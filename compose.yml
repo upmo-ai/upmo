@@ -1,0 +1,104 @@
+name: upmo
+
+x-go: &go
+  image: golang:1.26.5-bookworm
+  working_dir: /src
+  volumes:
+    - .:/src
+    - upmo-gomodcache:/go/pkg/mod
+    - upmo-gocache:/root/.cache/go-build
+  environment:
+    GOMODCACHE: /go/pkg/mod
+    GOCACHE: /root/.cache/go-build
+    GOTOOLCHAIN: local
+  networks:
+    - dev
+
+services:
+  go:
+    <<: *go
+
+  brain:
+    <<: *go
+    # Built then exec'd rather than go run, so SIGTERM reaches brain and it shuts
+    # down gracefully; go run exits on SIGTERM without passing it on.
+    command: ["sh", "-c", "go build -o /tmp/brain ./cmd/brain && exec /tmp/brain"]
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 120s
+
+  golangci-lint:
+    # v2.13.2 is the oldest v2 image whose Go (1.27) can load a go 1.26.5 module.
+    # v2.12.2 ships Go 1.26.2, which refuses this module under GOTOOLCHAIN=local.
+    image: golangci/golangci-lint:v2.13.2-alpine
+    profiles: ["tools"]
+    working_dir: /src
+    volumes:
+      - .:/src
+      - upmo-gomodcache:/go/pkg/mod
+      - upmo-gocache:/root/.cache/go-build
+      - upmo-golangci-cache:/root/.cache/golangci-lint
+    environment:
+      GOMODCACHE: /go/pkg/mod
+      GOCACHE: /root/.cache/go-build
+      GOLANGCI_LINT_CACHE: /root/.cache/golangci-lint
+      GOTOOLCHAIN: local
+
+  web:
+    image: node:24.22.1-bookworm-slim
+    working_dir: /src/web
+    volumes:
+      - .:/src
+      # node_modules lives in a volume, off the slower bind mount.
+      - upmo-web-node-modules:/src/web/node_modules
+      - upmo-pnpm-store:/root/.local/share/pnpm/store
+      - upmo-pnpm-cache:/root/.cache/pnpm
+      - upmo-corepack:/root/.cache/node/corepack
+    environment:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      pnpm_config_store_dir: /root/.local/share/pnpm/store
+    ports:
+      - "127.0.0.1:5173:5173"
+    entrypoint: ["sh", "-c", "corepack enable && exec \"$$@\"", "--"]
+    command: ["pnpm", "dev"]
+
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-bookworm
+    # Dev only credentials. Never reuse them outside the local compose stack.
+    environment:
+      POSTGRES_USER: upmo
+      POSTGRES_PASSWORD: upmo
+      POSTGRES_DB: upmo
+    volumes:
+      - upmo-pgdata:/var/lib/postgresql
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U upmo -d upmo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+networks:
+  dev:
+
+volumes:
+  upmo-gomodcache:
+  upmo-gocache:
+  upmo-golangci-cache:
+  upmo-pnpm-store:
+  upmo-pnpm-cache:
+  upmo-web-node-modules:
+  upmo-corepack:
+  upmo-pgdata:
