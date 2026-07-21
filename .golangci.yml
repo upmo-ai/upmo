@@ -1,0 +1,52 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        # Domain packages hold no I/O.
+        domain:
+          files:
+            - "**/internal/*/domain/**/*.go"
+            - "**/internal/*/domain/*.go"
+          deny:
+            - pkg: database/sql
+              desc: domain packages hold no I/O
+            - pkg: net/http
+              desc: domain packages hold no I/O
+            - pkg: os/exec
+              desc: domain packages hold no I/O
+            - pkg: github.com/jackc/pgx
+              desc: domain packages hold no I/O
+            - pkg: connectrpc.com/connect
+              desc: domain packages hold no I/O
+            - pkg: github.com/riverqueue/river
+              desc: domain packages hold no I/O
+        # Admission rule: the kernel depends on the standard library
+        # and the UUID package only.
+        kernel:
+          list-mode: strict
+          files:
+            - "**/internal/kernel/**/*.go"
+            - "**/internal/kernel/*.go"
+          allow:
+            - $gostd
+            - github.com/google/uuid
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/upmo-ai/upmo

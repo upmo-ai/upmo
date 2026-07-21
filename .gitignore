@@ -1,0 +1,23 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Go
+/bin/
+*.test
+*.out
+coverage.txt
+
+# Node and web
+node_modules/
+dist/
+coverage/
+.pnpm-store/
+*.tsbuildinfo
+.vite/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
