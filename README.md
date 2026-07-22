@@ -26,3 +26,11 @@ Copy `.env.example` to `.env` to override settings. `.env` is never committed.
 ## Layout
 
 The Go module is laid out by bounded context under `internal/`, with technical code in `internal/platform` and the import rules checked by `internal/archtest`. The web app lives in `web/`.
+
+## Licence and trademark
+
+Code and documentation are under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`). The Upmo name, caret mark and wordmark are not; see [TRADEMARK.md](TRADEMARK.md).
+
+Third-party fonts and other assets, with their licences, are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
