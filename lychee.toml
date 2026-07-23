@@ -1,0 +1,9 @@
+# Link check for the markdown files. Run through `make docs`.
+exclude = [
+  '^mailto:',
+  'cla-assistant\.io',
+]
+exclude_path = [
+  'node_modules',
+]
+include_mail = false
