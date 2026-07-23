@@ -1,0 +1,12 @@
+{
+  "config": {
+    "default": true,
+    // Prose is written one paragraph per line.
+    "MD013": false,
+    // Contact addresses are written as plain text.
+    "MD034": false
+  },
+  "globs": ["**/*.md"],
+  // The pull request template starts at a second level heading by design.
+  "ignores": ["**/node_modules/**", ".github/pull_request_template.md"]
+}
