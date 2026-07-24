@@ -18,7 +18,7 @@ COMMITS_RANGE ?= origin/main..HEAD
 # Dev only database for integration tests, served by the compose postgres.
 TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
 
-.PHONY: help build test test-integration lint fmt up down ci web arch vuln secrets commits docs
+.PHONY: help build test test-integration lint fmt up down ci web arch vuln secrets commits docs fuzz
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -64,6 +64,12 @@ commits: ## Check Conventional Commit subjects on this branch
 docs: ## Check markdown style and links
 	$(TOOL) markdownlint
 	$(TOOL) lychee
+
+fuzz: ## Fuzz the safety libraries for 30 seconds each
+	$(GO) go test -fuzz=FuzzWrap -fuzztime=30s ./internal/platform/trustfence
+	$(GO) go test -fuzz=FuzzNeutralizeSlot -fuzztime=30s ./internal/platform/trustfence
+	$(GO) go test -fuzz=FuzzBlockedAddr -fuzztime=30s ./internal/platform/netguard
+	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/webhooksig
 
 ci: build lint test arch vuln secrets commits docs ## Run the same steps as CI
 
