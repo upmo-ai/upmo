@@ -79,6 +79,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make docs
 
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make fuzz
+
   codeql:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'
@@ -112,6 +118,7 @@ jobs:
       - secrets
       - commits
       - docs
+      - fuzz
       - codeql
     steps:
       - name: Fail unless every job passed or was skipped on purpose
