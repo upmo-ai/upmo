@@ -117,6 +117,22 @@ services:
       - .:/src:ro
     command: ["--config", "lychee.toml", "--no-progress", "."]
 
+  shellcheck:
+    image: koalaman/shellcheck:v0.11.0
+    profiles: ["tools"]
+    working_dir: /scripts
+    volumes:
+      - ./scripts:/scripts:ro
+    command: ["canary/lib.sh", "canary/selftest.sh"]
+
+  bash:
+    image: bash:5.3.15-alpine3.24
+    profiles: ["tools"]
+    working_dir: /scripts
+    volumes:
+      - ./scripts/canary:/scripts:ro
+    command: ["bash", "/scripts/selftest.sh"]
+
   postgres:
     image: pgvector/pgvector:0.8.7-pg18-bookworm
     # Dev only credentials. Never reuse them outside the local compose stack.
