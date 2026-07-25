@@ -13,7 +13,7 @@ import (
 
 // NonContexts are the top-level packages under internal/ that are not
 // bounded contexts.
-var NonContexts = map[string]bool{"platform": true, "kernel": true, "archtest": true}
+var NonContexts = map[string]bool{"platform": true, "kernel": true, "archtest": true, "testutil": true}
 
 // IOPackages may not be imported by a domain package. A path also covers
 // every package below it.

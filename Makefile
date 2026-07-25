@@ -18,7 +18,7 @@ COMMITS_RANGE ?= origin/main..HEAD
 # Dev only database for integration tests, served by the compose postgres.
 TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
 
-.PHONY: help build test test-integration lint fmt up down ci web arch vuln secrets commits docs fuzz
+.PHONY: help build test test-integration test-live test-regression lint fmt up down ci web arch vuln secrets commits docs fuzz canary
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -35,8 +35,15 @@ test-integration: ## Run Go integration tests against the compose postgres
 	$(COMPOSE) up -d --wait postgres
 	$(COMPOSE) run --rm -e UPMO_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go go test -tags integration ./...
 
-lint: ## Run golangci-lint (linters and format check) and the web lint
+test-live: ## Run tests that call a real model provider
+	$(GO) go test -tags live ./...
+
+test-regression: ## Run regression tests
+	$(GO) go test -race -run Regression ./...
+
+lint: ## Run golangci-lint (linters and format check), shellcheck and the web lint
 	$(LINT) golangci-lint run ./...
+	$(TOOL) shellcheck
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint"
 
 fmt: ## Format Go code with gofmt and goimports
@@ -65,13 +72,16 @@ docs: ## Check markdown style and links
 	$(TOOL) markdownlint
 	$(TOOL) lychee
 
+canary: ## Run the canary library self-test
+	$(TOOL) bash
+
 fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(GO) go test -fuzz=FuzzWrap -fuzztime=30s ./internal/platform/trustfence
 	$(GO) go test -fuzz=FuzzNeutralizeSlot -fuzztime=30s ./internal/platform/trustfence
 	$(GO) go test -fuzz=FuzzBlockedAddr -fuzztime=30s ./internal/platform/netguard
 	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/webhooksig
 
-ci: build lint test arch vuln secrets commits docs ## Run the same steps as CI
+ci: build lint test test-regression canary arch vuln secrets commits docs ## Run the same steps as CI
 
 web: ## Install, lint, test and build the web app
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build"
