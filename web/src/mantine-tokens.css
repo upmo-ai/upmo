@@ -1,0 +1,34 @@
+:root,
+[data-mantine-color-scheme="light"] {
+  --mantine-color-body: var(--surface-000);
+  --mantine-color-text: var(--ink);
+  --mantine-color-dimmed: var(--ink-muted);
+  --mantine-color-default: var(--surface-100);
+  --mantine-color-default-hover: var(--surface-hover);
+  --mantine-color-default-border: var(--border-strong);
+  --mantine-color-placeholder: var(--ink-muted);
+  --mantine-color-anchor: var(--emerald-deep);
+  --mantine-color-error: var(--danger);
+  --mantine-primary-color-filled: var(--emerald-deep);
+  --mantine-primary-color-filled-hover: var(--emerald-hover);
+  --mantine-primary-color-light: var(--emerald-soft);
+  --mantine-primary-color-light-color: var(--emerald-deep);
+  --mantine-primary-color-contrast: var(--ink-on-brand);
+}
+
+[data-mantine-color-scheme="dark"] {
+  --mantine-color-body: var(--surface-000);
+  --mantine-color-text: var(--ink);
+  --mantine-color-dimmed: var(--ink-muted);
+  --mantine-color-default: var(--surface-100);
+  --mantine-color-default-hover: var(--surface-hover);
+  --mantine-color-default-border: var(--border-strong);
+  --mantine-color-placeholder: var(--ink-muted);
+  --mantine-color-anchor: var(--emerald-deep);
+  --mantine-color-error: var(--danger);
+  --mantine-primary-color-filled: var(--emerald-deep);
+  --mantine-primary-color-filled-hover: var(--emerald-hover);
+  --mantine-primary-color-light: var(--emerald-soft);
+  --mantine-primary-color-light-color: var(--emerald-deep);
+  --mantine-primary-color-contrast: var(--ink-on-brand);
+}

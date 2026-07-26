@@ -1,0 +1,5 @@
+# Drop the host port so a second dev server can run beside one that already
+# published 127.0.0.1:5173. Playwright reaches it on the compose network.
+services:
+  web:
+    ports: !override []

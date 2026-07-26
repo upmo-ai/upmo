@@ -8,12 +8,21 @@ importers:
 
   .:
     dependencies:
+      '@fontsource/manrope':
+        specifier: 5.3.0
+        version: 5.3.0
       '@mantine/core':
         specifier: ^9.7.4
         version: 9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@mantine/hooks':
         specifier: ^9.7.4
         version: 9.7.4(react@19.3.1)
+      '@upmo-ai/tokens':
+        specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/tokens
+        version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens
+      '@upmo-ai/ui':
+        specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/ui
+        version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -143,6 +152,9 @@ packages:
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@fontsource/manrope@5.3.0':
+    resolution: {integrity: sha512-obJ1Dv3+uCA6HlHgW8u4BGYxJR9In2HW7gjJhlflEvkrj1X1iSEwu0fToL+JYGC/FEKFfIz1sBuPduvcL2gIAA==}
 
   '@jridgewell/resolve-uri@3.1.2':
     resolution: {integrity: sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==}
@@ -548,6 +560,20 @@ packages:
     engines: {node: '>=16.20.0'}
     cpu: [x64]
     os: [win32]
+
+  '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens':
+    resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/tokens, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
+    version: 0.1.0
+
+  '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui':
+    resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/ui, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
+    version: 0.1.0
+    peerDependencies:
+      '@mantine/core': ^9.4.0
+      '@mantine/hooks': ^9.4.0
+      '@upmo-ai/tokens': 0.x
+      react: ^19.2.0
+      react-dom: ^19.2.0
 
   '@vitejs/plugin-react@6.1.2':
     resolution: {integrity: sha512-fhJNGUdscQa4HkI0xFxwonWyhnVReCPDbXI7FH7jmzpnVCrFQI7PRrhWecO263610vOrs9tr2Y4xcf8uAdFxbw==}
@@ -1151,6 +1177,8 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
+  '@fontsource/manrope@5.3.0': {}
+
   '@jridgewell/resolve-uri@3.1.2': {}
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
@@ -1382,6 +1410,16 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
+
+  '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens': {}
+
+  '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@mantine/core': 9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@mantine/hooks': 9.7.4(react@19.3.1)
+      '@upmo-ai/tokens': https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
 
   '@vitejs/plugin-react@6.1.2(vite@8.3.5)':
     dependencies:
