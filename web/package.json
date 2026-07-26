@@ -12,8 +12,11 @@
   },
   "packageManager": "pnpm@11.28.8+sha512.f6988a32046b9a3f78d7d7ee0747926bbe905ff9dff73bf19abb87bd7d1906a2ac90d93f73be32b5f9e14c2899569bcb0c9c5ec8a19e083f5d71bbab6dd9e0b8",
   "dependencies": {
+    "@fontsource/manrope": "5.3.0",
     "@mantine/core": "^9.7.4",
     "@mantine/hooks": "^9.7.4",
+    "@upmo-ai/tokens": "github:upmo-ai/design-system#v0.1.0&path:/packages/tokens",
+    "@upmo-ai/ui": "github:upmo-ai/design-system#v0.1.0&path:/packages/ui",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

@@ -67,6 +67,7 @@ services:
     working_dir: /src/web
     volumes:
       - .:/src
+      - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       # node_modules lives in a volume, off the slower bind mount.
       - upmo-web-node-modules:/src/web/node_modules
       - upmo-pnpm-store:/root/.local/share/pnpm/store
@@ -75,10 +76,34 @@ services:
     environment:
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
       pnpm_config_store_dir: /root/.local/share/pnpm/store
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
     ports:
       - "127.0.0.1:5173:5173"
-    entrypoint: ["sh", "-c", "corepack enable && exec \"$$@\"", "--"]
+    entrypoint: ["sh", "-c", "corepack enable && (command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends git ca-certificates)) && exec \"$$@\"", "--"]
     command: ["pnpm", "dev"]
+
+  # Official Playwright image: browsers and system libraries only. The npm
+  # package is installed into a volume by e2e/run.sh so the web app does not
+  # gain a dependency. Kept off the default `up` and off `make ci`.
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.55.1-noble
+    profiles: ["e2e"]
+    user: root
+    working_dir: /src
+    # Share the dev server's network so the browser's Host is 127.0.0.1.
+    # Vite rejects any other host, including the compose service name.
+    network_mode: "service:web"
+    ipc: host
+    init: true
+    volumes:
+      - .:/src
+      - upmo-playwright:/opt/playwright
+    environment:
+      WEB_URL: http://127.0.0.1:5173
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    command: ["sh", "/src/e2e/run.sh"]
 
   osv-scanner:
     image: ghcr.io/google/osv-scanner:v2.4.0
@@ -161,4 +186,5 @@ volumes:
   upmo-pnpm-cache:
   upmo-web-node-modules:
   upmo-corepack:
+  upmo-playwright:
   upmo-pgdata:
