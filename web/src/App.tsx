@@ -1,16 +1,32 @@
-import { Container, Stack, Text, Title } from "@mantine/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { RouterProvider } from "@tanstack/react-router";
+import { useState } from "react";
 
-import { ThemeSwitch } from "./theme";
+import { ApiProvider, type ApiClient } from "./features/shell/api";
+import { createAppRouter, type RouterHistory } from "./features/shell/router";
 
-export function App() {
+export function App({
+  history,
+  client,
+}: {
+  history?: RouterHistory;
+  client?: ApiClient;
+} = {}) {
+  const [router] = useState(() => createAppRouter(history));
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: { retry: false, refetchOnWindowFocus: false, staleTime: Infinity },
+        },
+      }),
+  );
+
   return (
-    <Container size="sm" py="xl">
-      <Stack gap="xs">
-        <Title order={1}>Upmo</Title>
-        <Text size="lg">Always up.</Text>
-        <Text c="dimmed">Web app placeholder</Text>
-        <ThemeSwitch />
-      </Stack>
-    </Container>
+    <ApiProvider client={client}>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </ApiProvider>
   );
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install Playwright into a volume, then run the theme check.
+# Install Playwright into a volume, then run the browser checks.
 # The image tag and this version stay on the same 1.55.1 release so the
 # baked browsers match the library.
 set -eu
@@ -26,4 +26,5 @@ if [ "$installed" != "$version" ]; then
     "playwright@$version"
 fi
 
-exec node /src/e2e/theme.mjs
+node /src/e2e/theme.mjs
+exec node /src/e2e/shell.mjs

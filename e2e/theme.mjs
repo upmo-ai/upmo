@@ -105,7 +105,7 @@ try {
   // Vite keeps a websocket open, so networkidle does not settle.
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
   try {
-    await page.getByRole("heading", { level: 1, name: "Upmo" }).waitFor();
+    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
   } catch (error) {
     const text = await page.locator("body").innerText().catch(() => "");
     throw new Error(`${error.message}\n${text.slice(0, 500)}`);
