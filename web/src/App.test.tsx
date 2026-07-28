@@ -56,11 +56,9 @@ describe("App", () => {
     window.matchMedia = matchMedia;
   });
 
-  it("renders the placeholder heading", () => {
+  it("renders the home heading and the theme switch", async () => {
     renderApp();
-    expect(screen.getByRole("heading", { name: "Upmo" })).toBeTruthy();
-    expect(screen.getByText("Always up.")).toBeTruthy();
-    expect(screen.getByText("Web app placeholder")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Home" })).toBeTruthy();
     expect(screen.getByTestId("theme-switch")).toBeTruthy();
     expect(screen.getByText("Light")).toBeTruthy();
     expect(screen.getByText("Dark")).toBeTruthy();
@@ -102,8 +100,9 @@ describe("App", () => {
     });
   });
 
-  it("sets the dark scheme", () => {
+  it("sets the dark scheme", async () => {
     renderApp();
+    await screen.findByTestId("theme-switch");
     choose("Dark");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     expect(screen.getByTestId("color-scheme").textContent).toBe("dark");
@@ -111,17 +110,19 @@ describe("App", () => {
     expect(Object.keys(localStorage)).toEqual(["mantine-color-scheme-value"]);
   });
 
-  it("sets the light scheme", () => {
+  it("sets the light scheme", async () => {
     renderApp();
+    await screen.findByTestId("theme-switch");
     choose("Dark");
     choose("Light");
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
     expect(screen.getByTestId("color-scheme").textContent).toBe("light");
   });
 
-  it("follows the computed scheme when System is chosen", () => {
+  it("follows the computed scheme when System is chosen", async () => {
     preferDark();
     renderApp();
+    await screen.findByTestId("theme-switch");
     choose("System");
     expect(screen.getByTestId("color-scheme").textContent).toBe("auto");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");

@@ -4,5 +4,6 @@ packages:
 updateNotifier: false
 
 allowBuilds:
+  '@upmo-ai/icons@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons': true
   '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens': true
   '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui': true

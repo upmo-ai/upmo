@@ -17,6 +17,18 @@ importers:
       '@mantine/hooks':
         specifier: ^9.7.4
         version: 9.7.4(react@19.3.1)
+      '@tabler/icons-react':
+        specifier: 3.45.0
+        version: 3.45.0(react@19.3.1)
+      '@tanstack/react-query':
+        specifier: 5.101.2
+        version: 5.101.2(react@19.3.1)
+      '@tanstack/react-router':
+        specifier: 1.170.18
+        version: 1.170.18(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@upmo-ai/icons':
+        specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/icons
+        version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons
       '@upmo-ai/tokens':
         specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/tokens
         version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens
@@ -402,6 +414,46 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
+  '@tabler/icons-react@3.45.0':
+    resolution: {integrity: sha512-t/AuKs7ALMDDTY+B9IvfZnlO0mbLlP/lJxP/HnGC49QkM8mCsTN38kYyxjXxgrb1+TeK53ioVBJqIV7n/eysXQ==}
+    peerDependencies:
+      react: '>= 16'
+
+  '@tabler/icons@3.45.0':
+    resolution: {integrity: sha512-jiATwV8+zGYLTZ7gMLGivCic+KtsMZXcDmufIG8umlLxoHhI6902hGYIEt0Oa9Y9SXblNzUlrisHm5jOFMxOQA==}
+
+  '@tanstack/history@1.162.0':
+    resolution: {integrity: sha512-79pf/RkhteYZTRgcR4F9kbk84P2N8rugQJswxfIqovlbRiT3yI7eBE+5QorIrZaOKktsgzRlXh1l/du/xpl4iA==}
+    engines: {node: '>=20.19'}
+
+  '@tanstack/query-core@5.101.2':
+    resolution: {integrity: sha512-hH5MLoJhF7KaIGd7q3xTXGXvslI+GYlM1Z/35aSHHWaCJWB7XvTSHYuV3eM7tw+aE0mT/xMro4M4Q9rCGHT0lw==}
+
+  '@tanstack/react-query@5.101.2':
+    resolution: {integrity: sha512-seDkr6kzGzX1okaaTtZPtgA688CDPlXUz1C6xSg0ESqn04Vuc8tlrYms1s3de+znBqhPVxFRfpAfUf+6XvfPWg==}
+    peerDependencies:
+      react: ^18 || ^19
+
+  '@tanstack/react-router@1.170.18':
+    resolution: {integrity: sha512-wpbGYZEp/fmz1q4bn7BD8VZ+/VZ7GBqSJv5V969pU+chP8y7dquWDmKTFMohvUegb9lg12m1uPVvD6kB2wORvQ==}
+    engines: {node: '>=20.19'}
+    peerDependencies:
+      react: '>=18.0.0 || >=19.0.0'
+      react-dom: '>=18.0.0 || >=19.0.0'
+
+  '@tanstack/react-store@0.9.3':
+    resolution: {integrity: sha512-y2iHd/N9OkoQbFJLUX1T9vbc2O9tjH0pQRgTcx1/Nz4IlwLvkgpuglXUx+mXt0g5ZDFrEeDnONPqkbfxXJKwRg==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  '@tanstack/router-core@1.171.15':
+    resolution: {integrity: sha512-IILCDcLaItMZQ2jEmCABHY1Nhjjn5XUvwpQp3e4Nmu+vfg0BgYFuu/QASz2SwE2ZNbVMrvt8X/wxa+Gg5aErxA==}
+    engines: {node: '>=20.19'}
+
+  '@tanstack/store@0.9.3':
+    resolution: {integrity: sha512-8reSzl/qGWGGVKhBoxXPMWzATSbZLZFWhwBAFO9NAyp0TxzfBP0mIrGb8CP8KrQTmvzXlR/vFPPUrHTLBGyFyw==}
+
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
     engines: {node: '>=18'}
@@ -561,6 +613,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@upmo-ai/icons@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons':
+    resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/icons, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
+    version: 0.1.0
+
   '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens':
     resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/tokens, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
     version: 0.1.0
@@ -631,6 +687,9 @@ packages:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
 
+  cookie-es@3.1.1:
+    resolution: {integrity: sha512-UaXxwISYJPTr9hwQxMFYZ7kNhSXboMXP+Z3TRX6f1/NyaGPfuNUZOWP1pUEb75B2HjfklIYLVRfWiFZJyC6Npg==}
+
   css-tree@3.2.1:
     resolution: {integrity: sha512-X7sjQzceUhu1u7Y/ylrRZFU2FS6LRiFVp6rKLPg23y3x3c3DOKAwuXGDp+PAGjh6CSnCjYeAul8pcT8bAl+lSA==}
     engines: {node: ^10 || ^12.20.0 || ^14.13.0 || >=15.0.0}
@@ -697,6 +756,10 @@ packages:
 
   is-potential-custom-element-name@1.0.1:
     resolution: {integrity: sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==}
+
+  isbot@5.2.2:
+    resolution: {integrity: sha512-iQcBXcd+Rv/pkubRyGh2utW2j1oPG5hZY6TUhVPpqK4G+o3IbxpJNx04hgksjc/N7GK5pEorUxDeg31cFgEk/w==}
+    engines: {node: '>=18'}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -906,6 +969,16 @@ packages:
   scheduler@0.28.0:
     resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
 
+  seroval-plugins@1.7.2:
+    resolution: {integrity: sha512-ud8kMCGLHmGkW9YtVDluJtqTukSx/4YBqtmPAvAz/HxbIwhwMeZU52imxeyZ1zoAXtqBDiaLwSasbnK9DptrDg==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      seroval: ^1.0
+
+  seroval@1.7.2:
+    resolution: {integrity: sha512-NPOYrDVbvtuTo5m9InqKE7O6wBASON46OabjyqLUGPvoXNDYp0pReuFYkqOQwGsoj1OpZVj6mIdnRRgt5O1/gQ==}
+    engines: {node: '>=20'}
+
   source-map-js@1.2.2:
     resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
     engines: {node: '>=0.10.0'}
@@ -982,6 +1055,11 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
+
+  use-sync-external-store@1.7.0:
+    resolution: {integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   vite@8.3.5:
     resolution: {integrity: sha512-z1YpjieJ9g0ebTmQpLBv/oq9E3F9EIlOe+7LahW8SrE3LTiG3udBRUXQOlYXP9b+IC2q2phHeVxj9xGlw34OEQ==}
@@ -1311,6 +1389,47 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@tabler/icons-react@3.45.0(react@19.3.1)':
+    dependencies:
+      '@tabler/icons': 3.45.0
+      react: 19.3.1
+
+  '@tabler/icons@3.45.0': {}
+
+  '@tanstack/history@1.162.0': {}
+
+  '@tanstack/query-core@5.101.2': {}
+
+  '@tanstack/react-query@5.101.2(react@19.3.1)':
+    dependencies:
+      '@tanstack/query-core': 5.101.2
+      react: 19.3.1
+
+  '@tanstack/react-router@1.170.18(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@tanstack/history': 1.162.0
+      '@tanstack/react-store': 0.9.3(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@tanstack/router-core': 1.171.15
+      isbot: 5.2.2
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+
+  '@tanstack/react-store@0.9.3(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@tanstack/store': 0.9.3
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+      use-sync-external-store: 1.7.0(react@19.3.1)
+
+  '@tanstack/router-core@1.171.15':
+    dependencies:
+      '@tanstack/history': 1.162.0
+      cookie-es: 3.1.1
+      seroval: 1.7.2
+      seroval-plugins: 1.7.2(seroval@1.7.2)
+
+  '@tanstack/store@0.9.3': {}
+
   '@testing-library/dom@10.4.2':
     dependencies:
       '@babel/code-frame': 7.29.7
@@ -1411,6 +1530,8 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
+  '@upmo-ai/icons@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons': {}
+
   '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens': {}
 
   '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
@@ -1454,6 +1575,8 @@ snapshots:
   chai@6.3.0: {}
 
   clsx@2.1.1: {}
+
+  cookie-es@3.1.1: {}
 
   css-tree@3.2.1:
     dependencies:
@@ -1505,6 +1628,8 @@ snapshots:
       - '@noble/hashes'
 
   is-potential-custom-element-name@1.0.1: {}
+
+  isbot@5.2.2: {}
 
   js-tokens@4.0.0: {}
 
@@ -1710,6 +1835,12 @@ snapshots:
 
   scheduler@0.28.0: {}
 
+  seroval-plugins@1.7.2(seroval@1.7.2):
+    dependencies:
+      seroval: 1.7.2
+
+  seroval@1.7.2: {}
+
   source-map-js@1.2.2: {}
 
   std-env@4.3.0: {}
@@ -1786,6 +1917,10 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.3.0
+
+  use-sync-external-store@1.7.0(react@19.3.1):
+    dependencies:
+      react: 19.3.1
 
   vite@8.3.5:
     dependencies:
