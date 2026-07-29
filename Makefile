@@ -41,10 +41,11 @@ test-live: ## Run tests that call a real model provider
 test-regression: ## Run regression tests
 	$(GO) go test -race -run Regression ./...
 
-lint: ## Run golangci-lint (linters and format check), shellcheck and the web lint
+lint: ## Run golangci-lint (linters and format check), shellcheck, the web lint and retired words
 	$(LINT) golangci-lint run ./...
 	$(TOOL) shellcheck
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint"
+	$(GO) sh -c "git ls-files | go run ./tools/repolint terms"
 
 fmt: ## Format Go code with gofmt and goimports
 	$(LINT) golangci-lint fmt ./...

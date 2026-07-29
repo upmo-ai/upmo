@@ -30,8 +30,44 @@ norm() {
   fi
 }
 
+# Host path of the mount whose JSON object contains "/src".
 src_of() {
-  docker inspect "$1" --format '{{range .Mounts}}{{if eq .Destination "/src"}}{{.Source}}{{end}}{{end}}'
+  json=$(docker inspect "$1" --format '{{json .Mounts}}') || return 1
+  printf '%s\n' "$json" | awk '
+    function source_of(obj,    key, pos, i, c, out) {
+      key = "\"Source\":\""
+      pos = index(obj, key)
+      if (pos == 0) {
+        return ""
+      }
+      i = pos + length(key)
+      out = ""
+      while (i <= length(obj)) {
+        c = substr(obj, i, 1)
+        if (c == "\\") {
+          out = out substr(obj, i + 1, 1)
+          i += 2
+          continue
+        }
+        if (c == "\"") {
+          break
+        }
+        out = out c
+        i++
+      }
+      return out
+    }
+    {
+      n = split($0, parts, /[{}]/)
+      for (i = 1; i <= n; i++) {
+        if (index(parts[i], "\"/src\"") == 0) {
+          continue
+        }
+        print source_of(parts[i])
+        exit
+      }
+    }
+  '
 }
 
 dc_args=
