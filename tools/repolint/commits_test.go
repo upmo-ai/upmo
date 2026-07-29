@@ -120,7 +120,7 @@ func TestRunCommits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			gitRepo(t, tt.subjects...)
 			var stdout, stderr bytes.Buffer
-			got := run([]string{"commits", "-range", "HEAD~" + strconv.Itoa(len(tt.subjects)-1) + "..HEAD"}, &stdout, &stderr)
+			got := run([]string{"commits", "-range", "HEAD~" + strconv.Itoa(len(tt.subjects)-1) + "..HEAD"}, nil, &stdout, &stderr)
 			if got != tt.want {
 				t.Errorf("exit code = %d, want %d\nstdout: %s\nstderr: %s", got, tt.want, &stdout, &stderr)
 			}
@@ -135,7 +135,7 @@ func TestRunCommitsBadRange(t *testing.T) {
 	gitRepo(t, "chore: start")
 	for _, rev := range []string{"--output=x", "no-such-ref..HEAD"} {
 		var stdout, stderr bytes.Buffer
-		if got := run([]string{"commits", "-range", rev}, &stdout, &stderr); got != 2 {
+		if got := run([]string{"commits", "-range", rev}, nil, &stdout, &stderr); got != 2 {
 			t.Errorf("range %q: exit code = %d, want 2", rev, got)
 		}
 	}

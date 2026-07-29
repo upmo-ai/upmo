@@ -33,4 +33,4 @@ Each change links its task ID (`UPM-n`) in the pull request.
 
 ## Writing style
 
-Write plain, direct sentences. Use sentence case for headings. Use no em dashes and no emoji. Use one word for one concept, following the glossary in the design system: [design.upmo.dev](https://design.upmo.dev).
+Write plain, direct sentences. Use sentence case for headings. Use no em dashes and no emoji. Use one word for one concept, following the glossary in the design system: [design.upmo.dev](https://design.upmo.dev). The `repolint terms` check fails the build on a retired word, and the fix is to reword, not to skip the file.

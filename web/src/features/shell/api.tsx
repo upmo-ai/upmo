@@ -21,13 +21,13 @@ export interface ApiClient {
 
 const tasks: Task[] = [
   { id: "aster-digest", title: "Daily finance digest" },
-  { id: "aster-inbox", title: "Inbox triage" },
+  { id: "aster-mail", title: "Mail triage" },
 ];
 
 const notificationFixtures: AppNotification[] = [
   { id: "aster-failed", kind: "failed", title: "Weekly close failed" },
   { id: "aster-approval", kind: "approval", title: "Approve the digest" },
-  { id: "aster-finished", kind: "finished", title: "Inbox triage done" },
+  { id: "aster-finished", kind: "finished", title: "Mail triage done" },
   { id: "aster-question", kind: "question", title: "Question about the budget" },
 ];
 

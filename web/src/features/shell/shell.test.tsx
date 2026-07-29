@@ -63,7 +63,7 @@ describe("app shell", () => {
   it("lists the install's tasks", async () => {
     renderAt("/tasks");
     expect(await screen.findByText("Daily finance digest")).toBeTruthy();
-    expect(screen.getByText("Inbox triage")).toBeTruthy();
+    expect(screen.getByText("Mail triage")).toBeTruthy();
     expect(within(sidebar()).getByText("Aster")).toBeTruthy();
     expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
   });
@@ -92,7 +92,7 @@ describe("app shell", () => {
     expect(items.map((item) => item.textContent)).toEqual([
       "Approve the digestApprove",
       "Question about the budgetApprove",
-      "Inbox triage done",
+      "Mail triage done",
       "Weekly close failed",
     ]);
     expect(within(items[3]!).queryByRole("button", { name: "Approve" })).toBeNull();
