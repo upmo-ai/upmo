@@ -57,6 +57,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make web
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make e2e
+
   vuln:
     runs-on: ubuntu-latest
     steps:
@@ -128,6 +134,7 @@ jobs:
       - lint
       - arch
       - web
+      - e2e
       - vuln
       - secrets
       - commits

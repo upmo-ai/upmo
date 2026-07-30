@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 
 // The official image ships browsers, not the npm package. e2e/run.sh installs
-// playwright@1.55.1 here. NODE_PATH does not apply to ESM imports.
+// playwright@1.61.1 here. NODE_PATH does not apply to ESM imports.
 const require = createRequire("/opt/playwright/package.json");
 const { chromium } = require("playwright");
 

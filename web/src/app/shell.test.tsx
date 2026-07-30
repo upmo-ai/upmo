@@ -2,8 +2,8 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { App } from "../../App";
-import { AppProviders } from "../../theme";
+import { App } from "../App";
+import { AppProviders } from "../theme";
 import { type ApiClient } from "./api";
 
 const routes = [
@@ -71,12 +71,42 @@ describe("app shell", () => {
   it("uses an injected API client", async () => {
     const client: ApiClient = {
       async listTasks() {
-        return [{ id: "custom-task", title: "Custom task" }];
+        return [
+          {
+            id: "custom-task",
+            title: "Custom task",
+            status: "Working",
+            phase: "Preparing",
+            result: "Custom task is finished.",
+            detail: "A custom task.",
+          },
+        ];
       },
       async listNotifications() {
         return [];
       },
       async approveNotification() {},
+      async nextPhase() {
+        return {
+          id: "custom-task",
+          title: "Custom task",
+          status: "Working",
+          phase: "Planning",
+          result: "Custom task is finished.",
+          detail: "A custom task.",
+        };
+      },
+      approvals: {
+        async list() {
+          return [];
+        },
+        async approve(_ignored, id) {
+          return { id, taskId: "task", title: "", action: "", state: "approved" };
+        },
+        async deny(_ignored, id) {
+          return { id, taskId: "task", title: "", action: "", state: "denied" };
+        },
+      },
     };
     renderAt("/tasks", client);
     expect(await screen.findByText("Custom task")).toBeTruthy();
@@ -128,6 +158,20 @@ describe("app shell", () => {
         return [];
       },
       async approveNotification() {},
+      async nextPhase() {
+        throw new Error("no task");
+      },
+      approvals: {
+        async list() {
+          return [];
+        },
+        async approve() {
+          throw new Error("no approval");
+        },
+        async deny() {
+          throw new Error("no approval");
+        },
+      },
     };
     renderAt("/", client);
     const bell = await screen.findByRole("button", { name: /^Notifications$/ });

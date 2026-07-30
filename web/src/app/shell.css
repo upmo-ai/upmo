@@ -52,10 +52,14 @@
   font-weight: 600;
 }
 
-.shell-footer {
+.shell-footer,
+.shell-footer-meta {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+.shell-footer {
   margin-top: auto;
 }
 
@@ -63,7 +67,6 @@
   padding: var(--space-4);
 }
 
-.shell-tasks,
 .shell-notes {
   margin: 0;
   padding: 0;
@@ -123,8 +126,17 @@
   .shell-wordmark,
   .shell-workspace,
   .shell-group,
-  .shell-footer {
+  .shell-footer-meta {
     display: none;
+  }
+
+  .shell-sign-out {
+    height: auto;
+    min-height: 40px;
+    padding-inline: 4px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: normal;
   }
 
   .shell-nav-label {
@@ -163,8 +175,16 @@
     display: block;
   }
 
-  .shell-footer {
+  .shell-footer-meta {
     display: flex;
+  }
+
+  .shell-sign-out {
+    height: auto;
+    padding-inline: var(--space-3);
+    font-size: inherit;
+    line-height: inherit;
+    white-space: nowrap;
   }
 
   .shell-nav-label {
