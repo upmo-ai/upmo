@@ -18,7 +18,7 @@ COMMITS_RANGE ?= origin/main..HEAD
 # Dev only database for integration tests, served by the compose postgres.
 TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
 
-.PHONY: help build test test-integration test-live test-regression lint fmt up down ci web web-e2e arch vuln secrets commits docs fuzz canary
+.PHONY: help build test test-integration test-live test-regression lint fmt up down ci web e2e arch vuln secrets commits docs fuzz canary
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -89,7 +89,7 @@ web: ## Install, lint, test and build the web app
 
 # Separate from `web` and `ci`. Reuses this checkout's dev server when it is
 # already up. e2e/ensure-web.sh prints the compose project and the page URL.
-web-e2e: ## Browser-check theme tokens on the web dev server
+e2e: ## Browser-check theme, shell and task flows
 	@set -eu; \
 	out=$$(sh e2e/ensure-web.sh 3>&1 1>&2) || exit 1; \
 	project=$$(printf '%s\n' "$$out" | awk 'NR==1'); \

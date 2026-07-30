@@ -2,31 +2,22 @@ import {
   ActionIcon,
   Anchor,
   AppShell,
-  Badge,
   Breadcrumbs,
   Button,
   Group,
   NavLink,
-  Popover,
   Text,
   Tooltip,
-  useComputedColorScheme,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
-import { ThemeSwitch } from "../../theme";
-import {
-  type AppNotification,
-  type NotificationKind,
-  useApi,
-} from "./api";
-import { ShellIcon, type ShellConcept } from "./icons";
-import wordmarkDark from "./wordmark-dark.svg";
-import wordmarkLight from "./wordmark-light.svg";
-import { WorkspaceName } from "./workspace";
+import { NotificationsBell } from "../features/notifications/bell";
+import { WorkspaceName } from "../features/workspaces/workspace";
+import { ThemeSwitch } from "../theme";
+import { ShellIcon, type ShellConcept } from "../ui/icons";
+import { Wordmark } from "../ui/wordmark";
 
 import "./shell.css";
 
@@ -48,13 +39,6 @@ type NavItem = {
   concept: ShellConcept;
 };
 
-const kindOrder = {
-  approval: 0,
-  question: 1,
-  finished: 2,
-  failed: 3,
-} as const satisfies Record<NotificationKind, number>;
-
 function useShellLayout(): "drawer" | "rail" | "full" {
   const full = useMediaQuery("(min-width: 62em)", false, { getInitialValueInEffect: false });
   const atLeastSm = useMediaQuery("(min-width: 48em)", false, { getInitialValueInEffect: false });
@@ -66,26 +50,8 @@ function useShellLayout(): "drawer" | "rail" | "full" {
 function isCurrent(pathname: string, to: string) {
   if (to === "/") return pathname === "/";
   if (to === "/settings") return pathname === "/settings" || pathname.startsWith("/settings/");
+  if (to === "/tasks") return pathname === "/tasks" || pathname.startsWith("/tasks/");
   return pathname === to;
-}
-
-function ordered(items: AppNotification[]) {
-  return [...items].sort((left, right) => kindOrder[left.kind] - kindOrder[right.kind]);
-}
-
-function needsApproval(kind: NotificationKind) {
-  return kind === "approval" || kind === "question";
-}
-
-function Wordmark() {
-  const scheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
-  return (
-    <img
-      className="shell-wordmark"
-      src={scheme === "dark" ? wordmarkDark : wordmarkLight}
-      alt="Upmo"
-    />
-  );
 }
 
 function NavEntry({
@@ -106,7 +72,7 @@ function NavEntry({
         className="shell-nav-link"
         component={Link}
         to={item.to}
-        activeOptions={{ exact: item.to !== "/settings" }}
+        activeOptions={{ exact: item.to !== "/settings" && item.to !== "/tasks" }}
         active={current}
         aria-current={current ? "page" : undefined}
         aria-label={item.label}
@@ -135,7 +101,11 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
 
   const label =
     primary.find((item) => item.to === pathname)?.label ??
-    (pathname === "/settings" ? "Settings" : "");
+    (pathname.startsWith("/tasks/")
+      ? "Tasks"
+      : pathname === "/settings"
+        ? "Settings"
+        : "");
 
   return (
     <Breadcrumbs separator="/">
@@ -146,62 +116,16 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
   );
 }
 
-function NotificationsBell() {
-  const api = useApi();
-  const queryClient = useQueryClient();
-  const notifications = useQuery({
-    queryKey: ["notifications"],
-    queryFn: () => api.listNotifications(),
-  });
-  const approve = useMutation({
-    mutationFn: (id: string) => api.approveNotification(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }),
-  });
-  const items = ordered(notifications.data ?? []);
-  const count = items.length;
-  const label = count > 0 ? `Notifications, ${count} unread` : "Notifications";
-
+function SignOut() {
+  const navigate = useNavigate();
   return (
-    <Popover position="bottom-end" width={320} shadow="md">
-      <Popover.Target>
-        <ActionIcon className="shell-bell" aria-label={label} variant="subtle" size={40}>
-          <ShellIcon concept="nav.notifications" />
-          {count > 0 ? (
-            <Badge className="shell-count" size="xs" circle aria-hidden>
-              {count}
-            </Badge>
-          ) : null}
-        </ActionIcon>
-      </Popover.Target>
-      <Popover.Dropdown>
-        {notifications.data && items.length === 0 ? (
-          <>
-            <Text fw={600}>You are up to date</Text>
-            <Text c="dimmed" size="sm">
-              Approvals and finished tasks show up here.
-            </Text>
-          </>
-        ) : (
-          <ul className="shell-notes" aria-label="Notifications">
-            {items.map((item) => (
-              <li key={item.id} className="shell-note">
-                <span>{item.title}</span>
-                {needsApproval(item.kind) ? (
-                  <Button
-                    size="xs"
-                    variant="light"
-                    disabled={approve.isPending}
-                    onClick={() => approve.mutate(item.id)}
-                  >
-                    Approve
-                  </Button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Popover.Dropdown>
-    </Popover>
+    <Button
+      className="shell-sign-out"
+      variant="subtle"
+      onClick={() => navigate({ to: "/sign-in" })}
+    >
+      Sign out
+    </Button>
   );
 }
 
@@ -269,8 +193,11 @@ export function Shell() {
           />
         </div>
         <div className="shell-footer">
-          <ThemeSwitch />
-          <span className="code-sm">0.1.0</span>
+          <div className="shell-footer-meta">
+            <ThemeSwitch />
+            <span className="code-sm">0.1.0</span>
+          </div>
+          <SignOut />
         </div>
       </AppShell.Navbar>
       <AppShell.Main>

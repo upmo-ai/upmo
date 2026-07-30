@@ -1,10 +1,10 @@
 #!/bin/sh
 # Install Playwright into a volume, then run the browser checks.
-# The image tag and this version stay on the same 1.55.1 release so the
+# The image tag and this version stay on the same 1.61.1 release so the
 # baked browsers match the library.
 set -eu
 
-version=1.55.1
+version=1.61.1
 prefix=/opt/playwright
 pkg="$prefix/node_modules/playwright/package.json"
 
@@ -27,4 +27,5 @@ if [ "$installed" != "$version" ]; then
 fi
 
 node /src/e2e/theme.mjs
-exec node /src/e2e/shell.mjs
+node /src/e2e/shell.mjs
+exec node /src/e2e/flows.mjs

@@ -2,8 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { ApiProvider, type ApiClient } from "./features/shell/api";
-import { createAppRouter, type RouterHistory } from "./features/shell/router";
+import { ApiProvider, type ApiClient } from "./app/api";
+import { createAppRouter, type RouterHistory } from "./app/router";
 
 export function App({
   history,

@@ -88,7 +88,7 @@ services:
   # package is installed into a volume by e2e/run.sh so the web app does not
   # gain a dependency. Kept off the default `up` and off `make ci`.
   playwright:
-    image: mcr.microsoft.com/playwright:v1.55.1-noble
+    image: mcr.microsoft.com/playwright:v1.61.1-noble
     profiles: ["e2e"]
     user: root
     working_dir: /src
