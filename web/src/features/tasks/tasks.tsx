@@ -11,6 +11,7 @@ import {
   type Task,
   type TaskStatus,
 } from "../../app/api";
+import { ShareDialog } from "../identity/share-dialog";
 import { EmptyState } from "../../ui/section";
 import { ApprovalCard } from "./approval-card";
 import { isTaskFilter, pendingResult, phases, type Phase, type TaskFilter } from "./types";
@@ -79,7 +80,7 @@ export function TasksPage() {
   const pending = pendingFor(approvals.data);
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" className="task-screen">
       <Title order={1}>Tasks</Title>
       {pending.map((approval) => (
         <ApprovalCard key={approval.id} approval={approval} />
@@ -128,6 +129,7 @@ export function TaskPage() {
   const taskId = typeof params.taskId === "string" ? params.taskId : "";
   const api = useApi();
   const queryClient = useQueryClient();
+  const [shareOpen, setShareOpen] = useState(false);
   const tasks = useQuery({
     queryKey: tasksQueryKey(),
     queryFn: () => api.listTasks(),
@@ -153,11 +155,17 @@ export function TaskPage() {
   const advance = task.status === "Working" && pending.length === 0;
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" className="task-screen">
       {pending.map((approval) => (
         <ApprovalCard key={approval.id} approval={approval} />
       ))}
-      <Title order={1}>{task.title}</Title>
+      <Group justify="space-between" align="center" wrap="wrap">
+        <Title order={1}>{task.title}</Title>
+        <Button type="button" variant="default" onClick={() => setShareOpen(true)}>
+          Share
+        </Button>
+      </Group>
+      <ShareDialog opened={shareOpen} task={task} onClose={() => setShareOpen(false)} />
       <TaskStatusBadge status={task.status} />
       <Text className="task-meta">{task.detail}</Text>
       <div>

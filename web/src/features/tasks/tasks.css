@@ -61,9 +61,23 @@
   font-weight: 600;
 }
 
+.task-screen {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .task-filter {
   height: auto;
   overflow: visible;
+}
+
+@media (max-width: 36em) {
+  .task-filter {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
 }
 
 .task-meta {

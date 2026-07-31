@@ -7,7 +7,10 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 
-import { ConnectorsPage, SettingsPage } from "../features/settings/settings";
+import { MembersPage } from "../features/identity/members";
+import { SecurityPage } from "../features/identity/security";
+import { TokensPage } from "../features/identity/tokens";
+import { ConnectorsPage, SettingsLayout } from "../features/settings/settings";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
 import { SignInPage } from "./sign-in";
 import { Shell } from "./shell";
@@ -93,13 +96,25 @@ const usageRoute = createRoute({
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings",
-  component: () => <Outlet />,
+  component: SettingsLayout,
 });
 
 const settingsIndexRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/",
-  component: SettingsPage,
+  component: SecurityPage,
+});
+
+const membersRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "members",
+  component: MembersPage,
+});
+
+const tokensRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "tokens",
+  component: TokensPage,
 });
 
 const connectorsRoute = createRoute({
@@ -118,7 +133,7 @@ const routeTree = rootRoute.addChildren([
     agentsRoute,
     knowledgeRoute,
     usageRoute,
-    settingsRoute.addChildren([settingsIndexRoute, connectorsRoute]),
+    settingsRoute.addChildren([settingsIndexRoute, membersRoute, tokensRoute, connectorsRoute]),
   ]),
 ]);
 

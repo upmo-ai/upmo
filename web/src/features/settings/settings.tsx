@@ -1,19 +1,41 @@
-import { Anchor } from "@mantine/core";
-import { Link } from "@tanstack/react-router";
+import { Anchor, Stack } from "@mantine/core";
+import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 
 import { Section } from "../../ui/section";
 
-export function SettingsPage() {
+import "../identity/identity.css";
+
+export const settingsSections = [
+  { to: "/settings", label: "Security" },
+  { to: "/settings/members", label: "Members" },
+  { to: "/settings/tokens", label: "API tokens" },
+  { to: "/settings/connectors", label: "Connectors" },
+] as const;
+
+export function SettingsLayout() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+
   return (
-    <Section
-      title="Settings"
-      emptyTitle="Workspace settings"
-      emptyBody="Connectors and other sections for this workspace live here."
-    >
-      <Anchor component={Link} to="/settings/connectors" fw={600}>
-        Connectors
-      </Anchor>
-    </Section>
+    <Stack gap="lg" className="settings-page">
+      <nav className="settings-nav" aria-label="Settings">
+        {settingsSections.map((item) => {
+          const current = pathname === item.to;
+          return (
+            <Anchor
+              key={item.to}
+              className={current ? "settings-nav-link settings-nav-current" : "settings-nav-link"}
+              component={Link}
+              to={item.to}
+              activeOptions={{ exact: true }}
+              aria-current={current ? "page" : undefined}
+            >
+              {item.label}
+            </Anchor>
+          );
+        })}
+      </nav>
+      <Outlet />
+    </Stack>
   );
 }
 

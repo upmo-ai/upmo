@@ -13,7 +13,9 @@ import { useMediaQuery } from "@mantine/hooks";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
+import { PasskeyOffer } from "../features/identity/passkey-offer";
 import { NotificationsBell } from "../features/notifications/bell";
+import { settingsSections } from "../features/settings/settings";
 import { WorkspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch } from "../theme";
 import { ShellIcon, type ShellConcept } from "../ui/icons";
@@ -86,14 +88,15 @@ function NavEntry({
 }
 
 function ShellBreadcrumb({ pathname }: { pathname: string }) {
-  if (pathname === "/settings/connectors") {
+  const section = settingsSections.find((item) => item.to === pathname);
+  if (section) {
     return (
       <Breadcrumbs separator="/">
         <Anchor component={Link} to="/settings" size="sm">
           Settings
         </Anchor>
         <Text size="sm" fw={600} aria-current="page">
-          Connectors
+          {section.label}
         </Text>
       </Breadcrumbs>
     );
@@ -202,6 +205,7 @@ export function Shell() {
       </AppShell.Navbar>
       <AppShell.Main>
         <div className="shell-content">
+          <PasskeyOffer />
           <Outlet />
         </div>
       </AppShell.Main>

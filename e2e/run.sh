@@ -28,4 +28,5 @@ fi
 
 node /src/e2e/theme.mjs
 node /src/e2e/shell.mjs
-exec node /src/e2e/flows.mjs
+node /src/e2e/flows.mjs
+exec node /src/e2e/identity.mjs
