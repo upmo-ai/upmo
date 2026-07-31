@@ -89,7 +89,7 @@ web: ## Install, lint, test and build the web app
 
 # Separate from `web` and `ci`. Reuses this checkout's dev server when it is
 # already up. e2e/ensure-web.sh prints the compose project and the page URL.
-e2e: ## Browser-check theme, shell and task flows
+e2e: ## Browser-check theme, shell, task flows and identity screens
 	@set -eu; \
 	out=$$(sh e2e/ensure-web.sh 3>&1 1>&2) || exit 1; \
 	project=$$(printf '%s\n' "$$out" | awk 'NR==1'); \

@@ -4,7 +4,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../App";
 import { AppProviders } from "../theme";
-import { type ApiClient } from "./api";
+import {
+  type ApiClient,
+  type ApiToken,
+  type CreatedToken,
+  type CurrentUser,
+  type Member,
+  type Passkey,
+  type TaskShare,
+  type Team,
+} from "./api";
 
 const routes = [
   ["/", "Home", "Home"],
@@ -14,7 +23,9 @@ const routes = [
   ["/agents", "Agents", "Agents"],
   ["/knowledge", "Knowledge", "Knowledge"],
   ["/usage", "Usage", "Usage"],
-  ["/settings", "Settings", "Settings"],
+  ["/settings", "Security", "Settings"],
+  ["/settings/members", "Members", "Settings"],
+  ["/settings/tokens", "API tokens", "Settings"],
   ["/settings/connectors", "Connectors", "Settings"],
 ] as const;
 
@@ -29,6 +40,109 @@ function renderAt(path: string, client?: ApiClient) {
 
 function sidebar() {
   return screen.getByRole("navigation", { name: "Sidebar" });
+}
+
+const signedOut: CurrentUser = {
+  memberId: "sam",
+  view: "admin",
+  signIn: null,
+  passwordSet: false,
+  offerDismissed: false,
+};
+
+function identityStub(): Pick<ApiClient, "me" | "passkeys" | "password" | "members" | "shares" | "tokens"> {
+  const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
+  const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
+  const share = (taskId: string): TaskShare => ({
+    taskId,
+    visibility: "private",
+    teamId: null,
+    people: [],
+  });
+  const token: ApiToken = {
+    id: "token",
+    name: "Token",
+    hint: "upmo_pat_stub",
+    scopes: [],
+    created: "",
+    lastUsed: null,
+    expires: "",
+  };
+  return {
+    me: {
+      async current() {
+        return signedOut;
+      },
+      async signIn(method) {
+        return { ...signedOut, signIn: method };
+      },
+      async dismissPasskeyOffer() {},
+      async viewAs(role) {
+        return { ...signedOut, view: role, memberId: "lee" };
+      },
+    },
+    passkeys: {
+      async list() {
+        return [];
+      },
+      async add(name) {
+        return { ...passkey, name };
+      },
+      async rename(id, name) {
+        return { ...passkey, id, name };
+      },
+      async remove() {},
+    },
+    password: {
+      async set() {},
+      async change() {},
+      async remove() {},
+    },
+    members: {
+      async list() {
+        return [];
+      },
+      async invite(input) {
+        return { ...member, email: input.email, role: input.role };
+      },
+      async setRole(id, role) {
+        return { ...member, id, role };
+      },
+      async remove() {},
+    },
+    shares: {
+      async teams() {
+        return [] as Team[];
+      },
+      async get(taskId) {
+        return share(taskId);
+      },
+      async setVisibility(taskId, visibility, teamId) {
+        return { ...share(taskId), visibility, teamId };
+      },
+      async addPerson(taskId, memberId, level) {
+        return { ...share(taskId), people: [{ memberId, level }] };
+      },
+      async setLevel(taskId, memberId, level) {
+        return { ...share(taskId), people: [{ memberId, level }] };
+      },
+      async removePerson(taskId) {
+        return share(taskId);
+      },
+    },
+    tokens: {
+      async list() {
+        return [];
+      },
+      async create(input): Promise<CreatedToken> {
+        return {
+          token: { ...token, name: input.name, scopes: input.scopes },
+          secret: "upmo_pat_secret",
+        };
+      },
+      async revoke() {},
+    },
+  };
 }
 
 describe("app shell", () => {
@@ -55,17 +169,11 @@ describe("app shell", () => {
       "Settings",
     ]);
     expect(within(sidebar()).getByText("Workspace")).toBeTruthy();
+    expect(within(sidebar()).getByText("Aster")).toBeTruthy();
+    expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
     expect(within(sidebar()).getByTestId("theme-switch")).toBeTruthy();
     expect(within(sidebar()).getByText("0.1.0")).toBeTruthy();
     expect(within(sidebar()).getByRole("img", { name: "Upmo" })).toBeTruthy();
-  });
-
-  it("lists the install's tasks", async () => {
-    renderAt("/tasks");
-    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
-    expect(screen.getByText("Mail triage")).toBeTruthy();
-    expect(within(sidebar()).getByText("Aster")).toBeTruthy();
-    expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
   });
 
   it("uses an injected API client", async () => {
@@ -100,13 +208,14 @@ describe("app shell", () => {
         async list() {
           return [];
         },
-        async approve(_ignored, id) {
-          return { id, taskId: "task", title: "", action: "", state: "approved" };
+        async approve(id) {
+          return { id, taskId: id, title: "", action: "", state: "approved" };
         },
-        async deny(_ignored, id) {
-          return { id, taskId: "task", title: "", action: "", state: "denied" };
+        async deny(id) {
+          return { id, taskId: id, title: "", action: "", state: "denied" };
         },
       },
+      ...identityStub(),
     };
     renderAt("/tasks", client);
     expect(await screen.findByText("Custom task")).toBeTruthy();
@@ -150,7 +259,7 @@ describe("app shell", () => {
   });
 
   it("shows the empty bell copy", async () => {
-    const client: ApiClient = {
+    renderAt("/", {
       async listTasks() {
         return [];
       },
@@ -159,21 +268,21 @@ describe("app shell", () => {
       },
       async approveNotification() {},
       async nextPhase() {
-        throw new Error("no task");
+        throw new Error("task missing");
       },
       approvals: {
         async list() {
           return [];
         },
         async approve() {
-          throw new Error("no approval");
+          throw new Error("approval missing");
         },
         async deny() {
-          throw new Error("no approval");
+          throw new Error("approval missing");
         },
       },
-    };
-    renderAt("/", client);
+      ...identityStub(),
+    });
     const bell = await screen.findByRole("button", { name: /^Notifications$/ });
     act(() => {
       bell.click();

@@ -1,0 +1,175 @@
+.settings-page {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settings-nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  max-width: 100%;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.settings-nav-current {
+  background: var(--surface-selected);
+  color: var(--emerald-deep);
+  font-weight: 600;
+}
+
+.record-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.record {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-100);
+}
+
+.record > span,
+.token-secret,
+.token-hint {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.members-table {
+  width: 100%;
+  max-width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+}
+
+.members-table th,
+.members-table td {
+  overflow-wrap: anywhere;
+  text-align: left;
+  vertical-align: top;
+  padding: var(--space-2);
+}
+
+.members-table select,
+.members-table .member-remove {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+}
+
+.members-table .member-remove .mantine-Button-label {
+  height: auto;
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  line-height: 1.3;
+}
+
+.scope-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.scope-object {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.passkey-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-100);
+}
+
+.view-as {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+@media (max-width: 47.99em) {
+  .members-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .members-table,
+  .members-table tbody,
+  .members-table tr,
+  .members-table td {
+    display: block;
+    width: auto;
+  }
+
+  .members-table tr {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@media (min-width: 48em) {
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+@media (hover: hover) {
+  .settings-nav-link:hover {
+    background: var(--surface-hover);
+  }
+
+  .settings-nav-current:hover {
+    background: var(--surface-selected);
+  }
+}
