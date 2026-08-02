@@ -1,0 +1,122 @@
+// Package domain holds the identity values the database checks enforce.
+// It does no I/O.
+package domain
+
+import (
+	"fmt"
+
+	"github.com/upmo-ai/upmo/internal/kernel"
+)
+
+type userID struct{}
+type teamID struct{}
+type principalID struct{}
+type shareID struct{}
+
+// UserID identifies a person.
+type UserID = kernel.ID[userID]
+
+// TeamID identifies a team.
+type TeamID = kernel.ID[teamID]
+
+// PrincipalID identifies who acts.
+type PrincipalID = kernel.ID[principalID]
+
+// ShareID identifies a grant.
+type ShareID = kernel.ID[shareID]
+
+// Role is a person's role in the install.
+type Role string
+
+const (
+	RoleOwner  Role = "owner"
+	RoleAdmin  Role = "admin"
+	RoleMember Role = "member"
+	RoleViewer Role = "viewer"
+)
+
+// Roles are the membership roles the database accepts.
+func Roles() []Role {
+	return []Role{RoleOwner, RoleAdmin, RoleMember, RoleViewer}
+}
+
+// ParseRole rejects an unknown role.
+func ParseRole(s string) (Role, error) {
+	for _, role := range Roles() {
+		if s == string(role) {
+			return role, nil
+		}
+	}
+	return "", fmt.Errorf("identity: unknown role %q", s)
+}
+
+// Visibility is who can see a work object before any share.
+type Visibility string
+
+const (
+	VisibilityPrivate  Visibility = "private"
+	VisibilityTeam     Visibility = "team"
+	VisibilityEveryone Visibility = "everyone"
+)
+
+// Visibilities are the visibility values a work object may store.
+func Visibilities() []Visibility {
+	return []Visibility{VisibilityPrivate, VisibilityTeam, VisibilityEveryone}
+}
+
+// ParseVisibility rejects an unknown visibility.
+func ParseVisibility(s string) (Visibility, error) {
+	for _, visibility := range Visibilities() {
+		if s == string(visibility) {
+			return visibility, nil
+		}
+	}
+	return "", fmt.Errorf("identity: unknown visibility %q", s)
+}
+
+// Level is a share grant. The owner is a column on the object, never a level.
+type Level string
+
+const (
+	LevelEditor Level = "editor"
+	LevelViewer Level = "viewer"
+)
+
+// Levels are the share levels the database accepts.
+func Levels() []Level {
+	return []Level{LevelEditor, LevelViewer}
+}
+
+// ParseLevel rejects an unknown level, including owner.
+func ParseLevel(s string) (Level, error) {
+	for _, level := range Levels() {
+		if s == string(level) {
+			return level, nil
+		}
+	}
+	return "", fmt.Errorf("identity: unknown level %q", s)
+}
+
+// Kind is who a principal is.
+type Kind string
+
+const (
+	KindUser  Kind = "user"
+	KindAgent Kind = "agent"
+	KindRun   Kind = "run"
+)
+
+// Kinds are the principal kinds the database accepts.
+func Kinds() []Kind {
+	return []Kind{KindUser, KindAgent, KindRun}
+}
+
+// ParseKind rejects an unknown principal kind.
+func ParseKind(s string) (Kind, error) {
+	for _, kind := range Kinds() {
+		if s == string(kind) {
+			return kind, nil
+		}
+	}
+	return "", fmt.Errorf("identity: unknown principal kind %q", s)
+}
