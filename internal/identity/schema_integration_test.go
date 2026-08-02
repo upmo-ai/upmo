@@ -20,19 +20,19 @@ import (
 func TestEmailUniqueIgnoringCase(t *testing.T) {
 	pool, ctx := up(t)
 	seedOwner(t, pool, ctx, "ada@example.com")
-	_, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role, joined_at) VALUES ('Ada@example.com', 'Other', 'member', now())`)
+	_, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('Ada@example.com', 'Other', (SELECT id FROM identity.roles WHERE key = 'member'), now())`)
 	if err == nil {
 		t.Fatal("email with a different case was accepted")
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO identity.users (email, name, external_id, role, joined_at) VALUES ('a@example.com', 'A', 'ext', 'member', now())`)
+	_, err = pool.Exec(ctx, `INSERT INTO identity.users (email, name, external_id, role_id, joined_at) VALUES ('a@example.com', 'A', 'ext', (SELECT id FROM identity.roles WHERE key = 'member'), now())`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO identity.users (email, name, external_id, role, joined_at) VALUES ('b@example.com', 'B', 'ext', 'member', now())`)
+	_, err = pool.Exec(ctx, `INSERT INTO identity.users (email, name, external_id, role_id, joined_at) VALUES ('b@example.com', 'B', 'ext', (SELECT id FROM identity.roles WHERE key = 'member'), now())`)
 	if err == nil {
 		t.Fatal("duplicate external_id was accepted")
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO identity.users (email, name, role, joined_at) VALUES ('c@example.com', 'C', 'member', now()), ('d@example.com', 'D', 'member', now())`)
+	_, err = pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('c@example.com', 'C', (SELECT id FROM identity.roles WHERE key = 'member'), now()), ('d@example.com', 'D', (SELECT id FROM identity.roles WHERE key = 'member'), now())`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestLastOwnerCannotBeDemoted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role = 'admin' WHERE id = $1`, owner); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'admin') WHERE id = $1`, owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err == nil {
@@ -71,7 +71,7 @@ func TestLastOwnerCannotBeRemoved(t *testing.T) {
 func TestDeletingTheOnlyOwnerFails(t *testing.T) {
 	pool, ctx := up(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
-	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role, joined_at) VALUES ('lee@example.com', 'Lee', 'member', now())`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(ctx)
@@ -90,17 +90,17 @@ func TestOwnershipCanBeHandedOver(t *testing.T) {
 	pool, ctx := up(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	var next string
-	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role, joined_at) VALUES ('lee@example.com', 'Lee', 'member', now()) RETURNING id`).Scan(&next); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now()) RETURNING id`).Scan(&next); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role = 'member' WHERE id = $1`, owner); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'member') WHERE id = $1`, owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role = 'owner' WHERE id = $1`, next); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'owner') WHERE id = $1`, next); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -109,17 +109,17 @@ func TestOwnershipCanBeHandedOver(t *testing.T) {
 
 	seedOwner(t, pool, ctx, "noor@example.com")
 	var promoted string
-	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role, joined_at) VALUES ('sam@example.com', 'Sam', 'admin', now()) RETURNING id`).Scan(&promoted); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('sam@example.com', 'Sam', (SELECT id FROM identity.roles WHERE key = 'admin'), now()) RETURNING id`).Scan(&promoted); err != nil {
 		t.Fatal(err)
 	}
 	tx, err = pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role = 'owner' WHERE id = $1`, promoted); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'owner') WHERE id = $1`, promoted); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role = 'admin' WHERE role = 'owner' AND id <> $1`, promoted); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'admin') WHERE role_id = (SELECT id FROM identity.roles WHERE key = 'owner') AND id <> $1`, promoted); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -130,14 +130,14 @@ func TestOwnershipCanBeHandedOver(t *testing.T) {
 func TestPendingOwnerDoesNotCount(t *testing.T) {
 	pool, ctx := up(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
-	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role, invited_at) VALUES ('lee@example.com', 'Lee', 'owner', now())`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, invited_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role = 'member' WHERE id = $1`, owner); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'member') WHERE id = $1`, owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err == nil {
@@ -157,7 +157,7 @@ func TestTeamMemberMustHaveJoined(t *testing.T) {
 		t.Fatal("team name with a different case was accepted")
 	}
 	var outsider string
-	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role, invited_at) VALUES ('lee@example.com', 'Lee', 'member', now()) RETURNING id`).Scan(&outsider); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role_id, invited_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now()) RETURNING id`).Scan(&outsider); err != nil {
 		t.Fatal(err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, team, outsider)
@@ -202,6 +202,21 @@ func TestOneGrantPerGranteePerObject(t *testing.T) {
 	if err == nil {
 		t.Fatal("a share with no grantee was accepted")
 	}
+	var viewer string
+	if err := pool.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'viewer'`).Scan(&viewer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO identity.shares (object_type, object_id, grantee_role_id, level, granted_by)
+		VALUES ('task', $1, $2, 'viewer', $3)`, object, viewer, owner); err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO identity.shares (object_type, object_id, grantee_role_id, level, granted_by)
+		VALUES ('task', $1, $2, 'editor', $3)`, object, viewer, owner)
+	if err == nil {
+		t.Fatal("a second grant for the same role was accepted")
+	}
 }
 
 func TestPrincipalShapes(t *testing.T) {
@@ -230,7 +245,7 @@ func TestPrincipalShapes(t *testing.T) {
 func TestUnknownRoleAndLevelRejected(t *testing.T) {
 	pool, ctx := up(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
-	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role, joined_at) VALUES ('lee@example.com', 'Lee', 'boss', now())`); err == nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.roles (key, name) VALUES ('boss', 'Boss')`); err == nil {
 		t.Fatal("role boss was accepted")
 	}
 	if _, err := pool.Exec(ctx, `
@@ -248,6 +263,66 @@ func TestOwnerIsNotAShareLevel(t *testing.T) {
 		VALUES ('task', uuidv7(), $1, 'owner', $1)`, owner)
 	if err == nil {
 		t.Fatal("share level owner was accepted")
+	}
+}
+
+func TestSystemRolesAndCustomPermissions(t *testing.T) {
+	pool, ctx := up(t)
+	seedOwner(t, pool, ctx, "ada@example.com")
+	var keys []string
+	rows, err := pool.Query(ctx, `SELECT key FROM identity.roles WHERE key IS NOT NULL ORDER BY key`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := values(domain.Roles())
+	slices.Sort(want)
+	if !slices.Equal(keys, want) {
+		t.Fatalf("system roles = %v, want %v", keys, want)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE identity.roles SET name = 'Proprietor' WHERE key = 'owner'`); err == nil {
+		t.Fatal("a system role was renamed")
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM identity.roles WHERE key = 'viewer'`); err == nil {
+		t.Fatal("a system role was deleted")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ('Steward', ARRAY['owners:manage'])`); err == nil {
+		t.Fatal("a custom role held an owner-only permission")
+	}
+	var custom string
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ('Steward', ARRAY['task:view']) RETURNING id`).Scan(&custom); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('lee@example.com', 'Lee', $1, now())`, custom); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM identity.roles WHERE id = $1`, custom); err == nil {
+		t.Fatal("a role in use was deleted")
+	}
+}
+
+func TestDisabledOwnerDoesNotCount(t *testing.T) {
+	pool, ctx := up(t)
+	owner := seedOwner(t, pool, ctx, "ada@example.com")
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err == nil {
+		t.Fatal("disabling the only joined owner committed")
 	}
 }
 
@@ -287,7 +362,12 @@ func TestSchemaChecksMatchTheDomain(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	assertQuoted(t, checks, "users_role_check", values(domain.Roles()))
+	assertQuoted(t, checks, "roles_key_check", values(domain.Roles()))
+	for _, permission := range domain.OwnerOnly() {
+		if !strings.Contains(checks["roles_permissions_check"], "'"+string(permission)+"'") {
+			t.Fatalf("owner-only %s missing from %s", permission, checks["roles_permissions_check"])
+		}
+	}
 	assertQuoted(t, checks, "shares_level_check", values(domain.Levels()))
 	assertQuoted(t, checks, "principals_kind_check", values(domain.Kinds()))
 	if strings.Contains(checks["shares_level_check"], "'owner'") {
@@ -334,8 +414,8 @@ func seedOwner(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email stri
 	t.Helper()
 	var owner string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role, joined_at)
-		VALUES ($1, 'Ada', 'owner', now()) RETURNING id`, email).Scan(&owner); err != nil {
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ($1, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now()) RETURNING id`, email).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
 	return owner

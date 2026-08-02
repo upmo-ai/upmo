@@ -10,7 +10,8 @@ BEGIN
      AND NOT EXISTS (
        SELECT 1
        FROM identity.users AS person
-       WHERE person.role = 'owner'
+       JOIN identity.roles AS role ON role.id = person.role_id
+       WHERE role.key = 'owner'
          AND person.joined_at IS NOT NULL
          AND person.disabled_at IS NULL
      ) THEN
@@ -41,16 +42,60 @@ END;
 $$;
 -- +goose StatementEnd
 
+-- +goose StatementBegin
+CREATE FUNCTION identity.keep_system_roles()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.key IS NOT NULL THEN
+    RAISE EXCEPTION 'a system role cannot be changed';
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TABLE identity.roles (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  key text,
+  name text NOT NULL,
+  permissions text[] NOT NULL DEFAULT '{}',
+  CONSTRAINT roles_key_check CHECK (key IS NULL OR key IN ('owner', 'admin', 'member', 'viewer')),
+  CONSTRAINT roles_permissions_check CHECK (
+    key IS NOT DISTINCT FROM 'owner'
+    OR NOT (permissions && ARRAY['owners:manage']::text[])
+  )
+);
+
+CREATE UNIQUE INDEX roles_system_key ON identity.roles (key) WHERE key IS NOT NULL;
+
+CREATE UNIQUE INDEX roles_name_ci ON identity.roles (lower(name));
+
+CREATE TRIGGER roles_keep_system
+BEFORE UPDATE OR DELETE ON identity.roles
+FOR EACH ROW
+EXECUTE FUNCTION identity.keep_system_roles();
+
+INSERT INTO identity.roles (key, name)
+VALUES
+  ('owner', 'Owner'),
+  ('admin', 'Admin'),
+  ('member', 'Member'),
+  ('viewer', 'Viewer');
+
 CREATE TABLE identity.users (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   email text NOT NULL,
   name text NOT NULL,
   external_id text,
-  role text NOT NULL,
+  role_id uuid NOT NULL REFERENCES identity.roles (id),
   invited_at timestamptz,
   joined_at timestamptz,
-  disabled_at timestamptz,
-  CONSTRAINT users_role_check CHECK (role IN ('owner', 'admin', 'member', 'viewer'))
+  disabled_at timestamptz
 );
 
 CREATE UNIQUE INDEX users_email_ci ON identity.users (lower(email));
@@ -100,12 +145,14 @@ CREATE TABLE identity.shares (
   object_id uuid NOT NULL,
   user_id uuid REFERENCES identity.users (id),
   team_id uuid REFERENCES identity.teams (id),
+  grantee_role_id uuid REFERENCES identity.roles (id),
   level text NOT NULL,
   granted_by uuid NOT NULL REFERENCES identity.users (id),
   CONSTRAINT shares_level_check CHECK (level IN ('editor', 'viewer')),
   CONSTRAINT shares_grantee_check CHECK (
-    (user_id IS NOT NULL AND team_id IS NULL)
-    OR (user_id IS NULL AND team_id IS NOT NULL)
+    (user_id IS NOT NULL AND team_id IS NULL AND grantee_role_id IS NULL)
+    OR (user_id IS NULL AND team_id IS NOT NULL AND grantee_role_id IS NULL)
+    OR (user_id IS NULL AND team_id IS NULL AND grantee_role_id IS NOT NULL)
   )
 );
 
@@ -113,11 +160,15 @@ CREATE UNIQUE INDEX shares_user_once ON identity.shares (object_type, object_id,
 
 CREATE UNIQUE INDEX shares_team_once ON identity.shares (object_type, object_id, team_id) WHERE team_id IS NOT NULL;
 
+CREATE UNIQUE INDEX shares_role_once ON identity.shares (object_type, object_id, grantee_role_id) WHERE grantee_role_id IS NOT NULL;
+
 -- +goose Down
 DROP TABLE IF EXISTS identity.shares;
 DROP TABLE IF EXISTS identity.principals;
 DROP TABLE IF EXISTS identity.team_members;
 DROP TABLE IF EXISTS identity.teams;
 DROP TABLE IF EXISTS identity.users;
+DROP TABLE IF EXISTS identity.roles;
+DROP FUNCTION IF EXISTS identity.keep_system_roles();
 DROP FUNCTION IF EXISTS identity.team_member_has_joined();
 DROP FUNCTION IF EXISTS identity.keep_joined_owner();

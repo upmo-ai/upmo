@@ -12,6 +12,7 @@ type userID struct{}
 type teamID struct{}
 type principalID struct{}
 type shareID struct{}
+type roleID struct{}
 
 // UserID identifies a person.
 type UserID = kernel.ID[userID]
@@ -24,6 +25,18 @@ type PrincipalID = kernel.ID[principalID]
 
 // ShareID identifies a grant.
 type ShareID = kernel.ID[shareID]
+
+// RoleID identifies a role row. System roles and custom roles share it.
+type RoleID = kernel.ID[roleID]
+
+// ParseUserID parses a person id.
+func ParseUserID(s string) (UserID, error) { return kernel.ParseID[userID](s) }
+
+// ParseTeamID parses a team id.
+func ParseTeamID(s string) (TeamID, error) { return kernel.ParseID[teamID](s) }
+
+// ParseRoleID parses a role id.
+func ParseRoleID(s string) (RoleID, error) { return kernel.ParseID[roleID](s) }
 
 // Role is a person's role in the install.
 type Role string
