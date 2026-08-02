@@ -163,6 +163,9 @@ func TestNeutralizeSlot(t *testing.T) {
 		{"selector split", "<\uFE0Fsys\U000E0100tem", "&lt;system"},
 		{"selector split braces", "{\uFE0F{", "{ {"},
 		{"joiner split braces", "{\u200D{", "{ \u200D{"},
+		{"fullwidth brace pair", "｛｛", "{ ｛"},
+		{"ascii then fullwidth brace", "{\uFF5B", "{ ｛"},
+		{"fullwidth then ascii brace", "｛{", "{ {"},
 		{"fullwidth bar", "＜|", "&lt;|"},
 		{"other tags untouched", "<b>bold</b> <sys", "<b>bold</b> <sys"},
 		{"single brace", "{x}", "{x}"},
@@ -200,6 +203,10 @@ func view(s string) string {
 			r = '>'
 		case r == '／':
 			r = '/'
+		case r == '｛':
+			r = '{'
+		case r == '｝':
+			r = '}'
 		}
 		b.WriteRune(r)
 	}
@@ -226,6 +233,9 @@ var fuzzSeeds = []string{
 	"<\u200Dsystem",
 	"<\u200B/system",
 	"{\uFE0F{",
+	"{\uFF5B",
+	"\uFF5B{",
+	"｛｛",
 	"\U000E0041\u202E",
 }
 

@@ -122,7 +122,7 @@ func NeutralizeSlot(s string) string {
 		switch {
 		case foldRune(r) == '<' && (startsWith(next, "system") || startsWith(next, "/system") || startsWith(next, "|")):
 			b.WriteString("&lt;")
-		case r == '{' && startsWith(next, "{"):
+		case foldRune(r) == '{' && startsWith(next, "{"):
 			b.WriteString("{ ")
 		default:
 			b.WriteRune(r)
@@ -185,6 +185,10 @@ func foldRune(r rune) rune {
 		return '>'
 	case '\uFF0F':
 		return '/'
+	case '\uFF5B':
+		return '{'
+	case '\uFF5D':
+		return '}'
 	}
 	return r
 }
