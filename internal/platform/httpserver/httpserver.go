@@ -11,11 +11,12 @@ import (
 	"time"
 )
 
-// New returns an http.Server on addr with conservative timeouts.
+// New returns an http.Server on addr with conservative timeouts. Every route
+// sits behind the cross-origin guard.
 func New(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           h,
+		Handler:           Protect(h),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -23,18 +24,27 @@ func New(addr string, h http.Handler) *http.Server {
 	}
 }
 
-// Health registers /healthz and /readyz on mux.
-// Readiness will check Postgres once the pool exists; for now it reports ready.
-func Health(mux *http.ServeMux) {
+// Protect rejects cross-origin POST, PUT, PATCH and DELETE.
+func Protect(h http.Handler) http.Handler {
+	return http.NewCrossOriginProtection().Handler(h)
+}
+
+// Health registers /healthz and /readyz on mux. ready is the readiness check;
+// a nil check reports ready.
+func Health(mux *http.ServeMux, ready func(context.Context) error) {
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("GET /readyz", readyz)
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if ready != nil {
+			if err := ready(r.Context()); err != nil {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		writeOK(w)
+	})
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
-	writeOK(w)
-}
-
-func readyz(w http.ResponseWriter, _ *http.Request) {
 	writeOK(w)
 }
 

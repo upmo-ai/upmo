@@ -162,7 +162,38 @@ CREATE UNIQUE INDEX shares_team_once ON identity.shares (object_type, object_id,
 
 CREATE UNIQUE INDEX shares_role_once ON identity.shares (object_type, object_id, grantee_role_id) WHERE grantee_role_id IS NOT NULL;
 
+CREATE TABLE identity.sessions (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  user_id uuid NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
+  token_hash bytea NOT NULL UNIQUE,
+  created_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL
+);
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.delete_sessions_on_disable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.disabled_at IS NOT NULL AND OLD.disabled_at IS NULL THEN
+    DELETE FROM identity.sessions WHERE user_id = NEW.id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER users_delete_sessions
+AFTER UPDATE OF disabled_at ON identity.users
+FOR EACH ROW
+EXECUTE FUNCTION identity.delete_sessions_on_disable();
+
 -- +goose Down
+DROP TRIGGER IF EXISTS users_delete_sessions ON identity.users;
+DROP FUNCTION IF EXISTS identity.delete_sessions_on_disable();
+DROP TABLE IF EXISTS identity.sessions;
 DROP TABLE IF EXISTS identity.shares;
 DROP TABLE IF EXISTS identity.principals;
 DROP TABLE IF EXISTS identity.team_members;

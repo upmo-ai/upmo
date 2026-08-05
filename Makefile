@@ -81,6 +81,7 @@ fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(GO) go test -fuzz=FuzzNeutralizeSlot -fuzztime=30s ./internal/platform/trustfence
 	$(GO) go test -fuzz=FuzzBlockedAddr -fuzztime=30s ./internal/platform/netguard
 	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/webhooksig
+	$(GO) go test -fuzz=FuzzParseToken -fuzztime=30s ./internal/identity/domain
 
 ci: build lint test test-regression canary arch vuln secrets commits docs ## Run the same steps as CI
 

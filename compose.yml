@@ -38,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 5s
