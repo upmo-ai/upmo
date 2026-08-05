@@ -1,5 +1,5 @@
 // Package identity is the identity context. It embeds this context's SQL.
-// The domain package does no I/O; sessions, passkeys and tokens are later work.
+// Session rules live in the domain; the table and the cookie live in the adapters.
 package identity
 
 import (

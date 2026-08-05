@@ -21,6 +21,16 @@ var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 // Up creates the schema, then applies that context's migrations and nothing
 // else. The version table is <schema>.goose_db_version.
 func Up(ctx context.Context, pool *pgxpool.Pool, schema string, files fs.FS) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: lock: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", int64(7480197)); err != nil {
+		return fmt.Errorf("migrate: lock: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", int64(7480197)) }()
+
 	provider, db, err := open(ctx, pool, schema, files)
 	if err != nil {
 		return err
