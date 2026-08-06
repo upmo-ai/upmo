@@ -19,9 +19,11 @@ var (
 
 // Session is a live server-side session.
 type Session struct {
-	ID      string
-	UserID  domain.UserID
-	Expires time.Time
+	ID       string
+	UserID   domain.UserID
+	Expires  time.Time
+	Method   string
+	SignedIn time.Time
 }
 
 // Row is a stored session, including one that has ended.
@@ -31,18 +33,32 @@ type Row struct {
 	Created  time.Time
 	LastSeen time.Time
 	Expires  time.Time
+	Method   string
+	SignedIn time.Time
 }
 
 // Store is the session table.
 type Store interface {
-	Insert(ctx context.Context, user domain.UserID, hash []byte, created, expires time.Time) (string, error)
+	Insert(ctx context.Context, user domain.UserID, hash []byte, created, expires time.Time, method, agent string) (string, error)
 	// Find returns the row for hash. found is false when the hash is unknown
 	// or the person is disabled.
 	Find(ctx context.Context, hash []byte) (Row, bool, error)
 	Touch(ctx context.Context, id string, seen time.Time) error
 	Delete(ctx context.Context, id string) error
 	DeleteUser(ctx context.Context, user domain.UserID) error
+	DeleteOthers(ctx context.Context, user domain.UserID, keep string) error
+	Refresh(ctx context.Context, id, method string, at time.Time) error
 	DeleteEnded(ctx context.Context, user domain.UserID, now time.Time, idle time.Duration) error
+	List(ctx context.Context, user domain.UserID) ([]Device, error)
+}
+
+// Device is one session without its token.
+type Device struct {
+	ID       string
+	Method   string
+	SignedIn time.Time
+	LastSeen time.Time
+	Agent    string
 }
 
 // Service issues and checks sessions. Now is the clock; tests set it.
@@ -61,7 +77,7 @@ func (s Service) now() time.Time {
 }
 
 // Start opens a new session for user and removes that person's ended ones.
-func (s Service) Start(ctx context.Context, user domain.UserID) (text string, session Session, err error) {
+func (s Service) Start(ctx context.Context, user domain.UserID, method, agent string) (text string, session Session, err error) {
 	token, text, err := domain.NewToken()
 	if err != nil {
 		return "", Session{}, err
@@ -70,11 +86,11 @@ func (s Service) Start(ctx context.Context, user domain.UserID) (text string, se
 	if err := s.Store.DeleteEnded(ctx, user, now, s.Idle); err != nil {
 		return "", Session{}, err
 	}
-	id, err := s.Store.Insert(ctx, user, domain.Hash(token), now, now.Add(s.MaxAge))
+	id, err := s.Store.Insert(ctx, user, domain.Hash(token), now, now.Add(s.MaxAge), method, agent)
 	if err != nil {
 		return "", Session{}, err
 	}
-	return text, Session{ID: id, UserID: user, Expires: now.Add(s.MaxAge)}, nil
+	return text, Session{ID: id, UserID: user, Expires: now.Add(s.MaxAge), Method: method, SignedIn: now}, nil
 }
 
 // Lookup resolves a cookie value. An ended session is deleted.
@@ -102,7 +118,22 @@ func (s Service) Lookup(ctx context.Context, text string) (Session, error) {
 			return Session{}, err
 		}
 	}
-	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires}, nil
+	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn}, nil
+}
+
+// EndOthers ends every session for user except keep.
+func (s Service) EndOthers(ctx context.Context, user domain.UserID, keep string) error {
+	return s.Store.DeleteOthers(ctx, user, keep)
+}
+
+// Refresh marks a session as freshly signed in.
+func (s Service) Refresh(ctx context.Context, id, method string, at time.Time) error {
+	return s.Store.Refresh(ctx, id, method, at)
+}
+
+// Devices lists the person's sessions.
+func (s Service) Devices(ctx context.Context, user domain.UserID) ([]Device, error) {
+	return s.Store.List(ctx, user)
 }
 
 // End ends one session.

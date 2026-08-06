@@ -34,7 +34,11 @@ func (h Handler) current(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"user_id": session.UserID.String()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":        session.UserID.String(),
+		"sign_in_method": session.Method,
+		"signed_in_at":   session.SignedIn,
+	})
 }
 
 func (h Handler) signOut(w http.ResponseWriter, r *http.Request) {

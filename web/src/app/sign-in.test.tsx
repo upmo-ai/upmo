@@ -23,20 +23,30 @@ describe("sign in", () => {
     cleanup();
   });
 
-  it("stays outside the shell and both actions enter the app", async () => {
+  it("stays outside the shell and a password enters the app", async () => {
     renderAt("/sign-in");
     expect(await screen.findByRole("img", { name: "Upmo" })).toBeTruthy();
+    expect(screen.getByLabelText("Email")).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
 
     act(() => {
-      screen.getByRole("button", { name: "Sign in with a passkey" }).click();
+      screen.getByRole("button", { name: "Log in with a passkey" }).click();
+    });
+    expect(await screen.findByRole("status")).toHaveProperty(
+      "textContent",
+      "The passkey prompt was cancelled. Try again.",
+    );
+    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+
+    act(() => {
+      screen.getByRole("button", { name: "Use a password instead" }).click();
     });
     expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
     expect(screen.getByTestId("theme-switch")).toBeTruthy();
     expect(screen.getByText("0.1.0")).toBeTruthy();
 
     act(() => {
-      screen.getByRole("button", { name: "Sign out" }).click();
+      screen.getByRole("button", { name: "Log out" }).click();
     });
     expect(await screen.findByRole("button", { name: "Use a password instead" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
@@ -49,19 +59,8 @@ describe("sign in", () => {
 
   it("offers a passkey only after a password sign-in, and only once", async () => {
     renderAt("/sign-in");
-    expect(await screen.findByRole("button", { name: "Sign in with a passkey" })).toBeTruthy();
-    act(() => {
-      screen.getByRole("button", { name: "Sign in with a passkey" }).click();
-    });
-    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
-    await expect(
-      screen.findByRole("region", { name: "Add a passkey for next time" }, { timeout: 300 }),
-    ).rejects.toThrow(/Add a passkey for next time/);
-
-    act(() => {
-      screen.getByRole("button", { name: "Sign out" }).click();
-    });
-    expect(await screen.findByRole("button", { name: "Use a password instead" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Log in with a passkey" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Add a passkey for next time" })).toBeNull();
     act(() => {
       screen.getByRole("button", { name: "Use a password instead" }).click();
     });
@@ -75,7 +74,7 @@ describe("sign in", () => {
     });
 
     act(() => {
-      screen.getByRole("button", { name: "Sign out" }).click();
+      screen.getByRole("button", { name: "Log out" }).click();
     });
     expect(await screen.findByRole("button", { name: "Use a password instead" })).toBeTruthy();
     act(() => {

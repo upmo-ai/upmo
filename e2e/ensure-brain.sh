@@ -1,0 +1,61 @@
+#!/bin/sh
+# Start Postgres and brain for this checkout's e2e project, and print one
+# sign-in link. A second run recovers instead of bootstrapping again.
+set -eu
+
+cd "$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+
+if [ -z "${UPMO_GIT_DIR:-}" ]; then
+  UPMO_GIT_DIR=$(sed -n 's|^gitdir: \(.*\)/worktrees/[^/]*$|\1|p' .git 2>/dev/null || true)
+  export UPMO_GIT_DIR
+fi
+
+project=${1:?project}
+if [ "$project" = "-" ]; then
+  dc_args=
+else
+  dc_args="-p $project -f compose.yml -f e2e/web.override.yml"
+fi
+
+dc() {
+  # shellcheck disable=SC2086
+  docker compose $dc_args "$@"
+}
+
+say() {
+  printf '%s\n' "$*" >&2
+}
+
+dc up -d --wait postgres
+
+issue() {
+  out=$(mktemp)
+  if ! dc run --rm --no-deps brain sh -c "go build -o /tmp/brain ./cmd/brain && /tmp/brain $1" >"$out"; then
+    cat "$out" >&2
+    rm -f "$out"
+    return 1
+  fi
+  awk '/^http/{url=$0} END{print url}' "$out"
+  rm -f "$out"
+}
+
+say "issuing a bootstrap link"
+link=$(issue "bootstrap --email ada@example.com --name Ada" || true)
+case $link in
+  http*) ;;
+  *)
+    say "bootstrap refused; issuing a recover link"
+    link=$(issue "recover --email ada@example.com")
+    ;;
+esac
+case $link in
+  http*) ;;
+  *)
+    say "brain did not print a link"
+    exit 1
+    ;;
+esac
+
+say "starting brain"
+dc up -d --wait brain
+printf '%s\n' "$link"
