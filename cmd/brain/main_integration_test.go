@@ -25,17 +25,26 @@ func TestReadyAndSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := config.Config{SessionIdle: domain.IdleTimeout, SessionMaxAge: domain.MaxAge}
-	handler := httpserver.New("127.0.0.1:0", routes(pool, cfg, log)).Handler
+	cfg := config.Config{
+		SessionIdle:   domain.IdleTimeout,
+		SessionMaxAge: domain.MaxAge,
+		PublicURL:     "http://localhost:5173",
+		WebAuthnRPID:  "localhost",
+	}
+	handler, err := routes(pool, cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected := httpserver.New("127.0.0.1:0", handler).Handler
 
 	ready := httptest.NewRecorder()
-	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	protected.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if ready.Code != http.StatusOK || ready.Body.String() != "ok" {
 		t.Fatalf("readyz = %d %q", ready.Code, ready.Body.String())
 	}
 
 	session := httptest.NewRecorder()
-	handler.ServeHTTP(session, httptest.NewRequest(http.MethodGet, "/api/session", nil))
+	protected.ServeHTTP(session, httptest.NewRequest(http.MethodGet, "/api/session", nil))
 	if session.Code != http.StatusUnauthorized {
 		t.Fatalf("session = %d, want 401", session.Code)
 	}
@@ -44,7 +53,7 @@ func TestReadyAndSession(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	req.Header.Set("Origin", "https://evil.example")
 	cross := httptest.NewRecorder()
-	handler.ServeHTTP(cross, req)
+	protected.ServeHTTP(cross, req)
 	if cross.Code != http.StatusForbidden {
 		t.Fatalf("cross-site delete = %d, want 403", cross.Code)
 	}

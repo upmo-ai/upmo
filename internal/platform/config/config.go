@@ -3,7 +3,10 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -15,6 +18,12 @@ type Config struct {
 	SessionIdle time.Duration
 	// SessionMaxAge is the absolute session lifetime (UPMO_SESSION_MAX_AGE).
 	SessionMaxAge time.Duration
+	// PublicURL is the browser origin (UPMO_PUBLIC_URL). It is required.
+	PublicURL string
+	// WebAuthnRPID is the passkey relying party id (UPMO_WEBAUTHN_RP_ID).
+	WebAuthnRPID string
+	// TrustedProxies are the proxies whose X-Forwarded-For is believed (UPMO_TRUSTED_PROXIES).
+	TrustedProxies []*net.IPNet
 	// ListenAddr is the HTTP listen address (UPMO_LISTEN_ADDR).
 	ListenAddr string
 	// ShutdownTimeout bounds graceful shutdown (UPMO_SHUTDOWN_TIMEOUT).
@@ -41,6 +50,39 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("config: UPMO_DATABASE_URL is required")
 	}
 	cfg.DatabaseURL = v
+	public, ok := lookup("UPMO_PUBLIC_URL")
+	if !ok || public == "" {
+		return Config{}, fmt.Errorf("config: UPMO_PUBLIC_URL is required")
+	}
+	parsed, err := url.Parse(public)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return Config{}, fmt.Errorf("config: UPMO_PUBLIC_URL must be an absolute http(s) URL")
+	}
+	cfg.PublicURL = strings.TrimRight(public, "/")
+	cfg.WebAuthnRPID = parsed.Hostname()
+	if v, ok := lookup("UPMO_WEBAUTHN_RP_ID"); ok && v != "" {
+		cfg.WebAuthnRPID = v
+	}
+	if v, ok := lookup("UPMO_TRUSTED_PROXIES"); ok && v != "" {
+		for _, item := range strings.Split(v, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if !strings.Contains(item, "/") {
+				if strings.Contains(item, ":") {
+					item += "/128"
+				} else {
+					item += "/32"
+				}
+			}
+			_, network, err := net.ParseCIDR(item)
+			if err != nil {
+				return Config{}, fmt.Errorf("config: UPMO_TRUSTED_PROXIES: %w", err)
+			}
+			cfg.TrustedProxies = append(cfg.TrustedProxies, network)
+		}
+	}
 	if v, ok := lookup("UPMO_SESSION_IDLE_TIMEOUT"); ok && v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {

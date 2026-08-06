@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { meQueryKey, passkeysQueryKey, useApi, type Passkey } from "../../app/api";
+import { addPasskey, removePasskey, renamePasskey } from "../../app/passkeys";
 import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
 import { canRemovePasskey, canRemovePassword, lastPasskeyReason, lastPasswordReason } from "./rules";
@@ -12,7 +13,7 @@ type PasswordMode = "set" | "change" | "remove";
 const passwordCopy: Record<PasswordMode, { title: string; body: string; action: string }> = {
   set: {
     title: "Set a password?",
-    body: "This replaces passkey-only sign-in. You can still use a passkey.",
+    body: "This replaces logging in with a passkey only. You can still use a passkey.",
     action: "Set password",
   },
   change: {
@@ -22,7 +23,7 @@ const passwordCopy: Record<PasswordMode, { title: string; body: string; action: 
   },
   remove: {
     title: "Remove your password?",
-    body: "You will lose password sign-in.",
+    body: "You will lose the ability to log in with a password.",
     action: "Remove password",
   },
 };
@@ -32,6 +33,14 @@ export function SecurityPage() {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: meQueryKey(), queryFn: () => api.me.current() });
   const passkeys = useQuery({ queryKey: passkeysQueryKey(), queryFn: () => api.passkeys.list() });
+  const livePasskeys = useQuery({
+    queryKey: ["live-passkeys"],
+    queryFn: () => liveJSON<LivePasskey[]>("/api/passkeys"),
+  });
+  const liveSessions = useQuery({
+    queryKey: ["live-sessions"],
+    queryFn: () => liveJSON<LiveSession[]>("/api/sessions"),
+  });
   const [adding, setAdding] = useState(false);
   const [addName, setAddName] = useState("Passkey");
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -39,6 +48,8 @@ export function SecurityPage() {
   const [removeId, setRemoveId] = useState<string | null>(null);
   const [passwordMode, setPasswordMode] = useState<PasswordMode | null>(null);
   const [passwordDraft, setPasswordDraft] = useState("");
+  const [notice, setNotice] = useState("");
+  const live = livePasskeys.data != null;
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: passkeysQueryKey() });
@@ -46,31 +57,52 @@ export function SecurityPage() {
   };
 
   const add = useMutation({
-    mutationFn: () => api.passkeys.add(addName),
+    mutationFn: async () => {
+      if (live) {
+        await addPasskey();
+        return;
+      }
+      await api.passkeys.add(addName);
+    },
     onSuccess: async () => {
       setAdding(false);
       setAddName("Passkey");
+      setNotice("");
       await refresh();
+      await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
+      await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
     },
+    onError: () => setNotice("The passkey prompt was cancelled. Try again."),
   });
   const rename = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!renameId) throw new Error("Passkey missing.");
-      return api.passkeys.rename(renameId, renameName);
+      if (live) {
+        await renamePasskey(renameId, renameName);
+        return;
+      }
+      await api.passkeys.rename(renameId, renameName);
     },
     onSuccess: async () => {
       setRenameId(null);
       await refresh();
+      await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
     },
   });
-  const removePasskey = useMutation({
-    mutationFn: () => {
+  const remove = useMutation({
+    mutationFn: async () => {
       if (!removeId) throw new Error("Passkey missing.");
-      return api.passkeys.remove(removeId);
+      if (live) {
+        await removePasskey(removeId);
+        return;
+      }
+      await api.passkeys.remove(removeId);
     },
     onSuccess: async () => {
       setRemoveId(null);
       await refresh();
+      await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
+      await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
     },
   });
   const savePassword = useMutation({
@@ -86,7 +118,14 @@ export function SecurityPage() {
     },
   });
 
-  const list = passkeys.data ?? [];
+  const list = livePasskeys.data
+    ? livePasskeys.data.map((item) => ({
+        id: item.id,
+        name: item.name,
+        added: item.added,
+        lastUsed: item.last_used ?? item.added,
+      }))
+    : (passkeys.data ?? []);
   const passwordSet = me.data?.passwordSet ?? false;
   const allowPasskeyRemoval = canRemovePasskey(list.length, passwordSet);
   const allowPasswordRemoval = canRemovePassword(list.length, passwordSet);
@@ -143,12 +182,39 @@ export function SecurityPage() {
               </Stack>
             ) : (
               <div>
-                <Button type="button" onClick={() => setAdding(true)}>
+                <Button type="button" disabled={live && add.isPending} onClick={() => (live ? add.mutate() : setAdding(true))}>
                   Add passkey
                 </Button>
+                {notice ? <Text role="status">{notice}</Text> : null}
               </div>
             )}
           </Stack>
+          {liveSessions.data ? (
+            <Stack gap="sm">
+              <Title order={2}>Where you're logged in</Title>
+              <ul className="record-list" aria-label="Sessions">
+                {liveSessions.data.map((item) => (
+                  <li className="record" key={item.id}>
+                    <Text fw={600}>{item.current ? "This session" : item.user_agent || "Session"}</Text>
+                    <Text size="sm">Logged in {formatDate(item.signed_in_at)}</Text>
+                    <Button
+                      type="button"
+                      variant="default"
+                      onClick={() => {
+                        void fetch(`/api/sessions/${item.id}`, { method: "DELETE", credentials: "include" }).then(
+                          () => {
+                            void queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
+                          },
+                        );
+                      }}
+                    >
+                      Log out
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </Stack>
+          ) : null}
           <Stack gap="sm">
             <Title order={2}>Password</Title>
             <Text>{passwordSet ? "A password is set." : "No password is set."}</Text>
@@ -180,11 +246,11 @@ export function SecurityPage() {
       <ConfirmDialog
         opened={removing !== null}
         title={removing ? `Remove the ${removing.name} passkey?` : "Remove this passkey?"}
-        body="You will lose this way to sign in."
+        body="You will lose this way to log in."
         action="Remove passkey"
-        busy={removePasskey.isPending}
+        busy={remove.isPending}
         onClose={() => setRemoveId(null)}
-        onConfirm={() => removePasskey.mutate()}
+        onConfirm={() => remove.mutate()}
       />
       <ConfirmDialog
         opened={passwordDialog !== null}
@@ -210,6 +276,20 @@ export function SecurityPage() {
       </ConfirmDialog>
     </Stack>
   );
+}
+
+type LivePasskey = { id: string; name: string; added: string; last_used: string | null };
+type LiveSession = { id: string; user_agent: string; signed_in_at: string; current: boolean };
+
+async function liveJSON<T>(path: string): Promise<T | null> {
+  try {
+    const response = await fetch(path, { credentials: "include" });
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    return Array.isArray(body) ? (body as T) : null;
+  } catch {
+    return null;
+  }
 }
 
 function PasskeyRow({

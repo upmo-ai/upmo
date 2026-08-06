@@ -40,6 +40,7 @@ services:
         condition: service_healthy
     environment:
       UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
+      UPMO_PUBLIC_URL: http://localhost:5173
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 5s
@@ -83,6 +84,8 @@ services:
       GIT_CONFIG_VALUE_0: "*"
     ports:
       - "127.0.0.1:5173:5173"
+    networks:
+      - dev
     entrypoint: ["sh", "-c", "corepack enable && (command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends git ca-certificates)) && exec \"$$@\"", "--"]
     command: ["pnpm", "dev"]
 

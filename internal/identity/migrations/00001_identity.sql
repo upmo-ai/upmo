@@ -95,12 +95,15 @@ CREATE TABLE identity.users (
   role_id uuid NOT NULL REFERENCES identity.roles (id),
   invited_at timestamptz,
   joined_at timestamptz,
-  disabled_at timestamptz
+  disabled_at timestamptz,
+  webauthn_handle bytea
 );
 
 CREATE UNIQUE INDEX users_email_ci ON identity.users (lower(email));
 
 CREATE UNIQUE INDEX users_external_id ON identity.users (external_id) WHERE external_id IS NOT NULL;
+
+CREATE UNIQUE INDEX users_webauthn_handle ON identity.users (webauthn_handle) WHERE webauthn_handle IS NOT NULL;
 
 CREATE CONSTRAINT TRIGGER users_keep_joined_owner
 AFTER INSERT OR UPDATE OR DELETE ON identity.users
@@ -168,7 +171,11 @@ CREATE TABLE identity.sessions (
   token_hash bytea NOT NULL UNIQUE,
   created_at timestamptz NOT NULL,
   last_seen_at timestamptz NOT NULL,
-  expires_at timestamptz NOT NULL
+  expires_at timestamptz NOT NULL,
+  sign_in_method text NOT NULL DEFAULT 'passkey',
+  signed_in_at timestamptz NOT NULL DEFAULT now(),
+  user_agent text NOT NULL DEFAULT '',
+  CONSTRAINT sessions_sign_in_method_check CHECK (sign_in_method IN ('passkey', 'link'))
 );
 
 -- +goose StatementBegin
@@ -190,7 +197,50 @@ AFTER UPDATE OF disabled_at ON identity.users
 FOR EACH ROW
 EXECUTE FUNCTION identity.delete_sessions_on_disable();
 
+CREATE TABLE identity.passkeys (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  user_id uuid NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
+  credential_id bytea NOT NULL UNIQUE,
+  public_key bytea NOT NULL,
+  sign_count bigint NOT NULL,
+  aaguid uuid NOT NULL,
+  transports text[] NOT NULL,
+  backup_eligible boolean NOT NULL,
+  backup_state boolean NOT NULL,
+  attestation text NOT NULL,
+  name text NOT NULL,
+  created_at timestamptz NOT NULL,
+  last_used_at timestamptz
+);
+
+CREATE TABLE identity.webauthn_challenges (
+  token_hash bytea PRIMARY KEY,
+  session jsonb NOT NULL,
+  purpose text NOT NULL,
+  user_id uuid,
+  expires_at timestamptz NOT NULL
+);
+
+CREATE TABLE identity.sign_in_links (
+  token_hash bytea PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
+  purpose text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  CONSTRAINT sign_in_links_purpose_check CHECK (purpose IN ('invite', 'recover', 'bootstrap'))
+);
+
+CREATE TABLE identity.throttle (
+  key text PRIMARY KEY,
+  tokens double precision NOT NULL,
+  updated_at timestamptz NOT NULL
+);
+
 -- +goose Down
+DROP TABLE IF EXISTS identity.throttle;
+DROP TABLE IF EXISTS identity.sign_in_links;
+DROP TABLE IF EXISTS identity.webauthn_challenges;
+DROP TABLE IF EXISTS identity.passkeys;
 DROP TRIGGER IF EXISTS users_delete_sessions ON identity.users;
 DROP FUNCTION IF EXISTS identity.delete_sessions_on_disable();
 DROP TABLE IF EXISTS identity.sessions;

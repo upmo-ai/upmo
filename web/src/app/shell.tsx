@@ -127,7 +127,7 @@ function SignOut() {
       variant="subtle"
       onClick={() => navigate({ to: "/sign-in" })}
     >
-      Sign out
+      Log out
     </Button>
   );
 }

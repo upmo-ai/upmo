@@ -28,11 +28,11 @@ func TestSessions(t *testing.T) {
 	svc := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	svc.Now = func() time.Time { return now }
 
-	adaText, adaSession, err := svc.Start(ctx, ada)
+	adaText, adaSession, err := svc.Start(ctx, ada, "passkey", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	leeText, _, err := svc.Start(ctx, lee)
+	leeText, _, err := svc.Start(ctx, lee, "passkey", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestSessions(t *testing.T) {
 		t.Fatalf("EndSessions left a session: %v", err)
 	}
 
-	text, _, err := svc.Start(ctx, ada)
+	text, _, err := svc.Start(ctx, ada, "passkey", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestSessions(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = NULL WHERE id = $1`, ada); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.Start(ctx, ada); err != nil {
+	if _, _, err := svc.Start(ctx, ada, "passkey", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, ada); err != nil {
@@ -118,7 +118,7 @@ func TestSessions(t *testing.T) {
 		VALUES ($1, $2, $3, $3, $4)`, ada, domain.Hash(old), now.Add(-48*time.Hour), now.Add(-24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.Start(ctx, ada); err != nil {
+	if _, _, err := svc.Start(ctx, ada, "passkey", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Lookup(ctx, domain.EncodeToken(old)); err != app.ErrNotFound {

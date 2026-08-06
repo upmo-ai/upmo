@@ -174,7 +174,7 @@ try {
     reducedMotion: "reduce",
   });
   const page = await context.newPage();
-  await taskFlow(page, { label: "Sign in with a passkey", checkBadges: true, theme: "light" });
+  await taskFlow(page, { label: "Use a password instead", checkBadges: true, theme: "light" });
 
   await page.getByTestId("theme-switch").getByText("Dark", { exact: true }).click();
   await page.locator("html[data-theme='dark']").waitFor();

@@ -40,7 +40,7 @@ async function expectFits(page, path, ready) {
 async function identityFlow(page) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(pageUrl("/sign-in"), { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.getByRole("button", { name: "Sign in with a passkey" }).click();
+  await page.getByRole("button", { name: "Use a password instead" }).click();
   await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
@@ -109,7 +109,7 @@ try {
   const page = await context.newPage();
 
   await expectFits(page, "/sign-in", (current) =>
-    current.getByRole("button", { name: "Sign in with a passkey" }).waitFor(),
+    current.getByRole("button", { name: "Log in with a passkey" }).waitFor(),
   );
   await expectFits(page, "/", (current) => current.getByRole("heading", { level: 1, name: "Home" }).waitFor());
   await expectFits(page, "/tasks", (current) =>

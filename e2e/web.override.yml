@@ -3,3 +3,5 @@
 services:
   web:
     ports: !override []
+  brain:
+    ports: !override []

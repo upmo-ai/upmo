@@ -20,6 +20,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] != "" && os.Args[1][0] != '-' {
+		if err := command(os.Args[1], os.Args[2:]); err != nil {
+			slog.Error("brain command failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("brain stopped", "err", err)
 		os.Exit(1)
@@ -45,12 +52,22 @@ func run() error {
 		return err
 	}
 
-	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, routes(pool, cfg, log)), cfg.ShutdownTimeout, log)
+	handler, err := routes(pool, cfg, log)
+	if err != nil {
+		return err
+	}
+	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) http.Handler {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	identity.MountSessions(mux, identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge), log)
-	return mux
+	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
+	identity.MountSessions(mux, sessions, log)
+	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	if err != nil {
+		return nil, err
+	}
+	identity.MountPasskeys(mux, passkeys, cfg.TrustedProxies)
+	return mux, nil
 }

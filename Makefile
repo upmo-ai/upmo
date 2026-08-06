@@ -82,6 +82,8 @@ fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(GO) go test -fuzz=FuzzBlockedAddr -fuzztime=30s ./internal/platform/netguard
 	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/webhooksig
 	$(GO) go test -fuzz=FuzzParseToken -fuzztime=30s ./internal/identity/domain
+	$(GO) go test -fuzz=FuzzParseLinkToken -fuzztime=30s ./internal/identity/domain
+	$(GO) go test -fuzz=FuzzParseChallengeID -fuzztime=30s ./internal/identity/domain
 
 ci: build lint test test-regression canary arch vuln secrets commits docs ## Run the same steps as CI
 
@@ -95,8 +97,9 @@ e2e: ## Browser-check theme, shell, task flows and identity screens
 	out=$$(sh e2e/ensure-web.sh 3>&1 1>&2) || exit 1; \
 	project=$$(printf '%s\n' "$$out" | awk 'NR==1'); \
 	url=$$(printf '%s\n' "$$out" | awk 'NR==2'); \
+	link=$$(sh e2e/ensure-brain.sh "$$project"); \
 	if [ "$$project" = "-" ]; then \
-		$(COMPOSE) --profile e2e run --rm -e WEB_URL="$$url" playwright; \
+		$(COMPOSE) --profile e2e run --rm -e WEB_URL="$$url" -e UPMO_LINK="$$link" playwright; \
 	else \
-		$(COMPOSE) -p "$$project" -f compose.yml -f e2e/web.override.yml --profile e2e run --rm -e WEB_URL="$$url" playwright; \
+		$(COMPOSE) -p "$$project" -f compose.yml -f e2e/web.override.yml --profile e2e run --rm -e WEB_URL="$$url" -e UPMO_LINK="$$link" playwright; \
 	fi
