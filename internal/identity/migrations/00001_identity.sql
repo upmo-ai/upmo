@@ -96,7 +96,9 @@ CREATE TABLE identity.users (
   invited_at timestamptz,
   joined_at timestamptz,
   disabled_at timestamptz,
-  webauthn_handle bytea
+  webauthn_handle bytea,
+  password_hash text,
+  passkey_offered_at timestamptz
 );
 
 CREATE UNIQUE INDEX users_email_ci ON identity.users (lower(email));
@@ -175,7 +177,7 @@ CREATE TABLE identity.sessions (
   sign_in_method text NOT NULL DEFAULT 'passkey',
   signed_in_at timestamptz NOT NULL DEFAULT now(),
   user_agent text NOT NULL DEFAULT '',
-  CONSTRAINT sessions_sign_in_method_check CHECK (sign_in_method IN ('passkey', 'link'))
+  CONSTRAINT sessions_sign_in_method_check CHECK (sign_in_method IN ('passkey', 'link', 'password'))
 );
 
 -- +goose StatementBegin

@@ -73,7 +73,7 @@ func TestSessionHTTP(t *testing.T) {
 		if rec.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("cache = %q", rec.Header().Get("Cache-Control"))
 		}
-		if rec.Body.String() != `{"sign_in_method":"passkey","signed_in_at":"2026-08-05T12:00:00Z","user_id":"`+user+`"}`+"\n" {
+		if rec.Body.String() != `{"has_password":false,"sign_in_method":"passkey","signed_in_at":"2026-08-05T12:00:00Z","user_id":"`+user+`"}`+"\n" {
 			t.Fatalf("body = %s", rec.Body.String())
 		}
 	})

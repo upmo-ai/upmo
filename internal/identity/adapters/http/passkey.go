@@ -20,14 +20,15 @@ const ChallengeCookie = "__Host-upmo_challenge"
 const (
 	invalidLink = `{"error":"invalid link"}` + "\n"
 	signInAgain = `{"error":"sign in again"}` + "\n"
-	lastPasskey = `{"error":"last passkey"}` + "\n"
+	lastPasskey = `{"error":"the last way to sign in cannot be removed"}` + "\n"
 	slowDown    = `{"error":"slow down"}` + "\n"
 )
 
-// Passkeys serves passkey sign-in, links and passkey changes.
+// Passkeys serves passkey sign-in, links, passwords and passkey changes.
 type Passkeys struct {
-	Pass    app.Passkeys
-	Trusted []*net.IPNet
+	Pass     app.Passkeys
+	Password app.Passwords
+	Trusted  []*net.IPNet
 }
 
 // Mount registers the passkey routes.
@@ -45,12 +46,16 @@ func (h Passkeys) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/passkeys/{id}", h.remove)
 	mux.HandleFunc("GET /api/sessions", h.devices)
 	mux.HandleFunc("DELETE /api/sessions/{id}", h.endDevice)
+	mux.HandleFunc("POST /api/sign-in/password", h.limited(h.passwordSignIn))
+	mux.HandleFunc("PUT /api/password", h.passwordSet)
+	mux.HandleFunc("DELETE /api/password", h.passwordClear)
+	mux.HandleFunc("POST /api/session/verify/password", h.passwordVerify)
 }
 
 func (h Passkeys) limited(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		allowed, retry, err := h.Pass.Store.Take(r.Context(), domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted), passkeyNow(h.Pass))
+		allowed, retry, err := h.Pass.Store.Take(r.Context(), domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted), passkeyNow(h.Pass), domain.ThrottleBurst, domain.ThrottlePerSecond)
 		if err != nil {
 			http.Error(w, "throttle", http.StatusInternalServerError)
 			return

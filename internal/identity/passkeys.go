@@ -31,7 +31,12 @@ func Passkeys(pool *pgxpool.Pool, sessions app.Service, publicURL, rpID string, 
 	}, nil
 }
 
-// MountPasskeys registers the passkey routes.
-func MountPasskeys(mux *http.ServeMux, passkeys app.Passkeys, trusted []*net.IPNet) {
-	(httpapi.Passkeys{Pass: passkeys, Trusted: trusted}).Mount(mux)
+// Passwords builds the password use case on the same pool as the passkeys.
+func Passwords(pool *pgxpool.Pool, sessions app.Service) app.Passwords {
+	return app.Passwords{Sessions: sessions, Store: postgres.Passkeys{Pool: pool}}
+}
+
+// MountPasskeys registers the passkey and password routes.
+func MountPasskeys(mux *http.ServeMux, passkeys app.Passkeys, passwords app.Passwords, trusted []*net.IPNet) {
+	(httpapi.Passkeys{Pass: passkeys, Password: passwords, Trusted: trusted}).Mount(mux)
 }

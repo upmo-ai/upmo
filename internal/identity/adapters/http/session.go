@@ -2,12 +2,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
+	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
 // CookieName is the session cookie. The __Host- prefix requires Secure,
@@ -18,8 +20,9 @@ const unauthorised = `{"error":"unauthorised"}` + "\n"
 
 // Handler is the session endpoints.
 type Handler struct {
-	Sessions app.Service
-	Log      *slog.Logger
+	Sessions    app.Service
+	Log         *slog.Logger
+	HasPassword func(ctx context.Context, user domain.UserID) (bool, error)
 }
 
 // Mount registers the session routes.
@@ -34,10 +37,20 @@ func (h Handler) current(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	has := false
+	if h.HasPassword != nil {
+		var err error
+		has, err = h.HasPassword(r.Context(), session.UserID)
+		if err != nil {
+			http.Error(w, "session", http.StatusInternalServerError)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id":        session.UserID.String(),
 		"sign_in_method": session.Method,
 		"signed_in_at":   session.SignedIn,
+		"has_password":   has,
 	})
 }
 

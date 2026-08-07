@@ -11,3 +11,11 @@ More entries are added as assets are bundled.
 - Project: [Manrope](https://fonts.google.com/specimen/Manrope) by Mikhail Sharanda
 - Licence: [SIL Open Font License 1.1](https://openfontlicense.org)
 - Used in: the web build, which bundles the font as the UI typeface.
+
+## Password lists
+
+### SecLists common credentials
+
+- Project: [SecLists](https://github.com/danielmiessler/SecLists) by Daniel Miessler and contributors
+- Licence: MIT
+- Used in: `internal/identity/domain/common_passwords.go`, a filtered snapshot of `xato-net-10-million-passwords-1000000.txt` and `100k-most-used-passwords-NCSC.txt`. Only entries of at least 15 characters are kept. The NCSC list is redistributed inside SecLists. The raw lists are not in this repository.

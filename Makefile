@@ -84,6 +84,8 @@ fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(GO) go test -fuzz=FuzzParseToken -fuzztime=30s ./internal/identity/domain
 	$(GO) go test -fuzz=FuzzParseLinkToken -fuzztime=30s ./internal/identity/domain
 	$(GO) go test -fuzz=FuzzParseChallengeID -fuzztime=30s ./internal/identity/domain
+	$(GO) go test -fuzz=FuzzCheck -fuzztime=30s ./internal/identity/domain
+	$(GO) go test -fuzz=FuzzParsePHC -fuzztime=30s ./internal/identity/domain
 
 ci: build lint test test-regression canary arch vuln secrets commits docs ## Run the same steps as CI
 

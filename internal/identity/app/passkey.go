@@ -16,7 +16,7 @@ var (
 	// ErrStale is a passkey change without a fresh sign-in.
 	ErrStale = errors.New("identity: sign in again")
 	// ErrLastPasskey refuses removal of the only way to sign in.
-	ErrLastPasskey = errors.New("identity: last passkey")
+	ErrLastPasskey = errors.New("identity: the last way to sign in cannot be removed")
 	// ErrChallenge is a missing, used or expired challenge.
 	ErrChallenge = errors.New("identity: challenge")
 	// ErrExists refuses a second bootstrap.
@@ -45,7 +45,7 @@ type PassStore interface {
 	InsertPasskey(ctx context.Context, user domain.UserID, item domain.Credential, name string, now time.Time) (string, error)
 	TouchPasskey(ctx context.Context, credentialID []byte, count uint32, now time.Time) error
 	Join(ctx context.Context, user domain.UserID, now time.Time) error
-	Take(ctx context.Context, key string, now time.Time) (bool, time.Duration, error)
+	Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
 	Bootstrap(ctx context.Context, email, name string, hash []byte, expires time.Time) (domain.UserID, error)
 	ListPasskeys(ctx context.Context, user domain.UserID) ([]PasskeyRecord, error)

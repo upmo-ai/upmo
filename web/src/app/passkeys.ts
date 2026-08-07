@@ -145,6 +145,10 @@ export async function endThisSession(): Promise<void> {
   }
 }
 
+export async function confirmWithPasskey(): Promise<void> {
+  await stepUp();
+}
+
 async function stepUp(): Promise<void> {
   const options = await postJSON<PublicKeyOptions>("/api/passkeys/step-up/options", {});
   const credential = await navigator.credentials.get({ publicKey: requestOptions(options) });

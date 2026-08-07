@@ -63,11 +63,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	identity.MountSessions(mux, sessions, log)
+	passwords := identity.Passwords(pool, sessions)
+	identity.MountSessions(mux, sessions, log, passwords.HasPassword)
 	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return nil, err
 	}
-	identity.MountPasskeys(mux, passkeys, cfg.TrustedProxies)
+	identity.MountPasskeys(mux, passkeys, passwords, cfg.TrustedProxies)
 	return mux, nil
 }

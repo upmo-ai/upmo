@@ -32,7 +32,7 @@ try {
   };
   const client = await context.newCDPSession(page);
   await client.send("WebAuthn.enable");
-  await client.send("WebAuthn.addVirtualAuthenticator", {
+  const authenticator = await client.send("WebAuthn.addVirtualAuthenticator", {
     options: {
       protocol: "ctap2",
       ctap2Version: "ctap2_1",
@@ -62,6 +62,29 @@ try {
     const signIn = new URL("/sign-in", link);
     await page.goto(signIn.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
+
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Set password" }).click();
+    await page.getByLabel("New password").fill("correct horse battery");
+    await page.getByRole("dialog").getByRole("button", { name: "Set password" }).click();
+    await page.getByRole("button", { name: "Change password" }).waitFor();
+
+    await client.send("WebAuthn.removeVirtualAuthenticator", {
+      authenticatorId: authenticator.authenticatorId,
+    });
+    await page.locator(".shell-sign-out").click();
+    await page.getByLabel("Email").fill("ada@example.com");
+    await page.getByLabel("Password").fill("correct horse battery");
+    await page.getByRole("button", { name: "Log in", exact: true }).click();
+    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
+    await page.getByRole("region", { name: "Add a passkey for next time" }).waitFor();
+
+    await page.locator(".shell-sign-out").click();
+    await page.getByLabel("Email").fill("ada@example.com");
+    await page.getByLabel("Password").fill("correct horse battery");
+    await page.getByRole("button", { name: "Log in", exact: true }).click();
+    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
+    await page.getByRole("region", { name: "Add a passkey for next time" }).waitFor({ state: "hidden", timeout: 2_000 });
   } catch (err) {
     await fail(err);
   }
