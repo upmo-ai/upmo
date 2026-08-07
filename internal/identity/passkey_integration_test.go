@@ -52,7 +52,7 @@ func TestPasskeySignIn(t *testing.T) {
 	}
 	handler := httpapi.Passkeys{Pass: passkeys, Trusted: []*net.IPNet{network}}
 	mux := http.NewServeMux()
-	identity.MountSessions(mux, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	identity.MountSessions(mux, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	handler.Mount(mux)
 	soft, err := webauthn.NewSoft()
 	if err != nil {

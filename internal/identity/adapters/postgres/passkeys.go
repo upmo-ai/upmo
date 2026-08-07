@@ -210,7 +210,11 @@ func (p Passkeys) DeletePasskey(ctx context.Context, user domain.UserID, id stri
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM identity.passkeys WHERE user_id = $1`, user).Scan(&count); err != nil {
 		return nil, err
 	}
-	if count < 2 {
+	var hasPassword bool
+	if err := tx.QueryRow(ctx, `SELECT password_hash IS NOT NULL FROM identity.users WHERE id = $1`, user).Scan(&hasPassword); err != nil {
+		return nil, err
+	}
+	if count < 2 && !hasPassword {
 		return nil, app.ErrLastPasskey
 	}
 	var credentialID []byte
@@ -229,7 +233,7 @@ func (p Passkeys) Join(ctx context.Context, user domain.UserID, now time.Time) e
 	return err
 }
 
-func (p Passkeys) Take(ctx context.Context, key string, now time.Time) (bool, time.Duration, error) {
+func (p Passkeys) Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return false, 0, err
@@ -238,7 +242,7 @@ func (p Passkeys) Take(ctx context.Context, key string, now time.Time) (bool, ti
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO identity.throttle (key, tokens, updated_at)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (key) DO NOTHING`, key, domain.ThrottleBurst, now); err != nil {
+		ON CONFLICT (key) DO NOTHING`, key, burst, now); err != nil {
 		return false, 0, err
 	}
 	var tokens float64
@@ -246,7 +250,7 @@ func (p Passkeys) Take(ctx context.Context, key string, now time.Time) (bool, ti
 	if err := tx.QueryRow(ctx, `SELECT tokens, updated_at FROM identity.throttle WHERE key = $1 FOR UPDATE`, key).Scan(&tokens, &updated); err != nil {
 		return false, 0, err
 	}
-	tokens = domain.Refill(tokens, updated, now, domain.ThrottleBurst, domain.ThrottlePerSecond)
+	tokens = domain.Refill(tokens, updated, now, burst, perSecond)
 	if tokens < 1 {
 		if _, err := tx.Exec(ctx, `UPDATE identity.throttle SET tokens = $2, updated_at = $3 WHERE key = $1`, key, tokens, now); err != nil {
 			return false, 0, err
@@ -254,7 +258,7 @@ func (p Passkeys) Take(ctx context.Context, key string, now time.Time) (bool, ti
 		if err := tx.Commit(ctx); err != nil {
 			return false, 0, err
 		}
-		return false, domain.RetryAfter(tokens, domain.ThrottlePerSecond), nil
+		return false, domain.RetryAfter(tokens, perSecond), nil
 	}
 	tokens--
 	if _, err := tx.Exec(ctx, `UPDATE identity.throttle SET tokens = $2, updated_at = $3 WHERE key = $1`, key, tokens, now); err != nil {

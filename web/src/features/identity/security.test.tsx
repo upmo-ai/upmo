@@ -41,7 +41,7 @@ describe("security", () => {
     });
     const setDialog = await screen.findByRole("dialog");
     fireEvent.change(within(setDialog).getByLabelText("New password"), {
-      target: { value: "correct horse" },
+      target: { value: "correct horse battery" },
     });
     act(() => {
       within(setDialog).getByRole("button", { name: "Set password" }).click();

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { meQueryKey, passkeysQueryKey, useApi, type Passkey } from "../../app/api";
-import { addPasskey, removePasskey, renamePasskey } from "../../app/passkeys";
+import { addPasskey, confirmWithPasskey, removePasskey, renamePasskey } from "../../app/passkeys";
 import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
 import { canRemovePasskey, canRemovePassword, lastPasskeyReason, lastPasswordReason } from "./rules";
@@ -46,8 +46,14 @@ export function SecurityPage() {
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
   const [removeId, setRemoveId] = useState<string | null>(null);
+  const liveAccount = useQuery({
+    queryKey: ["live-session"],
+    queryFn: () => liveObject<{ has_password?: boolean }>("/api/session"),
+  });
   const [passwordMode, setPasswordMode] = useState<PasswordMode | null>(null);
   const [passwordDraft, setPasswordDraft] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [confirmDraft, setConfirmDraft] = useState("");
   const [notice, setNotice] = useState("");
   const live = livePasskeys.data != null;
 
@@ -105,19 +111,6 @@ export function SecurityPage() {
       await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
     },
   });
-  const savePassword = useMutation({
-    mutationFn: () => {
-      if (passwordMode === "set") return api.password.set();
-      if (passwordMode === "change") return api.password.change();
-      return api.password.remove();
-    },
-    onSuccess: async () => {
-      setPasswordMode(null);
-      setPasswordDraft("");
-      await refresh();
-    },
-  });
-
   const list = livePasskeys.data
     ? livePasskeys.data.map((item) => ({
         id: item.id,
@@ -126,12 +119,63 @@ export function SecurityPage() {
         lastUsed: item.last_used ?? item.added,
       }))
     : (passkeys.data ?? []);
-  const passwordSet = me.data?.passwordSet ?? false;
+  const savePassword = useMutation({
+    mutationFn: async () => {
+      if (liveAccount.data) return saveLivePassword(passwordMode, passwordDraft, list.length);
+      if (passwordMode === "set") return api.password.set();
+      if (passwordMode === "change") return api.password.change();
+      return api.password.remove();
+    },
+    onSuccess: async () => {
+      setPasswordMode(null);
+      setPasswordDraft("");
+      setConfirming(false);
+      setConfirmDraft("");
+      setNotice("");
+      await refresh();
+      await queryClient.invalidateQueries({ queryKey: ["live-session"] });
+    },
+    onError: (err) => {
+      if (err instanceof ConfirmPassword) {
+        setConfirming(true);
+        return;
+      }
+      setNotice(err instanceof Error ? err.message : "Try again.");
+    },
+  });
+
+  const passwordSet = liveAccount.data
+    ? Boolean(liveAccount.data.has_password)
+    : (me.data?.passwordSet ?? false);
   const allowPasskeyRemoval = canRemovePasskey(list.length, passwordSet);
   const allowPasswordRemoval = canRemovePassword(list.length, passwordSet);
   const removing = list.find((item) => item.id === removeId) ?? null;
-  const passwordDialog = passwordMode ? passwordCopy[passwordMode] : null;
-  const passwordNeedsValue = passwordMode === "set" || passwordMode === "change";
+  const passwordDialog = confirming
+    ? { title: "Confirm it is you", body: "Enter your password to continue.", action: "Confirm" }
+    : passwordMode
+      ? passwordCopy[passwordMode]
+      : null;
+  const passwordNeedsValue = !confirming && (passwordMode === "set" || passwordMode === "change");
+
+  const confirmThenSave = async () => {
+    const response = await fetch("/api/session/verify/password", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: confirmDraft }),
+    });
+    if (response.status === 401) {
+      setNotice("Email or password is wrong.");
+      return;
+    }
+    if (!response.ok) {
+      setNotice("Try again.");
+      return;
+    }
+    setConfirming(false);
+    setConfirmDraft("");
+    savePassword.mutate();
+  };
 
   return (
     <Stack gap="lg">
@@ -258,14 +302,31 @@ export function SecurityPage() {
         body={passwordDialog?.body ?? ""}
         action={passwordDialog?.action ?? "Continue"}
         busy={savePassword.isPending}
-        confirmDisabled={passwordNeedsValue && passwordDraft.trim().length === 0}
+        confirmDisabled={
+          confirming ? [...confirmDraft].length < 15 : passwordNeedsValue && [...passwordDraft].length < 15
+        }
         onClose={() => {
           setPasswordMode(null);
           setPasswordDraft("");
+          setConfirming(false);
+          setConfirmDraft("");
         }}
-        onConfirm={() => savePassword.mutate()}
+        onConfirm={() => {
+          if (confirming) {
+            void confirmThenSave();
+            return;
+          }
+          savePassword.mutate();
+        }}
       >
-        {passwordNeedsValue ? (
+        {confirming ? (
+          <TextInput
+            label="Password"
+            type="password"
+            value={confirmDraft}
+            onChange={(event) => setConfirmDraft(event.currentTarget.value)}
+          />
+        ) : passwordNeedsValue ? (
           <TextInput
             label="New password"
             type="password"
@@ -280,6 +341,52 @@ export function SecurityPage() {
 
 type LivePasskey = { id: string; name: string; added: string; last_used: string | null };
 type LiveSession = { id: string; user_agent: string; signed_in_at: string; current: boolean };
+
+async function liveObject<T extends object>(path: string): Promise<T | null> {
+  try {
+    const response = await fetch(path, { credentials: "include" });
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    return body as T;
+  } catch {
+    return null;
+  }
+}
+
+class ConfirmPassword extends Error {
+  constructor() {
+    super("sign in again");
+    this.name = "ConfirmPassword";
+  }
+}
+
+async function saveLivePassword(mode: PasswordMode | null, password: string, passkeys: number): Promise<void> {
+  const send = () =>
+    mode === "remove"
+      ? fetch("/api/password", { method: "DELETE", credentials: "include" })
+      : fetch("/api/password", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+  let response = await send();
+  if (response.status === 403) {
+    if (passkeys === 0) throw new ConfirmPassword();
+    await confirmWithPasskey();
+    response = await send();
+  }
+  if (response.ok) return;
+  let message = "Try again.";
+  try {
+    const body = (await response.json()) as { error?: string };
+    if (body.error) message = body.error;
+  } catch {
+    // The status is enough when the body is not JSON.
+  }
+  throw new Error(message);
+}
 
 async function liveJSON<T>(path: string): Promise<T | null> {
   try {

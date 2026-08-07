@@ -14,7 +14,43 @@ export function SignInPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const logIn = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/sign-in/password", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (response.status === 401) {
+        setMessage("Email or password is wrong.");
+        return;
+      }
+      if (!response.ok) {
+        setMessage("Try again.");
+        return;
+      }
+      const body = (await response.json()) as { offer_passkey?: boolean };
+      await api.me.signIn("password");
+      if (!body.offer_passkey) await api.me.dismissPasskeyOffer();
+      await queryClient.invalidateQueries({ queryKey: meQueryKey() });
+      await navigate({ to: "/" });
+    } catch (err) {
+      if (err instanceof TypeError) {
+        setMessage("Try again.");
+        return;
+      }
+      throw err;
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const enter = async () => {
     await api.me.signIn("password");
@@ -60,8 +96,18 @@ export function SignInPage() {
           value={email}
           onChange={(event) => setEmail(event.currentTarget.value)}
         />
+        <TextInput
+          label="Password"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.currentTarget.value)}
+        />
         <Button type="button" onClick={() => void passkey()}>
           Log in with a passkey
+        </Button>
+        <Button type="button" loading={busy} onClick={() => void logIn()}>
+          Log in
         </Button>
         {message ? <Text role="status">{message}</Text> : null}
         <Button type="button" variant="default" onClick={() => void enter()}>
