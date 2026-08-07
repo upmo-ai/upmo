@@ -194,6 +194,7 @@ func view(s string) string {
 		switch {
 		case unicode.Is(unicode.Cf, r),
 			r >= 0xE0000 && r <= 0xE007F,
+			r >= 0x180B && r <= 0x180D,
 			r >= 0xFE00 && r <= 0xFE0F,
 			r >= 0xE0100 && r <= 0xE01EF:
 			continue
@@ -231,6 +232,7 @@ var fuzzSeeds = []string{
 	"{{",
 	"＜system",
 	"<\u200Dsystem",
+	"<\u180B|",
 	"<\u200B/system",
 	"{\uFE0F{",
 	"{\uFF5B",

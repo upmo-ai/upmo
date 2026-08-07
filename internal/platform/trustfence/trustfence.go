@@ -197,6 +197,9 @@ func ignorable(r rune) bool {
 	return r == zeroWidthJoiner || isSelector(r)
 }
 
+// isSelector reports a variation selector, including the Mongolian free
+// variation selectors. Those are marks, not format characters, so Clean
+// keeps them and this check is what strips them.
 func isSelector(r rune) bool {
-	return (r >= 0xFE00 && r <= 0xFE0F) || (r >= 0xE0100 && r <= 0xE01EF)
+	return (r >= 0x180B && r <= 0x180D) || (r >= 0xFE00 && r <= 0xFE0F) || (r >= 0xE0100 && r <= 0xE01EF)
 }
