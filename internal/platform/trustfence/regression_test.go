@@ -33,3 +33,17 @@ func TestRegression_zwj_closer(t *testing.T) {
 		t.Fatalf("Wrap(%q) has %d closers, want 1: %q", closerBody, n, wrapped)
 	}
 }
+
+// Regression for a control token split by a Mongolian free variation selector, found by fuzzing in UPM-15.5.
+func TestRegression_mongolian_variation_selector(t *testing.T) {
+	for _, sel := range []rune{'\u180B', '\u180C', '\u180D'} {
+		in := "<" + string(sel) + "|"
+		got := NeutralizeSlot(in)
+		if got != "&lt;|" {
+			t.Fatalf("NeutralizeSlot(%q) = %q, want %q", in, got, "&lt;|")
+		}
+		if strings.Contains(got, string(sel)) {
+			t.Fatalf("NeutralizeSlot(%q) kept the selector: %q", in, got)
+		}
+	}
+}
