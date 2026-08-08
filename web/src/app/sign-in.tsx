@@ -2,10 +2,10 @@ import { Button, Text, TextInput } from "@mantine/core";
 import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { LoginAgreement } from "./agreement";
-import { meQueryKey, useApi } from "./api";
+import { useApi } from "./api";
 import { BrandLink } from "./brand";
 import { abortConditional, conditionalPasskey, signInWithPasskey } from "./passkeys";
 
@@ -19,8 +19,32 @@ export function SignInPage() {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const liveRef = useRef(true);
+
+  const armConditional = useCallback(() => {
+    abortConditional();
+    void conditionalPasskey(() => liveRef.current)
+      .then(async (signedIn) => {
+        if (!liveRef.current || !signedIn) return;
+        queryClient.clear();
+        await navigate({ to: "/" });
+      })
+      .catch(() => {
+        // A missing passkey or a cancelled prompt leaves the person on this page.
+      });
+  }, [navigate, queryClient]);
+
+  useEffect(() => {
+    liveRef.current = true;
+    armConditional();
+    return () => {
+      liveRef.current = false;
+      abortConditional();
+    };
+  }, [armConditional]);
 
   const logIn = async () => {
+    if (busy) return;
     setBusy(true);
     setMessage("");
     try {
@@ -32,20 +56,23 @@ export function SignInPage() {
       });
       if (response.status === 401) {
         setMessage("Email or password is wrong.");
+        armConditional();
         return;
       }
       if (!response.ok) {
         setMessage("Try again.");
+        armConditional();
         return;
       }
       const body = (await response.json()) as { offer_passkey?: boolean };
       await api.me.signIn("password");
       if (!body.offer_passkey) await api.me.dismissPasskeyOffer();
-      await queryClient.invalidateQueries({ queryKey: meQueryKey() });
+      queryClient.clear();
       await navigate({ to: "/" });
     } catch (err) {
       if (err instanceof TypeError) {
         setMessage("Try again.");
+        armConditional();
         return;
       }
       throw err;
@@ -54,31 +81,20 @@ export function SignInPage() {
     }
   };
 
-  useEffect(() => {
-    let live = true;
-    void conditionalPasskey(() => live)
-      .then(async (signedIn) => {
-        if (!live || !signedIn) return;
-        await queryClient.invalidateQueries({ queryKey: meQueryKey() });
-        await navigate({ to: "/" });
-      })
-      .catch(() => {
-        // A missing passkey or a cancelled prompt leaves the person on this page.
-      });
-    return () => {
-      live = false;
-      abortConditional();
-    };
-  }, [navigate, queryClient]);
-
   const passkey = async () => {
+    if (busy) return;
+    setBusy(true);
+    abortConditional();
     setMessage("");
     try {
       await signInWithPasskey();
-      await queryClient.invalidateQueries({ queryKey: meQueryKey() });
+      queryClient.clear();
       await navigate({ to: "/" });
     } catch {
       setMessage("The passkey prompt was cancelled. Try again.");
+      armConditional();
+    } finally {
+      setBusy(false);
     }
   };
 

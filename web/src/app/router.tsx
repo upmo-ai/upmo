@@ -1,12 +1,15 @@
+import type { QueryClient } from "@tanstack/react-query";
 import {
   Outlet,
   createBrowserHistory,
-  createRootRoute,
+  createRootRouteWithContext,
   createRoute,
   createRouter,
+  redirect,
   type RouterHistory,
 } from "@tanstack/react-router";
 
+import { BrainError, sessionQueryKey, type ApiClient } from "./api";
 import { MembersPage } from "../features/identity/members";
 import { SecurityPage } from "../features/identity/security";
 import { TokensPage } from "../features/identity/tokens";
@@ -25,7 +28,12 @@ import {
   UsagePage,
 } from "./pages";
 
-const rootRoute = createRootRoute({
+export interface RouterContext {
+  queryClient: QueryClient;
+  api: ApiClient;
+}
+
+const rootRoute = createRootRouteWithContext<RouterContext>()({
   component: () => <Outlet />,
 });
 
@@ -56,6 +64,22 @@ const privacyRoute = createRoute({
 const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "shell",
+  beforeLoad: async ({ context }) => {
+    try {
+      await context.queryClient.ensureQueryData({
+        queryKey: sessionQueryKey(),
+        queryFn: () => context.api.session.get(),
+      });
+    } catch (err) {
+      if (
+        (err instanceof BrainError && err.status === 401 && err.error === "unauthorised") ||
+        (err && typeof err === "object" && (err as { status?: unknown }).status === 401 && (err as { error?: unknown }).error === "unauthorised")
+      ) {
+        throw redirect({ to: "/login" });
+      }
+      throw err;
+    }
+  },
   component: Shell,
 });
 
@@ -160,10 +184,14 @@ const routeTree = rootRoute.addChildren([
   ]),
 ]);
 
-export function createAppRouter(history?: RouterHistory) {
+export function createAppRouter(history?: RouterHistory, context?: RouterContext) {
   return createRouter({
     routeTree,
     history: history ?? createBrowserHistory(),
+    context: context ?? {
+      queryClient: undefined as unknown as QueryClient,
+      api: undefined as unknown as ApiClient,
+    },
   });
 }
 

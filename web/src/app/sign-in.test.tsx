@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
 import { AppProviders } from "../theme";
+import * as passkeys from "./passkeys";
 
 function renderAt(path: string) {
   const history = createMemoryHistory({ initialEntries: [path] });
@@ -222,5 +223,36 @@ describe("sign in", () => {
     });
     expect(await screen.findByText("This device")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Add a passkey for next time" })).toBeNull();
+  });
+
+  it("autofill re-arms; a test fails if the re-arm is removed", async () => {
+    const conditionalSpy = vi.spyOn(passkeys, "conditionalPasskey").mockResolvedValue(false);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<() => Promise<Response>>(async () => new Response("{}", { status: 401 })),
+    );
+
+    renderAt("/login");
+    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(conditionalSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong password" } });
+    act(() => {
+      screen.getByRole("button", { name: "Log in", exact: true }).click();
+    });
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Email or password is wrong.");
+    expect(conditionalSpy).toHaveBeenCalledTimes(2);
+
+    const passkeyBtn = screen.getByRole("button", { name: "Log in with a passkey" });
+    act(() => {
+      passkeyBtn.click();
+    });
+    expect(await screen.findByRole("status")).toHaveProperty(
+      "textContent",
+      "The passkey prompt was cancelled. Try again.",
+    );
+    expect(conditionalSpy).toHaveBeenCalledTimes(3);
   });
 });

@@ -1,8 +1,17 @@
 import { Button, Checkbox, Group, Modal, NativeSelect, Stack, Text, TextInput, Title } from "@mantine/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { meQueryKey, membersQueryKey, tokensQueryKey, useApi, type ApiToken, type TokenExpiry } from "../../app/api";
+import {
+  TOKENS_KEY,
+  meQueryKey,
+  membersQueryKey,
+  tokensQueryKey,
+  useApi,
+  useWrite,
+  type ApiToken,
+  type TokenExpiry,
+} from "../../app/api";
 import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
 import { actionsForRole, scopeActions, scopeObjects } from "./rules";
@@ -35,7 +44,6 @@ function isExpiry(value: string): value is `${TokenExpiry}` {
 
 export function TokensPage() {
   const api = useApi();
-  const queryClient = useQueryClient();
   const me = useQuery({ queryKey: meQueryKey(), queryFn: () => api.me.current() });
   const members = useQuery({
     queryKey: membersQueryKey(),
@@ -45,6 +53,12 @@ export function TokensPage() {
   const [opened, setOpened] = useState(false);
   const [secret, setSecret] = useState<string | null>(null);
   const [revokeId, setRevokeId] = useState<string | null>(null);
+
+  const revoke = useWrite((id: string) => api.tokens.revoke(id), [TOKENS_KEY], {
+    onSuccess: async () => {
+      setRevokeId(null);
+    },
+  });
 
   const actor = members.data?.find((member) => member.id === me.data?.memberId);
   const actions = actor ? actionsForRole(actor.role) : [];
@@ -59,6 +73,11 @@ export function TokensPage() {
   return (
     <Stack gap="lg" className="settings-page">
       <Title order={1}>API tokens</Title>
+      {tokens.isError ? (
+        <Text role="alert" c="red">
+          {tokens.error?.message ?? "Failed to load tokens."}
+        </Text>
+      ) : null}
       {actor ? (
         <div>
           <Button type="button" onClick={() => setOpened(true)}>
@@ -81,7 +100,6 @@ export function TokensPage() {
         onClose={close}
         onCreated={async (created) => {
           setSecret(created);
-          await queryClient.invalidateQueries({ queryKey: tokensQueryKey() });
         }}
       />
       <ConfirmDialog
@@ -89,13 +107,11 @@ export function TokensPage() {
         title={revoking ? `Revoke the ${revoking.name}?` : "Revoke this token?"}
         body="You will lose this token."
         action="Revoke token"
+        busy={revoke.isPending}
         onClose={() => setRevokeId(null)}
         onConfirm={() => {
           if (!revokeId) return;
-          void api.tokens.revoke(revokeId).then(async () => {
-            setRevokeId(null);
-            await queryClient.invalidateQueries({ queryKey: tokensQueryKey() });
-          });
+          revoke.mutate(revokeId);
         }}
       />
     </Stack>
@@ -137,7 +153,6 @@ function CreateTokenDialog({
   const [name, setName] = useState("");
   const [days, setDays] = useState<TokenExpiry>(30);
   const [scopes, setScopes] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const reset = () => {
@@ -158,18 +173,18 @@ function CreateTokenDialog({
     );
   };
 
-  const create = () => {
-    setBusy(true);
-    setError("");
-    void api.tokens
-      .create({ name, scopes, days })
-      .then(async (created) => {
+  const create = useWrite(
+    () => api.tokens.create({ name, scopes, days }),
+    [TOKENS_KEY],
+    {
+      shown: true,
+      onSuccess: async (created) => {
         reset();
         await onCreated(created.secret);
-      })
-      .catch((cause: Error) => setError(cause.message))
-      .finally(() => setBusy(false));
-  };
+      },
+      onError: (cause: Error) => setError(cause.message),
+    },
+  );
 
   const offered = scopeActions.filter((action) => actions.includes(action));
   if (!opened) return null;
@@ -233,8 +248,8 @@ function CreateTokenDialog({
           <Group gap="xs">
             <Button
               type="button"
-              disabled={busy || name.trim().length === 0 || scopes.length === 0}
-              onClick={create}
+              disabled={create.isPending || name.trim().length === 0 || scopes.length === 0}
+              onClick={() => create.mutate()}
             >
               Create token
             </Button>

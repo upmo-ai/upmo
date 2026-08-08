@@ -1,23 +1,23 @@
 import { Alert, Button, Group, Text } from "@mantine/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { approvalsQueryKey, tasksQueryKey, useApi, type Approval } from "../../app/api";
+import {
+  APPROVALS_KEY,
+  TASKS_KEY,
+  useApi,
+  useWrite,
+  type Approval,
+} from "../../app/api";
 
 export function ApprovalCard({ approval }: { approval: Approval }) {
   const api = useApi();
-  const queryClient = useQueryClient();
-  const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: approvalsQueryKey() });
-    void queryClient.invalidateQueries({ queryKey: tasksQueryKey() });
-  };
-  const approve = useMutation({
-    mutationFn: () => api.approvals.approve(approval.id),
-    onSuccess: refresh,
-  });
-  const deny = useMutation({
-    mutationFn: () => api.approvals.deny(approval.id),
-    onSuccess: refresh,
-  });
+  const approve = useWrite(
+    () => api.approvals.approve(approval.id),
+    [APPROVALS_KEY, TASKS_KEY],
+  );
+  const deny = useWrite(
+    () => api.approvals.deny(approval.id),
+    [APPROVALS_KEY, TASKS_KEY],
+  );
   const busy = approve.isPending || deny.isPending;
 
   return (
