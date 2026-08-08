@@ -83,10 +83,8 @@ async function expectBadgesFullyVisible(page) {
   await page.setViewportSize({ width: 1280, height: 800 });
 }
 
-async function signIn(page, label) {
-  await page.goto(pageUrl("/sign-in"), { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.getByRole("img", { name: "Upmo" }).waitFor();
-  await page.getByRole("button", { name: label }).click();
+async function signIn(page) {
+  await page.goto(pageUrl("/"), { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
 }
 
@@ -114,8 +112,8 @@ async function walkToDone(page) {
   await settleText(status, "Done");
 }
 
-async function taskFlow(page, { label, checkBadges, theme }) {
-  await signIn(page, label);
+async function taskFlow(page, { checkBadges, theme }) {
+  await signIn(page);
   if (theme) {
     await page.locator(`html[data-theme="${theme}"]`).waitFor();
   }
@@ -174,11 +172,11 @@ try {
     reducedMotion: "reduce",
   });
   const page = await context.newPage();
-  await taskFlow(page, { label: "Use a password instead", checkBadges: true, theme: "light" });
+  await taskFlow(page, { checkBadges: true, theme: "light" });
 
   await page.getByTestId("theme-switch").getByText("Dark", { exact: true }).click();
   await page.locator("html[data-theme='dark']").waitFor();
-  await taskFlow(page, { label: "Use a password instead", checkBadges: false, theme: "dark" });
+  await taskFlow(page, { checkBadges: false, theme: "dark" });
 
   console.log("task flow passed");
 } finally {

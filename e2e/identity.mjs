@@ -39,8 +39,14 @@ async function expectFits(page, path, ready) {
 
 async function identityFlow(page) {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto(pageUrl("/sign-in"), { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.getByRole("button", { name: "Use a password instead" }).click();
+  await page.goto(pageUrl("/login"), { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("button", { name: "Log in", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Terms of use" }).waitFor();
+  await page.getByRole("link", { name: "Privacy policy" }).waitFor();
+  if ((await page.getByRole("button", { name: "Use a password instead" }).count()) !== 0) {
+    throw new Error("the password form still offers another password button");
+  }
+  await page.goto(pageUrl("/"), { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
@@ -108,7 +114,7 @@ try {
   });
   const page = await context.newPage();
 
-  await expectFits(page, "/sign-in", (current) =>
+  await expectFits(page, "/login", (current) =>
     current.getByRole("button", { name: "Log in with a passkey" }).waitFor(),
   );
   await expectFits(page, "/", (current) => current.getByRole("heading", { level: 1, name: "Home" }).waitFor());

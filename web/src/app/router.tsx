@@ -12,6 +12,7 @@ import { SecurityPage } from "../features/identity/security";
 import { TokensPage } from "../features/identity/tokens";
 import { ConnectorsPage, SettingsLayout } from "../features/settings/settings";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
+import { PrivacyPage, TermsPage } from "./legal";
 import { LinkPage } from "./link";
 import { SignInPage } from "./sign-in";
 import { Shell } from "./shell";
@@ -30,14 +31,26 @@ const rootRoute = createRootRoute({
 
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/sign-in",
+  path: "/login",
   component: SignInPage,
 });
 
 const linkRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/sign-in/link",
+  path: "/login/link",
   component: LinkPage,
+});
+
+const termsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/terms",
+  component: TermsPage,
+});
+
+const privacyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/privacy",
+  component: PrivacyPage,
 });
 
 const shellRoute = createRoute({
@@ -133,6 +146,8 @@ const connectorsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   signInRoute,
   linkRoute,
+  termsRoute,
+  privacyRoute,
   shellRoute.addChildren([
     homeRoute,
     chatRoute,
