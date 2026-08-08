@@ -157,7 +157,10 @@ describe("app shell", () => {
   it("lists primary nav then Workspace and Settings", async () => {
     renderAt("/");
     await screen.findByRole("heading", { level: 1, name: "Home" });
-    const links = within(sidebar()).getAllByRole("link");
+    expect(within(sidebar()).getByRole("link", { name: "Upmo" }).getAttribute("href")).toBe("/login");
+    const links = within(sidebar())
+      .getAllByRole("link")
+      .filter((link) => link.querySelector("img") == null);
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "Home",
       "Chat",

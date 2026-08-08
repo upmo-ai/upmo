@@ -59,7 +59,7 @@ try {
     await page.getByRole("list", { name: "Sessions" }).getByRole("button", { name: "Log out" }).click();
     await page.getByRole("heading", { level: 2, name: "Where you're logged in" }).waitFor({ state: "hidden" });
 
-    const signIn = new URL("/sign-in", link);
+    const signIn = new URL("/login", link);
     await page.goto(signIn.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
 

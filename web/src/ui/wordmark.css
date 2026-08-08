@@ -1,0 +1,11 @@
+a.wordmark-link {
+  line-height: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.wordmark-link img {
+  display: block;
+  height: 28px;
+  width: auto;
+}

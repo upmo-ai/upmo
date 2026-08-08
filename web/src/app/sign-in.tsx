@@ -1,11 +1,13 @@
 import { Button, Text, TextInput } from "@mantine/core";
+import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
+import { LoginAgreement } from "./agreement";
 import { meQueryKey, useApi } from "./api";
+import { BrandLink } from "./brand";
 import { abortConditional, conditionalPasskey, signInWithPasskey } from "./passkeys";
-import { Wordmark } from "../ui/wordmark";
 
 import "./sign-in.css";
 
@@ -52,12 +54,6 @@ export function SignInPage() {
     }
   };
 
-  const enter = async () => {
-    await api.me.signIn("password");
-    await queryClient.invalidateQueries({ queryKey: meQueryKey() });
-    await navigate({ to: "/" });
-  };
-
   useEffect(() => {
     let live = true;
     void conditionalPasskey(() => live)
@@ -88,8 +84,14 @@ export function SignInPage() {
 
   return (
     <main className="sign-in">
-      <Wordmark className="sign-in-wordmark" />
-      <div className="sign-in-actions">
+      <BrandLink className="sign-in-wordmark" />
+      <form
+        className="sign-in-actions"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void logIn();
+        }}
+      >
         <TextInput
           label="Email"
           autoComplete="username webauthn"
@@ -103,17 +105,20 @@ export function SignInPage() {
           value={password}
           onChange={(event) => setPassword(event.currentTarget.value)}
         />
-        <Button type="button" onClick={() => void passkey()}>
-          Log in with a passkey
-        </Button>
-        <Button type="button" loading={busy} onClick={() => void logIn()}>
+        <Button type="submit" loading={busy}>
           Log in
         </Button>
-        {message ? <Text role="status">{message}</Text> : null}
-        <Button type="button" variant="default" onClick={() => void enter()}>
-          Use a password instead
+        <Button
+          type="button"
+          variant="default"
+          leftSection={<IconKey size={20} stroke={1.75} aria-hidden />}
+          onClick={() => void passkey()}
+        >
+          Log in with a passkey
         </Button>
-      </div>
+        {message ? <Text role="status">{message}</Text> : null}
+        <LoginAgreement />
+      </form>
     </main>
   );
 }

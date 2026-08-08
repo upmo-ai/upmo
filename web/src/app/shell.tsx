@@ -19,7 +19,7 @@ import { settingsSections } from "../features/settings/settings";
 import { WorkspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch } from "../theme";
 import { ShellIcon, type ShellConcept } from "../ui/icons";
-import { Wordmark } from "../ui/wordmark";
+import { BrandLink } from "./brand";
 
 import "./shell.css";
 
@@ -125,7 +125,7 @@ function SignOut() {
     <Button
       className="shell-sign-out"
       variant="subtle"
-      onClick={() => navigate({ to: "/sign-in" })}
+      onClick={() => navigate({ to: "/login" })}
     >
       Log out
     </Button>
@@ -175,7 +175,7 @@ export function Shell() {
         </Group>
       </AppShell.Header>
       <AppShell.Navbar className="shell-navbar" aria-label="Sidebar" data-layout={layout}>
-        <Wordmark />
+        <BrandLink className="shell-wordmark" />
         <WorkspaceName />
         <div className="shell-nav-scroll">
           {primary.map((item) => (
