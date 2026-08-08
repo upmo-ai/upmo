@@ -1,3 +1,4 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useState, type ReactNode } from "react";
 
 import {
@@ -54,6 +55,18 @@ export type {
   WorkspaceRole,
 } from "../features/identity/types";
 
+export class BrainError extends Error {
+  readonly status: number;
+  readonly error?: string;
+
+  constructor(status: number, error?: string, message?: string) {
+    super(message ?? error ?? `HTTP ${status}`);
+    this.name = "BrainError";
+    this.status = status;
+    this.error = error;
+  }
+}
+
 export interface ApiClient {
   listTasks(): Promise<Task[]>;
   listNotifications(): Promise<AppNotification[]>;
@@ -63,6 +76,9 @@ export interface ApiClient {
     list(): Promise<Approval[]>;
     approve(id: string): Promise<Approval>;
     deny(id: string): Promise<Approval>;
+  };
+  session: {
+    get(): Promise<CurrentUser>;
   };
   me: {
     current(): Promise<CurrentUser>;
@@ -106,28 +122,41 @@ export interface ApiClient {
   };
 }
 
+export const TASKS_KEY = ["tasks"] as const;
+export const APPROVALS_KEY = ["approvals"] as const;
+export const NOTIFICATIONS_KEY = ["notifications"] as const;
+export const SESSION_KEY = ["session"] as const;
+export const PASSKEYS_KEY = ["passkeys"] as const;
+export const MEMBERS_KEY = ["members"] as const;
+export const TEAMS_KEY = ["teams"] as const;
+export const TOKENS_KEY = ["tokens"] as const;
+
 export function tasksQueryKey() {
-  return ["tasks"] as const;
+  return TASKS_KEY;
 }
 
 export function approvalsQueryKey() {
-  return ["approvals"] as const;
+  return APPROVALS_KEY;
 }
 
 export function notificationsQueryKey() {
-  return ["notifications"] as const;
+  return NOTIFICATIONS_KEY;
 }
 
 export function meQueryKey() {
-  return ["me"] as const;
+  return SESSION_KEY;
+}
+
+export function sessionQueryKey() {
+  return SESSION_KEY;
 }
 
 export function passkeysQueryKey() {
-  return ["passkeys"] as const;
+  return PASSKEYS_KEY;
 }
 
 export function membersQueryKey() {
-  return ["members"] as const;
+  return MEMBERS_KEY;
 }
 
 export function shareQueryKey(taskId: string) {
@@ -135,11 +164,39 @@ export function shareQueryKey(taskId: string) {
 }
 
 export function teamsQueryKey() {
-  return ["teams"] as const;
+  return TEAMS_KEY;
 }
 
 export function tokensQueryKey() {
-  return ["tokens"] as const;
+  return TOKENS_KEY;
+}
+
+export function useWrite<TData, TVariables = void>(
+  write: (variables: TVariables) => Promise<TData>,
+  keys: readonly (readonly unknown[])[],
+  options?: {
+    shown?: boolean;
+    onSuccess?: (data: TData, variables: TVariables) => void | Promise<void>;
+    onError?: (error: Error, variables: TVariables) => void | Promise<void>;
+  },
+) {
+  const queryClient = useQueryClient();
+  return useMutation<TData, Error, TVariables>({
+    mutationFn: write,
+    meta: {
+      shown: options?.shown ?? false,
+      keys,
+    },
+    onSuccess: async (data, variables) => {
+      for (const key of keys) {
+        await queryClient.invalidateQueries({ queryKey: key });
+      }
+      await options?.onSuccess?.(data, variables);
+    },
+    onError: async (error, variables) => {
+      await options?.onError?.(error, variables);
+    },
+  });
 }
 
 /** JSON round-trip so a caller cannot change the stored record. */
@@ -371,6 +428,42 @@ export function createStubApi(): ApiClient {
     return copy(approval);
   }
 
+  async function readSession(): Promise<CurrentUser> {
+    try {
+      const response = await fetch("/api/session", { credentials: "include" });
+      if (response.status === 401) {
+        let body: { error?: string } = {};
+        try {
+          body = (await response.json()) as { error?: string };
+        } catch {
+          // not json
+        }
+        if (body.error === "unauthorised") {
+          throw new BrainError(401, "unauthorised");
+        }
+      }
+      if (response.ok) {
+        const body = (await response.json()) as {
+          sign_in_method?: "passkey" | "password";
+          has_password?: boolean;
+        };
+        if (body.sign_in_method === "passkey" || body.sign_in_method === "password") {
+          signIn = body.sign_in_method;
+        } else if (signIn == null) {
+          signIn = "password";
+        }
+        if (body.has_password !== undefined) {
+          passwordSet = Boolean(body.has_password);
+        }
+      }
+    } catch (err) {
+      if (err instanceof BrainError) {
+        throw err;
+      }
+    }
+    return copy(currentUser());
+  }
+
   return {
     async listTasks() {
       return tasks.map((task) => copy(task));
@@ -398,10 +491,11 @@ export function createStubApi(): ApiClient {
         return settle(id, "denied");
       },
     },
+    session: {
+      get: readSession,
+    },
     me: {
-      async current() {
-        return copy(currentUser());
-      },
+      current: readSession,
       async signIn(method) {
         if (method !== "passkey" && method !== "password") throw new Error("Unknown sign-in.");
         signIn = method;

@@ -1,9 +1,9 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../../App";
-import { createStubApi } from "../../app/api";
+import { createStubApi, type ApiClient } from "../../app/api";
 import { AppProviders } from "../../theme";
 import { lastOwnerReason } from "./rules";
 
@@ -84,5 +84,40 @@ describe("members", () => {
     expect(members.filter((member) => member.role === "owner")).toHaveLength(1);
     members[0]!.name = "Mutated";
     expect((await api.members.list())[0]?.name).toBe("Ada Okonkwo");
+  });
+
+  it("shows a message in the shell when a role change is refused and allows closing it", async () => {
+    const base = createStubApi();
+    const client: ApiClient = {
+      ...base,
+      members: {
+        ...base.members,
+        async setRole() {
+          throw new Error("Role change refused.");
+        },
+      },
+    };
+    const history = createMemoryHistory({ initialEntries: ["/settings/members"] });
+    render(
+      <AppProviders>
+        <App history={history} client={client} />
+      </AppProviders>,
+    );
+
+    const roleSelect = (await screen.findByLabelText("Role for Lee Chen")) as HTMLSelectElement;
+    act(() => {
+      fireEvent.change(roleSelect, { target: { value: "admin" } });
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Role change refused.");
+
+    const closeBtn = within(alert).getByRole("button", { name: "Close message" });
+    act(() => {
+      closeBtn.click();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Role change refused.")).toBeNull();
+    });
   });
 });

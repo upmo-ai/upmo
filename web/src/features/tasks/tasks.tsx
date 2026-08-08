@@ -1,12 +1,14 @@
 import { Badge, Button, Group, SegmentedControl, Stack, Tabs, Text, Title } from "@mantine/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 
 import {
+  TASKS_KEY,
   approvalsQueryKey,
   tasksQueryKey,
   useApi,
+  useWrite,
   type Approval,
   type Task,
   type TaskStatus,
@@ -82,6 +84,16 @@ export function TasksPage() {
   return (
     <Stack gap="md" className="task-screen">
       <Title order={1}>Tasks</Title>
+      {tasks.isError ? (
+        <Text role="alert" c="red">
+          {tasks.error?.message ?? "Failed to load tasks."}
+        </Text>
+      ) : null}
+      {approvals.isError ? (
+        <Text role="alert" c="red">
+          {approvals.error?.message ?? "Failed to load approvals."}
+        </Text>
+      ) : null}
       {pending.map((approval) => (
         <ApprovalCard key={approval.id} approval={approval} />
       ))}
@@ -128,7 +140,6 @@ export function TaskPage() {
   const params = useParams({ strict: false });
   const taskId = typeof params.taskId === "string" ? params.taskId : "";
   const api = useApi();
-  const queryClient = useQueryClient();
   const [shareOpen, setShareOpen] = useState(false);
   const tasks = useQuery({
     queryKey: tasksQueryKey(),
@@ -138,12 +149,7 @@ export function TaskPage() {
     queryKey: approvalsQueryKey(),
     queryFn: () => api.approvals.list(),
   });
-  const next = useMutation({
-    mutationFn: () => api.nextPhase(taskId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: tasksQueryKey() });
-    },
-  });
+  const next = useWrite(() => api.nextPhase(taskId), [TASKS_KEY]);
 
   const task = tasks.data?.find((item) => item.id === taskId);
   const pending = pendingFor(approvals.data, taskId);

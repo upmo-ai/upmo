@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../../App";
-import { createStubApi } from "../../app/api";
+import { createStubApi, type ApiClient } from "../../app/api";
 import { AppProviders } from "../../theme";
 import { lastPasskeyReason, lastPasswordReason } from "./rules";
 
@@ -102,5 +102,58 @@ describe("security", () => {
     await api.password.set();
     await api.passkeys.remove("pk-laptop");
     await expect(api.password.remove()).rejects.toThrow(lastPasswordReason);
+  });
+
+  it("a passkey rename refetches passkeys only", async () => {
+    let passkeyListCalls = 0;
+    let sessionCalls = 0;
+
+    const base = createStubApi();
+    const client: ApiClient = {
+      ...base,
+      session: {
+        async get() {
+          sessionCalls += 1;
+          return base.session.get();
+        },
+      },
+      me: {
+        ...base.me,
+        async current() {
+          sessionCalls += 1;
+          return base.me.current();
+        },
+      },
+      passkeys: {
+        ...base.passkeys,
+        async list() {
+          passkeyListCalls += 1;
+          return base.passkeys.list();
+        },
+      },
+    };
+
+    const history = createMemoryHistory({ initialEntries: ["/settings"] });
+    render(
+      <AppProviders>
+        <App history={history} client={client} />
+      </AppProviders>,
+    );
+
+    expect(await screen.findByText("Laptop")).toBeTruthy();
+    const initialPasskeyListCalls = passkeyListCalls;
+    const initialSessionCalls = sessionCalls;
+
+    act(() => {
+      screen.getByRole("button", { name: "Rename Laptop" }).click();
+    });
+    fireEvent.change(screen.getByLabelText("New name for Laptop"), { target: { value: "Desktop" } });
+    act(() => {
+      screen.getByRole("button", { name: "Save name" }).click();
+    });
+
+    expect(await screen.findByText("Desktop")).toBeTruthy();
+    expect(passkeyListCalls).toBe(initialPasskeyListCalls + 1);
+    expect(sessionCalls).toBe(initialSessionCalls);
   });
 });

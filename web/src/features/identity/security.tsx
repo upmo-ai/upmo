@@ -2,7 +2,15 @@ import { Button, Group, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { meQueryKey, passkeysQueryKey, useApi, type Passkey } from "../../app/api";
+import {
+  PASSKEYS_KEY,
+  SESSION_KEY,
+  meQueryKey,
+  passkeysQueryKey,
+  useApi,
+  useWrite,
+  type Passkey,
+} from "../../app/api";
 import { addPasskey, confirmWithPasskey, removePasskey, renamePasskey } from "../../app/passkeys";
 import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
@@ -62,26 +70,34 @@ export function SecurityPage() {
     await queryClient.invalidateQueries({ queryKey: meQueryKey() });
   };
 
-  const add = useMutation({
-    mutationFn: async () => {
+  const add = useWrite(
+    async () => {
       if (live) {
         await addPasskey();
         return;
       }
       await api.passkeys.add(addName);
     },
-    onSuccess: async () => {
-      setAdding(false);
-      setAddName("Passkey");
-      setNotice("");
-      await refresh();
-      await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
-      await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
+    [PASSKEYS_KEY, SESSION_KEY],
+    {
+      shown: true,
+      onSuccess: async () => {
+        setAdding(false);
+        setAddName("Passkey");
+        setNotice("");
+        await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
+        await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
+      },
+      onError: (err) => {
+        const cancelled =
+          err instanceof Error &&
+          (err.message === "cancelled" || err.name === "NotAllowedError" || err.name === "AbortError");
+        setNotice(cancelled ? "The passkey prompt was cancelled. Try again." : "Try again.");
+      },
     },
-    onError: () => setNotice("The passkey prompt was cancelled. Try again."),
-  });
-  const rename = useMutation({
-    mutationFn: async () => {
+  );
+  const rename = useWrite(
+    async () => {
       if (!renameId) throw new Error("Passkey missing.");
       if (live) {
         await renamePasskey(renameId, renameName);
@@ -89,14 +105,16 @@ export function SecurityPage() {
       }
       await api.passkeys.rename(renameId, renameName);
     },
-    onSuccess: async () => {
-      setRenameId(null);
-      await refresh();
-      await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
+    [PASSKEYS_KEY],
+    {
+      onSuccess: async () => {
+        setRenameId(null);
+        await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
+      },
     },
-  });
-  const remove = useMutation({
-    mutationFn: async () => {
+  );
+  const remove = useWrite(
+    async () => {
       if (!removeId) throw new Error("Passkey missing.");
       if (live) {
         await removePasskey(removeId);
@@ -104,13 +122,15 @@ export function SecurityPage() {
       }
       await api.passkeys.remove(removeId);
     },
-    onSuccess: async () => {
-      setRemoveId(null);
-      await refresh();
-      await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
-      await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
+    [PASSKEYS_KEY, SESSION_KEY],
+    {
+      onSuccess: async () => {
+        setRemoveId(null);
+        await queryClient.invalidateQueries({ queryKey: ["live-passkeys"] });
+        await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
+      },
     },
-  });
+  );
   const list = livePasskeys.data
     ? livePasskeys.data.map((item) => ({
         id: item.id,
@@ -120,6 +140,7 @@ export function SecurityPage() {
       }))
     : (passkeys.data ?? []);
   const savePassword = useMutation({
+    meta: { shown: true },
     mutationFn: async () => {
       if (liveAccount.data) return saveLivePassword(passwordMode, passwordDraft, list.length);
       if (passwordMode === "set") return api.password.set();
@@ -180,6 +201,11 @@ export function SecurityPage() {
   return (
     <Stack gap="lg">
       <Title order={1}>Security</Title>
+      {passkeys.isError ? (
+        <Text role="alert" c="red">
+          {passkeys.error?.message ?? "Failed to load passkeys."}
+        </Text>
+      ) : null}
       {me.data && passkeys.data ? (
         <>
           <Stack gap="sm">

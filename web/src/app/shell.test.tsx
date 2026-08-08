@@ -1,10 +1,12 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
 import { AppProviders } from "../theme";
 import {
+  BrainError,
+  createStubApi,
   type ApiClient,
   type ApiToken,
   type CreatedToken,
@@ -50,7 +52,7 @@ const signedOut: CurrentUser = {
   offerDismissed: false,
 };
 
-function identityStub(): Pick<ApiClient, "me" | "passkeys" | "password" | "members" | "shares" | "tokens"> {
+function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens"> {
   const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
   const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
   const share = (taskId: string): TaskShare => ({
@@ -69,6 +71,11 @@ function identityStub(): Pick<ApiClient, "me" | "passkeys" | "password" | "membe
     expires: "",
   };
   return {
+    session: {
+      async get() {
+        return signedOut;
+      },
+    },
     me: {
       async current() {
         return signedOut;
@@ -152,6 +159,7 @@ describe("app shell", () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("lists primary nav then Workspace and Settings", async () => {
@@ -303,5 +311,95 @@ describe("app shell", () => {
       .getAllByRole("link")
       .filter((link) => link.getAttribute("aria-current") === "page");
     expect(current.map((link) => link.textContent?.trim())).toEqual([navLabel]);
+  });
+
+  it("unauthorised 401 sends a signed-in route to /login and does not retry; /login still renders with no session", async () => {
+    let sessionFetches = 0;
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      session: {
+        async get() {
+          sessionFetches += 1;
+          throw new BrainError(401, "unauthorised");
+        },
+      },
+      me: {
+        ...stub.me,
+        async current() {
+          sessionFetches += 1;
+          throw new BrainError(401, "unauthorised");
+        },
+      },
+    };
+    renderAt("/", client);
+    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(sessionFetches).toBe(1);
+
+    cleanup();
+
+    renderAt("/login", client);
+    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+  });
+
+  it("sign-out clears the query cache", async () => {
+    let sessionCalls = 0;
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      session: {
+        async get() {
+          sessionCalls += 1;
+          return { ...signedOut, signIn: "password" };
+        },
+      },
+      me: {
+        ...stub.me,
+        async current() {
+          sessionCalls += 1;
+          return { ...signedOut, signIn: "password" };
+        },
+      },
+    };
+    renderAt("/", client);
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    const beforeCalls = sessionCalls;
+    act(() => {
+      screen.getByRole("button", { name: "Log out" }).click();
+    });
+    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(beforeCalls).toBeGreaterThan(0);
+  });
+
+  it("/api/session is fetched once per shell load", async () => {
+    let sessionFetches = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<() => Promise<Response>>(async (input) => {
+        if (String(input).includes("/api/session")) {
+          sessionFetches += 1;
+          return new Response(
+            JSON.stringify({
+              user_id: "sam",
+              sign_in_method: "password",
+              signed_in_at: new Date().toISOString(),
+              has_password: true,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    renderAt("/");
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: "Upmo" }).getAttribute("href")).toBe("/");
+    });
+    expect(sessionFetches).toBe(1);
   });
 });

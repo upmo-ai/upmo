@@ -1,11 +1,14 @@
 import { Button, NativeSelect, Stack, Table, Text, TextInput, Title } from "@mantine/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import {
+  MEMBERS_KEY,
+  SESSION_KEY,
   meQueryKey,
   membersQueryKey,
   useApi,
+  useWrite,
   type InviteRole,
   type Member,
   type ViewRole,
@@ -36,7 +39,6 @@ const viewChoices: { role: ViewRole; label: string }[] = [
 
 export function MembersPage() {
   const api = useApi();
-  const queryClient = useQueryClient();
   const me = useQuery({ queryKey: meQueryKey(), queryFn: () => api.me.current() });
   const members = useQuery({
     queryKey: membersQueryKey(),
@@ -47,39 +49,35 @@ export function MembersPage() {
   const [error, setError] = useState("");
   const [removeId, setRemoveId] = useState<string | null>(null);
 
-  const refresh = async () => {
-    await queryClient.invalidateQueries({ queryKey: membersQueryKey() });
-    await queryClient.invalidateQueries({ queryKey: meQueryKey() });
-  };
-
-  const viewAs = useMutation({
-    mutationFn: (next: ViewRole) => api.me.viewAs(next),
-    onSuccess: refresh,
-  });
-  const invite = useMutation({
-    mutationFn: () => api.members.invite({ email, role }),
-    onSuccess: async () => {
-      setEmail("");
-      setError("");
-      await refresh();
+  const viewAs = useWrite((next: ViewRole) => api.me.viewAs(next), [MEMBERS_KEY, SESSION_KEY]);
+  const invite = useWrite(
+    () => api.members.invite({ email, role }),
+    [MEMBERS_KEY],
+    {
+      shown: true,
+      onSuccess: async () => {
+        setEmail("");
+        setError("");
+      },
+      onError: (cause: Error) => setError(cause.message),
     },
-    onError: (cause: Error) => setError(cause.message),
-  });
-  const setMemberRole = useMutation({
-    mutationFn: (input: { id: string; role: InviteRole }) =>
-      api.members.setRole(input.id, input.role),
-    onSuccess: refresh,
-  });
-  const remove = useMutation({
-    mutationFn: () => {
+  );
+  const setMemberRole = useWrite(
+    (input: { id: string; role: InviteRole }) => api.members.setRole(input.id, input.role),
+    [MEMBERS_KEY],
+  );
+  const remove = useWrite(
+    () => {
       if (!removeId) throw new Error("member missing");
       return api.members.remove(removeId);
     },
-    onSuccess: async () => {
-      setRemoveId(null);
-      await refresh();
+    [MEMBERS_KEY],
+    {
+      onSuccess: async () => {
+        setRemoveId(null);
+      },
     },
-  });
+  );
 
   const list = members.data ?? [];
   const actor = list.find((member) => member.id === me.data?.memberId);
@@ -90,6 +88,11 @@ export function MembersPage() {
   return (
     <Stack gap="lg" className="settings-page">
       <Title order={1}>Members</Title>
+      {members.isError ? (
+        <Text role="alert" c="red">
+          {members.error?.message ?? "Failed to load members."}
+        </Text>
+      ) : null}
       {me.data ? (
         <div className="view-as" role="group" aria-label="View as">
           <Text fw={600}>View as</Text>
@@ -147,7 +150,7 @@ export function MembersPage() {
               <Table.Th>Email</Table.Th>
               <Table.Th>Role</Table.Th>
               <Table.Th>Teams</Table.Th>
-              {manage ? <Table.Th>Access</Table.Th> : null}
+              {manage ? <Table.Th aria-label="Actions">Actions</Table.Th> : null}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -236,7 +239,7 @@ function MemberRow({
       </Table.Td>
       <Table.Td>{member.teams.length > 0 ? member.teams.join(", ") : "No team"}</Table.Td>
       {manage ? (
-        <Table.Td>
+        <Table.Td aria-label="Actions">
           <Button
             type="button"
             className="member-remove"

@@ -1,5 +1,6 @@
 import { Button, Text, Title } from "@mantine/core";
 import { IconKey } from "@tabler/icons-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -11,6 +12,7 @@ import "./sign-in.css";
 
 export function LinkPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState("");
   const token = window.location.hash.replace(/^#/, "");
 
@@ -18,6 +20,7 @@ export function LinkPage() {
     setMessage("");
     try {
       await createPasskeyFromLink(token);
+      queryClient.clear();
       await navigate({ to: "/" });
     } catch {
       setMessage("This link cannot be used. Ask for a new one.");

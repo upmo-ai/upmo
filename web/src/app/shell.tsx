@@ -1,15 +1,18 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   AppShell,
   Breadcrumbs,
   Button,
+  CloseButton,
   Group,
   NavLink,
   Text,
   Tooltip,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
+import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
@@ -20,6 +23,7 @@ import { WorkspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch } from "../theme";
 import { ShellIcon, type ShellConcept } from "../ui/icons";
 import { BrandLink } from "./brand";
+import { endThisSession } from "./passkeys";
 
 import "./shell.css";
 
@@ -121,11 +125,16 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
 
 function SignOut() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   return (
     <Button
       className="shell-sign-out"
       variant="subtle"
-      onClick={() => navigate({ to: "/login" })}
+      onClick={async () => {
+        await endThisSession();
+        queryClient.clear();
+        await navigate({ to: "/login" });
+      }}
     >
       Log out
     </Button>
@@ -136,7 +145,27 @@ export function Shell() {
   const layout = useShellLayout();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [opened, setOpened] = useState(false);
+  const [dismissedAt, setDismissedAt] = useState<number>(0);
   const previous = useRef(pathname);
+
+  const failedMutations = useMutationState({
+    filters: { status: "error" },
+    select: (mutation) => ({
+      error: mutation.state.error,
+      meta: mutation.options.meta as { shown?: boolean } | undefined,
+      submittedAt: mutation.state.submittedAt,
+    }),
+  });
+
+  const unshownErrors = failedMutations.filter(
+    (m) => !m.meta?.shown && m.error && m.submittedAt > dismissedAt,
+  );
+  const latestMutation = unshownErrors[unshownErrors.length - 1];
+  const errorMessage = latestMutation?.error
+    ? latestMutation.error instanceof Error
+      ? latestMutation.error.message
+      : String(latestMutation.error)
+    : null;
 
   useEffect(() => {
     if (previous.current === pathname) return;
@@ -205,6 +234,22 @@ export function Shell() {
       </AppShell.Navbar>
       <AppShell.Main>
         <div className="shell-content">
+          {errorMessage ? (
+            <Alert
+              className="shell-message"
+              role="alert"
+              color="red"
+              variant="light"
+            >
+              <Group justify="space-between" align="center" wrap="nowrap">
+                <Text>{errorMessage}</Text>
+                <CloseButton
+                  aria-label="Close message"
+                  onClick={() => setDismissedAt(latestMutation.submittedAt)}
+                />
+              </Group>
+            </Alert>
+          ) : null}
           <PasskeyOffer />
           <Outlet />
         </div>
