@@ -44,6 +44,9 @@ func (h Passkeys) passwordSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email, name, err := h.Password.Store.Profile(r.Context(), session.UserID)
+	if refuseSignedOut(w, err) {
+		return
+	}
 	if err != nil {
 		http.Error(w, "password", http.StatusInternalServerError)
 		return
@@ -80,6 +83,9 @@ func (h Passkeys) passwordVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email, _, err := h.Password.Store.Profile(r.Context(), session.UserID)
+	if refuseSignedOut(w, err) {
+		return
+	}
 	if err != nil {
 		http.Error(w, "password", http.StatusInternalServerError)
 		return
@@ -108,6 +114,9 @@ func writePasswordErr(w http.ResponseWriter, retry time.Duration, err error) boo
 		return false
 	}
 	switch {
+	case errors.Is(err, app.ErrNotSignedIn):
+		ClearCookie(w)
+		writeRaw(w, http.StatusUnauthorized, unauthorised)
 	case errors.Is(err, app.ErrWrong):
 		writeRaw(w, http.StatusUnauthorized, wrongPassword)
 	case errors.Is(err, app.ErrLimited):

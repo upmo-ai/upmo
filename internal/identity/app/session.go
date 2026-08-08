@@ -12,9 +12,10 @@ import (
 // ErrNotFound is an unknown session. ErrEnded is a session that has timed out.
 // ErrMalformed is a cookie that is not a token. Callers show one answer for all three.
 var (
-	ErrNotFound  = errors.New("identity: session not found")
-	ErrEnded     = errors.New("identity: session ended")
-	ErrMalformed = errors.New("identity: malformed session")
+	ErrNotFound    = errors.New("identity: session not found")
+	ErrEnded       = errors.New("identity: session ended")
+	ErrMalformed   = errors.New("identity: malformed session")
+	ErrNotSignedIn = errors.New("identity: unauthorised")
 )
 
 // Session is a live server-side session.

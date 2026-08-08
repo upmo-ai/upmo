@@ -103,6 +103,9 @@ func (p Passkeys) Account(ctx context.Context, user domain.UserID) (domain.Accou
 		SELECT id, webauthn_handle, email, name
 		FROM identity.users
 		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&account.ID, &account.Handle, &account.Name, &account.Display)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Account{}, app.ErrNotSignedIn
+	}
 	if err != nil {
 		return domain.Account{}, err
 	}
@@ -123,6 +126,9 @@ func (p Passkeys) AccountByCredential(ctx context.Context, credentialID, userHan
 		WHERE passkey.credential_id = $1
 		  AND person.webauthn_handle = $2
 		  AND person.disabled_at IS NULL`, credentialID, userHandle).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Account{}, app.ErrNotSignedIn
+	}
 	if err != nil {
 		return domain.Account{}, err
 	}
@@ -203,7 +209,7 @@ func (p Passkeys) DeletePasskey(ctx context.Context, user domain.UserID, id stri
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT id FROM identity.users WHERE id = $1 FOR UPDATE`, user); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT id FROM identity.users WHERE id = $1 FOR NO KEY UPDATE`, user); err != nil {
 		return nil, err
 	}
 	var count int
@@ -234,6 +240,12 @@ func (p Passkeys) Join(ctx context.Context, user domain.UserID, now time.Time) e
 }
 
 func (p Passkeys) Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error) {
+	if perSecond > 0 {
+		idle := time.Duration((2 * burst / perSecond) * float64(time.Second))
+		if _, err := p.Pool.Exec(ctx, `DELETE FROM identity.throttle WHERE updated_at <= $1`, now.Add(-idle)); err != nil {
+			return false, 0, err
+		}
+	}
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return false, 0, err
@@ -252,6 +264,7 @@ func (p Passkeys) Take(ctx context.Context, key string, now time.Time, burst, pe
 	}
 	tokens = domain.Refill(tokens, updated, now, burst, perSecond)
 	if tokens < 1 {
+		tokens--
 		if _, err := tx.Exec(ctx, `UPDATE identity.throttle SET tokens = $2, updated_at = $3 WHERE key = $1`, key, tokens, now); err != nil {
 			return false, 0, err
 		}
@@ -283,7 +296,7 @@ func (p Passkeys) Empty(ctx context.Context) (bool, error) {
 	return !exists, err
 }
 
-func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte, expires time.Time) (domain.UserID, error) {
+func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return domain.UserID{}, err
@@ -301,9 +314,9 @@ func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte
 	}
 	var user domain.UserID
 	err = tx.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = 'owner'), now())
-		RETURNING id`, email, name).Scan(&user)
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = 'owner'), $3, $3)
+		RETURNING id`, email, name, now).Scan(&user)
 	if err != nil {
 		return domain.UserID{}, err
 	}

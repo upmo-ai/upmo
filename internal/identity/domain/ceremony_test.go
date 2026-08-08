@@ -41,6 +41,26 @@ func TestRefillAndRetry(t *testing.T) {
 	if RetryAfter(0, ThrottlePerSecond) != 6*time.Second {
 		t.Fatalf("retry = %s", RetryAfter(0, ThrottlePerSecond))
 	}
+	if RetryAfter(-1, 1.0/30) != 60*time.Second {
+		t.Fatalf("next token retry = %s", RetryAfter(-1, 1.0/30))
+	}
+}
+
+func TestThrottleAddressSharesAnIPv6Prefix(t *testing.T) {
+	one := ThrottleAddress("2001:db8:1:2::1")
+	other := ThrottleAddress("2001:db8:1:2::abcd")
+	if one != other {
+		t.Fatalf("prefix = %s and %s", one, other)
+	}
+	if ThrottleAddress("2001:db8:1:3::1") == one {
+		t.Fatal("a different prefix shared the bucket")
+	}
+	if ThrottleAddress("198.51.100.9") != "198.51.100.9" {
+		t.Fatalf("ipv4 = %s", ThrottleAddress("198.51.100.9"))
+	}
+	if ThrottleAddress("not-an-ip") != "not-an-ip" {
+		t.Fatal("a non-address was rewritten")
+	}
 }
 
 func TestPasskeyName(t *testing.T) {

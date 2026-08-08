@@ -6,6 +6,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -396,6 +397,108 @@ func TestSchemaChecksMatchTheDomain(t *testing.T) {
 	}
 	if crossing != 0 {
 		t.Fatalf("%d foreign keys leave the identity schema", crossing)
+	}
+}
+
+func TestTwoConcurrentDemotionsLeaveOneOwner(t *testing.T) {
+	pool, ctx := up(t)
+	first := seedOwner(t, pool, ctx, "ada@example.com")
+	var second string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, id := range []string{first, second} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if _, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'member') WHERE id = $1`, id); err != nil {
+				_ = tx.Rollback(ctx)
+				errs <- err
+				return
+			}
+			errs <- tx.Commit(ctx)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	failed := 0
+	for err := range errs {
+		if err != nil {
+			failed++
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("failed commits = %d, want 1", failed)
+	}
+	var owners int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM identity.users AS person
+		JOIN identity.roles AS role ON role.id = person.role_id
+		WHERE role.key = 'owner' AND person.joined_at IS NOT NULL AND person.disabled_at IS NULL`).Scan(&owners); err != nil {
+		t.Fatal(err)
+	}
+	if owners != 1 {
+		t.Fatalf("owners = %d, want 1", owners)
+	}
+}
+
+func TestPasswordChangeDoesNotFireTheOwnerGuard(t *testing.T) {
+	pool, ctx := up(t)
+	owner := seedOwner(t, pool, ctx, "ada@example.com")
+	if _, err := pool.Exec(ctx, `UPDATE identity.users SET password_hash = 'stored' WHERE id = $1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	var def, source string
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_get_triggerdef(oid)
+		FROM pg_trigger
+		WHERE tgname = 'users_keep_joined_owner' AND tgrelid = 'identity.users'::regclass`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(def, "UPDATE OF role_id, joined_at, disabled_at") {
+		t.Fatalf("trigger = %s", def)
+	}
+	if err := pool.QueryRow(ctx, `SELECT prosrc FROM pg_proc WHERE proname = 'keep_joined_owner'`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(source, "pg_advisory_xact_lock") {
+		t.Fatal("owner guard does not take a lock")
+	}
+	var nameCheck, shares, links, throttle int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM pg_constraint WHERE conname = 'users_name_check'),
+		  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'identity' AND indexname = 'shares_object'),
+		  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'identity' AND indexname = 'sign_in_links_id'),
+		  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'identity' AND indexname = 'throttle_updated')`).Scan(&nameCheck, &shares, &links, &throttle); err != nil {
+		t.Fatal(err)
+	}
+	if nameCheck != 1 || shares != 1 || links != 1 || throttle != 1 {
+		t.Fatalf("schema pieces name %d shares %d links %d throttle %d", nameCheck, shares, links, throttle)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('empty@example.com', '', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err == nil {
+		t.Fatal("an empty name was accepted")
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.sign_in_links (token_hash, user_id, purpose, expires_at)
+		VALUES ($2, $1, 'recover', now() + interval '1 minute')
+		RETURNING id::text`, owner, []byte{1, 2, 3}).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id == "" {
+		t.Fatal("link id was empty")
 	}
 }
 
