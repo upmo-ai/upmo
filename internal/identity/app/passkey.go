@@ -47,7 +47,7 @@ type PassStore interface {
 	Join(ctx context.Context, user domain.UserID, now time.Time) error
 	Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
-	Bootstrap(ctx context.Context, email, name string, hash []byte, expires time.Time) (domain.UserID, error)
+	Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error)
 	ListPasskeys(ctx context.Context, user domain.UserID) ([]PasskeyRecord, error)
 	RenamePasskey(ctx context.Context, user domain.UserID, id, name string) error
 	DeletePasskey(ctx context.Context, user domain.UserID, id string) ([]byte, error)
@@ -153,16 +153,14 @@ func (p Passkeys) FinishLink(ctx context.Context, cookie, token string, body []b
 	if err != nil {
 		return "", err
 	}
+	if err := p.Store.SpendLink(ctx, domain.Hash(raw), now); err != nil {
+		return "", ErrInvalidLink
+	}
 	if _, err := p.Store.InsertPasskey(ctx, user, credential, domain.PasskeyName(credential.AAGUID), now); err != nil {
 		return "", err
 	}
-	if purpose == "invite" {
-		if err := p.Store.Join(ctx, user, now); err != nil {
-			return "", err
-		}
-	}
-	if err := p.Store.SpendLink(ctx, domain.Hash(raw), now); err != nil {
-		return "", ErrInvalidLink
+	if err := p.Store.Join(ctx, user, now); err != nil {
+		return "", err
 	}
 	if err := p.Sessions.EndSessions(ctx, user); err != nil {
 		return "", err
@@ -214,11 +212,17 @@ func (p Passkeys) FinishAdd(ctx context.Context, user domain.UserID, keep, cooki
 
 // BeginStepUp asks for the passkey again.
 func (p Passkeys) BeginStepUp(ctx context.Context, user domain.UserID) (cookie string, options []byte, err error) {
+	if _, err := p.Store.Account(ctx, user); err != nil {
+		return "", nil, err
+	}
 	return p.BeginSignIn(ctx)
 }
 
 // FinishStepUp refreshes the session that asked.
 func (p Passkeys) FinishStepUp(ctx context.Context, user domain.UserID, sessionID, cookie string, body []byte) error {
+	if _, err := p.Store.Account(ctx, user); err != nil {
+		return err
+	}
 	session, _, _, err := p.take(ctx, cookie, "sign-in")
 	if err != nil {
 		return err
@@ -271,7 +275,8 @@ func (p Passkeys) Bootstrap(ctx context.Context, email, name string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if _, err := p.Store.Bootstrap(ctx, email, name, domain.Hash(token), p.now().Add(domain.RecoverLifetime)); err != nil {
+	now := p.now()
+	if _, err := p.Store.Bootstrap(ctx, email, name, domain.Hash(token), now, now.Add(domain.RecoverLifetime)); err != nil {
 		return "", err
 	}
 	return text, nil

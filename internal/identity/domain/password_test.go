@@ -100,6 +100,9 @@ func TestAccountKeyHidesEmail(t *testing.T) {
 	if !strings.HasPrefix(AccountIPKey("ada@example.com", "198.51.100.9"), "account-ip:") {
 		t.Fatal(AccountIPKey("ada@example.com", "198.51.100.9"))
 	}
+	if AccountIPKey("ada@example.com", "2001:db8:1:2::1") != AccountIPKey("ada@example.com", "2001:db8:1:2::abcd") {
+		t.Fatal("ipv6 addresses in one prefix did not share a key")
+	}
 }
 
 func FuzzCheck(f *testing.F) {

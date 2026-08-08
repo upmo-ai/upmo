@@ -30,6 +30,9 @@ func Up(ctx context.Context, pool *pgxpool.Pool, schema string, files fs.FS) err
 		return fmt.Errorf("migrate: lock: %w", err)
 	}
 	defer func() { _, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", int64(7480197)) }()
+	if err := createSchema(ctx, conn, schema); err != nil {
+		return err
+	}
 
 	provider, db, err := open(ctx, pool, schema, files)
 	if err != nil {
@@ -63,10 +66,6 @@ func open(ctx context.Context, pool *pgxpool.Pool, schema string, files fs.FS) (
 	if !schemaName.MatchString(schema) {
 		return nil, nil, fmt.Errorf("migrate: schema name %q", schema)
 	}
-	quoted := pgx.Identifier{schema}.Sanitize()
-	if _, err := pool.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+quoted); err != nil {
-		return nil, nil, fmt.Errorf("migrate: create schema %s: %w", schema, err)
-	}
 	db := stdlib.OpenDB(*pool.Config().ConnConfig)
 	provider, err := goose.NewProvider(
 		goose.DialectPostgres,
@@ -79,4 +78,15 @@ func open(ctx context.Context, pool *pgxpool.Pool, schema string, files fs.FS) (
 		return nil, nil, fmt.Errorf("migrate: provider %s: %w", schema, err)
 	}
 	return provider, db, nil
+}
+
+func createSchema(ctx context.Context, conn *pgxpool.Conn, schema string) error {
+	if !schemaName.MatchString(schema) {
+		return fmt.Errorf("migrate: schema name %q", schema)
+	}
+	quoted := pgx.Identifier{schema}.Sanitize()
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+quoted); err != nil {
+		return fmt.Errorf("migrate: create schema %s: %w", schema, err)
+	}
+	return nil
 }

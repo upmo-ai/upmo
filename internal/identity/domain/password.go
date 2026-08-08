@@ -168,7 +168,7 @@ func AccountKey(email string) string {
 // AccountIPKey is the throttle key for an account from one client address.
 func AccountIPKey(email, ip string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
-	return "account-ip:" + hex.EncodeToString(sum[:]) + ":" + ip
+	return "account-ip:" + hex.EncodeToString(sum[:]) + ":" + ThrottleAddress(ip)
 }
 
 func personalBans(email, name string) []string {

@@ -55,7 +55,7 @@ func (h Passkeys) Mount(mux *http.ServeMux) {
 func (h Passkeys) limited(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		allowed, retry, err := h.Pass.Store.Take(r.Context(), domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted), passkeyNow(h.Pass), domain.ThrottleBurst, domain.ThrottlePerSecond)
+		allowed, retry, err := h.Pass.Store.Take(r.Context(), domain.ThrottleAddress(domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted)), passkeyNow(h.Pass), domain.ThrottleBurst, domain.ThrottlePerSecond)
 		if err != nil {
 			http.Error(w, "throttle", http.StatusInternalServerError)
 			return
@@ -88,6 +88,9 @@ func (h Passkeys) signInFinish(w http.ResponseWriter, r *http.Request) {
 	text, err := h.Pass.FinishSignIn(r.Context(), challenge(r), body, agent(r))
 	if err != nil {
 		clearChallenge(w)
+		if refuseSignedOut(w, err) {
+			return
+		}
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 		return
 	}
@@ -125,6 +128,9 @@ func (h Passkeys) linkFinish(w http.ResponseWriter, r *http.Request) {
 	text, err := h.Pass.FinishLink(r.Context(), challenge(r), input.Token, input.Response, agent(r))
 	if err != nil {
 		clearChallenge(w)
+		if refuseSignedOut(w, err) {
+			return
+		}
 		writeRaw(w, http.StatusBadRequest, invalidLink)
 		return
 	}
@@ -139,6 +145,9 @@ func (h Passkeys) stepUpOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookie, options, err := h.Pass.BeginStepUp(r.Context(), session.UserID)
+	if refuseSignedOut(w, err) {
+		return
+	}
 	if err != nil {
 		writeRaw(w, http.StatusBadRequest, unauthorised)
 		return
@@ -155,6 +164,9 @@ func (h Passkeys) stepUpFinish(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 	if err := h.Pass.FinishStepUp(r.Context(), session.UserID, session.ID, challenge(r), body); err != nil {
 		clearChallenge(w)
+		if refuseSignedOut(w, err) {
+			return
+		}
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 		return
 	}
@@ -191,6 +203,9 @@ func (h Passkeys) addOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookie, options, err := h.Pass.BeginAdd(r.Context(), session.UserID)
+	if refuseSignedOut(w, err) {
+		return
+	}
 	if err != nil {
 		writeRaw(w, http.StatusBadRequest, unauthorised)
 		return
@@ -207,6 +222,9 @@ func (h Passkeys) addFinish(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 	if err := h.Pass.FinishAdd(r.Context(), session.UserID, session.ID, challenge(r), body); err != nil {
 		clearChallenge(w)
+		if refuseSignedOut(w, err) {
+			return
+		}
 		writeRaw(w, http.StatusBadRequest, unauthorised)
 		return
 	}
@@ -337,6 +355,15 @@ func (h Passkeys) fresh(w http.ResponseWriter, r *http.Request) (app.Session, bo
 		return app.Session{}, false
 	}
 	return session, true
+}
+
+func refuseSignedOut(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, app.ErrNotSignedIn) {
+		return false
+	}
+	ClearCookie(w)
+	writeRaw(w, http.StatusUnauthorized, unauthorised)
+	return true
 }
 
 func passkeyNow(p app.Passkeys) time.Time {

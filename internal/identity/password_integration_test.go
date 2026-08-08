@@ -242,6 +242,107 @@ func TestPasswordAndPasskeyRemovalsCannotBothPass(t *testing.T) {
 	}
 }
 
+func TestPasswordStore(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	user, err := domain.ParseUserID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO identity.passkeys (
+		  user_id, credential_id, public_key, sign_count, aaguid, transports,
+		  backup_eligible, backup_state, attestation, name, created_at)
+		VALUES ($1, $2, $2, 0, '00000000-0000-0000-0000-000000000000', '{}', false, false, 'none', 'Passkey', now())`, user, []byte{9}); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Passkeys{Pool: pool}
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	if err := store.SetPassword(ctx, user, "first-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPassword(ctx, user, "replacement-hash"); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "replacement-hash" {
+		t.Fatalf("hash = %s", stored)
+	}
+	offer, err := store.ClaimOffer(ctx, user, now)
+	if err != nil || !offer {
+		t.Fatalf("first offer %v %v", offer, err)
+	}
+	offer, err = store.ClaimOffer(ctx, user, now.Add(time.Hour))
+	if err != nil || offer {
+		t.Fatalf("second offer %v %v", offer, err)
+	}
+	offer, err = store.ClaimOffer(ctx, user, now.Add(domain.PasskeyOfferAfter))
+	if err != nil || !offer {
+		t.Fatalf("due offer %v %v", offer, err)
+	}
+	if err := store.ClearPassword(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	var gone *string
+	if err := pool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&gone); err != nil {
+		t.Fatal(err)
+	}
+	if gone != nil {
+		t.Fatalf("password remained %q", *gone)
+	}
+}
+
+func TestThrottleSweepAndRetry(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.throttle (key, tokens, updated_at) VALUES ('stale', 0, $1), ('fresh', 3, $2)`, now.Add(-time.Hour), now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Passkeys{Pool: pool}
+	key := domain.AccountIPKey("ada@example.com", "198.51.100.9")
+	for range domain.AccountIPBurst {
+		ok, _, err := store.Take(ctx, key, now, domain.AccountIPBurst, domain.AccountIPPerSecond)
+		if err != nil || !ok {
+			t.Fatalf("take %v %v", ok, err)
+		}
+	}
+	ok, retry, err := store.Take(ctx, key, now, domain.AccountIPBurst, domain.AccountIPPerSecond)
+	if err != nil || ok || retry != 60*time.Second {
+		t.Fatalf("blocked ok %v retry %s err %v", ok, retry, err)
+	}
+	ok, _, err = store.Take(ctx, key, now.Add(retry), domain.AccountIPBurst, domain.AccountIPPerSecond)
+	if err != nil || !ok {
+		t.Fatalf("after the wait %v %v", ok, err)
+	}
+	var stale, fresh int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM identity.throttle WHERE key = 'stale'`).Scan(&stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM identity.throttle WHERE key = 'fresh'`).Scan(&fresh); err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 || fresh != 1 {
+		t.Fatalf("swept stale %d fresh %d", stale, fresh)
+	}
+}
+
 func errorsIsLast(err error) bool {
 	return errors.Is(err, app.ErrLastPasskey)
 }

@@ -118,6 +118,19 @@ func trustedIP(ip net.IP, trusted []*net.IPNet) bool {
 	return false
 }
 
+// ThrottleAddress is the bucket key for a client address. IPv6 addresses in
+// one /64 share a bucket. Anything that is not an IP is returned unchanged.
+func ThrottleAddress(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String()
+}
+
 // Account is the person a ceremony is about.
 type Account struct {
 	ID          UserID

@@ -34,6 +34,9 @@ func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.Use
 func (p Passkeys) Profile(ctx context.Context, user domain.UserID) (string, string, error) {
 	var email, name string
 	err := p.Pool.QueryRow(ctx, `SELECT email, name FROM identity.users WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&email, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", app.ErrNotSignedIn
+	}
 	return email, name, err
 }
 
@@ -54,7 +57,7 @@ func (p Passkeys) ClearPassword(ctx context.Context, user domain.UserID) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT id FROM identity.users WHERE id = $1 FOR UPDATE`, user); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT id FROM identity.users WHERE id = $1 FOR NO KEY UPDATE`, user); err != nil {
 		return err
 	}
 	var count int
@@ -87,7 +90,7 @@ func (p Passkeys) ClaimOffer(ctx context.Context, user domain.UserID, now time.T
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var offered *time.Time
-	if err := tx.QueryRow(ctx, `SELECT passkey_offered_at FROM identity.users WHERE id = $1 FOR UPDATE`, user).Scan(&offered); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT passkey_offered_at FROM identity.users WHERE id = $1 FOR NO KEY UPDATE`, user).Scan(&offered); err != nil {
 		return false, err
 	}
 	if !domain.OfferPasskey(offered, now) {

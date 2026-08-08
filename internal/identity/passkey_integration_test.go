@@ -370,6 +370,212 @@ func TestTwoRemovalsCannotBothPass(t *testing.T) {
 	}
 }
 
+func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	pool, mux, passkeys, ctx := identityMux(t, now)
+	token, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invited, joined time.Time
+	var expires time.Time
+	if err := pool.QueryRow(ctx, `SELECT invited_at, joined_at FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&invited, &joined); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT expires_at FROM identity.sign_in_links`).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	if !invited.Equal(now) || !joined.Equal(now) || !expires.Equal(now.Add(domain.RecoverLifetime)) {
+		t.Fatalf("clock invited %s joined %s expires %s", invited, joined, expires)
+	}
+	soft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session := finishLink(t, mux, soft, token); session == "" {
+		t.Fatal("bootstrap link did not sign in")
+	}
+
+	var lee string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at)
+		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $1)
+		RETURNING id::text`, now).Scan(&lee); err != nil {
+		t.Fatal(err)
+	}
+	leeID, err := domain.ParseUserID(lee)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recover, err := passkeys.IssueLink(ctx, leeID, "recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leeSoft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finishLink(t, mux, leeSoft, recover) == "" {
+		t.Fatal("recover link did not sign in")
+	}
+	var leeJoined *time.Time
+	if err := pool.QueryRow(ctx, `SELECT joined_at FROM identity.users WHERE id = $1`, leeID).Scan(&leeJoined); err != nil {
+		t.Fatal(err)
+	}
+	if leeJoined == nil {
+		t.Fatal("recover left the person unjoined")
+	}
+	var team string
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Ship') RETURNING id`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, team, leeID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTwoFinishesRedeemOneLink(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	pool, mux, passkeys, ctx := identityMux(t, now)
+	if _, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada"); err != nil {
+		t.Fatal(err)
+	}
+	var lee string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $1)
+		RETURNING id::text`, now).Scan(&lee); err != nil {
+		t.Fatal(err)
+	}
+	leeID, err := domain.ParseUserID(lee)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := passkeys.IssueLink(ctx, leeID, "recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan finishResult, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- finishOnce(mux, token)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	ok, bad := 0, 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		switch result.code {
+		case http.StatusNoContent:
+			ok++
+		case http.StatusBadRequest:
+			bad++
+		default:
+			t.Fatalf("finish %d %s", result.code, result.body)
+		}
+	}
+	if ok != 1 || bad != 1 {
+		t.Fatalf("finishes ok %d bad %d", ok, bad)
+	}
+	var passkeysKept int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM identity.passkeys WHERE user_id = $1`, leeID).Scan(&passkeysKept); err != nil {
+		t.Fatal(err)
+	}
+	if passkeysKept != 1 {
+		t.Fatalf("passkeys = %d", passkeysKept)
+	}
+}
+
+func TestIPv6PrefixSharesAThrottleBucket(t *testing.T) {
+	_, mux, _, _ := identityMux(t, time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
+	for range domain.ThrottleBurst {
+		rec := limited(mux, "[2001:db8:1:2::1]:9", "", "")
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatal("limited before the burst")
+		}
+	}
+	blocked := limited(mux, "[2001:db8:1:2::abcd]:9", "", "")
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("same prefix %d", blocked.Code)
+	}
+	other := limited(mux, "[2001:db8:9:9::1]:9", "", "")
+	if other.Code == http.StatusTooManyRequests {
+		t.Fatal("a different prefix was limited")
+	}
+}
+
+func identityMux(t *testing.T, now time.Time) (*pgxpool.Pool, http.Handler, app.Passkeys, context.Context) {
+	t.Helper()
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
+	sessions.Now = func() time.Time { return now }
+	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	passkeys.Now = sessions.Now
+	mux := http.NewServeMux()
+	identity.MountSessions(mux, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	identity.MountPasskeys(mux, passkeys, identity.Passwords(pool, sessions), nil)
+	return pool, mux, passkeys, ctx
+}
+
+type finishResult struct {
+	code int
+	body string
+	err  error
+}
+
+func finishOnce(mux http.Handler, token string) finishResult {
+	soft, err := webauthn.NewSoft()
+	if err != nil {
+		return finishResult{err: err}
+	}
+	rec := callJSON(mux, http.MethodPost, "/api/passkeys/link/options", "", map[string]string{"token": token})
+	if rec.Code != http.StatusOK {
+		return finishResult{code: rec.Code, body: rec.Body.String()}
+	}
+	challenge, err := challengeOf(rec.Body.Bytes())
+	if err != nil {
+		return finishResult{err: err}
+	}
+	body, err := soft.Register("localhost", "http://localhost:5173", challenge, nil)
+	if err != nil {
+		return finishResult{err: err}
+	}
+	var challengeCookie string
+	for _, item := range rec.Result().Cookies() {
+		if item.Name == httpapi.ChallengeCookie {
+			challengeCookie = item.Value
+		}
+	}
+	finish := callJSON(mux, http.MethodPost, "/api/passkeys/link/finish", challengeCookie, map[string]any{"token": token, "response": json.RawMessage(body)})
+	return finishResult{code: finish.Code, body: finish.Body.String()}
+}
+
+func challengeOf(options []byte) (string, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(options, &payload); err != nil {
+		return "", err
+	}
+	public, _ := payload["publicKey"].(map[string]any)
+	challenge, _ := public["challenge"].(string)
+	if challenge == "" {
+		return "", errors.New("identity: no challenge")
+	}
+	return challenge, nil
+}
+
 func limited(mux http.Handler, remote, header, value string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/passkeys/sign-in/options", bytes.NewReader([]byte("{}")))
 	req.RemoteAddr = remote
