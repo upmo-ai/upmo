@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/identity"
-	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -26,8 +25,8 @@ func TestReadyAndSession(t *testing.T) {
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{
-		SessionIdle:   domain.IdleTimeout,
-		SessionMaxAge: domain.MaxAge,
+		SessionIdle:   identity.IdleTimeout,
+		SessionMaxAge: identity.MaxAge,
 		PublicURL:     "http://localhost:5173",
 		WebAuthnRPID:  "localhost",
 	}
@@ -56,5 +55,72 @@ func TestReadyAndSession(t *testing.T) {
 	protected.ServeHTTP(cross, req)
 	if cross.Code != http.StatusForbidden {
 		t.Fatalf("cross-site delete = %d, want 403", cross.Code)
+	}
+}
+
+func TestRequireSessionSeamIntegration(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	uid, err := identity.ParseUserID(userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{
+		SessionIdle:   identity.IdleTimeout,
+		SessionMaxAge: identity.MaxAge,
+		PublicURL:     "http://localhost:5173",
+		WebAuthnRPID:  "localhost",
+	}
+	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
+	passwords := identity.Passwords(pool, sessions)
+	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := identity.New(sessions, passkeys, passwords)
+
+	token, _, err := sessions.Start(ctx, uid, "passkey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seenPrincipal identity.Principal
+	targetHandler := id.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := identity.SessionFrom(r.Context())
+		if !ok {
+			http.Error(w, "missing principal", http.StatusInternalServerError)
+			return
+		}
+		seenPrincipal = p
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	req.AddCookie(&http.Cookie{
+		Name:     "__Host-upmo_session",
+		Value:    token,
+		Path:     "/",
+		Secure:   true,
+		HttpOnly: true,
+	})
+	targetHandler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if seenPrincipal.UserID != uid {
+		t.Fatalf("principal user = %v, want %v", seenPrincipal.UserID, uid)
 	}
 }

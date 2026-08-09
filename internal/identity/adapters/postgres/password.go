@@ -40,41 +40,49 @@ func (p Passkeys) Profile(ctx context.Context, user domain.UserID) (string, stri
 	return email, name, err
 }
 
+func (p Passkeys) SetPasswordWithKeep(ctx context.Context, user domain.UserID, keep, hash string) error {
+	return p.ChangeCredentials(ctx, user, keep,
+		func(c *domain.Credentials) error {
+			c.SetPassword()
+			return nil
+		},
+		func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, user, hash)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return pgx.ErrNoRows
+			}
+			return nil
+		},
+	)
+}
+
 func (p Passkeys) SetPassword(ctx context.Context, user domain.UserID, hash string) error {
-	tag, err := p.Pool.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, user, hash)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return pgx.ErrNoRows
-	}
-	return nil
+	return p.SetPasswordWithKeep(ctx, user, "", hash)
+}
+
+func (p Passkeys) RemovePassword(ctx context.Context, user domain.UserID, keep string) error {
+	return p.ChangeCredentials(ctx, user, keep,
+		func(c *domain.Credentials) error {
+			return c.RemovePassword()
+		},
+		func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx, `UPDATE identity.users SET password_hash = NULL WHERE id = $1 AND password_hash IS NOT NULL`, user)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return pgx.ErrNoRows
+			}
+			return nil
+		},
+	)
 }
 
 func (p Passkeys) ClearPassword(ctx context.Context, user domain.UserID) error {
-	tx, err := p.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT id FROM identity.users WHERE id = $1 FOR NO KEY UPDATE`, user); err != nil {
-		return err
-	}
-	var count int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM identity.passkeys WHERE user_id = $1`, user).Scan(&count); err != nil {
-		return err
-	}
-	if count == 0 {
-		return app.ErrLastPasskey
-	}
-	tag, err := tx.Exec(ctx, `UPDATE identity.users SET password_hash = NULL WHERE id = $1 AND password_hash IS NOT NULL`, user)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return pgx.ErrNoRows
-	}
-	return tx.Commit(ctx)
+	return p.RemovePassword(ctx, user, "")
 }
 
 func (p Passkeys) HasPassword(ctx context.Context, user domain.UserID) (bool, error) {

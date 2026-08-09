@@ -82,3 +82,38 @@ func TestCrossOriginDeleteIsRejected(t *testing.T) {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 }
+
+func TestWriteJSONAndNoContentAndFail(t *testing.T) {
+	t.Run("writeJSON", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		WriteJSON(rec, http.StatusOK, map[string]string{"status": "ok"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if rec.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+		}
+		if rec.Body.String() != `{"status":"ok"}`+"\n" {
+			t.Fatalf("body = %s", rec.Body.String())
+		}
+	})
+
+	t.Run("noContent", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		NoContent(rec)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", rec.Code)
+		}
+	})
+
+	t.Run("fail", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		Fail(rec, nil, "bad request", http.StatusBadRequest)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+		if rec.Body.String() != "bad request\n" {
+			t.Fatalf("body = %q", rec.Body.String())
+		}
+	})
+}

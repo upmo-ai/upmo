@@ -94,6 +94,11 @@ func (p Passwords) Set(ctx context.Context, user domain.UserID, keep, email, nam
 	if err != nil {
 		return err
 	}
+	if s, ok := p.Store.(interface {
+		SetPasswordWithKeep(ctx context.Context, user domain.UserID, keep, hash string) error
+	}); ok {
+		return s.SetPasswordWithKeep(ctx, user, keep, hash)
+	}
 	if err := p.Store.SetPassword(ctx, user, hash); err != nil {
 		return err
 	}
@@ -102,6 +107,11 @@ func (p Passwords) Set(ctx context.Context, user domain.UserID, keep, email, nam
 
 // Clear removes the password when a passkey remains, and ends the other sessions.
 func (p Passwords) Clear(ctx context.Context, user domain.UserID, keep string) error {
+	if r, ok := p.Store.(interface {
+		RemovePassword(ctx context.Context, user domain.UserID, keep string) error
+	}); ok {
+		return r.RemovePassword(ctx, user, keep)
+	}
 	if err := p.Store.ClearPassword(ctx, user); err != nil {
 		return err
 	}

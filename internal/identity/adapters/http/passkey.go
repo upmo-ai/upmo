@@ -44,8 +44,7 @@ func (h Passkeys) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/passkeys/finish", h.addFinish)
 	mux.HandleFunc("PATCH /api/passkeys/{id}", h.rename)
 	mux.HandleFunc("DELETE /api/passkeys/{id}", h.remove)
-	mux.HandleFunc("GET /api/sessions", h.devices)
-	mux.HandleFunc("DELETE /api/sessions/{id}", h.endDevice)
+	(Devices{Sessions: h.Pass.Sessions}).Mount(mux)
 	mux.HandleFunc("POST /api/sign-in/password", h.limited(h.passwordSignIn))
 	mux.HandleFunc("PUT /api/password", h.passwordSet)
 	mux.HandleFunc("DELETE /api/password", h.passwordClear)
@@ -256,7 +255,7 @@ func (h Passkeys) remove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	credentialID, err := h.Pass.Store.DeletePasskey(r.Context(), session.UserID, r.PathValue("id"))
+	credentialID, err := h.Pass.RemovePasskey(r.Context(), session.UserID, session.ID, r.PathValue("id"))
 	if errors.Is(err, app.ErrLastPasskey) {
 		writeRaw(w, http.StatusConflict, lastPasskey)
 		return
@@ -265,68 +264,9 @@ func (h Passkeys) remove(w http.ResponseWriter, r *http.Request) {
 		writeRaw(w, http.StatusNotFound, unauthorised)
 		return
 	}
-	if err := h.Pass.Sessions.EndOthers(r.Context(), session.UserID, session.ID); err != nil {
-		http.Error(w, "sessions", http.StatusInternalServerError)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"credential_id": base64.RawURLEncoding.EncodeToString(credentialID),
 	})
-}
-
-func (h Passkeys) devices(w http.ResponseWriter, r *http.Request) {
-	session, ok := h.session(w, r)
-	if !ok {
-		return
-	}
-	rows, err := h.Pass.Sessions.Devices(r.Context(), session.UserID)
-	if err != nil {
-		http.Error(w, "sessions", http.StatusInternalServerError)
-		return
-	}
-	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, map[string]any{
-			"id":             row.ID,
-			"sign_in_method": row.Method,
-			"signed_in_at":   row.SignedIn,
-			"last_seen":      row.LastSeen,
-			"user_agent":     row.Agent,
-			"current":        row.ID == session.ID,
-		})
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (h Passkeys) endDevice(w http.ResponseWriter, r *http.Request) {
-	session, ok := h.session(w, r)
-	if !ok {
-		return
-	}
-	id := r.PathValue("id")
-	rows, err := h.Pass.Sessions.Devices(r.Context(), session.UserID)
-	if err != nil {
-		http.Error(w, "sessions", http.StatusInternalServerError)
-		return
-	}
-	owned := false
-	for _, row := range rows {
-		if row.ID == id {
-			owned = true
-		}
-	}
-	if !owned {
-		writeRaw(w, http.StatusNotFound, unauthorised)
-		return
-	}
-	if err := h.Pass.Sessions.End(r.Context(), id); err != nil {
-		http.Error(w, "sessions", http.StatusInternalServerError)
-		return
-	}
-	if id == session.ID {
-		ClearCookie(w)
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h Passkeys) session(w http.ResponseWriter, r *http.Request) (app.Session, bool) {

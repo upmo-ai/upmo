@@ -3,13 +3,13 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 )
 
 // CookieName is the session cookie. The __Host- prefix requires Secure,
@@ -64,7 +64,7 @@ func (h Handler) signOut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ClearCookie(w)
-	w.WriteHeader(http.StatusNoContent)
+	noContent(w)
 }
 
 func (h Handler) signOutEverywhere(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +77,7 @@ func (h Handler) signOutEverywhere(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ClearCookie(w)
-	w.WriteHeader(http.StatusNoContent)
+	noContent(w)
 }
 
 func (h Handler) authenticate(w http.ResponseWriter, r *http.Request) (app.Session, bool) {
@@ -118,9 +118,11 @@ func refuse(w http.ResponseWriter, status int) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	httpserver.WriteJSON(w, status, body)
+}
+
+func noContent(w http.ResponseWriter) {
+	httpserver.NoContent(w)
 }
 
 // SetCookie writes the session cookie with the attributes the __Host- prefix requires.

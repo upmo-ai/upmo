@@ -155,16 +155,7 @@ func (p Passkeys) credentials(ctx context.Context, user domain.UserID) ([]domain
 }
 
 func (p Passkeys) InsertPasskey(ctx context.Context, user domain.UserID, item domain.Credential, name string, now time.Time) (string, error) {
-	var id string
-	err := p.Pool.QueryRow(ctx, `
-		INSERT INTO identity.passkeys (
-		  user_id, credential_id, public_key, sign_count, aaguid, transports,
-		  backup_eligible, backup_state, attestation, name, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING id::text`,
-		user, item.ID, item.PublicKey, item.SignCount, item.AAGUID, item.Transports,
-		item.BackupEligible, item.BackupState, item.Attestation, name, now).Scan(&id)
-	return id, err
+	return p.AddPasskey(ctx, user, "", item, name, now)
 }
 
 func (p Passkeys) TouchPasskey(ctx context.Context, credentialID []byte, count uint32, now time.Time) error {
@@ -204,32 +195,7 @@ func (p Passkeys) RenamePasskey(ctx context.Context, user domain.UserID, id, nam
 }
 
 func (p Passkeys) DeletePasskey(ctx context.Context, user domain.UserID, id string) ([]byte, error) {
-	tx, err := p.Pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT id FROM identity.users WHERE id = $1 FOR NO KEY UPDATE`, user); err != nil {
-		return nil, err
-	}
-	var count int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM identity.passkeys WHERE user_id = $1`, user).Scan(&count); err != nil {
-		return nil, err
-	}
-	var hasPassword bool
-	if err := tx.QueryRow(ctx, `SELECT password_hash IS NOT NULL FROM identity.users WHERE id = $1`, user).Scan(&hasPassword); err != nil {
-		return nil, err
-	}
-	if count < 2 && !hasPassword {
-		return nil, app.ErrLastPasskey
-	}
-	var credentialID []byte
-	err = tx.QueryRow(ctx, `
-		DELETE FROM identity.passkeys WHERE id = $1 AND user_id = $2 RETURNING credential_id`, id, user).Scan(&credentialID)
-	if err != nil {
-		return nil, err
-	}
-	return credentialID, tx.Commit(ctx)
+	return p.RemovePasskey(ctx, user, "", id)
 }
 
 func (p Passkeys) Join(ctx context.Context, user domain.UserID, now time.Time) error {

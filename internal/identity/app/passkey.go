@@ -16,7 +16,7 @@ var (
 	// ErrStale is a passkey change without a fresh sign-in.
 	ErrStale = errors.New("identity: sign in again")
 	// ErrLastPasskey refuses removal of the only way to sign in.
-	ErrLastPasskey = errors.New("identity: the last way to sign in cannot be removed")
+	ErrLastPasskey = domain.ErrLastPasskey
 	// ErrChallenge is a missing, used or expired challenge.
 	ErrChallenge = errors.New("identity: challenge")
 	// ErrExists refuses a second bootstrap.
@@ -153,17 +153,25 @@ func (p Passkeys) FinishLink(ctx context.Context, cookie, token string, body []b
 	if err != nil {
 		return "", err
 	}
-	if err := p.Store.SpendLink(ctx, domain.Hash(raw), now); err != nil {
-		return "", ErrInvalidLink
-	}
-	if _, err := p.Store.InsertPasskey(ctx, user, credential, domain.PasskeyName(credential.AAGUID), now); err != nil {
-		return "", err
-	}
-	if err := p.Store.Join(ctx, user, now); err != nil {
-		return "", err
-	}
-	if err := p.Sessions.EndSessions(ctx, user); err != nil {
-		return "", err
+	if r, ok := p.Store.(interface {
+		RedeemLink(ctx context.Context, user domain.UserID, linkHash []byte, credential domain.Credential, name string, now time.Time) error
+	}); ok {
+		if err := r.RedeemLink(ctx, user, domain.Hash(raw), credential, domain.PasskeyName(credential.AAGUID), now); err != nil {
+			return "", err
+		}
+	} else {
+		if err := p.Store.SpendLink(ctx, domain.Hash(raw), now); err != nil {
+			return "", ErrInvalidLink
+		}
+		if _, err := p.Store.InsertPasskey(ctx, user, credential, domain.PasskeyName(credential.AAGUID), now); err != nil {
+			return "", err
+		}
+		if err := p.Store.Join(ctx, user, now); err != nil {
+			return "", err
+		}
+		if err := p.Sessions.EndSessions(ctx, user); err != nil {
+			return "", err
+		}
 	}
 	method := "link"
 	if purpose == "invite" {
@@ -204,10 +212,32 @@ func (p Passkeys) FinishAdd(ctx context.Context, user domain.UserID, keep, cooki
 	if err != nil {
 		return err
 	}
+	if a, ok := p.Store.(interface {
+		AddPasskey(ctx context.Context, user domain.UserID, keep string, item domain.Credential, name string, now time.Time) (string, error)
+	}); ok {
+		if _, err := a.AddPasskey(ctx, user, keep, credential, domain.PasskeyName(credential.AAGUID), p.now()); err != nil {
+			return err
+		}
+		return nil
+	}
 	if _, err := p.Store.InsertPasskey(ctx, user, credential, domain.PasskeyName(credential.AAGUID), p.now()); err != nil {
 		return err
 	}
 	return p.Sessions.EndOthers(ctx, user, keep)
+}
+
+// RemovePasskey removes one passkey and ends other sessions.
+func (p Passkeys) RemovePasskey(ctx context.Context, user domain.UserID, keep, id string) ([]byte, error) {
+	if r, ok := p.Store.(interface {
+		RemovePasskey(ctx context.Context, user domain.UserID, keep, id string) ([]byte, error)
+	}); ok {
+		return r.RemovePasskey(ctx, user, keep, id)
+	}
+	credID, err := p.Store.DeletePasskey(ctx, user, id)
+	if err != nil {
+		return nil, err
+	}
+	return credID, p.Sessions.EndOthers(ctx, user, keep)
 }
 
 // BeginStepUp asks for the passkey again.
