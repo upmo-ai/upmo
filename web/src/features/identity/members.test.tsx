@@ -121,3 +121,88 @@ describe("members", () => {
     });
   });
 });
+
+describe("live members", () => {
+  const original = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = original;
+    cleanup();
+  });
+
+  it("invites with a copy link and does not offer a role change", async () => {
+    let copied = "";
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: async (value: string) => {
+          copied = value;
+        },
+      },
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/roles")) {
+        return Response.json([
+          { id: "role-owner", name: "Owner", system: "owner" },
+          { id: "role-member", name: "Member", system: "member" },
+        ]);
+      }
+      if (url.endsWith("/api/session")) {
+        return Response.json({ user_id: "ada", has_password: true, sign_in_method: "passkey" });
+      }
+      if (url.endsWith("/api/passkeys")) return Response.json([{ id: "passkey" }]);
+      if (url.endsWith("/api/members") && method === "POST") {
+        return Response.json({
+          id: "new",
+          name: "Ned",
+          email: "ned@example.com",
+          invited: true,
+          teams: [],
+          role: { id: "role-member", name: "Member", system: "member" },
+          token: "invite-token",
+        });
+      }
+      if (url.endsWith("/api/members")) {
+        return Response.json([
+          {
+            id: "ada",
+            name: "Ada",
+            email: "ada@example.com",
+            invited: false,
+            teams: [],
+            role: { id: "role-owner", name: "Owner", system: "owner" },
+          },
+          {
+            id: "bob",
+            name: "Bob",
+            email: "bob@example.com",
+            invited: true,
+            teams: [],
+            role: { id: "role-member", name: "Member", system: "member" },
+          },
+        ]);
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    renderAt("/settings/members");
+    expect(await screen.findByLabelText("Name")).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "View as" })).toBeNull();
+    expect(screen.queryByLabelText("Role for Ada")).toBeNull();
+    expect(screen.getByRole("button", { name: "New invite link" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove Ada" })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ned@example.com" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ned" } });
+    fireEvent.change(screen.getByLabelText("Invite role"), { target: { value: "role-member" } });
+    fireEvent.click(screen.getByRole("button", { name: "Invite" }));
+
+    const link = await screen.findByLabelText("Invite link");
+    expect((link as HTMLInputElement).value).toBe(`${window.location.origin}/login/link#invite-token`);
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => {
+      expect(copied).toBe(`${window.location.origin}/login/link#invite-token`);
+    });
+  });
+});

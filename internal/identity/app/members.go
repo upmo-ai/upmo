@@ -1,0 +1,217 @@
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"strings"
+	"time"
+
+	"github.com/upmo-ai/upmo/internal/identity/domain"
+)
+
+// MemberStore is the members tables.
+type MemberStore interface {
+	ListRoles(ctx context.Context) ([]domain.MemberRole, error)
+	ListMembers(ctx context.Context) ([]domain.Member, error)
+	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, error)
+	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
+	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
+	InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
+	RemoveMember(ctx context.Context, id domain.UserID, now time.Time, rule func(system string) error) error
+	ReplaceMemberLink(ctx context.Context, id domain.UserID, purpose string, hash []byte, expires time.Time, rule func(system string, invited bool) error) error
+}
+
+// Members is who may manage the people in an install.
+type Members struct {
+	Store MemberStore
+	Now   func() time.Time
+}
+
+func (m Members) now() time.Time {
+	if m.Now != nil {
+		return m.Now()
+	}
+	return time.Now()
+}
+
+// Roles lists the roles an invite may name.
+func (m Members) Roles(ctx context.Context, session Session) ([]domain.MemberRole, error) {
+	if _, err := m.actor(ctx, session.UserID); err != nil {
+		return nil, err
+	}
+	return m.Store.ListRoles(ctx)
+}
+
+// List returns the enabled people.
+func (m Members) List(ctx context.Context, session Session) ([]domain.Member, error) {
+	if _, err := m.actor(ctx, session.UserID); err != nil {
+		return nil, err
+	}
+	return m.Store.ListMembers(ctx)
+}
+
+// Invite creates or restores a person and returns the invite token text.
+func (m Members) Invite(ctx context.Context, session Session, email, name string, role domain.RoleID) (domain.Member, string, error) {
+	if err := m.fresh(session); err != nil {
+		return domain.Member{}, "", err
+	}
+	email = strings.TrimSpace(email)
+	name = strings.TrimSpace(name)
+	if email == "" || !strings.Contains(email, "@") || name == "" || role == (domain.RoleID{}) {
+		return domain.Member{}, "", domain.ErrMemberInput
+	}
+	actor, err := m.actor(ctx, session.UserID)
+	if err != nil {
+		return domain.Member{}, "", err
+	}
+	system, err := m.Store.RoleSystem(ctx, role)
+	if err != nil {
+		return domain.Member{}, "", err
+	}
+	if err := domain.MayManage(actor, system); err != nil {
+		return domain.Member{}, "", err
+	}
+	text, hash, handle, err := newLink()
+	if err != nil {
+		return domain.Member{}, "", err
+	}
+	now := m.now()
+	member, err := m.Store.InviteMember(ctx, email, name, role, handle, hash, now, now.Add(domain.InviteLifetime))
+	if err != nil {
+		return domain.Member{}, "", err
+	}
+	return member, text, nil
+}
+
+// InviteLink replaces the invite link for someone who has not joined.
+func (m Members) InviteLink(ctx context.Context, session Session, target domain.UserID) (string, error) {
+	return m.replace(ctx, session, target, "invite")
+}
+
+// ResetLink replaces the recover link for someone who has joined.
+func (m Members) ResetLink(ctx context.Context, session Session, target domain.UserID) (string, error) {
+	return m.replace(ctx, session, target, "recover")
+}
+
+// Remove disables a person other than the actor.
+func (m Members) Remove(ctx context.Context, session Session, target domain.UserID) error {
+	if err := m.fresh(session); err != nil {
+		return err
+	}
+	if session.UserID == target {
+		return domain.ErrSelf
+	}
+	actor, err := m.actor(ctx, session.UserID)
+	if err != nil {
+		return err
+	}
+	return m.Store.RemoveMember(ctx, target, m.now(), func(system string) error {
+		return domain.MayManage(actor, system)
+	})
+}
+
+// Recover issues a recover link for an enabled person. An unknown email and a
+// disabled person are the same answer.
+func (m Members) Recover(ctx context.Context, email string) (string, error) {
+	id, ok, err := m.Store.UserByEmail(ctx, strings.TrimSpace(email))
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", domain.ErrNoSuchMember
+	}
+	text, hash, _, err := newLink()
+	if err != nil {
+		return "", err
+	}
+	now := m.now()
+	err = m.Store.ReplaceMemberLink(ctx, id, "recover", hash, now.Add(domain.RecoverLifetime), nil)
+	if err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func (m Members) replace(ctx context.Context, session Session, target domain.UserID, purpose string) (string, error) {
+	if err := m.fresh(session); err != nil {
+		return "", err
+	}
+	if session.UserID == target {
+		return "", domain.ErrSelf
+	}
+	actor, err := m.actor(ctx, session.UserID)
+	if err != nil {
+		return "", err
+	}
+	text, hash, _, err := newLink()
+	if err != nil {
+		return "", err
+	}
+	life, ok := domain.LinkLifetime(purpose)
+	if !ok {
+		return "", domain.ErrMemberInput
+	}
+	err = m.Store.ReplaceMemberLink(ctx, target, purpose, hash, m.now().Add(life), func(system string, invited bool) error {
+		if err := domain.MayManage(actor, system); err != nil {
+			return err
+		}
+		if purpose == "invite" && !invited {
+			return domain.ErrAlreadyJoined
+		}
+		if purpose == "recover" && invited {
+			return domain.ErrNotJoined
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func (m Members) actor(ctx context.Context, id domain.UserID) (domain.Subject, error) {
+	roleID, system, joined, err := m.Store.MemberActor(ctx, id)
+	if err != nil {
+		return domain.Subject{}, err
+	}
+	if !joined {
+		return domain.Subject{}, domain.ErrNoSuchMember
+	}
+	permissions, err := permissionsFor(system)
+	if err != nil {
+		return domain.Subject{}, err
+	}
+	return domain.Subject{
+		Kind:        domain.KindUser,
+		UserID:      id,
+		RoleID:      roleID,
+		Joined:      true,
+		Permissions: permissions,
+	}, nil
+}
+
+func (m Members) fresh(session Session) error {
+	if !domain.Fresh(session.SignedIn, m.now()) {
+		return ErrStale
+	}
+	return nil
+}
+
+func permissionsFor(system string) ([]domain.Permission, error) {
+	if system == "" {
+		return nil, nil
+	}
+	return domain.SystemPermissions(domain.Role(system))
+}
+
+func newLink() (string, []byte, []byte, error) {
+	token, text, err := domain.NewToken()
+	if err != nil {
+		return "", nil, nil, err
+	}
+	handle := make([]byte, 32)
+	if _, err := rand.Read(handle); err != nil {
+		return "", nil, nil, err
+	}
+	return text, domain.Hash(token), handle, nil
+}
