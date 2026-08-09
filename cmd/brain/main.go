@@ -70,5 +70,6 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 		return nil, err
 	}
 	identity.MountPasskeys(mux, passkeys, passwords, cfg.TrustedProxies)
+	identity.MountMembers(mux, identity.Members(pool), sessions)
 	return mux, nil
 }

@@ -14,6 +14,7 @@ import {
   type ViewRole,
   type WorkspaceRole,
 } from "../../app/api";
+import { fresh } from "../../app/passkeys";
 import { ConfirmDialog } from "./confirm";
 import {
   canManageMembers,
@@ -38,6 +39,32 @@ const viewChoices: { role: ViewRole; label: string }[] = [
 ];
 
 export function MembersPage() {
+  const probe = useQuery({
+    queryKey: ["members-live"],
+    retry: false,
+    queryFn: async () => {
+      try {
+        const response = await fetch("/api/members", { credentials: "include" });
+        if (!response.ok) return null;
+        const body: unknown = await response.json();
+        return Array.isArray(body) ? (body as LiveMember[]) : null;
+      } catch {
+        return null;
+      }
+    },
+  });
+  if (probe.isPending) {
+    return (
+      <Stack gap="lg" className="settings-page">
+        <Title order={1}>Members</Title>
+      </Stack>
+    );
+  }
+  if (Array.isArray(probe.data)) return <LiveMembers />;
+  return <StubMembers />;
+}
+
+function StubMembers() {
   const api = useApi();
   const me = useQuery({ queryKey: meQueryKey(), queryFn: () => api.me.current() });
   const members = useQuery({
@@ -253,4 +280,272 @@ function MemberRow({
       ) : null}
     </Table.Tr>
   );
+}
+
+type LiveRole = { id: string; name: string; system: string };
+type LiveMember = {
+  id: string;
+  name: string;
+  email: string;
+  invited: boolean;
+  teams: string[];
+  role: LiveRole;
+};
+
+class ConfirmPassword extends Error {
+  constructor() {
+    super("Confirm your password to continue.");
+    this.name = "ConfirmPassword";
+  }
+}
+
+function LiveMembers() {
+  const members = useQuery({
+    queryKey: ["live-members"],
+    queryFn: () => liveJSON<LiveMember[]>("/api/members"),
+  });
+  const roles = useQuery({
+    queryKey: ["live-roles"],
+    queryFn: () => liveJSON<LiveRole[]>("/api/roles"),
+  });
+  const session = useQuery({
+    queryKey: ["live-member-session"],
+    queryFn: () => liveObject<{ user_id: string; has_password: boolean }>("/api/session"),
+  });
+  const passkeys = useQuery({
+    queryKey: ["live-member-passkeys"],
+    queryFn: () => liveJSON<{ id: string }[]>("/api/passkeys"),
+  });
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [roleId, setRoleId] = useState("");
+  const [link, setLink] = useState("");
+  const [error, setError] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState<null | (() => Promise<void>)>(null);
+  const [removeId, setRemoveId] = useState<string | null>(null);
+
+  const list = members.data ?? [];
+  const actor = list.find((member) => member.id === session.data?.user_id);
+  const manage = actor?.role.system === "owner" || actor?.role.system === "admin";
+  const choices = (roles.data ?? []).filter((role) => role.system !== "owner" || actor?.role.system === "owner");
+  const passkeyCount = passkeys.data?.length ?? 0;
+  const removing = list.find((member) => member.id === removeId) ?? null;
+
+  async function run(action: () => Promise<void>) {
+    try {
+      await action();
+      setError("");
+    } catch (cause) {
+      if (cause instanceof ConfirmPassword) {
+        setConfirm(() => action);
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : "Try again.");
+    }
+  }
+
+  async function confirmPassword() {
+    const response = await fetch("/api/session/verify/password", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!response.ok) {
+      setError("Email or password is wrong.");
+      return;
+    }
+    const action = confirm;
+    setConfirm(null);
+    setPassword("");
+    if (action) await run(action);
+  }
+
+  return (
+    <Stack gap="lg" className="settings-page">
+      <Title order={1}>Members</Title>
+      {error ? (
+        <Text role="alert" c="red">
+          {error}
+        </Text>
+      ) : null}
+      {link ? (
+        <Stack gap="xs">
+          <TextInput label="Invite link" readOnly value={link} />
+          <Button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(link);
+            }}
+          >
+            Copy
+          </Button>
+        </Stack>
+      ) : null}
+      {manage ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(async () => {
+              const body = await memberWrite(
+                "/api/members",
+                "POST",
+                { email, name, role_id: roleId },
+                passkeyCount,
+              );
+              const token = typeof body === "object" && body && "token" in body ? String(body.token) : "";
+              setLink(`${window.location.origin}/login/link#${token}`);
+              setEmail("");
+              setName("");
+              await members.refetch();
+            });
+          }}
+        >
+          <Stack gap="sm">
+            <TextInput label="Email" type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} />
+            <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+            <NativeSelect
+              label="Invite role"
+              value={roleId}
+              data={[{ value: "", label: "Choose a role" }, ...choices.map((role) => ({ value: role.id, label: role.name }))]}
+              onChange={(event) => setRoleId(event.currentTarget.value)}
+            />
+            <div>
+              <Button type="submit" disabled={!email.trim().includes("@") || !name.trim() || !roleId}>
+                Invite
+              </Button>
+            </div>
+          </Stack>
+        </form>
+      ) : null}
+      <Table className="members-table" aria-label="Members">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Name</Table.Th>
+            <Table.Th>Email</Table.Th>
+            <Table.Th>Role</Table.Th>
+            <Table.Th>Teams</Table.Th>
+            {manage ? <Table.Th aria-label="Actions">Actions</Table.Th> : null}
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {list.map((member) => (
+            <Table.Tr key={member.id}>
+              <Table.Td>{member.name}</Table.Td>
+              <Table.Td>{member.email}</Table.Td>
+              <Table.Td>{member.role.name}</Table.Td>
+              <Table.Td>{member.teams.length > 0 ? member.teams.join(", ") : "No team"}</Table.Td>
+              {manage ? (
+                <Table.Td aria-label="Actions">
+                  {member.id === actor?.id ? null : (
+                    <Button
+                      type="button"
+                      variant="default"
+                      onClick={() => {
+                        const path = member.invited
+                          ? `/api/members/${member.id}/invite-link`
+                          : `/api/members/${member.id}/reset-link`;
+                        void run(async () => {
+                          const body = await memberWrite(path, "POST", null, passkeyCount);
+                          const token = typeof body === "object" && body && "token" in body ? String(body.token) : "";
+                          setLink(`${window.location.origin}/login/link#${token}`);
+                        });
+                      }}
+                    >
+                      {member.invited ? "New invite link" : "Reset link"}
+                    </Button>
+                  )}
+                  {!member.invited && member.id !== actor?.id ? (
+                    <Text size="sm">This signs them in and logs out their other browsers.</Text>
+                  ) : null}
+                  {member.id === actor?.id ? null : (
+                    <Button type="button" variant="default" onClick={() => setRemoveId(member.id)}>
+                      Remove {member.name}
+                    </Button>
+                  )}
+                </Table.Td>
+              ) : null}
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+      <ConfirmDialog
+        opened={removing !== null}
+        title={removing ? `Remove ${removing.name}?` : "Remove this member?"}
+        body={removing ? `${removing.name} will lose access to this workspace.` : ""}
+        action="Remove member"
+        onClose={() => setRemoveId(null)}
+        onConfirm={() => {
+          const id = removeId;
+          setRemoveId(null);
+          if (!id) return;
+          void run(async () => {
+            await memberWrite(`/api/members/${id}`, "DELETE", null, passkeyCount);
+            await members.refetch();
+          });
+        }}
+      />
+      <ConfirmDialog
+        opened={confirm !== null}
+        title="Confirm your password"
+        body="Enter your password to continue."
+        action="Confirm"
+        confirmDisabled={!password}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          void confirmPassword();
+        }}
+      >
+        <TextInput
+          label="Password"
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.currentTarget.value)}
+        />
+      </ConfirmDialog>
+    </Stack>
+  );
+}
+
+async function liveJSON<T>(path: string): Promise<T> {
+  const response = await fetch(path, { credentials: "include" });
+  if (!response.ok) throw new Error("Failed to load members.");
+  return (await response.json()) as T;
+}
+
+async function liveObject<T extends object>(path: string): Promise<T> {
+  const response = await fetch(path, { credentials: "include" });
+  if (!response.ok) throw new Error("Failed to load members.");
+  return (await response.json()) as T;
+}
+
+async function memberWrite(path: string, method: string, body: unknown, passkeys: number): Promise<unknown> {
+  const send = async () => {
+    const response = await fetch(path, {
+      method,
+      credentials: "include",
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const payload = await readPayload(response);
+    if (response.status === 403 && payload.error === "sign in again") {
+      if (passkeys === 0) throw new ConfirmPassword();
+      throw { status: 403, error: "sign in again" };
+    }
+    if (!response.ok) throw new Error(payload.error || "Try again.");
+    return payload.value;
+  };
+  if (passkeys === 0) return send();
+  return fresh(send);
+}
+
+async function readPayload(response: Response): Promise<{ error: string; value: unknown }> {
+  if (response.status === 204) return { error: "", value: null };
+  try {
+    const value = (await response.json()) as { error?: string };
+    return { error: value.error ?? "", value };
+  } catch {
+    return { error: "", value: null };
+  }
 }

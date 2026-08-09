@@ -38,7 +38,7 @@ func command(name string, args []string) error {
 	case "bootstrap":
 		return bootstrap(ctx, passkeys, args)
 	case "recover":
-		return recover(ctx, passkeys, args)
+		return recover(ctx, passkeys, identity.Members(pool), args)
 	default:
 		return fmt.Errorf("brain: unknown command %q", name)
 	}
@@ -66,7 +66,7 @@ func bootstrap(ctx context.Context, passkeys identity.PasskeyService, args []str
 	return nil
 }
 
-func recover(ctx context.Context, passkeys identity.PasskeyService, args []string) error {
+func recover(ctx context.Context, passkeys identity.PasskeyService, members identity.MemberService, args []string) error {
 	fs := flag.NewFlagSet("recover", flag.ContinueOnError)
 	email := fs.String("email", "", "email of the person")
 	fs.SetOutput(os.Stderr)
@@ -76,14 +76,10 @@ func recover(ctx context.Context, passkeys identity.PasskeyService, args []strin
 	if *email == "" {
 		return errors.New("brain: recover requires --email")
 	}
-	user, ok, err := passkeys.Store.UserByEmail(ctx, *email)
-	if err != nil {
-		return err
-	}
-	if !ok {
+	token, err := members.Recover(ctx, *email)
+	if errors.Is(err, identity.ErrNoSuchMember) {
 		return errors.New("brain: no enabled person with that email")
 	}
-	token, err := passkeys.IssueLink(ctx, user, "recover")
 	if err != nil {
 		return err
 	}
