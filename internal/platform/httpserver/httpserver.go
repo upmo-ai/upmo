@@ -4,6 +4,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -52,6 +53,26 @@ func writeOK(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// WriteJSON writes body encoded as JSON with the given status code.
+func WriteJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// NoContent writes status 204 No Content.
+func NoContent(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Fail writes a plain text error and logs err when log is non-nil.
+func Fail(w http.ResponseWriter, log *slog.Logger, msg string, status int, err ...error) {
+	if log != nil && len(err) > 0 && err[0] != nil {
+		log.Error(msg, "err", err[0])
+	}
+	http.Error(w, msg, status)
 }
 
 // Run serves srv until ctx is cancelled, then shuts down within timeout.

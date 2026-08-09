@@ -15,6 +15,21 @@ type (
 	Grant      = domain.Grant
 	Decision   = domain.Decision
 	Reason     = domain.Reason
+	User       = domain.User
+)
+
+const (
+	IdleTimeout = domain.IdleTimeout
+	MaxAge      = domain.MaxAge
+)
+
+var (
+	ParseUserID     = domain.ParseUserID
+	ParseTeamID     = domain.ParseTeamID
+	ParseRoleID     = domain.ParseRoleID
+	ErrNoSuchPerson = domain.ErrNoSuchPerson
+	ErrLastPasskey  = domain.ErrLastPasskey
+	NewUser         = domain.NewUser
 )
 
 // Can decides an action on one work object.
