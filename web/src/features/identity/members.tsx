@@ -283,6 +283,7 @@ function MemberRow({
 }
 
 type LiveRole = { id: string; name: string; system: string; permissions?: string[]; members?: number };
+type LiveTeam = { id: string; name: string };
 type LiveMember = {
   id: string;
   name: string;
@@ -308,6 +309,10 @@ function LiveMembers() {
     queryKey: ["live-roles"],
     queryFn: () => liveJSON<LiveRole[]>("/api/roles"),
   });
+  const teams = useQuery({
+    queryKey: ["live-teams"],
+    queryFn: () => liveJSON<LiveTeam[]>("/api/teams"),
+  });
   const session = useQuery({
     queryKey: ["live-member-session"],
     queryFn: () => liveObject<{ user_id: string; has_password: boolean }>("/api/session"),
@@ -319,6 +324,7 @@ function LiveMembers() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [roleId, setRoleId] = useState("");
+  const [teamName, setTeamName] = useState("");
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
   const [password, setPassword] = useState("");
@@ -328,6 +334,8 @@ function LiveMembers() {
   const list = members.data ?? [];
   const actor = list.find((member) => member.id === session.data?.user_id);
   const manage = actor?.role.system === "owner" || actor?.role.system === "admin";
+  const canTeams = choicesFor(actor?.role.id, roles.data ?? []).includes("teams:manage");
+  const teamChoices = teams.data ?? [];
   const choices = (roles.data ?? []).filter((role) => role.system !== "owner" || actor?.role.system === "owner");
   const passkeyCount = passkeys.data?.length ?? 0;
   const removing = list.find((member) => member.id === removeId) ?? null;
@@ -419,6 +427,27 @@ function LiveMembers() {
           </Stack>
         </form>
       ) : null}
+      {canTeams ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(async () => {
+              await memberWrite("/api/teams", "POST", { name: teamName }, passkeyCount);
+              setTeamName("");
+              await teams.refetch();
+            });
+          }}
+        >
+          <Stack gap="sm">
+            <TextInput label="Team name" value={teamName} onChange={(event) => setTeamName(event.currentTarget.value)} />
+            <div>
+              <Button type="submit" disabled={!teamName.trim()}>
+                New team
+              </Button>
+            </div>
+          </Stack>
+        </form>
+      ) : null}
       <Table className="members-table" aria-label="Members">
         <Table.Thead>
           <Table.Tr>
@@ -452,7 +481,35 @@ function LiveMembers() {
                   member.role.name
                 )}
               </Table.Td>
-              <Table.Td>{member.teams.length > 0 ? member.teams.join(", ") : "No team"}</Table.Td>
+              <Table.Td>
+                {canTeams && !member.invited && teamChoices.length > 0 ? (
+                  <Stack gap={4}>
+                    {teamChoices.map((team) => (
+                      <Checkbox
+                        key={team.id}
+                        label={team.name}
+                        aria-label={`${team.name} for ${member.name}`}
+                        checked={member.teams.includes(team.name)}
+                        onChange={(event) => {
+                          const on = event.currentTarget.checked;
+                          void run(async () => {
+                            if (on) {
+                              await memberWrite(`/api/teams/${team.id}/members`, "POST", { user_id: member.id }, passkeyCount);
+                            } else {
+                              await memberWrite(`/api/teams/${team.id}/members/${member.id}`, "DELETE", null, passkeyCount);
+                            }
+                            await members.refetch();
+                          });
+                        }}
+                      />
+                    ))}
+                  </Stack>
+                ) : member.teams.length > 0 ? (
+                  member.teams.join(", ")
+                ) : (
+                  "No team"
+                )}
+              </Table.Td>
               {manage ? (
                 <Table.Td aria-label="Actions">
                   {member.id === actor?.id ? null : (

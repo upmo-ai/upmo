@@ -142,6 +142,7 @@ describe("live members", () => {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
+      if (url.endsWith("/api/teams")) return Response.json([{ id: "team-finance", name: "Finance" }]);
       if (url.endsWith("/api/roles")) {
         return Response.json([
           {
@@ -199,6 +200,9 @@ describe("live members", () => {
     expect(screen.getByLabelText("Role for Bob")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Roles" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New role" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New team" })).toBeTruthy();
+    expect(screen.getByLabelText("Finance for Ada")).toBeTruthy();
+    expect(screen.queryByLabelText("Finance for Bob")).toBeNull();
     expect(screen.getByRole("button", { name: "Duplicate Owner" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Delete Owner" })).toBeNull();
     expect(screen.getByRole("button", { name: "New invite link" })).toBeTruthy();
