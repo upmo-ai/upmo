@@ -13,7 +13,7 @@ import (
 type MemberStore interface {
 	ListRoles(ctx context.Context) ([]domain.MemberRole, error)
 	ListMembers(ctx context.Context) ([]domain.Member, error)
-	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, error)
+	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
 	InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
@@ -170,14 +170,14 @@ func (m Members) replace(ctx context.Context, session Session, target domain.Use
 }
 
 func (m Members) actor(ctx context.Context, id domain.UserID) (domain.Subject, error) {
-	roleID, system, joined, err := m.Store.MemberActor(ctx, id)
+	roleID, system, joined, raw, err := m.Store.MemberActor(ctx, id)
 	if err != nil {
 		return domain.Subject{}, err
 	}
 	if !joined {
 		return domain.Subject{}, domain.ErrNoSuchMember
 	}
-	permissions, err := permissionsFor(system)
+	permissions, err := permissionsFor(system, raw)
 	if err != nil {
 		return domain.Subject{}, err
 	}
@@ -197,11 +197,19 @@ func (m Members) fresh(session Session) error {
 	return nil
 }
 
-func permissionsFor(system string) ([]domain.Permission, error) {
-	if system == "" {
-		return nil, nil
+func permissionsFor(system string, raw []string) ([]domain.Permission, error) {
+	if system != "" {
+		return domain.SystemPermissions(domain.Role(system))
 	}
-	return domain.SystemPermissions(domain.Role(system))
+	var out []domain.Permission
+	for _, name := range raw {
+		permission, err := domain.ParsePermission(name)
+		if err != nil {
+			continue
+		}
+		out = append(out, permission)
+	}
+	return out, nil
 }
 
 func newLink() (string, []byte, []byte, error) {

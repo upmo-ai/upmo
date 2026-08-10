@@ -37,9 +37,11 @@ type Member struct {
 
 // MemberRole is a role an invite may name.
 type MemberRole struct {
-	ID     RoleID
-	Name   string
-	System string
+	ID          RoleID
+	Name        string
+	System      string
+	Permissions []Permission
+	Members     int
 }
 
 // MayManage reports whether actor may invite, re-link or remove a person
