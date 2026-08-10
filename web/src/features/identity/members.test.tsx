@@ -130,7 +130,7 @@ describe("live members", () => {
     cleanup();
   });
 
-  it("invites with a copy link and does not offer a role change", async () => {
+  it("invites with a copy link and offers roles the person can manage", async () => {
     let copied = "";
     Object.assign(navigator, {
       clipboard: {
@@ -144,8 +144,14 @@ describe("live members", () => {
       const method = init?.method ?? "GET";
       if (url.endsWith("/api/roles")) {
         return Response.json([
-          { id: "role-owner", name: "Owner", system: "owner" },
-          { id: "role-member", name: "Member", system: "member" },
+          {
+            id: "role-owner",
+            name: "Owner",
+            system: "owner",
+            permissions: ["roles:manage", "members:manage", "teams:manage", "owners:manage"],
+            members: 1,
+          },
+          { id: "role-member", name: "Member", system: "member", permissions: ["task:view"], members: 1 },
         ]);
       }
       if (url.endsWith("/api/session")) {
@@ -190,6 +196,11 @@ describe("live members", () => {
     expect(await screen.findByLabelText("Name")).toBeTruthy();
     expect(screen.queryByRole("group", { name: "View as" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
+    expect(screen.getByLabelText("Role for Bob")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Roles" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New role" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Duplicate Owner" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete Owner" })).toBeNull();
     expect(screen.getByRole("button", { name: "New invite link" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove Ada" })).toBeNull();
 

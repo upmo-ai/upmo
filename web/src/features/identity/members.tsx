@@ -1,4 +1,4 @@
-import { Button, NativeSelect, Stack, Table, Text, TextInput, Title } from "@mantine/core";
+import { Button, Checkbox, NativeSelect, Stack, Table, Text, TextInput, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -282,7 +282,7 @@ function MemberRow({
   );
 }
 
-type LiveRole = { id: string; name: string; system: string };
+type LiveRole = { id: string; name: string; system: string; permissions?: string[]; members?: number };
 type LiveMember = {
   id: string;
   name: string;
@@ -434,7 +434,24 @@ function LiveMembers() {
             <Table.Tr key={member.id}>
               <Table.Td>{member.name}</Table.Td>
               <Table.Td>{member.email}</Table.Td>
-              <Table.Td>{member.role.name}</Table.Td>
+              <Table.Td>
+                {manage && member.id !== actor?.id ? (
+                  <NativeSelect
+                    aria-label={`Role for ${member.name}`}
+                    value={member.role.id}
+                    data={(roles.data ?? []).map((role) => ({ value: role.id, label: role.name }))}
+                    onChange={(event) => {
+                      const nextRole = event.currentTarget.value;
+                      void run(async () => {
+                        await memberWrite(`/api/members/${member.id}/role`, "PUT", { role_id: nextRole }, passkeyCount);
+                        await members.refetch();
+                      });
+                    }}
+                  />
+                ) : (
+                  member.role.name
+                )}
+              </Table.Td>
               <Table.Td>{member.teams.length > 0 ? member.teams.join(", ") : "No team"}</Table.Td>
               {manage ? (
                 <Table.Td aria-label="Actions">
@@ -470,6 +487,17 @@ function LiveMembers() {
           ))}
         </Table.Tbody>
       </Table>
+      <RolesCard
+        roles={roles.data ?? []}
+        held={new Set(choicesFor(actor?.role.id, roles.data ?? []))}
+        canManage={canManageRoles(actor?.role.id, roles.data ?? [])}
+        passkeys={passkeyCount}
+        onChanged={async () => {
+          await roles.refetch();
+          await members.refetch();
+        }}
+        run={run}
+      />
       <ConfirmDialog
         opened={removing !== null}
         title={removing ? `Remove ${removing.name}?` : "Remove this member?"}
@@ -538,6 +566,164 @@ async function memberWrite(path: string, method: string, body: unknown, passkeys
   };
   if (passkeys === 0) return send();
   return fresh(send);
+}
+
+const roleObjects = ["task", "chat", "folder", "automation", "agent"] as const;
+const roleActions = ["create", "view", "edit", "share", "delete"] as const;
+const roleInstall = ["members:manage", "teams:manage", "roles:manage", "settings:manage", "connectors:manage"] as const;
+
+function canManageRoles(roleId: string | undefined, roles: LiveRole[]): boolean {
+  return roles.find((role) => role.id === roleId)?.permissions?.includes("roles:manage") ?? false;
+}
+
+function choicesFor(roleId: string | undefined, roles: LiveRole[]): string[] {
+  return roles.find((role) => role.id === roleId)?.permissions ?? [];
+}
+
+function RolesCard({
+  roles,
+  held,
+  canManage,
+  passkeys,
+  onChanged,
+  run,
+}: {
+  roles: LiveRole[];
+  held: Set<string>;
+  canManage: boolean;
+  passkeys: number;
+  onChanged: () => Promise<void>;
+  run: (action: () => Promise<void>) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
+
+  function start(role: LiveRole | null, copyName: string) {
+    setEditing(role && role.system === "" ? role.id : null);
+    setName(copyName);
+    setSelected(role?.permissions ?? []);
+    setOpen(true);
+  }
+
+  const catalog = [
+    ...roleObjects.flatMap((object) => roleActions.map((action) => `${object}:${action}`)),
+    ...roleInstall,
+  ];
+
+  return (
+    <Stack gap="sm">
+      <Title order={2}>Roles</Title>
+      {canManage ? (
+        <Button type="button" onClick={() => start(null, "")}>
+          New role
+        </Button>
+      ) : null}
+      <Table aria-label="Roles">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Name</Table.Th>
+            <Table.Th>Permissions</Table.Th>
+            <Table.Th>Members</Table.Th>
+            {canManage ? <Table.Th aria-label="Role actions">Actions</Table.Th> : null}
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {roles.map((role) => (
+            <Table.Tr key={role.id}>
+              <Table.Td>
+                {role.name}
+                {role.system ? <Text span> System</Text> : null}
+              </Table.Td>
+              <Table.Td>{(role.permissions ?? []).length}</Table.Td>
+              <Table.Td>{role.members ?? 0}</Table.Td>
+              {canManage ? (
+                <Table.Td>
+                  <Button
+                    type="button"
+                    variant="default"
+                    onClick={() => {
+                      void run(async () => {
+                        await memberWrite(
+                          `/api/roles/${role.id}/duplicate`,
+                          "POST",
+                          { name: `${role.name} copy` },
+                          passkeys,
+                        );
+                        await onChanged();
+                      });
+                    }}
+                  >
+                    Duplicate {role.name}
+                  </Button>
+                  {role.system ? null : (
+                    <Button type="button" variant="default" onClick={() => start(role, role.name)}>
+                      Edit {role.name}
+                    </Button>
+                  )}
+                  {role.system ? null : (
+                    <Button
+                      type="button"
+                      variant="default"
+                      onClick={() => {
+                        void run(async () => {
+                          await memberWrite(`/api/roles/${role.id}`, "DELETE", null, passkeys);
+                          await onChanged();
+                        });
+                      }}
+                    >
+                      Delete {role.name}
+                    </Button>
+                  )}
+                </Table.Td>
+              ) : null}
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+      <ConfirmDialog
+        opened={open}
+        title={editing ? "Edit role" : "New role"}
+        body="Choose permissions this role may use."
+        action="Save role"
+        confirmDisabled={!name.trim() || selected.length === 0}
+        onClose={() => setOpen(false)}
+        onConfirm={() => {
+          const id = editing;
+          const payload = { name, permissions: selected };
+          setOpen(false);
+          void run(async () => {
+            if (id) await memberWrite(`/api/roles/${id}`, "PUT", payload, passkeys);
+            else await memberWrite("/api/roles", "POST", payload, passkeys);
+            await onChanged();
+          });
+        }}
+      >
+        <TextInput label="Role name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+        <Stack gap="xs">
+          {catalog.map((permission) => {
+            const locked = !held.has(permission);
+            return (
+              <Checkbox
+                key={permission}
+                label={permission}
+                checked={selected.includes(permission) || (locked && selected.includes(permission))}
+                disabled={locked}
+                onChange={(event) => {
+                  setSelected((current) =>
+                    event.currentTarget.checked
+                      ? [...current, permission]
+                      : current.filter((item) => item !== permission),
+                  );
+                }}
+              />
+            );
+          })}
+        </Stack>
+      </ConfirmDialog>
+    </Stack>
+  );
 }
 
 async function readPayload(response: Response): Promise<{ error: string; value: unknown }> {

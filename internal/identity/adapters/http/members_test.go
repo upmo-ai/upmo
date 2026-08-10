@@ -158,8 +158,8 @@ func (f *memberFake) ListRoles(context.Context) ([]domain.MemberRole, error) {
 func (f *memberFake) ListMembers(context.Context) ([]domain.Member, error) {
 	return nil, nil
 }
-func (f *memberFake) MemberActor(context.Context, domain.UserID) (domain.RoleID, string, bool, error) {
-	return f.ownerRole, f.system, true, nil
+func (f *memberFake) MemberActor(context.Context, domain.UserID) (domain.RoleID, string, bool, []string, error) {
+	return f.ownerRole, f.system, true, nil, nil
 }
 func (f *memberFake) RoleSystem(_ context.Context, id domain.RoleID) (string, error) {
 	if id == f.ownerRole {

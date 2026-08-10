@@ -15,9 +15,11 @@ import (
 // ListRoles returns every role, system key or empty.
 func (p Passkeys) ListRoles(ctx context.Context) ([]domain.MemberRole, error) {
 	rows, err := p.Pool.Query(ctx, `
-		SELECT id::text, name, COALESCE(key, '')
-		FROM identity.roles
-		ORDER BY name`)
+		SELECT role.id::text, role.name, COALESCE(role.key, ''), role.permissions,
+		       (SELECT count(*) FROM identity.users AS person
+		        WHERE person.role_id = role.id AND person.disabled_at IS NULL)
+		FROM identity.roles AS role
+		ORDER BY role.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -25,14 +27,22 @@ func (p Passkeys) ListRoles(ctx context.Context) ([]domain.MemberRole, error) {
 	var out []domain.MemberRole
 	for rows.Next() {
 		var id, name, system string
-		if err := rows.Scan(&id, &name, &system); err != nil {
+		var raw []string
+		var members int
+		if err := rows.Scan(&id, &name, &system, &raw, &members); err != nil {
 			return nil, err
 		}
 		roleID, err := domain.ParseRoleID(id)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, domain.MemberRole{ID: roleID, Name: name, System: system})
+		permissions, err := rolePermissions(system, raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, domain.MemberRole{
+			ID: roleID, Name: name, System: system, Permissions: permissions, Members: members,
+		})
 	}
 	return out, rows.Err()
 }
@@ -87,25 +97,41 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 }
 
 // MemberActor loads an enabled person for an access check.
-func (p Passkeys) MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, error) {
+func (p Passkeys) MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error) {
 	var roleText, system string
 	var joined bool
+	var raw []string
 	err := p.Pool.QueryRow(ctx, `
-		SELECT role.id::text, COALESCE(role.key, ''), person.joined_at IS NOT NULL
+		SELECT role.id::text, COALESCE(role.key, ''), person.joined_at IS NOT NULL, role.permissions
 		FROM identity.users AS person
 		JOIN identity.roles AS role ON role.id = person.role_id
-		WHERE person.id = $1 AND person.disabled_at IS NULL`, id).Scan(&roleText, &system, &joined)
+		WHERE person.id = $1 AND person.disabled_at IS NULL`, id).Scan(&roleText, &system, &joined, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.RoleID{}, "", false, domain.ErrNoSuchMember
+		return domain.RoleID{}, "", false, nil, domain.ErrNoSuchMember
 	}
 	if err != nil {
-		return domain.RoleID{}, "", false, err
+		return domain.RoleID{}, "", false, nil, err
 	}
 	roleID, err := domain.ParseRoleID(roleText)
 	if err != nil {
-		return domain.RoleID{}, "", false, err
+		return domain.RoleID{}, "", false, nil, err
 	}
-	return roleID, system, joined, nil
+	return roleID, system, joined, raw, nil
+}
+
+func rolePermissions(system string, raw []string) ([]domain.Permission, error) {
+	if system != "" {
+		return domain.SystemPermissions(domain.Role(system))
+	}
+	var out []domain.Permission
+	for _, name := range raw {
+		permission, err := domain.ParsePermission(name)
+		if err != nil {
+			continue
+		}
+		out = append(out, permission)
+	}
+	return out, nil
 }
 
 // RoleSystem returns the system key for a role, or empty for a custom role.

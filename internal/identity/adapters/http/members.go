@@ -35,9 +35,16 @@ func (h Members) roles(w http.ResponseWriter, r *http.Request) {
 	if refuseMember(w, err) {
 		return
 	}
-	out := make([]map[string]string, 0, len(roles))
+	out := make([]map[string]any, 0, len(roles))
 	for _, role := range roles {
-		out = append(out, map[string]string{"id": role.ID.String(), "name": role.Name, "system": role.System})
+		names := make([]string, 0, len(role.Permissions))
+		for _, permission := range role.Permissions {
+			names = append(names, string(permission))
+		}
+		out = append(out, map[string]any{
+			"id": role.ID.String(), "name": role.Name, "system": role.System,
+			"permissions": names, "members": role.Members,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
