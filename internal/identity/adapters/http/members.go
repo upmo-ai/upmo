@@ -136,6 +136,9 @@ func (h Members) remove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Members) session(w http.ResponseWriter, r *http.Request) (app.Session, bool) {
+	if !allowPerson(w, r) {
+		return app.Session{}, false
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {

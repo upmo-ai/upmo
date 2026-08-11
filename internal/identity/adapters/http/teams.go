@@ -111,6 +111,9 @@ func (h Teams) teamID(w http.ResponseWriter, r *http.Request) (app.Session, doma
 }
 
 func (h Teams) session(w http.ResponseWriter, r *http.Request) (app.Session, bool) {
+	if !allowPerson(w, r) {
+		return app.Session{}, false
+	}
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {
 		writeRaw(w, http.StatusUnauthorized, unauthorised)

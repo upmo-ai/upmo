@@ -5,7 +5,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
@@ -23,6 +27,14 @@ type Handler struct {
 	Sessions    app.Service
 	Log         *slog.Logger
 	HasPassword func(ctx context.Context, user domain.UserID) (bool, error)
+	Tokens      interface {
+		Authenticate(ctx context.Context, secret string) (app.Bearer, error)
+	}
+	Limit interface {
+		Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error)
+	}
+	Trusted []*net.IPNet
+	Now     func() time.Time
 }
 
 // Mount registers the session routes.
@@ -33,6 +45,10 @@ func (h Handler) Mount(mux *http.ServeMux) {
 }
 
 func (h Handler) current(w http.ResponseWriter, r *http.Request) {
+	if secret, ok := bearerSecret(r); ok {
+		h.presentToken(w, r, secret)
+		return
+	}
 	session, ok := h.authenticate(w, r)
 	if !ok {
 		return
@@ -55,6 +71,9 @@ func (h Handler) current(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) signOut(w http.ResponseWriter, r *http.Request) {
+	if !h.person(w, r) {
+		return
+	}
 	session, ok := h.authenticate(w, r)
 	if !ok {
 		return
@@ -68,6 +87,9 @@ func (h Handler) signOut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) signOutEverywhere(w http.ResponseWriter, r *http.Request) {
+	if !h.person(w, r) {
+		return
+	}
 	session, ok := h.authenticate(w, r)
 	if !ok {
 		return
@@ -78,6 +100,76 @@ func (h Handler) signOutEverywhere(w http.ResponseWriter, r *http.Request) {
 	}
 	ClearCookie(w)
 	noContent(w)
+}
+
+func (h Handler) presentToken(w http.ResponseWriter, r *http.Request, secret string) {
+	w.Header().Set("Cache-Control", "no-store")
+	if h.Tokens == nil {
+		if !h.allow(w, r) {
+			return
+		}
+		writeRaw(w, http.StatusUnauthorized, `{"error":"invalid token"}`+"\n")
+		return
+	}
+	bearer, err := h.Tokens.Authenticate(r.Context(), secret)
+	if err != nil {
+		if !h.allow(w, r) {
+			return
+		}
+		writeRaw(w, http.StatusUnauthorized, `{"error":"invalid token"}`+"\n")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"principal": "token",
+		"user_id":   bearer.UserID.String(),
+		"name":      bearer.Name,
+		"scope":     bearer.Scope,
+	})
+}
+
+func (h Handler) person(w http.ResponseWriter, r *http.Request) bool {
+	return allowPerson(w, r)
+}
+
+func allowPerson(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := bearerSecret(r); !ok {
+		return true
+	}
+	writeRaw(w, http.StatusForbidden, `{"error":"needs a signed-in person"}`+"\n")
+	return false
+}
+
+func (h Handler) allow(w http.ResponseWriter, r *http.Request) bool {
+	if h.Limit == nil {
+		return true
+	}
+	now := time.Now()
+	if h.Now != nil {
+		now = h.Now()
+	}
+	allowed, retry, err := h.Limit.Take(r.Context(), domain.ThrottleAddress(domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted)), now, domain.ThrottleBurst, domain.ThrottlePerSecond)
+	if err != nil {
+		http.Error(w, "throttle", http.StatusInternalServerError)
+		return false
+	}
+	if !allowed {
+		secs := int(retry.Round(time.Second) / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		writeRaw(w, http.StatusTooManyRequests, slowDown)
+		return false
+	}
+	return true
+}
+
+func bearerSecret(r *http.Request) (string, bool) {
+	secret, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || secret == "" || strings.Contains(secret, " ") {
+		return "", false
+	}
+	return secret, true
 }
 
 func (h Handler) authenticate(w http.ResponseWriter, r *http.Request) (app.Session, bool) {

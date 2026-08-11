@@ -99,14 +99,14 @@ func SystemPermissions(role Role) ([]Permission, error) {
 }
 
 // EffectivePermissions is the set a subject actually holds. A run's policy
-// only narrows, and a run never holds a delete or an install permission.
-// An agent holds nothing. Names outside the catalog are dropped.
+// and a token's scope only narrow, and neither holds a delete or an install
+// permission. An agent holds nothing. Names outside the catalog are dropped.
 func EffectivePermissions(subject Subject) []Permission {
 	if subject.Kind == KindAgent {
 		return nil
 	}
 	held := known(subject.Permissions)
-	if subject.Kind != KindRun {
+	if subject.Kind != KindRun && subject.Kind != KindToken {
 		return held
 	}
 	held = intersect(held, known(subject.Policy))

@@ -275,6 +275,7 @@ func clearMemberAccess(ctx context.Context, tx pgx.Tx, id domain.UserID) error {
 		`DELETE FROM identity.shares WHERE user_id = $1`,
 		`DELETE FROM identity.webauthn_challenges WHERE user_id = $1`,
 		`DELETE FROM identity.sign_in_links WHERE user_id = $1 AND used_at IS NULL`,
+		`DELETE FROM identity.api_tokens WHERE user_id = $1`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement, id); err != nil {

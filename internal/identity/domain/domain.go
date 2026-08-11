@@ -117,6 +117,8 @@ const (
 	KindUser  Kind = "user"
 	KindAgent Kind = "agent"
 	KindRun   Kind = "run"
+	// KindToken is a personal API token. It is not a row in principals.
+	KindToken Kind = "token"
 )
 
 // Kinds are the principal kinds the database accepts.
