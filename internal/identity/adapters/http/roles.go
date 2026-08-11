@@ -136,6 +136,9 @@ func (h Roles) roleID(w http.ResponseWriter, r *http.Request) (app.Session, doma
 }
 
 func (h Roles) session(w http.ResponseWriter, r *http.Request) (app.Session, bool) {
+	if !allowPerson(w, r) {
+		return app.Session{}, false
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {

@@ -1,0 +1,9 @@
+title = "upmo"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "upmo-personal-token"
+description = "Upmo personal API token"
+regex = '''upmo_pat_[A-Za-z0-9_-]{43}'''

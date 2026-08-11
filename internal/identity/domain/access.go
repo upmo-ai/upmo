@@ -15,6 +15,7 @@ const (
 	ReasonUnknown    Reason = "unknown"
 	ReasonAgent      Reason = "agent"
 	ReasonPolicy     Reason = "policy"
+	ReasonScope      Reason = "token scope"
 )
 
 // Decision is one access answer.
@@ -29,7 +30,7 @@ func allow(reason Reason) Decision { return Decision{Allow: true, Reason: reason
 
 // Subject is who is asking. Permissions is the role set, already resolved
 // from code for a system role or from the row for a custom role. Policy is
-// read only for a run.
+// the run policy or the token scope. It only narrows.
 type Subject struct {
 	Kind        Kind
 	UserID      UserID
@@ -106,12 +107,15 @@ func screen(subject Subject) (Decision, bool) {
 }
 
 // permit refuses when the effective set does not hold permission. A run that
-// lost it to its policy, or to the rule that a run never deletes or manages
-// the install, is refused as policy.
+// lost it to its policy is refused as policy. A token that lost it to its
+// scope is refused as token scope.
 func permit(subject Subject, permission Permission) (Decision, bool) {
 	roleHolds := has(known(subject.Permissions), permission)
 	if has(EffectivePermissions(subject), permission) {
 		return Decision{}, true
+	}
+	if subject.Kind == KindToken && roleHolds {
+		return refuse(ReasonScope), false
 	}
 	if subject.Kind == KindRun && roleHolds {
 		return refuse(ReasonPolicy), false

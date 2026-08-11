@@ -1,4 +1,5 @@
 import "@mantine/core/styles.css";
+import "@mantine/dates/styles.css";
 import "@upmo-ai/tokens/tokens.css";
 import "./mantine-tokens.css";
 import "@fontsource/manrope/400.css";

@@ -29,7 +29,6 @@ import type {
   TaskShare,
   TaskVisibility,
   Team,
-  TokenExpiry,
   ViewRole,
   WorkspaceRole,
 } from "../features/identity/types";
@@ -117,7 +116,7 @@ export interface ApiClient {
   };
   tokens: {
     list(): Promise<ApiToken[]>;
-    create(input: { name: string; scopes: string[]; days: TokenExpiry }): Promise<CreatedToken>;
+    create(input: { name: string; scopes: string[]; days: number }): Promise<CreatedToken>;
     revoke(id: string): Promise<void>;
   };
 }
@@ -329,10 +328,6 @@ function advance(task: Task) {
     return;
   }
   task.status = "Done";
-}
-
-function isExpiry(value: number): value is TokenExpiry {
-  return value === 30 || value === 90 || value === 365;
 }
 
 function isVisibility(value: string): value is TaskVisibility {
@@ -652,7 +647,7 @@ export function createStubApi(): ApiClient {
         const acting = actor();
         const name = input.name.trim();
         if (!name) throw new Error("Name the token.");
-        if (!isExpiry(input.days)) throw new Error("Choose an expiry.");
+        if (!Number.isInteger(input.days) || input.days < 0 || input.days > 365) throw new Error("Choose an expiry.");
         if (input.scopes.length === 0) throw new Error("Choose at least one scope.");
         for (const scope of input.scopes) {
           if (!isAllowedScope(acting.role, scope)) throw new Error("That scope is not allowed.");

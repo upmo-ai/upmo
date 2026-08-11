@@ -64,7 +64,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	passwords := identity.Passwords(pool, sessions)
-	identity.MountSessions(mux, sessions, log, passwords.HasPassword)
+	identity.MountAPITokens(mux, sessions, identity.APITokens(pool, log), log, passwords.HasPassword, pool, cfg.TrustedProxies)
 	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return nil, err

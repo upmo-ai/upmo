@@ -98,3 +98,78 @@ describe("API tokens", () => {
     ).rejects.toThrow("Choose at least one scope.");
   });
 });
+
+describe("live tokens", () => {
+  const original = globalThis.fetch;
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = original;
+    cleanup();
+  });
+
+  it("lists a token and creates one inside the role", async () => {
+    let posted = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/tokens") && method === "POST") {
+        posted = String(init?.body ?? "");
+        return Response.json({ id: "tok", secret: "upmo_pat_secret" }, { status: 201 });
+      }
+      if (url.endsWith("/api/tokens")) {
+        return Response.json([
+          {
+            id: "tok-1",
+            name: "Ship",
+            scope: ["task:view"],
+            created_at: "2026-10-01T00:00:00Z",
+            expires_at: "2026-12-30T00:00:00Z",
+            last_used_at: null,
+          },
+        ]);
+      }
+      if (url.endsWith("/api/session")) return Response.json({ user_id: "ada" });
+      if (url.endsWith("/api/members")) {
+        return Response.json([{ id: "ada", role: { id: "role-owner" } }]);
+      }
+      if (url.endsWith("/api/roles")) {
+        return Response.json([
+          { id: "role-owner", permissions: ["task:view", "task:delete", "members:manage"] },
+        ]);
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+
+    renderAt("/settings/tokens");
+    expect(await screen.findByText("Ship")).toBeTruthy();
+    expect(screen.getByText("task:view")).toBeTruthy();
+    expect(screen.queryByTestId("token-hint")).toBeNull();
+    act(() => {
+      screen.getByRole("button", { name: "Create token" }).click();
+    });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("group", { name: "Task" })).toBeTruthy();
+    expect(within(dialog).getByRole("checkbox", { name: "Task view" })).toBeTruthy();
+    expect(within(dialog).queryByRole("checkbox", { name: "Task delete" })).toBeNull();
+    expect(within(dialog).queryByRole("group", { name: "Chat" })).toBeNull();
+    expect(within(dialog).getByText(Intl.DateTimeFormat().resolvedOptions().timeZone)).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Expiry"), { target: { value: "15 Jan 2027" } });
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Nightly" } });
+    act(() => {
+      within(dialog).getByRole("checkbox", { name: "Task view" }).click();
+    });
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create token" }).click();
+    });
+    expect(await within(dialog).findByTestId("token-secret")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(posted).toContain("Nightly");
+    expect(posted).toContain("2027-01-15");
+    expect(posted).toContain("task:view");
+    expect(posted).not.toContain("task:delete");
+  });
+});

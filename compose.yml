@@ -129,7 +129,7 @@ services:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: "*"
-    command: ["git", "--no-banner", "--redact", "--verbose", "/src"]
+    command: ["git", "--no-banner", "--redact", "--verbose", "--config", "/src/.gitleaks.toml", "/src"]
 
   markdownlint:
     image: davidanson/markdownlint-cli2:v0.23.1
