@@ -333,8 +333,9 @@ function LiveMembers() {
 
   const list = members.data ?? [];
   const actor = list.find((member) => member.id === session.data?.user_id);
-  const manage = actor?.role.system === "owner" || actor?.role.system === "admin";
-  const canTeams = choicesFor(actor?.role.id, roles.data ?? []).includes("teams:manage");
+  const held = choicesFor(actor?.role.id, roles.data ?? []);
+  const manage = held.includes("members:manage");
+  const canTeams = held.includes("teams:manage");
   const teamChoices = teams.data ?? [];
   const choices = (roles.data ?? []).filter((role) => role.system !== "owner" || actor?.role.system === "owner");
   const passkeyCount = passkeys.data?.length ?? 0;

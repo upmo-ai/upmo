@@ -220,4 +220,55 @@ describe("live members", () => {
       expect(copied).toBe(`${window.location.origin}/login/link#invite-token`);
     });
   });
+
+  it("decides the member controls from the role's permissions, not its name", async () => {
+    const live = (permissions: string[]) =>
+      (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/teams")) return Response.json([]);
+        if (url.endsWith("/api/roles")) {
+          return Response.json([
+            { id: "role-people", name: "People lead", system: "", permissions, members: 1 },
+            { id: "role-member", name: "Member", system: "member", permissions: ["task:view"], members: 1 },
+          ]);
+        }
+        if (url.endsWith("/api/session")) {
+          return Response.json({ user_id: "cy", has_password: true, sign_in_method: "passkey" });
+        }
+        if (url.endsWith("/api/passkeys")) return Response.json([{ id: "passkey" }]);
+        if (url.endsWith("/api/members")) {
+          return Response.json([
+            {
+              id: "cy",
+              name: "Cy",
+              email: "cy@example.com",
+              invited: false,
+              teams: [],
+              role: { id: "role-people", name: "People lead", system: "" },
+            },
+            {
+              id: "bob",
+              name: "Bob",
+              email: "bob@example.com",
+              invited: false,
+              teams: [],
+              role: { id: "role-member", name: "Member", system: "member" },
+            },
+          ]);
+        }
+        return new Response("missing", { status: 404 });
+      }) as typeof fetch;
+
+    globalThis.fetch = live(["members:manage", "task:view"]);
+    renderAt("/settings/members");
+    expect(await screen.findByLabelText("Role for Bob")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Invite" })).toBeTruthy();
+    cleanup();
+
+    globalThis.fetch = live(["task:view"]);
+    renderAt("/settings/members");
+    expect(await screen.findByText("Bob")).toBeTruthy();
+    expect(screen.queryByLabelText("Role for Bob")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Invite" })).toBeNull();
+  });
 });
