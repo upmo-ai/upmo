@@ -3,7 +3,6 @@
 package identity_test
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -16,16 +15,10 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
-	"github.com/upmo-ai/upmo/internal/platform/migrate"
-	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 func TestPersonalTokens(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, time.Hour, 24*time.Hour)
 	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", log)

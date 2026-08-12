@@ -48,5 +48,10 @@ func ListFilter(alias string, subject Subject, objectType ObjectType, shared []s
 	return domain.ListFilter(alias, subject, objectType, shared)
 }
 
-// SharedObjectsSQL lists object ids shared with a person, their teams, or their role.
+// SharedObjectsSQL lists object ids shared with a person, their teams, or their role, with the share level.
 func SharedObjectsSQL() string { return domain.SharedObjectsSQL() }
+
+// AccessSettings writes the person's access into transaction-local settings.
+func AccessSettings(subject Subject, objectType ObjectType, sharedView, sharedEdit []string) (string, []any) {
+	return domain.AccessSettings(subject, objectType, sharedView, sharedEdit)
+}

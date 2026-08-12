@@ -1,7 +1,10 @@
 package archtest
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +47,53 @@ func TestFixtureViolations(t *testing.T) {
 		if !slices.Contains(want, v) {
 			t.Errorf("unexpected violation: %s", v)
 		}
+	}
+}
+
+func TestRoleSwitchStaysInPoolSetup(t *testing.T) {
+	root := "../.."
+	allow := map[string]bool{
+		"cmd/brain/main.go":                  true,
+		"internal/testutil/pgtest/pgtest.go": true,
+	}
+	needles := []string{"SET ROLE", "RESET ROLE", "row_security", "ROW LEVEL SECURITY"}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			base := info.Name()
+			if base == ".git" || base == "node_modules" || base == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if allow[filepath.ToSlash(rel)] {
+			return nil
+		}
+		if strings.HasSuffix(rel, "_test.go") || strings.HasSuffix(rel, ".sql") {
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".go") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		text := string(body)
+		for _, needle := range needles {
+			if strings.Contains(text, needle) {
+				t.Errorf("%s contains %q", rel, needle)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -20,11 +20,12 @@ import (
 )
 
 func TestSessionHTTP(t *testing.T) {
-	pool := pgtest.New(t)
+	owner := pgtest.New(t)
 	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
+	pool := pgtest.App(t, owner)
 	var user string
 	err := pool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)

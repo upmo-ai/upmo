@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,6 +44,22 @@ func New(t *testing.T) *pgxpool.Pool {
 	})
 
 	pool, err := openPool(raw, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// App returns a pool on the same database as owner that runs as upmo_app.
+func App(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	cfg := owner.Config()
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -285,8 +285,64 @@ func TestListFilterRefusesABadAliasAndABlindRole(t *testing.T) {
 	if !strings.Contains(clause, "visibility = 'team'") || !strings.Contains(clause, "visibility = 'everyone'") || strings.Contains(clause, "identity.") {
 		t.Fatalf("filter = %s", clause)
 	}
-	if !strings.Contains(SharedObjectsSQL(), "grantee_role_id") || !strings.Contains(SharedObjectsSQL(), "team_id") {
+	if !strings.Contains(SharedObjectsSQL(), "grantee_role_id") || !strings.Contains(SharedObjectsSQL(), "team_id") || !strings.Contains(SharedObjectsSQL(), "level") {
 		t.Fatal("shared-object query dropped a grantee")
+	}
+}
+
+func TestAccessSettingsFailClosedForABlindSubject(t *testing.T) {
+	subject := joined(nil)
+	sql, args := AccessSettings(subject, TypeTask, []string{"obj-1"}, nil)
+	if !strings.Contains(sql, "set_config('upmo.user_id', $1, true)") || !strings.Contains(sql, "set_config('upmo.allow', $2, true)") {
+		t.Fatalf("settings = %s", sql)
+	}
+	if len(args) != 5 {
+		t.Fatalf("args = %d", len(args))
+	}
+	if args[0] != subject.UserID.String() {
+		t.Fatalf("user = %v", args[0])
+	}
+	if args[1] != "" {
+		t.Fatalf("blind allow = %q", args[1])
+	}
+
+	viewer, err := SystemPermissions(RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject.Permissions = viewer
+	_, args = AccessSettings(subject, TypeTask, []string{"obj-1"}, []string{"obj-2"})
+	if !strings.Contains(args[1].(string), "task:view") || strings.Contains(args[1].(string), "task:delete") {
+		t.Fatalf("viewer allow = %q", args[1])
+	}
+	if args[3] != "obj-1" || args[4] != "obj-2" {
+		t.Fatalf("shared = %v %v", args[3], args[4])
+	}
+
+	disabled := subject
+	disabled.Disabled = true
+	_, args = AccessSettings(disabled, TypeTask, nil, nil)
+	if args[1] != "" {
+		t.Fatalf("disabled allow = %q", args[1])
+	}
+	invited := subject
+	invited.Joined = false
+	_, args = AccessSettings(invited, TypeTask, nil, nil)
+	if args[1] != "" {
+		t.Fatalf("invited allow = %q", args[1])
+	}
+	agent := subject
+	agent.Kind = KindAgent
+	_, args = AccessSettings(agent, TypeTask, nil, nil)
+	if args[1] != "" {
+		t.Fatalf("agent allow = %q", args[1])
+	}
+	token := subject
+	token.Kind = KindToken
+	token.Policy = []Permission{ObjectPermission(TypeTask, ActionView)}
+	_, args = AccessSettings(token, TypeTask, nil, nil)
+	if args[1] != "task:view" {
+		t.Fatalf("token allow = %q", args[1])
 	}
 }
 
