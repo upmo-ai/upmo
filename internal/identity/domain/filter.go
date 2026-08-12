@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // aliasName is the only text ListFilter interpolates. Values travel as
@@ -49,8 +50,36 @@ func ListFilter(alias string, subject Subject, objectType ObjectType, shared []s
 }
 
 // SharedObjectsSQL returns the object ids shared with a person, one of their
-// teams, or their role. $1 is the object type, $2 the user, $3 the team ids,
-// $4 the role id.
+// teams, or their role, with the share level. $1 is the object type, $2 the
+// user, $3 the team ids, $4 the role id. One query yields both the view list
+// (any level) and the editor list.
 func SharedObjectsSQL() string {
-	return `SELECT object_id::text FROM identity.shares WHERE object_type = $1 AND (user_id::text = $2 OR team_id::text = ANY($3::text[]) OR grantee_role_id::text = $4)`
+	return `SELECT object_id::text, level FROM identity.shares WHERE object_type = $1 AND (user_id::text = $2 OR team_id::text = ANY($3::text[]) OR grantee_role_id::text = $4)`
+}
+
+// AccessSettings is one statement that writes the person's access into
+// transaction-local settings. The adapter of the owning context runs it first
+// in its transaction. A disabled or invited person, or a lone agent, gets an
+// empty allow list. objectType is accepted so the caller can pass the lists
+// for that type; the allow list is the full effective set.
+func AccessSettings(subject Subject, objectType ObjectType, sharedView, sharedEdit []string) (string, []any) {
+	allow := ""
+	if _, ok := screen(subject); ok && (objectType == "" || knownType(objectType)) {
+		allow = joinPermissions(EffectivePermissions(subject))
+	}
+	teams := make([]string, len(subject.Teams))
+	for i, team := range subject.Teams {
+		teams[i] = team.String()
+	}
+	sql := `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true), set_config('upmo.teams', $3, true), set_config('upmo.shared_view', $4, true), set_config('upmo.shared_edit', $5, true)`
+	args := []any{subject.UserID.String(), allow, strings.Join(teams, ","), strings.Join(sharedView, ","), strings.Join(sharedEdit, ",")}
+	return sql, args
+}
+
+func joinPermissions(permissions []Permission) string {
+	names := make([]string, len(permissions))
+	for i, permission := range permissions {
+		names[i] = string(permission)
+	}
+	return strings.Join(names, ",")
 }

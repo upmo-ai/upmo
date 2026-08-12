@@ -4,7 +4,6 @@ package identity_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -23,16 +22,10 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
-	"github.com/upmo-ai/upmo/internal/platform/migrate"
-	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 func TestPasswordSignIn(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
 	var clock time.Time
 	clock = now
@@ -189,11 +182,7 @@ func TestPasswordSignIn(t *testing.T) {
 }
 
 func TestPasswordAndPasskeyRemovalsCannotBothPass(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	var id string
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, password_hash, role_id, joined_at)
@@ -243,11 +232,7 @@ func TestPasswordAndPasskeyRemovalsCannotBothPass(t *testing.T) {
 }
 
 func TestPasswordStore(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	var id string
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
@@ -306,11 +291,7 @@ func TestPasswordStore(t *testing.T) {
 }
 
 func TestThrottleSweepAndRetry(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `INSERT INTO identity.throttle (key, tokens, updated_at) VALUES ('stale', 0, $1), ('fresh', 3, $2)`, now.Add(-time.Hour), now.Add(-time.Second)); err != nil {
 		t.Fatal(err)

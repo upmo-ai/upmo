@@ -328,7 +328,7 @@ func TestDisabledOwnerDoesNotCount(t *testing.T) {
 }
 
 func TestDownRemovesTheIdentitySchema(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	if err := migrate.Down(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
@@ -503,6 +503,12 @@ func TestPasswordChangeDoesNotFireTheOwnerGuard(t *testing.T) {
 }
 
 func up(t *testing.T) (*pgxpool.Pool, context.Context) {
+	t.Helper()
+	owner, ctx := upOwner(t)
+	return pgtest.App(t, owner), ctx
+}
+
+func upOwner(t *testing.T) (*pgxpool.Pool, context.Context) {
 	t.Helper()
 	pool := pgtest.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

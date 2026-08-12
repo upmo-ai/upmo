@@ -7,18 +7,21 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 func TestListFilterAgreesWithCan(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3} {
 		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
-			pool, ctx := up(t)
-			if _, err := pool.Exec(ctx, `
+			owner, ctx := upOwner(t)
+			if _, err := owner.Exec(ctx, `
 				CREATE TABLE work_objects (
 					id uuid PRIMARY KEY DEFAULT uuidv7(),
 					object_type text NOT NULL,
@@ -28,10 +31,13 @@ func TestListFilterAgreesWithCan(t *testing.T) {
 				)`); err != nil {
 				t.Fatal(err)
 			}
-			world := buildWorld(t, pool, ctx, seed)
+			world := buildWorld(t, owner, ctx, seed)
+			secureWork(t, owner, ctx)
+			app := pgtest.App(t, owner)
 			for _, subject := range world.subjects() {
 				for _, objectType := range domain.ObjectTypes() {
-					agree(t, pool, ctx, world, subject, objectType)
+					agree(t, owner, ctx, world, subject, objectType)
+					rlsAgree(t, app, ctx, world, subject, objectType)
 				}
 			}
 		})
@@ -74,6 +80,10 @@ func (w world) subjects() []held {
 	agent := base
 	agent.Kind = domain.KindAgent
 	out = append(out, held{agent, "agent"})
+	token := base
+	token.Kind = domain.KindToken
+	token.Policy = []domain.Permission{domain.ObjectPermission(domain.TypeTask, domain.ActionView)}
+	out = append(out, held{token, "token view"})
 	return out
 }
 
@@ -156,26 +166,7 @@ func buildWorld(t *testing.T, pool *pgxpool.Pool, ctx context.Context, seed uint
 
 func agree(t *testing.T, pool *pgxpool.Pool, ctx context.Context, w world, who held, objectType domain.ObjectType) {
 	t.Helper()
-	teams := make([]string, len(who.subject.Teams))
-	for i, team := range who.subject.Teams {
-		teams[i] = team.String()
-	}
-	sharedRows, err := pool.Query(ctx, domain.SharedObjectsSQL(), string(objectType), who.subject.UserID.String(), teams, who.subject.RoleID.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sharedRows.Close()
-	var shared []string
-	for sharedRows.Next() {
-		var id string
-		if err := sharedRows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		shared = append(shared, id)
-	}
-	if err := sharedRows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	shared, _ := loadShared(t, pool, ctx, who, objectType)
 	clause, args, err := domain.ListFilter("obj", who.subject, objectType, shared)
 	if err != nil {
 		t.Fatal(err)
@@ -397,4 +388,339 @@ func mustRole(t *testing.T, id string) domain.RoleID {
 		t.Fatal(err)
 	}
 	return parsed
+}
+
+func loadShared(t *testing.T, pool *pgxpool.Pool, ctx context.Context, who held, objectType domain.ObjectType) (view, edit []string) {
+	t.Helper()
+	teams := make([]string, len(who.subject.Teams))
+	for i, team := range who.subject.Teams {
+		teams[i] = team.String()
+	}
+	rows, err := pool.Query(ctx, domain.SharedObjectsSQL(), string(objectType), who.subject.UserID.String(), teams, who.subject.RoleID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, level string
+		if err := rows.Scan(&id, &level); err != nil {
+			t.Fatal(err)
+		}
+		view = append(view, id)
+		if level == string(domain.LevelEditor) {
+			edit = append(edit, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return view, edit
+}
+
+func secureWork(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE work_secure (
+			id uuid PRIMARY KEY,
+			object_type text NOT NULL,
+			owner_user_id uuid NOT NULL,
+			visibility text NOT NULL,
+			visibility_team_id uuid
+		);
+		INSERT INTO work_secure SELECT * FROM work_objects;
+		ALTER TABLE work_secure ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE work_secure FORCE ROW LEVEL SECURITY;
+		CREATE POLICY work_secure_view ON work_secure FOR SELECT
+			USING (identity.may('view', object_type, owner_user_id, visibility, visibility_team_id, id));
+		CREATE POLICY work_secure_edit ON work_secure FOR UPDATE
+			USING (identity.may('edit', object_type, owner_user_id, visibility, visibility_team_id, id));
+		CREATE POLICY work_secure_delete ON work_secure FOR DELETE
+			USING (identity.may('delete', object_type, owner_user_id, visibility, visibility_team_id, id));
+		CREATE POLICY work_secure_create ON work_secure FOR INSERT
+			WITH CHECK (identity.may('create', object_type, owner_user_id, visibility, visibility_team_id, id));
+		GRANT SELECT, INSERT, UPDATE, DELETE ON work_secure TO upmo_app;
+		GRANT USAGE ON SCHEMA public TO upmo_app;
+	`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rlsAgree(t *testing.T, pool *pgxpool.Pool, ctx context.Context, w world, who held, objectType domain.ObjectType) {
+	t.Helper()
+	view, edit := loadShared(t, pool, ctx, who, objectType)
+	gotView := rlsReturning(t, pool, ctx, who, objectType, view, edit, `SELECT id::text FROM work_secure WHERE object_type = $1`)
+	gotEdit := rlsReturning(t, pool, ctx, who, objectType, view, edit, `UPDATE work_secure SET visibility = visibility WHERE object_type = $1 RETURNING id::text`)
+	gotDelete := rlsReturning(t, pool, ctx, who, objectType, view, edit, `DELETE FROM work_secure WHERE object_type = $1 RETURNING id::text`)
+	wantView, wantEdit, wantDelete := wantIDs(w, who, objectType)
+	if !slices.Equal(gotView, wantView) {
+		t.Fatalf("%s %s view\ngot  %v\nwant %v", who.label, objectType, gotView, wantView)
+	}
+	if !slices.Equal(gotEdit, wantEdit) {
+		t.Fatalf("%s %s edit\ngot  %v\nwant %v", who.label, objectType, gotEdit, wantEdit)
+	}
+	if !slices.Equal(gotDelete, wantDelete) {
+		t.Fatalf("%s %s delete\ngot  %v\nwant %v", who.label, objectType, gotDelete, wantDelete)
+	}
+	rlsCreate(t, pool, ctx, w, who, objectType, view, edit)
+}
+
+func wantIDs(w world, who held, objectType domain.ObjectType) (view, edit, del []string) {
+	for _, row := range w.objects {
+		if row.object.Type != objectType {
+			continue
+		}
+		if domain.Can(who.subject, row.object, domain.ActionView).Allow {
+			view = append(view, row.id)
+		}
+		if domain.Can(who.subject, row.object, domain.ActionEdit).Allow {
+			edit = append(edit, row.id)
+		}
+		if domain.Can(who.subject, row.object, domain.ActionDelete).Allow {
+			del = append(del, row.id)
+		}
+	}
+	slices.Sort(view)
+	slices.Sort(edit)
+	slices.Sort(del)
+	return view, edit, del
+}
+
+func rlsReturning(t *testing.T, pool *pgxpool.Pool, ctx context.Context, who held, objectType domain.ObjectType, view, edit []string, query string) []string {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	applyAccess(t, tx, ctx, who, objectType, view, edit)
+	rows, err := tx.Query(ctx, query, string(objectType))
+	if err != nil {
+		t.Fatalf("%s %s: %v\n%s", who.label, objectType, err, query)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	slices.Sort(ids)
+	return ids
+}
+
+func rlsCreate(t *testing.T, pool *pgxpool.Pool, ctx context.Context, w world, who held, objectType domain.ObjectType, view, edit []string) {
+	t.Helper()
+	allowed := domain.Permitted(who.subject, domain.ObjectPermission(objectType, domain.ActionCreate)).Allow
+	own := insertSecure(t, pool, ctx, who, objectType, view, edit, who.subject.UserID.String())
+	if own != allowed {
+		t.Fatalf("%s %s create own: allowed=%v want %v", who.label, objectType, own, allowed)
+	}
+	other := w.people[0].subject.UserID.String()
+	if other == who.subject.UserID.String() && len(w.people) > 1 {
+		other = w.people[1].subject.UserID.String()
+	}
+	if insertSecure(t, pool, ctx, who, objectType, view, edit, other) {
+		t.Fatalf("%s %s create for another person was allowed", who.label, objectType)
+	}
+}
+
+func insertSecure(t *testing.T, pool *pgxpool.Pool, ctx context.Context, who held, objectType domain.ObjectType, view, edit []string, owner string) bool {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	applyAccess(t, tx, ctx, who, objectType, view, edit)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO work_secure (id, object_type, owner_user_id, visibility)
+		VALUES (uuidv7(), $1, $2, 'private')`, string(objectType), owner)
+	return err == nil
+}
+
+func applyAccess(t *testing.T, tx pgx.Tx, ctx context.Context, who held, objectType domain.ObjectType, view, edit []string) {
+	t.Helper()
+	sql, args := domain.AccessSettings(who.subject, objectType, view, edit)
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRowSecurityFailsClosedWithoutSettings(t *testing.T) {
+	owner, ctx := upOwner(t)
+	if _, err := owner.Exec(ctx, `
+		CREATE TABLE work_objects (
+			id uuid PRIMARY KEY DEFAULT uuidv7(),
+			object_type text NOT NULL,
+			owner_user_id uuid NOT NULL,
+			visibility text NOT NULL,
+			visibility_team_id uuid
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	world := buildWorld(t, owner, ctx, 1)
+	secureWork(t, owner, ctx)
+	app := pgtest.App(t, owner)
+	var n int
+	if err := app.QueryRow(ctx, `SELECT count(*) FROM work_secure`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("no settings returned %d rows", n)
+	}
+	who := world.people[0]
+	view, edit := loadShared(t, app, ctx, who, domain.TypeTask)
+	tx, err := app.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyAccess(t, tx, ctx, who, domain.TypeTask, view, edit)
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM work_secure WHERE object_type = 'task'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("owner saw no tasks with settings")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.QueryRow(ctx, `SELECT count(*) FROM work_secure`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("settings leaked into the next transaction: %d", n)
+	}
+}
+
+func TestAppRoleCannotChangeSchema(t *testing.T) {
+	owner, ctx := upOwner(t)
+	app := pgtest.App(t, owner)
+	if _, err := app.Exec(ctx, `CREATE TABLE work_nope (id uuid)`); err == nil {
+		t.Fatal("upmo_app created a table")
+	}
+	if _, err := app.Exec(ctx, `DROP TABLE identity.users`); err == nil {
+		t.Fatal("upmo_app dropped users")
+	}
+	if _, err := app.Exec(ctx, `SELECT * FROM identity.goose_db_version`); err == nil {
+		t.Fatal("upmo_app read the version table")
+	}
+}
+
+func TestGuardWorkTablesHaveRowSecurity(t *testing.T) {
+	pool, ctx := up(t)
+	rows, err := pool.Query(ctx, `
+		SELECT n.nspname || '.' || c.relname, c.relrowsecurity, c.relforcerowsecurity
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'owner_user_id' AND NOT a.attisdropped
+		WHERE c.relkind = 'r' AND n.nspname NOT IN ('identity', 'pg_catalog', 'information_schema')
+		  AND n.nspname NOT LIKE 'pg_%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var enabled, forced bool
+		if err := rows.Scan(&name, &enabled, &forced); err != nil {
+			t.Fatal(err)
+		}
+		if !enabled || !forced {
+			t.Fatalf("%s row security enabled=%v forced=%v", name, enabled, forced)
+		}
+		var cmds []string
+		pol, err := pool.Query(ctx, `
+			SELECT polcmd::text, COALESCE(polqual::text, ''), COALESCE(polwithcheck::text, '')
+			FROM pg_policy WHERE polrelid = $1::regclass`, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for pol.Next() {
+			var cmd, qual, check string
+			if err := pol.Scan(&cmd, &qual, &check); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(qual+check, "identity.may") {
+				t.Fatalf("%s policy %s does not call identity.may", name, cmd)
+			}
+			cmds = append(cmds, cmd)
+		}
+		if err := pol.Err(); err != nil {
+			t.Fatal(err)
+		}
+		pol.Close()
+		for _, want := range []string{"r", "a", "w", "d"} {
+			if !slices.Contains(cmds, want) {
+				t.Fatalf("%s missing policy %s", name, want)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRowSecurityMutationDetectsDroppedClauses(t *testing.T) {
+	owner, ctx := upOwner(t)
+	if _, err := owner.Exec(ctx, `
+		CREATE TABLE work_objects (
+			id uuid PRIMARY KEY DEFAULT uuidv7(),
+			object_type text NOT NULL,
+			owner_user_id uuid NOT NULL,
+			visibility text NOT NULL,
+			visibility_team_id uuid
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	world := buildWorld(t, owner, ctx, 1)
+	secureWork(t, owner, ctx)
+	app := pgtest.App(t, owner)
+	var original string
+	if err := owner.QueryRow(ctx, `SELECT pg_get_functiondef('identity.may(text,text,uuid,text,uuid,uuid)'::regprocedure)`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := owner.Exec(ctx, original); err != nil {
+			t.Errorf("restore identity.may: %v", err)
+		}
+	})
+	cases := []struct {
+		name, old, new, query string
+		want                  func(view, edit, del []string) []string
+	}{
+		{"team", "visibility = 'team'", "visibility = 'never-team'", `SELECT id::text FROM work_secure WHERE object_type = $1`, func(view, _, _ []string) []string { return view }},
+		{"editor", "action IN ('edit', 'delete')", "action IN ('never-edit', 'never-delete')", `UPDATE work_secure SET visibility = visibility WHERE object_type = $1 RETURNING id::text`, func(_, edit, _ []string) []string { return edit }},
+		{"permission", "object_type || ':' || action", "object_type || ':never-' || action", `SELECT id::text FROM work_secure WHERE object_type = $1`, func(view, _, _ []string) []string { return view }},
+	}
+	who := world.people[1]
+	for _, tc := range cases {
+		mutated := strings.Replace(original, tc.old, tc.new, 1)
+		if mutated == original {
+			t.Fatalf("clause %s not found in identity.may", tc.name)
+		}
+		if _, err := owner.Exec(ctx, mutated); err != nil {
+			t.Fatal(err)
+		}
+		var mismatch bool
+		for _, objectType := range domain.ObjectTypes() {
+			view, edit := loadShared(t, app, ctx, who, objectType)
+			got := rlsReturning(t, app, ctx, who, objectType, view, edit, tc.query)
+			wantView, wantEdit, wantDelete := wantIDs(world, who, objectType)
+			if !slices.Equal(got, tc.want(wantView, wantEdit, wantDelete)) {
+				mismatch = true
+				break
+			}
+		}
+		if !mismatch {
+			t.Fatalf("dropping the %s clause still agreed with Can", tc.name)
+		}
+		if _, err := owner.Exec(ctx, original); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

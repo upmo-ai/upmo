@@ -26,16 +26,10 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
-	"github.com/upmo-ai/upmo/internal/platform/migrate"
-	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 func TestPasskeySignIn(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	var clock time.Time
 	clock = now
@@ -317,11 +311,7 @@ func TestPasskeySignIn(t *testing.T) {
 }
 
 func TestTwoRemovalsCannotBothPass(t *testing.T) {
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	var user string
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
@@ -512,11 +502,7 @@ func TestIPv6PrefixSharesAThrottleBucket(t *testing.T) {
 
 func identityMux(t *testing.T, now time.Time) (*pgxpool.Pool, http.Handler, app.Passkeys, context.Context) {
 	t.Helper()
-	pool := pgtest.New(t)
-	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := up(t)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return now }
 	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -43,20 +44,39 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	owner, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	err = migrate.Up(ctx, owner, identity.Schema, identity.Migrations())
+	owner.Close()
+	if err != nil {
+		return err
+	}
+	pool, err := requestPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		return err
-	}
 
 	handler, err := routes(pool, cfg, log)
 	if err != nil {
 		return err
 	}
 	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
+}
+
+// requestPool opens connections that run as upmo_app, which owns nothing.
+func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
+		return err
+	}
+	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
 func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handler, error) {

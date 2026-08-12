@@ -17,11 +17,12 @@ import (
 )
 
 func TestSessions(t *testing.T) {
-	pool := pgtest.New(t)
+	owner := pgtest.New(t)
 	ctx := context.Background()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
+	pool := pgtest.App(t, owner)
 	ada := user(t, ctx, pool, "ada@example.com")
 	lee := user(t, ctx, pool, "lee@example.com")
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
