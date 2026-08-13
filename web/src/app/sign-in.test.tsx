@@ -35,7 +35,7 @@ async function submitPassword() {
   fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery" } });
   act(() => {
-    screen.getByRole("button", { name: "Log in", exact: true }).click();
+    screen.getByRole("button", { name: /^Log in$/ }).click();
   });
 }
 
@@ -66,7 +66,7 @@ describe("sign in", () => {
     fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery" } });
     act(() => {
-      screen.getByRole("button", { name: "Log in", exact: true }).click();
+      screen.getByRole("button", { name: /^Log in$/ }).click();
     });
     expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
     expect(await screen.findByRole("region", { name: "Add a passkey for next time" })).toBeTruthy();
@@ -84,7 +84,7 @@ describe("sign in", () => {
     fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "not the password" } });
     act(() => {
-      screen.getByRole("button", { name: "Log in", exact: true }).click();
+      screen.getByRole("button", { name: /^Log in$/ }).click();
     });
     expect(await screen.findByRole("status")).toHaveProperty("textContent", "Email or password is wrong.");
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
@@ -94,7 +94,7 @@ describe("sign in", () => {
     renderAt("/login");
     expect((await screen.findByRole("link", { name: "Upmo" })).getAttribute("href")).toBe("/login");
     const password = screen.getByLabelText("Password");
-    const logIn = screen.getByRole("button", { name: "Log in", exact: true });
+    const logIn = screen.getByRole("button", { name: /^Log in$/ });
     const passkey = screen.getByRole("button", { name: "Log in with a passkey" });
     expect(passkey.querySelector("svg")).toBeTruthy();
     expect(password.compareDocumentPosition(logIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -125,7 +125,7 @@ describe("sign in", () => {
     act(() => {
       screen.getByRole("button", { name: "Log out" }).click();
     });
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
 
     await submitPassword();
@@ -181,7 +181,7 @@ describe("sign in", () => {
       return posts === 1;
     });
     renderAt("/login");
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Add a passkey for next time" })).toBeNull();
     await submitPassword();
     expect(await screen.findByRole("region", { name: "Add a passkey for next time" })).toBeTruthy();
@@ -196,7 +196,7 @@ describe("sign in", () => {
     act(() => {
       screen.getByRole("button", { name: "Log out" }).click();
     });
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     await submitPassword();
     expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
     await expect(
@@ -234,13 +234,13 @@ describe("sign in", () => {
     );
 
     renderAt("/login");
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(conditionalSpy).toHaveBeenCalledTimes(1);
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong password" } });
     act(() => {
-      screen.getByRole("button", { name: "Log in", exact: true }).click();
+      screen.getByRole("button", { name: /^Log in$/ }).click();
     });
     expect(await screen.findByRole("status")).toHaveProperty("textContent", "Email or password is wrong.");
     expect(conditionalSpy).toHaveBeenCalledTimes(2);

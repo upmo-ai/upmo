@@ -333,14 +333,14 @@ describe("app shell", () => {
       },
     };
     renderAt("/", client);
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
     expect(sessionFetches).toBe(1);
 
     cleanup();
 
     renderAt("/login", client);
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
   });
 
@@ -369,7 +369,7 @@ describe("app shell", () => {
     act(() => {
       screen.getByRole("button", { name: "Log out" }).click();
     });
-    expect(await screen.findByRole("button", { name: "Log in", exact: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
     expect(beforeCalls).toBeGreaterThan(0);
   });
@@ -378,7 +378,7 @@ describe("app shell", () => {
     let sessionFetches = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn<() => Promise<Response>>(async (input) => {
+      vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async (input) => {
         if (String(input).includes("/api/session")) {
           sessionFetches += 1;
           return new Response(
