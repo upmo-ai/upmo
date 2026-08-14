@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "openpgp is not imported; identity uses argon2 only. govulncheck reports no call-graph hit."
