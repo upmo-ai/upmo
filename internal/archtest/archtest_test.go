@@ -81,7 +81,7 @@ func TestRoleSwitchStaysInPoolSetup(t *testing.T) {
 		if !strings.HasSuffix(rel, ".go") {
 			return nil
 		}
-		body, err := os.ReadFile(path)
+		body, err := os.ReadFile(path) //nolint:gosec // path is from a walk of this module
 		if err != nil {
 			return err
 		}
