@@ -7,3 +7,10 @@ useDefault = true
 id = "upmo-personal-token"
 description = "Upmo personal API token"
 regex = '''upmo_pat_[A-Za-z0-9_-]{43}'''
+
+[[allowlists]]
+description = "published examples, not credentials"
+regexes = [
+  '''upmo_pat_\.\.\.''',
+  '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
+]
