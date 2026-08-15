@@ -30,9 +30,12 @@ export function App({
       new QueryClient({
         queryCache: new QueryCache({
           onError: (error) => {
-            if (isUnauthorised(error)) {
-              void router.navigate({ to: "/login" });
+            if (!isUnauthorised(error)) return;
+            const path = router.state.location.pathname;
+            if (path === "/login" || path === "/login/link" || path === "/terms" || path === "/privacy") {
+              return;
             }
+            void router.navigate({ to: "/login" });
           },
         }),
         defaultOptions: {

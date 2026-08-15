@@ -142,6 +142,27 @@ describe("sign in", () => {
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
   });
 
+  it("keeps the one-time link page when the session is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async (input) => {
+        if (String(input).includes("/api/session")) {
+          return new Response(JSON.stringify({ error: "unauthorised" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("", { status: 404 });
+      }),
+    );
+    renderAt("/login/link");
+    expect(await screen.findByRole("heading", { level: 1, name: "Create your passkey" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "Create your passkey" })).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: /^Log in$/ })).toBeNull();
+  });
+
   it("sends the logo home when a live session exists", async () => {
     vi.stubGlobal(
       "fetch",
