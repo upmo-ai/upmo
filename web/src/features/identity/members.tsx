@@ -678,7 +678,7 @@ function RolesCard({
           New role
         </Button>
       ) : null}
-      <Table aria-label="Roles">
+      <Table className="members-table" aria-label="Roles">
         <Table.Thead>
           <Table.Tr>
             <Table.Th>Name</Table.Th>
