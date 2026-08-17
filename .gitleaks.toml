@@ -8,9 +8,15 @@ id = "upmo-personal-token"
 description = "Upmo personal API token"
 regex = '''upmo_pat_[A-Za-z0-9_-]{43}'''
 
+[[rules]]
+id = "upmo-service-key"
+description = "Upmo process-to-process master key"
+regex = '''upmo_svc_[A-Za-z0-9+/=_-]{43,}'''
+
 [[allowlists]]
 description = "published examples, not credentials"
 regexes = [
   '''upmo_pat_\.\.\.''',
+  '''upmo_svc_\.\.\.''',
   '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
 ]

@@ -35,6 +35,24 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.PublicURL != "http://localhost:5173" || cfg.WebAuthnRPID != "localhost" {
 		t.Errorf("public URL = %s rp = %s", cfg.PublicURL, cfg.WebAuthnRPID)
 	}
+	if cfg.ServiceKey != "" || cfg.ServiceKeyPrevious != "" {
+		t.Errorf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	}
+}
+
+func TestLoadServiceKeys(t *testing.T) {
+	cfg, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":           "http://localhost:5173",
+		"UPMO_SERVICE_KEY":          "upmo_svc_current",
+		"UPMO_SERVICE_KEY_PREVIOUS": "upmo_svc_previous",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServiceKey != "upmo_svc_current" || cfg.ServiceKeyPrevious != "upmo_svc_previous" {
+		t.Fatalf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	}
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
