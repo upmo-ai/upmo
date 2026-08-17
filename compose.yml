@@ -106,7 +106,7 @@ services:
       - .:/src
       - upmo-playwright:/opt/playwright
     environment:
-      WEB_URL: http://127.0.0.1:5173
+      WEB_URL: http://localhost:5173
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     command: ["sh", "/src/e2e/run.sh"]
 

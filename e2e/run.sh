@@ -26,8 +26,10 @@ if [ "$installed" != "$version" ]; then
     "playwright@$version"
 fi
 
+# Passkeys first: it consumes the bootstrap link and sets the password the
+# other checks sign in with.
+node /src/e2e/passkeys.mjs
 node /src/e2e/theme.mjs
 node /src/e2e/shell.mjs
 node /src/e2e/flows.mjs
-node /src/e2e/identity.mjs
-exec node /src/e2e/passkeys.mjs
+exec node /src/e2e/identity.mjs

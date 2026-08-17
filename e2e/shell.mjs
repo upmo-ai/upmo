@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { signInWithPassword, storagePath } from "./session.mjs";
 
 // The official image ships browsers, not the npm package. e2e/run.sh installs
 // playwright@1.61.1 here. NODE_PATH does not apply to ESM imports.
@@ -48,13 +49,13 @@ const browser = await chromium.launch({
 
 try {
   const context = await browser.newContext({
+    storageState: storagePath,
     viewport: { width: 1280, height: 800 },
     colorScheme: "light",
     reducedMotion: "reduce",
   });
   const page = await context.newPage();
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
+  await signInWithPassword(page, url);
 
   await expectWidth(page, "full", 248);
 
