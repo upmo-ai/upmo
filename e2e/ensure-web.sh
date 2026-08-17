@@ -95,7 +95,7 @@ wait_ready() {
 
 finish() {
   printf '%s\n' "$1" >&3
-  printf '%s\n' "http://127.0.0.1:5173" >&3
+  printf '%s\n' "http://localhost:5173" >&3
   exit 0
 }
 

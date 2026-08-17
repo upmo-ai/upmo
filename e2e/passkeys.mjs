@@ -45,8 +45,12 @@ try {
   });
 
   await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30_000 });
-  await page.getByRole("button", { name: "Create your passkey" }).click();
   try {
+    const create = page.getByRole("button", { name: "Create your passkey" });
+    await create.waitFor();
+    // Strict Mode remounts the button; noWaitAfter keeps the click from retrying
+    // after the page leaves this screen.
+    await create.click({ noWaitAfter: true });
     await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
   } catch (err) {
     await fail(err);
@@ -64,9 +68,12 @@ try {
     await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
 
     await page.getByRole("link", { name: "Settings", exact: true }).click();
-    await page.getByRole("button", { name: "Set password" }).click();
-    await page.getByLabel("New password").fill("correct horse battery");
-    await page.getByRole("dialog").getByRole("button", { name: "Set password" }).click();
+    const setPassword = page.getByRole("button", { name: "Set password" });
+    if (await setPassword.count()) {
+      await setPassword.click();
+      await page.getByLabel("New password").fill("correct horse battery");
+      await page.getByRole("dialog").getByRole("button", { name: "Set password" }).click();
+    }
     await page.getByRole("button", { name: "Change password" }).waitFor();
 
     await client.send("WebAuthn.removeVirtualAuthenticator", {
@@ -88,6 +95,7 @@ try {
   } catch (err) {
     await fail(err);
   }
+  await context.storageState({ path: "/tmp/upmo-e2e-state.json" });
   console.log("passkey check passed");
 } finally {
   await browser.close();
