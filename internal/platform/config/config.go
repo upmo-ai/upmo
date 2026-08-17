@@ -30,6 +30,10 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// LogLevel is one of debug, info, warn, error (UPMO_LOG_LEVEL).
 	LogLevel string
+	// ServiceKey is the master HMAC key for process-to-process calls (UPMO_SERVICE_KEY).
+	ServiceKey string
+	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
+	ServiceKeyPrevious string
 }
 
 // Load reads the configuration from the environment and applies defaults.
@@ -112,6 +116,12 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if v, ok := lookup("UPMO_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
+	}
+	if v, ok := lookup("UPMO_SERVICE_KEY"); ok {
+		cfg.ServiceKey = v
+	}
+	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
+		cfg.ServiceKeyPrevious = v
 	}
 	return cfg, nil
 }

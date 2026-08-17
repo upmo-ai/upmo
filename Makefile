@@ -81,6 +81,7 @@ fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(GO) go test -fuzz=FuzzNeutralizeSlot -fuzztime=30s ./internal/platform/trustfence
 	$(GO) go test -fuzz=FuzzBlockedAddr -fuzztime=30s ./internal/platform/netguard
 	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/webhooksig
+	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/svcsig
 	$(GO) go test -fuzz=FuzzParseToken -fuzztime=30s ./internal/identity/domain
 	$(GO) go test -fuzz=FuzzParseLinkToken -fuzztime=30s ./internal/identity/domain
 	$(GO) go test -fuzz=FuzzParseChallengeID -fuzztime=30s ./internal/identity/domain
