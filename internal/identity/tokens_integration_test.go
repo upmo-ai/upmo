@@ -147,6 +147,10 @@ func TestPersonalTokens(t *testing.T) {
 	if service.Code != http.StatusUnauthorized || !strings.Contains(service.Body.String(), "invalid token") {
 		t.Fatalf("service bearer = %d %s", service.Code, service.Body.String())
 	}
+	jwt := bearer(mux, http.MethodGet, "/api/session", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1In0.sig")
+	if jwt.Code != http.StatusUnauthorized || !strings.Contains(jwt.Body.String(), "invalid token") {
+		t.Fatalf("run jwt = %d %s", jwt.Code, jwt.Body.String())
+	}
 	kept := call(mux, http.MethodPost, "/api/tokens", cookie, []byte(`{"name":"kept","scope":["task:view"],"days":7}`))
 	if kept.Code != http.StatusCreated {
 		t.Fatalf("kept = %d %s", kept.Code, kept.Body.String())
