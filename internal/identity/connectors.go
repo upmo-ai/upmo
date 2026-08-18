@@ -10,6 +10,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/runjwt"
+	"github.com/upmo-ai/upmo/internal/platform/writeguard"
 )
 
 // Connector grants and the run JWT, re-exported so other contexts import this
@@ -20,6 +21,7 @@ type (
 	ConnectorVerdict = domain.ConnectorVerdict
 	RunTokens        = app.RunTokens
 	RunClaims        = runjwt.Claims
+	WriteExposure    = writeguard.Exposure
 )
 
 const (
@@ -49,7 +51,17 @@ func NewRunTokens(current, previous string) (app.RunTokens, error) {
 	return app.NewRunTokens(current, previous)
 }
 
+// DefaultConnectorGrant is All plus Ask first.
+func DefaultConnectorGrant(connector string) ConnectorGrant {
+	return domain.DefaultConnectorGrant(connector)
+}
+
 // ConnectorDecide is the safety rule for one action on one resource.
 func ConnectorDecide(grant domain.ConnectorGrant, action domain.ConnectorAction, resource string) domain.ConnectorVerdict {
 	return domain.ConnectorDecide(grant, action, resource)
+}
+
+// TightenWrite stacks the untrusted-write guard on a connector verdict.
+func TightenWrite(verdict ConnectorVerdict, exposure WriteExposure) ConnectorVerdict {
+	return ConnectorVerdict(writeguard.Tighten(string(verdict), exposure))
 }
