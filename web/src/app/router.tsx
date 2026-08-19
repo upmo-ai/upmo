@@ -15,6 +15,7 @@ import { SecurityPage } from "../features/identity/security";
 import { TokensPage } from "../features/identity/tokens";
 import { ConnectorsPage, SettingsLayout } from "../features/settings/settings";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
+import { UsagePage } from "../features/usage/usage";
 import { PrivacyPage, TermsPage } from "./legal";
 import { LinkPage } from "./link";
 import { SignInPage } from "./sign-in";
@@ -25,7 +26,6 @@ import {
   ChatPage,
   HomePage,
   KnowledgePage,
-  UsagePage,
 } from "./pages";
 
 export interface RouterContext {

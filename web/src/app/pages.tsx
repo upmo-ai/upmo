@@ -50,12 +50,3 @@ export function KnowledgePage() {
   );
 }
 
-export function UsagePage() {
-  return (
-    <Section
-      title="Usage"
-      emptyTitle="Usage shows up here"
-      emptyBody="Token counts and cost appear after a task runs."
-    />
-  );
-}
