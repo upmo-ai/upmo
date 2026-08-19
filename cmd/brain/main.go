@@ -66,15 +66,21 @@ func run() error {
 	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
 }
 
-// requestPool opens connections that run as upmo_app, which owns nothing.
+// requestPool opens connections that run as upmo_app, which owns nothing, and
+// sets that role again on every checkout.
 func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, err
 	}
-	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+	setRole := func(ctx context.Context, conn *pgx.Conn) error {
 		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
 		return err
+	}
+	cfg.AfterConnect = setRole
+	cfg.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+		err := setRole(ctx, conn)
+		return err == nil, err
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }

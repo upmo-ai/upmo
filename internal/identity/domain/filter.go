@@ -59,9 +59,11 @@ func SharedObjectsSQL() string {
 
 // AccessSettings is one statement that writes the person's access into
 // transaction-local settings. The adapter of the owning context runs it first
-// in its transaction. A disabled or invited person, or a lone agent, gets an
-// empty allow list. objectType is accepted so the caller can pass the lists
-// for that type; the allow list is the full effective set.
+// in its transaction. Teams and shared ids are uuid array literals so
+// identity.may can compare them to uuid columns. A disabled or invited
+// person, or a lone agent, gets an empty allow list. objectType is accepted
+// so the caller can pass the lists for that type; the allow list is the full
+// effective set.
 func AccessSettings(subject Subject, objectType ObjectType, sharedView, sharedEdit []string) (string, []any) {
 	allow := ""
 	if _, ok := screen(subject); ok && (objectType == "" || knownType(objectType)) {
@@ -72,8 +74,15 @@ func AccessSettings(subject Subject, objectType ObjectType, sharedView, sharedEd
 		teams[i] = team.String()
 	}
 	sql := `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true), set_config('upmo.teams', $3, true), set_config('upmo.shared_view', $4, true), set_config('upmo.shared_edit', $5, true)`
-	args := []any{subject.UserID.String(), allow, strings.Join(teams, ","), strings.Join(sharedView, ","), strings.Join(sharedEdit, ",")}
+	args := []any{subject.UserID.String(), allow, uuidArray(teams), uuidArray(sharedView), uuidArray(sharedEdit)}
 	return sql, args
+}
+
+func uuidArray(ids []string) string {
+	if len(ids) == 0 {
+		return "{}"
+	}
+	return "{" + strings.Join(ids, ",") + "}"
 }
 
 func joinPermissions(permissions []Permission) string {

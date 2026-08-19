@@ -428,18 +428,7 @@ func secureWork(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
 			visibility_team_id uuid
 		);
 		INSERT INTO work_secure SELECT * FROM work_objects;
-		ALTER TABLE work_secure ENABLE ROW LEVEL SECURITY;
-		ALTER TABLE work_secure FORCE ROW LEVEL SECURITY;
-		CREATE POLICY work_secure_view ON work_secure FOR SELECT
-			USING (identity.may('view', object_type, owner_user_id, visibility, visibility_team_id, id));
-		CREATE POLICY work_secure_edit ON work_secure FOR UPDATE
-			USING (identity.may('edit', object_type, owner_user_id, visibility, visibility_team_id, id));
-		CREATE POLICY work_secure_delete ON work_secure FOR DELETE
-			USING (identity.may('delete', object_type, owner_user_id, visibility, visibility_team_id, id));
-		CREATE POLICY work_secure_create ON work_secure FOR INSERT
-			WITH CHECK (identity.may('create', object_type, owner_user_id, visibility, visibility_team_id, id));
-		GRANT SELECT, INSERT, UPDATE, DELETE ON work_secure TO upmo_app;
-		GRANT USAGE ON SCHEMA public TO upmo_app;
+		SELECT identity.protect('work_secure'::regclass);
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -609,12 +598,26 @@ func TestAppRoleCannotChangeSchema(t *testing.T) {
 	if _, err := app.Exec(ctx, `SELECT * FROM identity.goose_db_version`); err == nil {
 		t.Fatal("upmo_app read the version table")
 	}
+	var bypass bool
+	if err := app.QueryRow(ctx, `SELECT rolbypassrls FROM pg_roles WHERE rolname = 'upmo_app'`).Scan(&bypass); err != nil {
+		t.Fatal(err)
+	}
+	if bypass {
+		t.Fatal("upmo_app has BYPASSRLS")
+	}
+	var mayProtect bool
+	if err := app.QueryRow(ctx, `SELECT has_function_privilege('upmo_app', 'identity.protect(regclass)', 'EXECUTE')`).Scan(&mayProtect); err != nil {
+		t.Fatal(err)
+	}
+	if mayProtect {
+		t.Fatal("upmo_app can run identity.protect")
+	}
 }
 
 func TestGuardWorkTablesHaveRowSecurity(t *testing.T) {
 	pool, ctx := up(t)
 	rows, err := pool.Query(ctx, `
-		SELECT n.nspname || '.' || c.relname, c.relrowsecurity, c.relforcerowsecurity
+		SELECT n.nspname || '.' || c.relname
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'owner_user_id' AND NOT a.attisdropped
@@ -626,43 +629,126 @@ func TestGuardWorkTablesHaveRowSecurity(t *testing.T) {
 	defer rows.Close()
 	for rows.Next() {
 		var name string
-		var enabled, forced bool
-		if err := rows.Scan(&name, &enabled, &forced); err != nil {
+		if err := rows.Scan(&name); err != nil {
 			t.Fatal(err)
 		}
-		if !enabled || !forced {
-			t.Fatalf("%s row security enabled=%v forced=%v", name, enabled, forced)
-		}
-		var cmds []string
-		pol, err := pool.Query(ctx, `
-			SELECT polcmd::text, COALESCE(polqual::text, ''), COALESCE(polwithcheck::text, '')
-			FROM pg_policy WHERE polrelid = $1::regclass`, name)
+		gaps, err := protectionGaps(ctx, pool, name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for pol.Next() {
-			var cmd, qual, check string
-			if err := pol.Scan(&cmd, &qual, &check); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(qual+check, "identity.may") {
-				t.Fatalf("%s policy %s does not call identity.may", name, cmd)
-			}
-			cmds = append(cmds, cmd)
-		}
-		if err := pol.Err(); err != nil {
-			t.Fatal(err)
-		}
-		pol.Close()
-		for _, want := range []string{"r", "a", "w", "d"} {
-			if !slices.Contains(cmds, want) {
-				t.Fatalf("%s missing policy %s", name, want)
-			}
+		if len(gaps) > 0 {
+			t.Fatalf("%s: %s", name, strings.Join(gaps, "; "))
 		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func protectionGaps(ctx context.Context, pool *pgxpool.Pool, name string) ([]string, error) {
+	var enabled, forced bool
+	if err := pool.QueryRow(ctx, `
+		SELECT c.relrowsecurity, c.relforcerowsecurity
+		FROM pg_class c WHERE c.oid = $1::regclass`, name).Scan(&enabled, &forced); err != nil {
+		return nil, err
+	}
+	var gaps []string
+	if !enabled {
+		gaps = append(gaps, "row security disabled")
+	}
+	if !forced {
+		gaps = append(gaps, "row security not forced")
+	}
+	for _, priv := range []string{"SELECT", "INSERT", "DELETE"} {
+		var ok bool
+		if err := pool.QueryRow(ctx, `SELECT has_table_privilege('upmo_app', $1::regclass, $2)`, name, priv).Scan(&ok); err != nil {
+			return nil, err
+		}
+		if !ok {
+			gaps = append(gaps, "missing "+priv)
+		}
+	}
+	var anyUpdate bool
+	if err := pool.QueryRow(ctx, `SELECT has_any_column_privilege('upmo_app', $1::regclass, 'UPDATE')`, name).Scan(&anyUpdate); err != nil {
+		return nil, err
+	}
+	if !anyUpdate {
+		gaps = append(gaps, "missing UPDATE")
+	}
+	var ownerUpdate bool
+	if err := pool.QueryRow(ctx, `SELECT has_column_privilege('upmo_app', $1::regclass, 'owner_user_id', 'UPDATE')`, name).Scan(&ownerUpdate); err != nil {
+		return nil, err
+	}
+	if ownerUpdate {
+		gaps = append(gaps, "owner_user_id is updatable")
+	}
+	var nsp string
+	if err := pool.QueryRow(ctx, `
+		SELECT n.nspname FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.oid = $1::regclass`, name).Scan(&nsp); err != nil {
+		return nil, err
+	}
+	var usage bool
+	if err := pool.QueryRow(ctx, `SELECT has_schema_privilege('upmo_app', $1, 'USAGE')`, nsp).Scan(&usage); err != nil {
+		return nil, err
+	}
+	if !usage {
+		gaps = append(gaps, "schema usage missing")
+	}
+	pol, err := pool.Query(ctx, `
+		SELECT polcmd::text,
+			COALESCE(pg_get_expr(polqual, polrelid), ''),
+			COALESCE(pg_get_expr(polwithcheck, polrelid), '')
+		FROM pg_policy WHERE polrelid = $1::regclass`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer pol.Close()
+	cmds := map[string]int{}
+	for pol.Next() {
+		var cmd, qual, check string
+		if err := pol.Scan(&cmd, &qual, &check); err != nil {
+			return nil, err
+		}
+		switch cmd {
+		case "r":
+			if !strings.Contains(qual, "identity.may") {
+				gaps = append(gaps, "select policy")
+			}
+		case "a":
+			if !strings.Contains(check, "identity.may") {
+				gaps = append(gaps, "insert policy")
+			}
+		case "w":
+			if !strings.Contains(qual, "identity.may") || !strings.Contains(check, "identity.may") {
+				gaps = append(gaps, "update policy")
+			}
+		case "d":
+			if !strings.Contains(qual, "identity.may") {
+				gaps = append(gaps, "delete policy")
+			}
+		default:
+			gaps = append(gaps, "unexpected command "+cmd)
+		}
+		cmds[cmd]++
+	}
+	if err := pol.Err(); err != nil {
+		return nil, err
+	}
+	var total int
+	for _, n := range cmds {
+		total += n
+	}
+	if total != 4 {
+		gaps = append(gaps, fmt.Sprintf("%d policies, want 4", total))
+	}
+	for _, want := range []string{"r", "a", "w", "d"} {
+		if cmds[want] != 1 {
+			gaps = append(gaps, "policy "+want)
+		}
+	}
+	return gaps, nil
 }
 
 func TestRowSecurityMutationDetectsDroppedClauses(t *testing.T) {
@@ -723,4 +809,122 @@ func TestRowSecurityMutationDetectsDroppedClauses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestAppRoleReturnsAfterReset(t *testing.T) {
+	owner, ctx := upOwner(t)
+	app := pgtest.App(t, owner)
+	n := int(app.Config().MaxConns)
+	held := make([]*pgxpool.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := app.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, "RESET ROLE"); err != nil {
+			t.Fatal(err)
+		}
+		var who string
+		if err := c.QueryRow(ctx, "SELECT current_user").Scan(&who); err != nil {
+			t.Fatal(err)
+		}
+		if who == "upmo_app" {
+			t.Fatal("RESET ROLE did not return to the login user")
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		c.Release()
+	}
+	var who string
+	if err := app.QueryRow(ctx, "SELECT current_user").Scan(&who); err != nil {
+		t.Fatal(err)
+	}
+	if who != "upmo_app" {
+		t.Fatalf("after checkout current_user = %s", who)
+	}
+}
+
+func TestProtectWorkObjects(t *testing.T) {
+	owner, ctx := upOwner(t)
+	ownerID := seedOwner(t, owner, ctx, "ada@example.com")
+	editorID := insertUser(t, owner, ctx, "noor@example.com")
+	if _, err := owner.Exec(ctx, `
+		CREATE TABLE work_guard (
+			id uuid PRIMARY KEY DEFAULT uuidv7(),
+			object_type text NOT NULL,
+			owner_user_id uuid NOT NULL,
+			visibility text NOT NULL,
+			visibility_team_id uuid
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	var objectID string
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO work_guard (object_type, owner_user_id, visibility)
+		VALUES ('task', $1, 'private') RETURNING id::text`, ownerID).Scan(&objectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by)
+		VALUES ('task', $1, $2, 'editor', $3)`, objectID, editorID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `SELECT identity.protect('work_guard')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `SELECT identity.protect('work_guard')`); err != nil {
+		t.Fatal("identity.protect is not idempotent: " + err.Error())
+	}
+	if _, err := owner.Exec(ctx, `SELECT identity.protect('identity.users')`); err == nil {
+		t.Fatal("identity.protect accepted an identity table")
+	}
+	gaps, err := protectionGaps(ctx, owner, "work_guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) > 0 {
+		t.Fatalf("after protect: %s", strings.Join(gaps, "; "))
+	}
+	if _, err := owner.Exec(ctx, `CREATE POLICY extra ON work_guard FOR SELECT USING (true)`); err != nil {
+		t.Fatal(err)
+	}
+	gaps, err = protectionGaps(ctx, owner, "work_guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) == 0 {
+		t.Fatal("an extra policy still passed the guard")
+	}
+	if _, err := owner.Exec(ctx, `DROP POLICY extra ON work_guard`); err != nil {
+		t.Fatal(err)
+	}
+
+	app := pgtest.App(t, owner)
+	ada := hold(t, owner, ctx, "ada", ownerID, "owner", true, false, nil, nil)
+	noor := hold(t, owner, ctx, "noor", editorID, "member", true, false, nil, nil)
+	view, edit := loadShared(t, app, ctx, noor, domain.TypeTask)
+	if err := updateAs(t, app, ctx, noor, view, edit, `UPDATE work_guard SET visibility = 'everyone' WHERE id = $1`, objectID); err != nil {
+		t.Fatalf("editor could not edit: %v", err)
+	}
+	if err := updateAs(t, app, ctx, noor, view, edit, `UPDATE work_guard SET owner_user_id = $1 WHERE id = $2`, editorID, objectID); err == nil {
+		t.Fatal("editor took ownership")
+	}
+	if err := updateAs(t, app, ctx, ada, nil, nil, `UPDATE work_guard SET owner_user_id = $1 WHERE id = $2`, editorID, objectID); err == nil {
+		t.Fatal("owner_user_id was updatable")
+	}
+}
+
+func updateAs(t *testing.T, pool *pgxpool.Pool, ctx context.Context, who held, view, edit []string, query string, args ...any) error {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	applyAccess(t, tx, ctx, who, domain.TypeTask, view, edit)
+	if _, err := tx.Exec(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

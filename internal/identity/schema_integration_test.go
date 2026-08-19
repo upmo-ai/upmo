@@ -453,6 +453,20 @@ func TestTwoConcurrentDemotionsLeaveOneOwner(t *testing.T) {
 	}
 }
 
+func TestIdentityIsOneMigration(t *testing.T) {
+	pool, ctx := upOwner(t)
+	var n, latest int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), coalesce(max(version_id), 0)
+		FROM identity.goose_db_version
+		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || latest != 1 {
+		t.Fatalf("applied versions = %d latest = %d, want 1 and 1", n, latest)
+	}
+}
+
 func TestPasswordChangeDoesNotFireTheOwnerGuard(t *testing.T) {
 	pool, ctx := up(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")

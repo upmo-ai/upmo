@@ -55,16 +55,25 @@ func New(t *testing.T) *pgxpool.Pool {
 func App(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 	t.Helper()
 	cfg := owner.Config()
-	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
-		return err
-	}
+	useAppRole(cfg)
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+func useAppRole(cfg *pgxpool.Config) {
+	setRole := func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
+		return err
+	}
+	cfg.AfterConnect = setRole
+	cfg.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+		err := setRole(ctx, conn)
+		return err == nil, err
+	}
 }
 
 func newDBName() (string, error) {
