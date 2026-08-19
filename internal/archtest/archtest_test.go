@@ -52,11 +52,12 @@ func TestFixtureViolations(t *testing.T) {
 
 func TestRoleSwitchStaysInPoolSetup(t *testing.T) {
 	root := "../.."
-	allow := map[string]bool{
+	allowSetRole := map[string]bool{
 		"cmd/brain/main.go":                  true,
 		"internal/testutil/pgtest/pgtest.go": true,
 	}
-	needles := []string{"SET ROLE", "RESET ROLE", "row_security", "ROW LEVEL SECURITY"}
+	revert := []string{"RESET ROLE", "SET ROLE NONE", "SET SESSION AUTHORIZATION"}
+	needles := []string{"SET ROLE", "row_security", "ROW LEVEL SECURITY"}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -72,9 +73,6 @@ func TestRoleSwitchStaysInPoolSetup(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if allow[filepath.ToSlash(rel)] {
-			return nil
-		}
 		if strings.HasSuffix(rel, "_test.go") || strings.HasSuffix(rel, ".sql") {
 			return nil
 		}
@@ -86,9 +84,25 @@ func TestRoleSwitchStaysInPoolSetup(t *testing.T) {
 			return err
 		}
 		text := string(body)
-		for _, needle := range needles {
+		slash := filepath.ToSlash(rel)
+		for _, needle := range revert {
 			if strings.Contains(text, needle) {
 				t.Errorf("%s contains %q", rel, needle)
+			}
+		}
+		if !allowSetRole[slash] {
+			for _, needle := range needles {
+				if strings.Contains(text, needle) {
+					t.Errorf("%s contains %q", rel, needle)
+				}
+			}
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if strings.Contains(line, "SET upmo.") {
+				t.Errorf("%s sets an upmo option for the session", rel)
+			}
+			if strings.Contains(line, "set_config('upmo.") && strings.Contains(line, "false") {
+				t.Errorf("%s writes an upmo setting that survives the transaction", rel)
 			}
 		}
 		return nil

@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
@@ -124,5 +126,40 @@ func TestRequireSessionSeamIntegration(t *testing.T) {
 	}
 	if seenPrincipal.UserID != uid {
 		t.Fatalf("principal user = %v, want %v", seenPrincipal.UserID, uid)
+	}
+}
+
+func TestRequestPoolReappliesRoleAfterReset(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := requestPool(ctx, owner.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	n := int(pool.Config().MaxConns)
+	held := make([]*pgxpool.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(ctx, "RESET ROLE"); err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		c.Release()
+	}
+	var who string
+	if err := pool.QueryRow(ctx, "SELECT current_user").Scan(&who); err != nil {
+		t.Fatal(err)
+	}
+	if who != "upmo_app" {
+		t.Fatalf("after checkout current_user = %s", who)
 	}
 }

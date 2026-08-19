@@ -305,6 +305,9 @@ func TestAccessSettingsFailClosedForABlindSubject(t *testing.T) {
 	if args[1] != "" {
 		t.Fatalf("blind allow = %q", args[1])
 	}
+	if args[2] != "{}" || args[3] != "{obj-1}" || args[4] != "{}" {
+		t.Fatalf("arrays = %v %v %v", args[2], args[3], args[4])
+	}
 
 	viewer, err := SystemPermissions(RoleViewer)
 	if err != nil {
@@ -315,7 +318,7 @@ func TestAccessSettingsFailClosedForABlindSubject(t *testing.T) {
 	if !strings.Contains(args[1].(string), "task:view") || strings.Contains(args[1].(string), "task:delete") {
 		t.Fatalf("viewer allow = %q", args[1])
 	}
-	if args[3] != "obj-1" || args[4] != "obj-2" {
+	if args[3] != "{obj-1}" || args[4] != "{obj-2}" {
 		t.Fatalf("shared = %v %v", args[3], args[4])
 	}
 
