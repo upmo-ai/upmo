@@ -48,6 +48,31 @@ services:
       retries: 5
       start_period: 120s
 
+  gateway:
+    <<: *go
+    command: ["sh", "-c", "go build -o /tmp/gateway ./cmd/gateway && exec /tmp/gateway"]
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
+      UPMO_PUBLIC_URL: http://127.0.0.1:8082
+      UPMO_LISTEN_ADDR: ":8082"
+      # Dev only. Never reuse outside the local compose stack.
+      UPMO_SERVICE_KEY: upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
+      UPMO_CREDENTIAL_house: local-dev-not-a-provider-key
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
   golangci-lint:
     # v2.13.2 is the oldest v2 image whose Go (1.27) can load a go 1.26.5 module.
     # v2.12.2 ships Go 1.26.2, which refuses this module under GOTOOLCHAIN=local.
