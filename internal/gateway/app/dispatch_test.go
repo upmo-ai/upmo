@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -112,5 +113,48 @@ func TestDispatchSkipsCredentialAtOnce(t *testing.T) {
 	}
 	if got.YesNo || bad.calls != 1 || ok.calls != 1 {
 		t.Fatalf("got=%v bad=%d ok=%d", got, bad.calls, ok.calls)
+	}
+}
+
+type scriptChatter struct {
+	calls int
+	reply string
+	got   domain.Request
+}
+
+func (s *scriptChatter) Chat(_ context.Context, _ Attempt, req domain.Request) (string, domain.FailureClass, error) {
+	s.calls++
+	s.got = req
+	return s.reply, domain.ClassOK, nil
+}
+
+func TestDispatchChatUsesBuilder(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a", RetryBudget: 0}},
+	}
+	c := &scriptChatter{reply: "ok"}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Chat:    map[string]Chatter{"fake": c},
+	}
+	got, err := disp.ChatCall(context.Background(), "draft", "", domain.Input{
+		Tools:    []domain.Tool{{Name: "search", Schema: json.RawMessage(`{"b":1,"a":2}`)}},
+		System:   "be brief",
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ok" || c.calls != 1 {
+		t.Fatalf("got=%q calls=%d", got, c.calls)
+	}
+	if string(c.got.Tools[0].Schema) != `{"a":2,"b":1}` {
+		t.Fatalf("schema = %s", c.got.Tools[0].Schema)
+	}
+	if len(c.got.Cache) != 2 {
+		t.Fatalf("cache = %v", c.got.Cache)
 	}
 }

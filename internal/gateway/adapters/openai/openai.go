@@ -34,7 +34,9 @@ func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.Dec
 	} else {
 		prompt += "\nAnswer with one of: " + strings.Join(req.Options, ", ")
 	}
-	text, class, err := a.complete(ctx, attempt, prompt)
+	text, class, err := a.complete(ctx, attempt, domain.Request{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: prompt}},
+	})
 	if err != nil {
 		return domain.DecideResult{}, class, err
 	}
@@ -56,19 +58,99 @@ func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.Dec
 	}
 }
 
-func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, prompt string) (string, domain.FailureClass, error) {
-	return a.complete(ctx, attempt, prompt)
+func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Request) (string, domain.FailureClass, error) {
+	return a.complete(ctx, attempt, req)
 }
 
-func (a Adapter) complete(ctx context.Context, attempt app.Attempt, prompt string) (string, domain.FailureClass, error) {
+type cacheCtl struct {
+	Type string `json:"type"`
+}
+
+type chatToolFn struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type chatTool struct {
+	Type         string     `json:"type"`
+	Function     chatToolFn `json:"function"`
+	CacheControl *cacheCtl  `json:"cache_control,omitempty"`
+}
+
+type chatMsg struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+type systemBlock struct {
+	Content      string    `json:"content"`
+	CacheControl *cacheCtl `json:"cache_control,omitempty"`
+}
+
+// chatBody is the OpenAI-compat payload. Field order is tools, system,
+// messages so the cache prefix sits in front of the turn.
+type chatBody struct {
+	Model    string     `json:"model"`
+	Tools    []chatTool `json:"tools,omitempty"`
+	System   any        `json:"system,omitempty"`
+	Messages []chatMsg  `json:"messages"`
+}
+
+func encodeChat(model string, req domain.Request) ([]byte, error) {
+	breakTools := false
+	breakSystem := false
+	for _, mark := range req.Cache {
+		if mark == domain.BreakTools {
+			breakTools = true
+		}
+		if mark == domain.BreakSystem {
+			breakSystem = true
+		}
+	}
+	var system any
+	if req.System != "" {
+		if breakSystem {
+			system = systemBlock{Content: req.System, CacheControl: &cacheCtl{Type: "ephemeral"}}
+		} else {
+			system = req.System
+		}
+	}
+	body := chatBody{Model: model, System: system}
+	for i, tool := range req.Tools {
+		item := chatTool{
+			Type: "function",
+			Function: chatToolFn{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Schema,
+			},
+		}
+		if len(bytes.TrimSpace(item.Function.Parameters)) == 0 {
+			item.Function.Parameters = json.RawMessage(`{}`)
+		}
+		if breakTools && i == len(req.Tools)-1 {
+			item.CacheControl = &cacheCtl{Type: "ephemeral"}
+		}
+		body.Tools = append(body.Tools, item)
+	}
+	for _, msg := range req.Messages {
+		body.Messages = append(body.Messages, chatMsg{
+			Role:       string(msg.Role),
+			Content:    msg.Text,
+			ToolCallID: msg.ToolID,
+		})
+	}
+	return json.Marshal(body)
+}
+
+func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (string, domain.FailureClass, error) {
 	base := strings.TrimRight(attempt.BaseURL, "/")
 	if base == "" {
 		return "", domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
-	body, err := json.Marshal(map[string]any{
-		"model":    attempt.Model,
-		"messages": []map[string]string{{"role": "user", "content": prompt}},
-	})
+	body, err := encodeChat(attempt.Model, built)
 	if err != nil {
 		return "", domain.ClassCaller, err
 	}

@@ -35,9 +35,12 @@ func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideReque
 	}
 }
 
-func (a Adapter) Chat(_ context.Context, _ app.Attempt, prompt string) (string, domain.FailureClass, error) {
+func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (string, domain.FailureClass, error) {
 	if a.Reply != "" {
 		return a.Reply, domain.ClassOK, nil
 	}
-	return strings.TrimSpace(prompt), domain.ClassOK, nil
+	if len(req.Messages) == 0 {
+		return "", domain.ClassCaller, fmt.Errorf("gateway: chat prompt is empty")
+	}
+	return strings.TrimSpace(req.Messages[len(req.Messages)-1].Text), domain.ClassOK, nil
 }

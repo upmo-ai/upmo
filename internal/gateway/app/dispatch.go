@@ -23,7 +23,7 @@ type Decider interface {
 
 // Chatter is the chat adapter for one account.adapter value.
 type Chatter interface {
-	Chat(ctx context.Context, attempt Attempt, prompt string) (string, domain.FailureClass, error)
+	Chat(ctx context.Context, attempt Attempt, req domain.Request) (string, domain.FailureClass, error)
 }
 
 // Routes loads one named route from the gateway schema.
@@ -102,8 +102,12 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 	return domain.DecideResult{}, last
 }
 
-func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef, prompt string) (string, error) {
-	if prompt == "" {
+func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string, in domain.Input) (string, error) {
+	built, err := domain.Build(in)
+	if err != nil {
+		return "", err
+	}
+	if len(built.Messages) == 0 {
 		return "", fmt.Errorf("gateway: chat prompt is empty")
 	}
 	route, err := d.Routes.ByName(ctx, routeName)
@@ -132,7 +136,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef, prompt
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
 		retries := link.RetryBudget
 		for {
-			text, class, err := chatter.Chat(ctx, attempt, prompt)
+			text, class, err := chatter.Chat(ctx, attempt, built)
 			if class == domain.ClassOK && err == nil {
 				return text, nil
 			}
