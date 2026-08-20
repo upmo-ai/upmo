@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` to override settings. `.env` is never committed.
 ## Services
 
 - `brain` hosts every bounded context in one process.
-- `gateway` routes model calls and holds provider credentials. It listens on localhost:8082.
+- `gateway` routes model calls and holds provider credentials. It listens on localhost:8082. Chat is built as tools, then system, then messages.
 - `sandboxd` runs sandbox drivers and the egress proxy and arrives with its epic.
 
 ## Layout

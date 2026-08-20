@@ -31,9 +31,13 @@ type decideBody struct {
 }
 
 type chatBody struct {
-	Route         string `json:"route"`
-	Prompt        string `json:"prompt"`
-	CredentialRef string `json:"credential_ref"`
+	Route         string           `json:"route"`
+	Prompt        string           `json:"prompt"`
+	System        string           `json:"system"`
+	Tools         []domain.Tool    `json:"tools"`
+	AllowTools    []string         `json:"allow_tools"`
+	Messages      []domain.Message `json:"messages"`
+	CredentialRef string           `json:"credential_ref"`
 }
 
 func (h Handler) Mount(mux *http.ServeMux) {
@@ -67,7 +71,16 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
 		return
 	}
-	text, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, body.Prompt)
+	in := domain.Input{
+		Tools:      body.Tools,
+		AllowTools: body.AllowTools,
+		System:     body.System,
+		Messages:   body.Messages,
+	}
+	if len(in.Messages) == 0 && body.Prompt != "" {
+		in.Messages = []domain.Message{{Role: domain.RoleUser, Text: body.Prompt}}
+	}
+	text, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, in)
 	if err != nil {
 		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return
