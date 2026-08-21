@@ -61,7 +61,9 @@ type Request struct {
 // Input is what a caller hands the builder.
 type Input struct {
 	Tools      []Tool
-	AllowTools []string // empty keeps every tool
+	AllowTools []string // empty keeps every tool unless Mask is set
+	Mask       bool     // when true, empty AllowTools means no tools
+	Bundle     string   // named surface; resolved before Build
 	System     string
 	Messages   []Message
 	OffloadAt  int // 0 means DefaultOffload
@@ -71,7 +73,7 @@ type Input struct {
 // stamps cache breakpoints after tools and after system when those sections
 // are present.
 func Build(in Input) (Request, error) {
-	tools, err := maskTools(in.Tools, in.AllowTools)
+	tools, err := maskTools(in.Tools, in.AllowTools, in.Mask)
 	if err != nil {
 		return Request{}, err
 	}
@@ -184,8 +186,8 @@ func marshalSorted(v any) (json.RawMessage, error) {
 	}
 }
 
-func maskTools(tools []Tool, allow []string) ([]Tool, error) {
-	if len(allow) == 0 {
+func maskTools(tools []Tool, allow []string, mask bool) ([]Tool, error) {
+	if !mask && len(allow) == 0 {
 		return tools, nil
 	}
 	keep := map[string]bool{}

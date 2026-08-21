@@ -38,6 +38,20 @@ func TestBuildRejectsSystemRoleInMessages(t *testing.T) {
 	}
 }
 
+func TestMaskEmptyAllowKeepsCatalogUnlessMasked(t *testing.T) {
+	req, err := Build(Input{
+		Tools:    []Tool{{Name: "search"}, {Name: "write"}},
+		Mask:     true,
+		Messages: []Message{{Role: RoleUser, Text: "q"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tools) != 0 {
+		t.Fatalf("tools = %+v", req.Tools)
+	}
+}
+
 func TestMaskTools(t *testing.T) {
 	req, err := Build(Input{
 		Tools: []Tool{

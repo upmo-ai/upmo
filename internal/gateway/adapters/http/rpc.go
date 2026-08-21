@@ -48,6 +48,7 @@ type chatBody struct {
 	System        string           `json:"system"`
 	Tools         []domain.Tool    `json:"tools"`
 	AllowTools    []string         `json:"allow_tools"`
+	Bundle        string           `json:"bundle"`
 	Messages      []domain.Message `json:"messages"`
 	CredentialRef string           `json:"credential_ref"`
 	actorBody
@@ -87,6 +88,7 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 	in := domain.Input{
 		Tools:      body.Tools,
 		AllowTools: body.AllowTools,
+		Bundle:     body.Bundle,
 		System:     body.System,
 		Messages:   body.Messages,
 	}
