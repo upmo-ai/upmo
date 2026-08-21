@@ -38,6 +38,8 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 		Dispatch: app.Dispatch{
 			Routes:  store,
 			Secrets: secrets,
+			Prices:  store,
+			Ledger:  store,
 			Decide:  map[string]app.Decider{"fake": f, "openai_compat": o},
 			Chat:    map[string]app.Chatter{"fake": f, "openai_compat": o},
 		},

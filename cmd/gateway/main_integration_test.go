@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -111,7 +113,64 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	if n != 1 || latest != 1 {
 		t.Fatalf("applied versions = %d latest = %d, want 1 and 1", n, latest)
 	}
+
+	var attempts, priced int
+	if err := owner.QueryRow(ctx, `SELECT count(*), count(cost_usd) FROM gateway.ledger`).Scan(&attempts, &priced); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || priced != 0 {
+		t.Fatalf("ledger attempts=%d priced=%d", attempts, priced)
+	}
 }
+
+func TestGatewayLedgerNullCostCases(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Store{Pool: owner}
+	usage := domain.Usage{Arrived: true, Input: 1000, Output: 1000}
+	price := domain.Price{Version: "v1", InputPerMTok: ptr(1), OutputPerMTok: ptr(2)}
+	cases := []struct {
+		plan  string
+		usage domain.Usage
+		found bool
+	}{
+		{plan: domain.PlanLocal, usage: usage, found: true},
+		{plan: domain.PlanMetered, usage: domain.Usage{}, found: true},
+		{plan: domain.PlanMetered, usage: usage, found: false},
+	}
+	for i, tc := range cases {
+		row := domain.Entry{
+			Route: "draft", LinkPosition: 1, Model: "stub", PlanKind: tc.plan,
+			Class: domain.ClassOK, Usage: tc.usage,
+			CostUSD: domain.CostUSD(tc.plan, tc.usage, price, tc.found),
+		}
+		if row.CostUSD != nil {
+			t.Fatalf("case %d cost = %v", i, *row.CostUSD)
+		}
+		if err := store.Record(ctx, row); err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+	}
+	var priced int
+	if err := owner.QueryRow(ctx, `SELECT count(cost_usd) FROM gateway.ledger`).Scan(&priced); err != nil {
+		t.Fatal(err)
+	}
+	if priced != 0 {
+		t.Fatalf("priced = %d", priced)
+	}
+	var alert bool
+	if err := owner.QueryRow(ctx, `SELECT gateway.cache_hit_alert(40, 60)`).Scan(&alert); err != nil {
+		t.Fatal(err)
+	}
+	if !alert {
+		t.Fatal("expected cache hit alert")
+	}
+}
+
+func ptr(v float64) *float64 { return &v }
 
 func postJSON(t *testing.T, srv *httptest.Server, derived []byte, path string, body map[string]any) map[string]any {
 	t.Helper()

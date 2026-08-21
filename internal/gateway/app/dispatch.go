@@ -18,12 +18,22 @@ type Attempt struct {
 
 // Decider is the decide adapter for one account.adapter value.
 type Decider interface {
-	Decide(ctx context.Context, attempt Attempt, req domain.DecideRequest) (domain.DecideResult, domain.FailureClass, error)
+	Decide(ctx context.Context, attempt Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error)
 }
 
 // Chatter is the chat adapter for one account.adapter value.
 type Chatter interface {
-	Chat(ctx context.Context, attempt Attempt, req domain.Request) (string, domain.FailureClass, error)
+	Chat(ctx context.Context, attempt Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error)
+}
+
+// Prices looks up a catalog row. Missing is not an error.
+type Prices interface {
+	Price(ctx context.Context, model string) (domain.Price, bool, error)
+}
+
+// Ledger stores one row per attempt.
+type Ledger interface {
+	Record(ctx context.Context, row domain.Entry) error
 }
 
 // Routes loads one named route from the gateway schema.
@@ -40,11 +50,40 @@ type Secrets interface {
 type Dispatch struct {
 	Routes  Routes
 	Secrets Secrets
+	Prices  Prices
+	Ledger  Ledger
 	Decide  map[string]Decider
 	Chat    map[string]Chatter
 }
 
-func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef string, req domain.DecideRequest) (domain.DecideResult, error) {
+func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) error {
+	if d.Ledger == nil {
+		return nil
+	}
+	var price domain.Price
+	found := false
+	if d.Prices != nil {
+		p, ok, err := d.Prices.Price(ctx, link.Model)
+		if err != nil {
+			return err
+		}
+		price, found = p, ok
+	}
+	return d.Ledger.Record(ctx, domain.Entry{
+		Route:        route,
+		LinkPosition: link.Position,
+		AccountID:    link.Account.ID,
+		Model:        link.Model,
+		PlanKind:     link.Account.PlanKind,
+		Class:        class,
+		Principal:    who,
+		Usage:        usage,
+		CostUSD:      domain.CostUSD(link.Account.PlanKind, usage, price, found),
+		PriceVersion: price.Version,
+	})
+}
+
+func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, req domain.DecideRequest) (domain.DecideResult, error) {
 	if err := req.Check(); err != nil {
 		return domain.DecideResult{}, err
 	}
@@ -68,6 +107,9 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		}
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
+			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+				return domain.DecideResult{}, werr
+			}
 			if domain.NextAction(domain.ClassCredential, 0) == domain.ActionNext {
 				last = err
 				continue
@@ -77,7 +119,10 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
 		retries := link.RetryBudget
 		for {
-			result, class, err := decider.Decide(ctx, attempt, req)
+			result, usage, class, err := decider.Decide(ctx, attempt, req)
+			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
+				return domain.DecideResult{}, werr
+			}
 			if class == domain.ClassOK && err == nil {
 				return result, nil
 			}
@@ -102,7 +147,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 	return domain.DecideResult{}, last
 }
 
-func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string, in domain.Input) (string, error) {
+func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input) (string, error) {
 	built, err := domain.Build(in)
 	if err != nil {
 		return "", err
@@ -130,13 +175,19 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		}
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
+			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+				return "", werr
+			}
 			last = err
 			continue
 		}
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
 		retries := link.RetryBudget
 		for {
-			text, class, err := chatter.Chat(ctx, attempt, built)
+			text, usage, class, err := chatter.Chat(ctx, attempt, built)
+			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
+				return "", werr
+			}
 			if class == domain.ClassOK && err == nil {
 				return text, nil
 			}

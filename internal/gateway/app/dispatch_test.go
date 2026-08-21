@@ -29,17 +29,24 @@ type scriptDecider struct {
 	pick  domain.DecideResult
 }
 
-func (s *scriptDecider) Decide(context.Context, Attempt, domain.DecideRequest) (domain.DecideResult, domain.FailureClass, error) {
+func (s *scriptDecider) Decide(context.Context, Attempt, domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
 	i := s.calls
 	s.calls++
 	if i >= len(s.class) {
-		return s.pick, domain.ClassOK, nil
+		return s.pick, domain.Usage{}, domain.ClassOK, nil
 	}
 	c := s.class[i]
 	if c == domain.ClassOK {
-		return s.pick, c, nil
+		return s.pick, domain.Usage{}, c, nil
 	}
-	return domain.DecideResult{}, c, errors.New(string(c))
+	return domain.DecideResult{}, domain.Usage{}, c, errors.New(string(c))
+}
+
+type memLedger struct{ rows []domain.Entry }
+
+func (m *memLedger) Record(_ context.Context, row domain.Entry) error {
+	m.rows = append(m.rows, row)
+	return nil
 }
 
 func TestDispatchRetriesThenAdvances(t *testing.T) {
@@ -55,17 +62,22 @@ func TestDispatchRetriesThenAdvances(t *testing.T) {
 		class: []domain.FailureClass{domain.ClassTransient, domain.ClassTransient, domain.ClassOK},
 		pick:  domain.DecideResult{YesNo: true},
 	}
+	led := &memLedger{}
 	disp := Dispatch{
 		Routes:  memRoutes{r},
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
 		Decide:  map[string]Decider{"fake": d},
 	}
-	got, err := disp.DecideCall(context.Background(), "memory-check", "", domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
+	got, err := disp.DecideCall(context.Background(), "memory-check", "", domain.Principal{}, domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.YesNo || d.calls != 3 {
 		t.Fatalf("result=%v calls=%d", got, d.calls)
+	}
+	if len(led.rows) != 3 {
+		t.Fatalf("ledger rows = %d", len(led.rows))
 	}
 }
 
@@ -84,7 +96,7 @@ func TestDispatchDoesNotAdvanceOnCallerFault(t *testing.T) {
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
 		Decide:  map[string]Decider{"fake": d},
 	}
-	_, err := disp.DecideCall(context.Background(), "memory-check", "", domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
+	_, err := disp.DecideCall(context.Background(), "memory-check", "", domain.Principal{}, domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
 	if err == nil || d.calls != 1 {
 		t.Fatalf("err=%v calls=%d", err, d.calls)
 	}
@@ -107,7 +119,7 @@ func TestDispatchSkipsCredentialAtOnce(t *testing.T) {
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
 		Decide:  map[string]Decider{"fake": bad, "other": ok},
 	}
-	got, err := disp.DecideCall(context.Background(), "memory-check", "", domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
+	got, err := disp.DecideCall(context.Background(), "memory-check", "", domain.Principal{}, domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,10 +134,10 @@ type scriptChatter struct {
 	got   domain.Request
 }
 
-func (s *scriptChatter) Chat(_ context.Context, _ Attempt, req domain.Request) (string, domain.FailureClass, error) {
+func (s *scriptChatter) Chat(_ context.Context, _ Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
 	s.calls++
 	s.got = req
-	return s.reply, domain.ClassOK, nil
+	return s.reply, domain.Usage{}, domain.ClassOK, nil
 }
 
 func TestDispatchChatUsesBuilder(t *testing.T) {
@@ -140,7 +152,7 @@ func TestDispatchChatUsesBuilder(t *testing.T) {
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
 		Chat:    map[string]Chatter{"fake": c},
 	}
-	got, err := disp.ChatCall(context.Background(), "draft", "", domain.Input{
+	got, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{}, domain.Input{
 		Tools:    []domain.Tool{{Name: "search", Schema: json.RawMessage(`{"b":1,"a":2}`)}},
 		System:   "be brief",
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
