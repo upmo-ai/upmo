@@ -22,12 +22,24 @@ type Handler struct {
 	Names    func(r *http.Request) ([]string, error)
 }
 
+type actorBody struct {
+	UserID      string `json:"user_id"`
+	AgentID     string `json:"agent_id"`
+	RunID       string `json:"run_id"`
+	ParentRunID string `json:"parent_run_id"`
+}
+
+func (a actorBody) principal() domain.Principal {
+	return domain.Principal{User: a.UserID, Agent: a.AgentID, Run: a.RunID, Parent: a.ParentRunID}
+}
+
 type decideBody struct {
 	Route         string   `json:"route"`
 	Kind          string   `json:"kind"`
 	Prompt        string   `json:"prompt"`
 	Options       []string `json:"options"`
 	CredentialRef string   `json:"credential_ref"`
+	actorBody
 }
 
 type chatBody struct {
@@ -38,6 +50,7 @@ type chatBody struct {
 	AllowTools    []string         `json:"allow_tools"`
 	Messages      []domain.Message `json:"messages"`
 	CredentialRef string           `json:"credential_ref"`
+	actorBody
 }
 
 func (h Handler) Mount(mux *http.ServeMux) {
@@ -53,7 +66,7 @@ func (h Handler) decide(w http.ResponseWriter, r *http.Request) {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
 		return
 	}
-	result, err := h.Dispatch.DecideCall(r.Context(), body.Route, body.CredentialRef, domain.DecideRequest{
+	result, err := h.Dispatch.DecideCall(r.Context(), body.Route, body.CredentialRef, body.principal(), domain.DecideRequest{
 		Kind:    domain.Decision(body.Kind),
 		Prompt:  body.Prompt,
 		Options: body.Options,
@@ -80,7 +93,7 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 	if len(in.Messages) == 0 && body.Prompt != "" {
 		in.Messages = []domain.Message{{Role: domain.RoleUser, Text: body.Prompt}}
 	}
-	text, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, in)
+	text, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, body.principal(), in)
 	if err != nil {
 		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return

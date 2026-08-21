@@ -27,38 +27,38 @@ func (a Adapter) client() *http.Client {
 	return &http.Client{Transport: (&netguard.Guard{}).Transport()}
 }
 
-func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.FailureClass, error) {
+func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
 	prompt := req.Prompt
 	if req.Kind == domain.DecisionYesNo {
 		prompt += "\nAnswer with yes or no."
 	} else {
 		prompt += "\nAnswer with one of: " + strings.Join(req.Options, ", ")
 	}
-	text, class, err := a.complete(ctx, attempt, domain.Request{
+	text, _, class, err := a.complete(ctx, attempt, domain.Request{
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: prompt}},
 	})
 	if err != nil {
-		return domain.DecideResult{}, class, err
+		return domain.DecideResult{}, domain.Usage{}, class, err
 	}
 	switch req.Kind {
 	case domain.DecisionYesNo:
 		yes, err := domain.ParseYesNo(strings.ToLower(strings.TrimSpace(text)))
 		if err != nil {
-			return domain.DecideResult{}, domain.ClassCaller, err
+			return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, err
 		}
-		return domain.DecideResult{YesNo: yes}, domain.ClassOK, nil
+		return domain.DecideResult{YesNo: yes}, domain.Usage{}, domain.ClassOK, nil
 	case domain.DecisionChoice:
 		got, err := domain.ParseChoice(strings.TrimSpace(text), req.Options)
 		if err != nil {
-			return domain.DecideResult{}, domain.ClassCaller, err
+			return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, err
 		}
-		return domain.DecideResult{Choice: got}, domain.ClassOK, nil
+		return domain.DecideResult{Choice: got}, domain.Usage{}, domain.ClassOK, nil
 	default:
-		return domain.DecideResult{}, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
+		return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
 	}
 }
 
-func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Request) (string, domain.FailureClass, error) {
+func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
 	return a.complete(ctx, attempt, req)
 }
 
@@ -145,18 +145,18 @@ func encodeChat(model string, req domain.Request) ([]byte, error) {
 	return json.Marshal(body)
 }
 
-func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (string, domain.FailureClass, error) {
+func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (string, domain.Usage, domain.FailureClass, error) {
 	base := strings.TrimRight(attempt.BaseURL, "/")
 	if base == "" {
-		return "", domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	body, err := encodeChat(attempt.Model, built)
 	if err != nil {
-		return "", domain.ClassCaller, err
+		return "", domain.Usage{}, domain.ClassCaller, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", domain.ClassCaller, err
+		return "", domain.Usage{}, domain.ClassCaller, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if attempt.Secret != "" {
@@ -164,27 +164,27 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 	}
 	res, err := a.client().Do(req)
 	if err != nil {
-		return "", classForErr(err), err
+		return "", domain.Usage{}, classForErr(err), err
 	}
 	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return "", domain.ClassTransient, err
+		return "", domain.Usage{}, domain.ClassTransient, err
 	}
 	if res.StatusCode == http.StatusTooManyRequests {
-		return "", domain.ClassRateLimit, fmt.Errorf("gateway: provider %d", res.StatusCode)
+		return "", domain.Usage{}, domain.ClassRateLimit, fmt.Errorf("gateway: provider %d", res.StatusCode)
 	}
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
-		return "", domain.ClassCredential, fmt.Errorf("gateway: provider %d", res.StatusCode)
+		return "", domain.Usage{}, domain.ClassCredential, fmt.Errorf("gateway: provider %d", res.StatusCode)
 	}
 	if res.StatusCode == http.StatusNotFound {
-		return "", domain.ClassModelAccess, fmt.Errorf("gateway: provider %d", res.StatusCode)
+		return "", domain.Usage{}, domain.ClassModelAccess, fmt.Errorf("gateway: provider %d", res.StatusCode)
 	}
 	if res.StatusCode >= 500 {
-		return "", domain.ClassTransient, fmt.Errorf("gateway: provider %d", res.StatusCode)
+		return "", domain.Usage{}, domain.ClassTransient, fmt.Errorf("gateway: provider %d", res.StatusCode)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", domain.ClassCaller, fmt.Errorf("gateway: provider %d", res.StatusCode)
+		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider %d", res.StatusCode)
 	}
 	var parsed struct {
 		Choices []struct {
@@ -192,11 +192,27 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage *struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
-		return "", domain.ClassCaller, fmt.Errorf("gateway: provider body")
+		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider body")
 	}
-	return parsed.Choices[0].Message.Content, domain.ClassOK, nil
+	usage := domain.Usage{}
+	if parsed.Usage != nil {
+		usage.Arrived = true
+		usage.Input = parsed.Usage.PromptTokens
+		usage.Output = parsed.Usage.CompletionTokens
+		if parsed.Usage.PromptTokensDetails != nil {
+			usage.CacheRead = parsed.Usage.PromptTokensDetails.CachedTokens
+		}
+	}
+	return parsed.Choices[0].Message.Content, usage, domain.ClassOK, nil
 }
 
 func classForErr(err error) domain.FailureClass {

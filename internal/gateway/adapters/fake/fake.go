@@ -16,10 +16,10 @@ type Adapter struct {
 	Reply  string
 }
 
-func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.FailureClass, error) {
+func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
 	switch req.Kind {
 	case domain.DecisionYesNo:
-		return domain.DecideResult{YesNo: a.YesNo}, domain.ClassOK, nil
+		return domain.DecideResult{YesNo: a.YesNo}, domain.Usage{}, domain.ClassOK, nil
 	case domain.DecisionChoice:
 		pick := a.Choice
 		if pick == "" && len(req.Options) > 0 {
@@ -27,20 +27,20 @@ func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideReque
 		}
 		got, err := domain.ParseChoice(pick, req.Options)
 		if err != nil {
-			return domain.DecideResult{}, domain.ClassCaller, err
+			return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, err
 		}
-		return domain.DecideResult{Choice: got}, domain.ClassOK, nil
+		return domain.DecideResult{Choice: got}, domain.Usage{}, domain.ClassOK, nil
 	default:
-		return domain.DecideResult{}, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
+		return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
 	}
 }
 
-func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (string, domain.FailureClass, error) {
+func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
 	if a.Reply != "" {
-		return a.Reply, domain.ClassOK, nil
+		return a.Reply, domain.Usage{}, domain.ClassOK, nil
 	}
 	if len(req.Messages) == 0 {
-		return "", domain.ClassCaller, fmt.Errorf("gateway: chat prompt is empty")
+		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: chat prompt is empty")
 	}
-	return strings.TrimSpace(req.Messages[len(req.Messages)-1].Text), domain.ClassOK, nil
+	return strings.TrimSpace(req.Messages[len(req.Messages)-1].Text), domain.Usage{}, domain.ClassOK, nil
 }

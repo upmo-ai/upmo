@@ -26,7 +26,7 @@ func TestAdapterDecideYesNo(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	a := Adapter{Client: srv.Client()}
-	got, class, err := a.Decide(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
+	got, _, class, err := a.Decide(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
 	if err != nil || class != domain.ClassOK || !got.YesNo {
 		t.Fatalf("got=%v class=%s err=%v", got, class, err)
 	}
@@ -38,7 +38,7 @@ func TestAdapterMapsStatusToClass(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	a := Adapter{Client: srv.Client()}
-	_, class, err := a.Chat(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, domain.Request{
+	_, _, class, err := a.Chat(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, domain.Request{
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
 	})
 	if err == nil || class != domain.ClassCredential {
