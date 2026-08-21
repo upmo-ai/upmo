@@ -46,6 +46,27 @@ CREATE TABLE gateway.route_links (
 
 CREATE UNIQUE INDEX route_links_position ON gateway.route_links (route_id, position);
 
+CREATE TABLE gateway.tool_bundles (
+  name text PRIMARY KEY,
+  CONSTRAINT tool_bundles_name_check CHECK (name <> '')
+);
+
+CREATE TABLE gateway.tool_bundle_tools (
+  bundle text NOT NULL REFERENCES gateway.tool_bundles (name) ON DELETE CASCADE,
+  tool_name text NOT NULL,
+  position int NOT NULL,
+  PRIMARY KEY (bundle, tool_name),
+  CONSTRAINT tool_bundle_tools_name_check CHECK (tool_name <> ''),
+  CONSTRAINT tool_bundle_tools_position_check CHECK (position > 0)
+);
+
+CREATE UNIQUE INDEX tool_bundle_tools_position ON gateway.tool_bundle_tools (bundle, position);
+
+CREATE TABLE gateway.agent_bundles (
+  agent_id uuid PRIMARY KEY,
+  bundle text NOT NULL REFERENCES gateway.tool_bundles (name)
+);
+
 CREATE TABLE gateway.prices (
   model text PRIMARY KEY,
   version text NOT NULL,
@@ -118,6 +139,9 @@ DROP FUNCTION IF EXISTS gateway.cache_hit_alert(int, int);
 DROP VIEW IF EXISTS gateway.task_tokens;
 DROP TABLE IF EXISTS gateway.ledger;
 DROP TABLE IF EXISTS gateway.prices;
+DROP TABLE IF EXISTS gateway.agent_bundles;
+DROP TABLE IF EXISTS gateway.tool_bundle_tools;
+DROP TABLE IF EXISTS gateway.tool_bundles;
 DROP TABLE IF EXISTS gateway.route_links;
 DROP TABLE IF EXISTS gateway.routes;
 DROP TABLE IF EXISTS gateway.provider_accounts;

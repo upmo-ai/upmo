@@ -170,3 +170,102 @@ func TestDispatchChatUsesBuilder(t *testing.T) {
 		t.Fatalf("cache = %v", c.got.Cache)
 	}
 }
+
+type memBundles struct {
+	byName map[string]domain.Bundle
+	agent  map[string]string
+}
+
+func (m memBundles) Bundle(_ context.Context, name string) (domain.Bundle, error) {
+	b, ok := m.byName[name]
+	if !ok {
+		return domain.Bundle{}, errors.New("gateway: no bundle " + name)
+	}
+	return b, nil
+}
+
+func (m memBundles) AgentBundle(ctx context.Context, agentID string) (domain.Bundle, error) {
+	name, ok := m.agent[agentID]
+	if !ok {
+		return domain.Bundle{}, errors.New("gateway: agent has no tool bundle")
+	}
+	return m.Bundle(ctx, name)
+}
+
+func TestDispatchChatMasksToAgentBundle(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a", RetryBudget: 0}},
+	}
+	c := &scriptChatter{reply: "ok"}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Bundles: memBundles{
+			byName: map[string]domain.Bundle{"core": {Name: "core", Tools: []string{"search"}}},
+			agent:  map[string]string{"11111111-1111-1111-1111-111111111111": "core"},
+		},
+		Chat: map[string]Chatter{"fake": c},
+	}
+	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{Agent: "11111111-1111-1111-1111-111111111111"}, domain.Input{
+		Tools: []domain.Tool{
+			{Name: "search", Schema: json.RawMessage(`{}`)},
+			{Name: "write", Schema: json.RawMessage(`{}`)},
+		},
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.got.Tools) != 1 || c.got.Tools[0].Name != "search" {
+		t.Fatalf("tools = %+v", c.got.Tools)
+	}
+}
+
+func TestDispatchChatBundleDoesNotLeakCatalog(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a", RetryBudget: 0}},
+	}
+	c := &scriptChatter{reply: "ok"}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Bundles: memBundles{byName: map[string]domain.Bundle{"core": {Name: "core", Tools: []string{"search"}}}},
+		Chat:    map[string]Chatter{"fake": c},
+	}
+	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{}, domain.Input{
+		Bundle:   "core",
+		Tools:    []domain.Tool{{Name: "write", Schema: json.RawMessage(`{}`)}},
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.got.Tools) != 0 {
+		t.Fatalf("leaked catalog = %+v", c.got.Tools)
+	}
+}
+
+func TestDispatchChatAgentWithoutBundleFailsClosed(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a", RetryBudget: 0}},
+	}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Bundles: memBundles{byName: map[string]domain.Bundle{}, agent: map[string]string{}},
+		Chat:    map[string]Chatter{"fake": &scriptChatter{reply: "ok"}},
+	}
+	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{Agent: "11111111-1111-1111-1111-111111111111"}, domain.Input{
+		Tools:    []domain.Tool{{Name: "search"}},
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("agent without bundle")
+	}
+}

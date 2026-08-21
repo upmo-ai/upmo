@@ -204,6 +204,37 @@ func postJSON(t *testing.T, srv *httptest.Server, derived []byte, path string, b
 	return out
 }
 
+func TestGatewayToolBundles(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	agent := "11111111-1111-4111-8111-111111111111"
+	if _, err := owner.Exec(ctx, `INSERT INTO gateway.tool_bundles (name) VALUES ('core')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.tool_bundle_tools (bundle, tool_name, position) VALUES
+			('core', 'search', 1), ('core', 'write', 2)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO gateway.agent_bundles (agent_id, bundle) VALUES ($1, 'core')`, agent); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Store{Pool: owner}
+	b, err := store.AgentBundle(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Name != "core" || len(b.Tools) != 2 || b.Tools[0] != "search" || b.Tools[1] != "write" {
+		t.Fatalf("bundle = %+v", b)
+	}
+	if _, err := store.AgentBundle(ctx, "22222222-2222-4222-8222-222222222222"); err == nil {
+		t.Fatal("missing agent bundle")
+	}
+}
+
 func mustMaster(t *testing.T) string {
 	t.Helper()
 	raw := bytes32('g')
