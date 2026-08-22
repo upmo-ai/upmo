@@ -30,14 +30,14 @@ importers:
         specifier: 1.170.18
         version: 1.170.18(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@upmo-ai/icons':
-        specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/icons
-        version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons
+        specifier: file:../design-system/packages/icons
+        version: file:../design-system/packages/icons
       '@upmo-ai/tokens':
-        specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/tokens
-        version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens
+        specifier: file:../design-system/packages/tokens
+        version: file:../design-system/packages/tokens
       '@upmo-ai/ui':
-        specifier: github:upmo-ai/design-system#v0.1.0&path:/packages/ui
-        version: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: file:../design-system/packages/ui
+        version: file:../design-system/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@file:../design-system/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -625,17 +625,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@upmo-ai/icons@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons':
-    resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/icons, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
-    version: 0.1.0
+  '@upmo-ai/icons@file:../design-system/packages/icons':
+    resolution: {directory: ../design-system/packages/icons, type: directory}
 
-  '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens':
-    resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/tokens, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
-    version: 0.1.0
+  '@upmo-ai/tokens@file:../design-system/packages/tokens':
+    resolution: {directory: ../design-system/packages/tokens, type: directory}
 
-  '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui':
-    resolution: {gitHosted: true, integrity: sha512-UHt+IytjQ5DgzZRN3XPXg+ZdjQ1n8u4IJF3+YEqg4uQfXN6nlgTTq7GZHD6/tGdE4HzwEjzzRzE9qZt4IINzYQ==, path: /packages/ui, tarball: https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413}
-    version: 0.1.0
+  '@upmo-ai/ui@file:../design-system/packages/ui':
+    resolution: {directory: ../design-system/packages/ui, type: directory}
     peerDependencies:
       '@mantine/core': ^9.4.0
       '@mantine/hooks': ^9.4.0
@@ -1554,15 +1551,15 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  '@upmo-ai/icons@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons': {}
+  '@upmo-ai/icons@file:../design-system/packages/icons': {}
 
-  '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens': {}
+  '@upmo-ai/tokens@file:../design-system/packages/tokens': {}
 
-  '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@upmo-ai/ui@file:../design-system/packages/ui(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@upmo-ai/tokens@file:../design-system/packages/tokens)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@mantine/core': 9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@mantine/hooks': 9.7.4(react@19.3.1)
-      '@upmo-ai/tokens': https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens
+      '@upmo-ai/tokens': file:../design-system/packages/tokens
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
 

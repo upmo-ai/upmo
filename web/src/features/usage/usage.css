@@ -95,3 +95,18 @@
   width: 100%;
   background: var(--border);
 }
+
+@media (max-width: 47.99em) {
+  .usage-chart tbody tr {
+    display: block;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .usage-chart tbody th,
+  .usage-chart tbody td {
+    display: block;
+    width: auto;
+    padding: var(--space-1) 0;
+  }
+}

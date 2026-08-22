@@ -45,6 +45,7 @@ export function ConnectorsPage() {
       title="Connectors"
       emptyTitle="Connect your tools"
       emptyBody="GitHub, email, calendar and any MCP server. Agents use only the connectors you add."
+      emptyAction={{ label: "Add connector", to: "/settings/connectors" }}
     />
   );
 }
