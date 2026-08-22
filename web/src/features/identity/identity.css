@@ -158,10 +158,27 @@
   }
 }
 
-@media (min-width: 48em) {
+@media (max-width: 47.99em) {
   .settings-nav {
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: var(--space-1);
+    max-width: 100%;
+  }
+}
+
+@media (min-width: 48em) {
+  .settings-page {
+    display: grid;
+    grid-template-columns: 12.5rem minmax(0, 1fr);
+    gap: var(--space-8);
+    align-items: start;
+  }
+
+  .settings-nav {
+    flex-direction: column;
+    flex-wrap: nowrap;
   }
 }
 

@@ -113,6 +113,8 @@ export function TasksPage() {
         <EmptyState
           title="Your first task"
           body="Give Upmo a goal. It plans the work, does it and checks the result while you do something else."
+          action={{ label: "Create task", to: "/tasks" }}
+          firstRun
         />
       ) : null}
       {tasks.data && all.length > 0 ? (

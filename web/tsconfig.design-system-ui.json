@@ -1,0 +1,12 @@
+{
+  "extends": "../design-system/packages/ui/tsconfig.build.json",
+  "compilerOptions": {
+    "rootDir": "../design-system/packages/ui/src",
+    "outDir": "../design-system/packages/ui/dist",
+    "paths": {
+      "@mantine/core": ["./node_modules/@mantine/core/lib/index.d.ts"],
+      "@upmo-ai/tokens": ["./node_modules/@upmo-ai/tokens/dist/tokens.d.ts"]
+    }
+  },
+  "include": ["../design-system/packages/ui/src/**/*.ts"]
+}
