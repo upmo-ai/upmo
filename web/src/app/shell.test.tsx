@@ -162,6 +162,22 @@ describe("app shell", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows a forward path on the home empty state", async () => {
+    renderAt("/");
+    expect(await screen.findByRole("heading", { level: 3, name: "Your first task" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Create task" }).getAttribute("href")).toBe("/tasks");
+  });
+
+  it("opens navigation from the command launcher", async () => {
+    renderAt("/");
+    await screen.findByRole("heading", { level: 1, name: "Home" });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Go to" });
+    expect(within(dialog).getByRole("link", { name: "Tasks" }).getAttribute("href")).toBe("/tasks");
+  });
+
   it("lists primary nav then Workspace and Settings", async () => {
     renderAt("/");
     await screen.findByRole("heading", { level: 1, name: "Home" });

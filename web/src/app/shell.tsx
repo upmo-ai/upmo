@@ -23,6 +23,7 @@ import { WorkspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch } from "../theme";
 import { ShellIcon, type ShellConcept } from "../ui/icons";
 import { BrandLink } from "./brand";
+import { CommandLauncher } from "./command-launcher";
 import { endThisSession } from "./passkeys";
 
 import "./shell.css";
@@ -200,7 +201,10 @@ export function Shell() {
             </Tooltip>
             <ShellBreadcrumb pathname={pathname} />
           </Group>
-          <NotificationsBell />
+          <Group gap="xs" wrap="nowrap">
+            <CommandLauncher />
+            <NotificationsBell />
+          </Group>
         </Group>
       </AppShell.Header>
       <AppShell.Navbar className="shell-navbar" aria-label="Sidebar" data-layout={layout}>

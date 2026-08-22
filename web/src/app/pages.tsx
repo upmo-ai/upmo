@@ -4,8 +4,9 @@ export function HomePage() {
   return (
     <Section
       title="Home"
-      emptyTitle="Your workspace"
-      emptyBody="Open a section from the sidebar to see what is happening here."
+      emptyTitle="Your first task"
+      emptyBody="Give Upmo a goal. It plans the work, does it and checks the result while you do something else."
+      emptyAction={{ label: "Create task", to: "/tasks" }}
     />
   );
 }
@@ -16,6 +17,7 @@ export function ChatPage() {
       title="Chat"
       emptyTitle="Start a chat"
       emptyBody="Ask a question, paste a file, or describe what you want done."
+      emptyAction={{ label: "New chat", to: "/chat" }}
     />
   );
 }
@@ -26,6 +28,7 @@ export function AutomationsPage() {
       title="Automations"
       emptyTitle="Run tasks on a schedule"
       emptyBody="A daily digest, a weekly review, a check every hour."
+      emptyAction={{ label: "Add automation", to: "/automations" }}
     />
   );
 }
@@ -36,6 +39,7 @@ export function AgentsPage() {
       title="Agents"
       emptyTitle="Add an agent"
       emptyBody="Agents run tasks with the tools you give them."
+      emptyAction={{ label: "Add agent", to: "/agents" }}
     />
   );
 }
@@ -46,7 +50,7 @@ export function KnowledgePage() {
       title="Knowledge"
       emptyTitle="Give Upmo something to read"
       emptyBody="Upload files or point to a folder. Agents search it when it helps."
+      emptyAction={{ label: "Add source", to: "/knowledge" }}
     />
   );
 }
-
