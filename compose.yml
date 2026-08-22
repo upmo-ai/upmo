@@ -95,6 +95,7 @@ services:
     working_dir: /src/web
     volumes:
       - .:/src
+      - ../design-system:/src/design-system
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       # node_modules lives in a volume, off the slower bind mount.
       - upmo-web-node-modules:/src/web/node_modules
@@ -129,6 +130,7 @@ services:
     init: true
     volumes:
       - .:/src
+      - ../design-system:/src/design-system
       - upmo-playwright:/opt/playwright
     environment:
       WEB_URL: http://localhost:5173
