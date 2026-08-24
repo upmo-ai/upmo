@@ -22,6 +22,7 @@ export function EmptyState({
       gap="xs"
       py={48}
       px="md"
+      w="100%"
       className={firstRun ? "empty-state empty-state-first-run" : "empty-state"}
     >
       <ThemeIcon variant="light" size={48} radius="lg" aria-hidden>
