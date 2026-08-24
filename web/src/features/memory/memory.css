@@ -1,6 +1,7 @@
 .memory-page {
   min-width: 0;
-  max-width: 40rem;
+  width: 100%;
+  max-width: 100%;
 }
 
 .memory-profile,

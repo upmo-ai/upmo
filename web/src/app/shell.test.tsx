@@ -167,6 +167,7 @@ describe("app shell", () => {
     renderAt("/");
     expect(await screen.findByRole("heading", { level: 3, name: "Your first task" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Create task" }).getAttribute("href")).toBe("/tasks");
+    expect(screen.getByRole("heading", { level: 3, name: "Your first task" }).closest(".empty-state")).toBeTruthy();
   });
 
   it("opens navigation from the command launcher", async () => {
