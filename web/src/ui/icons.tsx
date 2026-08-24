@@ -1,6 +1,7 @@
 import {
   IconBell,
   IconBooks,
+  IconBrain,
   IconChartBar,
   IconClockPlay,
   IconHome,
@@ -18,6 +19,7 @@ export const shellConcepts = [
   "nav.tasks",
   "nav.automations",
   "nav.agents",
+  "nav.memory",
   "nav.knowledge",
   "nav.usage",
   "nav.settings",
@@ -34,6 +36,7 @@ const byName = {
   "clock-play": IconClockPlay,
   users: IconUsers,
   books: IconBooks,
+  brain: IconBrain,
   "chart-bar": IconChartBar,
   settings: IconSettings,
   "layout-sidebar": IconLayoutSidebar,

@@ -34,6 +34,7 @@ const primary = [
   { to: "/tasks", label: "Tasks", concept: "nav.tasks" },
   { to: "/automations", label: "Automations", concept: "nav.automations" },
   { to: "/agents", label: "Agents", concept: "nav.agents" },
+  { to: "/memory", label: "Memory", concept: "nav.memory" },
   { to: "/knowledge", label: "Knowledge", concept: "nav.knowledge" },
   { to: "/usage", label: "Usage", concept: "nav.usage" },
 ] as const;

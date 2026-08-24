@@ -1,0 +1,31 @@
+.memory-page {
+  min-width: 0;
+  max-width: 40rem;
+}
+
+.memory-profile,
+.memory-list {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-100);
+}
+
+.memory-row {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+
+.memory-row:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.memory-row[data-forgotten="true"] {
+  color: var(--ink-muted);
+}
+
+.memory-row-actions {
+  opacity: 1;
+}

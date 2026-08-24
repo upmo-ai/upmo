@@ -15,18 +15,14 @@ import { SecurityPage } from "../features/identity/security";
 import { TokensPage } from "../features/identity/tokens";
 import { ConnectorsPage, SettingsLayout } from "../features/settings/settings";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
+import { KnowledgePage } from "../features/knowledge/knowledge";
+import { MemoryPage } from "../features/memory/memory";
 import { UsagePage } from "../features/usage/usage";
 import { PrivacyPage, TermsPage } from "./legal";
 import { LinkPage } from "./link";
 import { SignInPage } from "./sign-in";
 import { Shell } from "./shell";
-import {
-  AgentsPage,
-  AutomationsPage,
-  ChatPage,
-  HomePage,
-  KnowledgePage,
-} from "./pages";
+import { AgentsPage, AutomationsPage, ChatPage, HomePage } from "./pages";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -125,6 +121,12 @@ const agentsRoute = createRoute({
   component: AgentsPage,
 });
 
+const memoryRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/memory",
+  component: MemoryPage,
+});
+
 const knowledgeRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/knowledge",
@@ -178,6 +180,7 @@ const routeTree = rootRoute.addChildren([
     tasksRoute.addChildren([tasksIndexRoute, taskRoute]),
     automationsRoute,
     agentsRoute,
+    memoryRoute,
     knowledgeRoute,
     usageRoute,
     settingsRoute.addChildren([settingsIndexRoute, membersRoute, tokensRoute, connectorsRoute]),

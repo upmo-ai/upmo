@@ -1,0 +1,17 @@
+.knowledge-page {
+  min-width: 0;
+  max-width: 40rem;
+}
+
+.knowledge-folder {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-100);
+}
+
+.knowledge-sources {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.25rem;
+}
