@@ -10,6 +10,7 @@ const pages = [
   { to: "/tasks", label: "Tasks" },
   { to: "/automations", label: "Automations" },
   { to: "/agents", label: "Agents" },
+  { to: "/memory", label: "Memory" },
   { to: "/knowledge", label: "Knowledge" },
   { to: "/usage", label: "Usage" },
   { to: "/settings", label: "Settings" },

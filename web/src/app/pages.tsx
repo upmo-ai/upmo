@@ -43,14 +43,3 @@ export function AgentsPage() {
     />
   );
 }
-
-export function KnowledgePage() {
-  return (
-    <Section
-      title="Knowledge"
-      emptyTitle="Give Upmo something to read"
-      emptyBody="Upload files or point to a folder. Agents search it when it helps."
-      emptyAction={{ label: "Add source", to: "/knowledge" }}
-    />
-  );
-}
