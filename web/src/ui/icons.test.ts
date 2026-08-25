@@ -9,7 +9,6 @@ const expected: Record<(typeof shellConcepts)[number], string> = {
   "nav.tasks": "list-check",
   "nav.automations": "clock-play",
   "nav.agents": "users",
-  "nav.memory": "brain",
   "nav.knowledge": "books",
   "nav.usage": "chart-bar",
   "nav.settings": "settings",

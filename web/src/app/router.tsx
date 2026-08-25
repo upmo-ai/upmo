@@ -16,7 +16,7 @@ import { TokensPage } from "../features/identity/tokens";
 import { ConnectorsPage, SettingsLayout } from "../features/settings/settings";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
 import { KnowledgePage } from "../features/knowledge/knowledge";
-import { MemoryPage } from "../features/memory/memory";
+import { PersonalisationPage } from "../features/memory/memory";
 import { UsagePage } from "../features/usage/usage";
 import { PrivacyPage, TermsPage } from "./legal";
 import { LinkPage } from "./link";
@@ -124,7 +124,9 @@ const agentsRoute = createRoute({
 const memoryRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/memory",
-  component: MemoryPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/personalisation" });
+  },
 });
 
 const knowledgeRoute = createRoute({
@@ -149,6 +151,12 @@ const settingsIndexRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/",
   component: SecurityPage,
+});
+
+const personalisationRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "personalisation",
+  component: PersonalisationPage,
 });
 
 const membersRoute = createRoute({
@@ -183,7 +191,13 @@ const routeTree = rootRoute.addChildren([
     memoryRoute,
     knowledgeRoute,
     usageRoute,
-    settingsRoute.addChildren([settingsIndexRoute, membersRoute, tokensRoute, connectorsRoute]),
+    settingsRoute.addChildren([
+      settingsIndexRoute,
+      personalisationRoute,
+      membersRoute,
+      tokensRoute,
+      connectorsRoute,
+    ]),
   ]),
 ]);
 
