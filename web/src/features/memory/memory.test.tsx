@@ -1,5 +1,5 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../../App";
@@ -15,7 +15,7 @@ function renderAt(path: string) {
   );
 }
 
-describe("Memory page", () => {
+describe("Personalisation page", () => {
   beforeEach(() => {
     localStorage.clear();
   });
@@ -24,37 +24,82 @@ describe("Memory page", () => {
     cleanup();
   });
 
-  it("shows the profile and sample facts", async () => {
-    renderAt("/memory");
-    expect(await screen.findByRole("heading", { level: 1, name: "Memory" })).toBeTruthy();
+  it("shows the profile and sample facts under Settings", async () => {
+    renderAt("/settings/personalisation");
+    expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Profile" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Memory" })).toBeTruthy();
     expect(screen.getByText(sampleProfile)).toBeTruthy();
     expect(screen.getByText(sampleFacts[0]!.text)).toBeTruthy();
-    expect(screen.getByText("Personal by default. Sample facts until memory exists.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "What Upmo remembers about you. Facts stay personal until you promote them. Documents belong in Knowledge.",
+      ),
+    ).toBeTruthy();
+    const settings = screen.getByRole("navigation", { name: "Settings" });
+    expect(within(settings).getByRole("link", { name: "Personalisation" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
   });
 
-  it("asks before promote and forget", async () => {
+  it("redirects /memory to Personalisation", async () => {
     renderAt("/memory");
-    await screen.findByRole("heading", { level: 1, name: "Memory" });
+    expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
+  });
+
+  it("adds, edits, promotes to a team, and forgets a fact", async () => {
+    renderAt("/settings/personalisation");
+    await screen.findByRole("heading", { level: 1, name: "Personalisation" });
+
+    fireEvent.change(screen.getByLabelText("Add a fact"), { target: { value: "Prefers tables over prose." } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText("Prefers tables over prose.")).toBeTruthy();
+
     const first = screen.getByText(sampleFacts[0]!.text).closest(".memory-row");
     expect(first).toBeTruthy();
     act(() => {
-      within(first as HTMLElement).getByRole("button", { name: "Promote" }).click();
+      within(first as HTMLElement).getByRole("button", { name: "Edit" }).click();
+    });
+    fireEvent.change(screen.getByLabelText("Fact"), { target: { value: "Prefers British spelling in every reply." } });
+    act(() => {
+      screen.getByRole("button", { name: "Save" }).click();
+    });
+    expect(screen.getByText("Prefers British spelling in every reply.")).toBeTruthy();
+
+    const edited = screen.getByText("Prefers British spelling in every reply.").closest(".memory-row");
+    act(() => {
+      within(edited as HTMLElement).getByRole("button", { name: "Promote" }).click();
     });
     const promoteDialog = await screen.findByRole("dialog", { name: "Promote this fact?" });
+    fireEvent.change(within(promoteDialog).getByLabelText("Team"), { target: { value: "Product" } });
     act(() => {
       within(promoteDialog).getByRole("button", { name: "Promote" }).click();
     });
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(within(first as HTMLElement).getByText("Team · Finance")).toBeTruthy();
+    expect(within(edited as HTMLElement).getByText("Team · Product")).toBeTruthy();
 
     act(() => {
-      within(first as HTMLElement).getByRole("button", { name: "Forget" }).click();
+      within(edited as HTMLElement).getByRole("button", { name: "Forget" }).click();
     });
     expect(await screen.findByRole("dialog", { name: "Forget this fact?" })).toBeTruthy();
     act(() => {
       within(screen.getByRole("dialog")).getByRole("button", { name: "Forget" }).click();
     });
-    expect(screen.queryByText(sampleFacts[0]!.text)).toBeNull();
+    expect(screen.queryByText("Prefers British spelling in every reply.")).toBeNull();
+  });
+
+  it("saves an edited profile", async () => {
+    renderAt("/settings/personalisation");
+    await screen.findByRole("heading", { level: 1, name: "Personalisation" });
+    act(() => {
+      screen.getAllByRole("button", { name: "Edit" })[0]!.click();
+    });
+    fireEvent.change(screen.getByLabelText("Profile"), {
+      target: { value: "Prefers short answers and tables." },
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Save" }).click();
+    });
+    expect(screen.getByText("Prefers short answers and tables.")).toBeTruthy();
   });
 });
