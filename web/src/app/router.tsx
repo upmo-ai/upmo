@@ -121,14 +121,6 @@ const agentsRoute = createRoute({
   component: AgentsPage,
 });
 
-const memoryRoute = createRoute({
-  getParentRoute: () => shellRoute,
-  path: "/memory",
-  beforeLoad: () => {
-    throw redirect({ to: "/settings/personalisation" });
-  },
-});
-
 const knowledgeRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/knowledge",
@@ -188,7 +180,6 @@ const routeTree = rootRoute.addChildren([
     tasksRoute.addChildren([tasksIndexRoute, taskRoute]),
     automationsRoute,
     agentsRoute,
-    memoryRoute,
     knowledgeRoute,
     usageRoute,
     settingsRoute.addChildren([

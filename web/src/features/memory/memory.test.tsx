@@ -42,11 +42,6 @@ describe("Personalisation page", () => {
     );
   });
 
-  it("redirects /memory to Personalisation", async () => {
-    renderAt("/memory");
-    expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
-  });
-
   it("adds, edits, promotes to a team, and forgets a fact", async () => {
     renderAt("/settings/personalisation");
     await screen.findByRole("heading", { level: 1, name: "Personalisation" });
