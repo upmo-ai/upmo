@@ -13,7 +13,7 @@ const pages = [
   { to: "/knowledge", label: "Knowledge" },
   { to: "/usage", label: "Usage" },
   { to: "/settings", label: "Settings" },
-  { to: "/settings/personalisation", label: "Personalisation" },
+  { to: "/settings/personalization", label: "Personalisation" },
   { to: "/settings/members", label: "Members" },
   { to: "/settings/tokens", label: "API tokens" },
   { to: "/settings/connectors", label: "Connectors" },

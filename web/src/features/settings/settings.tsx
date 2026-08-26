@@ -6,7 +6,7 @@ import { Section } from "../../ui/section";
 import "../identity/identity.css";
 
 export const settingsSections = [
-  { to: "/settings/personalisation", label: "Personalisation" },
+  { to: "/settings/personalization", label: "Personalisation" },
   { to: "/settings", label: "Security" },
   { to: "/settings/members", label: "Members" },
   { to: "/settings/tokens", label: "API tokens" },

@@ -26,7 +26,7 @@ const routes = [
   ["/knowledge", "Knowledge", "Knowledge"],
   ["/usage", "Usage", "Usage"],
   ["/settings", "Security", "Settings"],
-  ["/settings/personalisation", "Personalisation", "Settings"],
+  ["/settings/personalization", "Personalisation", "Settings"],
   ["/settings/members", "Members", "Settings"],
   ["/settings/tokens", "API tokens", "Settings"],
   ["/settings/connectors", "Connectors", "Settings"],
