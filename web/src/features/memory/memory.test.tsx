@@ -25,7 +25,7 @@ describe("Personalisation page", () => {
   });
 
   it("shows the profile and sample facts under Settings", async () => {
-    renderAt("/settings/personalisation");
+    renderAt("/settings/personalization");
     expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Profile" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Memory" })).toBeTruthy();
@@ -43,7 +43,7 @@ describe("Personalisation page", () => {
   });
 
   it("adds, edits, promotes to a team, and forgets a fact", async () => {
-    renderAt("/settings/personalisation");
+    renderAt("/settings/personalization");
     await screen.findByRole("heading", { level: 1, name: "Personalisation" });
 
     fireEvent.change(screen.getByLabelText("Add a fact"), { target: { value: "Prefers tables over prose." } });
@@ -84,7 +84,7 @@ describe("Personalisation page", () => {
   });
 
   it("saves an edited profile", async () => {
-    renderAt("/settings/personalisation");
+    renderAt("/settings/personalization");
     await screen.findByRole("heading", { level: 1, name: "Personalisation" });
     act(() => {
       screen.getAllByRole("button", { name: "Edit" })[0]!.click();

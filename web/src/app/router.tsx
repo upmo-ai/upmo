@@ -147,7 +147,7 @@ const settingsIndexRoute = createRoute({
 
 const personalisationRoute = createRoute({
   getParentRoute: () => settingsRoute,
-  path: "personalisation",
+  path: "personalization",
   component: PersonalisationPage,
 });
 
