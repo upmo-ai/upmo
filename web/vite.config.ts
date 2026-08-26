@@ -7,6 +7,10 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       "/api": {
         target: (globalThis as { process?: { env?: { UPMO_API_PROXY?: string } } }).process?.env?.UPMO_API_PROXY ?? "http://brain:8080",
