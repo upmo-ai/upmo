@@ -8,18 +8,25 @@ import "../identity/identity.css";
 export const settingsSections = [
   { to: "/settings/personalization", label: "Personalisation" },
   { to: "/settings", label: "Security" },
-  { to: "/settings/members", label: "Members" },
   { to: "/settings/tokens", label: "API tokens" },
   { to: "/settings/connectors", label: "Connectors" },
 ] as const;
 
-export function SettingsLayout() {
+export const adminSections = [{ to: "/admin", label: "Members" }] as const;
+
+function SectionNav({
+  label,
+  sections,
+}: {
+  label: string;
+  sections: readonly { to: string; label: string }[];
+}) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
 
   return (
     <Stack gap="lg" className="settings-page">
-      <nav className="settings-nav" aria-label="Settings">
-        {settingsSections.map((item) => {
+      <nav className="settings-nav" aria-label={label}>
+        {sections.map((item) => {
           const current = pathname === item.to;
           return (
             <Anchor
@@ -38,6 +45,14 @@ export function SettingsLayout() {
       <Outlet />
     </Stack>
   );
+}
+
+export function SettingsLayout() {
+  return <SectionNav label="Settings" sections={settingsSections} />;
+}
+
+export function AdminSettingsLayout() {
+  return <SectionNav label="Admin Settings" sections={adminSections} />;
 }
 
 export function ConnectorsPage() {

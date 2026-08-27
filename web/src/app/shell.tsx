@@ -18,7 +18,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { PasskeyOffer } from "../features/identity/passkey-offer";
 import { NotificationsBell } from "../features/notifications/bell";
-import { settingsSections } from "../features/settings/settings";
+import { adminSections, settingsSections } from "../features/settings/settings";
 import { WorkspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch } from "../theme";
 import { ShellIcon, type ShellConcept } from "../ui/icons";
@@ -39,9 +39,10 @@ const primary = [
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", concept: "nav.settings" } as const;
+const adminItem = { to: "/admin", label: "Admin Settings", concept: "nav.settings" } as const;
 
 type NavItem = {
-  to: (typeof primary)[number]["to"] | (typeof settingsItem)["to"];
+  to: (typeof primary)[number]["to"] | (typeof settingsItem)["to"] | (typeof adminItem)["to"];
   label: string;
   concept: ShellConcept;
 };
@@ -56,8 +57,9 @@ function useShellLayout(): "drawer" | "rail" | "full" {
 
 function isCurrent(pathname: string, to: string) {
   if (to === "/") return pathname === "/";
-  if (to === "/settings") return pathname === "/settings" || pathname.startsWith("/settings/");
-  if (to === "/tasks") return pathname === "/tasks" || pathname.startsWith("/tasks/");
+  if (to === "/settings" || to === "/admin" || to === "/tasks") {
+    return pathname === to || pathname.startsWith(`${to}/`);
+  }
   return pathname === to;
 }
 
@@ -79,7 +81,7 @@ function NavEntry({
         className="shell-nav-link"
         component={Link}
         to={item.to}
-        activeOptions={{ exact: item.to !== "/settings" && item.to !== "/tasks" }}
+        activeOptions={{ exact: item.to !== "/settings" && item.to !== "/admin" && item.to !== "/tasks" }}
         active={current}
         aria-current={current ? "page" : undefined}
         aria-label={item.label}
@@ -93,15 +95,29 @@ function NavEntry({
 }
 
 function ShellBreadcrumb({ pathname }: { pathname: string }) {
-  const section = settingsSections.find((item) => item.to === pathname);
-  if (section) {
+  const settingsSection = settingsSections.find((item) => item.to === pathname);
+  if (settingsSection) {
     return (
       <Breadcrumbs separator="/">
         <Anchor component={Link} to="/settings" size="sm">
           Settings
         </Anchor>
         <Text size="sm" fw={600} aria-current="page">
-          {section.label}
+          {settingsSection.label}
+        </Text>
+      </Breadcrumbs>
+    );
+  }
+
+  const adminSection = adminSections.find((item) => item.to === pathname);
+  if (adminSection) {
+    return (
+      <Breadcrumbs separator="/">
+        <Anchor component={Link} to="/admin" size="sm">
+          Admin Settings
+        </Anchor>
+        <Text size="sm" fw={600} aria-current="page">
+          {adminSection.label}
         </Text>
       </Breadcrumbs>
     );
@@ -113,7 +129,9 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
       ? "Tasks"
       : pathname === "/settings"
         ? "Settings"
-        : "");
+        : pathname === "/admin"
+          ? "Admin Settings"
+          : "");
 
   return (
     <Breadcrumbs separator="/">
@@ -223,6 +241,12 @@ export function Shell() {
           <Text className="shell-group">Workspace</Text>
           <NavEntry
             item={settingsItem}
+            pathname={pathname}
+            rail={layout === "rail"}
+            onNavigate={close}
+          />
+          <NavEntry
+            item={adminItem}
             pathname={pathname}
             rail={layout === "rail"}
             onNavigate={close}

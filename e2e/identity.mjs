@@ -137,7 +137,7 @@ try {
   await expectFits(page, "/settings", (current) =>
     current.getByRole("button", { name: "Change password" }).waitFor(),
   );
-  await expectFits(page, "/settings/members", (current) =>
+  await expectFits(page, "/admin", (current) =>
     current.getByText("ada@example.com").waitFor(),
   );
   await expectFits(page, "/settings/tokens", (current) =>
