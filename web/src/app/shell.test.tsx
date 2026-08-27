@@ -27,7 +27,7 @@ const routes = [
   ["/usage", "Usage", "Usage"],
   ["/settings", "Security", "Settings"],
   ["/settings/personalization", "Personalisation", "Settings"],
-  ["/settings/members", "Members", "Settings"],
+  ["/admin", "Members", "Admin Settings"],
   ["/settings/tokens", "API tokens", "Settings"],
   ["/settings/connectors", "Connectors", "Settings"],
 ] as const;
@@ -196,6 +196,7 @@ describe("app shell", () => {
       "Knowledge",
       "Usage",
       "Settings",
+      "Admin Settings",
     ]);
     expect(within(sidebar()).getByText("Workspace")).toBeTruthy();
     expect(within(sidebar()).getByText("Aster")).toBeTruthy();

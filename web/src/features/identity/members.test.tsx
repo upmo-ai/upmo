@@ -32,8 +32,11 @@ describe("members", () => {
   });
 
   it("hides invite, role, and remove controls for a member and a viewer", async () => {
-    renderAt("/settings/members");
+    renderAt("/admin");
     expect(await screen.findByRole("heading", { level: 1, name: "Members" })).toBeTruthy();
+    const admin = screen.getByRole("navigation", { name: "Admin Settings" });
+    expect(within(admin).getByRole("link", { name: "Members" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("navigation", { name: "Settings" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Invite" })).toBeTruthy();
     expect(screen.getByText("ada@aster.example")).toBeTruthy();
     expect(screen.getAllByText("Finance").length).toBeGreaterThan(0);
@@ -58,7 +61,7 @@ describe("members", () => {
   });
 
   it("keeps the last owner in place and does not offer Owner on invite", async () => {
-    renderAt("/settings/members");
+    renderAt("/admin");
     const ownerRole = (await screen.findByLabelText("Role for Ada Okonkwo")) as HTMLSelectElement;
     expect(ownerRole.disabled).toBe(true);
     expect(screen.getByText(lastOwnerReason)).toBeTruthy();
@@ -97,7 +100,7 @@ describe("members", () => {
         },
       },
     };
-    const history = createMemoryHistory({ initialEntries: ["/settings/members"] });
+    const history = createMemoryHistory({ initialEntries: ["/admin"] });
     render(
       <AppProviders>
         <App history={history} client={client} />
@@ -193,7 +196,7 @@ describe("live members", () => {
       return new Response("missing", { status: 404 });
     }) as typeof fetch;
 
-    renderAt("/settings/members");
+    renderAt("/admin");
     expect(await screen.findByLabelText("Name")).toBeTruthy();
     expect(screen.queryByRole("group", { name: "View as" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
@@ -260,13 +263,13 @@ describe("live members", () => {
       }) as typeof fetch;
 
     globalThis.fetch = live(["members:manage", "task:view"]);
-    renderAt("/settings/members");
+    renderAt("/admin");
     expect(await screen.findByLabelText("Role for Bob")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Invite" })).toBeTruthy();
     cleanup();
 
     globalThis.fetch = live(["task:view"]);
-    renderAt("/settings/members");
+    renderAt("/admin");
     expect(await screen.findByText("Bob")).toBeTruthy();
     expect(screen.queryByLabelText("Role for Bob")).toBeNull();
     expect(screen.queryByRole("button", { name: "Invite" })).toBeNull();

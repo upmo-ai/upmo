@@ -14,7 +14,8 @@ const pages = [
   { to: "/usage", label: "Usage" },
   { to: "/settings", label: "Settings" },
   { to: "/settings/personalization", label: "Personalisation" },
-  { to: "/settings/members", label: "Members" },
+  { to: "/admin", label: "Admin Settings" },
+  { to: "/admin", label: "Members" },
   { to: "/settings/tokens", label: "API tokens" },
   { to: "/settings/connectors", label: "Connectors" },
 ] as const;
@@ -52,7 +53,7 @@ export function CommandLauncher() {
         <Stack gap="xs">
           {pages.map((item) => (
             <Button
-              key={item.to}
+              key={`${item.to}:${item.label}`}
               component={Link}
               to={item.to}
               variant="subtle"

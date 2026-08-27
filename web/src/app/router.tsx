@@ -13,7 +13,7 @@ import { BrainError, sessionQueryKey, type ApiClient } from "./api";
 import { MembersPage } from "../features/identity/members";
 import { SecurityPage } from "../features/identity/security";
 import { TokensPage } from "../features/identity/tokens";
-import { ConnectorsPage, SettingsLayout } from "../features/settings/settings";
+import { AdminSettingsLayout, ConnectorsPage, SettingsLayout } from "../features/settings/settings";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
 import { KnowledgePage } from "../features/knowledge/knowledge";
 import { PersonalisationPage } from "../features/memory/memory";
@@ -151,12 +151,6 @@ const personalisationRoute = createRoute({
   component: PersonalisationPage,
 });
 
-const membersRoute = createRoute({
-  getParentRoute: () => settingsRoute,
-  path: "members",
-  component: MembersPage,
-});
-
 const tokensRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "tokens",
@@ -167,6 +161,18 @@ const connectorsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "connectors",
   component: ConnectorsPage,
+});
+
+const adminRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/admin",
+  component: AdminSettingsLayout,
+});
+
+const adminIndexRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "/",
+  component: MembersPage,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -185,10 +191,10 @@ const routeTree = rootRoute.addChildren([
     settingsRoute.addChildren([
       settingsIndexRoute,
       personalisationRoute,
-      membersRoute,
       tokensRoute,
       connectorsRoute,
     ]),
+    adminRoute.addChildren([adminIndexRoute]),
   ]),
 ]);
 

@@ -50,7 +50,7 @@ describe("sharing", () => {
   });
 
   it("opens read-only when the signed-in person cannot edit sharing", async () => {
-    renderAt("/settings/members");
+    renderAt("/admin");
     expect(await screen.findByRole("button", { name: "Invite" })).toBeTruthy();
     act(() => {
       within(screen.getByRole("group", { name: "View as" })).getByRole("button", { name: "Viewer" }).click();
