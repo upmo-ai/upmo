@@ -9,8 +9,6 @@ export type Fact = {
   replaced: boolean;
 };
 
-export const sampleTeams = ["Finance", "Product"] as const;
-
 export const sampleProfile =
   "Prefers short written answers in British English. Works across finance close and product reviews. Asks before a change leaves the workspace.";
 

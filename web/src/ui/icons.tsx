@@ -7,7 +7,9 @@ import {
   IconLayoutSidebar,
   IconListCheck,
   IconMessage,
+  IconPencil,
   IconSettings,
+  IconTrash,
   IconUsers,
 } from "@tabler/icons-react";
 import { icons, type IconConcept } from "@upmo-ai/icons";
@@ -23,6 +25,8 @@ export const shellConcepts = [
   "nav.settings",
   "nav.sidebar",
   "nav.notifications",
+  "action.edit",
+  "action.delete",
 ] as const satisfies readonly IconConcept[];
 
 export type ShellConcept = (typeof shellConcepts)[number];
@@ -38,6 +42,8 @@ const byName = {
   settings: IconSettings,
   "layout-sidebar": IconLayoutSidebar,
   bell: IconBell,
+  pencil: IconPencil,
+  trash: IconTrash,
 } as const;
 
 export function ShellIcon({ concept }: { concept: ShellConcept }) {
