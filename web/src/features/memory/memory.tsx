@@ -1,11 +1,30 @@
-import { Badge, Button, Group, NativeSelect, Stack, Text, Textarea, TextInput, Title } from "@mantine/core";
+import { ActionIcon, Badge, Button, Group, Stack, Text, Textarea, TextInput, Title, Tooltip } from "@mantine/core";
 import { useState } from "react";
 
 import { ConfirmDialog } from "../identity/confirm";
 import { EmptyState } from "../../ui/section";
-import { sampleFacts, sampleProfile, sampleTeams, type Fact } from "./sample";
+import { ShellIcon, type ShellConcept } from "../../ui/icons";
+import { sampleFacts, sampleProfile, type Fact } from "./sample";
 
 import "./memory.css";
+
+function IconAction({
+  label,
+  concept,
+  onClick,
+}: {
+  label: string;
+  concept: Extract<ShellConcept, "action.edit" | "action.delete">;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip label={label} position="bottom" openDelay={400}>
+      <ActionIcon aria-label={label} variant="subtle" size={40} onClick={onClick}>
+        <ShellIcon concept={concept} />
+      </ActionIcon>
+    </Tooltip>
+  );
+}
 
 export function PersonalisationPage() {
   const [profile, setProfile] = useState(sampleProfile);
@@ -15,12 +34,9 @@ export function PersonalisationPage() {
   const [draft, setDraft] = useState("");
   const [editId, setEditId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
-  const [promoteId, setPromoteId] = useState<string | null>(null);
-  const [team, setTeam] = useState<(typeof sampleTeams)[number]>(sampleTeams[0]);
   const [forgetId, setForgetId] = useState<string | null>(null);
 
   const visible = facts.filter((fact) => !fact.forgotten);
-  const promote = facts.find((fact) => fact.id === promoteId);
   const forget = facts.find((fact) => fact.id === forgetId);
 
   const addFact = () => {
@@ -45,8 +61,7 @@ export function PersonalisationPage() {
       <div>
         <Title order={1}>Personalisation</Title>
         <Text c="dimmed" size="sm" mt="xs">
-          What Upmo remembers about you. Facts stay personal until you promote them. Documents belong in
-          Knowledge.
+          What Upmo remembers about you. Facts stay personal. Documents belong in Knowledge.
         </Text>
       </div>
 
@@ -54,9 +69,7 @@ export function PersonalisationPage() {
         <Group justify="space-between" align="flex-start" wrap="wrap">
           <Title order={2}>Profile</Title>
           {editingProfile ? null : (
-            <Button size="compact-sm" variant="subtle" onClick={() => setEditingProfile(true)}>
-              Edit
-            </Button>
+            <IconAction label="Edit" concept="action.edit" onClick={() => setEditingProfile(true)} />
           )}
         </Group>
         <section className="memory-profile" aria-label="Profile text">
@@ -182,31 +195,15 @@ export function PersonalisationPage() {
                     </Stack>
                     {fact.replaced ? null : (
                       <Group gap="xs" wrap="nowrap">
-                        <Button
-                          size="compact-sm"
-                          variant="subtle"
+                        <IconAction
+                          label="Edit"
+                          concept="action.edit"
                           onClick={() => {
                             setEditId(fact.id);
                             setEditDraft(fact.text);
                           }}
-                        >
-                          Edit
-                        </Button>
-                        {fact.scope === "Personal" ? (
-                          <Button
-                            size="compact-sm"
-                            variant="subtle"
-                            onClick={() => {
-                              setTeam(sampleTeams[0]);
-                              setPromoteId(fact.id);
-                            }}
-                          >
-                            Promote
-                          </Button>
-                        ) : null}
-                        <Button size="compact-sm" variant="subtle" onClick={() => setForgetId(fact.id)}>
-                          Forget
-                        </Button>
+                        />
+                        <IconAction label="Forget" concept="action.delete" onClick={() => setForgetId(fact.id)} />
                       </Group>
                     )}
                   </Group>
@@ -217,29 +214,6 @@ export function PersonalisationPage() {
         )}
       </Stack>
 
-      <ConfirmDialog
-        opened={promote != null}
-        title="Promote this fact?"
-        body="The team can use it after you promote it. It stays a fact you can forget."
-        action="Promote"
-        onClose={() => setPromoteId(null)}
-        onConfirm={() => {
-          if (promote) {
-            const scope = `Team · ${team}` as const;
-            setFacts((current) =>
-              current.map((fact) => (fact.id === promote.id ? { ...fact, scope } : fact)),
-            );
-          }
-          setPromoteId(null);
-        }}
-      >
-        <NativeSelect
-          label="Team"
-          value={team}
-          data={[...sampleTeams]}
-          onChange={(event) => setTeam(event.currentTarget.value as (typeof sampleTeams)[number])}
-        />
-      </ConfirmDialog>
       <ConfirmDialog
         opened={forget != null}
         title="Forget this fact?"

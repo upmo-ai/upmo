@@ -32,17 +32,16 @@ describe("Personalisation page", () => {
     expect(screen.getByText(sampleProfile)).toBeTruthy();
     expect(screen.getByText(sampleFacts[0]!.text)).toBeTruthy();
     expect(
-      screen.getByText(
-        "What Upmo remembers about you. Facts stay personal until you promote them. Documents belong in Knowledge.",
-      ),
+      screen.getByText("What Upmo remembers about you. Facts stay personal. Documents belong in Knowledge."),
     ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Promote" })).toBeNull();
     const settings = screen.getByRole("navigation", { name: "Settings" });
     expect(within(settings).getByRole("link", { name: "Personalisation" }).getAttribute("aria-current")).toBe(
       "page",
     );
   });
 
-  it("adds, edits, promotes to a team, and forgets a fact", async () => {
+  it("adds, edits, and forgets a fact", async () => {
     renderAt("/settings/personalization");
     await screen.findByRole("heading", { level: 1, name: "Personalisation" });
 
@@ -62,17 +61,6 @@ describe("Personalisation page", () => {
     expect(screen.getByText("Prefers British spelling in every reply.")).toBeTruthy();
 
     const edited = screen.getByText("Prefers British spelling in every reply.").closest(".memory-row");
-    act(() => {
-      within(edited as HTMLElement).getByRole("button", { name: "Promote" }).click();
-    });
-    const promoteDialog = await screen.findByRole("dialog", { name: "Promote this fact?" });
-    fireEvent.change(within(promoteDialog).getByLabelText("Team"), { target: { value: "Product" } });
-    act(() => {
-      within(promoteDialog).getByRole("button", { name: "Promote" }).click();
-    });
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(within(edited as HTMLElement).getByText("Team · Product")).toBeTruthy();
-
     act(() => {
       within(edited as HTMLElement).getByRole("button", { name: "Forget" }).click();
     });
