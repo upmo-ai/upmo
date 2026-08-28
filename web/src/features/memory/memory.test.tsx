@@ -35,6 +35,8 @@ describe("Personalisation page", () => {
       screen.getByText("What Upmo remembers about you. Facts stay personal. Documents belong in Knowledge."),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Promote" })).toBeNull();
+    expect(screen.queryByText(/^Team /)).toBeNull();
+    expect(screen.queryByText(/^Agent /)).toBeNull();
     const settings = screen.getByRole("navigation", { name: "Settings" });
     expect(within(settings).getByRole("link", { name: "Personalisation" }).getAttribute("aria-current")).toBe(
       "page",
