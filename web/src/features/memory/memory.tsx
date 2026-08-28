@@ -47,7 +47,6 @@ export function PersonalisationPage() {
         id: `fact-${current.length + 1}`,
         text,
         source: "Added by you · today",
-        scope: "Personal",
         forgotten: false,
         replaced: false,
       },
@@ -182,16 +181,11 @@ export function PersonalisationPage() {
                       <Text size="sm" c="dimmed">
                         {fact.source}
                       </Text>
-                      <Group gap="xs">
+                      {fact.replaced ? (
                         <Badge variant="outline" w="fit-content">
-                          {fact.scope}
+                          Replaced
                         </Badge>
-                        {fact.replaced ? (
-                          <Badge variant="outline" w="fit-content">
-                            Replaced
-                          </Badge>
-                        ) : null}
-                      </Group>
+                      ) : null}
                     </Stack>
                     {fact.replaced ? null : (
                       <Group gap="xs" wrap="nowrap">
