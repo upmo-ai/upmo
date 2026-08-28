@@ -3,11 +3,13 @@ import {
   IconBooks,
   IconChartBar,
   IconClockPlay,
+  IconFolder,
   IconHome,
   IconLayoutSidebar,
   IconListCheck,
   IconMessage,
   IconPencil,
+  IconPlus,
   IconSettings,
   IconTrash,
   IconUsers,
@@ -27,6 +29,8 @@ export const shellConcepts = [
   "nav.notifications",
   "action.edit",
   "action.delete",
+  "action.add",
+  "object.folder",
 ] as const satisfies readonly IconConcept[];
 
 export type ShellConcept = (typeof shellConcepts)[number];
@@ -43,7 +47,9 @@ const byName = {
   "layout-sidebar": IconLayoutSidebar,
   bell: IconBell,
   pencil: IconPencil,
+  plus: IconPlus,
   trash: IconTrash,
+  folder: IconFolder,
 } as const;
 
 export function ShellIcon({ concept }: { concept: ShellConcept }) {

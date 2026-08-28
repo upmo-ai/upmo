@@ -1,5 +1,5 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../../App";
@@ -24,12 +24,27 @@ describe("Knowledge page", () => {
     cleanup();
   });
 
-  it("lists folders and sources from the sample", async () => {
+  it("lists folders as cards from the sample", async () => {
     renderAt("/knowledge");
     expect(await screen.findByRole("heading", { level: 1, name: "Knowledge" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: sampleFolders[0]!.name })).toBeTruthy();
-    expect(screen.getByText(sampleFolders[0]!.sources[0]!.name)).toBeTruthy();
+    const product = screen.getByRole("heading", { level: 2, name: sampleFolders[0]!.name });
+    expect(product).toBeTruthy();
+    expect(screen.getByText("Folders · 6")).toBeTruthy();
+    expect(within(product.closest("article") as HTMLElement).getByText(/2 sources · updated/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add source" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New folder" })).toBeTruthy();
     expect(screen.queryByText("Give Upmo something to read")).toBeNull();
+    expect(screen.queryByText("Handbook.pdf")).toBeNull();
+  });
+
+  it("adds a folder from the header action", async () => {
+    renderAt("/knowledge");
+    await screen.findByRole("heading", { level: 1, name: "Knowledge" });
+    act(() => {
+      screen.getByRole("button", { name: "New folder" }).click();
+    });
+    expect(screen.getByText("Folders · 7")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "New folder" })).toBeTruthy();
+    expect(screen.getByText("Nothing in this folder yet.")).toBeTruthy();
   });
 });
