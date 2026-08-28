@@ -16,6 +16,8 @@ const expected: Record<(typeof shellConcepts)[number], string> = {
   "nav.notifications": "bell",
   "action.edit": "pencil",
   "action.delete": "trash",
+  "action.add": "plus",
+  "object.folder": "folder",
 };
 
 describe("shell icons", () => {
