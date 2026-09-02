@@ -46,6 +46,43 @@ func TestAdapterMapsStatusToClass(t *testing.T) {
 	}
 }
 
+func TestAdapterEmbedOrdersByIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer s" {
+			t.Fatalf("auth = %q", got)
+		}
+		var body struct {
+			Model string   `json:"model"`
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Model != "m" || len(body.Input) != 2 || body.Input[0] != "one" {
+			t.Fatalf("body = %+v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"index": 1, "embedding": []float32{0, 1}},
+				{"index": 0, "embedding": []float32{1, 0}},
+			},
+			"usage": map[string]int{"prompt_tokens": 4},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	a := Adapter{Client: srv.Client()}
+	got, usage, class, err := a.Embed(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, []string{"one", "two"})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if len(got) != 2 || got[0][0] != 1 || got[1][1] != 1 || !usage.Arrived || usage.Input != 4 {
+		t.Fatalf("got=%v usage=%+v", got, usage)
+	}
+}
+
 func TestEncodeChatOrderIsToolsSystemMessages(t *testing.T) {
 	req, err := domain.Build(domain.Input{
 		Tools:    []domain.Tool{{Name: "search", Schema: json.RawMessage(`{"type":"object"}`)}},

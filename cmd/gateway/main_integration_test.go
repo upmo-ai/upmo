@@ -39,7 +39,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		INSERT INTO gateway.routes (name, capability, decision) VALUES
 			('memory-check', 'decide', 'yesno'),
 			('folder-file', 'decide', 'choice'),
-			('draft', 'chat', '')
+			('draft', 'chat', ''),
+			('embed', 'embed', '')
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +78,31 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	})
 	if chat["text"] != "ok" {
 		t.Fatalf("chat = %v", chat)
+	}
+	embedded := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Embed", map[string]any{
+		"route": "embed", "inputs": []string{"ada prefers tea"},
+	})
+	if embedded["model"] != "stub" {
+		t.Fatalf("model = %v", embedded["model"])
+	}
+	vectors, _ := embedded["vectors"].([]any)
+	if len(vectors) != 1 {
+		t.Fatalf("vectors = %d", len(vectors))
+	}
+	row, _ := vectors[0].([]any)
+	if len(row) != 1024 {
+		t.Fatalf("dimension = %d", len(row))
+	}
+	nonzero := false
+	for _, n := range row {
+		v, ok := n.(float64)
+		if ok && v != 0 {
+			nonzero = true
+			break
+		}
+	}
+	if !nonzero {
+		t.Fatal("zero vector")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/upmo.gateway.v1.Gateway/Models", nil)
@@ -118,7 +144,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT count(*), count(cost_usd) FROM gateway.ledger`).Scan(&attempts, &priced); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 3 || priced != 0 {
+	if attempts != 4 || priced != 0 {
 		t.Fatalf("ledger attempts=%d priced=%d", attempts, priced)
 	}
 }

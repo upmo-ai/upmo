@@ -26,6 +26,11 @@ type Chatter interface {
 	Chat(ctx context.Context, attempt Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error)
 }
 
+// Embedder is the embed adapter for one account.adapter value.
+type Embedder interface {
+	Embed(ctx context.Context, attempt Attempt, inputs []string) ([][]float32, domain.Usage, domain.FailureClass, error)
+}
+
 // Prices looks up a catalog row. Missing is not an error.
 type Prices interface {
 	Price(ctx context.Context, model string) (domain.Price, bool, error)
@@ -61,6 +66,7 @@ type Dispatch struct {
 	Bundles Bundles
 	Decide  map[string]Decider
 	Chat    map[string]Chatter
+	Embed   map[string]Embedder
 }
 
 func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) error {
@@ -257,4 +263,75 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		last = fmt.Errorf("gateway: route %q exhausted", routeName)
 	}
 	return "", last
+}
+
+// EmbedCall walks an embed route and returns the link model with one vector
+// per input. A vector of the wrong shape skips that link. Nothing is returned
+// until every vector is EmbedDim, finite, and non-zero.
+func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, inputs []string) (string, [][]float32, error) {
+	if err := domain.CheckEmbedInputs(inputs); err != nil {
+		return "", nil, err
+	}
+	route, err := d.Routes.ByName(ctx, routeName)
+	if err != nil {
+		return "", nil, err
+	}
+	if route.Capability != domain.CapEmbed {
+		return "", nil, fmt.Errorf("gateway: route %q is %s", routeName, route.Capability)
+	}
+	links, err := route.LinksFor(credentialRef)
+	if err != nil {
+		return "", nil, err
+	}
+	var last error
+	for _, link := range links {
+		embedder := d.Embed[link.Account.Adapter]
+		if embedder == nil {
+			last = fmt.Errorf("gateway: no embed adapter %q", link.Account.Adapter)
+			continue
+		}
+		secret, err := d.Secrets.Get(link.Account.CredentialRef)
+		if err != nil {
+			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+				return "", nil, werr
+			}
+			last = err
+			continue
+		}
+		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
+		retries := link.RetryBudget
+		for {
+			vectors, usage, class, err := embedder.Embed(ctx, attempt, inputs)
+			if class == domain.ClassOK && err == nil {
+				if verr := domain.CheckEmbeddings(len(inputs), vectors); verr != nil {
+					class = domain.ClassModelAccess
+					err = verr
+					vectors = nil
+				}
+			}
+			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
+				return "", nil, werr
+			}
+			if class == domain.ClassOK && err == nil {
+				return link.Model, vectors, nil
+			}
+			last = err
+			if last == nil {
+				last = fmt.Errorf("gateway: %s", class)
+			}
+			switch domain.NextAction(class, retries) {
+			case domain.ActionRetry:
+				retries--
+				continue
+			case domain.ActionNext:
+			default:
+				return "", nil, last
+			}
+			break
+		}
+	}
+	if last == nil {
+		last = fmt.Errorf("gateway: route %q exhausted", routeName)
+	}
+	return "", nil, last
 }

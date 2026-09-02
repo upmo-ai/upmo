@@ -35,6 +35,20 @@ func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideReque
 	}
 }
 
+func (a Adapter) Embed(_ context.Context, _ app.Attempt, inputs []string) ([][]float32, domain.Usage, domain.FailureClass, error) {
+	if err := domain.CheckEmbedInputs(inputs); err != nil {
+		return nil, domain.Usage{}, domain.ClassCaller, err
+	}
+	out := make([][]float32, len(inputs))
+	for i, text := range inputs {
+		v := make([]float32, domain.EmbedDim)
+		v[i%domain.EmbedDim] = 1
+		v[int(text[0])%domain.EmbedDim] = 1
+		out[i] = v
+	}
+	return out, domain.Usage{Arrived: true, Input: len(inputs)}, domain.ClassOK, nil
+}
+
 func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
 	if a.Reply != "" {
 		return a.Reply, domain.Usage{}, domain.ClassOK, nil
