@@ -45,6 +45,18 @@ func TestCosine(t *testing.T) {
 	}
 }
 
+func TestValid(t *testing.T) {
+	if err := Valid(testVector(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Valid(make([]float32, Dim)); err == nil {
+		t.Fatal("zero vector")
+	}
+	if err := Valid([]float32{1}); err == nil {
+		t.Fatal("short vector")
+	}
+}
+
 func TestDecideNearDup(t *testing.T) {
 	tests := []struct {
 		name       string

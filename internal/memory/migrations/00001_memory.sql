@@ -50,6 +50,16 @@ CREATE UNIQUE INDEX facts_active_hash ON memory.facts (user_id, claim_hash) WHER
 
 CREATE INDEX facts_person ON memory.facts (user_id);
 
+CREATE TABLE memory.extracts (
+  user_id uuid NOT NULL,
+  source_kind text NOT NULL,
+  source_id uuid NOT NULL,
+  source_seq int NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (user_id, source_kind, source_id, source_seq),
+  CONSTRAINT extracts_source_check CHECK (source_kind <> '' AND source_seq >= 0)
+);
+
 -- +goose StatementBegin
 CREATE FUNCTION memory.one_embedding_model()
 RETURNS trigger
@@ -87,6 +97,8 @@ ALTER TABLE memory.facts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memory.facts FORCE ROW LEVEL SECURITY;
 ALTER TABLE memory.embed_models ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memory.embed_models FORCE ROW LEVEL SECURITY;
+ALTER TABLE memory.extracts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memory.extracts FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY profiles_own ON memory.profiles
   USING (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
@@ -100,17 +112,23 @@ CREATE POLICY embed_models_own ON memory.embed_models
   USING (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
   WITH CHECK (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid);
 
+CREATE POLICY extracts_own ON memory.extracts
+  USING (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
+  WITH CHECK (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid);
+
 GRANT USAGE ON SCHEMA memory TO upmo_app;
 GRANT SELECT, INSERT ON memory.profiles TO upmo_app;
 GRANT UPDATE (body, updated_at) ON memory.profiles TO upmo_app;
 GRANT SELECT, INSERT ON memory.facts TO upmo_app;
 GRANT UPDATE (invalid_at, superseded_by, last_confirmed_at, embedding, embedding_model) ON memory.facts TO upmo_app;
 GRANT SELECT, INSERT ON memory.embed_models TO upmo_app;
+GRANT SELECT, INSERT ON memory.extracts TO upmo_app;
 GRANT EXECUTE ON FUNCTION memory.one_embedding_model() TO upmo_app;
 REVOKE ALL ON FUNCTION memory.one_embedding_model() FROM PUBLIC;
 
 -- +goose Down
 
+DROP TABLE IF EXISTS memory.extracts;
 DROP TABLE IF EXISTS memory.facts;
 DROP TABLE IF EXISTS memory.embed_models;
 DROP TABLE IF EXISTS memory.profiles;
