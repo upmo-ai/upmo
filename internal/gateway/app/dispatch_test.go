@@ -249,6 +249,103 @@ func TestDispatchChatBundleDoesNotLeakCatalog(t *testing.T) {
 	}
 }
 
+type scriptEmbedder struct {
+	calls   int
+	vectors [][]float32
+	class   domain.FailureClass
+}
+
+func (s *scriptEmbedder) Embed(context.Context, Attempt, []string) ([][]float32, domain.Usage, domain.FailureClass, error) {
+	s.calls++
+	if s.class != domain.ClassOK {
+		return nil, domain.Usage{}, s.class, errors.New(string(s.class))
+	}
+	return s.vectors, domain.Usage{Arrived: true, Input: 1}, domain.ClassOK, nil
+}
+
+func unitVector() []float32 {
+	v := make([]float32, domain.EmbedDim)
+	v[0] = 1
+	return v
+}
+
+func TestDispatchEmbedReturnsModelAndVectors(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "embed", Capability: domain.CapEmbed,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "model-a", RetryBudget: 0}},
+	}
+	e := &scriptEmbedder{vectors: [][]float32{unitVector()}}
+	led := &memLedger{}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Embed:   map[string]Embedder{"fake": e},
+	}
+	model, vectors, err := disp.EmbedCall(context.Background(), "embed", "", domain.Principal{}, []string{"ada prefers tea"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "model-a" || len(vectors) != 1 || len(vectors[0]) != domain.EmbedDim || e.calls != 1 {
+		t.Fatalf("model=%s vectors=%d calls=%d", model, len(vectors), e.calls)
+	}
+	if len(led.rows) != 1 || led.rows[0].Class != domain.ClassOK || led.rows[0].Model != "model-a" {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+}
+
+func TestDispatchEmbedSkipsWrongDimension(t *testing.T) {
+	first := domain.Account{ID: "1", Adapter: "wide", CredentialRef: "house", House: true}
+	second := domain.Account{ID: "2", Adapter: "ok", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "embed", Capability: domain.CapEmbed,
+		Links: []domain.Link{
+			{Position: 1, Account: first, Model: "wide", RetryBudget: 3},
+			{Position: 2, Account: second, Model: "model-a", RetryBudget: 0},
+		},
+	}
+	wide := &scriptEmbedder{vectors: [][]float32{{1, 0, 0}}}
+	good := &scriptEmbedder{vectors: [][]float32{unitVector()}}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Embed:   map[string]Embedder{"wide": wide, "ok": good},
+	}
+	model, vectors, err := disp.EmbedCall(context.Background(), "embed", "", domain.Principal{}, []string{"ada prefers tea"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "model-a" || len(vectors) != 1 || wide.calls != 1 || good.calls != 1 {
+		t.Fatalf("model=%s wide=%d good=%d", model, wide.calls, good.calls)
+	}
+}
+
+func TestDispatchEmbedRejectsChatRoute(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a"}},
+	}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Embed:   map[string]Embedder{"fake": &scriptEmbedder{vectors: [][]float32{unitVector()}}},
+	}
+	_, _, err := disp.EmbedCall(context.Background(), "draft", "", domain.Principal{}, []string{"ada prefers tea"})
+	if err == nil {
+		t.Fatal("chat route accepted an embed call")
+	}
+}
+
+func TestDispatchEmbedEmptyInput(t *testing.T) {
+	disp := Dispatch{Routes: memRoutes{domain.Route{Name: "embed", Capability: domain.CapEmbed}}}
+	_, _, err := disp.EmbedCall(context.Background(), "embed", "", domain.Principal{}, nil)
+	if err == nil {
+		t.Fatal("empty input")
+	}
+}
+
 func TestDispatchChatAgentWithoutBundleFailsClosed(t *testing.T) {
 	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
 	r := domain.Route{

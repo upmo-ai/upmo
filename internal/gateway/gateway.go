@@ -43,6 +43,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 			Bundles: store,
 			Decide:  map[string]app.Decider{"fake": f, "openai_compat": o},
 			Chat:    map[string]app.Chatter{"fake": f, "openai_compat": o},
+			Embed:   map[string]app.Embedder{"fake": f, "openai_compat": o},
 		},
 		Names: func(r *http.Request) ([]string, error) {
 			return store.Names(r.Context())

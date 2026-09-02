@@ -171,20 +171,8 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 	if err != nil {
 		return "", domain.Usage{}, domain.ClassTransient, err
 	}
-	if res.StatusCode == http.StatusTooManyRequests {
-		return "", domain.Usage{}, domain.ClassRateLimit, fmt.Errorf("gateway: provider %d", res.StatusCode)
-	}
-	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
-		return "", domain.Usage{}, domain.ClassCredential, fmt.Errorf("gateway: provider %d", res.StatusCode)
-	}
-	if res.StatusCode == http.StatusNotFound {
-		return "", domain.Usage{}, domain.ClassModelAccess, fmt.Errorf("gateway: provider %d", res.StatusCode)
-	}
-	if res.StatusCode >= 500 {
-		return "", domain.Usage{}, domain.ClassTransient, fmt.Errorf("gateway: provider %d", res.StatusCode)
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider %d", res.StatusCode)
+	if class, err := statusClass(res.StatusCode); err != nil {
+		return "", domain.Usage{}, class, err
 	}
 	var parsed struct {
 		Choices []struct {
@@ -213,6 +201,92 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 		}
 	}
 	return parsed.Choices[0].Message.Content, usage, domain.ClassOK, nil
+}
+
+func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string) ([][]float32, domain.Usage, domain.FailureClass, error) {
+	if err := domain.CheckEmbedInputs(inputs); err != nil {
+		return nil, domain.Usage{}, domain.ClassCaller, err
+	}
+	base := strings.TrimRight(attempt.BaseURL, "/")
+	if base == "" {
+		return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+	}
+	body, err := json.Marshal(struct {
+		Model string   `json:"model"`
+		Input []string `json:"input"`
+	}{Model: attempt.Model, Input: inputs})
+	if err != nil {
+		return nil, domain.Usage{}, domain.ClassCaller, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, domain.Usage{}, domain.ClassCaller, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if attempt.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
+	}
+	res, err := a.client().Do(req)
+	if err != nil {
+		return nil, domain.Usage{}, classForErr(err), err
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return nil, domain.Usage{}, domain.ClassTransient, err
+	}
+	if class, err := statusClass(res.StatusCode); err != nil {
+		return nil, domain.Usage{}, class, err
+	}
+	var parsed struct {
+		Data []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+		Usage *struct {
+			PromptTokens int `json:"prompt_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider body")
+	}
+	out := make([][]float32, len(inputs))
+	seen := make([]bool, len(inputs))
+	for _, item := range parsed.Data {
+		if item.Index < 0 || item.Index >= len(inputs) || seen[item.Index] {
+			return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider body")
+		}
+		seen[item.Index] = true
+		out[item.Index] = item.Embedding
+	}
+	for _, ok := range seen {
+		if !ok {
+			return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider body")
+		}
+	}
+	usage := domain.Usage{}
+	if parsed.Usage != nil {
+		usage.Arrived = true
+		usage.Input = parsed.Usage.PromptTokens
+	}
+	return out, usage, domain.ClassOK, nil
+}
+
+func statusClass(code int) (domain.FailureClass, error) {
+	switch {
+	case code == http.StatusTooManyRequests:
+		return domain.ClassRateLimit, fmt.Errorf("gateway: provider %d", code)
+	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		return domain.ClassCredential, fmt.Errorf("gateway: provider %d", code)
+	case code == http.StatusNotFound:
+		return domain.ClassModelAccess, fmt.Errorf("gateway: provider %d", code)
+	case code >= 500:
+		return domain.ClassTransient, fmt.Errorf("gateway: provider %d", code)
+	case code < 200 || code >= 300:
+		return domain.ClassCaller, fmt.Errorf("gateway: provider %d", code)
+	default:
+		return domain.ClassOK, nil
+	}
 }
 
 func classForErr(err error) domain.FailureClass {

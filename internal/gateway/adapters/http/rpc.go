@@ -42,6 +42,13 @@ type decideBody struct {
 	actorBody
 }
 
+type embedBody struct {
+	Route         string   `json:"route"`
+	Inputs        []string `json:"inputs"`
+	CredentialRef string   `json:"credential_ref"`
+	actorBody
+}
+
 type chatBody struct {
 	Route         string           `json:"route"`
 	Prompt        string           `json:"prompt"`
@@ -103,8 +110,18 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 	httpserver.WriteJSON(w, http.StatusOK, map[string]string{"text": text})
 }
 
-func (h Handler) embed(w http.ResponseWriter, _ *http.Request) {
-	httpserver.Fail(w, nil, "embed is not served yet", http.StatusNotImplemented)
+func (h Handler) embed(w http.ResponseWriter, r *http.Request) {
+	var body embedBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
+		return
+	}
+	model, vectors, err := h.Dispatch.EmbedCall(r.Context(), body.Route, body.CredentialRef, body.principal(), body.Inputs)
+	if err != nil {
+		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+		return
+	}
+	httpserver.WriteJSON(w, http.StatusOK, map[string]any{"model": model, "vectors": vectors})
 }
 
 func (h Handler) models(w http.ResponseWriter, r *http.Request) {
