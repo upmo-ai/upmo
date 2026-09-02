@@ -38,6 +38,26 @@ func Cosine(a, b []float32) (float64, error) {
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB)), nil
 }
 
+// Valid reports a vector that cannot be stored: wrong length, a non-finite
+// value, or a zero norm.
+func Valid(v []float32) error {
+	if len(v) != Dim {
+		return fmt.Errorf("cosine: vector must have dimension %d", Dim)
+	}
+	var norm float64
+	for _, x := range v {
+		f := float64(x)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("cosine: vectors must contain only finite values")
+		}
+		norm += f * f
+	}
+	if norm == 0 {
+		return fmt.Errorf("cosine: vectors must have non-zero L2 norms")
+	}
+	return nil
+}
+
 func DecideNearDup(forgotten, active []Hit) (action, reason string) {
 	for _, hit := range forgotten {
 		if hit.Cosine >= NearDup {
