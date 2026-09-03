@@ -38,6 +38,30 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ServiceKey != "" || cfg.ServiceKeyPrevious != "" {
 		t.Errorf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
 	}
+	if cfg.GatewayURL != "" {
+		t.Errorf("GatewayURL = %q", cfg.GatewayURL)
+	}
+}
+
+func TestLoadGatewayURL(t *testing.T) {
+	cfg, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_GATEWAY_URL":  "http://gateway:8080/",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GatewayURL != "http://gateway:8080" {
+		t.Fatalf("GatewayURL = %q", cfg.GatewayURL)
+	}
+	if _, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_GATEWAY_URL":  "gateway:8080",
+	})); err == nil {
+		t.Fatal("relative gateway url")
+	}
 }
 
 func TestLoadServiceKeys(t *testing.T) {
