@@ -34,6 +34,8 @@ type Config struct {
 	ServiceKey string
 	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
 	ServiceKeyPrevious string
+	// GatewayURL is the model gateway (UPMO_GATEWAY_URL). Empty until brain calls it.
+	GatewayURL string
 }
 
 // Load reads the configuration from the environment and applies defaults.
@@ -122,6 +124,13 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
 		cfg.ServiceKeyPrevious = v
+	}
+	if v, ok := lookup("UPMO_GATEWAY_URL"); ok && v != "" {
+		parsed, err := url.Parse(v)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return Config{}, fmt.Errorf("config: UPMO_GATEWAY_URL must be an absolute http(s) URL")
+		}
+		cfg.GatewayURL = strings.TrimRight(v, "/")
 	}
 	return cfg, nil
 }
