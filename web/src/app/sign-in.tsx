@@ -99,7 +99,11 @@ export function SignInPage() {
   };
 
   return (
-    <main className="sign-in">
+    <>
+      <a className="shell-skip" href="#content">
+        Skip to content
+      </a>
+      <main id="content" className="sign-in">
       <BrandLink className="sign-in-wordmark" />
       <form
         className="sign-in-actions"
@@ -136,5 +140,6 @@ export function SignInPage() {
         <LoginAgreement />
       </form>
     </main>
+    </>
   );
 }

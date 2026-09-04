@@ -167,6 +167,9 @@ describe("app shell", () => {
     renderAt("/");
     expect(await screen.findByRole("heading", { level: 3, name: "Your first task" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Create task" }).getAttribute("href")).toBe("/tasks");
+    expect(screen.getAllByRole("link")[0]?.textContent).toBe("Skip to content");
+    expect(screen.getByRole("link", { name: "Skip to content" }).getAttribute("href")).toBe("#content");
+    expect(document.getElementById("content")).toBeTruthy();
     expect(screen.getByRole("heading", { level: 3, name: "Your first task" }).closest(".empty-state")).toBeTruthy();
   });
 

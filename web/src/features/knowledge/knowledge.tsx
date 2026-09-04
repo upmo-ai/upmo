@@ -69,7 +69,7 @@ export function KnowledgePage() {
                   <ThemeIcon variant="light" size={40} radius="md" aria-hidden>
                     <ShellIcon concept="object.folder" />
                   </ThemeIcon>
-                  <Title order={3} id={folder.id} className="knowledge-card-title">
+                  <Title order={2} id={folder.id} className="knowledge-card-title" size="h3">
                     {folder.name}
                   </Title>
                   <Text size="sm" c="dimmed" className="knowledge-card-summary">

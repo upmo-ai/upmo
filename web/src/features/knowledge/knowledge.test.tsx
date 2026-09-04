@@ -27,7 +27,7 @@ describe("Knowledge page", () => {
   it("lists folders as cards from the sample", async () => {
     renderAt("/knowledge");
     expect(await screen.findByRole("heading", { level: 1, name: "Knowledge" })).toBeTruthy();
-    const product = screen.getByRole("heading", { level: 3, name: sampleFolders[0]!.name });
+    const product = screen.getByRole("heading", { level: 2, name: sampleFolders[0]!.name });
     expect(product).toBeTruthy();
     expect(screen.getByText("Folders · 6")).toBeTruthy();
     expect(within(product.closest("article") as HTMLElement).getByText(/2 sources · updated/)).toBeTruthy();
@@ -44,7 +44,7 @@ describe("Knowledge page", () => {
       screen.getByRole("button", { name: "New folder" }).click();
     });
     expect(screen.getByText("Folders · 7")).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 3, name: "New folder" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "New folder" })).toBeTruthy();
     expect(screen.getByText("Nothing in this folder yet.")).toBeTruthy();
   });
 });

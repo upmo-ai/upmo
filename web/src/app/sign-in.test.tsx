@@ -93,6 +93,7 @@ describe("sign in", () => {
   it("puts Log in under the password and keeps the passkey as the other choice", async () => {
     renderAt("/login");
     expect((await screen.findByRole("link", { name: "Upmo" })).getAttribute("href")).toBe("/login");
+    expect(screen.getAllByRole("link")[0]?.textContent).toBe("Skip to content");
     const password = screen.getByLabelText("Password");
     const logIn = screen.getByRole("button", { name: /^Log in$/ });
     const passkey = screen.getByRole("button", { name: "Log in with a passkey" });

@@ -28,7 +28,11 @@ export function LinkPage() {
   };
 
   return (
-    <main className="sign-in">
+    <>
+      <a className="shell-skip" href="#content">
+        Skip to content
+      </a>
+      <main id="content" className="sign-in">
       <BrandLink className="sign-in-wordmark" />
       <Title order={1}>Create your passkey</Title>
       <div className="sign-in-actions">
@@ -44,5 +48,6 @@ export function LinkPage() {
         <LoginAgreement />
       </div>
     </main>
+    </>
   );
 }

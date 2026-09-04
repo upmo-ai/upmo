@@ -1,12 +1,29 @@
+.shell-skip {
+  position: absolute;
+  left: var(--space-2);
+  top: var(--space-2);
+  z-index: 500;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-100);
+  color: var(--ink);
+  transform: translateY(-150%);
+}
+
+.shell-skip:focus {
+  transform: none;
+}
+
 .sign-in {
   display: flex;
-  min-height: 100vh;
+  min-height: 100dvh;
   box-sizing: border-box;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: var(--space-4);
-  padding: var(--space-6);
+  padding: calc(var(--space-6) + env(safe-area-inset-top)) var(--space-6)
+    calc(var(--space-6) + env(safe-area-inset-bottom));
   background: var(--surface-000);
 }
 
@@ -34,9 +51,19 @@
 
 .legal {
   box-sizing: border-box;
-  min-height: 100vh;
-  padding: var(--space-6);
+  min-height: 100dvh;
+  padding: calc(var(--space-6) + env(safe-area-inset-top)) var(--space-6)
+    calc(var(--space-6) + env(safe-area-inset-bottom));
   background: var(--surface-000);
+}
+
+@media (pointer: coarse) {
+  .sign-in input,
+  .sign-in textarea,
+  .legal input,
+  .legal textarea {
+    font-size: 16px;
+  }
 }
 
 .legal-body {
