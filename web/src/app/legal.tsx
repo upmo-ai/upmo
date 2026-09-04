@@ -169,7 +169,11 @@ const privacy: Section[] = [
 
 function Document({ title, sections }: { title: string; sections: Section[] }) {
   return (
-    <main className="legal">
+    <>
+      <a className="shell-skip" href="#content">
+        Skip to content
+      </a>
+      <main id="content" className="legal">
       <article className="legal-body">
         <BrandLink className="sign-in-wordmark legal-mark" />
         <Title order={1}>{title}</Title>
@@ -189,6 +193,7 @@ function Document({ title, sections }: { title: string; sections: Section[] }) {
         </Anchor>
       </article>
     </main>
+    </>
   );
 }
 

@@ -196,6 +196,7 @@ export function Shell() {
 
   return (
     <AppShell
+      className="shell"
       padding={0}
       header={{ height: 48 }}
       navbar={{
@@ -204,6 +205,9 @@ export function Shell() {
         collapsed: { mobile: !opened },
       }}
     >
+      <a className="shell-skip" href="#content">
+        Skip to content
+      </a>
       <AppShell.Header className="shell-header">
         <Group h="100%" px="sm" gap="xs" wrap="nowrap" justify="space-between">
           <Group gap="xs" wrap="nowrap">
@@ -260,7 +264,7 @@ export function Shell() {
           <SignOut />
         </div>
       </AppShell.Navbar>
-      <AppShell.Main>
+      <AppShell.Main id="content">
         <div className="shell-content">
           {errorMessage ? (
             <Alert
