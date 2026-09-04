@@ -67,8 +67,17 @@
 }
 
 .shell-nav-link {
-  border-radius: var(--radius-md);
-  min-height: 40px;
+  border-radius: var(--radius-sm);
+  min-height: 32px;
+  padding-inline: var(--space-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+@media (pointer: coarse) {
+  .shell-nav-link {
+    min-height: 40px;
+  }
 }
 
 .shell-nav-link[data-active],
@@ -161,7 +170,7 @@
 
   .shell-sign-out {
     height: auto;
-    min-height: 40px;
+    min-height: 32px;
     padding-inline: 4px;
     font-size: 11px;
     line-height: 1.2;
@@ -185,7 +194,7 @@
   }
 
   .shell-content {
-    padding: var(--space-6);
+    padding: var(--space-4);
   }
 }
 
@@ -231,6 +240,6 @@
   }
 
   .shell-content {
-    padding: var(--space-8);
+    padding: var(--space-5);
   }
 }

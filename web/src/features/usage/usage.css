@@ -6,13 +6,13 @@
 .usage-figures {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
-  gap: var(--space-3);
+  gap: var(--space-4);
   margin: 0;
 }
 
 .usage-figures > div {
   min-width: 0;
-  padding: var(--space-3);
+  padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-100);
@@ -20,12 +20,13 @@
 
 .usage-figures dt {
   color: var(--ink-muted);
-  font-size: 0.875rem;
+  font-size: 13px;
 }
 
 .usage-figures dd {
   margin: var(--space-1) 0 0;
-  font-size: 1.5rem;
+  font-size: 20px;
+  line-height: 28px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -39,7 +40,7 @@
 .usage-chart {
   min-width: 0;
   margin: 0;
-  padding: var(--space-3);
+  padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-100);
