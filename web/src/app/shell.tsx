@@ -86,7 +86,7 @@ function NavEntry({
         aria-current={current ? "page" : undefined}
         aria-label={item.label}
         label={<span className="shell-nav-label">{item.label}</span>}
-        leftSection={<ShellIcon concept={item.concept} />}
+        leftSection={<ShellIcon concept={item.concept} size={16} />}
         variant={current ? "light" : "subtle"}
         onClick={onNavigate}
       />

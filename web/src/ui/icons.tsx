@@ -52,7 +52,7 @@ const byName = {
   folder: IconFolder,
 } as const;
 
-export function ShellIcon({ concept }: { concept: ShellConcept }) {
+export function ShellIcon({ concept, size = 20 }: { concept: ShellConcept; size?: 16 | 20 }) {
   const Icon = byName[icons[concept]];
-  return <Icon size={20} stroke={1.75} aria-hidden />;
+  return <Icon size={size} stroke={1.75} aria-hidden />;
 }
