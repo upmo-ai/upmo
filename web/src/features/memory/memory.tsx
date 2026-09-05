@@ -1,12 +1,23 @@
-import { ActionIcon, Badge, Button, Group, Stack, Text, Textarea, TextInput, Title, Tooltip } from "@mantine/core";
-import { useState } from "react";
+import { ActionIcon, Button, Group, Stack, Text, Textarea, TextInput, Title, Tooltip } from "@mantine/core";
+import { useEffect, useState } from "react";
 
 import { ConfirmDialog } from "../identity/confirm";
 import { EmptyState } from "../../ui/section";
 import { ShellIcon, type ShellConcept } from "../../ui/icons";
-import { sampleFacts, sampleProfile, type Fact } from "./sample";
 
 import "./memory.css";
+
+type Fact = {
+  id: string;
+  claim: string;
+  trust: string;
+  confirmed_at: string;
+};
+
+type Page = {
+  profile: string;
+  facts: Fact[];
+};
 
 function IconAction({
   label,
@@ -26,33 +37,82 @@ function IconAction({
   );
 }
 
+async function send(path: string, method: string, body?: unknown): Promise<Response> {
+  return fetch(path, {
+    method,
+    credentials: "include",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function read<T>(response: Response): Promise<T> {
+  if (response.status === 204) return undefined as T;
+  const payload = (await response.json()) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || "Personalisation could not be saved");
+  return payload;
+}
+
+function when(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+function source(fact: Fact): string {
+  const who = fact.trust === "user" ? "Added by you" : "Learned";
+  const day = when(fact.confirmed_at);
+  return day === "" ? who : `${who} · ${day}`;
+}
+
 export function PersonalisationPage() {
-  const [profile, setProfile] = useState(sampleProfile);
+  const [loaded, setLoaded] = useState(false);
+  const [message, setMessage] = useState("");
+  const [profile, setProfile] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
-  const [profileDraft, setProfileDraft] = useState(sampleProfile);
-  const [facts, setFacts] = useState<Fact[]>(sampleFacts);
+  const [profileDraft, setProfileDraft] = useState("");
+  const [facts, setFacts] = useState<Fact[]>([]);
   const [draft, setDraft] = useState("");
   const [editId, setEditId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [forgetId, setForgetId] = useState<string | null>(null);
 
-  const visible = facts.filter((fact) => !fact.forgotten);
   const forget = facts.find((fact) => fact.id === forgetId);
 
-  const addFact = () => {
-    const text = draft.trim();
-    if (text === "") return;
-    setFacts((current) => [
-      {
-        id: `fact-${current.length + 1}`,
-        text,
-        source: "Added by you · today",
-        forgotten: false,
-        replaced: false,
-      },
-      ...current,
-    ]);
-    setDraft("");
+  const load = async () => {
+    const page = await read<Page>(await send("/api/personalization", "GET"));
+    setProfile(page.profile);
+    setFacts(page.facts ?? []);
+    setLoaded(true);
+  };
+
+  useEffect(() => {
+    let live = true;
+    void send("/api/personalization", "GET")
+      .then((response) => read<Page>(response))
+      .then((page) => {
+        if (!live) return;
+        setProfile(page.profile);
+        setFacts(page.facts ?? []);
+        setLoaded(true);
+      })
+      .catch((err: unknown) => {
+        if (!live) return;
+        setMessage(err instanceof Error ? err.message : "Personalisation could not be loaded");
+        setLoaded(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const run = async (work: () => Promise<void>) => {
+    setMessage("");
+    try {
+      await work();
+    } catch (err: unknown) {
+      setMessage(err instanceof Error ? err.message : "Personalisation could not be saved");
+    }
   };
 
   return (
@@ -63,12 +123,24 @@ export function PersonalisationPage() {
           What Upmo remembers about you. Facts stay personal. Documents belong in Knowledge.
         </Text>
       </div>
+      {message ? (
+        <Text role="alert" c="red">
+          {message}
+        </Text>
+      ) : null}
 
       <Stack gap="sm">
         <Group justify="space-between" align="flex-start" wrap="wrap">
           <Title order={2}>Profile</Title>
           {editingProfile ? null : (
-            <IconAction label="Edit" concept="action.edit" onClick={() => setEditingProfile(true)} />
+            <IconAction
+              label="Edit"
+              concept="action.edit"
+              onClick={() => {
+                setProfileDraft(profile);
+                setEditingProfile(true);
+              }}
+            />
           )}
         </Group>
         <section className="memory-profile" aria-label="Profile text">
@@ -84,8 +156,12 @@ export function PersonalisationPage() {
                 <Button
                   size="compact-sm"
                   onClick={() => {
-                    setProfile(profileDraft.trim() || profile);
-                    setEditingProfile(false);
+                    const body = profileDraft.trim();
+                    void run(async () => {
+                      await read(await send("/api/personalization/profile", "PUT", { body }));
+                      setProfile(body);
+                      setEditingProfile(false);
+                    });
                   }}
                 >
                   Save
@@ -94,7 +170,6 @@ export function PersonalisationPage() {
                   size="compact-sm"
                   variant="default"
                   onClick={() => {
-                    setProfileDraft(profile);
                     setEditingProfile(false);
                   }}
                 >
@@ -117,7 +192,13 @@ export function PersonalisationPage() {
           className="memory-add"
           onSubmit={(event) => {
             event.preventDefault();
-            addFact();
+            const claim = draft.trim();
+            if (claim === "") return;
+            void run(async () => {
+              await read(await send("/api/personalization/facts", "POST", { claim }));
+              setDraft("");
+              await load();
+            });
           }}
         >
           <TextInput
@@ -130,19 +211,15 @@ export function PersonalisationPage() {
             Add
           </Button>
         </form>
-        {visible.length === 0 ? (
+        {loaded && facts.length === 0 ? (
           <EmptyState
             title="Nothing remembered yet"
             body="Upmo keeps facts you tell it and lessons from tasks. You can delete any of them."
           />
         ) : (
           <div className="memory-list">
-            {visible.map((fact) => (
-              <div
-                key={fact.id}
-                className="memory-row"
-                data-muted={fact.replaced ? "true" : "false"}
-              >
+            {facts.map((fact) => (
+              <div key={fact.id} className="memory-row">
                 {editId === fact.id ? (
                   <Stack gap="sm">
                     <Textarea
@@ -155,16 +232,13 @@ export function PersonalisationPage() {
                       <Button
                         size="compact-sm"
                         onClick={() => {
-                          const text = editDraft.trim();
-                          if (text === "") return;
-                          setFacts((current) =>
-                            current.map((item) =>
-                              item.id === fact.id
-                                ? { ...item, text, source: "Learned in chat · today", replaced: false }
-                                : item,
-                            ),
-                          );
-                          setEditId(null);
+                          const claim = editDraft.trim();
+                          if (claim === "") return;
+                          void run(async () => {
+                            await read(await send(`/api/personalization/facts/${fact.id}`, "PUT", { claim }));
+                            setEditId(null);
+                            await load();
+                          });
                         }}
                       >
                         Save
@@ -177,29 +251,22 @@ export function PersonalisationPage() {
                 ) : (
                   <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
                     <Stack gap={4}>
-                      <Text>{fact.text}</Text>
+                      <Text>{fact.claim}</Text>
                       <Text size="sm" c="dimmed">
-                        {fact.source}
+                        {source(fact)}
                       </Text>
-                      {fact.replaced ? (
-                        <Badge variant="outline" w="fit-content">
-                          Replaced
-                        </Badge>
-                      ) : null}
                     </Stack>
-                    {fact.replaced ? null : (
-                      <Group gap="xs" wrap="nowrap">
-                        <IconAction
-                          label="Edit"
-                          concept="action.edit"
-                          onClick={() => {
-                            setEditId(fact.id);
-                            setEditDraft(fact.text);
-                          }}
-                        />
-                        <IconAction label="Forget" concept="action.delete" onClick={() => setForgetId(fact.id)} />
-                      </Group>
-                    )}
+                    <Group gap="xs" wrap="nowrap">
+                      <IconAction
+                        label="Edit"
+                        concept="action.edit"
+                        onClick={() => {
+                          setEditId(fact.id);
+                          setEditDraft(fact.claim);
+                        }}
+                      />
+                      <IconAction label="Forget" concept="action.delete" onClick={() => setForgetId(fact.id)} />
+                    </Group>
                   </Group>
                 )}
               </div>
@@ -215,12 +282,13 @@ export function PersonalisationPage() {
         action="Forget"
         onClose={() => setForgetId(null)}
         onConfirm={() => {
-          if (forget) {
-            setFacts((current) =>
-              current.map((fact) => (fact.id === forget.id ? { ...fact, forgotten: true } : fact)),
-            );
-          }
+          if (!forget) return;
+          const id = forget.id;
           setForgetId(null);
+          void run(async () => {
+            await read(await send(`/api/personalization/facts/${id}`, "DELETE"));
+            await load();
+          });
         }}
       />
     </Stack>
