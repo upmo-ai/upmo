@@ -51,6 +51,12 @@ func TestReadyAndSession(t *testing.T) {
 		t.Fatalf("session = %d, want 401", session.Code)
 	}
 
+	page := httptest.NewRecorder()
+	protected.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/api/personalization", nil))
+	if page.Code != http.StatusUnauthorized {
+		t.Fatalf("personalization = %d, want 401", page.Code)
+	}
+
 	req := httptest.NewRequest(http.MethodDelete, "/api/session", nil)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	req.Header.Set("Origin", "https://evil.example")

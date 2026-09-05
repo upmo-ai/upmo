@@ -15,6 +15,8 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/memory"
+	memoryhttp "github.com/upmo-ai/upmo/internal/memory/adapters/http"
+	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
@@ -104,5 +106,17 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
+	memoryhttp.Handler{
+		Editor: memorystore.Facts{Pool: pool},
+		User: func(r *http.Request) (string, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return "", false
+			}
+			return person.UserID.String(), true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
 	return mux, nil
 }
