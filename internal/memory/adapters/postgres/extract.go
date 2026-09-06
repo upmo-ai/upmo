@@ -22,6 +22,12 @@ type personTx struct {
 }
 
 func (f Facts) InTx(ctx context.Context, userID string, fn func(app.Tx) error) error {
+	return f.inPersonTx(ctx, userID, func(tx personTx) error {
+		return fn(tx)
+	})
+}
+
+func (f Facts) inPersonTx(ctx context.Context, userID string, fn func(personTx) error) error {
 	if f.Pool == nil {
 		return fmt.Errorf("memory: no database")
 	}

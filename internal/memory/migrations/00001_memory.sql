@@ -122,6 +122,7 @@ GRANT UPDATE (body, updated_at) ON memory.profiles TO upmo_app;
 GRANT SELECT, INSERT ON memory.facts TO upmo_app;
 GRANT UPDATE (invalid_at, superseded_by, last_confirmed_at, embedding, embedding_model) ON memory.facts TO upmo_app;
 GRANT SELECT, INSERT ON memory.embed_models TO upmo_app;
+GRANT DELETE ON memory.embed_models TO upmo_app;
 GRANT SELECT, INSERT ON memory.extracts TO upmo_app;
 GRANT EXECUTE ON FUNCTION memory.one_embedding_model() TO upmo_app;
 REVOKE ALL ON FUNCTION memory.one_embedding_model() FROM PUBLIC;
