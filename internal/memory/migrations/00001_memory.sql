@@ -19,6 +19,7 @@ CREATE TABLE memory.facts (
   user_id uuid NOT NULL,
   trust text NOT NULL,
   claim text NOT NULL,
+  claim_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', claim)) STORED,
   claim_hash bytea NOT NULL,
   valid_from timestamptz NOT NULL,
   invalid_at timestamptz,
@@ -49,6 +50,10 @@ CREATE TABLE memory.facts (
 CREATE UNIQUE INDEX facts_active_hash ON memory.facts (user_id, claim_hash) WHERE invalid_at IS NULL;
 
 CREATE INDEX facts_person ON memory.facts (user_id);
+
+CREATE INDEX facts_embedding_hnsw ON memory.facts USING hnsw (embedding halfvec_cosine_ops);
+
+CREATE INDEX facts_claim_fts ON memory.facts USING gin (claim_tsv);
 
 CREATE TABLE memory.extracts (
   user_id uuid NOT NULL,
