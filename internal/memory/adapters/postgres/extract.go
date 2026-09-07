@@ -61,6 +61,22 @@ func (p personTx) Already(ctx context.Context, key app.Key) (bool, error) {
 	return done, nil
 }
 
+func (p personTx) Recent(ctx context.Context, kind, id string, since time.Time) (int, error) {
+	var count int
+	err := p.tx.QueryRow(ctx, `
+		SELECT count(*)
+		FROM memory.extracts
+		WHERE user_id = $1::uuid
+		  AND source_kind = $2
+		  AND source_id = $3::uuid
+		  AND created_at > $4`,
+		p.userID, kind, id, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("memory: recent extracts: %w", err)
+	}
+	return count, nil
+}
+
 func (p personTx) Record(ctx context.Context, key app.Key, at time.Time) error {
 	_, err := p.tx.Exec(ctx, `
 		INSERT INTO memory.extracts (user_id, source_kind, source_id, source_seq, created_at)

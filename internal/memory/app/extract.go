@@ -21,6 +21,13 @@ var ErrRetry = errors.New("memory: retry")
 
 const proposeTimeout = 30 * time.Second
 
+// A source is extracted at most ExtractLimit times in ExtractWindow, measured
+// back from the source time.
+const (
+	ExtractLimit  = 5
+	ExtractWindow = time.Hour
+)
+
 // Source is one user-authored text. Kind, ID and Seq identify the job.
 // Deny lists claims already shown to the person on that turn.
 type Source struct {
@@ -52,10 +59,12 @@ type Fact struct {
 	At       time.Time
 }
 
-// Report is what one run did. A duplicate or a skip stores no new claim.
+// Report is what one run did. A duplicate, a skip or a limited run stores no
+// new claim.
 type Report struct {
 	Duplicate  bool
 	Skipped    bool
+	Limited    bool
 	Inserted   int
 	Reinforced int
 	Dropped    int
@@ -82,6 +91,7 @@ type Store interface {
 type Tx interface {
 	Already(ctx context.Context, key Key) (bool, error)
 	Record(ctx context.Context, key Key, at time.Time) error
+	Recent(ctx context.Context, kind, id string, since time.Time) (int, error)
 	Hashes(ctx context.Context) (active, forgotten [][32]byte, err error)
 	Confirm(ctx context.Context, hash [32]byte, at time.Time) error
 	ConfirmID(ctx context.Context, id string, at time.Time) error
@@ -113,6 +123,14 @@ func Extract(ctx context.Context, store Store, proposer Proposer, embedder Embed
 		}
 		if done {
 			rep.Duplicate = true
+			return nil
+		}
+		recent, err := tx.Recent(ctx, src.Kind, src.ID, src.At.Add(-ExtractWindow))
+		if err != nil {
+			return err
+		}
+		if recent >= ExtractLimit {
+			rep.Limited = true
 			return nil
 		}
 		prepared, ok := domain.Prepare(src.Text)
