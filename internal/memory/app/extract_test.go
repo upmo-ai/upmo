@@ -89,6 +89,13 @@ type memStore struct {
 	confirmIDs []string
 	nearAction string
 	nearID     string
+
+	recent      int
+	recentCalls int
+	recentKind  string
+	recentID    string
+	recentSince time.Time
+	records     int
 }
 
 func (m *memStore) InTx(_ context.Context, _ string, fn func(Tx) error) error {
@@ -99,7 +106,16 @@ func (m *memStore) Already(context.Context, Key) (bool, error) { return m.done, 
 
 func (m *memStore) Record(context.Context, Key, time.Time) error {
 	m.done = true
+	m.records++
 	return nil
+}
+
+func (m *memStore) Recent(_ context.Context, kind, id string, since time.Time) (int, error) {
+	m.recentCalls++
+	m.recentKind = kind
+	m.recentID = id
+	m.recentSince = since
+	return m.recent, nil
 }
 
 func (m *memStore) Hashes(context.Context) ([][32]byte, [][32]byte, error) {
@@ -317,5 +333,45 @@ func TestExtractForgottenNearDoesNotInsert(t *testing.T) {
 	}
 	if rep.Dropped != 1 || len(store.added) != 0 {
 		t.Fatalf("report=%+v added=%d", rep, len(store.added))
+	}
+}
+
+func TestExtractLimitedSkipsProposeAndRecord(t *testing.T) {
+	store := &memStore{recent: ExtractLimit}
+	prop := &scriptPropose{bodies: []string{`[{"claim":"Ada prefers tea","changes_behavior":true}]`}}
+	emb := &scriptEmbed{}
+	rep, err := Extract(context.Background(), store, prop, emb, testSource("Ada prefers tea every morning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Limited || prop.calls != 0 || emb.calls != 0 || store.records != 0 || len(store.added) != 0 {
+		t.Fatalf("report=%+v calls=%d embed=%d records=%d added=%d", rep, prop.calls, emb.calls, store.records, len(store.added))
+	}
+}
+
+func TestExtractBelowLimitProposes(t *testing.T) {
+	store := &memStore{recent: ExtractLimit - 1}
+	prop := &scriptPropose{bodies: []string{`[]`}}
+	rep, err := Extract(context.Background(), store, prop, &scriptEmbed{}, testSource("Ada prefers tea every morning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Limited || prop.calls != 1 || store.records != 1 {
+		t.Fatalf("report=%+v calls=%d records=%d", rep, prop.calls, store.records)
+	}
+}
+
+func TestExtractRecentUsesSourceKindIDAndWindow(t *testing.T) {
+	store := &memStore{}
+	prop := &scriptPropose{bodies: []string{`[]`}}
+	src := testSource("Ada prefers tea every morning")
+	if _, err := Extract(context.Background(), store, prop, &scriptEmbed{}, src); err != nil {
+		t.Fatal(err)
+	}
+	if store.recentCalls != 1 || store.recentKind != src.Kind || store.recentID != src.ID {
+		t.Fatalf("calls=%d kind=%q id=%q", store.recentCalls, store.recentKind, store.recentID)
+	}
+	if want := src.At.Add(-ExtractWindow); !store.recentSince.Equal(want) {
+		t.Fatalf("since = %s, want %s", store.recentSince, want)
 	}
 }
