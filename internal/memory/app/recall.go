@@ -13,7 +13,7 @@ import (
 // ProfileTokens is the profile budget in the cacheable prefix.
 const ProfileTokens = 300
 
-// SearchLimit is the most claims one search_memory call returns.
+// SearchLimit is the most claims the word-overlap Search returns.
 const SearchLimit = 5
 
 // Memory is the profile and the active claims for one person.
@@ -51,13 +51,18 @@ type Recall struct {
 
 // Search ranks active claims against the query and fences the hits.
 func Search(query string, claims []string) Recall {
+	return fenceClaims(rankClaims(query, claims))
+}
+
+// fenceClaims fences each claim on its own line, in the order given, and
+// sets Private and Untrusted even when there are no claims.
+func fenceClaims(claims []string) Recall {
 	recall := Recall{Exposure: writeguard.Exposure{Untrusted: true, Private: true}}
-	ranked := rankClaims(query, claims)
-	if len(ranked) == 0 {
+	if len(claims) == 0 {
 		return recall
 	}
 	var b strings.Builder
-	for i, claim := range ranked {
+	for i, claim := range claims {
 		if i > 0 {
 			b.WriteByte('\n')
 		}

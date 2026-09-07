@@ -41,7 +41,7 @@ type Reranker interface {
 }
 
 // Retrieve fuses a vector list and a text list with reciprocal rank fusion,
-// then reranks when a reranker answers. It does not fence; Search does.
+// then reranks when a reranker answers. SearchMemory fences the result.
 func Retrieve(ctx context.Context, store RetrievalStore, embedder Embedder, reranker Reranker, userID, query string, asOf time.Time) ([]Candidate, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("memory: user id")
