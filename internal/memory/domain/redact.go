@@ -15,6 +15,7 @@ var (
 	googleKeyPattern   = regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{35}\b`)
 	bearerPattern      = regexp.MustCompile(`(?i)\b(bearer|token)([ \t]+)([A-Za-z0-9._~+/=-]{12,})`)
 	keyedSecretPattern = regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|api_key|apikey|access_key|secret_key|client_secret|refresh_token|access_token|session_token|token|authorization)\b([ \t]*[:=][ \t]*)([^\s,;]+)`)
+	emailPattern       = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
 )
 
 func Prepare(text string) (string, bool) {
@@ -39,6 +40,7 @@ func Prepare(text string) (string, bool) {
 func Redact(s string) string {
 	s = privateKeyPattern.ReplaceAllString(s, "***")
 	s = urlUserinfoPattern.ReplaceAllString(s, "${1}://***@")
+	s = emailPattern.ReplaceAllString(s, "***")
 	s = jwtPattern.ReplaceAllString(s, "***")
 	s = awsKeyPattern.ReplaceAllString(s, "***")
 	s = googleKeyPattern.ReplaceAllString(s, "***")

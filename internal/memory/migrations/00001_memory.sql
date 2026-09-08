@@ -132,8 +132,76 @@ GRANT SELECT, INSERT ON memory.extracts TO upmo_app;
 GRANT EXECUTE ON FUNCTION memory.one_embedding_model() TO upmo_app;
 REVOKE ALL ON FUNCTION memory.one_embedding_model() FROM PUBLIC;
 
+-- +goose StatementBegin
+CREATE FUNCTION memory.erase(p_user uuid, p_task uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF p_user IS NULL THEN
+    RAISE EXCEPTION 'memory: erase user';
+  END IF;
+  IF pg_catalog.current_setting('upmo.user_id', true) IS DISTINCT FROM p_user::text THEN
+    RAISE EXCEPTION 'memory: erase';
+  END IF;
+
+  IF p_task IS NULL THEN
+    UPDATE memory.facts
+    SET superseded_by = NULL
+    WHERE user_id = p_user;
+
+    DELETE FROM memory.facts
+    WHERE user_id = p_user;
+
+    DELETE FROM memory.profiles
+    WHERE user_id = p_user;
+
+    DELETE FROM memory.embed_models
+    WHERE user_id = p_user;
+
+    DELETE FROM memory.extracts
+    WHERE user_id = p_user;
+  ELSE
+    UPDATE memory.facts AS fact
+    SET superseded_by = NULL
+    WHERE fact.user_id = p_user
+      AND EXISTS (
+        SELECT 1
+        FROM memory.facts AS superseding
+        WHERE superseding.id = fact.superseded_by
+          AND superseding.user_id = p_user
+          AND superseding.source_id = p_task
+      );
+
+    DELETE FROM memory.facts
+    WHERE user_id = p_user
+      AND source_id = p_task;
+
+    DELETE FROM memory.extracts
+    WHERE user_id = p_user
+      AND source_id = p_task;
+
+    DELETE FROM memory.embed_models AS model
+    WHERE model.user_id = p_user
+      AND NOT EXISTS (
+        SELECT 1
+        FROM memory.facts AS fact
+        WHERE fact.user_id = p_user
+          AND fact.embedding IS NOT NULL
+      );
+  END IF;
+END;
+$$;
+-- +goose StatementEnd
+
+GRANT EXECUTE ON FUNCTION memory.erase(uuid, uuid) TO upmo_app;
+REVOKE ALL ON FUNCTION memory.erase(uuid, uuid) FROM PUBLIC;
+
 -- +goose Down
 
+DROP FUNCTION IF EXISTS memory.erase(uuid, uuid);
 DROP TABLE IF EXISTS memory.extracts;
 DROP TABLE IF EXISTS memory.facts;
 DROP TABLE IF EXISTS memory.embed_models;

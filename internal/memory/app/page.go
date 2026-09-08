@@ -61,6 +61,7 @@ func SaveProfile(ctx context.Context, editor Editor, userID, body string, at tim
 	if len(body) > ProfileTokens*4 {
 		return ErrProfile
 	}
+	body = domain.Redact(body)
 	return editor.InPerson(ctx, userID, func(p Person) error {
 		return p.WriteProfile(ctx, body, at)
 	})
@@ -136,5 +137,6 @@ func preparedClaim(userID, claim string) (string, [32]byte, error) {
 	if claim == "" {
 		return "", [32]byte{}, ErrClaim
 	}
+	claim = domain.Redact(claim)
 	return claim, domain.ClaimHash(claim), nil
 }
