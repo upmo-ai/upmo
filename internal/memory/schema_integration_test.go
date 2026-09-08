@@ -256,3 +256,129 @@ func half() string {
 	parts[0] = "1"
 	return "[" + strings.Join(parts, ",") + "]"
 }
+
+func TestLessonColumnsAreSeparateFromFacts(t *testing.T) {
+	owner, _ := up(t)
+	ctx := context.Background()
+	var hasAgent, hasUser, factsHaveLesson bool
+	if err := owner.QueryRow(ctx, `
+		SELECT
+		  EXISTS (
+		    SELECT 1 FROM information_schema.columns
+		    WHERE table_schema = 'memory' AND table_name = 'lessons'
+		      AND column_name = 'agent_id'
+		  ),
+		  EXISTS (
+		    SELECT 1 FROM information_schema.columns
+		    WHERE table_schema = 'memory' AND table_name = 'lessons'
+		      AND column_name = 'user_id'
+		  ),
+		  EXISTS (
+		    SELECT 1 FROM information_schema.columns
+		    WHERE table_schema = 'memory' AND table_name = 'facts'
+		      AND column_name = 'lesson'
+		  )`).Scan(&hasAgent, &hasUser, &factsHaveLesson); err != nil {
+		t.Fatal(err)
+	}
+	if !hasAgent || hasUser || factsHaveLesson {
+		t.Fatalf("agent_id=%v user_id=%v facts.lesson=%v", hasAgent, hasUser, factsHaveLesson)
+	}
+}
+
+func TestLessonRowSecurity(t *testing.T) {
+	owner, appPool := up(t)
+	ctx := context.Background()
+	for _, agentID := range []string{lessonAgentA, lessonAgentB} {
+		if _, err := owner.Exec(ctx, `
+			INSERT INTO memory.lessons (agent_id, title, cue, body, updated_at)
+			VALUES ($1, 'Shared title', 'Cue', 'Body', now())`, agentID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var count int
+	if err := appPool.QueryRow(ctx, `SELECT count(*) FROM memory.lessons`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("no settings saw %d lessons", count)
+	}
+
+	withLessonSettings(t, appPool, lessonAgentA, "", func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM memory.lessons`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("agent saw %d lessons", count)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO memory.lessons (agent_id, title, cue, body, updated_at)
+			VALUES ($1, 'Inserted by agent', 'Cue', 'Body', now())`,
+			lessonAgentA); err == nil {
+			t.Fatal("agent inserted a lesson")
+		}
+	})
+
+	withLessonSettings(t, appPool, "", "admin", func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM memory.lessons`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 {
+			t.Fatalf("admin saw %d lessons", count)
+		}
+	})
+
+	withLessonSettings(t, appPool, lessonAgentA, "", func(tx pgx.Tx) {
+		tag, err := tx.Exec(ctx, `DELETE FROM memory.lessons WHERE agent_id = $1`, lessonAgentA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tag.RowsAffected() != 0 {
+			t.Fatal("agent deleted a lesson")
+		}
+	})
+	if err := owner.QueryRow(ctx,
+		`SELECT count(*) FROM memory.lessons WHERE agent_id = $1`,
+		lessonAgentA,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("lessons after agent delete = %d", count)
+	}
+}
+
+const (
+	lessonAgentA = "018f3b2c-7a10-7c4a-8e11-aaaaaaa11111"
+	lessonAgentB = "018f3b2c-7a10-7c4a-8e11-bbbbbbb22222"
+)
+
+func withLessonSettings(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	agentID, access string,
+	fn func(pgx.Tx),
+) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if agentID != "" {
+		if _, err := tx.Exec(ctx,
+			`SELECT set_config('upmo.agent_id', $1, true)`, agentID,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if access != "" {
+		if _, err := tx.Exec(ctx,
+			`SELECT set_config('upmo.lesson_access', $1, true)`, access,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fn(tx)
+}

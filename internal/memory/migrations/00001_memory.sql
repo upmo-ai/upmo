@@ -65,6 +65,21 @@ CREATE TABLE memory.extracts (
   CONSTRAINT extracts_source_check CHECK (source_kind <> '' AND source_seq >= 0)
 );
 
+CREATE TABLE memory.lessons (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  agent_id uuid NOT NULL,
+  title text NOT NULL,
+  cue text NOT NULL,
+  body text NOT NULL,
+  updated_at timestamptz NOT NULL,
+  CONSTRAINT lessons_title_check CHECK (title <> ''),
+  CONSTRAINT lessons_cue_check CHECK (cue <> ''),
+  CONSTRAINT lessons_body_check CHECK (body <> '')
+);
+
+CREATE UNIQUE INDEX lessons_agent_title ON memory.lessons (agent_id, title);
+CREATE INDEX lessons_agent ON memory.lessons (agent_id);
+
 -- +goose StatementBegin
 CREATE FUNCTION memory.one_embedding_model()
 RETURNS trigger
@@ -104,6 +119,8 @@ ALTER TABLE memory.embed_models ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memory.embed_models FORCE ROW LEVEL SECURITY;
 ALTER TABLE memory.extracts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memory.extracts FORCE ROW LEVEL SECURITY;
+ALTER TABLE memory.lessons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memory.lessons FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY profiles_own ON memory.profiles
   USING (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
@@ -121,6 +138,21 @@ CREATE POLICY extracts_own ON memory.extracts
   USING (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
   WITH CHECK (user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid);
 
+CREATE POLICY lessons_select ON memory.lessons
+  FOR SELECT
+  USING (
+    current_setting('upmo.lesson_access', true) = 'admin'
+    OR agent_id = NULLIF(current_setting('upmo.agent_id', true), '')::uuid
+  );
+
+CREATE POLICY lessons_insert ON memory.lessons
+  FOR INSERT
+  WITH CHECK (current_setting('upmo.lesson_access', true) = 'admin');
+
+CREATE POLICY lessons_delete ON memory.lessons
+  FOR DELETE
+  USING (current_setting('upmo.lesson_access', true) = 'admin');
+
 GRANT USAGE ON SCHEMA memory TO upmo_app;
 GRANT SELECT, INSERT ON memory.profiles TO upmo_app;
 GRANT UPDATE (body, updated_at) ON memory.profiles TO upmo_app;
@@ -129,6 +161,7 @@ GRANT UPDATE (invalid_at, superseded_by, last_confirmed_at, embedding, embedding
 GRANT SELECT, INSERT ON memory.embed_models TO upmo_app;
 GRANT DELETE ON memory.embed_models TO upmo_app;
 GRANT SELECT, INSERT ON memory.extracts TO upmo_app;
+GRANT SELECT, INSERT, DELETE ON memory.lessons TO upmo_app;
 GRANT EXECUTE ON FUNCTION memory.one_embedding_model() TO upmo_app;
 REVOKE ALL ON FUNCTION memory.one_embedding_model() FROM PUBLIC;
 
@@ -201,6 +234,7 @@ REVOKE ALL ON FUNCTION memory.erase(uuid, uuid) FROM PUBLIC;
 
 -- +goose Down
 
+DROP TABLE IF EXISTS memory.lessons;
 DROP FUNCTION IF EXISTS memory.erase(uuid, uuid);
 DROP TABLE IF EXISTS memory.extracts;
 DROP TABLE IF EXISTS memory.facts;
