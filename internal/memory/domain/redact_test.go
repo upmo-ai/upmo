@@ -57,6 +57,11 @@ func TestRedact(t *testing.T) {
 			want: "session ***",
 		},
 		{
+			name: "email address",
+			in:   "Write to ada@example.com today",
+			want: "Write to *** today",
+		},
+		{
 			name: "ordinary token prose",
 			in:   "the token refreshes",
 			want: "the token refreshes",
