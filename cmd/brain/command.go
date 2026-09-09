@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -31,6 +32,9 @@ func command(name string, args []string) error {
 		return err
 	}
 	if err := migrate.Up(ctx, pool, memory.Schema, memory.Migrations()); err != nil {
+		return err
+	}
+	if err := migrate.Up(ctx, pool, knowledge.Schema, knowledge.Migrations()); err != nil {
 		return err
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)

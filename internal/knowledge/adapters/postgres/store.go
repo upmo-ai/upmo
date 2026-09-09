@@ -1,0 +1,246 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/upmo-ai/upmo/internal/knowledge/app"
+)
+
+// Store is the knowledge tables. One method call is one transaction.
+type Store struct {
+	Pool *pgxpool.Pool
+}
+
+type rowTx struct {
+	tx pgx.Tx
+}
+
+func (s Store) InTx(ctx context.Context, access app.Access, fn func(app.Tx) error) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(rowTx{tx: tx}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s Store) CreateFolder(ctx context.Context, access app.Access, name string) (string, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var id string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO knowledge.folders (owner_user_id, visibility, name)
+		VALUES ($1::uuid, 'private', $2)
+		RETURNING id::text`, access.UserID, name).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("knowledge: folder: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query string, limit int) ([]app.Lexical, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text
+		FROM knowledge.chunks AS chunk
+		JOIN knowledge.sources AS source
+		  ON source.id = chunk.source_id
+		 AND source.revision = chunk.revision
+		WHERE source.folder_id = $1::uuid
+		  AND chunk.body_tsv @@ websearch_to_tsquery('english', $2)
+		ORDER BY
+		  ts_rank(chunk.body_tsv, websearch_to_tsquery('english', $2))
+		  + 0.3 * ts_rank(chunk.prefix_tsv, websearch_to_tsquery('english', $2)) DESC,
+		  chunk.source_id::text,
+		  chunk.seq
+		LIMIT $3`, folderID, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: search: %w", err)
+	}
+	defer rows.Close()
+	var hits []app.Lexical
+	for rows.Next() {
+		var hit app.Lexical
+		var raw *string
+		if err := rows.Scan(&hit.SourceID, &hit.Seq, &hit.Body, &raw); err != nil {
+			return nil, fmt.Errorf("knowledge: search: %w", err)
+		}
+		if raw != nil {
+			hit.Vector = parseHalfvec(*raw)
+		}
+		hits = append(hits, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("knowledge: search: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return hits, nil
+}
+
+func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
+	if s.Pool == nil {
+		return nil, fmt.Errorf("knowledge: no database")
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, `
+		SELECT set_config('upmo.user_id', $1, true),
+		       set_config('upmo.allow', $2, true),
+		       set_config('upmo.teams', '{}', true),
+		       set_config('upmo.shared_view', '{}', true),
+		       set_config('upmo.shared_edit', '{}', true)`,
+		access.UserID, access.Allow)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
+}
+
+func (t rowTx) Current(ctx context.Context, folderID, sourceID string) (app.Current, error) {
+	var folder string
+	var revision int
+	var hash []byte
+	err := t.tx.QueryRow(ctx, `
+		SELECT folder_id::text, revision, sha256
+		FROM knowledge.sources
+		WHERE id = $1::uuid`, sourceID).Scan(&folder, &revision, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Current{}, nil
+	}
+	if err != nil {
+		return app.Current{}, fmt.Errorf("knowledge: source: %w", err)
+	}
+	if folder != folderID {
+		return app.Current{}, app.ErrFolder
+	}
+	if len(hash) != 32 {
+		return app.Current{}, fmt.Errorf("knowledge: source hash")
+	}
+	current := app.Current{Found: true, ID: sourceID, Revision: revision}
+	copy(current.Hash[:], hash)
+	return current, nil
+}
+
+func (t rowTx) Save(
+	ctx context.Context,
+	folderID, sourceID, title, body string,
+	hash [32]byte,
+	pieces []app.Piece,
+) (app.Result, error) {
+	id := sourceID
+	revision := 0
+	if sourceID == "" {
+		err := t.tx.QueryRow(ctx, `
+			INSERT INTO knowledge.sources (folder_id, title, body, sha256, revision, updated_at)
+			VALUES ($1::uuid, $2, $3, $4, 0, $5)
+			RETURNING id::text`,
+			folderID, title, body, hash[:], time.Now().UTC()).Scan(&id)
+		if err != nil {
+			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
+		}
+	} else {
+		tag, err := t.tx.Exec(ctx, `
+			UPDATE knowledge.sources
+			SET title = $3, body = $4, sha256 = $5, updated_at = $6
+			WHERE id = $1::uuid AND folder_id = $2::uuid`,
+			sourceID, folderID, title, body, hash[:], time.Now().UTC())
+		if err != nil {
+			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			err = t.tx.QueryRow(ctx, `
+				INSERT INTO knowledge.sources (id, folder_id, title, body, sha256, revision, updated_at)
+				VALUES ($1::uuid, $2::uuid, $3, $4, $5, 0, $6)
+				RETURNING id::text`,
+				sourceID, folderID, title, body, hash[:], time.Now().UTC()).Scan(&id)
+			if err != nil {
+				return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
+			}
+		} else if err = t.tx.QueryRow(ctx, `
+			SELECT revision FROM knowledge.sources WHERE id = $1::uuid`, sourceID).Scan(&revision); err != nil {
+			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
+		}
+	}
+	newRev := revision + 1
+	for i, piece := range pieces {
+		vector := ""
+		model := ""
+		if piece.Vector != nil {
+			vector = formatHalfvec(piece.Vector)
+			model = piece.Model
+		}
+		if _, err := t.tx.Exec(ctx, `
+			INSERT INTO knowledge.chunks (
+				source_id, revision, seq, body, context_prefix, embedding, embedding_model
+			) VALUES (
+				$1::uuid, $2, $3, $4, $5, NULLIF($6, '')::halfvec(1024), $7
+			)`, id, newRev, i, piece.Body, piece.Prefix, vector, model); err != nil {
+			return app.Result{}, fmt.Errorf("knowledge: chunk: %w", err)
+		}
+	}
+	if _, err := t.tx.Exec(ctx, `
+		UPDATE knowledge.sources SET revision = $2 WHERE id = $1::uuid`, id, newRev); err != nil {
+		return app.Result{}, fmt.Errorf("knowledge: revision: %w", err)
+	}
+	if _, err := t.tx.Exec(ctx, `
+		DELETE FROM knowledge.chunks WHERE source_id = $1::uuid AND revision <> $2`, id, newRev); err != nil {
+		return app.Result{}, fmt.Errorf("knowledge: revision: %w", err)
+	}
+	return app.Result{ID: id, Revision: newRev, Chunks: len(pieces)}, nil
+}
+
+func formatHalfvec(v []float32) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, x := range v {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(x), 'f', -1, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func parseHalfvec(raw string) []float32 {
+	raw = strings.Trim(raw, "[]")
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]float32, len(parts))
+	for i, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 32)
+		if err != nil {
+			return nil
+		}
+		out[i] = float32(value)
+	}
+	return out
+}
