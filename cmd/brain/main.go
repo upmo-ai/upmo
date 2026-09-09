@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/memory"
 	memoryhttp "github.com/upmo-ai/upmo/internal/memory/adapters/http"
 	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
@@ -54,6 +55,9 @@ func run() error {
 	err = migrate.Up(ctx, owner, identity.Schema, identity.Migrations())
 	if err == nil {
 		err = migrate.Up(ctx, owner, memory.Schema, memory.Migrations())
+	}
+	if err == nil {
+		err = migrate.Up(ctx, owner, knowledge.Schema, knowledge.Migrations())
 	}
 	owner.Close()
 	if err != nil {
