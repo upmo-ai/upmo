@@ -211,6 +211,7 @@ const taskFixtures: Task[] = [
     phase: "Planning",
     result: "The daily finance digest is ready.",
     detail: "Send the daily finance digest.",
+    subtasks: [{ id: "digest-figures", title: "Pull yesterday's figures", status: "Needs approval" }],
   },
   {
     id: "aster-mail",
@@ -219,6 +220,15 @@ const taskFixtures: Task[] = [
     phase: "Preparing",
     result: "Mail triage is finished.",
     detail: "Sort the morning mail.",
+    subtasks: [
+      {
+        id: "mail-read",
+        title: "Read the inbox",
+        status: "Done",
+        children: [{ id: "mail-flag", title: "Flag the invoices", status: "Working" }],
+      },
+      { id: "mail-draft", title: "Draft the replies", status: "Working" },
+    ],
   },
   {
     id: "aster-done",
