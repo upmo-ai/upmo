@@ -6,6 +6,13 @@ export const taskStatuses = ["Working", "Needs approval", "Done", "Failed"] as c
 
 export type TaskStatus = (typeof taskStatuses)[number];
 
+export interface Subtask {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  children?: Subtask[];
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -13,6 +20,7 @@ export interface Task {
   phase: Phase;
   result: string;
   detail: string;
+  subtasks?: Subtask[];
 }
 
 export const pendingResult = "The final result shows up here when the task is done.";

@@ -120,6 +120,22 @@ describe("tasks", () => {
     expect(screen.getByTestId("task-result").textContent).toBe("Mail triage is finished.");
   });
 
+  it("shows a nested subtask under its parent", async () => {
+    renderAt("/tasks/aster-mail");
+    const tree = await screen.findByRole("list", { name: "Subtasks" });
+    const parent = within(tree).getByText("Read the inbox").closest("li");
+    expect(parent).toBeTruthy();
+    expect(within(parent as HTMLElement).getByText("Flag the invoices")).toBeTruthy();
+    expect(within(parent as HTMLElement).queryByText("Draft the replies")).toBeNull();
+    expect(within(tree).getByText("Draft the replies")).toBeTruthy();
+  });
+
+  it("hides the subtask tree when a task has none", async () => {
+    renderAt("/tasks/aster-done");
+    expect(await screen.findByRole("heading", { level: 1, name: "File the receipts" })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Subtasks" })).toBeNull();
+  });
+
   it("approves a waiting task and then advances it", async () => {
     renderAt("/tasks/aster-digest");
     const heading = await screen.findByRole("heading", { level: 1, name: "Daily finance digest" });

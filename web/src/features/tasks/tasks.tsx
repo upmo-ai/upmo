@@ -16,7 +16,14 @@ import {
 import { ShareDialog } from "../identity/share-dialog";
 import { EmptyState } from "../../ui/section";
 import { ApprovalCard } from "./approval-card";
-import { isTaskFilter, pendingResult, phases, type Phase, type TaskFilter } from "./types";
+import {
+  isTaskFilter,
+  pendingResult,
+  phases,
+  type Phase,
+  type Subtask,
+  type TaskFilter,
+} from "./types";
 
 import "./tasks.css";
 
@@ -38,12 +45,18 @@ function pendingFor(approvals: Approval[] | undefined, taskId?: string) {
   );
 }
 
-export function TaskStatusBadge({ status }: { status: TaskStatus }) {
+export function TaskStatusBadge({
+  status,
+  marker = "task-status",
+}: {
+  status: TaskStatus;
+  marker?: string;
+}) {
   return (
     <Badge
       className="task-badge"
       classNames={{ label: "task-badge-label" }}
-      data-testid="task-status"
+      data-testid={marker}
       variant="light"
       styles={{
         root: {
@@ -198,6 +211,12 @@ export function TaskPage() {
               </li>
             ))}
           </ol>
+          {task.subtasks && task.subtasks.length > 0 ? (
+            <Stack gap="xs" mt="md">
+              <Title order={2}>Subtasks</Title>
+              <SubtaskList nodes={task.subtasks} label="Subtasks" />
+            </Stack>
+          ) : null}
         </Tabs.Panel>
         <Tabs.Panel value="result">
           <Text data-testid="task-result">
@@ -206,5 +225,21 @@ export function TaskPage() {
         </Tabs.Panel>
       </Tabs>
     </Stack>
+  );
+}
+
+function SubtaskList({ nodes, label }: { nodes: Subtask[]; label?: string }) {
+  return (
+    <ul className="subtask-tree" aria-label={label}>
+      {nodes.map((node) => (
+        <li key={node.id}>
+          <span className="subtask-row">
+            <span>{node.title}</span>
+            <TaskStatusBadge status={node.status} marker="subtask-status" />
+          </span>
+          {node.children && node.children.length > 0 ? <SubtaskList nodes={node.children} /> : null}
+        </li>
+      ))}
+    </ul>
   );
 }
