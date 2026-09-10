@@ -15,6 +15,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/tasks"
 )
 
 func command(name string, args []string) error {
@@ -35,6 +36,9 @@ func command(name string, args []string) error {
 		return err
 	}
 	if err := migrate.Up(ctx, pool, knowledge.Schema, knowledge.Migrations()); err != nil {
+		return err
+	}
+	if err := migrate.Up(ctx, pool, tasks.Schema, tasks.Migrations()); err != nil {
 		return err
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
