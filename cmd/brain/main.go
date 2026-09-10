@@ -22,6 +22,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/tasks"
 )
 
 func main() {
@@ -58,6 +59,9 @@ func run() error {
 	}
 	if err == nil {
 		err = migrate.Up(ctx, owner, knowledge.Schema, knowledge.Migrations())
+	}
+	if err == nil {
+		err = migrate.Up(ctx, owner, tasks.Schema, tasks.Migrations())
 	}
 	owner.Close()
 	if err != nil {
