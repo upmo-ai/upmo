@@ -97,6 +97,105 @@ func (s Store) Record(ctx context.Context, access app.Access, taskID string, che
 	return passes, nil
 }
 
+// Admit serialises admission for one person and creates or admits one run.
+func (s Store) Admit(ctx context.Context, access app.Access, taskID, runID string) (app.Run, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return app.Run{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(
+		ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`,
+		access.UserID,
+	); err != nil {
+		return app.Run{}, fmt.Errorf("tasks: admission lock: %w", err)
+	}
+
+	var run app.Run
+	if runID == "" {
+		run, err = insertRun(ctx, tx, access.UserID, taskID)
+	} else {
+		run, err = admitRunLocked(ctx, tx, access.UserID, runID)
+	}
+	if err != nil {
+		return app.Run{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return app.Run{}, err
+	}
+	return run, nil
+}
+
+// End ends a queued or admitted run.
+func (s Store) End(ctx context.Context, access app.Access, runID string) (app.Run, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return app.Run{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	run, err := lockRun(ctx, tx, runID)
+	if err != nil {
+		return app.Run{}, err
+	}
+	next, err := domain.RunStep(run.State, domain.RunInput{Kind: domain.RunEnd})
+	if err != nil {
+		return app.Run{}, err
+	}
+	if next != run.State {
+		if err := insertRunEvent(ctx, tx, run.ID, run.State, next, domain.RunEnd); err != nil {
+			return app.Run{}, err
+		}
+		if err := updateRunState(ctx, tx, run.ID, next); err != nil {
+			return app.Run{}, err
+		}
+		run.State = next
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return app.Run{}, err
+	}
+	return run, nil
+}
+
+// Queued lists this person's queued runs oldest first.
+func (s Store) Queued(ctx context.Context, access app.Access) ([]string, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT run.id::text
+		FROM tasks.runs AS run
+		JOIN tasks.tasks AS task ON task.id = run.task_id
+		WHERE task.owner_user_id = $1::uuid
+		  AND run.state = 'queued'
+		ORDER BY run.created_at, run.id`, access.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: queued: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("tasks: queued: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tasks: queued: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
 	if s.Pool == nil {
 		return nil, fmt.Errorf("tasks: no database")
@@ -117,6 +216,147 @@ func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
 		return nil, err
 	}
 	return tx, nil
+}
+
+func insertRun(ctx context.Context, tx pgx.Tx, userID, taskID string) (app.Run, error) {
+	var status string
+	err := tx.QueryRow(ctx, `
+		SELECT status
+		FROM tasks.tasks
+		WHERE id = $1::uuid
+		FOR UPDATE`, taskID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Run{}, app.ErrGone
+	}
+	if err != nil {
+		return app.Run{}, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {
+		return app.Run{}, domain.ErrTerminal
+	}
+
+	active, err := countAdmittedRuns(ctx, tx, userID)
+	if err != nil {
+		return app.Run{}, err
+	}
+	next, err := domain.RunStep("", domain.RunInput{
+		Kind: domain.RunAdmit,
+		Room: domain.Room(active),
+	})
+	if err != nil {
+		return app.Run{}, err
+	}
+
+	run := app.Run{TaskID: taskID, State: next}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO tasks.runs (task_id, state)
+		VALUES ($1::uuid, $2)
+		RETURNING id::text`, taskID, string(next)).Scan(&run.ID)
+	if err != nil {
+		return app.Run{}, fmt.Errorf("tasks: run: %w", err)
+	}
+	if err := insertRunEvent(ctx, tx, run.ID, "", next, domain.RunAdmit); err != nil {
+		return app.Run{}, err
+	}
+	return run, nil
+}
+
+func admitRunLocked(ctx context.Context, tx pgx.Tx, userID, runID string) (app.Run, error) {
+	run, err := lockRun(ctx, tx, runID)
+	if err != nil {
+		return app.Run{}, err
+	}
+	if run.State == domain.RunAdmitted {
+		return run, nil
+	}
+
+	active, err := countAdmittedRuns(ctx, tx, userID)
+	if err != nil {
+		return app.Run{}, err
+	}
+	next, err := domain.RunStep(run.State, domain.RunInput{
+		Kind: domain.RunAdmit,
+		Room: domain.Room(active),
+	})
+	if err != nil {
+		return app.Run{}, err
+	}
+	if next == run.State {
+		return run, nil
+	}
+	if err := insertRunEvent(ctx, tx, run.ID, run.State, next, domain.RunAdmit); err != nil {
+		return app.Run{}, err
+	}
+	if err := updateRunState(ctx, tx, run.ID, next); err != nil {
+		return app.Run{}, err
+	}
+	run.State = next
+	return run, nil
+}
+
+func lockRun(ctx context.Context, tx pgx.Tx, runID string) (app.Run, error) {
+	var run app.Run
+	var state string
+	err := tx.QueryRow(ctx, `
+		SELECT id::text, task_id::text, state
+		FROM tasks.runs
+		WHERE id = $1::uuid
+		FOR UPDATE`, runID).Scan(&run.ID, &run.TaskID, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Run{}, app.ErrGone
+	}
+	if err != nil {
+		return app.Run{}, fmt.Errorf("tasks: lock run: %w", err)
+	}
+	run.State = domain.RunState(state)
+	return run, nil
+}
+
+func countAdmittedRuns(ctx context.Context, tx pgx.Tx, userID string) (int, error) {
+	var active int
+	err := tx.QueryRow(ctx, `
+		SELECT count(*)
+		FROM tasks.runs AS run
+		JOIN tasks.tasks AS task ON task.id = run.task_id
+		WHERE task.owner_user_id = $1::uuid
+		  AND run.state = 'admitted'`, userID).Scan(&active)
+	if err != nil {
+		return 0, fmt.Errorf("tasks: count admitted: %w", err)
+	}
+	return active, nil
+}
+
+func insertRunEvent(
+	ctx context.Context,
+	tx pgx.Tx,
+	runID string,
+	from, to domain.RunState,
+	input domain.RunKind,
+) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO tasks.run_events (run_id, seq, from_state, to_state, input)
+		SELECT $1::uuid,
+		       COALESCE((SELECT MAX(seq) FROM tasks.run_events WHERE run_id = $1::uuid), 0) + 1,
+		       $2, $3, $4`,
+		runID, string(from), string(to), string(input))
+	if err != nil {
+		return fmt.Errorf("tasks: run event: %w", err)
+	}
+	return nil
+}
+
+func updateRunState(ctx context.Context, tx pgx.Tx, runID string, state domain.RunState) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks.runs
+		SET state = $2
+		WHERE id = $1::uuid`, runID, string(state))
+	if err != nil {
+		return fmt.Errorf("tasks: run state: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return app.ErrGone
+	}
+	return nil
 }
 
 func insertOpen(ctx context.Context, tx pgx.Tx, userID string, input domain.Input) (app.Task, error) {
