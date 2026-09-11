@@ -26,43 +26,115 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	if err != nil || opened.Status != domain.Preparing {
 		t.Fatalf("open = %+v %v", opened, err)
 	}
-	status := opened.Status
-	for _, next := range []domain.Status{domain.Planning, domain.Working, domain.Checking} {
+	for _, next := range []domain.Status{domain.Planning, domain.Working} {
 		got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance})
 		if err != nil || got.Status != next {
 			t.Fatalf("advance to %s = %+v %v", next, got, err)
 		}
-		status = got.Status
 	}
-	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, domain.ErrEvidence) {
-		t.Fatalf("advance from Checking = %v", err)
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, domain.ErrTurn) {
+		t.Fatalf("advance without sentinel = %v", err)
 	}
-	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Pass}); !errors.Is(err, domain.ErrEvidence) {
-		t.Fatalf("pass = %v", err)
-	}
-	noted, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Chat, Body: " the figures "})
-	if err != nil || noted.Status != status {
-		t.Fatalf("chat = %+v %v", noted, err)
-	}
-	var events, chats int
-	var stored, body string
+	var stored string
+	var events int
 	if err := owner.QueryRow(ctx, `SELECT status FROM tasks.tasks WHERE id = $1`, opened.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored != string(domain.Checking) {
-		t.Fatalf("stored status = %s", stored)
+	if stored != string(domain.Working) {
+		t.Fatalf("stored status after unfinished turn = %s", stored)
 	}
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.task_events WHERE task_id = $1`, opened.ID).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
-	if events != 4 {
+	if events != 3 {
+		t.Fatalf("task events after unfinished turn = %d", events)
+	}
+	checked, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance, Turn: "upmo:end"})
+	if err != nil || checked.Status != domain.Checking {
+		t.Fatalf("advance to Checking = %+v %v", checked, err)
+	}
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, domain.ErrEvidence) {
+		t.Fatalf("advance from Checking = %v", err)
+	}
+	noted, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Chat, Body: " I pass "})
+	if err != nil || noted.Status != domain.Checking {
+		t.Fatalf("chat = %+v %v", noted, err)
+	}
+	var passes bool
+	if err := owner.QueryRow(ctx, `SELECT status, passes FROM tasks.tasks WHERE id = $1`, opened.ID).Scan(&stored, &passes); err != nil {
+		t.Fatal(err)
+	}
+	if stored != string(domain.Checking) || passes {
+		t.Fatalf("after chat status=%s passes=%t", stored, passes)
+	}
+	passed, err := app.RecordChecks(ctx, store, ownerAccess, opened.ID, []domain.Check{{Name: "go test", Code: 0}})
+	if err != nil || !passed {
+		t.Fatalf("record checks passed=%t err=%v", passed, err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT status, passes FROM tasks.tasks WHERE id = $1`, opened.ID).Scan(&stored, &passes); err != nil {
+		t.Fatal(err)
+	}
+	if stored != string(domain.Checking) || !passes {
+		t.Fatalf("after checks status=%s passes=%t", stored, passes)
+	}
+	done, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Pass})
+	if err != nil || done.Status != domain.Done {
+		t.Fatalf("pass = %+v %v", done, err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT status, passes FROM tasks.tasks WHERE id = $1`, opened.ID).Scan(&stored, &passes); err != nil {
+		t.Fatal(err)
+	}
+	if stored != string(domain.Done) || !passes {
+		t.Fatalf("after pass status=%s passes=%t", stored, passes)
+	}
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.task_events WHERE task_id = $1`, opened.ID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 5 {
 		t.Fatalf("task events = %d", events)
 	}
+	var chats int
+	var body string
 	if err := owner.QueryRow(ctx, `SELECT count(*), COALESCE(max(body), '') FROM tasks.chat_events WHERE task_id = $1`, opened.ID).Scan(&chats, &body); err != nil {
 		t.Fatal(err)
 	}
-	if chats != 1 || body != "the figures" {
+	if chats != 1 || body != "I pass" {
 		t.Fatalf("chat events = %d %q", chats, body)
+	}
+	var checkName string
+	var checkCode int
+	if err := owner.QueryRow(ctx, `SELECT name, code FROM tasks.checks WHERE task_id = $1`, opened.ID).Scan(&checkName, &checkCode); err != nil {
+		t.Fatal(err)
+	}
+	if checkName != "go test" || checkCode != 0 {
+		t.Fatalf("check = %q %d", checkName, checkCode)
+	}
+}
+
+func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, next := range []domain.Status{domain.Planning, domain.Working} {
+		got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance})
+		if err != nil || got.Status != next {
+			t.Fatalf("advance to %s = %+v %v", next, got, err)
+		}
+	}
+	got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance, Turn: "work complete\nupmo:end"})
+	if err != nil || got.Status != domain.Checking {
+		t.Fatalf("advance to Checking = %+v %v", got, err)
+	}
+	var body string
+	if err := owner.QueryRow(ctx, `SELECT body FROM tasks.chat_events WHERE task_id = $1`, opened.ID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body != "work complete" {
+		t.Fatalf("turn body = %q", body)
 	}
 }
 
@@ -90,15 +162,68 @@ func TestTransitionFailThenChatStops(t *testing.T) {
 	}
 }
 
+func TestFailedChecksAreStoredAndDoNotPass(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	task := openAtChecking(t, store, "File the receipts")
+	if passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil || !passed {
+		t.Fatalf("successful checks passed=%t err=%v", passed, err)
+	}
+	passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 1}})
+	if err != nil || passed {
+		t.Fatalf("record checks passed=%t err=%v", passed, err)
+	}
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Pass}); !errors.Is(err, domain.ErrEvidence) {
+		t.Fatalf("pass after failed check = %v", err)
+	}
+	var status string
+	var storedPasses bool
+	var code int
+	var count, batch int
+	if err := owner.QueryRow(ctx, `SELECT status, passes FROM tasks.tasks WHERE id = $1`, task.ID).Scan(&status, &storedPasses); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT count(*), max(batch) FROM tasks.checks WHERE task_id = $1`, task.ID).Scan(&count, &batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT code FROM tasks.checks WHERE task_id = $1 AND batch = 2`, task.ID).Scan(&code); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.Checking) || storedPasses || count != 2 || batch != 2 || code != 1 {
+		t.Fatalf("status=%s passes=%t count=%d batch=%d code=%d", status, storedPasses, count, batch, code)
+	}
+}
+
+func TestChecksBeforeCheckingAreRefused(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.RecordChecks(ctx, store, ownerAccess, opened.ID, []domain.Check{{Name: "go test", Code: 0}}); !errors.Is(err, domain.ErrInput) {
+		t.Fatalf("checks before Checking = %v", err)
+	}
+	var checks int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.checks WHERE task_id = $1`, opened.ID).Scan(&checks); err != nil {
+		t.Fatal(err)
+	}
+	if checks != 0 {
+		t.Fatalf("checks stored = %d", checks)
+	}
+}
+
 func TestTransitionHidesATaskFromAnotherPerson(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
-	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Sort the mail"})
-	if err != nil {
+	task := openAtChecking(t, store, "Sort the mail")
+	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.ApplyTransition(ctx, store, otherAccess, opened.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, app.ErrGone) {
+	if _, err := app.ApplyTransition(ctx, store, otherAccess, task.ID, domain.Input{Kind: domain.Pass}); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("other person = %v", err)
 	}
 	var seen int
@@ -122,9 +247,15 @@ func TestTransitionHidesATaskFromAnotherPerson(t *testing.T) {
 	if seen != 0 {
 		t.Fatalf("other person sees %d tasks", seen)
 	}
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM tasks.checks`).Scan(&seen); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 0 {
+		t.Fatalf("other person sees %d checks", seen)
+	}
 }
 
-func TestEventsAreAppendOnlyAndDoneCannotBeWritten(t *testing.T) {
+func TestEvidenceAndEventsCannotBeRewritten(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
@@ -132,20 +263,37 @@ func TestEventsAreAppendOnlyAndDoneCannotBeWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Chat, Body: "kept"}); err != nil {
-		t.Fatal(err)
+	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET passes = true WHERE id = $1`, opened.ID); err == nil {
+		t.Fatal("passes became true without checks")
 	}
 	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET status = 'Done' WHERE id = $1`, opened.ID); err == nil {
-		t.Fatal("status moved to Done without an event")
+		t.Fatal("status moved to Done while passes was false")
 	}
-	if _, err := owner.Exec(ctx, `UPDATE tasks.task_events SET input = 'pass'`); err == nil {
+
+	task := openAtChecking(t, store, "Keep the evidence")
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Chat, Body: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `UPDATE tasks.task_events SET input = 'pass' WHERE task_id = $1`, task.ID); err == nil {
 		t.Fatal("a task event was updated")
 	}
-	if _, err := owner.Exec(ctx, `DELETE FROM tasks.task_events`); err == nil {
+	if _, err := owner.Exec(ctx, `DELETE FROM tasks.task_events WHERE task_id = $1`, task.ID); err == nil {
 		t.Fatal("a task event was deleted")
 	}
-	if _, err := owner.Exec(ctx, `DELETE FROM tasks.chat_events`); err == nil {
+	if _, err := owner.Exec(ctx, `UPDATE tasks.chat_events SET body = 'changed' WHERE task_id = $1`, task.ID); err == nil {
+		t.Fatal("a chat event was updated")
+	}
+	if _, err := owner.Exec(ctx, `DELETE FROM tasks.chat_events WHERE task_id = $1`, task.ID); err == nil {
 		t.Fatal("a chat event was deleted")
+	}
+	if _, err := owner.Exec(ctx, `UPDATE tasks.checks SET code = 1 WHERE task_id = $1`, task.ID); err == nil {
+		t.Fatal("a check was updated")
+	}
+	if _, err := owner.Exec(ctx, `DELETE FROM tasks.checks WHERE task_id = $1`, task.ID); err == nil {
+		t.Fatal("a check was deleted")
 	}
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status)
@@ -155,6 +303,9 @@ func TestEventsAreAppendOnlyAndDoneCannotBeWritten(t *testing.T) {
 	appPool := pgtest.App(t, owner)
 	if _, err := appPool.Exec(ctx, `UPDATE tasks.task_events SET input = input`); err == nil {
 		t.Fatal("the app role updated a task event")
+	}
+	if _, err := appPool.Exec(ctx, `UPDATE tasks.checks SET code = code`); err == nil {
+		t.Fatal("the app role updated a check")
 	}
 }
 
@@ -167,6 +318,26 @@ var (
 	ownerAccess = app.Access{UserID: ownerUser, Allow: "task:create,task:view,task:edit"}
 	otherAccess = app.Access{UserID: otherUser, Allow: "task:view,task:edit"}
 )
+
+func openAtChecking(t *testing.T, store postgres.Store, goal string) app.Task {
+	t.Helper()
+	ctx := context.Background()
+	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: goal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, next := range []domain.Status{domain.Planning, domain.Working, domain.Checking} {
+		input := domain.Input{Kind: domain.Advance}
+		if next == domain.Checking {
+			input.Turn = domain.Sentinel
+		}
+		task, err = app.ApplyTransition(ctx, store, ownerAccess, task.ID, input)
+		if err != nil || task.Status != next {
+			t.Fatalf("advance to %s = %+v %v", next, task, err)
+		}
+	}
+	return task
+}
 
 func up(t *testing.T) *pgxpool.Pool {
 	t.Helper()

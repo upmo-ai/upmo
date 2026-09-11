@@ -33,19 +33,16 @@ type Task struct {
 	Goal   string
 }
 
-// Book applies one transition under a row lock and appends the event.
+// Book applies transitions and records checks under a row lock.
 type Book interface {
 	Transition(ctx context.Context, access Access, taskID string, input domain.Input) (Task, error)
+	Record(ctx context.Context, access Access, taskID string, checks []domain.Check) (bool, error)
 }
 
-// ApplyTransition is the only writer. Pass is refused here: Done needs core
-// evidence, and this writer does not collect any.
+// ApplyTransition validates the caller and delegates one transition.
 func ApplyTransition(ctx context.Context, book Book, access Access, taskID string, input domain.Input) (Task, error) {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
 		return Task{}, ErrAccess
-	}
-	if input.Kind == domain.Pass {
-		return Task{}, domain.ErrEvidence
 	}
 	if taskID == "" {
 		if input.Kind != domain.Open {
@@ -60,4 +57,18 @@ func ApplyTransition(ctx context.Context, book Book, access Access, taskID strin
 		}
 	}
 	return book.Transition(ctx, access, taskID, input)
+}
+
+// RecordChecks validates the caller and records one batch of checks.
+func RecordChecks(ctx context.Context, book Book, access Access, taskID string, checks []domain.Check) (bool, error) {
+	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
+		return false, ErrAccess
+	}
+	if _, err := uuid.Parse(taskID); err != nil {
+		return false, ErrTask
+	}
+	if len(checks) == 0 {
+		return false, domain.ErrEvidence
+	}
+	return book.Record(ctx, access, taskID, checks)
 }

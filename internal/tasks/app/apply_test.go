@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
@@ -10,11 +11,16 @@ import (
 
 const userID = "018f3b2c-7a10-7c4a-8e11-111111111111"
 
-func TestApplyRefusesPassBeforeTheWriter(t *testing.T) {
-	book := &fake{}
+func TestApplyPassCallsTheBook(t *testing.T) {
+	book := &fake{status: domain.Checking}
 	_, err := ApplyTransition(context.Background(), book, Access{UserID: userID, Allow: "task:edit"}, taskOf(book), domain.Input{Kind: domain.Pass})
-	if !errors.Is(err, domain.ErrEvidence) || book.calls != 0 {
+	if !errors.Is(err, domain.ErrEvidence) || book.calls != 1 {
 		t.Fatalf("pass calls=%d err=%v", book.calls, err)
+	}
+	book.passes = true
+	got, err := ApplyTransition(context.Background(), book, Access{UserID: userID, Allow: "task:edit"}, taskOf(book), domain.Input{Kind: domain.Pass})
+	if err != nil || got.Status != domain.Done || book.calls != 2 {
+		t.Fatalf("passed = %+v calls=%d err=%v", got, book.calls, err)
 	}
 }
 
@@ -53,15 +59,54 @@ func TestApplyRejectsABadCaller(t *testing.T) {
 	}
 }
 
+func TestRecordChecksValidatesAndCallsTheBook(t *testing.T) {
+	book := &fake{}
+	ctx := context.Background()
+	access := Access{UserID: userID, Allow: "task:edit"}
+	taskID := taskOf(book)
+	if _, err := RecordChecks(ctx, book, access, taskID, nil); !errors.Is(err, domain.ErrEvidence) || book.records != 0 {
+		t.Fatalf("empty checks records=%d err=%v", book.records, err)
+	}
+	passed, err := RecordChecks(ctx, book, access, taskID, []domain.Check{{Name: "go test", Code: 0}})
+	if err != nil || !passed || book.records != 1 {
+		t.Fatalf("checks passed=%t records=%d err=%v", passed, book.records, err)
+	}
+	if _, err := RecordChecks(ctx, book, Access{Allow: "task:edit"}, taskID, []domain.Check{{Name: "go test"}}); !errors.Is(err, ErrAccess) {
+		t.Fatalf("access = %v", err)
+	}
+	if _, err := RecordChecks(ctx, book, access, "nope", []domain.Check{{Name: "go test"}}); !errors.Is(err, ErrTask) {
+		t.Fatalf("task = %v", err)
+	}
+}
+
+func TestReviewContainsOnlyTheGivenDiffAndCriteria(t *testing.T) {
+	got, err := domain.Review("the diff", "the criteria")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "criteria:\nthe criteria\n\ndiff:\nthe diff\n"
+	if got != want {
+		t.Fatalf("review = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "private transcript") {
+		t.Fatalf("review contains text that was not passed: %q", got)
+	}
+}
+
 type fake struct {
-	calls  int
-	chats  int
-	id     string
-	status domain.Status
+	calls   int
+	records int
+	chats   int
+	id      string
+	status  domain.Status
+	passes  bool
 }
 
 func (f *fake) Transition(_ context.Context, _ Access, taskID string, input domain.Input) (Task, error) {
 	f.calls++
+	if input.Kind == domain.Pass && !f.passes {
+		return Task{}, domain.ErrEvidence
+	}
 	status := f.status
 	if taskID == "" {
 		status = ""
@@ -79,6 +124,12 @@ func (f *fake) Transition(_ context.Context, _ Access, taskID string, input doma
 		f.chats++
 	}
 	return Task{ID: taskID, Status: next, Goal: "File the receipts"}, nil
+}
+
+func (f *fake) Record(_ context.Context, _ Access, _ string, checks []domain.Check) (bool, error) {
+	f.records++
+	f.passes = domain.Passes(checks)
+	return f.passes, nil
 }
 
 func taskOf(f *fake) string {

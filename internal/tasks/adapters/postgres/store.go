@@ -17,12 +17,8 @@ type Store struct {
 	Pool *pgxpool.Pool
 }
 
-// Transition locks the task, applies Step, and appends one event.
-// Pass is refused so Done cannot be stored without evidence.
+// Transition locks the task, applies Step, and appends its events.
 func (s Store) Transition(ctx context.Context, access app.Access, taskID string, input domain.Input) (app.Task, error) {
-	if input.Kind == domain.Pass {
-		return app.Task{}, domain.ErrEvidence
-	}
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return app.Task{}, err
@@ -42,6 +38,63 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 		return app.Task{}, err
 	}
 	return task, nil
+}
+
+// Record locks the task, appends one check batch, and records whether it passed.
+func (s Store) Record(ctx context.Context, access app.Access, taskID string, checks []domain.Check) (bool, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT status
+		FROM tasks.tasks
+		WHERE id = $1::uuid
+		FOR UPDATE`, taskID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, app.ErrGone
+	}
+	if err != nil {
+		return false, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if domain.Status(status) != domain.Checking {
+		return false, domain.ErrInput
+	}
+
+	var batch int
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(batch), 0) + 1
+		FROM tasks.checks
+		WHERE task_id = $1::uuid`, taskID).Scan(&batch); err != nil {
+		return false, fmt.Errorf("tasks: check batch: %w", err)
+	}
+	for index, check := range checks {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tasks.checks (task_id, batch, seq, name, code)
+			VALUES ($1::uuid, $2, $3, $4, $5)`,
+			taskID, batch, index+1, check.Name, check.Code); err != nil {
+			return false, fmt.Errorf("tasks: check: %w", err)
+		}
+	}
+
+	passes := domain.Passes(checks)
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks.tasks
+		SET passes = $2, updated_at = now()
+		WHERE id = $1::uuid`, taskID, passes)
+	if err != nil {
+		return false, fmt.Errorf("tasks: passes: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return false, app.ErrGone
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return passes, nil
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
@@ -87,16 +140,35 @@ func insertOpen(ctx context.Context, tx pgx.Tx, userID string, input domain.Inpu
 
 func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, error) {
 	var status, goal string
+	var passes bool
 	err := tx.QueryRow(ctx, `
-		SELECT status, goal
+		SELECT status, goal, passes
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&status, &goal)
+		FOR UPDATE`, taskID).Scan(&status, &goal, &passes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Task{}, app.ErrGone
 	}
 	if err != nil {
 		return app.Task{}, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if input.Kind == domain.Pass && !passes {
+		return app.Task{}, domain.ErrEvidence
+	}
+	var turnBody string
+	if input.Kind == domain.Advance && domain.Status(status) == domain.Working {
+		var ended bool
+		turnBody, ended = domain.EndTurn(input.Turn)
+		if !ended {
+			return app.Task{}, domain.ErrTurn
+		}
+		if turnBody != "" {
+			_, effect, err := domain.Step(domain.Working, domain.Input{Kind: domain.Chat, Body: turnBody})
+			if err != nil {
+				return app.Task{}, err
+			}
+			turnBody = effect.Body
+		}
 	}
 	next, effect, err := domain.Step(domain.Status(status), input)
 	if err != nil {
@@ -107,6 +179,11 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 			return app.Task{}, err
 		}
 		return app.Task{ID: taskID, Status: next, Goal: goal}, nil
+	}
+	if turnBody != "" {
+		if err := insertChatEvent(ctx, tx, taskID, turnBody); err != nil {
+			return app.Task{}, err
+		}
 	}
 	if err := insertTaskEvent(ctx, tx, taskID, effect); err != nil {
 		return app.Task{}, err
