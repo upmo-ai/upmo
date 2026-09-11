@@ -42,6 +42,7 @@ type Input struct {
 	Kind Kind
 	Goal string
 	Body string
+	Turn string
 }
 
 // Effect is the event the writer appends. It is a value, not a write.
@@ -75,8 +76,8 @@ var advance = map[Status]Status{
 }
 
 // Step returns the next status and the event to append. It does not write.
-// Pass is the only edge into Done. The writer refuses to persist that edge
-// until the core holds evidence.
+// Pass is the only edge into Done. The writer persists Pass only when core
+// checks have passed; Step itself still knows the edge.
 func Step(status Status, input Input) (Status, Effect, error) {
 	input.Goal = strings.TrimSpace(input.Goal)
 	input.Body = strings.TrimSpace(input.Body)
