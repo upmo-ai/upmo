@@ -65,12 +65,41 @@ CREATE TABLE tasks.checks (
   CONSTRAINT checks_name_check CHECK (char_length(name) BETWEEN 1 AND 80)
 );
 
+CREATE TABLE tasks.runs (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id),
+  state text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT runs_state_check CHECK (state IN ('queued', 'admitted', 'ended'))
+);
+
+CREATE TABLE tasks.run_events (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  run_id uuid NOT NULL REFERENCES tasks.runs (id),
+  seq int NOT NULL,
+  from_state text NOT NULL,
+  to_state text NOT NULL,
+  input text NOT NULL,
+  at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, seq),
+  CONSTRAINT run_events_seq_check CHECK (seq > 0),
+  CONSTRAINT run_events_edge_check CHECK (
+    (input = 'admit' AND from_state = '' AND to_state IN ('queued', 'admitted') AND seq = 1)
+    OR (input = 'admit' AND from_state = 'queued' AND to_state = 'admitted')
+    OR (input = 'end' AND from_state IN ('queued', 'admitted') AND to_state = 'ended')
+  )
+);
+
 ALTER TABLE tasks.task_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks.task_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE tasks.chat_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks.chat_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE tasks.checks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks.checks FORCE ROW LEVEL SECURITY;
+ALTER TABLE tasks.runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.runs FORCE ROW LEVEL SECURITY;
+ALTER TABLE tasks.run_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.run_events FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY task_events_select ON tasks.task_events
   FOR SELECT
@@ -119,6 +148,139 @@ CREATE POLICY checks_insert ON tasks.checks
     WHERE task.id = task_id
       AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
   ));
+
+CREATE POLICY runs_select ON tasks.runs
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY runs_insert ON tasks.runs
+  FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY runs_update ON tasks.runs
+  FOR UPDATE
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY run_events_select ON tasks.run_events
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1
+    FROM tasks.runs AS run
+    JOIN tasks.tasks AS task ON task.id = run.task_id
+    WHERE run.id = run_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY run_events_insert ON tasks.run_events
+  FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1
+    FROM tasks.runs AS run
+    JOIN tasks.tasks AS task ON task.id = run.task_id
+    WHERE run.id = run_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.cap_run()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  run_owner uuid;
+  admitted_count int;
+BEGIN
+  IF NEW.state IS DISTINCT FROM 'admitted' THEN
+    RETURN NEW;
+  END IF;
+  SELECT task.owner_user_id
+    INTO run_owner
+  FROM tasks.tasks AS task
+  WHERE task.id = NEW.task_id;
+  SELECT count(*)
+    INTO admitted_count
+  FROM tasks.runs AS run
+  JOIN tasks.tasks AS task ON task.id = run.task_id
+  WHERE task.owner_user_id = run_owner
+    AND run.state = 'admitted'
+    AND run.id <> NEW.id;
+  IF admitted_count >= 2 THEN
+    RAISE EXCEPTION 'tasks: cap';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.run_born()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NEW.state NOT IN ('queued', 'admitted') THEN
+    RAISE EXCEPTION 'tasks: writer';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM tasks.run_events AS event
+    WHERE event.run_id = NEW.id
+      AND event.input = 'admit'
+      AND event.from_state = ''
+      AND event.to_state = NEW.state
+      AND event.seq = 1
+  ) THEN
+    RAISE EXCEPTION 'tasks: writer';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.run_follow()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  prev text;
+  nxt text;
+BEGIN
+  IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
+    RETURN NEW;
+  END IF;
+  SELECT event.from_state, event.to_state
+    INTO prev, nxt
+  FROM tasks.run_events AS event
+  WHERE event.run_id = NEW.id
+  ORDER BY event.seq DESC
+  LIMIT 1;
+  IF prev IS DISTINCT FROM OLD.state OR nxt IS DISTINCT FROM NEW.state THEN
+    RAISE EXCEPTION 'tasks: writer';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
 
 -- +goose StatementBegin
 CREATE FUNCTION tasks.born()
@@ -229,25 +391,60 @@ CREATE TRIGGER checks_append_only
   FOR EACH ROW
   EXECUTE FUNCTION tasks.keep_event();
 
+CREATE TRIGGER runs_cap
+  BEFORE INSERT OR UPDATE ON tasks.runs
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.cap_run();
+
+CREATE CONSTRAINT TRIGGER runs_born
+  AFTER INSERT ON tasks.runs
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.run_born();
+
+CREATE TRIGGER runs_follow
+  AFTER UPDATE OF state ON tasks.runs
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.run_follow();
+
+CREATE TRIGGER run_events_append_only
+  BEFORE UPDATE OR DELETE ON tasks.run_events
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.keep_event();
+
 GRANT SELECT, INSERT ON tasks.task_events TO upmo_app;
 GRANT SELECT, INSERT ON tasks.chat_events TO upmo_app;
 GRANT SELECT, INSERT ON tasks.checks TO upmo_app;
+GRANT SELECT, INSERT ON tasks.runs TO upmo_app;
+GRANT UPDATE (state) ON tasks.runs TO upmo_app;
+GRANT SELECT, INSERT ON tasks.run_events TO upmo_app;
 REVOKE UPDATE, DELETE ON tasks.task_events FROM upmo_app;
 REVOKE UPDATE, DELETE ON tasks.chat_events FROM upmo_app;
 REVOKE UPDATE, DELETE ON tasks.checks FROM upmo_app;
+REVOKE DELETE ON tasks.runs FROM upmo_app;
+REVOKE UPDATE, DELETE ON tasks.run_events FROM upmo_app;
 
 SELECT identity.protect('tasks.tasks');
 
 -- +goose Down
 
+DROP TRIGGER IF EXISTS run_events_append_only ON tasks.run_events;
+DROP TRIGGER IF EXISTS runs_follow ON tasks.runs;
+DROP TRIGGER IF EXISTS runs_born ON tasks.runs;
+DROP TRIGGER IF EXISTS runs_cap ON tasks.runs;
 DROP TRIGGER IF EXISTS checks_append_only ON tasks.checks;
 DROP TRIGGER IF EXISTS chat_events_append_only ON tasks.chat_events;
 DROP TRIGGER IF EXISTS task_events_append_only ON tasks.task_events;
 DROP TRIGGER IF EXISTS tasks_follow ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_born ON tasks.tasks;
+DROP FUNCTION IF EXISTS tasks.run_follow();
+DROP FUNCTION IF EXISTS tasks.run_born();
+DROP FUNCTION IF EXISTS tasks.cap_run();
 DROP FUNCTION IF EXISTS tasks.keep_event();
 DROP FUNCTION IF EXISTS tasks.follow();
 DROP FUNCTION IF EXISTS tasks.born();
+DROP TABLE IF EXISTS tasks.run_events;
+DROP TABLE IF EXISTS tasks.runs;
 DROP TABLE IF EXISTS tasks.checks;
 DROP TABLE IF EXISTS tasks.chat_events;
 DROP TABLE IF EXISTS tasks.task_events;
