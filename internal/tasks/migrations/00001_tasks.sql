@@ -8,6 +8,7 @@ CREATE TABLE tasks.tasks (
   visibility_team_id uuid,
   goal text NOT NULL,
   status text NOT NULL,
+  parent_id uuid REFERENCES tasks.tasks (id),
   passes boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT tasks_type_check CHECK (object_type = 'task'),
@@ -16,8 +17,11 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_visibility_check CHECK (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
-  )
+  ),
+  CONSTRAINT tasks_parent_check CHECK (parent_id IS NULL OR parent_id <> id)
 );
+
+CREATE INDEX tasks_parent_idx ON tasks.tasks (parent_id);
 
 CREATE TABLE tasks.task_events (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -376,6 +380,94 @@ CREATE TRIGGER tasks_follow
   FOR EACH ROW
   EXECUTE FUNCTION tasks.follow();
 
+-- +goose StatementBegin
+CREATE FUNCTION tasks.open_child_count()
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT count(*)::int
+  FROM tasks.tasks
+  WHERE parent_id IS NOT NULL
+    AND status NOT IN ('Done', 'Failed');
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION tasks.open_child_count() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tasks.open_child_count() TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.limit_child()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  parent_parent uuid;
+  parent_status text;
+  siblings int;
+  open_children int;
+BEGIN
+  IF NEW.parent_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('tasks:child', 0::bigint));
+  SELECT task.parent_id, task.status
+    INTO parent_parent, parent_status
+  FROM tasks.tasks AS task
+  WHERE task.id = NEW.parent_id;
+  IF parent_status IS NULL THEN
+    RAISE EXCEPTION 'tasks: no such task';
+  END IF;
+  IF parent_status IN ('Done', 'Failed') THEN
+    RAISE EXCEPTION 'tasks: terminal';
+  END IF;
+  IF parent_parent IS NOT NULL THEN
+    RAISE EXCEPTION 'tasks: depth';
+  END IF;
+  SELECT count(*)::int
+    INTO siblings
+  FROM tasks.tasks AS task
+  WHERE task.parent_id = NEW.parent_id;
+  IF siblings >= 5 THEN
+    RAISE EXCEPTION 'tasks: fanout';
+  END IF;
+  open_children := tasks.open_child_count();
+  IF open_children >= 6 THEN
+    RAISE EXCEPTION 'tasks: ceiling';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_limit_child
+  BEFORE INSERT ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.limit_child();
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.keep_parent()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NEW.parent_id IS DISTINCT FROM OLD.parent_id THEN
+    RAISE EXCEPTION 'tasks: writer';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_keep_parent
+  BEFORE UPDATE OF parent_id ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.keep_parent();
+
 CREATE TRIGGER task_events_append_only
   BEFORE UPDATE OR DELETE ON tasks.task_events
   FOR EACH ROW
@@ -570,6 +662,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_steps TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_deliveries TO upmo_app;
 
 -- +goose Down
+
+DROP TRIGGER IF EXISTS tasks_keep_parent ON tasks.tasks;
+DROP TRIGGER IF EXISTS tasks_limit_child ON tasks.tasks;
+DROP FUNCTION IF EXISTS tasks.keep_parent();
+DROP FUNCTION IF EXISTS tasks.limit_child();
+DROP FUNCTION IF EXISTS tasks.open_child_count();
 
 DROP TABLE IF EXISTS tasks.template_deliveries;
 DROP TABLE IF EXISTS tasks.template_steps;
