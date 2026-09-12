@@ -466,3 +466,200 @@ func insertChatEvent(ctx context.Context, tx pgx.Tx, taskID, body string) error 
 	}
 	return nil
 }
+
+// SaveTemplate creates or updates a template under row security.
+func (s Store) SaveTemplate(ctx context.Context, access app.Access, id string, template domain.Template) (string, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if id == "" {
+		var newID string
+		err = tx.QueryRow(ctx, `
+			INSERT INTO tasks.templates (owner_user_id, goal, agent_id, budget)
+			VALUES ($1::uuid, $2, $3::uuid, $4)
+			RETURNING id`,
+			access.UserID, template.Goal, template.AgentID, template.Budget).Scan(&newID)
+		if err != nil {
+			return "", fmt.Errorf("tasks: insert template: %w", err)
+		}
+		for i, title := range template.Outline {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO tasks.template_steps (template_id, seq, title)
+				VALUES ($1::uuid, $2, $3)`,
+				newID, i+1, title); err != nil {
+				return "", fmt.Errorf("tasks: insert template step: %w", err)
+			}
+		}
+		for i, target := range template.Deliveries {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO tasks.template_deliveries (template_id, seq, target)
+				VALUES ($1::uuid, $2, $3)`,
+				newID, i+1, target); err != nil {
+				return "", fmt.Errorf("tasks: insert template delivery: %w", err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", err
+		}
+		return newID, nil
+	}
+
+	var existingID string
+	err = tx.QueryRow(ctx, `
+		SELECT id
+		FROM tasks.templates
+		WHERE id = $1::uuid
+		FOR UPDATE`, id).Scan(&existingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", app.ErrGone
+	}
+	if err != nil {
+		return "", fmt.Errorf("tasks: lock template: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks.templates
+		SET goal = $2, agent_id = $3::uuid, budget = $4, updated_at = now()
+		WHERE id = $1::uuid`,
+		id, template.Goal, template.AgentID, template.Budget)
+	if err != nil {
+		return "", fmt.Errorf("tasks: update template: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return "", app.ErrGone
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM tasks.template_steps
+		WHERE template_id = $1::uuid`, id); err != nil {
+		return "", fmt.Errorf("tasks: delete template steps: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM tasks.template_deliveries
+		WHERE template_id = $1::uuid`, id); err != nil {
+		return "", fmt.Errorf("tasks: delete template deliveries: %w", err)
+	}
+
+	for i, title := range template.Outline {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tasks.template_steps (template_id, seq, title)
+			VALUES ($1::uuid, $2, $3)`,
+			id, i+1, title); err != nil {
+			return "", fmt.Errorf("tasks: insert template step: %w", err)
+		}
+	}
+	for i, target := range template.Deliveries {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tasks.template_deliveries (template_id, seq, target)
+			VALUES ($1::uuid, $2, $3)`,
+			id, i+1, target); err != nil {
+			return "", fmt.Errorf("tasks: insert template delivery: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// OpenTemplate fetches a template by id under row security.
+func (s Store) OpenTemplate(ctx context.Context, access app.Access, id string) (domain.Template, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return domain.Template{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var goal, agentID string
+	var budget int
+	err = tx.QueryRow(ctx, `
+		SELECT goal, agent_id::text, budget
+		FROM tasks.templates
+		WHERE id = $1::uuid`, id).Scan(&goal, &agentID, &budget)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Template{}, app.ErrGone
+	}
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("tasks: open template: %w", err)
+	}
+
+	stepRows, err := tx.Query(ctx, `
+		SELECT title
+		FROM tasks.template_steps
+		WHERE template_id = $1::uuid
+		ORDER BY seq ASC`, id)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("tasks: open template steps: %w", err)
+	}
+	defer stepRows.Close()
+
+	outline := make([]string, 0)
+	for stepRows.Next() {
+		var title string
+		if err := stepRows.Scan(&title); err != nil {
+			return domain.Template{}, fmt.Errorf("tasks: scan template step: %w", err)
+		}
+		outline = append(outline, title)
+	}
+	if err := stepRows.Err(); err != nil {
+		return domain.Template{}, fmt.Errorf("tasks: step rows: %w", err)
+	}
+
+	deliveryRows, err := tx.Query(ctx, `
+		SELECT target
+		FROM tasks.template_deliveries
+		WHERE template_id = $1::uuid
+		ORDER BY seq ASC`, id)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("tasks: open template deliveries: %w", err)
+	}
+	defer deliveryRows.Close()
+
+	deliveries := make([]string, 0)
+	for deliveryRows.Next() {
+		var target string
+		if err := deliveryRows.Scan(&target); err != nil {
+			return domain.Template{}, fmt.Errorf("tasks: scan template delivery: %w", err)
+		}
+		deliveries = append(deliveries, target)
+	}
+	if err := deliveryRows.Err(); err != nil {
+		return domain.Template{}, fmt.Errorf("tasks: delivery rows: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Template{}, err
+	}
+
+	return domain.Template{
+		Goal:       goal,
+		AgentID:    agentID,
+		Outline:    outline,
+		Deliveries: deliveries,
+		Budget:     budget,
+	}, nil
+}
+
+// RemoveTemplate deletes a template by id under row security.
+func (s Store) RemoveTemplate(ctx context.Context, access app.Access, id string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM tasks.templates
+		WHERE id = $1::uuid`, id)
+	if err != nil {
+		return fmt.Errorf("tasks: remove template: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}
