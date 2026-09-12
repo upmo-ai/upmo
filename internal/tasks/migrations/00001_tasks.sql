@@ -426,7 +426,154 @@ REVOKE UPDATE, DELETE ON tasks.run_events FROM upmo_app;
 
 SELECT identity.protect('tasks.tasks');
 
+CREATE TABLE tasks.templates (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  owner_user_id uuid NOT NULL,
+  goal text NOT NULL,
+  agent_id uuid NOT NULL,
+  budget int NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT templates_goal_check CHECK (char_length(goal) BETWEEN 1 AND 200),
+  CONSTRAINT templates_budget_check CHECK (budget BETWEEN 1 AND 1000000)
+);
+
+CREATE TABLE tasks.template_steps (
+  template_id uuid NOT NULL REFERENCES tasks.templates (id) ON DELETE CASCADE,
+  seq int NOT NULL,
+  title text NOT NULL,
+  PRIMARY KEY (template_id, seq),
+  CONSTRAINT template_steps_seq_check CHECK (seq > 0),
+  CONSTRAINT template_steps_title_check CHECK (char_length(title) BETWEEN 1 AND 200)
+);
+
+CREATE TABLE tasks.template_deliveries (
+  template_id uuid NOT NULL REFERENCES tasks.templates (id) ON DELETE CASCADE,
+  seq int NOT NULL,
+  target text NOT NULL,
+  PRIMARY KEY (template_id, seq),
+  CONSTRAINT template_deliveries_seq_check CHECK (seq > 0),
+  CONSTRAINT template_deliveries_target_check CHECK (char_length(target) BETWEEN 1 AND 200)
+);
+
+ALTER TABLE tasks.templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.templates FORCE ROW LEVEL SECURITY;
+ALTER TABLE tasks.template_steps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.template_steps FORCE ROW LEVEL SECURITY;
+ALTER TABLE tasks.template_deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.template_deliveries FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY templates_select ON tasks.templates
+  FOR SELECT
+  USING (
+    owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY templates_insert ON tasks.templates
+  FOR INSERT
+  WITH CHECK (
+    owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY templates_update ON tasks.templates
+  FOR UPDATE
+  USING (
+    owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  )
+  WITH CHECK (
+    owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY templates_delete ON tasks.templates
+  FOR DELETE
+  USING (
+    owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:delete' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY template_steps_select ON tasks.template_steps
+  FOR SELECT
+  USING (
+    'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM tasks.templates AS template
+      WHERE template.id = template_id
+        AND template.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+CREATE POLICY template_steps_insert ON tasks.template_steps
+  FOR INSERT
+  WITH CHECK (
+    ('task:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+     OR 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')))
+    AND EXISTS (
+      SELECT 1 FROM tasks.templates AS template
+      WHERE template.id = template_id
+        AND template.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+CREATE POLICY template_steps_delete ON tasks.template_steps
+  FOR DELETE
+  USING (
+    ('task:delete' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+     OR 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')))
+    AND EXISTS (
+      SELECT 1 FROM tasks.templates AS template
+      WHERE template.id = template_id
+        AND template.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+CREATE POLICY template_deliveries_select ON tasks.template_deliveries
+  FOR SELECT
+  USING (
+    'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM tasks.templates AS template
+      WHERE template.id = template_id
+        AND template.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+CREATE POLICY template_deliveries_insert ON tasks.template_deliveries
+  FOR INSERT
+  WITH CHECK (
+    ('task:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+     OR 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')))
+    AND EXISTS (
+      SELECT 1 FROM tasks.templates AS template
+      WHERE template.id = template_id
+        AND template.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+CREATE POLICY template_deliveries_delete ON tasks.template_deliveries
+  FOR DELETE
+  USING (
+    ('task:delete' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+     OR 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')))
+    AND EXISTS (
+      SELECT 1 FROM tasks.templates AS template
+      WHERE template.id = template_id
+        AND template.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+GRANT SELECT, INSERT, DELETE ON tasks.templates TO upmo_app;
+GRANT UPDATE (goal, agent_id, budget, updated_at) ON tasks.templates TO upmo_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_steps TO upmo_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_deliveries TO upmo_app;
+
 -- +goose Down
+
+DROP TABLE IF EXISTS tasks.template_deliveries;
+DROP TABLE IF EXISTS tasks.template_steps;
+DROP TABLE IF EXISTS tasks.templates;
 
 DROP TRIGGER IF EXISTS run_events_append_only ON tasks.run_events;
 DROP TRIGGER IF EXISTS runs_follow ON tasks.runs;
