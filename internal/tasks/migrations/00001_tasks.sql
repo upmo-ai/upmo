@@ -15,6 +15,9 @@ CREATE TABLE tasks.tasks (
   paused boolean NOT NULL DEFAULT false,
   allow text NOT NULL DEFAULT '',
   tainted boolean NOT NULL DEFAULT false,
+  cause text NOT NULL DEFAULT '',
+  result jsonb,
+  worktree text NOT NULL DEFAULT '',
   passes boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT tasks_type_check CHECK (object_type = 'task'),
@@ -28,10 +31,18 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000),
   CONSTRAINT tasks_held_check CHECK (held BETWEEN 0 AND budget),
   CONSTRAINT tasks_spent_check CHECK (spent BETWEEN 0 AND budget),
-  CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400)
+  CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
+  CONSTRAINT tasks_cause_check CHECK (
+    cause = '' OR (cause = 'parent_cancelled' AND status = 'Failed')
+  ),
+  CONSTRAINT tasks_worktree_check CHECK (char_length(worktree) <= 80)
 );
 
 CREATE INDEX tasks_parent_idx ON tasks.tasks (parent_id);
+
+CREATE UNIQUE INDEX tasks_worktree_writer
+  ON tasks.tasks (worktree)
+  WHERE worktree <> '' AND status NOT IN ('Done', 'Failed');
 
 CREATE TABLE tasks.task_events (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -479,6 +490,66 @@ CREATE TRIGGER tasks_keep_parent
   EXECUTE FUNCTION tasks.keep_parent();
 
 -- +goose StatementBegin
+CREATE FUNCTION tasks.keep_result()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  key text;
+  keys int := 0;
+  summary text;
+  detail text;
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.cause <> '' THEN
+    RAISE EXCEPTION 'tasks: cause';
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.cause IS DISTINCT FROM OLD.cause THEN
+    IF OLD.cause <> '' OR NEW.cause <> 'parent_cancelled' OR NEW.status <> 'Failed' THEN
+      RAISE EXCEPTION 'tasks: cause';
+    END IF;
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.worktree IS DISTINCT FROM OLD.worktree AND OLD.worktree <> '' THEN
+    RAISE EXCEPTION 'tasks: worktree';
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD.result IS NOT NULL AND NEW.result IS DISTINCT FROM OLD.result THEN
+    RAISE EXCEPTION 'tasks: result';
+  END IF;
+  IF NEW.result IS NULL THEN
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD.result IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.parent_id IS NULL OR jsonb_typeof(NEW.result) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'tasks: result';
+  END IF;
+  FOR key IN SELECT jsonb_object_keys(NEW.result)
+  LOOP
+    keys := keys + 1;
+    IF key NOT IN ('summary', 'detail') THEN
+      RAISE EXCEPTION 'tasks: result';
+    END IF;
+  END LOOP;
+  IF keys <> 2 THEN
+    RAISE EXCEPTION 'tasks: result';
+  END IF;
+  summary := NEW.result->>'summary';
+  detail := COALESCE(NEW.result->>'detail', '');
+  IF char_length(summary) < 1 OR char_length(summary) > 200 OR char_length(detail) > 2000 THEN
+    RAISE EXCEPTION 'tasks: result';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_keep_result
+  BEFORE INSERT OR UPDATE ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.keep_result();
+
+-- +goose StatementBegin
 CREATE FUNCTION tasks.allow_fits(parent_allow text, child_allow text)
 RETURNS boolean
 LANGUAGE sql
@@ -838,6 +909,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_deliveries TO upmo_app;
 
 -- +goose Down
 
+DROP INDEX IF EXISTS tasks.tasks_worktree_writer;
+DROP TRIGGER IF EXISTS tasks_keep_result ON tasks.tasks;
+DROP FUNCTION IF EXISTS tasks.keep_result();
 DROP TRIGGER IF EXISTS tasks_spread_taint ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_keep_grant ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_budget_notice ON tasks.tasks;

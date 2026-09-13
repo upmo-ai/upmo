@@ -206,8 +206,15 @@ func TestCancelDoesNotPropagate(t *testing.T) {
 	if _, err := app.Cancel(ctx, store, ownerAccess, parent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if status := taskStatus(t, owner, second.ID); status != string(domain.Preparing) {
+	if status := taskStatus(t, owner, second.ID); status != string(domain.Failed) {
 		t.Fatalf("child after parent cancel = %s", status)
+	}
+	var cause string
+	if err := owner.QueryRow(ctx, `SELECT cause FROM tasks.tasks WHERE id = $1`, second.ID).Scan(&cause); err != nil {
+		t.Fatal(err)
+	}
+	if cause != domain.ParentCancelled {
+		t.Fatalf("cause = %q", cause)
 	}
 }
 
