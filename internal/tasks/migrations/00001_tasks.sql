@@ -9,6 +9,12 @@ CREATE TABLE tasks.tasks (
   goal text NOT NULL,
   status text NOT NULL,
   parent_id uuid REFERENCES tasks.tasks (id),
+  budget int NOT NULL DEFAULT 0,
+  held int NOT NULL DEFAULT 0,
+  spent int NOT NULL DEFAULT 0,
+  paused boolean NOT NULL DEFAULT false,
+  allow text NOT NULL DEFAULT '',
+  tainted boolean NOT NULL DEFAULT false,
   passes boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT tasks_type_check CHECK (object_type = 'task'),
@@ -18,7 +24,11 @@ CREATE TABLE tasks.tasks (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
   ),
-  CONSTRAINT tasks_parent_check CHECK (parent_id IS NULL OR parent_id <> id)
+  CONSTRAINT tasks_parent_check CHECK (parent_id IS NULL OR parent_id <> id),
+  CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000),
+  CONSTRAINT tasks_held_check CHECK (held BETWEEN 0 AND budget),
+  CONSTRAINT tasks_spent_check CHECK (spent BETWEEN 0 AND budget),
+  CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400)
 );
 
 CREATE INDEX tasks_parent_idx ON tasks.tasks (parent_id);
@@ -468,6 +478,171 @@ CREATE TRIGGER tasks_keep_parent
   FOR EACH ROW
   EXECUTE FUNCTION tasks.keep_parent();
 
+-- +goose StatementBegin
+CREATE FUNCTION tasks.allow_fits(parent_allow text, child_allow text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog
+AS $$
+  SELECT COALESCE(bool_and(
+    token = ANY (string_to_array(COALESCE(parent_allow, ''), ','))
+  ), true)
+  FROM unnest(string_to_array(COALESCE(child_allow, ''), ',')) AS token
+  WHERE token <> '';
+$$;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.escrow_child()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  parent_budget int;
+  parent_held int;
+  parent_allow text;
+  parent_tainted boolean;
+BEGIN
+  IF NEW.parent_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+  SELECT task.budget, task.held, task.allow, task.tainted
+    INTO parent_budget, parent_held, parent_allow, parent_tainted
+  FROM tasks.tasks AS task
+  WHERE task.id = NEW.parent_id;
+  IF parent_budget IS NULL
+     OR NEW.budget < 1
+     OR parent_held + NEW.budget > parent_budget THEN
+    RAISE EXCEPTION 'tasks: budget';
+  END IF;
+  IF NOT tasks.allow_fits(parent_allow, NEW.allow) THEN
+    RAISE EXCEPTION 'tasks: authority';
+  END IF;
+  IF parent_tainted AND NOT NEW.tainted THEN
+    RAISE EXCEPTION 'tasks: taint';
+  END IF;
+  UPDATE tasks.tasks
+  SET held = held + NEW.budget
+  WHERE id = NEW.parent_id;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_escrow_child
+  BEFORE INSERT ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.escrow_child();
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.release_escrow()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NEW.parent_id IS NOT NULL
+     AND OLD.status NOT IN ('Done', 'Failed')
+     AND NEW.status IN ('Done', 'Failed') THEN
+    UPDATE tasks.tasks
+    SET held = held - NEW.budget
+    WHERE id = NEW.parent_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_release_escrow
+  AFTER UPDATE OF status ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.release_escrow();
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.budget_notice()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  notice_task uuid;
+BEGIN
+  IF NOT NEW.paused OR OLD.paused THEN
+    RETURN NEW;
+  END IF;
+  notice_task := COALESCE(NEW.parent_id, NEW.id);
+  INSERT INTO tasks.chat_events (task_id, seq, body)
+  SELECT notice_task,
+         COALESCE((SELECT MAX(seq) FROM tasks.chat_events WHERE task_id = notice_task), 0) + 1,
+         'Budget exhausted.';
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_budget_notice
+  AFTER UPDATE OF paused ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.budget_notice();
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.keep_grant()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NEW.budget IS DISTINCT FROM OLD.budget THEN
+    IF OLD.budget <> 0 OR NEW.parent_id IS NOT NULL OR NEW.budget < 1 THEN
+      RAISE EXCEPTION 'tasks: budget';
+    END IF;
+  END IF;
+  IF NEW.allow IS DISTINCT FROM OLD.allow THEN
+    RAISE EXCEPTION 'tasks: authority';
+  END IF;
+  IF OLD.tainted AND NOT NEW.tainted THEN
+    RAISE EXCEPTION 'tasks: taint';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_keep_grant
+  BEFORE UPDATE ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.keep_grant();
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.spread_taint()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NOT NEW.tainted OR OLD.tainted THEN
+    RETURN NEW;
+  END IF;
+  UPDATE tasks.tasks
+  SET tainted = true
+  WHERE id = NEW.parent_id
+    AND NOT tainted;
+  UPDATE tasks.tasks
+  SET tainted = true
+  WHERE parent_id = NEW.id
+    AND NOT tainted;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_spread_taint
+  AFTER UPDATE OF tainted ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.spread_taint();
+
 CREATE TRIGGER task_events_append_only
   BEFORE UPDATE OR DELETE ON tasks.task_events
   FOR EACH ROW
@@ -663,8 +838,19 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_deliveries TO upmo_app;
 
 -- +goose Down
 
+DROP TRIGGER IF EXISTS tasks_spread_taint ON tasks.tasks;
+DROP TRIGGER IF EXISTS tasks_keep_grant ON tasks.tasks;
+DROP TRIGGER IF EXISTS tasks_budget_notice ON tasks.tasks;
+DROP TRIGGER IF EXISTS tasks_release_escrow ON tasks.tasks;
+DROP TRIGGER IF EXISTS tasks_escrow_child ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_keep_parent ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_limit_child ON tasks.tasks;
+DROP FUNCTION IF EXISTS tasks.spread_taint();
+DROP FUNCTION IF EXISTS tasks.keep_grant();
+DROP FUNCTION IF EXISTS tasks.budget_notice();
+DROP FUNCTION IF EXISTS tasks.release_escrow();
+DROP FUNCTION IF EXISTS tasks.escrow_child();
+DROP FUNCTION IF EXISTS tasks.allow_fits(text, text);
 DROP FUNCTION IF EXISTS tasks.keep_parent();
 DROP FUNCTION IF EXISTS tasks.limit_child();
 DROP FUNCTION IF EXISTS tasks.open_child_count();
