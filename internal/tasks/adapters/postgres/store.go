@@ -27,7 +27,7 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 
 	var task app.Task
 	if taskID == "" {
-		task, err = insertOpen(ctx, tx, access.UserID, input)
+		task, err = insertOpen(ctx, tx, access.UserID, access.Allow, input)
 	} else {
 		task, err = stepLocked(ctx, tx, taskID, input)
 	}
@@ -359,16 +359,16 @@ func updateRunState(ctx context.Context, tx pgx.Tx, runID string, state domain.R
 	return nil
 }
 
-func insertOpen(ctx context.Context, tx pgx.Tx, userID string, input domain.Input) (app.Task, error) {
+func insertOpen(ctx context.Context, tx pgx.Tx, userID, allow string, input domain.Input) (app.Task, error) {
 	next, effect, err := domain.Step("", input)
 	if err != nil {
 		return app.Task{}, err
 	}
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status)
-		VALUES ($1::uuid, 'private', $2, $3)
-		RETURNING id::text`, userID, effect.Goal, string(next)).Scan(&id)
+		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, allow)
+		VALUES ($1::uuid, 'private', $2, $3, $4)
+		RETURNING id::text`, userID, effect.Goal, string(next), allow).Scan(&id)
 	if err != nil {
 		return app.Task{}, fmt.Errorf("tasks: open: %w", err)
 	}
@@ -380,17 +380,20 @@ func insertOpen(ctx context.Context, tx pgx.Tx, userID string, input domain.Inpu
 
 func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, error) {
 	var status, goal string
-	var passes bool
+	var passes, paused bool
 	err := tx.QueryRow(ctx, `
-		SELECT status, goal, passes
+		SELECT status, goal, passes, paused
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&status, &goal, &passes)
+		FOR UPDATE`, taskID).Scan(&status, &goal, &passes, &paused)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Task{}, app.ErrGone
 	}
 	if err != nil {
 		return app.Task{}, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if paused && input.Kind == domain.Advance {
+		return app.Task{}, domain.ErrExhausted
 	}
 	if input.Kind == domain.Pass && !passes {
 		return app.Task{}, domain.ErrEvidence

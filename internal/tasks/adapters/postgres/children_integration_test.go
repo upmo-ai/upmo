@@ -22,7 +22,7 @@ func TestSpawnOpensAChildAndDoesNotAdmit(t *testing.T) {
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 
-	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, " File them ")
+	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, " File them ", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,11 +52,11 @@ func TestSpawnCeilings(t *testing.T) {
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 
-	first, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder")
+	first, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Spawn(ctx, store, ownerAccess, first.ID, "File them"); !errors.Is(err, domain.ErrDepth) {
+	if _, err := app.Spawn(ctx, store, ownerAccess, first.ID, "File them", 1, "task:view"); !errors.Is(err, domain.ErrDepth) {
 		t.Fatalf("grandchild error = %v, want %v", err, domain.ErrDepth)
 	}
 	var grandchildren int
@@ -68,11 +68,11 @@ func TestSpawnCeilings(t *testing.T) {
 	}
 
 	for i := 1; i < domain.Fanout; i++ {
-		if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them"); err != nil {
+		if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "One more"); !errors.Is(err, domain.ErrFanout) {
+	if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "One more", 1, "task:view"); !errors.Is(err, domain.ErrFanout) {
 		t.Fatalf("sixth child error = %v, want %v", err, domain.ErrFanout)
 	}
 
@@ -81,20 +81,23 @@ func TestSpawnCeilings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Spawn(ctx, store, other, otherParent.ID, "Pull the figures"); err != nil {
+	if err := app.Fund(ctx, store, other, otherParent.ID, 1000); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Spawn(ctx, store, other, otherParent.ID, "One more"); !errors.Is(err, domain.ErrCeiling) {
+	if _, err := app.Spawn(ctx, store, other, otherParent.ID, "Pull the figures", 1, "task:view"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Spawn(ctx, store, other, otherParent.ID, "One more", 1, "task:view"); !errors.Is(err, domain.ErrCeiling) {
 		t.Fatalf("shared cap error = %v, want %v", err, domain.ErrCeiling)
 	}
 
 	if _, err := app.Cancel(ctx, store, ownerAccess, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "After a cancel"); !errors.Is(err, domain.ErrFanout) {
+	if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "After a cancel", 1, "task:view"); !errors.Is(err, domain.ErrFanout) {
 		t.Fatalf("fan-out after cancel error = %v, want %v", err, domain.ErrFanout)
 	}
-	if _, err := app.Spawn(ctx, store, other, otherParent.ID, "After a slot freed"); err != nil {
+	if _, err := app.Spawn(ctx, store, other, otherParent.ID, "After a slot freed", 1, "task:view"); err != nil {
 		t.Fatalf("shared cap after a finish: %v", err)
 	}
 }
@@ -113,7 +116,7 @@ func TestAwaitReportsOpenChildren(t *testing.T) {
 		t.Fatalf("empty children = %#v", none)
 	}
 
-	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them")
+	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +143,7 @@ func TestSendReachesAChildOnly(t *testing.T) {
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
-	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them")
+	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,11 +180,11 @@ func TestCancelDoesNotPropagate(t *testing.T) {
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
-	first, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder")
+	first, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them")
+	second, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +216,7 @@ func TestDirectWriteKeepsTheCeilings(t *testing.T) {
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
-	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them")
+	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,19 +225,19 @@ func TestDirectWriteKeepsTheCeilings(t *testing.T) {
 		t.Fatalf("parent rewrite error = %v", err)
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, parent_id)
-		VALUES ($1::uuid, 'private', 'Nested', 'Preparing', $2::uuid)`, ownerUser, child.ID); err == nil || !containsTask(err, "tasks: depth") {
+		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, parent_id, budget, allow)
+		VALUES ($1::uuid, 'private', 'Nested', 'Preparing', $2::uuid, 1, 'task:view')`, ownerUser, child.ID); err == nil || !containsTask(err, "tasks: depth") {
 		t.Fatalf("grandchild insert error = %v", err)
 	}
 
 	for i := 1; i < domain.Fanout; i++ {
-		if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them"); err != nil {
+		if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, parent_id)
-		VALUES ($1::uuid, 'private', 'One more', 'Preparing', $2::uuid)`, ownerUser, parent.ID); err == nil || !containsTask(err, "tasks: fanout") {
+		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, parent_id, budget, allow)
+		VALUES ($1::uuid, 'private', 'One more', 'Preparing', $2::uuid, 1, 'task:view')`, ownerUser, parent.ID); err == nil || !containsTask(err, "tasks: fanout") {
 		t.Fatalf("sixth insert error = %v", err)
 	}
 }
@@ -243,6 +246,9 @@ func openRoot(t *testing.T, store postgres.Store, goal string) app.Task {
 	t.Helper()
 	task, err := app.ApplyTransition(context.Background(), store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: goal})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Fund(context.Background(), store, ownerAccess, task.ID, 1000); err != nil {
 		t.Fatal(err)
 	}
 	return task

@@ -13,14 +13,17 @@ func TestSpawnRejectsABadGoalBeforeTheBook(t *testing.T) {
 	access := Access{UserID: userID, Allow: "task:create"}
 	parent := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
 
-	if _, err := Spawn(context.Background(), book, access, parent, "  "); !errors.Is(err, domain.ErrGoal) {
+	if _, err := Spawn(context.Background(), book, access, parent, "  ", 1, ""); !errors.Is(err, domain.ErrGoal) {
 		t.Fatalf("empty goal error = %v, want %v", err, domain.ErrGoal)
 	}
-	if _, err := Spawn(context.Background(), book, Access{UserID: userID}, parent, "File them"); !errors.Is(err, ErrAccess) {
+	if _, err := Spawn(context.Background(), book, Access{UserID: userID}, parent, "File them", 1, ""); !errors.Is(err, ErrAccess) {
 		t.Fatalf("empty allow error = %v, want %v", err, ErrAccess)
 	}
-	if _, err := Spawn(context.Background(), book, access, "bad-id", "File them"); !errors.Is(err, ErrTask) {
+	if _, err := Spawn(context.Background(), book, access, "bad-id", "File them", 1, ""); !errors.Is(err, ErrTask) {
 		t.Fatalf("bad parent error = %v, want %v", err, ErrTask)
+	}
+	if _, err := Spawn(context.Background(), book, access, parent, "File them", 0, ""); !errors.Is(err, domain.ErrBudget) {
+		t.Fatalf("zero budget error = %v, want %v", err, domain.ErrBudget)
 	}
 	if book.spawns != 0 {
 		t.Fatalf("spawn calls = %d, want 0", book.spawns)
@@ -91,7 +94,7 @@ type fakeSpawner struct {
 	children []Subtask
 }
 
-func (f *fakeSpawner) Spawn(context.Context, Access, string, string) (Task, error) {
+func (f *fakeSpawner) Spawn(context.Context, Access, string, string, int, string) (Task, error) {
 	f.spawns++
 	return Task{}, nil
 }

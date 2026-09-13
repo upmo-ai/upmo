@@ -13,7 +13,7 @@ import (
 )
 
 // Spawn locks the parent, applies the ceilings, and opens one child.
-func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal string) (app.Task, error) {
+func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal string, budget int, allow string) (app.Task, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return app.Task{}, err
@@ -24,13 +24,14 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 		return app.Task{}, fmt.Errorf("tasks: child lock: %w", err)
 	}
 
-	var status string
-	var parentIsChild bool
+	var status, parentAllow string
+	var parentIsChild, paused, tainted bool
+	var parentBudget, held int
 	err = tx.QueryRow(ctx, `
-		SELECT status, parent_id IS NOT NULL
+		SELECT status, parent_id IS NOT NULL, budget, held, paused, allow, tainted
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, parentID).Scan(&status, &parentIsChild)
+		FOR UPDATE`, parentID).Scan(&status, &parentIsChild, &parentBudget, &held, &paused, &parentAllow, &tainted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Task{}, app.ErrGone
 	}
@@ -39,6 +40,9 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 	}
 	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {
 		return app.Task{}, domain.ErrTerminal
+	}
+	if paused {
+		return app.Task{}, domain.ErrExhausted
 	}
 
 	depth := 1
@@ -56,6 +60,10 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 	if err := domain.Ceilings(depth, siblings, openChildren); err != nil {
 		return app.Task{}, err
 	}
+	if err := domain.BudgetFits(parentBudget, held, budget); err != nil {
+		return app.Task{}, err
+	}
+	granted := domain.Intersect(parentAllow, domain.Intersect(access.Allow, allow))
 
 	next, effect, err := domain.Step("", domain.Input{Kind: domain.Open, Goal: goal})
 	if err != nil {
@@ -63,10 +71,10 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 	}
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, parent_id)
-		VALUES ($1::uuid, 'private', $2, $3, $4::uuid)
+		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, parent_id, budget, allow, tainted)
+		VALUES ($1::uuid, 'private', $2, $3, $4::uuid, $5, $6, $7)
 		RETURNING id::text`,
-		access.UserID, effect.Goal, string(next), parentID).Scan(&id)
+		access.UserID, effect.Goal, string(next), parentID, budget, granted, tainted).Scan(&id)
 	if err != nil {
 		return app.Task{}, childWriteErr(err)
 	}
@@ -185,6 +193,12 @@ func childWriteErr(err error) error {
 		return domain.ErrCeiling
 	case strings.Contains(msg, "tasks: terminal"):
 		return domain.ErrTerminal
+	case strings.Contains(msg, "tasks: budget"):
+		return domain.ErrBudget
+	case strings.Contains(msg, "tasks: authority"):
+		return domain.ErrAuthority
+	case strings.Contains(msg, "tasks: taint"):
+		return domain.ErrTaint
 	default:
 		return fmt.Errorf("tasks: child: %w", err)
 	}
