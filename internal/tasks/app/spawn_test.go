@@ -73,18 +73,24 @@ func TestSendRejectsAnEmptyLineBeforeTheBook(t *testing.T) {
 	}
 }
 
-func TestCancelFailsThatTask(t *testing.T) {
-	book := &fake{status: domain.Preparing}
+func TestCancelRejectsABadCaller(t *testing.T) {
+	book := &fakeCanceller{task: Task{Status: domain.Failed}}
 	taskID := "018f3b2c-7a10-7c4a-8e11-cccccccccccc"
+	if _, err := Cancel(context.Background(), book, Access{UserID: "bad"}, taskID); !errors.Is(err, ErrAccess) {
+		t.Fatalf("bad access error = %v, want %v", err, ErrAccess)
+	}
+	if _, err := Cancel(context.Background(), book, Access{UserID: userID, Allow: "task:edit"}, "bad-id"); !errors.Is(err, ErrTask) {
+		t.Fatalf("bad task error = %v, want %v", err, ErrTask)
+	}
+	if book.calls != 0 {
+		t.Fatalf("cancel calls = %d, want 0", book.calls)
+	}
 	got, err := Cancel(context.Background(), book, Access{UserID: userID, Allow: "task:edit"}, taskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != domain.Failed {
-		t.Fatalf("status = %s, want Failed", got.Status)
-	}
-	if _, err := Cancel(context.Background(), book, Access{UserID: "bad"}, taskID); !errors.Is(err, ErrAccess) {
-		t.Fatalf("bad access error = %v, want %v", err, ErrAccess)
+	if got.Status != domain.Failed || book.calls != 1 {
+		t.Fatalf("status = %s calls = %d", got.Status, book.calls)
 	}
 }
 
@@ -106,4 +112,14 @@ func (f *fakeSpawner) Children(context.Context, Access, string) ([]Subtask, erro
 func (f *fakeSpawner) Send(context.Context, Access, string, string) error {
 	f.sends++
 	return nil
+}
+
+type fakeCanceller struct {
+	calls int
+	task  Task
+}
+
+func (f *fakeCanceller) Cancel(context.Context, Access, string) (Task, error) {
+	f.calls++
+	return f.task, nil
 }

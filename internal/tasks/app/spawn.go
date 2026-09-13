@@ -22,6 +22,11 @@ type Spawner interface {
 	Send(ctx context.Context, access Access, taskID, body string) error
 }
 
+// Canceller fails a task and, when it is a parent, its open children.
+type Canceller interface {
+	Cancel(ctx context.Context, access Access, taskID string) (Task, error)
+}
+
 // Spawn opens one child under a parent. It does not admit a run.
 func Spawn(ctx context.Context, book Spawner, access Access, parentID, goal string, budget int, allow string) (Task, error) {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
@@ -76,7 +81,13 @@ func Send(ctx context.Context, book Spawner, access Access, taskID, body string)
 	return book.Send(ctx, access, taskID, body)
 }
 
-// Cancel fails that one task. It does not fail a parent or a sibling.
-func Cancel(ctx context.Context, book Book, access Access, taskID string) (Task, error) {
-	return ApplyTransition(ctx, book, access, taskID, domain.Input{Kind: domain.Fail})
+// Cancel fails that task. A parent cancel also fails its open children.
+func Cancel(ctx context.Context, book Canceller, access Access, taskID string) (Task, error) {
+	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
+		return Task{}, ErrAccess
+	}
+	if _, err := uuid.Parse(taskID); err != nil {
+		return Task{}, ErrTask
+	}
+	return book.Cancel(ctx, access, taskID)
 }
