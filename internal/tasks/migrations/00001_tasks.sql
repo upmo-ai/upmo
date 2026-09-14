@@ -18,6 +18,7 @@ CREATE TABLE tasks.tasks (
   cause text NOT NULL DEFAULT '',
   result jsonb,
   worktree text NOT NULL DEFAULT '',
+  automation_id uuid,
   passes boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT tasks_type_check CHECK (object_type = 'task'),
@@ -504,6 +505,9 @@ BEGIN
   IF TG_OP = 'INSERT' AND NEW.cause <> '' THEN
     RAISE EXCEPTION 'tasks: cause';
   END IF;
+  IF TG_OP = 'UPDATE' AND NEW.automation_id IS DISTINCT FROM OLD.automation_id THEN
+    RAISE EXCEPTION 'tasks: writer';
+  END IF;
   IF TG_OP = 'UPDATE' AND NEW.cause IS DISTINCT FROM OLD.cause THEN
     IF OLD.cause <> '' OR NEW.cause <> 'parent_cancelled' OR NEW.status <> 'Failed' THEN
       RAISE EXCEPTION 'tasks: cause';
@@ -907,8 +911,142 @@ GRANT UPDATE (goal, agent_id, budget, updated_at) ON tasks.templates TO upmo_app
 GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_steps TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tasks.template_deliveries TO upmo_app;
 
+CREATE TABLE tasks.automations (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  owner_user_id uuid NOT NULL,
+  template_id uuid NOT NULL REFERENCES tasks.templates (id),
+  kind text NOT NULL,
+  spec text NOT NULL,
+  mode text NOT NULL DEFAULT 'on',
+  failures int NOT NULL DEFAULT 0,
+  reason text NOT NULL DEFAULT '',
+  CONSTRAINT automations_kind_check CHECK (kind IN ('cron', 'event', 'webhook', 'channel')),
+  CONSTRAINT automations_spec_check CHECK (char_length(spec) BETWEEN 1 AND 200),
+  CONSTRAINT automations_mode_check CHECK (mode IN ('on', 'off')),
+  CONSTRAINT automations_failures_check CHECK (failures BETWEEN 0 AND 3),
+  CONSTRAINT automations_reason_check CHECK (reason IN ('', 'breaker', 'owner_left')),
+  CONSTRAINT automations_live_check CHECK (mode = 'off' OR reason <> 'owner_left')
+);
+
+CREATE TABLE tasks.automation_fires (
+  automation_id uuid NOT NULL REFERENCES tasks.automations (id) ON DELETE CASCADE,
+  dedup_key text NOT NULL,
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id),
+  PRIMARY KEY (automation_id, dedup_key),
+  CONSTRAINT automation_fires_key_check CHECK (char_length(dedup_key) BETWEEN 1 AND 200)
+);
+
+ALTER TABLE tasks.automations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.automations FORCE ROW LEVEL SECURITY;
+ALTER TABLE tasks.automation_fires ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.automation_fires FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY automations_select ON tasks.automations
+  FOR SELECT
+  USING (
+    'members:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    OR (
+      owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+      AND 'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    )
+  );
+
+CREATE POLICY automations_insert ON tasks.automations
+  FOR INSERT
+  WITH CHECK (
+    owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY automations_update ON tasks.automations
+  FOR UPDATE
+  USING (
+    (owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+      AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')))
+    OR 'members:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  )
+  WITH CHECK (
+    (owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+      AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')))
+    OR 'members:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY automation_fires_select ON tasks.automation_fires
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM tasks.automations AS automation
+      WHERE automation.id = automation_id
+        AND automation.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+    AND 'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY automation_fires_insert ON tasks.automation_fires
+  FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM tasks.automations AS automation
+      WHERE automation.id = automation_id
+        AND automation.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+    AND 'task:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.automation_template(automation uuid)
+RETURNS TABLE (goal text, budget int)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT template.goal, template.budget
+  FROM tasks.templates AS template
+  JOIN tasks.automations AS automation_row ON automation_row.template_id = template.id
+  WHERE automation_row.id = automation
+    AND automation_row.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION tasks.automation_template(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tasks.automation_template(uuid) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.own_template()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM tasks.templates
+    WHERE id = NEW.template_id
+      AND owner_user_id = NEW.owner_user_id
+  ) THEN
+    RAISE EXCEPTION 'tasks: template';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_own_template
+  BEFORE INSERT ON tasks.automations
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.own_template();
+
+GRANT SELECT, INSERT ON tasks.automations TO upmo_app;
+GRANT UPDATE (mode, failures, reason, owner_user_id) ON tasks.automations TO upmo_app;
+GRANT SELECT, INSERT ON tasks.automation_fires TO upmo_app;
+
 -- +goose Down
 
+DROP TABLE IF EXISTS tasks.automation_fires;
+DROP TABLE IF EXISTS tasks.automations;
+DROP FUNCTION IF EXISTS tasks.automation_template(uuid);
+DROP FUNCTION IF EXISTS tasks.own_template();
 DROP INDEX IF EXISTS tasks.tasks_worktree_writer;
 DROP TRIGGER IF EXISTS tasks_keep_result ON tasks.tasks;
 DROP FUNCTION IF EXISTS tasks.keep_result();
