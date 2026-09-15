@@ -6,9 +6,7 @@ CREATE TABLE chat.chats (
   owner_user_id uuid NOT NULL,
   visibility text NOT NULL,
   visibility_team_id uuid,
-  profile text NOT NULL DEFAULT '',
   CONSTRAINT chats_type_check CHECK (object_type = 'chat'),
-  CONSTRAINT chats_profile_check CHECK (octet_length(profile) <= 1200),
   CONSTRAINT chats_visibility_check CHECK (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
@@ -44,26 +42,6 @@ CREATE POLICY lines_insert ON chat.lines
   ));
 
 -- +goose StatementBegin
-CREATE FUNCTION chat.keep_profile()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = pg_catalog
-AS $$
-BEGIN
-  IF NEW.profile IS DISTINCT FROM OLD.profile THEN
-    RAISE EXCEPTION 'chat: profile';
-  END IF;
-  RETURN NEW;
-END;
-$$;
--- +goose StatementEnd
-
-CREATE TRIGGER chat_keep_profile
-  BEFORE UPDATE OF profile ON chat.chats
-  FOR EACH ROW
-  EXECUTE FUNCTION chat.keep_profile();
-
--- +goose StatementBegin
 CREATE FUNCTION chat.keep_line()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -89,4 +67,3 @@ SELECT identity.protect('chat.chats');
 DROP TABLE IF EXISTS chat.lines;
 DROP TABLE IF EXISTS chat.chats;
 DROP FUNCTION IF EXISTS chat.keep_line();
-DROP FUNCTION IF EXISTS chat.keep_profile();

@@ -13,7 +13,6 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/chat/app"
-	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -29,12 +28,12 @@ var (
 	otherAccess = app.Access{UserID: otherUser, Allow: "chat:view,chat:edit"}
 )
 
-func TestOpenKeepsTheProfileAndLeavesTheSession(t *testing.T) {
+func TestOpenLeavesTheSession(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 
-	id, err := app.Open(ctx, store, ownerAccess, " See {{prior}} ")
+	id, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +47,6 @@ func TestOpenKeepsTheProfileAndLeavesTheSession(t *testing.T) {
 	got, err := app.Read(ctx, store, ownerAccess, id)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if got.Profile != "See { {prior}}" || got.Block != domain.Block(got.Profile) {
-		t.Fatalf("profile = %q block = %q", got.Profile, got.Block)
 	}
 	if len(got.Lines) != 2 || got.Lines[0] != "hello" || got.Lines[1] != "again" {
 		t.Fatalf("lines = %#v", got.Lines)
@@ -67,10 +63,6 @@ func TestOpenKeepsTheProfileAndLeavesTheSession(t *testing.T) {
 		t.Fatalf("other person error = %v", err)
 	}
 
-	_, err = owner.Exec(ctx, `UPDATE chat.chats SET profile = 'changed' WHERE id = $1`, id)
-	if err == nil || !strings.Contains(err.Error(), "chat: profile") {
-		t.Fatalf("profile rewrite error = %v", err)
-	}
 	_, err = owner.Exec(ctx, `UPDATE chat.lines SET body = 'changed' WHERE chat_id = $1`, id)
 	if err == nil || !strings.Contains(err.Error(), "chat: writer") {
 		t.Fatalf("line rewrite error = %v", err)

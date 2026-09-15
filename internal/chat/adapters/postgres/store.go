@@ -18,8 +18,8 @@ type Store struct {
 	Pool *pgxpool.Pool
 }
 
-// Open inserts one private chat and its profile. It does not touch a login session.
-func (s Store) Open(ctx context.Context, access app.Access, profile string) (string, error) {
+// Open inserts one private chat. It does not touch a login session or the profile.
+func (s Store) Open(ctx context.Context, access app.Access) (string, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return "", err
@@ -28,9 +28,9 @@ func (s Store) Open(ctx context.Context, access app.Access, profile string) (str
 
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO chat.chats (owner_user_id, visibility, profile)
-		VALUES ($1::uuid, 'private', $2)
-		RETURNING id::text`, access.UserID, profile).Scan(&id)
+		INSERT INTO chat.chats (owner_user_id, visibility)
+		VALUES ($1::uuid, 'private')
+		RETURNING id::text`, access.UserID).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("chat: open: %w", err)
 	}
@@ -40,7 +40,7 @@ func (s Store) Open(ctx context.Context, access app.Access, profile string) (str
 	return id, nil
 }
 
-// Say appends one line. The profile column is not written.
+// Say appends one line.
 func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) error {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
@@ -67,7 +67,7 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 	return tx.Commit(ctx)
 }
 
-// Read returns the stored profile and the lines in order.
+// Read returns the lines in order.
 func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.Chat, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
@@ -75,8 +75,8 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var profile string
-	err = tx.QueryRow(ctx, `SELECT profile FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&profile)
+	var one int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Chat{}, app.ErrGone
 	}
@@ -106,7 +106,7 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	if err := tx.Commit(ctx); err != nil {
 		return app.Chat{}, err
 	}
-	return app.Chat{ID: chatID, Profile: profile, Lines: lines}, nil
+	return app.Chat{ID: chatID, Lines: lines}, nil
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
