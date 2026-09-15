@@ -1,5 +1,5 @@
 // Package chat is the chat context. It embeds this context's SQL.
-// A chat is an owned object, and the profile block rides with it.
+// A chat is an owned object. The profile stays in memory and is read when a turn is built.
 package chat
 
 import (

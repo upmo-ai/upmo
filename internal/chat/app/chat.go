@@ -26,35 +26,29 @@ type Access struct {
 	Allow  string
 }
 
-// Chat is one owned chat. Block is the cacheable prefix, not a line.
+// Chat is one owned chat and the lines said in it.
 type Chat struct {
-	ID      string
-	Profile string
-	Block   string
-	Lines   []string
+	ID    string
+	Lines []string
 }
 
 // Book stores chats and their lines.
 type Book interface {
-	Open(ctx context.Context, access Access, profile string) (string, error)
+	Open(ctx context.Context, access Access) (string, error)
 	Say(ctx context.Context, access Access, chatID, body string) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
 }
 
-// Open starts a chat for this person and stores the profile block.
+// Open starts a chat for this person. The profile stays in memory and is read when a turn is built.
 // It does not open a login session.
-func Open(ctx context.Context, book Book, access Access, profile string) (string, error) {
+func Open(ctx context.Context, book Book, access Access) (string, error) {
 	if err := caller(access); err != nil {
 		return "", err
 	}
-	profile, err := domain.Profile(strings.TrimSpace(trustfence.NeutralizeSlot(profile)))
-	if err != nil {
-		return "", err
-	}
-	return book.Open(ctx, access, profile)
+	return book.Open(ctx, access)
 }
 
-// Say appends one line. The profile block stays as it was at open.
+// Say appends one line.
 func Say(ctx context.Context, book Book, access Access, chatID, body string) error {
 	if err := caller(access); err != nil {
 		return err
@@ -69,7 +63,7 @@ func Say(ctx context.Context, book Book, access Access, chatID, body string) err
 	return book.Say(ctx, access, chatID, body)
 }
 
-// Read returns the chat, with the profile rendered as the prefix.
+// Read returns the chat and its lines in order.
 func Read(ctx context.Context, book Book, access Access, chatID string) (Chat, error) {
 	if err := caller(access); err != nil {
 		return Chat{}, err
@@ -84,7 +78,6 @@ func Read(ctx context.Context, book Book, access Access, chatID string) (Chat, e
 	if got.Lines == nil {
 		got.Lines = []string{}
 	}
-	got.Block = domain.Block(got.Profile)
 	return got, nil
 }
 
