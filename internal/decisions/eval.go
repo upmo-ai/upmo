@@ -152,24 +152,39 @@ type Gate struct {
 // Accept stores the route when its fingerprint is unchanged, or when the labelled cases pass for the new one.
 // A failed gate leaves the stored fingerprint as it was.
 func Accept(ctx context.Context, book Gates, access Access, cfg Config, bar int, examples []Example, run Runner) error {
-	if _, err := uuid.Parse(access.UserID); err != nil || !allows(access.Allow, "settings:manage") {
-		return ErrAccess
-	}
-	next, err := Fingerprint(cfg)
+	next, unchanged, err := prepared(ctx, book, access, cfg)
 	if err != nil {
 		return err
 	}
-	stored, ok, err := book.Accepted(ctx, access, cfg.Name)
-	if err != nil {
-		return err
-	}
-	if ok && stored == next {
+	if unchanged {
 		return nil
 	}
 	hit, total, err := Evaluate(ctx, run, cfg.Kind, examples)
 	if err != nil {
 		return err
 	}
+	return keep(ctx, book, access, cfg, next, bar, hit, total)
+}
+
+func prepared(ctx context.Context, book Gates, access Access, cfg Config) (fingerprint string, unchanged bool, err error) {
+	if _, err := uuid.Parse(access.UserID); err != nil || !allows(access.Allow, "settings:manage") {
+		return "", false, ErrAccess
+	}
+	next, err := Fingerprint(cfg)
+	if err != nil {
+		return "", false, err
+	}
+	stored, ok, err := book.Accepted(ctx, access, cfg.Name)
+	if err != nil {
+		return "", false, err
+	}
+	if ok && stored == next {
+		return next, true, nil
+	}
+	return next, false, nil
+}
+
+func keep(ctx context.Context, book Gates, access Access, cfg Config, fingerprint string, bar, hit, total int) error {
 	verdict, err := Verdict(hit, total, bar)
 	if err != nil {
 		return err
@@ -180,7 +195,7 @@ func Accept(ctx context.Context, book Gates, access Access, cfg Config, bar int,
 	return book.Save(ctx, access, Gate{
 		Route:       cfg.Name,
 		Kind:        cfg.Kind,
-		Fingerprint: next,
+		Fingerprint: fingerprint,
 		Hit:         hit,
 		Total:       total,
 		Bar:         bar,
