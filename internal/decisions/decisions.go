@@ -1,6 +1,7 @@
 // Package decisions is the decisions context. It embeds this context's SQL.
 // A decide route changes model only when the labelled gate passes.
 // Agent dispatch and route intent are choice routes scored on labelled accuracy.
+// A memory check is a yes-or-no route scored on precision.
 package decisions
 
 import (
