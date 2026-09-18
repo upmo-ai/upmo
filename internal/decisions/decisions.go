@@ -3,6 +3,7 @@
 // Agent dispatch and route intent are choice routes scored on labelled accuracy.
 // A memory check is a yes-or-no route scored on precision.
 // A fact worth keeping is a yes-or-no route scored on recall.
+// A tool surface is a filter route that must keep every tool the turn calls.
 package decisions
 
 import (
