@@ -14,6 +14,7 @@ import (
 const (
 	KindYesNo   = "yesno"
 	KindChoice  = "choice"
+	KindFilter  = "filter"
 	VerdictPass = "pass"
 	VerdictFail = "fail"
 )
@@ -65,7 +66,7 @@ type Access struct {
 // Fingerprint is the hex SHA-256 of the route name, kind and hops.
 // Hop order in the input does not change it. A model change does.
 func Fingerprint(cfg Config) (string, error) {
-	if cfg.Name == "" || (cfg.Kind != KindYesNo && cfg.Kind != KindChoice) || len(cfg.Hops) == 0 {
+	if cfg.Name == "" || (cfg.Kind != KindYesNo && cfg.Kind != KindChoice && cfg.Kind != KindFilter) || len(cfg.Hops) == 0 {
 		return "", ErrConfig
 	}
 	hops := append([]Hop(nil), cfg.Hops...)
