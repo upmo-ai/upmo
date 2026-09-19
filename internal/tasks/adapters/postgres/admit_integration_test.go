@@ -111,9 +111,7 @@ func TestAdmitRefusesADoneTaskWithoutStoringARun(t *testing.T) {
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 
-	for _, next := range []domain.Status{domain.Planning, domain.Working} {
-		task, _ = advanceRunTask(t, store, ownerAccess, task.ID, domain.Input{Kind: domain.Advance}, next)
-	}
+	task, _ = advanceRunTask(t, store, ownerAccess, task.ID, domain.Input{Kind: domain.Advance}, domain.Working)
 	task, _ = advanceRunTask(
 		t,
 		store,

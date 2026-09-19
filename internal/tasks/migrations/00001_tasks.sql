@@ -58,10 +58,11 @@ CREATE TABLE tasks.task_events (
   CONSTRAINT task_events_edge_check CHECK (
     (input = 'open' AND from_status = '' AND to_status = 'Preparing' AND seq = 1)
     OR (input = 'advance' AND (
-      (from_status = 'Preparing' AND to_status = 'Planning')
+      (from_status = 'Preparing' AND to_status = 'Working')
       OR (from_status = 'Planning' AND to_status = 'Working')
       OR (from_status = 'Working' AND to_status = 'Checking')
     ))
+    OR (input = 'plan' AND from_status = 'Preparing' AND to_status = 'Planning')
     OR (input = 'fail' AND to_status = 'Failed' AND from_status IN ('Preparing', 'Planning', 'Working', 'Checking'))
     OR (input = 'pass' AND from_status = 'Checking' AND to_status = 'Done')
   )

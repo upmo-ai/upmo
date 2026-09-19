@@ -33,11 +33,11 @@ func TestApplyOpensAndAdvances(t *testing.T) {
 		t.Fatalf("open = %+v %v", opened, err)
 	}
 	next, err := ApplyTransition(ctx, book, access, opened.ID, domain.Input{Kind: domain.Advance})
-	if err != nil || next.Status != domain.Planning {
+	if err != nil || next.Status != domain.Working {
 		t.Fatalf("advance = %+v %v", next, err)
 	}
 	noted, err := ApplyTransition(ctx, book, access, opened.ID, domain.Input{Kind: domain.Chat, Body: "the figures"})
-	if err != nil || noted.Status != domain.Planning || book.chats != 1 {
+	if err != nil || noted.Status != domain.Working || book.chats != 1 {
 		t.Fatalf("chat = %+v chats=%d %v", noted, book.chats, err)
 	}
 }

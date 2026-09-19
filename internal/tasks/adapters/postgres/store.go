@@ -392,7 +392,7 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 	if err != nil {
 		return app.Task{}, fmt.Errorf("tasks: lock: %w", err)
 	}
-	if paused && input.Kind == domain.Advance {
+	if paused && (input.Kind == domain.Advance || input.Kind == domain.Plan) {
 		return app.Task{}, domain.ErrExhausted
 	}
 	if input.Kind == domain.Pass && !passes {

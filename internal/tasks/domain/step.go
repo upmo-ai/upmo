@@ -25,9 +25,11 @@ type Kind string
 const (
 	Open    Kind = "open"
 	Advance Kind = "advance"
-	Fail    Kind = "fail"
-	Pass    Kind = "pass"
-	Chat    Kind = "chat"
+	// Plan enters Planning from Preparing.
+	Plan Kind = "plan"
+	Fail Kind = "fail"
+	Pass Kind = "pass"
+	Chat Kind = "chat"
 )
 
 const (
@@ -70,7 +72,7 @@ var (
 )
 
 var advance = map[Status]Status{
-	Preparing: Planning,
+	Preparing: Working,
 	Planning:  Working,
 	Working:   Checking,
 }
@@ -79,19 +81,19 @@ var advance = map[Status]Status{
 // Pass is the only edge into Done. The writer persists Pass only when core
 // checks have passed; Step itself still knows the edge.
 func Step(status Status, input Input) (Status, Effect, error) {
-	input.Goal = strings.TrimSpace(input.Goal)
-	input.Body = strings.TrimSpace(input.Body)
 	switch input.Kind {
 	case Open:
-		return openTask(status, input.Goal)
+		return openTask(status, strings.TrimSpace(input.Goal))
 	case Advance:
 		return move(status)
+	case Plan:
+		return planTask(status)
 	case Fail:
 		return fail(status)
 	case Pass:
 		return pass(status)
 	case Chat:
-		return chat(status, input.Body)
+		return chat(status, strings.TrimSpace(input.Body))
 	default:
 		return status, Effect{}, ErrInput
 	}
@@ -116,6 +118,16 @@ func move(status Status) (Status, Effect, error) {
 		return status, Effect{}, ErrEvidence
 	}
 	return next, Effect{Kind: Advance, From: status, To: next}, nil
+}
+
+func planTask(status Status) (Status, Effect, error) {
+	if err := underway(status); err != nil {
+		return status, Effect{}, err
+	}
+	if status != Preparing {
+		return status, Effect{}, ErrInput
+	}
+	return Planning, Effect{Kind: Plan, From: Preparing, To: Planning}, nil
 }
 
 func fail(status Status) (Status, Effect, error) {

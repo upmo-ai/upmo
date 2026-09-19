@@ -11,7 +11,7 @@ func TestStepWalksToCheckingAndStops(t *testing.T) {
 	if err != nil || status != Preparing || effect.Goal != "File the receipts" || effect.From != "" {
 		t.Fatalf("open = %s %+v %v", status, effect, err)
 	}
-	want := []Status{Planning, Working, Checking}
+	want := []Status{Working, Checking}
 	for _, next := range want {
 		status, effect, err = Step(status, Input{Kind: Advance})
 		if err != nil || status != next || effect.To != next {
@@ -20,6 +20,20 @@ func TestStepWalksToCheckingAndStops(t *testing.T) {
 	}
 	if _, _, err := Step(status, Input{Kind: Advance}); !errors.Is(err, ErrEvidence) {
 		t.Fatalf("advance from Checking = %v", err)
+	}
+}
+
+func TestStepPlansOnlyFromPreparing(t *testing.T) {
+	status, effect, err := Step(Preparing, Input{Kind: Plan, Goal: "  leave this alone  "})
+	if err != nil || status != Planning || effect.Kind != Plan || effect.From != Preparing || effect.To != Planning || effect.Goal != "" {
+		t.Fatalf("plan = %s %+v %v", status, effect, err)
+	}
+	status, effect, err = Step(status, Input{Kind: Advance})
+	if err != nil || status != Working || effect.Kind != Advance || effect.From != Planning || effect.To != Working {
+		t.Fatalf("advance from Planning = %s %+v %v", status, effect, err)
+	}
+	if _, _, err := Step(Working, Input{Kind: Plan}); !errors.Is(err, ErrInput) {
+		t.Fatalf("plan from Working = %v", err)
 	}
 }
 

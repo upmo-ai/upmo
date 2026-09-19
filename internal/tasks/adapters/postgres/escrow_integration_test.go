@@ -93,6 +93,9 @@ func TestSpendExhaustionPausesAndNotifiesOnce(t *testing.T) {
 	if _, err := app.ApplyTransition(ctx, store, ownerAccess, child.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, domain.ErrExhausted) {
 		t.Fatalf("advance while paused = %v", err)
 	}
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, child.ID, domain.Input{Kind: domain.Plan}); !errors.Is(err, domain.ErrExhausted) {
+		t.Fatalf("plan while paused = %v", err)
+	}
 
 	if err := app.Spend(ctx, store, ownerAccess, child.ID, 1); !errors.Is(err, domain.ErrExhausted) {
 		t.Fatalf("second spend = %v", err)

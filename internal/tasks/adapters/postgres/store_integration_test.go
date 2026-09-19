@@ -26,11 +26,9 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	if err != nil || opened.Status != domain.Preparing {
 		t.Fatalf("open = %+v %v", opened, err)
 	}
-	for _, next := range []domain.Status{domain.Planning, domain.Working} {
-		got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance})
-		if err != nil || got.Status != next {
-			t.Fatalf("advance to %s = %+v %v", next, got, err)
-		}
+	working, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance})
+	if err != nil || working.Status != domain.Working {
+		t.Fatalf("advance to Working = %+v %v", working, err)
 	}
 	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, domain.ErrTurn) {
 		t.Fatalf("advance without sentinel = %v", err)
@@ -46,7 +44,7 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.task_events WHERE task_id = $1`, opened.ID).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
-	if events != 3 {
+	if events != 2 {
 		t.Fatalf("task events after unfinished turn = %d", events)
 	}
 	checked, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance, Turn: "upmo:end"})
@@ -90,7 +88,7 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.task_events WHERE task_id = $1`, opened.ID).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
-	if events != 5 {
+	if events != 4 {
 		t.Fatalf("task events = %d", events)
 	}
 	var chats int
@@ -111,6 +109,42 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	}
 }
 
+func TestTransitionPlansFromPreparingAndRejectsAnAdvanceEdgeToPlanning(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Plan})
+	if err != nil || planned.Status != domain.Planning {
+		t.Fatalf("plan = %+v %v", planned, err)
+	}
+	var status, input string
+	if err := owner.QueryRow(ctx, `
+		SELECT task.status, event.input
+		FROM tasks.tasks AS task
+		JOIN tasks.task_events AS event ON event.task_id = task.id
+		WHERE task.id = $1 AND event.seq = 2`, opened.ID).Scan(&status, &input); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.Planning) || input != string(domain.Plan) {
+		t.Fatalf("stored status=%s input=%s", status, input)
+	}
+
+	tx, err := owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
+		VALUES ($1, 3, 'Preparing', 'Planning', 'advance')`, opened.ID); err == nil {
+		t.Fatal("an advance edge from Preparing to Planning was stored")
+	}
+}
+
 func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
@@ -119,11 +153,9 @@ func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, next := range []domain.Status{domain.Planning, domain.Working} {
-		got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance})
-		if err != nil || got.Status != next {
-			t.Fatalf("advance to %s = %+v %v", next, got, err)
-		}
+	working, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance})
+	if err != nil || working.Status != domain.Working {
+		t.Fatalf("advance to Working = %+v %v", working, err)
 	}
 	got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance, Turn: "work complete\nupmo:end"})
 	if err != nil || got.Status != domain.Checking {
@@ -326,7 +358,7 @@ func openAtChecking(t *testing.T, store postgres.Store, goal string) app.Task {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, next := range []domain.Status{domain.Planning, domain.Working, domain.Checking} {
+	for _, next := range []domain.Status{domain.Working, domain.Checking} {
 		input := domain.Input{Kind: domain.Advance}
 		if next == domain.Checking {
 			input.Turn = domain.Sentinel
