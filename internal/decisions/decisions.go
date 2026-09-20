@@ -7,6 +7,7 @@
 // A permission second opinion is a choice route that may escalate and must never relax.
 // A model tier route is a choice route scored on canary success parity.
 // Folder filing is a choice route scored on labelled accuracy.
+// Channel triage is a choice route scored on labelled accuracy.
 package decisions
 
 import (
