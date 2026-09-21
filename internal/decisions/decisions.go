@@ -8,6 +8,7 @@
 // A model tier route is a choice route scored on canary success parity.
 // Folder filing is a choice route scored on labelled accuracy.
 // Channel triage is a choice route scored on labelled accuracy.
+// A rerank route is scored on NDCG.
 package decisions
 
 import (
