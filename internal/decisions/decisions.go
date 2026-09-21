@@ -9,6 +9,7 @@
 // Folder filing is a choice route scored on labelled accuracy.
 // Channel triage is a choice route scored on labelled accuracy.
 // A rerank route is scored on NDCG.
+// A result confidence route is a yes-or-no route scored on precision.
 package decisions
 
 import (
