@@ -10,7 +10,7 @@ CREATE TABLE decisions.gates (
   bar int NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT gates_route_check CHECK (route <> ''),
-  CONSTRAINT gates_kind_check CHECK (kind IN ('yesno', 'choice', 'filter')),
+  CONSTRAINT gates_kind_check CHECK (kind IN ('yesno', 'choice', 'filter', 'rank')),
   CONSTRAINT gates_fingerprint_check CHECK (fingerprint ~ '^[0-9a-f]{64}$'),
   CONSTRAINT gates_verdict_check CHECK (verdict = 'pass'),
   CONSTRAINT gates_score_check CHECK (hit >= 0 AND total > 0 AND hit <= total),
