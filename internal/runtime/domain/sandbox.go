@@ -1,5 +1,6 @@
 // Package domain determines whether a task needs a sandbox for a repository or a shell or file tool.
 // Provisioning during Preparing returns at once and keeps its own events.
+// A warm pool keeps one or two idle base containers and refills in the background.
 package domain
 
 import (
