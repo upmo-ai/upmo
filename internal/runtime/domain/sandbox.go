@@ -3,6 +3,7 @@
 // A warm pool keeps one or two idle base containers and refills in the background.
 // A paused task releases its container, and an idle one is released after the time limit.
 // A task may reach only listed host names, and a name or address that means the host is refused.
+// A task allow-list starts empty, and a person grants or revokes a host name.
 package domain
 
 import (
