@@ -2,6 +2,7 @@
 // Provisioning during Preparing returns at once and keeps its own events.
 // A warm pool keeps one or two idle base containers and refills in the background.
 // A paused task releases its container, and an idle one is released after the time limit.
+// A task may reach only listed host names, and a name or address that means the host is refused.
 package domain
 
 import (
