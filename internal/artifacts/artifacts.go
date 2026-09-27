@@ -1,6 +1,7 @@
 // Package artifacts is the artifacts context. It embeds this context's SQL.
 // An artifact outlives the sandbox that produced it, on a Compose volume or in
 // object storage, and erasure removes it.
+// A served artifact always sends nosniff, and HTML is never the type.
 package artifacts
 
 import (
