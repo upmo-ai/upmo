@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/artifacts"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/decisions"
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -70,6 +71,9 @@ func run() error {
 	}
 	if err == nil {
 		err = migrate.Up(ctx, owner, decisions.Schema, decisions.Migrations())
+	}
+	if err == nil {
+		err = migrate.Up(ctx, owner, artifacts.Schema, artifacts.Migrations())
 	}
 	owner.Close()
 	if err != nil {
