@@ -17,7 +17,7 @@ const (
 	EditorCap = 1
 )
 
-// ErrEditor reports a status with no editor mount, a negative idle time, or an editor over the cap.
+// ErrEditor reports a status with no editor mount, a negative idle time, an editor over the cap, or a token, origin, or gallery that does not match.
 var ErrEditor = errors.New("runtime: editor")
 
 // Mount is how an editor sees the scratch volume.
