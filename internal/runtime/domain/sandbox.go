@@ -6,6 +6,7 @@
 // A task allow-list starts empty, and a person grants or revokes a host name.
 // A hardening tier is gVisor or Kata, and a platform that cannot meet it is refused.
 // A sandbox has a fixed resource shape, and a command longer than 15 minutes is refused.
+// A code editor mounts the scratch volume read-only while a task is Working, and stops after its own idle limit.
 package domain
 
 import (
