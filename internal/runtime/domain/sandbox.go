@@ -8,6 +8,7 @@
 // A sandbox has a fixed resource shape, and a command longer than 15 minutes is refused.
 // A code editor mounts the scratch volume read-only while a task is Working, and stops after its own idle limit.
 // A code editor is reached on its own origin with a short-lived token bound to one person, one task and one session, and its gallery host is open-vsx.org.
+// A code editor is a service container beside the sandbox, in the pod on Kubernetes, and it does not choose a runtime.
 package domain
 
 import (
