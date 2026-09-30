@@ -16,6 +16,9 @@ type Handler struct {
 	Book   app.Book
 	List   app.Lister
 	Access func(r *http.Request) (app.Access, bool)
+	// Sandboxes starts a task's sandbox on Open and releases it when the
+	// task ends. Nil refuses any task that needs one.
+	Sandboxes app.Sandboxes
 }
 
 // Mount registers the task routes. guard runs first.
@@ -56,17 +59,29 @@ func (h Handler) open(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// repo and tool_classes are optional. Either can make the task need a
+	// sandbox.
 	var input struct {
-		Goal *string `json:"goal"`
+		Goal    *string  `json:"goal"`
+		Repo    string   `json:"repo"`
+		Classes []string `json:"tool_classes"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Goal == nil {
 		writeError(w, http.StatusBadRequest, "a task needs a goal")
 		return
 	}
-	task, err := app.ApplyTransition(r.Context(), h.Book, access, "", domain.Input{
-		Kind: domain.Open,
-		Goal: *input.Goal,
+	task, err := app.OpenTask(r.Context(), h.Book, h.Sandboxes, access, app.Opening{
+		Goal:    *input.Goal,
+		Repo:    input.Repo,
+		Classes: input.Classes,
 	})
+	if errors.Is(err, app.ErrSandbox) && task.ID != "" {
+		// The task opened, then its sandbox failed and it was moved to Failed.
+		body := taskJSON(task)
+		body["error"] = "the task sandbox could not start"
+		writeJSON(w, http.StatusServiceUnavailable, body)
+		return
+	}
 	if refuse(w, err) {
 		return
 	}
@@ -94,7 +109,7 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a task needs a kind")
 		return
 	}
-	task, err := app.ApplyTransition(r.Context(), h.Book, access, r.PathValue("id"), domain.Input{
+	task, err := app.StepTask(r.Context(), h.Book, h.Sandboxes, access, r.PathValue("id"), domain.Input{
 		Kind: kind,
 		Body: input.Body,
 		Turn: input.Turn,
@@ -136,6 +151,10 @@ func refuse(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
+	case errors.Is(err, app.ErrSandboxUnset):
+		writeError(w, http.StatusServiceUnavailable, "the task needs a sandbox and none is configured")
+	case errors.Is(err, app.ErrSandbox):
+		writeError(w, http.StatusServiceUnavailable, "the task sandbox could not start")
 	case errors.Is(err, app.ErrAccess):
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, app.ErrGone):

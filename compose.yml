@@ -41,6 +41,12 @@ services:
     environment:
       UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
       UPMO_PUBLIC_URL: http://localhost:5173
+      # brain reaches sandboxd only over HTTP, signed with the service key; it
+      # never gets the engine socket. A task that needs a sandbox
+      # fails with 503 while sandboxd is not running.
+      UPMO_SANDBOXD_URL: http://sandboxd:8083
+      # Dev only. Never reuse outside the local compose stack.
+      UPMO_SERVICE_KEY: upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 5s

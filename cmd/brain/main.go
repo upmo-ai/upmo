@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	taskhttp "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
 	taskstore "github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
@@ -105,6 +107,22 @@ func linkMail(s config.SMTP) mail.Sender {
 	return mail.SMTP{Host: s.Host, Port: s.Port, User: s.User, Password: s.Password, From: s.From}
 }
 
+// sandboxSeats holds task sandboxes through sandboxd, signed with the
+// service key. With UPMO_SANDBOXD_URL unset it has no
+// provider, and a task that needs a sandbox is refused rather than opened.
+func sandboxSeats(cfg config.Config, log *slog.Logger) (*runtime.Seats, error) {
+	seats := &runtime.Seats{Log: log}
+	if cfg.SandboxdURL == "" {
+		return seats, nil
+	}
+	provider, err := runtime.Open(cfg.SandboxdURL, cfg.ServiceKey)
+	if err != nil {
+		return nil, fmt.Errorf("brain: sandboxd: %w", err)
+	}
+	seats.Provider = provider
+	return seats, nil
+}
+
 // requestPool opens connections that run as upmo_app, which owns nothing, and
 // sets that role again on every checkout.
 func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
@@ -140,10 +158,15 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
+	seats, err := sandboxSeats(cfg, log)
+	if err != nil {
+		return nil, err
+	}
 	taskBook := taskstore.Store{Pool: pool}
 	taskhttp.Handler{
-		Book: taskBook,
-		List: taskBook,
+		Book:      taskBook,
+		List:      taskBook,
+		Sandboxes: seats,
 		Access: func(r *http.Request) (taskapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
