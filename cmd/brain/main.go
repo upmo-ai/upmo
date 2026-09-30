@@ -17,6 +17,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/artifacts"
 	artifacthttp "github.com/upmo-ai/upmo/internal/artifacts/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat"
+	chatapp "github.com/upmo-ai/upmo/internal/chat/app"
+	chathttp "github.com/upmo-ai/upmo/internal/chat/adapters/http"
+	chatstore "github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/decisions"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
@@ -241,6 +244,32 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 				return artifacts.Access{}, false
 			}
 			return artifacts.Access{
+				UserID:     person.UserID.String(),
+				Allow:      allow,
+				Teams:      shares.Teams,
+				SharedView: shares.SharedView,
+				SharedEdit: shares.SharedEdit,
+			}, true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	chathttp.Handler{
+		Book: chatstore.Store{Pool: pool},
+		Access: func(r *http.Request) (chatapp.Access, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return chatapp.Access{}, false
+			}
+			allow, err := members.ChatAllow(r.Context(), person.UserID)
+			if err != nil || allow == "" {
+				return chatapp.Access{}, false
+			}
+			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeChat)
+			if err != nil {
+				return chatapp.Access{}, false
+			}
+			return chatapp.Access{
 				UserID:     person.UserID.String(),
 				Allow:      allow,
 				Teams:      shares.Teams,

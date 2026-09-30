@@ -134,3 +134,23 @@ func TestArtifactAllowRefusesAPersonWhoHasNotJoined(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestChatAllowUsesTheMembersChatPermissions(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member", joined: true}}
+	got, err := members.ChatAllow(context.Background(), domain.UserID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "chat:create,chat:view,chat:edit,chat:share,chat:delete"
+	if got != want {
+		t.Fatalf("allow = %q", got)
+	}
+}
+
+func TestChatAllowRefusesAPersonWhoHasNotJoined(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member"}}
+	_, err := members.ChatAllow(context.Background(), domain.UserID{})
+	if !errors.Is(err, domain.ErrNoSuchMember) {
+		t.Fatalf("error = %v", err)
+	}
+}

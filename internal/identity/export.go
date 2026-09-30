@@ -22,6 +22,7 @@ const (
 	IdleTimeout  = domain.IdleTimeout
 	MaxAge       = domain.MaxAge
 	TypeTask     = domain.TypeTask
+	TypeChat     = domain.TypeChat
 	TypeArtifact = domain.TypeArtifact
 )
 
