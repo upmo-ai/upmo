@@ -266,7 +266,7 @@ func TestLoadSandboxd(t *testing.T) {
 		"empty key":    {"UPMO_SERVICE_KEY": ""},
 		"same address": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
 		"bad timeout":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
-		"bad driver":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "kubernetes"},
+		"bad driver":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "nomad"},
 	} {
 		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
 			t.Errorf("%s: want an error", name)

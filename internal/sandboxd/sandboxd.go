@@ -17,6 +17,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/docker"
 	httpapi "github.com/upmo-ai/upmo/internal/sandboxd/adapters/http"
+	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/kubernetes"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/stub"
 	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 	"github.com/upmo-ai/upmo/internal/sandboxd/inject"
@@ -28,6 +29,8 @@ const (
 	DriverAuto = "auto"
 	// DriverDocker requires the Docker engine.
 	DriverDocker = "docker"
+	// DriverKubernetes requires a reachable Kubernetes API.
+	DriverKubernetes = "kubernetes"
 	// DriverStub uses the in-memory stub.
 	DriverStub = "stub"
 )
@@ -75,6 +78,13 @@ func open(ctx context.Context, choice string, log *slog.Logger, dial func(contex
 	case DriverStub:
 		log.Info("sandbox driver", "driver", DriverStub)
 		return Stub(), nil
+	case DriverKubernetes:
+		d, err := kubernetes.Open(ctx, kubernetes.Options{})
+		if err != nil {
+			return nil, fmt.Errorf("sandboxd: kubernetes driver: %w", err)
+		}
+		log.Info("sandbox driver", "driver", DriverKubernetes)
+		return d, nil
 	case DriverDocker:
 		d, err := dial(ctx)
 		if err != nil {
