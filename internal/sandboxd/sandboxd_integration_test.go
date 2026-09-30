@@ -183,11 +183,30 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 		seats.Image = v
 	}
 	ctx := context.Background()
+	// provision returns once the seat is held; the phases run on, and their
+	// outcome arrives on the channel.
+	provision := func(t *testing.T, task, repo string, classes []runtime.Class) error {
+		t.Helper()
+		outcome := make(chan error, 1)
+		if _, err := seats.Provision(ctx, task, repo, classes, func(_ context.Context, err error) error {
+			outcome <- err
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-outcome:
+			return err
+		case <-time.After(3 * time.Minute):
+			t.Fatal("provisioning did not finish")
+			return nil
+		}
+	}
 
 	t.Run("no repository", func(t *testing.T) {
 		task := "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
 		t.Cleanup(func() { _ = seats.Release(context.Background(), task) })
-		if _, err := seats.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell}); err != nil {
+		if err := provision(t, task, "", []runtime.Class{runtime.ClassShell}); err != nil {
 			t.Fatal(err)
 		}
 		if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
@@ -212,7 +231,7 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	t.Run("repository without network", func(t *testing.T) {
 		task := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
 		t.Cleanup(func() { _ = seats.Release(context.Background(), task) })
-		_, err := seats.Provision(ctx, task, "org/name", nil)
+		err := provision(t, task, "org/name", nil)
 		var phase *runtime.PhaseError
 		if !errors.As(err, &phase) || phase.Phase != runtime.PhaseClone || !errors.Is(err, runtime.ErrCommand) {
 			t.Fatalf("provision = %v", err)

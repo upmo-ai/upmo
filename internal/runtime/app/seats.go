@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,9 @@ const (
 	// SeatTTL is how long a task sandbox lives when Seats names no TTL.
 	// sandboxd reclaims it after that even if no Release arrives.
 	SeatTTL = 30 * time.Minute
+	// settleTimeout bounds the done call that settles a task once its
+	// provisioning stops in the background.
+	settleTimeout = 30 * time.Second
 )
 
 var (
@@ -77,26 +82,45 @@ type Seats struct {
 	// Log records a Destroy or a provisioning that failed. Nil logs nothing.
 	Log *slog.Logger
 
-	// mu guards progress, the provisioning record of each seat in this
-	// process.
+	// mu guards progress, the provisioning of each seat in this process.
 	mu       sync.Mutex
-	progress map[string]domain.Record
+	progress map[string]*preparing
+	// running counts the provisionings still running in the background.
+	running sync.WaitGroup
 }
+
+// preparing is one seat's provisioning: its record, and the stop that
+// cancels its background phases once they have started.
+type preparing struct {
+	rec  domain.Record
+	stop context.CancelFunc
+}
+
+// Done receives the outcome of a provisioning that ran in the background:
+// nil at PhaseReady, or the PhaseError of the phase that failed. ctx is
+// detached from the request that opened the task and bounded, so done can
+// fail the task and Release the seat. The error done returns is logged.
+type Done func(ctx context.Context, err error) error
 
 // Ready reports whether Seats can create a sandbox.
 func (s *Seats) Ready() bool {
 	return s != nil && s.Provider != nil && s.Book != nil
 }
 
-// Provision creates a sandbox for taskID when repo or classes need one,
-// then runs the provisioning phases in it and
-// reports whether one was needed. When none is needed it does not call the
-// provider. A repo CloneURL refuses is refused before Create.
+// Provision creates a sandbox for taskID when repo or classes need one
+// and reports whether one was needed. When none is needed it
+// does not call the provider. A repo CloneURL refuses is refused before
+// Create.
 //
-// A phase that fails returns a PhaseError and leaves the seat held, so the
-// caller fails the task and calls Release. Progress shows the record until
-// that Release.
-func (s *Seats) Provision(ctx context.Context, taskID, repo string, classes []domain.Class) (bool, error) {
+// Provision returns as soon as the seat holds its sandbox. The
+// provisioning phases then run in the background, on a context
+// detached from ctx and bounded by the seat's TTL, because the sandbox is
+// gone after that anyway. When they stop, done is called once with the
+// outcome; a phase that fails leaves the seat held, so done fails the task
+// and calls Release. done is not called once a Release has stopped the
+// phases, because whoever released the seat has already moved the task on.
+// Progress shows the record from the start until Release.
+func (s *Seats) Provision(ctx context.Context, taskID, repo string, classes []domain.Class, done Done) (bool, error) {
 	needs, err := domain.NeedsSandbox(repo, classes)
 	if err != nil || !needs {
 		return false, err
@@ -109,25 +133,91 @@ func (s *Seats) Provision(ctx context.Context, taskID, repo string, classes []do
 		return true, ErrSpec
 	}
 	// Tracked before Start, so a Release from here on also forgets it.
-	mine := s.track(key, domain.Begin(), true)
-	box, err := s.Start(ctx, taskID, s.spec(taskID))
+	mine := s.begin(key)
+	spec := s.spec(taskID, repo)
+	box, err := s.Start(ctx, taskID, spec)
 	if err != nil {
-		if mine {
-			s.forget(key)
+		if mine != nil {
+			s.forget(key, mine)
 		}
 		return true, err
 	}
-	prep := Provisioner{Provider: s.Provider, Track: func(rec domain.Record) { _ = s.track(key, rec, false) }}
-	rec, err := prep.Run(ctx, box.ID, repo)
-	if err != nil && s.Log != nil {
-		s.Log.Warn("sandbox provisioning failed", "task", key, "sandbox", box.ID, "phase", rec.Phase, "err", err)
+
+	// The TTL is brain's own clock, so sandboxd's clock cannot cut it short.
+	run, stop := context.WithTimeout(context.WithoutCancel(ctx), spec.TTL)
+	if mine == nil || !s.arm(key, mine, stop) {
+		// A Release came between Start and here, or this call never owned
+		// the record; either way the phases are not this call's to run.
+		stop()
+		return true, ErrReleased
 	}
-	return true, err
+	s.running.Go(func() { s.prepare(run, stop, key, mine, box.ID, repo, done) })
+	return true, nil
+}
+
+// prepare runs the provisioning phases for key in sandbox id and hands the
+// outcome to done, unless a Release stopped them first. It never lets a
+// panic out of its goroutine: one in the phases fails the provisioning,
+// and one in done is logged.
+func (s *Seats) prepare(ctx context.Context, stop context.CancelFunc, key string, mine *preparing, id, repo string, done Done) {
+	defer stop()
+	defer func() {
+		if p := recover(); p != nil {
+			s.warn("sandbox provisioning settle panicked", "task", key, "sandbox", id, "panic", p)
+		}
+	}()
+	rec, err := s.phases(ctx, key, mine, id, repo)
+	if !s.holds(key, mine) {
+		return
+	}
+	if err != nil {
+		s.warn("sandbox provisioning failed", "task", key, "sandbox", id, "phase", rec.Phase, "err", err)
+	}
+	if done == nil {
+		return
+	}
+	settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	if derr := done(settle, err); derr != nil {
+		s.warn("sandbox provisioning settle failed", "task", key, "sandbox", id, "err", derr)
+	}
+}
+
+// phases runs the Provisioner, turning a panic into a failed provisioning.
+func (s *Seats) phases(ctx context.Context, key string, mine *preparing, id, repo string) (rec domain.Record, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			rec, err = domain.Record{Phase: domain.PhaseFailed}, fmt.Errorf("%w: panic: %v", ErrProvisionFailed, p)
+			s.update(key, mine, rec)
+		}
+	}()
+	prep := Provisioner{Provider: s.Provider, Track: func(rec domain.Record) { s.update(key, mine, rec) }}
+	return prep.Run(ctx, id, repo)
+}
+
+// Wait blocks until every provisioning running in the background has
+// stopped, or ctx ends. brain calls it on shutdown, after the server has
+// stopped taking requests, so no new provisioning starts while it waits.
+func (s *Seats) Wait(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	idle := make(chan struct{})
+	go func() {
+		s.running.Wait()
+		close(idle)
+	}()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Progress returns the provisioning record of taskID's seat, from the
-// moment Provision starts until Release. It lives in this process only;
-// the seat itself is in the Book.
+// moment Provision starts until Release, including while its phases run.
+// It lives in this process only; the seat itself is in the Book.
 func (s *Seats) Progress(taskID string) (domain.Record, bool) {
 	key, ok := taskKey(taskID)
 	if s == nil || !ok {
@@ -135,47 +225,101 @@ func (s *Seats) Progress(taskID string) (domain.Record, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rec, ok := s.progress[key]
-	return rec, ok
+	p, ok := s.progress[key]
+	if !ok {
+		return domain.Record{}, false
+	}
+	return p.rec, true
 }
 
-// track records rec for key. With start it only adds a record that is not
-// there yet, and reports whether it did; without it, it only updates one
-// that is still there, so a Run after a Release leaves nothing behind.
-func (s *Seats) track(key string, rec domain.Record, start bool) bool {
+// begin adds a fresh provisioning for key and returns it, or nil when key
+// already has one or s is nil.
+func (s *Seats) begin(key string) *preparing {
 	if s == nil {
-		return false
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.progress[key]; ok == start {
-		return false
+	if _, ok := s.progress[key]; ok {
+		return nil
 	}
 	if s.progress == nil {
-		s.progress = map[string]domain.Record{}
+		s.progress = map[string]*preparing{}
 	}
-	s.progress[key] = rec
+	p := &preparing{rec: domain.Begin()}
+	s.progress[key] = p
+	return p
+}
+
+// arm gives mine the stop for its background phases, and reports false
+// when a Release has already forgotten it.
+func (s *Seats) arm(key string, mine *preparing, stop context.CancelFunc) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.progress[key] != mine {
+		return false
+	}
+	mine.stop = stop
 	return true
 }
 
-func (s *Seats) forget(key string) {
+// update records rec on mine while key still holds it, so phases that
+// run on after a Release leave nothing behind.
+func (s *Seats) update(key string, mine *preparing, rec domain.Record) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.progress[key] == mine {
+		mine.rec = rec
+	}
+}
+
+// holds reports whether key still holds mine, that is, no Release came.
+func (s *Seats) holds(key string, mine *preparing) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.progress[key] == mine
+}
+
+// forget drops key's provisioning, or only mine when mine is not nil, and
+// stops its background phases.
+func (s *Seats) forget(key string, mine *preparing) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.progress, key)
+	var stop context.CancelFunc
+	if p, ok := s.progress[key]; ok && (mine == nil || p == mine) {
+		delete(s.progress, key)
+		stop = p.stop
+	}
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+func (s *Seats) warn(msg string, args ...any) {
+	if s.Log != nil {
+		s.Log.Warn(msg, args...)
+	}
 }
 
 // spec is the sandbox Provision asks for: the container tier, the seat
-// image and TTL, and an empty allow-list, so egress stays denied.
-func (s *Seats) spec(taskID string) Spec {
+// image and TTL, and the clone host on the allow-list when repo has one.
+func (s *Seats) spec(taskID, repo string) Spec {
 	spec := Spec{Task: taskID, Image: SeatImage, Tier: domain.TierContainer, TTL: SeatTTL}
 	if s != nil && strings.TrimSpace(s.Image) != "" {
 		spec.Image = s.Image
 	}
 	if s != nil && s.TTL > 0 {
 		spec.TTL = s.TTL
+	}
+	if clone, err := domain.CloneURL(repo); err == nil && clone != "" {
+		if u, err := url.Parse(clone); err == nil {
+			if host := u.Hostname(); host != "" {
+				spec.Allow = []string{host}
+			}
+		}
 	}
 	return spec
 }
@@ -232,8 +376,8 @@ func (s *Seats) Start(ctx context.Context, taskID string, spec Spec) (Sandbox, e
 }
 
 // Release destroys the sandbox taskID holds and forgets it and its
-// provisioning record. A task that
-// holds none, or a nil Seats, is a no-op. A pending seat is dropped, and
+// provisioning record, stopping any phases still running in the
+// background. A task that holds none, or a nil Seats, is a no-op. A pending seat is dropped, and
 // the Start still creating it destroys the sandbox once Create returns; a
 // pending seat whose process is gone has no sandbox id to destroy, and
 // sandboxd reclaims that sandbox at its TTL. A sandbox sandboxd no longer
@@ -247,7 +391,7 @@ func (s *Seats) Release(ctx context.Context, taskID string) error {
 	if !ok {
 		return ErrSpec
 	}
-	s.forget(key)
+	s.forget(key, nil)
 	if s.Provider == nil || s.Book == nil {
 		return nil
 	}

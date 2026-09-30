@@ -237,8 +237,8 @@ func TestBrainClientExecAndFiles(t *testing.T) {
 
 // TestBrainSeatsProvisionAndRelease runs the seats brain uses on the
 // Preparing path against the real sandboxd routes: Provision creates the
-// sandbox and runs every phase through Exec and the file routes, and
-// Release destroys it so sandboxd no longer holds it.
+// sandbox and runs every phase in the background through Exec and the file
+// routes, and Release destroys it so sandboxd no longer holds it.
 func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	key := serviceKey('k')
 	sh := newShell()
@@ -256,9 +256,16 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	seats := &runtime.Seats{Provider: provider, Book: book}
 	ctx := context.Background()
 	task := spec().Task
-	needed, err := seats.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell})
+	outcome := make(chan error, 1)
+	needed, err := seats.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell}, func(_ context.Context, err error) error {
+		outcome <- err
+		return nil
+	})
 	if err != nil || !needed {
 		t.Fatalf("provision = %t %v", needed, err)
+	}
+	if err := <-outcome; err != nil {
+		t.Fatalf("provisioning = %v", err)
 	}
 	if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
 		t.Fatalf("progress = %+v %t", rec, ok)
@@ -285,8 +292,9 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 }
 
 // TestBrainSeatsProvisionOnTheStubFails shows the stub, which runs no
-// command, cannot provision: the clone phase fails with ErrUnsupported and
-// the seat is still held for the caller to release.
+// command, cannot provision: Provision returns once the seat is held, then
+// the clone phase fails with ErrUnsupported in the background and the seat
+// is still held for done to release.
 func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
 	key := serviceKey('k')
 	srv := start(t, key, "")
@@ -297,10 +305,17 @@ func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
 	seats := &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}}
 	ctx := context.Background()
 	task := spec().Task
-	_, err = seats.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell})
+	outcome := make(chan error, 1)
+	if _, err := seats.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell}, func(_ context.Context, err error) error {
+		outcome <- err
+		return nil
+	}); err != nil {
+		t.Fatalf("provision = %v", err)
+	}
+	err = <-outcome
 	var phase *runtime.PhaseError
 	if !errors.As(err, &phase) || phase.Phase != runtime.PhaseClone || !errors.Is(err, runtime.ErrUnsupported) {
-		t.Fatalf("provision = %v", err)
+		t.Fatalf("provisioning = %v", err)
 	}
 	if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
 		t.Fatalf("progress = %+v %t", rec, ok)

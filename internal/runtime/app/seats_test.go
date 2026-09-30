@@ -30,6 +30,60 @@ func held(t *testing.T, s *Seats, taskID string) (string, bool) {
 	return id, ok
 }
 
+// outcome records what Done receives, so a test can wait for it.
+type outcome struct {
+	got  chan error
+	ctxs chan settledCtx
+}
+
+// settledCtx is the context done ran on, as it was when done ran.
+type settledCtx struct {
+	err      error
+	deadline time.Time
+	bounded  bool
+}
+
+func newOutcome() *outcome {
+	return &outcome{got: make(chan error, 1), ctxs: make(chan settledCtx, 1)}
+}
+
+func (o *outcome) done(ctx context.Context, err error) error {
+	deadline, bounded := ctx.Deadline()
+	o.ctxs <- settledCtx{err: ctx.Err(), deadline: deadline, bounded: bounded}
+	o.got <- err
+	return nil
+}
+
+// result reports whether done was called and the error it got.
+func (o *outcome) result() (bool, error) {
+	select {
+	case err := <-o.got:
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+// settle waits for every background provisioning on s to stop.
+func settle(t *testing.T, s *Seats) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Wait(ctx); err != nil {
+		t.Fatalf("provisioning still running: %v", err)
+	}
+}
+
+// provisioned calls Provision for task and waits for its background phases.
+// It returns what done got, through the outcome, and what Provision returned.
+func provisioned(t *testing.T, s *Seats, repo string, classes []domain.Class) (*outcome, bool, error) {
+	t.Helper()
+	o := newOutcome()
+	needed, err := s.Provision(context.Background(), task, repo, classes, o.done)
+	settle(t, s)
+	return o, needed, err
+}
+
 func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
 	cases := map[string]struct {
 		repo    string
@@ -43,16 +97,23 @@ func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p := &fakeProvider{}
 			s, book := newSeats(p)
-			needed, err := s.Provision(context.Background(), task, tc.repo, tc.classes)
+			o, needed, err := provisioned(t, s, tc.repo, tc.classes)
 			if err != nil || !needed {
 				t.Fatalf("provision = %t %v", needed, err)
+			}
+			if called, got := o.result(); !called || got != nil {
+				t.Fatalf("done = %t %v", called, got)
 			}
 			if len(p.created) != 1 {
 				t.Fatalf("creates = %d", len(p.created))
 			}
 			spec := p.created[0]
-			if spec.Task != task || spec.Image != SeatImage || spec.Tier != domain.TierContainer || spec.TTL != SeatTTL || len(spec.Allow) != 0 {
-				t.Fatalf("spec = %+v", spec)
+			wantAllow := []string(nil)
+			if tc.repo != "" {
+				wantAllow = []string{domain.RepoHost}
+			}
+			if spec.Task != task || spec.Image != SeatImage || spec.Tier != domain.TierContainer || spec.TTL != SeatTTL || !slices.Equal(spec.Allow, wantAllow) {
+				t.Fatalf("spec = %+v, want allow %v", spec, wantAllow)
 			}
 			if id, ok := held(t, s, task); !ok || id != "box-1" {
 				t.Fatalf("held = %q %t", id, ok)
@@ -84,10 +145,15 @@ func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
 		return Exit{}, "", nil
 	}}
 	s, book := newSeats(p)
-	needed, err := s.Provision(ctx, task, "org/name", nil)
-	var phase *PhaseError
-	if !needed || !errors.As(err, &phase) || phase.Phase != domain.PhaseClone || !errors.Is(err, ErrProvisionFailed) || !errors.Is(err, ErrCommand) {
+	o, needed, err := provisioned(t, s, "org/name", nil)
+	if !needed || err != nil {
 		t.Fatalf("provision = %t %v", needed, err)
+	}
+	// The phase fails after Provision has returned, so done reports it.
+	called, err := o.result()
+	var phase *PhaseError
+	if !called || !errors.As(err, &phase) || phase.Phase != domain.PhaseClone || !errors.Is(err, ErrProvisionFailed) || !errors.Is(err, ErrCommand) {
+		t.Fatalf("done = %t %v", called, err)
 	}
 	if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseFailed {
 		t.Fatalf("progress = %+v %t", rec, ok)
@@ -110,7 +176,7 @@ func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
 func TestSeatsProvisionRefusesABadRepoBeforeCreate(t *testing.T) {
 	p := &fakeProvider{}
 	s, book := newSeats(p)
-	needed, err := s.Provision(context.Background(), task, "https://ada@example.com/org/name", nil)
+	needed, err := s.Provision(context.Background(), task, "https://ada@example.com/org/name", nil, nil)
 	if !needed || !errors.Is(err, domain.ErrRepo) || len(p.created) != 0 || book.size() != 0 {
 		t.Fatalf("provision = %t %v creates=%d", needed, err, len(p.created))
 	}
@@ -122,48 +188,176 @@ func TestSeatsProvisionRefusesABadRepoBeforeCreate(t *testing.T) {
 func TestSeatsProvisionCreateFailureLeavesNoProgress(t *testing.T) {
 	p := &fakeProvider{createErr: ErrIsolation}
 	s, _ := newSeats(p)
-	if _, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}); !errors.Is(err, ErrIsolation) {
+	o := newOutcome()
+	if _, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}, o.done); !errors.Is(err, ErrIsolation) {
 		t.Fatalf("provision = %v", err)
 	}
+	settle(t, s)
 	if _, ok := s.Progress(task); ok || len(p.execCalls()) != 0 {
 		t.Fatalf("progress kept or exec ran: %v", p.execCalls())
 	}
+	if called, _ := o.result(); called {
+		t.Fatal("done called for a Create that failed")
+	}
 }
 
-func TestSeatsReleaseDuringProvisionLeavesNoProgress(t *testing.T) {
-	ctx := context.Background()
-	p := &fakeProvider{}
-	s, _ := newSeats(p)
-	entered, gate := make(chan struct{}), make(chan struct{})
+// gated makes p hold its first Exec until gate is closed, after closing
+// entered, so a test can look at a provisioning in the middle of a phase.
+func gated(p *fakeProvider) (entered, gate chan struct{}) {
+	entered, gate = make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	p.run = func(Command) (Exit, string, error) {
 		once.Do(func() { close(entered); <-gate })
 		return Exit{}, "", nil
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := s.Provision(ctx, task, "", []domain.Class{domain.ClassShell})
-		done <- err
-	}()
+	return entered, gate
+}
+
+func TestSeatsProvisionReturnsBeforeASlowPhaseFinishes(t *testing.T) {
+	p := &fakeProvider{}
+	s, _ := newSeats(p)
+	entered, gate := gated(p)
+	o := newOutcome()
+	needed, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}, o.done)
+	if err != nil || !needed {
+		t.Fatalf("provision = %t %v", needed, err)
+	}
+	<-entered
+	// Provision has returned while the toolchain phase is still running.
+	if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseToolchain {
+		t.Fatalf("progress while running = %+v %t", rec, ok)
+	}
+	if id, ok := held(t, s, task); !ok || id != "box-1" {
+		t.Fatalf("held while running = %q %t", id, ok)
+	}
+	if called, _ := o.result(); called {
+		t.Fatal("done called before the phases finished")
+	}
+	busy, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := s.Wait(busy); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait while running = %v", err)
+	}
+
+	close(gate)
+	settle(t, s)
+	if called, err := o.result(); !called || err != nil {
+		t.Fatalf("done = %t %v", called, err)
+	}
+	if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseReady {
+		t.Fatalf("progress = %+v %t", rec, ok)
+	}
+}
+
+func TestSeatsProvisionOutlivesTheCallerWithinTheTTL(t *testing.T) {
+	p := &fakeProvider{}
+	s, _ := newSeats(p)
+	s.TTL = time.Minute
+	entered, gate := gated(p)
+	o := newOutcome()
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	if _, err := s.Provision(ctx, task, "", []domain.Class{domain.ClassShell}, o.done); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	// The request that opened the task has gone; the phases carry on.
+	cancel()
+	close(gate)
+	settle(t, s)
+	if called, err := o.result(); !called || err != nil {
+		t.Fatalf("done = %t %v", called, err)
+	}
+	execs := p.execCalls()
+	if len(execs) == 0 {
+		t.Fatal("no exec ran")
+	}
+	settled := <-o.ctxs
+	if settled.err != nil {
+		t.Fatalf("done got a context that had ended: %v", settled.err)
+	}
+	if !settled.bounded || settled.deadline.After(time.Now().Add(settleTimeout)) {
+		t.Fatalf("done context deadline = %v %t", settled.deadline, settled.bounded)
+	}
+	if deadline, ok := p.lastDeadline(); !ok || deadline.Before(start) || deadline.After(start.Add(time.Minute+time.Second)) {
+		t.Fatalf("phase deadline = %v %t, want within the TTL", deadline, ok)
+	}
+}
+
+func TestSeatsReleaseDuringProvisionStopsThePhases(t *testing.T) {
+	ctx := context.Background()
+	p := &fakeProvider{}
+	s, _ := newSeats(p)
+	entered, gate := gated(p)
+	o := newOutcome()
+	if _, err := s.Provision(ctx, task, "", []domain.Class{domain.ClassShell}, o.done); err != nil {
+		t.Fatal(err)
+	}
 	<-entered
 	if err := s.Release(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	if !p.lastCanceled() {
+		t.Fatal("release left the phases running")
+	}
 	close(gate)
-	<-done
+	settle(t, s)
 	if _, ok := s.Progress(task); ok {
 		t.Fatal("progress came back after release")
+	}
+	// Whoever released the seat has moved the task on already.
+	if called, err := o.result(); called {
+		t.Fatalf("done called after release: %v", err)
+	}
+}
+
+func TestSeatsProvisionSurvivesAPanic(t *testing.T) {
+	cases := map[string]struct {
+		run  func(Command) (Exit, string, error)
+		done func(context.Context, error) error
+	}{
+		"in a phase": {run: func(Command) (Exit, string, error) { panic("provider bug") }},
+		"in done": {done: func(context.Context, error) error {
+			panic("settle bug")
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := &fakeProvider{run: tc.run}
+			s, _ := newSeats(p)
+			got := make(chan error, 1)
+			done := Done(func(ctx context.Context, err error) error {
+				got <- err
+				if tc.done != nil {
+					return tc.done(ctx, err)
+				}
+				return nil
+			})
+			if _, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}, done); err != nil {
+				t.Fatal(err)
+			}
+			settle(t, s)
+			err := <-got
+			if tc.run != nil {
+				if !errors.Is(err, ErrProvisionFailed) {
+					t.Fatalf("done = %v", err)
+				}
+				if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseFailed {
+					t.Fatalf("progress = %+v %t", rec, ok)
+				}
+			}
+		})
 	}
 }
 
 func TestSeatsProvisionSkipsCreateWhenNotNeeded(t *testing.T) {
 	p := &fakeProvider{}
 	s, book := newSeats(p)
-	needed, err := s.Provision(context.Background(), task, " ", []domain.Class{domain.ClassConnector, domain.ClassKnowledge})
+	needed, err := s.Provision(context.Background(), task, " ", []domain.Class{domain.ClassConnector, domain.ClassKnowledge}, nil)
 	if err != nil || needed || len(p.created) != 0 {
 		t.Fatalf("provision = %t %v creates=%d", needed, err, len(p.created))
 	}
-	if _, err := s.Provision(context.Background(), task, "", []domain.Class{"sideways"}); !errors.Is(err, domain.ErrClass) || len(p.created) != 0 {
+	if _, err := s.Provision(context.Background(), task, "", []domain.Class{"sideways"}, nil); !errors.Is(err, domain.ErrClass) || len(p.created) != 0 {
 		t.Fatalf("unknown class = %v creates=%d", err, len(p.created))
 	}
 	if len(book.seats) != 0 {
@@ -175,7 +369,7 @@ func TestSeatsUsesImageAndTTL(t *testing.T) {
 	p := &fakeProvider{}
 	s, book := newSeats(p)
 	s.Image, s.TTL = "upmo/sandbox:base", time.Minute
-	if _, err := s.Provision(context.Background(), task, "org/name", nil); err != nil {
+	if _, _, err := provisioned(t, s, "org/name", nil); err != nil {
 		t.Fatal(err)
 	}
 	if p.created[0].Image != "upmo/sandbox:base" || p.created[0].TTL != time.Minute {
@@ -197,7 +391,7 @@ func TestSeatsWithoutProviderIsClear(t *testing.T) {
 			if _, err := s.Start(ctx, task, validSpec()); !errors.Is(err, ErrSandboxdUnset) {
 				t.Fatalf("start = %v", err)
 			}
-			if needed, err := s.Provision(ctx, task, "org/name", nil); !needed || !errors.Is(err, ErrSandboxdUnset) {
+			if needed, err := s.Provision(ctx, task, "org/name", nil, nil); !needed || !errors.Is(err, ErrSandboxdUnset) {
 				t.Fatalf("provision = %t %v", needed, err)
 			}
 			if err := s.Release(ctx, task); err != nil {
@@ -481,6 +675,7 @@ type fakeProvider struct {
 	entered    chan struct{}
 
 	execs    []execCall
+	lastCtx  context.Context
 	run      func(Command) (Exit, string, error)
 	files    map[string][]byte
 	readErr  error
@@ -526,9 +721,10 @@ func (f *fakeProvider) destroyedIDs() []string {
 
 // Exec records cmd and answers through run, or exits 0 when run is nil.
 // stderr from run is streamed before the exit.
-func (f *fakeProvider) Exec(_ context.Context, id string, cmd Command, out func(Output) error) (Exit, error) {
+func (f *fakeProvider) Exec(ctx context.Context, id string, cmd Command, out func(Output) error) (Exit, error) {
 	f.mu.Lock()
 	f.execs = append(f.execs, execCall{id: id, cmd: cmd})
+	f.lastCtx = ctx
 	run := f.run
 	f.mu.Unlock()
 	if run == nil {
@@ -571,6 +767,23 @@ func (f *fakeProvider) WriteFile(_ context.Context, _ string, path string, data 
 	}
 	f.files[path] = slices.Clone(data)
 	return nil
+}
+
+// lastDeadline is the deadline of the context the last Exec ran on.
+func (f *fakeProvider) lastDeadline() (time.Time, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lastCtx == nil {
+		return time.Time{}, false
+	}
+	return f.lastCtx.Deadline()
+}
+
+// lastCanceled reports whether the context the last Exec ran on has ended.
+func (f *fakeProvider) lastCanceled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCtx != nil && f.lastCtx.Err() != nil
 }
 
 func (f *fakeProvider) execCalls() []execCall {

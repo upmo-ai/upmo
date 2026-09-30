@@ -32,6 +32,11 @@ type fakeSandboxd struct {
 	files    map[string][]byte
 	refuse   int
 	failOn   string
+	// gate, when set, holds every Exec until it is closed, after closing
+	// entered on the first, so a phase is slow for as long as a test needs.
+	gate    chan struct{}
+	entered chan struct{}
+	once    sync.Once
 }
 
 // provisionCalls is what a sandbox without a repository is provisioned
@@ -55,6 +60,10 @@ func (f *fakeSandboxd) serve(t *testing.T, secret string) *httptest.Server {
 		t.Fatal(err)
 	}
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.gate != nil && r.URL.Path == "/upmo.sandboxd.v1.Runtime/Exec" {
+			f.once.Do(func() { close(f.entered) })
+			<-f.gate
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls = append(f.calls, r.URL.Path)
@@ -158,6 +167,16 @@ func seats(t *testing.T, f *fakeSandboxd, key string) *runtime.Seats {
 	return &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}}
 }
 
+// settle waits for the provisioning Open left running in the background.
+func settle(t *testing.T, boxes *runtime.Seats) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := boxes.Wait(ctx); err != nil {
+		t.Fatalf("provisioning still running: %v", err)
+	}
+}
+
 func held(t *testing.T, boxes *runtime.Seats) (string, bool) {
 	t.Helper()
 	id, ok, err := boxes.Held(context.Background(), taskID)
@@ -196,6 +215,7 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("open status = %d body %s", rec.Code, rec.Body.String())
 	}
+	settle(t, boxes)
 	calls, created, _ := sd.seen()
 	wantCalls := []string{
 		"/upmo.sandboxd.v1.Runtime/Create",
@@ -244,6 +264,7 @@ func TestOpenWithAShellProvisionsWithoutAClone(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["status"] != string(domain.Preparing) {
 		t.Fatalf("body = %v %v", got, err)
 	}
+	settle(t, boxes)
 	if calls, _, _ := sd.seen(); !slices.Equal(calls, provisionCalls) {
 		t.Fatalf("calls = %v", calls)
 	}
@@ -252,25 +273,61 @@ func TestOpenWithAShellProvisionsWithoutAClone(t *testing.T) {
 	}
 }
 
+func TestOpenAnswersBeforeASlowCloneFinishes(t *testing.T) {
+	sd := &fakeSandboxd{gate: make(chan struct{}), entered: make(chan struct{})}
+	boxes := seats(t, sd, testKey('s'))
+	book := &fakeBook{openID: taskID}
+	h := sandboxHandler(book, boxes)
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- post(h, "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`) }()
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-answered:
+	case <-time.After(5 * time.Second):
+		close(sd.gate)
+		t.Fatal("open waited on the clone")
+	}
+	<-sd.entered
+	// The clone is still running in sandboxd; Open has already answered.
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusCreated || got["status"] != string(domain.Preparing) {
+		t.Fatalf("open = %d %v %v", rec.Code, got, err)
+	}
+	if progress, ok := boxes.Progress(taskID); !ok || progress.Phase != runtime.PhaseClone {
+		t.Fatalf("progress while cloning = %+v %t", progress, ok)
+	}
+	if id, ok := held(t, boxes); !ok || id != "box-1" {
+		t.Fatalf("held while cloning = %q %t", id, ok)
+	}
+
+	close(sd.gate)
+	settle(t, boxes)
+	if progress, ok := boxes.Progress(taskID); !ok || progress.Phase != runtime.PhaseReady {
+		t.Fatalf("progress = %+v %t", progress, ok)
+	}
+	if len(book.inputs) != 1 {
+		t.Fatalf("inputs = %v", book.inputs)
+	}
+}
+
 func TestOpenWhenACloneFailsFailsTheTaskAndDestroysTheSandbox(t *testing.T) {
 	sd := &fakeSandboxd{failOn: "clone"}
 	boxes := seats(t, sd, testKey('s'))
 	book := &fakeBook{openID: taskID}
 	rec := post(sandboxHandler(book, boxes), "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`)
-	if rec.Code != http.StatusServiceUnavailable {
+	// Open answers before the clone runs, so the failure comes after.
+	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
 	}
 	var got map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["id"] != taskID || got["status"] != string(domain.Failed) || got["phase"] != string(runtime.PhaseClone) {
+	if got["id"] != taskID || got["status"] != string(domain.Preparing) {
 		t.Fatalf("body = %v", got)
 	}
-	// The cause stays in the brain log; the body names the phase only.
-	if strings.Contains(rec.Body.String(), "no network") || strings.Contains(rec.Body.String(), "github.com") {
-		t.Fatalf("body leaks the cause: %s", rec.Body.String())
-	}
+	settle(t, boxes)
 	if len(book.inputs) != 2 || book.inputs[1].Kind != domain.Fail {
 		t.Fatalf("inputs = %v", book.inputs)
 	}

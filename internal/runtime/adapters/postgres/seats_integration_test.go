@@ -145,8 +145,11 @@ func TestSeatsReleaseAfterRestart(t *testing.T) {
 	provider := &fakeProvider{}
 
 	before := &runtime.Seats{Provider: provider, Book: runtime.SeatStore(pgtest.App(t, owner))}
-	if needed, err := before.Provision(ctx, task, "org/name", nil); err != nil || !needed {
+	if needed, err := before.Provision(ctx, task, "org/name", nil, nil); err != nil || !needed {
 		t.Fatalf("provision = %t %v", needed, err)
+	}
+	if err := before.Wait(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// A new process with a new pool finds the seat and releases it.
@@ -174,7 +177,10 @@ func TestSeatsReleaseKeepsTheSeatWhenDestroyFails(t *testing.T) {
 	ctx := context.Background()
 	provider := &fakeProvider{}
 	seats := &runtime.Seats{Provider: provider, Book: runtime.SeatStore(pgtest.App(t, owner))}
-	if _, err := seats.Provision(ctx, task, "org/name", nil); err != nil {
+	if _, err := seats.Provision(ctx, task, "org/name", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := seats.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
 	provider.fail(errors.New("sandboxd down"))

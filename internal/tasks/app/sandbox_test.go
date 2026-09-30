@@ -95,20 +95,54 @@ func TestOpenTaskFailsTheTaskWhenCreateFails(t *testing.T) {
 	}
 }
 
-func TestOpenTaskFailsTheTaskWhenAPhaseFails(t *testing.T) {
+func TestOpenTaskFailsTheTaskWhenAPhaseFailsAfterOpen(t *testing.T) {
 	book := &fake{}
-	cause := &runtime.PhaseError{Phase: runtime.PhaseToolchain, Err: runtime.ErrCommand}
-	boxes := &fakeBoxes{ready: true, err: cause}
+	boxes := &fakeBoxes{ready: true}
 	task, err := OpenTask(context.Background(), book, boxes, openAccess, Opening{Goal: "Fix the build", Classes: []string{"shell"}})
-	var phase *runtime.PhaseError
-	if !errors.Is(err, ErrSandbox) || !errors.Is(err, runtime.ErrProvisionFailed) || !errors.As(err, &phase) || phase.Phase != runtime.PhaseToolchain {
-		t.Fatalf("err = %v", err)
+	// Open returns Preparing before the phases have run.
+	if err != nil || task.Status != domain.Preparing || len(boxes.released) != 0 {
+		t.Fatalf("open = %+v %v released = %v", task, err, boxes.released)
 	}
-	if task.Status != domain.Failed || book.status != domain.Failed {
-		t.Fatalf("task = %+v book = %s", task, book.status)
+	cause := &runtime.PhaseError{Phase: runtime.PhaseToolchain, Err: runtime.ErrCommand}
+	if err := boxes.finish(cause); err != nil {
+		t.Fatalf("settle = %v", err)
+	}
+	if book.status != domain.Failed {
+		t.Fatalf("book = %s", book.status)
 	}
 	if !slices.Equal(boxes.released, []string{task.ID}) {
 		t.Fatalf("released = %v", boxes.released)
+	}
+}
+
+func TestOpenTaskLeavesAReadySandboxPreparing(t *testing.T) {
+	book := &fake{}
+	boxes := &fakeBoxes{ready: true}
+	task, err := OpenTask(context.Background(), book, boxes, openAccess, Opening{Goal: "Fix the build", Repo: "org/name"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := book.calls
+	if err := boxes.finish(nil); err != nil {
+		t.Fatalf("settle = %v", err)
+	}
+	if book.status != domain.Preparing || book.calls != calls || len(boxes.released) != 0 {
+		t.Fatalf("book = %s calls = %d released = %v", book.status, book.calls, boxes.released)
+	}
+	if next, err := StepTask(context.Background(), book, boxes, openAccess, task.ID, domain.Input{Kind: domain.Advance}); err != nil || next.Status != domain.Working {
+		t.Fatalf("advance = %+v %v", next, err)
+	}
+}
+
+func TestOpenTaskReportsASettleThatFails(t *testing.T) {
+	book := &fake{}
+	boxes := &fakeBoxes{ready: true, releaseErr: errors.New("sandboxd down")}
+	if _, err := OpenTask(context.Background(), book, boxes, openAccess, Opening{Goal: "Fix the build", Classes: []string{"shell"}}); err != nil {
+		t.Fatal(err)
+	}
+	cause := &runtime.PhaseError{Phase: runtime.PhaseProbe, Err: runtime.ErrCommand}
+	if err := boxes.finish(cause); !errors.Is(err, boxes.releaseErr) || book.status != domain.Failed {
+		t.Fatalf("settle = %v book = %s", err, book.status)
 	}
 }
 
@@ -154,23 +188,38 @@ func TestStepTaskKeepsTheTransitionWhenReleaseFails(t *testing.T) {
 	}
 }
 
+// fakeBoxes answers Provision at once, as Seats does, and keeps done so a
+// test can finish the background phases with finish. err is a Create that
+// fails, so done is not kept.
 type fakeBoxes struct {
 	ready       bool
 	err         error
 	releaseErr  error
 	provisioned []string
 	released    []string
+	done        runtime.Done
 }
 
 func (f *fakeBoxes) Ready() bool { return f.ready }
 
-func (f *fakeBoxes) Provision(_ context.Context, taskID, repo string, classes []runtime.Class) (bool, error) {
+func (f *fakeBoxes) Provision(_ context.Context, taskID, repo string, classes []runtime.Class, done runtime.Done) (bool, error) {
 	needs, err := runtime.NeedsSandbox(repo, classes)
 	if err != nil || !needs {
 		return false, err
 	}
 	f.provisioned = append(f.provisioned, taskID)
+	if f.err == nil {
+		f.done = done
+	}
 	return true, f.err
+}
+
+// finish ends the phases Provision started with outcome, as Seats would.
+func (f *fakeBoxes) finish(outcome error) error {
+	if f.done == nil {
+		return errors.New("no provisioning to finish")
+	}
+	return f.done(context.Background(), outcome)
 }
 
 func (f *fakeBoxes) Release(_ context.Context, taskID string) error {

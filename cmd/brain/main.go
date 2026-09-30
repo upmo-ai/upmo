@@ -94,11 +94,25 @@ func run() error {
 	}
 	defer pool.Close()
 
-	handler, err := routes(pool, cfg, log)
+	seats, err := sandboxSeats(cfg, pool, log)
 	if err != nil {
 		return err
 	}
-	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
+	handler, err := routes(pool, cfg, log, seats)
+	if err != nil {
+		return err
+	}
+	err = httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
+	// Provisioning still running in the background gets the shutdown
+	// timeout to settle its task before the pool closes. Any left after
+	// that is abandoned: its task stays in Preparing and sandboxd reclaims
+	// its sandbox at the seat TTL.
+	wait, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if werr := seats.Wait(wait); werr != nil {
+		log.Warn("sandbox provisioning still running at shutdown", "err", werr)
+	}
+	return err
 }
 
 // linkMail is the sender for invite and recover links. With SMTP unset it
@@ -114,9 +128,9 @@ func linkMail(s config.SMTP) mail.Sender {
 // service key, and records each seat in the runtime
 // schema through pool, so a restarted brain can still release it. Each new
 // sandbox starts from UPMO_SEAT_IMAGE, or the runtime default, and is
-// provisioned through sandboxd before Open returns. With
-// UPMO_SANDBOXD_URL unset it has no provider, and a task that needs a
-// sandbox is refused rather than opened.
+// provisioned through sandboxd in the background once Open has returned.
+// With UPMO_SANDBOXD_URL unset it has no provider, and a task
+// that needs a sandbox is refused rather than opened.
 func sandboxSeats(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*runtime.Seats, error) {
 	seats := &runtime.Seats{Book: runtime.SeatStore(pool), Image: cfg.SeatImage, Log: log}
 	if cfg.SandboxdURL == "" {
@@ -149,7 +163,7 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runtime.Seats) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -165,10 +179,6 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
-	seats, err := sandboxSeats(cfg, pool, log)
-	if err != nil {
-		return nil, err
-	}
 	taskBook := taskstore.Store{Pool: pool}
 	taskhttp.Handler{
 		Book:      taskBook,

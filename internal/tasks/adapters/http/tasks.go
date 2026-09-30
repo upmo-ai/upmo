@@ -18,7 +18,8 @@ type Handler struct {
 	List   app.Lister
 	Access func(r *http.Request) (app.Access, bool)
 	// Sandboxes starts a task's sandbox on Open and releases it when the
-	// task ends. Nil refuses any task that needs one.
+	// task ends. Open answers once the sandbox is created; provisioning runs
+	// on after the response. Nil refuses any task that needs one.
 	Sandboxes app.Sandboxes
 }
 
@@ -80,13 +81,6 @@ func (h Handler) open(w http.ResponseWriter, r *http.Request) {
 		// The task opened, then its sandbox failed and it was moved to Failed.
 		body := taskJSON(task)
 		body["error"] = "the task sandbox could not start"
-		// A provisioning phase that failed is named, and only named: its
-		// cause may quote the sandbox, so it stays in the brain log.
-		var phase *runtime.PhaseError
-		if errors.As(err, &phase) {
-			body["error"] = "the task sandbox failed while provisioning"
-			body["phase"] = string(phase.Phase)
-		}
 		writeJSON(w, http.StatusServiceUnavailable, body)
 		return
 	}
