@@ -23,6 +23,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/decisions"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
+	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
+	knowledgehttp "github.com/upmo-ai/upmo/internal/knowledge/adapters/http"
+	knowledgestore "github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/memory"
 	memoryhttp "github.com/upmo-ai/upmo/internal/memory/adapters/http"
 	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
@@ -270,6 +273,34 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 				return chatapp.Access{}, false
 			}
 			return chatapp.Access{
+				UserID:     person.UserID.String(),
+				Allow:      allow,
+				Teams:      shares.Teams,
+				SharedView: shares.SharedView,
+				SharedEdit: shares.SharedEdit,
+			}, true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	knowledgeBook := knowledgestore.Store{Pool: pool}
+	knowledgehttp.Handler{
+		Store:  knowledgeBook,
+		Finder: knowledgeBook,
+		Access: func(r *http.Request) (knowledgeapp.Access, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return knowledgeapp.Access{}, false
+			}
+			allow, err := members.FolderAllow(r.Context(), person.UserID)
+			if err != nil || allow == "" {
+				return knowledgeapp.Access{}, false
+			}
+			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeFolder)
+			if err != nil {
+				return knowledgeapp.Access{}, false
+			}
+			return knowledgeapp.Access{
 				UserID:     person.UserID.String(),
 				Allow:      allow,
 				Teams:      shares.Teams,

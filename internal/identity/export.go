@@ -23,6 +23,7 @@ const (
 	MaxAge       = domain.MaxAge
 	TypeTask     = domain.TypeTask
 	TypeChat     = domain.TypeChat
+	TypeFolder   = domain.TypeFolder
 	TypeArtifact = domain.TypeArtifact
 )
 
