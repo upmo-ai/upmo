@@ -21,6 +21,7 @@ import (
 	chathttp "github.com/upmo-ai/upmo/internal/chat/adapters/http"
 	chatstore "github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/decisions"
+	decisionshttp "github.com/upmo-ai/upmo/internal/decisions/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
@@ -307,6 +308,22 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 				SharedView: shares.SharedView,
 				SharedEdit: shares.SharedEdit,
 			}, true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	decisionshttp.Handler{
+		List: decisions.Store{Pool: pool},
+		Access: func(r *http.Request) (decisions.Access, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return decisions.Access{}, false
+			}
+			allow, err := members.SettingsAllow(r.Context(), person.UserID)
+			if err != nil || allow == "" {
+				return decisions.Access{}, false
+			}
+			return decisions.Access{UserID: person.UserID.String(), Allow: allow}, true
 		},
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)

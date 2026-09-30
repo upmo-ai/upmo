@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -97,4 +98,50 @@ func arrayOr(literal string) string {
 		return "{}"
 	}
 	return literal
+}
+
+// ListedGate is one accepted gate row for the bindings screen.
+type ListedGate struct {
+	Route       string
+	Kind        string
+	Fingerprint string
+	Verdict     string
+	Hit         int
+	Total       int
+	Bar         int
+	UpdatedAt   time.Time
+}
+
+// List returns every accepted gate the caller may see under settings:manage.
+func (s Store) List(ctx context.Context, access Access) ([]ListedGate, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT route, kind, fingerprint, verdict, hit, total, bar, updated_at
+		FROM decisions.gates
+		ORDER BY route`)
+	if err != nil {
+		return nil, fmt.Errorf("decisions: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ListedGate, 0)
+	for rows.Next() {
+		var row ListedGate
+		if err := rows.Scan(&row.Route, &row.Kind, &row.Fingerprint, &row.Verdict, &row.Hit, &row.Total, &row.Bar, &row.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("decisions: list: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("decisions: list: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
