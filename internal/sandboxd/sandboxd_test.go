@@ -446,7 +446,7 @@ func TestOpenPicksTheDriver(t *testing.T) {
 	if _, err := open(ctx, DriverStub, log, never); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := open(ctx, "kubernetes", log, never); err == nil {
+	if _, err := open(ctx, "nomad", log, never); err == nil {
 		t.Fatal("unknown driver accepted")
 	}
 }
