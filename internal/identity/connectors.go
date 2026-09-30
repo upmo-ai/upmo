@@ -19,6 +19,7 @@ type (
 	ConnectorGrant   = domain.ConnectorGrant
 	ConnectorAction  = domain.ConnectorAction
 	ConnectorVerdict = domain.ConnectorVerdict
+	ActionRules      = domain.ActionRules
 	RunTokens        = app.RunTokens
 	RunClaims        = runjwt.Claims
 	WriteExposure    = writeguard.Exposure
@@ -59,6 +60,11 @@ func DefaultConnectorGrant(connector string) ConnectorGrant {
 // ConnectorDecide is the safety rule for one action on one resource.
 func ConnectorDecide(grant domain.ConnectorGrant, action domain.ConnectorAction, resource string) domain.ConnectorVerdict {
 	return domain.ConnectorDecide(grant, action, resource)
+}
+
+// DecideAction is ConnectorDecide with optional per-action rules on top.
+func DecideAction(grant ConnectorGrant, rules ActionRules, action ConnectorAction, resource string) ConnectorVerdict {
+	return domain.DecideAction(grant, rules, action, resource)
 }
 
 // TightenWrite stacks the untrusted-write guard on a connector verdict.
