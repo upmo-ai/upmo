@@ -130,8 +130,10 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
 	members := identity.Members(pool)
+	taskBook := taskstore.Store{Pool: pool}
 	taskhttp.Handler{
-		Book: taskstore.Store{Pool: pool},
+		Book: taskBook,
+		List: taskBook,
 		Access: func(r *http.Request) (taskapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

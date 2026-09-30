@@ -14,6 +14,7 @@ import (
 // Handler applies one task transition through the existing writer.
 type Handler struct {
 	Book   app.Book
+	List   app.Lister
 	Access func(r *http.Request) (app.Access, bool)
 }
 
@@ -25,8 +26,29 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 		}
 		return guard(next)
 	}
+	mux.Handle("GET /api/tasks", wrap(http.HandlerFunc(h.list)))
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
+}
+
+func (h Handler) list(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if h.List == nil {
+		writeError(w, http.StatusInternalServerError, "task")
+		return
+	}
+	tasks, err := app.ListTasks(r.Context(), h.List, access)
+	if refuse(w, err) {
+		return
+	}
+	body := make([]map[string]string, 0, len(tasks))
+	for _, task := range tasks {
+		body = append(body, taskJSON(task))
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (h Handler) open(w http.ResponseWriter, r *http.Request) {
