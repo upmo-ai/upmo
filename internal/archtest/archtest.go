@@ -1,6 +1,7 @@
 // Package archtest checks the module import rules over a loaded package
 // graph: contexts meet only through their facade, domain stays free of I/O and
-// of its own app and adapters, and nothing imports cmd.
+// of its own app and adapters, and nothing imports cmd. It also keeps
+// container engine clients and sandboxd internals inside the sandboxd tree.
 package archtest
 
 import (
@@ -25,6 +26,15 @@ var IOPackages = []string{
 	"github.com/jackc/pgx",
 	"connectrpc.com/connect",
 	"github.com/riverqueue/river",
+}
+
+// EnginePackages are container engine clients. Only the sandboxd tree may
+// import them. A path also covers every package below it.
+var EnginePackages = []string{
+	"github.com/docker",
+	"github.com/moby",
+	"github.com/containerd",
+	"k8s.io/client-go",
 }
 
 // Violation is one forbidden import.
@@ -79,6 +89,32 @@ func locate(module, path string) (location, bool) {
 	return loc, true
 }
 
+// inSandboxd reports whether path is internal/sandboxd or cmd/sandboxd, or
+// below either.
+func inSandboxd(module, path string) bool {
+	rel, ok := strings.CutPrefix(path, module+"/")
+	if !ok {
+		return false
+	}
+	// The generated test main of a package sits beside it as path.test.
+	rel = strings.TrimSuffix(rel, ".test")
+	for _, root := range []string{"internal/sandboxd", "cmd/sandboxd"} {
+		if rel == root || strings.HasPrefix(rel, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isEngine(path string) bool {
+	for _, p := range EnginePackages {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func isIO(path string) bool {
 	for _, p := range IOPackages {
 		if path == p || strings.HasPrefix(path, p+"/") {
@@ -99,7 +135,14 @@ func Check(module string, pkgs []*packages.Package) []Violation {
 		if !ok {
 			return
 		}
+		sandboxd := inSandboxd(module, p.PkgPath)
 		for path := range p.Imports {
+			if !sandboxd && isEngine(path) {
+				add(Violation{p.PkgPath, path, "container engine clients stay in sandboxd"})
+			}
+			if !sandboxd && inSandboxd(module, path) {
+				add(Violation{p.PkgPath, path, "only cmd/sandboxd imports sandboxd"})
+			}
 			if isIO(path) && from.layer == "domain" {
 				add(Violation{p.PkgPath, path, "domain imports an I/O package"})
 			}

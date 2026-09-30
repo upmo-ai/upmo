@@ -31,6 +31,26 @@ linters:
               desc: domain packages hold no I/O
             - pkg: github.com/riverqueue/river
               desc: domain packages hold no I/O
+        # Container engine clients and sandboxd internals stay in
+        # the sandboxd tree, so brain never holds container privileges.
+        sandboxd:
+          files:
+            - "$all"
+            - "!**/internal/sandboxd/*.go"
+            - "!**/internal/sandboxd/**/*.go"
+            - "!**/cmd/sandboxd/*.go"
+            - "!**/cmd/sandboxd/**/*.go"
+          deny:
+            - pkg: github.com/docker
+              desc: container engine clients run only in sandboxd
+            - pkg: github.com/moby
+              desc: container engine clients run only in sandboxd
+            - pkg: github.com/containerd
+              desc: container engine clients run only in sandboxd
+            - pkg: k8s.io/client-go
+              desc: container engine clients run only in sandboxd
+            - pkg: github.com/upmo-ai/upmo/internal/sandboxd
+              desc: only cmd/sandboxd imports sandboxd; brain uses the runtime SandboxProvider port
         # Admission rule: the kernel depends on the standard library
         # and the UUID package only.
         kernel:

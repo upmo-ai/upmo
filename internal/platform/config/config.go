@@ -38,6 +38,8 @@ type Config struct {
 	ServiceKeyPrevious string
 	// GatewayURL is the model gateway (UPMO_GATEWAY_URL). Empty until brain calls it.
 	GatewayURL string
+	// SandboxdURL is the sandbox process (UPMO_SANDBOXD_URL). Empty until brain calls it.
+	SandboxdURL string
 	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
 	// is empty when mail is unset, and links are then only copied.
 	SMTP SMTP
@@ -150,11 +152,76 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.GatewayURL = strings.TrimRight(v, "/")
 	}
+	if v, ok := lookup("UPMO_SANDBOXD_URL"); ok && v != "" {
+		parsed, err := url.Parse(v)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return Config{}, fmt.Errorf("config: UPMO_SANDBOXD_URL must be an absolute http(s) URL")
+		}
+		cfg.SandboxdURL = strings.TrimRight(v, "/")
+	}
 	smtp, err := loadSMTP(lookup)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.SMTP = smtp
+	return cfg, nil
+}
+
+// Sandboxd holds the settings sandboxd reads at start. It has no database.
+type Sandboxd struct {
+	// ListenAddr serves the SandboxProvider port (UPMO_LISTEN_ADDR), :8083 by default.
+	ListenAddr string
+	// ProxyAddr serves the egress proxy to sandboxes (UPMO_PROXY_ADDR), :3128 by default.
+	ProxyAddr string
+	// ShutdownTimeout bounds graceful shutdown (UPMO_SHUTDOWN_TIMEOUT).
+	ShutdownTimeout time.Duration
+	// LogLevel is one of debug, info, warn, error (UPMO_LOG_LEVEL).
+	LogLevel string
+	// ServiceKey is the master HMAC key (UPMO_SERVICE_KEY). It is required.
+	ServiceKey string
+	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
+	ServiceKeyPrevious string
+}
+
+// LoadSandboxd reads the sandboxd configuration from the environment.
+func LoadSandboxd() (Sandboxd, error) {
+	return loadSandboxd(os.LookupEnv)
+}
+
+func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
+	cfg := Sandboxd{
+		ListenAddr:      ":8083",
+		ProxyAddr:       ":3128",
+		ShutdownTimeout: 10 * time.Second,
+		LogLevel:        "info",
+	}
+	if v, ok := lookup("UPMO_LISTEN_ADDR"); ok && v != "" {
+		cfg.ListenAddr = v
+	}
+	if v, ok := lookup("UPMO_PROXY_ADDR"); ok && v != "" {
+		cfg.ProxyAddr = v
+	}
+	if cfg.ListenAddr == cfg.ProxyAddr {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_PROXY_ADDR must differ from UPMO_LISTEN_ADDR")
+	}
+	if v, ok := lookup("UPMO_SHUTDOWN_TIMEOUT"); ok && v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_SHUTDOWN_TIMEOUT: %w", err)
+		}
+		cfg.ShutdownTimeout = d
+	}
+	if v, ok := lookup("UPMO_LOG_LEVEL"); ok && v != "" {
+		cfg.LogLevel = v
+	}
+	v, ok := lookup("UPMO_SERVICE_KEY")
+	if !ok || v == "" {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_SERVICE_KEY is required")
+	}
+	cfg.ServiceKey = v
+	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
+		cfg.ServiceKeyPrevious = v
+	}
 	return cfg, nil
 }
 

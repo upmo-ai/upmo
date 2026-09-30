@@ -33,6 +33,7 @@ func TestFixtureViolations(t *testing.T) {
 	want := []Violation{
 		{m + "internal/memory", m + "internal/tasks/domain", "only the facade of context tasks is importable"},
 		{m + "internal/memory/domain", m + "internal/memory/app", "domain reaches app"},
+		{m + "internal/platform/leak", m + "internal/sandboxd", "only cmd/sandboxd imports sandboxd"},
 		{m + "internal/platform/web", m + "cmd/tool/flags", "cmd is not importable"},
 		{m + "internal/tasks/domain", "database/sql", "domain imports an I/O package"},
 		{m + "internal/tasks/domain", m + "internal/tasks/adapters/postgres", "domain reaches adapters"},
@@ -46,6 +47,35 @@ func TestFixtureViolations(t *testing.T) {
 	for _, v := range got {
 		if !slices.Contains(want, v) {
 			t.Errorf("unexpected violation: %s", v)
+		}
+	}
+}
+
+// TestEnginePackages covers the engine rule, which the fixture cannot load
+// without the engine modules.
+func TestEnginePackages(t *testing.T) {
+	for _, path := range []string{"github.com/docker/docker/client", "github.com/moby/moby", "github.com/containerd/containerd/v2/client", "k8s.io/client-go/kubernetes"} {
+		if !isEngine(path) {
+			t.Errorf("isEngine(%q) = false", path)
+		}
+	}
+	for _, path := range []string{"github.com/dockerx", "net/http", "k8s.io/api"} {
+		if isEngine(path) {
+			t.Errorf("isEngine(%q) = true", path)
+		}
+	}
+	const m = "example.com/fixture"
+	for path, want := range map[string]bool{
+		m + "/internal/sandboxd":              true,
+		m + "/internal/sandboxd/driver":       true,
+		m + "/internal/sandboxd.test":         true,
+		m + "/cmd/sandboxd":                   true,
+		m + "/internal/sandboxdx":             false,
+		m + "/internal/runtime":               false,
+		"example.com/other/internal/sandboxd": false,
+	} {
+		if got := inSandboxd(m, path); got != want {
+			t.Errorf("inSandboxd(%q) = %v, want %v", path, got, want)
 		}
 	}
 }
