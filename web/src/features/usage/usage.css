@@ -97,6 +97,18 @@
   background: var(--border);
 }
 
+@media (pointer: fine) {
+  .usage-chart tbody tr {
+    min-height: 32px;
+  }
+}
+
+@media (pointer: coarse) {
+  .usage-chart tbody tr {
+    min-height: 40px;
+  }
+}
+
 @media (max-width: 47.99em) {
   .usage-chart tbody tr {
     display: block;

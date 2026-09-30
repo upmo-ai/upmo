@@ -32,7 +32,8 @@ describe("security", () => {
     expect(screen.getByText(/Added/)).toBeTruthy();
     expect(screen.getByText(/Last used/)).toBeTruthy();
 
-    const remove = screen.getByRole("button", { name: "Remove Laptop" }) as HTMLButtonElement;
+    const passkeyItem = screen.getByText("Laptop").closest("li")!;
+    const remove = within(passkeyItem).getByRole("button", { name: "Remove" }) as HTMLButtonElement;
     expect(remove.disabled).toBe(true);
     expect(screen.getByText(lastPasskeyReason)).toBeTruthy();
 
@@ -47,14 +48,14 @@ describe("security", () => {
       within(setDialog).getByRole("button", { name: "Set password" }).click();
     });
     await waitFor(() => {
-      expect((screen.getByRole("button", { name: "Remove Laptop" }) as HTMLButtonElement).disabled).toBe(
+      expect((within(passkeyItem).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(
         false,
       );
     });
     expect(screen.queryByText(lastPasskeyReason)).toBeNull();
 
     act(() => {
-      screen.getByRole("button", { name: "Remove Laptop" }).click();
+      within(passkeyItem).getByRole("button", { name: "Remove" }).click();
     });
     const removeDialog = await screen.findByRole("dialog");
     expect(within(removeDialog).getByText("Remove the Laptop passkey?")).toBeTruthy();
@@ -83,8 +84,9 @@ describe("security", () => {
     });
     expect(await screen.findByText("Phone")).toBeTruthy();
 
+    const phoneItem = (await screen.findByText("Phone")).closest("li")!;
     act(() => {
-      screen.getByRole("button", { name: "Rename Phone" }).click();
+      within(phoneItem).getByRole("button", { name: "Edit" }).click();
     });
     fireEvent.change(screen.getByLabelText("New name for Phone"), { target: { value: "Pocket" } });
     act(() => {
@@ -145,7 +147,7 @@ describe("security", () => {
     const initialSessionCalls = sessionCalls;
 
     act(() => {
-      screen.getByRole("button", { name: "Rename Laptop" }).click();
+      screen.getByRole("button", { name: "Edit" }).click();
     });
     fireEvent.change(screen.getByLabelText("New name for Laptop"), { target: { value: "Desktop" } });
     act(() => {

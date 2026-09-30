@@ -4,6 +4,11 @@
   overflow-x: auto;
 }
 
+.settings-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .settings-nav {
   display: flex;
   flex-direction: row;
@@ -164,8 +169,17 @@
   }
 }
 
+@media (pointer: fine) {
+  .members-table select,
+  .members-table .member-remove {
+    min-height: 32px;
+  }
+}
+
 @media (pointer: coarse) {
-  .settings-nav-link {
+  .settings-nav-link,
+  .members-table select,
+  .members-table .member-remove {
     min-height: 40px;
   }
 }

@@ -115,7 +115,7 @@ export function TokensPage() {
   });
   if (probe.isPending) {
     return (
-      <Stack gap="lg" className="settings-page">
+      <Stack gap="lg" className="settings-content">
         <Title order={1}>API tokens</Title>
       </Stack>
     );
@@ -153,7 +153,7 @@ function StubTokens() {
   };
 
   return (
-    <Stack gap="lg" className="settings-page">
+    <Stack gap="lg" className="settings-content">
       <Title order={1}>API tokens</Title>
       {tokens.isError ? (
         <Text role="alert" c="red">
@@ -388,7 +388,7 @@ function LiveTokens() {
   });
 
   return (
-    <Stack gap="lg" className="settings-page">
+    <Stack gap="lg" className="settings-content">
       <Title order={1}>API tokens</Title>
       {tokens.isError ? (
         <Text role="alert" c="red">

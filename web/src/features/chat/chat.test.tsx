@@ -38,5 +38,8 @@ describe("Chat page", () => {
     const composer = screen.getByRole("form", { name: "Chat composer" });
     expect(within(composer).getByRole("textbox", { name: "Message" })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Send" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy reply" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
+    expect(screen.getByText(/to send/)).toBeTruthy();
   });
 });
