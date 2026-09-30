@@ -142,10 +142,10 @@ func TestGetEmptyAllowDoesNotCallTheViewer(t *testing.T) {
 	}
 }
 
-func TestPreparingReturnsProgress(t *testing.T) {
+func TestProgressReturnsPhase(t *testing.T) {
 	book := &fakeBook{}
 	progress := fakeProgress{taskID: {Phase: "toolchain", Events: 3}}
-	rec := callPreparing(t, book, progress, "/api/tasks/"+taskID+"/preparing", true)
+	rec := callProgress(t, book, progress, "/api/tasks/"+taskID+"/progress", true)
 	if rec.Code != http.StatusOK || book.views != 1 {
 		t.Fatalf("status %d views %d body %s", rec.Code, book.views, rec.Body.String())
 	}
@@ -158,17 +158,17 @@ func TestPreparingReturnsProgress(t *testing.T) {
 	}
 }
 
-func TestPreparingMissingIsNotFound(t *testing.T) {
+func TestProgressMissingIsNotFound(t *testing.T) {
 	book := &fakeBook{}
-	rec := callPreparing(t, book, fakeProgress{}, "/api/tasks/"+taskID+"/preparing", true)
+	rec := callProgress(t, book, fakeProgress{}, "/api/tasks/"+taskID+"/progress", true)
 	if rec.Code != http.StatusNotFound || book.views != 1 {
 		t.Fatalf("status %d views %d", rec.Code, book.views)
 	}
 }
 
-func TestPreparingGoneTaskIsNotFound(t *testing.T) {
+func TestProgressGoneTaskIsNotFound(t *testing.T) {
 	book := &fakeBook{err: app.ErrGone}
-	rec := callPreparing(t, book, fakeProgress{taskID: {Phase: "clone", Events: 1}}, "/api/tasks/"+taskID+"/preparing", true)
+	rec := callProgress(t, book, fakeProgress{taskID: {Phase: "clone", Events: 1}}, "/api/tasks/"+taskID+"/progress", true)
 	if rec.Code != http.StatusNotFound || book.views != 1 {
 		t.Fatalf("status %d views %d", rec.Code, book.views)
 	}
@@ -195,7 +195,7 @@ func handlerWithProgress(book *fakeBook, progress app.Progresses, allow bool) ht
 	return mux
 }
 
-func callPreparing(t *testing.T, book *fakeBook, progress app.Progresses, path string, allow bool) *httptest.ResponseRecorder {
+func callProgress(t *testing.T, book *fakeBook, progress app.Progresses, path string, allow bool) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()

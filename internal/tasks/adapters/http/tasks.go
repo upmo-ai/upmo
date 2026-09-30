@@ -23,7 +23,7 @@ type Handler struct {
 	// on after the response. Nil refuses any task that needs one.
 	Sandboxes app.Sandboxes
 	// Progress returns the in-process Preparing record. Nil answers not found
-	// for GET /api/tasks/{id}/preparing.
+	// for GET /api/tasks/{id}/progress.
 	Progress app.Progresses
 }
 
@@ -36,13 +36,13 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 		return guard(next)
 	}
 	mux.Handle("GET /api/tasks", wrap(http.HandlerFunc(h.list)))
-	mux.Handle("GET /api/tasks/{id}/preparing", wrap(http.HandlerFunc(h.preparing)))
+	mux.Handle("GET /api/tasks/{id}/progress", wrap(http.HandlerFunc(h.progress)))
 	mux.Handle("GET /api/tasks/{id}", wrap(http.HandlerFunc(h.get)))
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
 }
 
-func (h Handler) preparing(w http.ResponseWriter, r *http.Request) {
+func (h Handler) progress(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
 	if !ok {
 		return
@@ -197,7 +197,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "no such task")
 	case errors.Is(err, app.ErrPreparing):
-		writeError(w, http.StatusNotFound, "no preparing progress")
+		writeError(w, http.StatusNotFound, "no progress")
 	case errors.Is(err, app.ErrTask), errors.Is(err, domain.ErrInput), errors.Is(err, domain.ErrGoal), errors.Is(err, domain.ErrChat):
 		writeError(w, http.StatusBadRequest, "the task input was refused")
 	case errors.Is(err, domain.ErrTerminal), errors.Is(err, domain.ErrEvidence), errors.Is(err, domain.ErrTurn), errors.Is(err, domain.ErrExhausted), errors.Is(err, domain.ErrStatus):
