@@ -73,12 +73,47 @@ func TestUnknownKindIsRefused(t *testing.T) {
 	}
 }
 
+func TestListReturnsTasks(t *testing.T) {
+	book := &fakeBook{listed: []app.Task{{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}}
+	rec := call(t, book, http.MethodGet, "/api/tasks", "", true)
+	if rec.Code != http.StatusOK || book.lists != 1 {
+		t.Fatalf("status %d lists %d body %s", rec.Code, book.lists, rec.Body.String())
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["id"] != taskID || got[0]["status"] != string(domain.Working) {
+		t.Fatalf("tasks = %#v", got)
+	}
+}
+
+func TestListBearerIsRefused(t *testing.T) {
+	book := &fakeBook{}
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req.Header.Set("Authorization", "Bearer upmo_pat_secret")
+	rec := httptest.NewRecorder()
+	handler(book, true).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || book.lists != 0 {
+		t.Fatalf("status %d lists %d", rec.Code, book.lists)
+	}
+}
+
+func TestListEmptyAllowDoesNotCallTheLister(t *testing.T) {
+	book := &fakeBook{}
+	rec := call(t, book, http.MethodGet, "/api/tasks", "", false)
+	if rec.Code != http.StatusUnauthorized || book.lists != 0 {
+		t.Fatalf("status %d lists %d", rec.Code, book.lists)
+	}
+}
+
 const taskID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
 func handler(book *fakeBook, allow bool) http.Handler {
 	mux := http.NewServeMux()
 	Handler{
 		Book: book,
+		List: book,
 		Access: func(*http.Request) (app.Access, bool) {
 			if !allow {
 				return app.Access{}, false
@@ -99,9 +134,11 @@ func call(t *testing.T, book *fakeBook, method, path, body string, allow bool) *
 
 type fakeBook struct {
 	calls  int
+	lists  int
 	taskID string
 	input  domain.Input
 	err    error
+	listed []app.Task
 }
 
 func (f *fakeBook) Transition(_ context.Context, _ app.Access, taskID string, input domain.Input) (app.Task, error) {
@@ -120,6 +157,14 @@ func (f *fakeBook) Transition(_ context.Context, _ app.Access, taskID string, in
 		id = "task-1"
 	}
 	return app.Task{ID: id, Status: domain.Preparing, Goal: goal}, nil
+}
+
+func (f *fakeBook) List(context.Context, app.Access) ([]app.Task, error) {
+	f.lists++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]app.Task(nil), f.listed...), nil
 }
 
 func (f *fakeBook) Record(context.Context, app.Access, string, []domain.Check) (bool, error) {
