@@ -33,7 +33,11 @@ func TestReadyAndSession(t *testing.T) {
 		PublicURL:     "http://localhost:5173",
 		WebAuthnRPID:  "localhost",
 	}
-	handler, err := routes(pool, cfg, log)
+	seats, err := sandboxSeats(cfg, pool, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := routes(pool, cfg, log, seats)
 	if err != nil {
 		t.Fatal(err)
 	}

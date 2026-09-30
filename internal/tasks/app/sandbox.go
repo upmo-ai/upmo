@@ -10,7 +10,8 @@ import (
 )
 
 // ErrSandbox is a task that needs a sandbox brain could not start: sandboxd
-// is not configured, its Create failed, or a provisioning phase failed.
+// is not configured or its Create failed. A provisioning phase fails after
+// Open has returned, so it fails the task without reaching the caller.
 var ErrSandbox = errors.New("tasks: sandbox")
 
 // ErrSandboxUnset is the ErrSandbox for a task that needs a sandbox while
@@ -22,10 +23,11 @@ var ErrSandboxUnset = fmt.Errorf("%w: sandboxd is not configured", ErrSandbox)
 type Sandboxes interface {
 	// Ready reports whether a sandbox can be created at all.
 	Ready() bool
-	// Provision creates the sandbox when repo or classes need one, then
-	// runs clone, toolchain and probe in it. A phase that fails
-	// is a runtime.PhaseError.
-	Provision(ctx context.Context, taskID, repo string, classes []runtime.Class) (bool, error)
+	// Provision creates the sandbox when repo or classes need one and
+	// returns once the task holds it. Clone, toolchain and probe then run
+	// in the background, and done gets the outcome once: nil at
+	// ready, or a runtime.PhaseError. done is not called after Release.
+	Provision(ctx context.Context, taskID, repo string, classes []runtime.Class, done runtime.Done) (bool, error)
 	// Release destroys the sandbox the task holds, if any.
 	Release(ctx context.Context, taskID string) error
 }
@@ -39,16 +41,21 @@ type Opening struct {
 }
 
 // OpenTask opens a task in Preparing and, when its repository or tool
-// classes need a sandbox, creates and provisions one through boxes. The
-// task stays in Preparing; the provisioning record is runtime's, not a
-// task event.
+// classes need a sandbox, creates one through boxes. It returns the
+// Preparing task once the sandbox is held, without waiting for clone,
+// toolchain and probe, which run in the background. The
+// provisioning record is runtime's, not a task event. A sandbox that
+// reaches ready leaves the task in Preparing until an Advance moves it on,
+// as for a task that needs no sandbox; Advance does not wait for ready.
 //
 // An unknown class or a repository that cannot be cloned is refused before
 // the task exists. A needed sandbox with no sandboxd configured is refused
-// before the task exists too, with ErrSandbox. When Create or a
-// provisioning phase fails after the task is open, the task is moved to
-// Failed, any sandbox is released, and the Failed task is returned with
-// ErrSandbox, so no container or Preparing task is left behind silently.
+// before the task exists too, with ErrSandbox. When Create fails after the
+// task is open, the task is moved to Failed, any sandbox is released, and
+// the Failed task is returned with ErrSandbox. When a provisioning phase
+// fails later, the task is moved to Failed and the sandbox released in the
+// background with access, so no container or Preparing task is left behind
+// silently.
 func OpenTask(ctx context.Context, book Book, boxes Sandboxes, access Access, open Opening) (Task, error) {
 	classes := make([]runtime.Class, 0, len(open.Classes))
 	for _, c := range open.Classes {
@@ -69,7 +76,17 @@ func OpenTask(ctx context.Context, book Book, boxes Sandboxes, access Access, op
 	if err != nil || !needs {
 		return task, err
 	}
-	if _, err := boxes.Provision(ctx, task.ID, open.Repo, classes); err != nil {
+	// done runs after this call has returned, on a context runtime detaches
+	// from ctx. At ready there is nothing to do.
+	id := task.ID
+	done := func(ctx context.Context, err error) error {
+		if err == nil {
+			return nil
+		}
+		_, ferr := book.Transition(ctx, access, id, domain.Input{Kind: domain.Fail})
+		return errors.Join(ferr, boxes.Release(ctx, id))
+	}
+	if _, err := boxes.Provision(ctx, task.ID, open.Repo, classes, done); err != nil {
 		// The caller may have gone; cleanup still runs.
 		cleanup := context.WithoutCancel(ctx)
 		failed, ferr := book.Transition(cleanup, access, task.ID, domain.Input{Kind: domain.Fail})

@@ -25,7 +25,7 @@ func TestSandboxSeatsWithoutURLHasNoProvider(t *testing.T) {
 		t.Fatal("no seat book")
 	}
 	ctx := context.Background()
-	if _, err := seats.Provision(ctx, "018f3b2c-7a10-7c4a-8e11-111111111111", "org/name", nil); !errors.Is(err, runtime.ErrSandboxdUnset) {
+	if _, err := seats.Provision(ctx, "018f3b2c-7a10-7c4a-8e11-111111111111", "org/name", nil, nil); !errors.Is(err, runtime.ErrSandboxdUnset) {
 		t.Fatalf("provision = %v", err)
 	}
 	// With no sandboxd there is nothing to destroy, so the seat book is not read.

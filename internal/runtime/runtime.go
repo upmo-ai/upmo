@@ -52,10 +52,12 @@ type (
 )
 
 // Seats holds the sandbox each task occupies and records it in a SeatBook.
-// Class is a tool class NeedsSandbox reads.
+// Done receives the outcome of the provisioning Seats.Provision runs in the
+// background. Class is a tool class NeedsSandbox reads.
 type (
 	Seats    = app.Seats
 	SeatBook = app.SeatBook
+	Done     = app.Done
 	Class    = domain.Class
 )
 
@@ -94,8 +96,8 @@ func NeedsSandbox(repo string, classes []Class) (bool, error) {
 func CloneURL(repo string) (string, error) { return domain.CloneURL(repo) }
 
 // Provisioning runs clone, toolchain and probe in a new sandbox and records
-// each step as its own event. Seats.Provision runs it after
-// Create; a PhaseError names the phase that failed.
+// each step as its own event. Seats.Provision runs it in the
+// background after Create; a PhaseError names the phase that failed.
 type (
 	Provisioner = app.Provisioner
 	Record      = domain.Record
