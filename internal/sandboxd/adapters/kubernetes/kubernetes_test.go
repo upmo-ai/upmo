@@ -150,10 +150,36 @@ func TestCreateAdmitsContainerTierOnly(t *testing.T) {
 	if pod.Labels[labelSandbox] != box.ID || pod.Spec.Containers[0].Image != spec().Image {
 		t.Fatalf("pod = %+v", pod)
 	}
-	gvisor := spec()
-	gvisor.Tier = runtime.TierGVisor
-	if _, err := d.Create(ctx, gvisor); !errors.Is(err, runtime.ErrIsolation) {
-		t.Fatalf("gvisor err = %v", err)
+	if name := pod.Spec.RuntimeClassName; name != nil {
+		t.Fatalf("container RuntimeClassName = %v, want nil", *name)
+	}
+}
+
+func TestCreateSetsRuntimeClass(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	d, fake := testDriver(t, func() time.Time { return now })
+	ctx := context.Background()
+	cases := []struct {
+		tier string
+		want string
+	}{
+		{runtime.TierGVisor, runtime.RuntimeClassGVisor},
+		{runtime.TierKata, runtime.RuntimeClassKata},
+	}
+	for _, c := range cases {
+		s := spec()
+		s.Tier = c.tier
+		box, err := d.Create(ctx, s)
+		if err != nil {
+			t.Fatalf("%s: %v", c.tier, err)
+		}
+		if box.Tier != c.tier {
+			t.Fatalf("%s tier = %q", c.tier, box.Tier)
+		}
+		pod := fake.created[len(fake.created)-1]
+		if pod.Spec.RuntimeClassName == nil || *pod.Spec.RuntimeClassName != c.want {
+			t.Fatalf("%s RuntimeClassName = %v, want %q", c.tier, pod.Spec.RuntimeClassName, c.want)
+		}
 	}
 }
 

@@ -148,7 +148,8 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	if err != nil {
 		return runtime.Sandbox{}, err
 	}
-	if spec.Tier != runtime.TierContainer {
+	place, err := runtime.Place(spec.Tier, runtime.PlatformKubernetes)
+	if err != nil {
 		return runtime.Sandbox{}, runtime.ErrIsolation
 	}
 	uid, err := uuid.NewV7()
@@ -209,6 +210,10 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 				}},
 			}},
 		},
+	}
+	if place.RuntimeClass != "" {
+		class := place.RuntimeClass
+		pod.Spec.RuntimeClassName = &class
 	}
 	if _, err := d.api.CreatePod(ctx, pod); err != nil {
 		_ = d.api.DeletePod(context.WithoutCancel(ctx), podName(id), metav1.DeleteOptions{})

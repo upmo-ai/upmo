@@ -197,18 +197,39 @@ func TestDockerSandboxLifecycle(t *testing.T) {
 	}
 }
 
-func TestDockerRefusesStrongerTiers(t *testing.T) {
+func TestDockerRefusesKata(t *testing.T) {
 	d, _ := openEngine(t)
-	for _, tier := range []string{runtime.TierGVisor, runtime.TierKata} {
-		_, err := d.Create(context.Background(), runtime.Spec{
-			Task:  "018f3b2c-7a10-7c4a-8e11-111111111111",
-			Image: image(),
-			Tier:  tier,
-			TTL:   time.Minute,
-		})
-		if !errors.Is(err, runtime.ErrIsolation) {
-			t.Fatalf("%s err = %v, want ErrIsolation", tier, err)
-		}
+	_, err := d.Create(context.Background(), runtime.Spec{
+		Task:  "018f3b2c-7a10-7c4a-8e11-111111111111",
+		Image: image(),
+		Tier:  runtime.TierKata,
+		TTL:   time.Minute,
+	})
+	if !errors.Is(err, runtime.ErrIsolation) {
+		t.Fatalf("kata err = %v, want ErrIsolation", err)
+	}
+}
+
+func TestDockerGVisorUsesRunscOrFailsClosed(t *testing.T) {
+	d, cli := openEngine(t)
+	ctx := context.Background()
+	box, err := d.Create(ctx, runtime.Spec{
+		Task:  "018f3b2c-7a10-7c4a-8e11-111111111111",
+		Image: image(),
+		Tier:  runtime.TierGVisor,
+		TTL:   time.Minute,
+	})
+	if err != nil {
+		// No runsc on the engine: fail closed rather than start on the default.
+		return
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.WithoutCancel(ctx), box.ID) })
+	inspect, err := cli.ContainerInspect(ctx, containerName(box.ID), client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inspect.Container.HostConfig.Runtime; got != runtime.RuntimeRunsc {
+		t.Fatalf("runtime = %q, want %q", got, runtime.RuntimeRunsc)
 	}
 }
 
