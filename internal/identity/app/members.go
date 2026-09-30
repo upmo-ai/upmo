@@ -271,6 +271,22 @@ func (m Members) ChatAllow(ctx context.Context, id domain.UserID) (string, error
 	return strings.Join(names, ","), nil
 }
 
+// FolderAllow is the folder permissions a joined person holds, comma-separated.
+func (m Members) FolderAllow(ctx context.Context, id domain.UserID) (string, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, permission := range subject.Permissions {
+		name := string(permission)
+		if strings.HasPrefix(name, "folder:") {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ","), nil
+}
+
 // ObjectShare is one row from SharedObjectsSQL.
 type ObjectShare struct {
 	ObjectID string

@@ -24,6 +24,8 @@ var (
 	ErrAccess = errors.New("knowledge: access")
 	// ErrFolder is a folder id that is not a UUID, or a source in another folder.
 	ErrFolder = errors.New("knowledge: folder")
+	// ErrQuery is a blank search query.
+	ErrQuery = errors.New("knowledge: query")
 )
 
 // Access is the person and the allow list for this transaction.

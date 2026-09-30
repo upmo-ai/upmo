@@ -154,3 +154,23 @@ func TestChatAllowRefusesAPersonWhoHasNotJoined(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestFolderAllowUsesTheMembersFolderPermissions(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member", joined: true}}
+	got, err := members.FolderAllow(context.Background(), domain.UserID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "folder:create,folder:view,folder:edit,folder:share,folder:delete"
+	if got != want {
+		t.Fatalf("allow = %q", got)
+	}
+}
+
+func TestFolderAllowRefusesAPersonWhoHasNotJoined(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member"}}
+	_, err := members.FolderAllow(context.Background(), domain.UserID{})
+	if !errors.Is(err, domain.ErrNoSuchMember) {
+		t.Fatalf("error = %v", err)
+	}
+}

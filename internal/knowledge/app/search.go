@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,7 +62,7 @@ func Search(
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, errors.New("knowledge: query")
+		return nil, ErrQuery
 	}
 	matches, err := finder.Lexical(ctx, access, folderID, query, LexicalCandidates)
 	if err != nil {

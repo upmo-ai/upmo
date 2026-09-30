@@ -1,0 +1,171 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/upmo-ai/upmo/internal/knowledge/app"
+)
+
+const (
+	userID   = "018f3b2c-7a10-7c4a-8e11-111111111111"
+	folderID = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
+	sourceID = "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
+)
+
+type fakeStore struct {
+	folders int
+	ingests int
+	name    string
+	draft   app.Draft
+	err     error
+}
+
+func (f *fakeStore) InTx(_ context.Context, _ app.Access, fn func(app.Tx) error) error {
+	f.ingests++
+	if f.err != nil {
+		return f.err
+	}
+	return fn(fakeTx{})
+}
+
+func (f *fakeStore) CreateFolder(_ context.Context, _ app.Access, name string) (string, error) {
+	f.folders++
+	f.name = name
+	if f.err != nil {
+		return "", f.err
+	}
+	return folderID, nil
+}
+
+type fakeTx struct{}
+
+func (fakeTx) Current(context.Context, string, string) (app.Current, error) {
+	return app.Current{}, nil
+}
+
+func (fakeTx) Save(_ context.Context, _, _, _, _ string, _ [32]byte, pieces []app.Piece) (app.Result, error) {
+	return app.Result{ID: sourceID, Revision: 1, Chunks: len(pieces)}, nil
+}
+
+type fakeFinder struct {
+	calls int
+	hits  []app.Lexical
+	err   error
+}
+
+func (f *fakeFinder) Lexical(context.Context, app.Access, string, string, int) ([]app.Lexical, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.hits, nil
+}
+
+func TestCreateFolder(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders", `{"name":" Specs "}`, true)
+	if rec.Code != http.StatusCreated || store.folders != 1 || store.name != "Specs" {
+		t.Fatalf("status %d folders %d name %q body %s", rec.Code, store.folders, store.name, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["id"] != folderID {
+		t.Fatalf("got = %#v err %v", got, err)
+	}
+}
+
+func TestIngestSource(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources", `{"title":"Guide","body":"Hello world"}`, true)
+	if rec.Code != http.StatusCreated || store.ingests != 1 {
+		t.Fatalf("status %d ingests %d body %s", rec.Code, store.ingests, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != sourceID || got["skipped"] != false {
+		t.Fatalf("got = %#v", got)
+	}
+}
+
+func TestSearchReturnsHits(t *testing.T) {
+	store := &fakeStore{}
+	finder := &fakeFinder{hits: []app.Lexical{{SourceID: sourceID, Seq: 1, Body: "Hello world"}}}
+	rec := call(t, store, finder, http.MethodGet, "/api/knowledge/folders/"+folderID+"/search?q=Hello", "", true)
+	if rec.Code != http.StatusOK || finder.calls != 1 {
+		t.Fatalf("status %d calls %d body %s", rec.Code, finder.calls, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 1 || got[0]["body"] != "Hello world" {
+		t.Fatalf("got = %#v err %v", got, err)
+	}
+}
+
+func TestBearerIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	req := httptest.NewRequest(http.MethodPost, "/api/knowledge/folders", strings.NewReader(`{"name":"Specs"}`))
+	req.Header.Set("Authorization", "Bearer upmo_pat_secret")
+	rec := httptest.NewRecorder()
+	handler(store, nil, true).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || store.folders != 0 {
+		t.Fatalf("status %d folders %d", rec.Code, store.folders)
+	}
+}
+
+func TestEmptyAllowDoesNotCallTheStore(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders", `{"name":"Specs"}`, false)
+	if rec.Code != http.StatusUnauthorized || store.folders != 0 {
+		t.Fatalf("status %d folders %d", rec.Code, store.folders)
+	}
+}
+
+func TestEmptyNameIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders", `{"name":"  "}`, true)
+	if rec.Code != http.StatusBadRequest || store.folders != 0 {
+		t.Fatalf("status %d folders %d", rec.Code, store.folders)
+	}
+}
+
+func TestEmptyQueryIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	finder := &fakeFinder{}
+	rec := call(t, store, finder, http.MethodGet, "/api/knowledge/folders/"+folderID+"/search?q=%20", "", true)
+	if rec.Code != http.StatusBadRequest || finder.calls != 0 {
+		t.Fatalf("status %d calls %d", rec.Code, finder.calls)
+	}
+}
+
+func call(t *testing.T, store *fakeStore, finder app.Finder, method, path, body string, allow bool) *httptest.ResponseRecorder {
+	t.Helper()
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	rec := httptest.NewRecorder()
+	handler(store, finder, allow).ServeHTTP(rec, r)
+	return rec
+}
+
+func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
+	mux := http.NewServeMux()
+	Handler{
+		Store:  store,
+		Finder: finder,
+		Access: func(*http.Request) (app.Access, bool) {
+			if !allow {
+				return app.Access{}, false
+			}
+			return app.Access{UserID: userID, Allow: "folder:create,folder:view,folder:edit"}, true
+		},
+	}.Mount(mux, nil)
+	return mux
+}
