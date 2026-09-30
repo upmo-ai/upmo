@@ -169,6 +169,23 @@ func (m Members) replace(ctx context.Context, session Session, target domain.Use
 	return text, nil
 }
 
+// TaskAllow is the task permissions a joined person holds, comma-separated.
+// The task writer stores that list on the row and checks it on every call.
+func (m Members) TaskAllow(ctx context.Context, id domain.UserID) (string, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, permission := range subject.Permissions {
+		name := string(permission)
+		if strings.HasPrefix(name, "task:") {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ","), nil
+}
+
 func (m Members) actor(ctx context.Context, id domain.UserID) (domain.Subject, error) {
 	roleID, system, joined, raw, err := m.Store.MemberActor(ctx, id)
 	if err != nil {
