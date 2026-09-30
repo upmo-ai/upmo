@@ -33,7 +33,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	r.Capability = domain.Capability(cap)
 	r.Decision = domain.Decision(decision)
 	rows, err := s.Pool.Query(ctx, `
-		SELECT link.position, link.model, link.weight, link.retry_budget,
+		SELECT link.position, link.model, link.weight, link.retry_budget, link.required_capabilities,
 			account.id::text, account.adapter, account.credential_ref, account.plan_kind, account.house, account.base_url
 		FROM gateway.route_links AS link
 		JOIN gateway.provider_accounts AS account ON account.id = link.provider_account_id
@@ -46,7 +46,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	for rows.Next() {
 		var link domain.Link
 		if err := rows.Scan(
-			&link.Position, &link.Model, &link.Weight, &link.RetryBudget,
+			&link.Position, &link.Model, &link.Weight, &link.RetryBudget, &link.Need,
 			&link.Account.ID, &link.Account.Adapter, &link.Account.CredentialRef,
 			&link.Account.PlanKind, &link.Account.House, &link.Account.BaseURL,
 		); err != nil {

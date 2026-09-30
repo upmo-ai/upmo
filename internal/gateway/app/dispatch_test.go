@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
@@ -364,5 +365,48 @@ func TestDispatchChatAgentWithoutBundleFailsClosed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("agent without bundle")
+	}
+}
+
+func TestDispatchSkipsACooledKey(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "memory-check", Capability: domain.CapDecide, Decision: domain.DecisionYesNo,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a", RetryBudget: 0}},
+	}
+	d := &scriptDecider{pick: domain.DecideResult{YesNo: true}}
+	gates := NewGates()
+	gates.now = func() time.Time { return time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC) }
+	gates.Observe("house", domain.ClassCredential, 0)
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Decide:  map[string]Decider{"fake": d},
+		Gates:   gates,
+	}
+	_, err := disp.DecideCall(context.Background(), "memory-check", "", domain.Principal{}, domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
+	if !errors.Is(err, domain.ErrCooling) || d.calls != 0 {
+		t.Fatalf("err=%v calls=%d", err, d.calls)
+	}
+}
+
+func TestDispatchRefusesAMissingCapability(t *testing.T) {
+	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "a", Need: []string{"vision"}, RetryBudget: 0}},
+	}
+	c := &scriptChatter{reply: "ok"}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Chat:    map[string]Chatter{"fake": c},
+		Caps:    func(string) ([]string, bool) { return []string{"tools"}, true },
+	}
+	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{}, domain.Input{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if !errors.Is(err, domain.ErrCapability) || c.calls != 0 {
+		t.Fatalf("err=%v calls=%d", err, c.calls)
 	}
 }

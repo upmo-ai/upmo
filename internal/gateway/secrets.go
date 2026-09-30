@@ -13,7 +13,7 @@ type EnvSecrets struct{}
 
 func (EnvSecrets) Get(ref string) (string, error) {
 	if !credentialRef.MatchString(ref) {
-		return "", fmt.Errorf("gateway: credential_ref %q", ref)
+		return "", fmt.Errorf("gateway: credential ref")
 	}
 	v, ok := os.LookupEnv("UPMO_CREDENTIAL_" + ref)
 	if !ok || v == "" {

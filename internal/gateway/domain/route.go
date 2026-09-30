@@ -26,6 +26,8 @@ type Link struct {
 	Model       string
 	Weight      int
 	RetryBudget int
+	// Need is the capabilities this hop requires. Empty means no extra demand.
+	Need []string
 }
 
 // Route is one named path through the catalog. Decision is empty except on
