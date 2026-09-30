@@ -305,3 +305,30 @@ func TestLoadSandboxd(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadArtifactsDir(t *testing.T) {
+	env := map[string]string{
+		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":    "http://localhost:5173",
+		"UPMO_ARTIFACTS_DIR": "/var/upmo/artifacts",
+	}
+	cfg, err := load(lookupFrom(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ArtifactsDir != "/var/upmo/artifacts" {
+		t.Fatalf("dir = %q", cfg.ArtifactsDir)
+	}
+}
+
+func TestLoadArtifactsDirMustBeAbsolute(t *testing.T) {
+	env := map[string]string{
+		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":    "http://localhost:5173",
+		"UPMO_ARTIFACTS_DIR": "relative/path",
+	}
+	_, err := load(lookupFrom(env))
+	if err == nil || !strings.Contains(err.Error(), "UPMO_ARTIFACTS_DIR") {
+		t.Fatalf("error = %v", err)
+	}
+}

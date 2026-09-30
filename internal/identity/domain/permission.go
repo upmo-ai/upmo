@@ -14,11 +14,12 @@ const (
 	TypeFolder     ObjectType = "folder"
 	TypeAutomation ObjectType = "automation"
 	TypeAgent      ObjectType = "agent"
+	TypeArtifact   ObjectType = "artifact"
 )
 
 // ObjectTypes are the work objects the catalog covers.
 func ObjectTypes() []ObjectType {
-	return []ObjectType{TypeTask, TypeChat, TypeFolder, TypeAutomation, TypeAgent}
+	return []ObjectType{TypeTask, TypeChat, TypeFolder, TypeAutomation, TypeAgent, TypeArtifact}
 }
 
 // Action is something a principal may do to a work object.

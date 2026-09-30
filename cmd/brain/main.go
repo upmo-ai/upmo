@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/artifacts"
+	artifacthttp "github.com/upmo-ai/upmo/internal/artifacts/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/decisions"
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -218,6 +219,34 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 				return "", false
 			}
 			return person.UserID.String(), true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	artifactStore := artifacts.Store{Pool: pool}
+	artifacthttp.Handler{
+		Catalog: artifactStore,
+		Blobs:   artifacts.Volume{Root: cfg.ArtifactsDir},
+		Access: func(r *http.Request) (artifacts.Access, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return artifacts.Access{}, false
+			}
+			allow, err := members.ArtifactAllow(r.Context(), person.UserID)
+			if err != nil || allow == "" {
+				return artifacts.Access{}, false
+			}
+			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeArtifact)
+			if err != nil {
+				return artifacts.Access{}, false
+			}
+			return artifacts.Access{
+				UserID:     person.UserID.String(),
+				Allow:      allow,
+				Teams:      shares.Teams,
+				SharedView: shares.SharedView,
+				SharedEdit: shares.SharedEdit,
+			}, true
 		},
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)

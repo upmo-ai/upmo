@@ -239,6 +239,22 @@ func (m Members) TaskAllow(ctx context.Context, id domain.UserID) (string, error
 	return strings.Join(names, ","), nil
 }
 
+// ArtifactAllow is the artifact permissions a joined person holds, comma-separated.
+func (m Members) ArtifactAllow(ctx context.Context, id domain.UserID) (string, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, permission := range subject.Permissions {
+		name := string(permission)
+		if strings.HasPrefix(name, "artifact:") {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ","), nil
+}
+
 // ObjectShare is one row from SharedObjectsSQL.
 type ObjectShare struct {
 	ObjectID string
