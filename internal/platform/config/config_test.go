@@ -241,6 +241,9 @@ func TestLoadSandboxd(t *testing.T) {
 	if cfg.ServiceKey != "upmo_svc_x" || cfg.ServiceKeyPrevious != "" {
 		t.Fatalf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
 	}
+	if cfg.Driver != "auto" {
+		t.Fatalf("Driver = %q, want auto", cfg.Driver)
+	}
 
 	cfg, err = loadSandboxd(lookupFrom(map[string]string{
 		"UPMO_SERVICE_KEY":          "upmo_svc_x",
@@ -249,11 +252,12 @@ func TestLoadSandboxd(t *testing.T) {
 		"UPMO_PROXY_ADDR":           ":9001",
 		"UPMO_SHUTDOWN_TIMEOUT":     "3s",
 		"UPMO_LOG_LEVEL":            "debug",
+		"UPMO_SANDBOX_DRIVER":       " Docker ",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":9000" || cfg.ProxyAddr != ":9001" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevel != "debug" || cfg.ServiceKeyPrevious != "upmo_svc_y" {
+	if cfg.ListenAddr != ":9000" || cfg.ProxyAddr != ":9001" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevel != "debug" || cfg.ServiceKeyPrevious != "upmo_svc_y" || cfg.Driver != "docker" {
 		t.Fatalf("overrides = %+v", cfg)
 	}
 
@@ -262,6 +266,7 @@ func TestLoadSandboxd(t *testing.T) {
 		"empty key":    {"UPMO_SERVICE_KEY": ""},
 		"same address": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
 		"bad timeout":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
+		"bad driver":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "kubernetes"},
 	} {
 		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
 			t.Errorf("%s: want an error", name)

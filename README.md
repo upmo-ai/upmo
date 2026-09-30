@@ -21,7 +21,7 @@ Copy `.env.example` to `.env` to override settings. `.env` is never committed.
 
 - `brain` hosts every bounded context in one process.
 - `gateway` routes model calls and holds provider credentials. It listens on localhost:8082. Chat is built as tools, then system, then messages. Each attempt writes a ledger row.
-- `sandboxd` serves the sandbox port, the egress proxy and the credential injector. It listens on localhost:8083. The driver is a stub for now.
+- `sandboxd` serves the sandbox port, the egress proxy and the credential injector. It listens on localhost:8083. It runs sandboxes as Docker containers through the engine socket and falls back to an in-memory stub when the engine does not answer (`UPMO_SANDBOX_DRIVER`).
 
 ## Layout
 

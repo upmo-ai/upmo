@@ -6,17 +6,22 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/sandboxd"
 )
+
+// sweepEvery is how often expired sandboxes are reclaimed.
+const sweepEvery = time.Minute
 
 func main() {
 	if err := run(); err != nil {
@@ -34,7 +39,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	driver := sandboxd.Stub()
+	driver, err := sandboxd.Open(ctx, cfg.Driver, log)
+	if err != nil {
+		return err
+	}
+	if c, ok := driver.(io.Closer); ok {
+		defer func() { _ = c.Close() }()
+	}
 	api, err := sandboxd.Routes(cfg.ServiceKey, cfg.ServiceKeyPrevious, driver, log)
 	if err != nil {
 		return err
@@ -44,6 +55,7 @@ func run() error {
 	// Either server stopping stops the other.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go sandboxd.Sweep(ctx, driver, sweepEvery, log)
 	errc := make(chan error, 2)
 	for _, srv := range []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy} {
 		go func() {
