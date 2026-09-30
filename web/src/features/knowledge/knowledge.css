@@ -54,6 +54,23 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-100);
+  transition: border-color 120ms, box-shadow 120ms;
+}
+
+.knowledge-card:hover {
+  border-color: var(--border-strong);
+}
+
+@media (pointer: coarse) {
+  .knowledge-actions button {
+    min-height: 40px;
+  }
+}
+
+@media (pointer: fine) {
+  .knowledge-actions button {
+    min-height: 32px;
+  }
 }
 
 .knowledge-card-title {

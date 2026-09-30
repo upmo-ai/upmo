@@ -46,7 +46,7 @@ describe("members", () => {
       expect(screen.queryByRole("button", { name: "Invite" })).toBeNull();
     });
     expect(screen.queryByLabelText(/Role for /)).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(screen.getByText("Ada Okonkwo")).toBeTruthy();
 
     viewAs("Viewer");
@@ -54,7 +54,7 @@ describe("members", () => {
       expect(screen.queryByRole("button", { name: "Invite" })).toBeNull();
     });
     expect(screen.queryByLabelText(/Role for /)).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
 
     viewAs("Admin");
     expect(await screen.findByRole("button", { name: "Invite" })).toBeTruthy();
@@ -65,7 +65,8 @@ describe("members", () => {
     const ownerRole = (await screen.findByLabelText("Role for Ada Okonkwo")) as HTMLSelectElement;
     expect(ownerRole.disabled).toBe(true);
     expect(screen.getByText(lastOwnerReason)).toBeTruthy();
-    const removeOwner = screen.getByRole("button", { name: "Remove Ada Okonkwo" }) as HTMLButtonElement;
+    const adaRow = screen.getByText("Ada Okonkwo").closest("tr")!;
+    const removeOwner = within(adaRow).getByRole("button", { name: "Remove" }) as HTMLButtonElement;
     expect(removeOwner.disabled).toBe(true);
 
     const inviteRole = screen.getByLabelText("Invite role");
@@ -207,9 +208,11 @@ describe("live members", () => {
     expect(screen.getByLabelText("Finance for Ada")).toBeTruthy();
     expect(screen.queryByLabelText("Finance for Bob")).toBeNull();
     expect(screen.getByRole("button", { name: "Duplicate Owner" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Delete Owner" })).toBeNull();
+    const ownerRow = screen.getByRole("button", { name: "Duplicate Owner" }).closest("tr")!;
+    expect(within(ownerRow).queryByRole("button", { name: "Delete" })).toBeNull();
     expect(screen.getByRole("button", { name: "New invite link" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Remove Ada" })).toBeNull();
+    const adaRow = screen.getByText("ada@example.com").closest("tr")!;
+    expect(within(adaRow).queryByRole("button", { name: "Remove" })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ned@example.com" } });
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ned" } });
