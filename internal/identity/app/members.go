@@ -287,6 +287,20 @@ func (m Members) FolderAllow(ctx context.Context, id domain.UserID) (string, err
 	return strings.Join(names, ","), nil
 }
 
+// SettingsAllow is settings:manage when the person holds it, otherwise empty.
+func (m Members) SettingsAllow(ctx context.Context, id domain.UserID) (string, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	for _, permission := range subject.Permissions {
+		if permission == domain.PermSettingsManage {
+			return string(domain.PermSettingsManage), nil
+		}
+	}
+	return "", nil
+}
+
 // ObjectShare is one row from SharedObjectsSQL.
 type ObjectShare struct {
 	ObjectID string

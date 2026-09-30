@@ -174,3 +174,25 @@ func TestFolderAllowRefusesAPersonWhoHasNotJoined(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestSettingsAllowReturnsManageWhenHeld(t *testing.T) {
+	members := Members{Store: &allowFake{system: "admin", joined: true}}
+	got, err := members.SettingsAllow(context.Background(), domain.UserID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(domain.PermSettingsManage) {
+		t.Fatalf("allow = %q", got)
+	}
+}
+
+func TestSettingsAllowIsEmptyForAViewer(t *testing.T) {
+	members := Members{Store: &allowFake{system: "viewer", joined: true}}
+	got, err := members.SettingsAllow(context.Background(), domain.UserID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("allow = %q", got)
+	}
+}
