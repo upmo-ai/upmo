@@ -26,6 +26,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
+	taskhttp "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
+	taskstore "github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
+	taskapp "github.com/upmo-ai/upmo/internal/tasks/app"
 )
 
 func main() {
@@ -126,6 +129,23 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
+	members := identity.Members(pool)
+	taskhttp.Handler{
+		Book: taskstore.Store{Pool: pool},
+		Access: func(r *http.Request) (taskapp.Access, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return taskapp.Access{}, false
+			}
+			allow, err := members.TaskAllow(r.Context(), person.UserID)
+			if err != nil || allow == "" {
+				return taskapp.Access{}, false
+			}
+			return taskapp.Access{UserID: person.UserID.String(), Allow: allow}, true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
 	memoryhttp.Handler{
 		Editor: memorystore.Facts{Pool: pool},
 		User: func(r *http.Request) (string, bool) {

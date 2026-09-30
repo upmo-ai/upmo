@@ -1,5 +1,6 @@
 // Package tasks is the tasks context. It embeds this context's SQL.
 // A task moves through one pure step, and one writer appends the event.
+// A signed-in person opens and moves a task over HTTP.
 package tasks
 
 import (
