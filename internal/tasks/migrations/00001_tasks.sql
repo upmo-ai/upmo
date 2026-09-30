@@ -23,7 +23,7 @@ CREATE TABLE tasks.tasks (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT tasks_type_check CHECK (object_type = 'task'),
   CONSTRAINT tasks_goal_check CHECK (char_length(goal) BETWEEN 1 AND 200),
-  CONSTRAINT tasks_status_check CHECK (status IN ('Preparing', 'Planning', 'Working', 'Checking', 'Done', 'Failed')),
+  CONSTRAINT tasks_status_check CHECK (status IN ('Preparing', 'Planning', 'Working', 'Checking', 'Needs approval', 'Done', 'Failed')),
   CONSTRAINT tasks_visibility_check CHECK (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
@@ -63,8 +63,10 @@ CREATE TABLE tasks.task_events (
       OR (from_status = 'Working' AND to_status = 'Checking')
     ))
     OR (input = 'plan' AND from_status = 'Preparing' AND to_status = 'Planning')
-    OR (input = 'fail' AND to_status = 'Failed' AND from_status IN ('Preparing', 'Planning', 'Working', 'Checking'))
+    OR (input = 'fail' AND to_status = 'Failed' AND from_status IN ('Preparing', 'Planning', 'Working', 'Checking', 'Needs approval'))
     OR (input = 'pass' AND from_status = 'Checking' AND to_status = 'Done')
+    OR (input = 'pause' AND from_status = 'Working' AND to_status = 'Needs approval')
+    OR (input = 'resume' AND from_status = 'Needs approval' AND to_status = 'Working')
   )
 );
 

@@ -65,6 +65,66 @@ func TestStepFailFromEachOpenStatus(t *testing.T) {
 	}
 }
 
+func TestStepPauseAndResumeWorking(t *testing.T) {
+	status, effect, err := Step(Working, Input{Kind: Pause})
+	if err != nil || status != NeedsApproval || effect != (Effect{Kind: Pause, From: Working, To: NeedsApproval}) {
+		t.Fatalf("pause = %s %+v %v", status, effect, err)
+	}
+	if status != "Needs approval" {
+		t.Fatalf("status text = %q", status)
+	}
+	status, effect, err = Step(status, Input{Kind: Resume})
+	if err != nil || status != Working || effect != (Effect{Kind: Resume, From: NeedsApproval, To: Working}) {
+		t.Fatalf("resume = %s %+v %v", status, effect, err)
+	}
+}
+
+func TestStepPauseOnlyFromWorking(t *testing.T) {
+	for _, status := range []Status{Preparing, Planning, Checking, NeedsApproval} {
+		if _, _, err := Step(status, Input{Kind: Pause}); !errors.Is(err, ErrInput) {
+			t.Fatalf("pause from %s = %v", status, err)
+		}
+	}
+	for _, status := range []Status{Done, Failed} {
+		if _, _, err := Step(status, Input{Kind: Pause}); !errors.Is(err, ErrTerminal) {
+			t.Fatalf("pause from %s = %v", status, err)
+		}
+	}
+	if _, _, err := Step("", Input{Kind: Pause}); !errors.Is(err, ErrStatus) {
+		t.Fatalf("pause from nothing = %v", err)
+	}
+}
+
+func TestStepResumeOnlyFromNeedsApproval(t *testing.T) {
+	for _, status := range []Status{Preparing, Planning, Working, Checking} {
+		if _, _, err := Step(status, Input{Kind: Resume}); !errors.Is(err, ErrInput) {
+			t.Fatalf("resume from %s = %v", status, err)
+		}
+	}
+	for _, status := range []Status{Done, Failed} {
+		if _, _, err := Step(status, Input{Kind: Resume}); !errors.Is(err, ErrTerminal) {
+			t.Fatalf("resume from %s = %v", status, err)
+		}
+	}
+}
+
+func TestStepNeedsApprovalRefusesOtherMoves(t *testing.T) {
+	for _, kind := range []Kind{Advance, Plan, Pass, Open} {
+		status, _, err := Step(NeedsApproval, Input{Kind: kind, Goal: "again"})
+		if !errors.Is(err, ErrInput) || status != NeedsApproval {
+			t.Fatalf("%s from Needs approval = %s %v", kind, status, err)
+		}
+	}
+	status, effect, err := Step(NeedsApproval, Input{Kind: Fail})
+	if err != nil || status != Failed || effect.From != NeedsApproval {
+		t.Fatalf("fail from Needs approval = %s %+v %v", status, effect, err)
+	}
+	status, effect, err = Step(NeedsApproval, Input{Kind: Chat, Body: "still there?"})
+	if err != nil || status != NeedsApproval || effect.To != NeedsApproval {
+		t.Fatalf("chat on Needs approval = %s %+v %v", status, effect, err)
+	}
+}
+
 func TestStepChatKeepsTheStatus(t *testing.T) {
 	status, effect, err := Step(Planning, Input{Kind: Chat, Body: "  the figures  "})
 	if err != nil || status != Planning || effect.Body != "the figures" || effect.To != Planning {
