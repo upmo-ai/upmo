@@ -45,6 +45,7 @@ const (
 
 	defaultNamespace = "default"
 	configTimeout    = 10 * time.Second
+	pauseTimeout     = 10 * time.Second
 )
 
 // ErrPaused reports a command sent to a paused sandbox. Its files can still
@@ -229,7 +230,8 @@ func capabilityAdds() []corev1.Capability {
 
 func boolPtr(b bool) *bool { return &b }
 
-// Pause marks the sandbox paused. The Pod keeps running so scratch files stay.
+// Pause freezes the sandbox workload and keeps the Pod and its scratch volume,
+// so the files stay readable while the sandbox holds no CPU.
 func (d *Driver) Pause(ctx context.Context, id string) error {
 	id, _, ok := d.live(id)
 	if !ok {
@@ -242,12 +244,32 @@ func (d *Driver) Pause(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("kubernetes: pause: %w", err)
 	}
+	if err := d.freezeSandbox(ctx, id); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	if b, ok := d.boxes[id]; ok {
 		b.paused = true
 		d.boxes[id] = b
 	}
 	d.mu.Unlock()
+	return nil
+}
+
+func (d *Driver) freezeSandbox(ctx context.Context, id string) error {
+	runCtx, cancel := context.WithTimeout(ctx, pauseTimeout)
+	defer cancel()
+	err := d.api.Exec(runCtx, podName(id), []string{"kill", "-STOP", "-1"}, nil, nil, nil)
+	if runCtx.Err() != nil {
+		return fmt.Errorf("kubernetes: pause: freeze: %w", runCtx.Err())
+	}
+	if err != nil {
+		var exit remotecommandExit
+		if errors.As(err, &exit) && exit.ExitStatus() != 0 {
+			return fmt.Errorf("kubernetes: pause: freeze: exit status %d", exit.ExitStatus())
+		}
+		return fmt.Errorf("kubernetes: pause: freeze: %w", err)
+	}
 	return nil
 }
 
