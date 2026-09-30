@@ -183,7 +183,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	taskhttp.Handler{
 		Book:      taskBook,
 		List:      taskBook,
+		View:      taskBook,
 		Sandboxes: seats,
+		Progress:  seats,
 		Access: func(r *http.Request) (taskapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
