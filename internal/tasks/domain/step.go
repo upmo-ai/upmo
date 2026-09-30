@@ -17,6 +17,8 @@ const (
 	Checking  Status = "Checking"
 	Done      Status = "Done"
 	Failed    Status = "Failed"
+	// NeedsApproval is a Working task whose connector call is paused.
+	NeedsApproval Status = "Needs approval"
 )
 
 // Kind is the input that Step reads.
@@ -30,6 +32,10 @@ const (
 	Fail Kind = "fail"
 	Pass Kind = "pass"
 	Chat Kind = "chat"
+	// Pause enters Needs approval from Working once a connector pause is stored.
+	Pause Kind = "pause"
+	// Resume returns to Working once that same stored pause is taken.
+	Resume Kind = "resume"
 )
 
 const (
@@ -94,6 +100,10 @@ func Step(status Status, input Input) (Status, Effect, error) {
 		return pass(status)
 	case Chat:
 		return chat(status, strings.TrimSpace(input.Body))
+	case Pause:
+		return edge(status, Pause, Working, NeedsApproval)
+	case Resume:
+		return edge(status, Resume, NeedsApproval, Working)
 	default:
 		return status, Effect{}, ErrInput
 	}
@@ -112,6 +122,9 @@ func openTask(status Status, goal string) (Status, Effect, error) {
 func move(status Status) (Status, Effect, error) {
 	if err := underway(status); err != nil {
 		return status, Effect{}, err
+	}
+	if status == NeedsApproval {
+		return status, Effect{}, ErrInput
 	}
 	next, ok := advance[status]
 	if !ok {
@@ -143,11 +156,22 @@ func pass(status Status) (Status, Effect, error) {
 		return status, Effect{}, ErrTerminal
 	case Checking:
 		return Done, Effect{Kind: Pass, From: Checking, To: Done}, nil
-	case Preparing, Planning, Working:
+	case Preparing, Planning, Working, NeedsApproval:
 		return status, Effect{}, ErrInput
 	default:
 		return status, Effect{}, ErrStatus
 	}
+}
+
+// edge moves from one status to another for kind, and refuses any other start.
+func edge(status Status, kind Kind, from, to Status) (Status, Effect, error) {
+	if err := underway(status); err != nil {
+		return status, Effect{}, err
+	}
+	if status != from {
+		return status, Effect{}, ErrInput
+	}
+	return to, Effect{Kind: kind, From: from, To: to}, nil
 }
 
 func chat(status Status, body string) (Status, Effect, error) {
@@ -162,7 +186,7 @@ func chat(status Status, body string) (Status, Effect, error) {
 
 func underway(status Status) error {
 	switch status {
-	case Preparing, Planning, Working, Checking:
+	case Preparing, Planning, Working, Checking, NeedsApproval:
 		return nil
 	case Done, Failed:
 		return ErrTerminal
