@@ -17,7 +17,7 @@ func TestTeamsIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	pool, handler, passkeys, ctx := identityMux(t, now)
 	mux := handler.(*http.ServeMux)
-	members := identity.Members(pool)
+	members := identity.Members(pool, "", nil, nil)
 	members.Now = func() time.Time { return now }
 	teams := identity.Teams(pool, nil)
 	teams.Now = members.Now

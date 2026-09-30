@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,5 +121,85 @@ func TestLoadInvalidDuration(t *testing.T) {
 		"UPMO_SHUTDOWN_TIMEOUT": "soon",
 	})); err == nil {
 		t.Fatal("expected an error for an invalid duration")
+	}
+}
+
+func TestLoadSMTPUnset(t *testing.T) {
+	cfg, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_SMTP_HOST":    "",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SMTP != (SMTP{}) {
+		t.Fatalf("SMTP = %+v", cfg.SMTP)
+	}
+}
+
+func TestLoadSMTP(t *testing.T) {
+	cfg, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":    "http://localhost:5173",
+		"UPMO_SMTP_HOST":     "smtp.example.com",
+		"UPMO_SMTP_USER":     "relay",
+		"UPMO_SMTP_PASSWORD": "relay-password",
+		"UPMO_SMTP_FROM":     "Upmo <noreply@example.com>",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := SMTP{Host: "smtp.example.com", Port: 587, User: "relay", Password: "relay-password", From: "Upmo <noreply@example.com>"}
+	if cfg.SMTP != want {
+		t.Fatalf("SMTP = %+v", cfg.SMTP)
+	}
+	cfg, err = load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_SMTP_HOST":    "mailpit",
+		"UPMO_SMTP_PORT":    "1025",
+		"UPMO_SMTP_FROM":    "noreply@example.com",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SMTP.Port != 1025 || cfg.SMTP.User != "" {
+		t.Fatalf("SMTP = %+v", cfg.SMTP)
+	}
+}
+
+func TestLoadSMTPPartialOrInvalid(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"from without host", map[string]string{"UPMO_SMTP_FROM": "noreply@example.com"}, "UPMO_SMTP_HOST is required"},
+		{"password without host", map[string]string{"UPMO_SMTP_PASSWORD": "x"}, "UPMO_SMTP_HOST is required"},
+		{"host without from", map[string]string{"UPMO_SMTP_HOST": "smtp.example.com"}, "UPMO_SMTP_FROM is required"},
+		{"bad from", map[string]string{"UPMO_SMTP_HOST": "smtp.example.com", "UPMO_SMTP_FROM": "not an address"}, "UPMO_SMTP_FROM must be an email address"},
+		{"bad port", map[string]string{"UPMO_SMTP_HOST": "smtp.example.com", "UPMO_SMTP_FROM": "a@example.com", "UPMO_SMTP_PORT": "smtp"}, "UPMO_SMTP_PORT must be a port number"},
+		{"port out of range", map[string]string{"UPMO_SMTP_HOST": "smtp.example.com", "UPMO_SMTP_FROM": "a@example.com", "UPMO_SMTP_PORT": "70000"}, "UPMO_SMTP_PORT must be a port number"},
+		{"user without password", map[string]string{"UPMO_SMTP_HOST": "smtp.example.com", "UPMO_SMTP_FROM": "a@example.com", "UPMO_SMTP_USER": "relay"}, "must be set together"},
+		{"host with port", map[string]string{"UPMO_SMTP_HOST": "smtp.example.com:587", "UPMO_SMTP_FROM": "a@example.com"}, "UPMO_SMTP_HOST must be a host name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{
+				"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+				"UPMO_PUBLIC_URL":   "http://localhost:5173",
+			}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			_, err := load(lookupFrom(env))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "relay-password") {
+				t.Fatalf("err holds the password: %v", err)
+			}
+		})
 	}
 }

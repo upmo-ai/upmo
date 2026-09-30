@@ -191,3 +191,6 @@ func (f *memberFake) RemoveMember(_ context.Context, _ domain.UserID, _ time.Tim
 func (f *memberFake) ReplaceMemberLink(_ context.Context, _ domain.UserID, _ string, _ []byte, _ time.Time, rule func(string, bool) error) error {
 	return rule("member", f.invited)
 }
+func (f *memberFake) Profile(context.Context, domain.UserID) (string, string, error) {
+	return "", "", nil
+}

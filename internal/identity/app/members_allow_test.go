@@ -111,3 +111,6 @@ func (f allowFake) RemoveMember(context.Context, domain.UserID, time.Time, func(
 func (f allowFake) ReplaceMemberLink(context.Context, domain.UserID, string, []byte, time.Time, func(string, bool) error) error {
 	return nil
 }
+func (f allowFake) Profile(context.Context, domain.UserID) (string, string, error) {
+	return "", "", nil
+}

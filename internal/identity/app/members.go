@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/mail"
 )
 
 // MemberStore is the members tables.
@@ -21,12 +24,19 @@ type MemberStore interface {
 	InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
 	RemoveMember(ctx context.Context, id domain.UserID, now time.Time, rule func(system string) error) error
 	ReplaceMemberLink(ctx context.Context, id domain.UserID, purpose string, hash []byte, expires time.Time, rule func(system string, invited bool) error) error
+	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
 }
 
 // Members is who may manage the people in an install.
 type Members struct {
 	Store MemberStore
 	Now   func() time.Time
+	// Mail emails each invite and recover link. Nil sends nothing; the
+	// token text is returned either way so the link can still be copied.
+	Mail mail.Sender
+	// PublicURL is the browser origin the emailed link opens.
+	PublicURL string
+	Log       *slog.Logger
 }
 
 func (m Members) now() time.Time {
@@ -82,6 +92,7 @@ func (m Members) Invite(ctx context.Context, session Session, email, name string
 	if err != nil {
 		return domain.Member{}, "", err
 	}
+	m.send(ctx, "invite", member.ID, member.Email, text)
 	return member, text, nil
 }
 
@@ -131,6 +142,7 @@ func (m Members) Recover(ctx context.Context, email string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	m.sendTo(ctx, "recover", id, text)
 	return text, nil
 }
 
@@ -168,7 +180,46 @@ func (m Members) replace(ctx context.Context, session Session, target domain.Use
 	if err != nil {
 		return "", err
 	}
+	m.sendTo(ctx, purpose, target, text)
 	return text, nil
+}
+
+// sendTo emails the link to the person's stored address.
+func (m Members) sendTo(ctx context.Context, purpose string, id domain.UserID, token string) {
+	if m.Mail == nil {
+		return
+	}
+	email, _, err := m.Store.Profile(ctx, id)
+	if err != nil {
+		m.warn(purpose, id, err)
+		return
+	}
+	m.send(ctx, purpose, id, email, token)
+}
+
+// send emails the link. A failed send is logged and never fails the request:
+// the caller still returns the token text for copying. The token is never
+// logged.
+func (m Members) send(ctx context.Context, purpose string, id domain.UserID, email, token string) {
+	if m.Mail == nil {
+		return
+	}
+	link := linkURL(m.PublicURL, token)
+	var err error
+	if purpose == "invite" {
+		err = m.Mail.SendInvite(ctx, email, link)
+	} else {
+		err = m.Mail.SendRecover(ctx, email, link)
+	}
+	if err != nil {
+		m.warn(purpose, id, errors.New(strings.ReplaceAll(err.Error(), token, "[token]")))
+	}
+}
+
+func (m Members) warn(purpose string, id domain.UserID, err error) {
+	if m.Log != nil {
+		m.Log.Warn("link email not sent", "purpose", purpose, "member", id.String(), "err", err.Error())
+	}
 }
 
 // TaskAllow is the task permissions a joined person holds, comma-separated.

@@ -296,7 +296,11 @@ func (p Passkeys) IssueLink(ctx context.Context, user domain.UserID, purpose str
 
 // LinkURL is the page a person opens. The token stays in the fragment.
 func (p Passkeys) LinkURL(token string) string {
-	return p.PublicURL + "/login/link#" + token
+	return linkURL(p.PublicURL, token)
+}
+
+func linkURL(publicURL, token string) string {
+	return publicURL + "/login/link#" + token
 }
 
 // Bootstrap creates the first owner and returns the link token text.
