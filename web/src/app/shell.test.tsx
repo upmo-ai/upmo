@@ -17,7 +17,7 @@ import {
   type Team,
 } from "./api";
 
-const routes = [
+const sidebarRoutes = [
   ["/", "Home", "Home"],
   ["/chat", "Chat", "Chat"],
   ["/tasks", "Tasks", "Tasks"],
@@ -25,11 +25,14 @@ const routes = [
   ["/agents", "Agents", "Agents"],
   ["/knowledge", "Knowledge", "Knowledge"],
   ["/usage", "Usage", "Usage"],
-  ["/settings", "Security", "Settings"],
-  ["/settings/personalization", "Personalisation", "Settings"],
-  ["/admin", "Members", "Admin Settings"],
-  ["/settings/tokens", "API tokens", "Settings"],
-  ["/settings/connectors", "Connectors", "Settings"],
+  ["/settings/connectors", "Connectors", "Connectors"],
+  ["/admin", "Members", "Management"],
+] as const;
+
+const userSettingsRoutes = [
+  ["/settings", "Security"],
+  ["/settings/personalization", "Personalisation"],
+  ["/settings/tokens", "API tokens"],
 ] as const;
 
 function renderAt(path: string, client?: ApiClient) {
@@ -198,15 +201,41 @@ describe("app shell", () => {
       "Agents",
       "Knowledge",
       "Usage",
-      "Settings",
-      "Admin Settings",
+      "Connectors",
+      "Management",
     ]);
     expect(within(sidebar()).getByText("Workspace")).toBeTruthy();
-    expect(within(sidebar()).getByText("Aster")).toBeTruthy();
+    expect(within(sidebar()).getByText("Kodeeo Limited")).toBeTruthy();
     expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
     expect(within(sidebar()).getByTestId("theme-switch")).toBeTruthy();
     expect(within(sidebar()).getByText("0.1.0")).toBeTruthy();
     expect(within(sidebar()).getByRole("img", { name: "Upmo" })).toBeTruthy();
+  });
+
+  it("toggles the sidebar with the toggle button and keyboard shortcut", async () => {
+    renderAt("/");
+    await screen.findByRole("heading", { level: 1, name: "Home" });
+    const navToggle = within(sidebar()).getByRole("button", { name: "Toggle sidebar" });
+    expect(navToggle).toBeTruthy();
+    act(() => {
+      navToggle.click();
+    });
+    // Sidebar collapses to rail mode
+    expect(sidebar().getAttribute("data-layout")).toBe("rail");
+
+    // Header toggle becomes active
+    const headerToggle = screen.getByRole("banner").querySelector(".shell-header-toggle");
+    expect(headerToggle).toBeTruthy();
+    act(() => {
+      (headerToggle as HTMLElement).click();
+    });
+    expect(sidebar().getAttribute("data-layout")).not.toBe("rail");
+
+    // Shortcut toggles it back to rail mode
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", metaKey: true }));
+    });
+    expect(sidebar().getAttribute("data-layout")).toBe("rail");
   });
 
   it("uses an injected API client", async () => {
@@ -324,7 +353,7 @@ describe("app shell", () => {
     expect(screen.getByText("Approvals and finished tasks show up here.")).toBeTruthy();
   });
 
-  it.each(routes)("%s has one h1 %s and current nav %s", async (path, title, navLabel) => {
+  it.each(sidebarRoutes)("%s has one h1 %s and current nav %s", async (path, title, navLabel) => {
     renderAt(path);
     const headings = await screen.findAllByRole("heading", { level: 1 });
     expect(headings).toHaveLength(1);
@@ -333,6 +362,55 @@ describe("app shell", () => {
       .getAllByRole("link")
       .filter((link) => link.getAttribute("aria-current") === "page");
     expect(current.map((link) => link.textContent?.trim())).toEqual([navLabel]);
+  });
+
+  it.each(userSettingsRoutes)("%s has one h1 %s", async (path, title) => {
+    renderAt(path);
+    const headings = await screen.findAllByRole("heading", { level: 1 });
+    expect(headings).toHaveLength(1);
+    expect(headings[0]?.textContent).toBe(title);
+  });
+
+  it("opens user profile menu with Personalisation, Security, API tokens, and Log out", async () => {
+    renderAt("/");
+    await screen.findByRole("heading", { level: 1, name: "Home" });
+    const userCard = screen.getByRole("button", { name: /^User account:/ });
+    expect(userCard).toBeTruthy();
+    act(() => {
+      userCard.click();
+    });
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent?.trim())).toEqual([
+      "Personalisation",
+      "Security",
+      "API tokens",
+      "Log out",
+    ]);
+  });
+
+  it("shows Connectors to all users but hides Management for members", async () => {
+    const stub = createStubApi();
+    const memberClient: ApiClient = {
+      ...stub,
+      session: {
+        async get() {
+          return { ...signedOut, view: "member" };
+        },
+      },
+      me: {
+        ...stub.me,
+        async current() {
+          return { ...signedOut, view: "member" };
+        },
+      },
+    };
+    renderAt("/", memberClient);
+    await screen.findByRole("heading", { level: 1, name: "Home" });
+    const links = within(sidebar())
+      .getAllByRole("link")
+      .filter((link) => link.querySelector("img") == null);
+    expect(links.map((link) => link.textContent?.trim())).toContain("Connectors");
+    expect(links.map((link) => link.textContent?.trim())).not.toContain("Management");
   });
 
   it("unauthorised 401 sends a signed-in route to /login and does not retry; /login still renders with no session", async () => {
@@ -389,7 +467,11 @@ describe("app shell", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
     const beforeCalls = sessionCalls;
     act(() => {
-      screen.getByRole("button", { name: "Log out" }).click();
+      screen.getByRole("button", { name: /^User account:/ }).click();
+    });
+    const logoutItem = await screen.findByRole("menuitem", { name: "Log out" });
+    act(() => {
+      logoutItem.click();
     });
     expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
