@@ -89,6 +89,36 @@ func NeedsSandbox(repo string, classes []Class) (bool, error) {
 	return domain.NeedsSandbox(repo, classes)
 }
 
+// CloneURL returns the URL a repository is cloned from, empty for an empty
+// repository, or ErrRepo for one that cannot be cloned.
+func CloneURL(repo string) (string, error) { return domain.CloneURL(repo) }
+
+// Provisioning runs clone, toolchain and probe in a new sandbox and records
+// each step as its own event. Seats.Provision runs it after
+// Create; a PhaseError names the phase that failed.
+type (
+	Provisioner = app.Provisioner
+	Record      = domain.Record
+	Phase       = domain.Phase
+	PhaseError  = app.PhaseError
+)
+
+// Provisioning phases.
+const (
+	PhaseClone     = domain.PhaseClone
+	PhaseToolchain = domain.PhaseToolchain
+	PhaseProbe     = domain.PhaseProbe
+	PhaseReady     = domain.PhaseReady
+	PhaseFailed    = domain.PhaseFailed
+)
+
+// Errors provisioning reports.
+var (
+	ErrProvisionFailed = app.ErrProvisionFailed
+	ErrCommand         = app.ErrCommand
+	ErrRepo            = domain.ErrRepo
+)
+
 // Egress decisions, so sandboxd applies the rules the domain owns.
 type (
 	Decision = domain.Decision

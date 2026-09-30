@@ -112,11 +112,13 @@ func linkMail(s config.SMTP) mail.Sender {
 
 // sandboxSeats holds task sandboxes through sandboxd, signed with the
 // service key, and records each seat in the runtime
-// schema through pool, so a restarted brain can still release it. With
+// schema through pool, so a restarted brain can still release it. Each new
+// sandbox starts from UPMO_SEAT_IMAGE, or the runtime default, and is
+// provisioned through sandboxd before Open returns. With
 // UPMO_SANDBOXD_URL unset it has no provider, and a task that needs a
 // sandbox is refused rather than opened.
 func sandboxSeats(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*runtime.Seats, error) {
-	seats := &runtime.Seats{Book: runtime.SeatStore(pool), Log: log}
+	seats := &runtime.Seats{Book: runtime.SeatStore(pool), Image: cfg.SeatImage, Log: log}
 	if cfg.SandboxdURL == "" {
 		return seats, nil
 	}

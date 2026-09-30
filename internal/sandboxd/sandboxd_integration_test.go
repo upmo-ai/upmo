@@ -16,6 +16,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/docker"
+	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
 )
 
 // TestBrainClientOverDocker runs brain's runtime client against the real
@@ -137,4 +138,78 @@ func TestBrainClientOverDocker(t *testing.T) {
 	if _, err := provider.Exec(ctx, box.ID, runtime.Command{Args: []string{"true"}}, nil); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("exec after destroy err = %v", err)
 	}
+}
+
+// TestBrainSeatsProvisionOverDocker runs the Preparing path brain takes on
+// the real sandboxd routes and the Docker driver: a task without a
+// repository reaches ready, and a task with one fails in the clone phase,
+// because a sandbox has no network (and the default image has no git).
+func TestBrainSeatsProvisionOverDocker(t *testing.T) {
+	host := os.Getenv("UPMO_TEST_DOCKER_HOST")
+	if host == "" {
+		t.Skip("UPMO_TEST_DOCKER_HOST is not set; make test-integration sets it")
+	}
+	t.Setenv("DOCKER_HOST", host)
+	openCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	driver, err := docker.Open(openCtx, docker.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = driver.Close() })
+	key := serviceKey('k')
+	h, err := Routes(key, "", driver, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	provider, err := runtime.Open(srv.URL, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}, TTL: 5 * time.Minute}
+	if v := os.Getenv("UPMO_TEST_SANDBOX_IMAGE"); v != "" {
+		seats.Image = v
+	}
+	ctx := context.Background()
+
+	t.Run("no repository", func(t *testing.T) {
+		task := "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
+		t.Cleanup(func() { _ = seats.Release(context.Background(), task) })
+		if _, err := seats.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell}); err != nil {
+			t.Fatal(err)
+		}
+		if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
+			t.Fatalf("progress = %+v %t", rec, ok)
+		}
+		id, ok, err := seats.Held(ctx, task)
+		if err != nil || !ok {
+			t.Fatalf("held = %t %v", ok, err)
+		}
+		marker, err := provider.ReadFile(ctx, id, "/scratch/.upmo-provision")
+		if err != nil || !strings.Contains(string(marker), "repo: none") {
+			t.Fatalf("marker = %q %v", marker, err)
+		}
+		if err := seats.Release(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := provider.Destroy(ctx, id); !errors.Is(err, runtime.ErrNotFound) {
+			t.Fatalf("sandbox kept after release: %v", err)
+		}
+	})
+
+	t.Run("repository without network", func(t *testing.T) {
+		task := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
+		t.Cleanup(func() { _ = seats.Release(context.Background(), task) })
+		_, err := seats.Provision(ctx, task, "org/name", nil)
+		var phase *runtime.PhaseError
+		if !errors.As(err, &phase) || phase.Phase != runtime.PhaseClone || !errors.Is(err, runtime.ErrCommand) {
+			t.Fatalf("provision = %v", err)
+		}
+		t.Logf("clone failed as expected: %v", err)
+		if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
+			t.Fatalf("progress = %+v %t", rec, ok)
+		}
+	})
 }

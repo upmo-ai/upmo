@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,8 +15,10 @@ import (
 
 const (
 	// SeatImage is the image a task sandbox starts from when Seats names none.
-	// It ships coreutils timeout and a sleep that accepts infinity, which the
-	// Docker driver needs.
+	// It ships sh, coreutils timeout and a sleep that accepts infinity, which
+	// the Docker driver and the provisioning phases need. It has no git, so
+	// a task with a repository needs an image that does, such as the base
+	// target of deploy/sandbox/Dockerfile (UPMO_SEAT_IMAGE).
 	SeatImage = "debian:bookworm-slim"
 	// SeatTTL is how long a task sandbox lives when Seats names no TTL.
 	// sandboxd reclaims it after that even if no Release arrives.
@@ -71,8 +74,13 @@ type Seats struct {
 	// Image and TTL fill the spec Provision builds. Empty means SeatImage and SeatTTL.
 	Image string
 	TTL   time.Duration
-	// Log records a Destroy that failed. Nil logs nothing.
+	// Log records a Destroy or a provisioning that failed. Nil logs nothing.
 	Log *slog.Logger
+
+	// mu guards progress, the provisioning record of each seat in this
+	// process.
+	mu       sync.Mutex
+	progress map[string]domain.Record
 }
 
 // Ready reports whether Seats can create a sandbox.
@@ -80,16 +88,83 @@ func (s *Seats) Ready() bool {
 	return s != nil && s.Provider != nil && s.Book != nil
 }
 
-// Provision creates a sandbox for taskID when repo or classes need one.
-// It reports whether one was needed. When none is needed it
-// does not call the provider.
+// Provision creates a sandbox for taskID when repo or classes need one,
+// then runs the provisioning phases in it and
+// reports whether one was needed. When none is needed it does not call the
+// provider. A repo CloneURL refuses is refused before Create.
+//
+// A phase that fails returns a PhaseError and leaves the seat held, so the
+// caller fails the task and calls Release. Progress shows the record until
+// that Release.
 func (s *Seats) Provision(ctx context.Context, taskID, repo string, classes []domain.Class) (bool, error) {
 	needs, err := domain.NeedsSandbox(repo, classes)
 	if err != nil || !needs {
 		return false, err
 	}
-	_, err = s.Start(ctx, taskID, s.spec(taskID))
+	if _, err := domain.CloneURL(repo); err != nil {
+		return true, err
+	}
+	key, ok := taskKey(taskID)
+	if !ok {
+		return true, ErrSpec
+	}
+	// Tracked before Start, so a Release from here on also forgets it.
+	mine := s.track(key, domain.Begin(), true)
+	box, err := s.Start(ctx, taskID, s.spec(taskID))
+	if err != nil {
+		if mine {
+			s.forget(key)
+		}
+		return true, err
+	}
+	prep := Provisioner{Provider: s.Provider, Track: func(rec domain.Record) { _ = s.track(key, rec, false) }}
+	rec, err := prep.Run(ctx, box.ID, repo)
+	if err != nil && s.Log != nil {
+		s.Log.Warn("sandbox provisioning failed", "task", key, "sandbox", box.ID, "phase", rec.Phase, "err", err)
+	}
 	return true, err
+}
+
+// Progress returns the provisioning record of taskID's seat, from the
+// moment Provision starts until Release. It lives in this process only;
+// the seat itself is in the Book.
+func (s *Seats) Progress(taskID string) (domain.Record, bool) {
+	key, ok := taskKey(taskID)
+	if s == nil || !ok {
+		return domain.Record{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.progress[key]
+	return rec, ok
+}
+
+// track records rec for key. With start it only adds a record that is not
+// there yet, and reports whether it did; without it, it only updates one
+// that is still there, so a Run after a Release leaves nothing behind.
+func (s *Seats) track(key string, rec domain.Record, start bool) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.progress[key]; ok == start {
+		return false
+	}
+	if s.progress == nil {
+		s.progress = map[string]domain.Record{}
+	}
+	s.progress[key] = rec
+	return true
+}
+
+func (s *Seats) forget(key string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.progress, key)
 }
 
 // spec is the sandbox Provision asks for: the container tier, the seat
@@ -156,7 +231,8 @@ func (s *Seats) Start(ctx context.Context, taskID string, spec Spec) (Sandbox, e
 	return box, nil
 }
 
-// Release destroys the sandbox taskID holds and forgets it. A task that
+// Release destroys the sandbox taskID holds and forgets it and its
+// provisioning record. A task that
 // holds none, or a nil Seats, is a no-op. A pending seat is dropped, and
 // the Start still creating it destroys the sandbox once Create returns; a
 // pending seat whose process is gone has no sandbox id to destroy, and
@@ -171,6 +247,7 @@ func (s *Seats) Release(ctx context.Context, taskID string) error {
 	if !ok {
 		return ErrSpec
 	}
+	s.forget(key)
 	if s.Provider == nil || s.Book == nil {
 		return nil
 	}

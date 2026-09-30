@@ -96,6 +96,7 @@ type shell struct {
 	Driver
 	mu    sync.Mutex
 	files map[string][]byte
+	ran   []string
 }
 
 func newShell() *shell { return &shell{Driver: Stub(), files: map[string][]byte{}} }
@@ -106,7 +107,8 @@ func (s *shell) live(id string) bool {
 }
 
 // Exec knows echo, which writes its arguments to stdout, fail, which writes
-// to stderr and exits 2, and sleep, which runs until its timeout.
+// to stderr and exits 2, sleep, which runs until its timeout, and sh, env
+// and git, which succeed and are recorded.
 func (s *shell) Exec(ctx context.Context, id string, cmd runtime.Command, out func(runtime.Output) error) (runtime.Exit, error) {
 	if !s.live(id) {
 		return runtime.Exit{}, runtime.ErrNotFound
@@ -132,6 +134,12 @@ func (s *shell) Exec(ctx context.Context, id string, cmd runtime.Command, out fu
 		case <-time.After(cmd.Timeout):
 			return runtime.Exit{}, fmt.Errorf("shell: command timed out: %w", context.DeadlineExceeded)
 		}
+	case "sh", "env", "git":
+		// The provisioning commands, which pass here.
+		s.mu.Lock()
+		s.ran = append(s.ran, strings.Join(cmd.Args, " "))
+		s.mu.Unlock()
+		return runtime.Exit{}, nil
 	default:
 		return runtime.Exit{Code: 127}, nil
 	}
@@ -229,10 +237,17 @@ func TestBrainClientExecAndFiles(t *testing.T) {
 
 // TestBrainSeatsProvisionAndRelease runs the seats brain uses on the
 // Preparing path against the real sandboxd routes: Provision creates the
-// sandbox, and Release destroys it so sandboxd no longer holds it.
+// sandbox and runs every phase through Exec and the file routes, and
+// Release destroys it so sandboxd no longer holds it.
 func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	key := serviceKey('k')
-	srv := start(t, key, "")
+	sh := newShell()
+	h, err := Routes(key, "", sh, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
 	provider, err := runtime.Open(srv.URL, key)
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +259,15 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	needed, err := seats.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell})
 	if err != nil || !needed {
 		t.Fatalf("provision = %t %v", needed, err)
+	}
+	if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
+		t.Fatalf("progress = %+v %t", rec, ok)
+	}
+	sh.mu.Lock()
+	ran := strings.Join(sh.ran, "\n")
+	sh.mu.Unlock()
+	if !strings.Contains(ran, "git clone --depth=1 --quiet -- https://github.com/org/name.git /scratch/repo") || !strings.Contains(ran, "rev-parse") {
+		t.Fatalf("ran = %s", ran)
 	}
 	id, ok, err := seats.Held(ctx, task)
 	if err != nil || !ok {
@@ -257,6 +281,32 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	}
 	if book.Len() != 0 {
 		t.Fatalf("seats after release = %d", book.Len())
+	}
+}
+
+// TestBrainSeatsProvisionOnTheStubFails shows the stub, which runs no
+// command, cannot provision: the clone phase fails with ErrUnsupported and
+// the seat is still held for the caller to release.
+func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
+	key := serviceKey('k')
+	srv := start(t, key, "")
+	provider, err := runtime.Open(srv.URL, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}}
+	ctx := context.Background()
+	task := spec().Task
+	_, err = seats.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell})
+	var phase *runtime.PhaseError
+	if !errors.As(err, &phase) || phase.Phase != runtime.PhaseClone || !errors.Is(err, runtime.ErrUnsupported) {
+		t.Fatalf("provision = %v", err)
+	}
+	if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
+		t.Fatalf("progress = %+v %t", rec, ok)
+	}
+	if err := seats.Release(ctx, task); err != nil {
+		t.Fatal(err)
 	}
 }
 
