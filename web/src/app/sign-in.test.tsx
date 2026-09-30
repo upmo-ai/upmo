@@ -124,7 +124,10 @@ describe("sign in", () => {
     expect(screen.getByText("0.1.0")).toBeTruthy();
 
     act(() => {
-      screen.getByRole("button", { name: "Log out" }).click();
+      screen.getByRole("button", { name: /Sam Rivera/i }).click();
+    });
+    act(() => {
+      screen.getByRole("menuitem", { name: "Log out" }).click();
     });
     expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
@@ -216,7 +219,10 @@ describe("sign in", () => {
     });
 
     act(() => {
-      screen.getByRole("button", { name: "Log out" }).click();
+      screen.getByRole("button", { name: /Sam Rivera/i }).click();
+    });
+    act(() => {
+      screen.getByRole("menuitem", { name: "Log out" }).click();
     });
     expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
     await submitPassword();
@@ -239,9 +245,10 @@ describe("sign in", () => {
     });
 
     act(() => {
-      within(screen.getByRole("navigation", { name: "Sidebar" }))
-        .getByRole("link", { name: "Settings" })
-        .click();
+      screen.getByRole("button", { name: /Sam Rivera/i }).click();
+    });
+    act(() => {
+      screen.getByRole("menuitem", { name: "Security" }).click();
     });
     expect(await screen.findByText("This device")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Add a passkey for next time" })).toBeNull();
