@@ -111,15 +111,27 @@ func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
 	_, err = tx.Exec(ctx, `
 		SELECT set_config('upmo.user_id', $1, true),
 		       set_config('upmo.allow', $2, true),
-		       set_config('upmo.teams', '{}', true),
-		       set_config('upmo.shared_view', '{}', true),
-		       set_config('upmo.shared_edit', '{}', true)`,
-		access.UserID, access.Allow)
+		       set_config('upmo.teams', $3, true),
+		       set_config('upmo.shared_view', $4, true),
+		       set_config('upmo.shared_edit', $5, true)`,
+		accessArgs(access)...)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, err
 	}
 	return tx, nil
+}
+
+// accessArgs are the begin settings. An empty team or share list is "{}".
+func accessArgs(access app.Access) []any {
+	return []any{access.UserID, access.Allow, arrayOr(access.Teams), arrayOr(access.SharedView), arrayOr(access.SharedEdit)}
+}
+
+func arrayOr(literal string) string {
+	if literal == "" {
+		return "{}"
+	}
+	return literal
 }
 
 func (t rowTx) Current(ctx context.Context, folderID, sourceID string) (app.Current, error) {

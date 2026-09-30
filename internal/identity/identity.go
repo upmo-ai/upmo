@@ -1,5 +1,7 @@
 // Package identity is the identity context. It embeds this context's SQL.
 // Session rules live in the domain; the table and the cookie live in the adapters.
+// MemberService.ShareAccess loads a person's teams and shares for one object
+// type, and the object stores write them into each transaction.
 package identity
 
 import (

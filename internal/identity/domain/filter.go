@@ -78,6 +78,10 @@ func AccessSettings(subject Subject, objectType ObjectType, sharedView, sharedEd
 	return sql, args
 }
 
+// UUIDArray is the Postgres uuid array literal AccessSettings writes, "{}"
+// for none.
+func UUIDArray(ids []string) string { return uuidArray(ids) }
+
 func uuidArray(ids []string) string {
 	if len(ids) == 0 {
 		return "{}"

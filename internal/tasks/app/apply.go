@@ -21,9 +21,13 @@ var (
 
 // Access is the person and the allow list for this transaction.
 // The database still decides what those permissions can see.
+// Teams, SharedView and SharedEdit are uuid array literals; empty is "{}".
 type Access struct {
-	UserID string
-	Allow  string
+	UserID     string
+	Allow      string
+	Teams      string
+	SharedView string
+	SharedEdit string
 }
 
 // Task is the status after a transition.

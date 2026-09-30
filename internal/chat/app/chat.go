@@ -21,9 +21,13 @@ var (
 )
 
 // Access is the signed-in person and the allow list on this call.
+// Teams, SharedView and SharedEdit are uuid array literals; empty is "{}".
 type Access struct {
-	UserID string
-	Allow  string
+	UserID     string
+	Allow      string
+	Teams      string
+	SharedView string
+	SharedEdit string
 }
 
 // Chat is one owned chat and the lines said in it.

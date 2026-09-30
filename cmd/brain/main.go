@@ -143,7 +143,17 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 			if err != nil || allow == "" {
 				return taskapp.Access{}, false
 			}
-			return taskapp.Access{UserID: person.UserID.String(), Allow: allow}, true
+			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeTask)
+			if err != nil {
+				return taskapp.Access{}, false
+			}
+			return taskapp.Access{
+				UserID:     person.UserID.String(),
+				Allow:      allow,
+				Teams:      shares.Teams,
+				SharedView: shares.SharedView,
+				SharedEdit: shares.SharedEdit,
+			}, true
 		},
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)

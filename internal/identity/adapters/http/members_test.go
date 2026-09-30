@@ -161,6 +161,12 @@ func (f *memberFake) ListMembers(context.Context) ([]domain.Member, error) {
 func (f *memberFake) MemberActor(context.Context, domain.UserID) (domain.RoleID, string, bool, []string, error) {
 	return f.ownerRole, f.system, true, nil, nil
 }
+func (f *memberFake) MemberTeams(context.Context, domain.UserID) ([]string, error) {
+	return nil, nil
+}
+func (f *memberFake) SharedObjects(context.Context, domain.ObjectType, domain.UserID, []string, domain.RoleID) ([]app.ObjectShare, error) {
+	return nil, nil
+}
 func (f *memberFake) RoleSystem(_ context.Context, id domain.RoleID) (string, error) {
 	if id == f.ownerRole {
 		return "owner", nil
