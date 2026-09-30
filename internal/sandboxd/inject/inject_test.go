@@ -53,11 +53,22 @@ func TestForResolvesNothingForAnotherHost(t *testing.T) {
 	}
 }
 
+func TestNoCredentialIsNotAnError(t *testing.T) {
+	for name, inj := range map[string]Injector{"refuse": {Resolver: Refuse{}}, "nil resolver": {}} {
+		for _, list := range [][]runtime.Credential{nil, {}, creds} {
+			rw, err := inj.For(context.Background(), "proxy.golang.org", list)
+			if err != nil || !rw.Empty() {
+				t.Fatalf("%s with %d credentials = %v empty=%t", name, len(list), err, rw.Empty())
+			}
+		}
+	}
+}
+
 func TestRefuseResolvesNothing(t *testing.T) {
 	if _, err := (Injector{Resolver: Refuse{}}).For(context.Background(), "github.com", creds); !errors.Is(err, ErrNoBackend) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := (Injector{}).For(context.Background(), "github.com", nil); !errors.Is(err, ErrNoBackend) {
+	if _, err := (Injector{}).For(context.Background(), "github.com", creds); !errors.Is(err, ErrNoBackend) {
 		t.Fatalf("nil resolver err = %v", err)
 	}
 	if _, err := (Injector{Resolver: fakeResolver{"env:GITHUB_TOKEN": ""}}).For(context.Background(), "github.com", creds); !errors.Is(err, ErrNoBackend) {

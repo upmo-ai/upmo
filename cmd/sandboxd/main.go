@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,7 +40,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	driver, err := sandboxd.Open(ctx, cfg.Driver, log)
+	network := sandboxd.Network{Name: cfg.SandboxNetwork, ProxyURL: cfg.EgressProxyURL}
+	driver, err := sandboxd.Open(ctx, cfg.Driver, network, log)
 	if err != nil {
 		return err
 	}
@@ -50,11 +52,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	proxy := httpserver.New(cfg.ProxyAddr, sandboxd.Proxy(driver, log))
 
 	// Either server stopping stops the other.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	proxy := httpserver.New(cfg.ProxyAddr, sandboxd.Proxy(driver, log))
+	// Shutdown does not wait for hijacked connections, so every tunnel hangs
+	// off ctx and closes when sandboxd stops.
+	proxy.BaseContext = func(net.Listener) context.Context { return ctx }
 	go sandboxd.Sweep(ctx, driver, sweepEvery, log)
 	errc := make(chan error, 2)
 	for _, srv := range []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy} {

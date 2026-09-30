@@ -53,19 +53,30 @@ func Stub() Driver {
 	return stub.New(nil)
 }
 
+// Network is how Docker sandboxes reach the egress proxy.
+type Network struct {
+	// Name is the internal Docker network sandboxes join; empty is the
+	// driver default.
+	Name string
+	// ProxyURL is the egress proxy as a sandbox reaches it; empty is the
+	// driver default.
+	ProxyURL string
+}
+
 // Open returns the driver named by choice. auto, the default, uses the
 // Docker engine from DOCKER_HOST or the default socket when it answers, and
 // falls back to the stub with a warning when it does not. docker fails
-// instead of falling back.
-func Open(ctx context.Context, choice string, log *slog.Logger) (Driver, error) {
+// instead of falling back. network applies to the Docker driver only.
+func Open(ctx context.Context, choice string, network Network, log *slog.Logger) (Driver, error) {
 	return open(ctx, choice, log, func(ctx context.Context) (Driver, error) {
-		d, err := docker.Open(ctx, docker.Options{})
+		d, err := docker.Open(ctx, docker.Options{Network: network.Name, ProxyURL: network.ProxyURL})
 		if err != nil {
 			return nil, err
 		}
 		e := d.Engine()
 		log.Info("sandbox driver", "driver", DriverDocker, "host", e.Host, "version", e.Version,
-			"rootless", e.Rootless, "userns", e.UserNS, "seccomp", e.Seccomp)
+			"rootless", e.Rootless, "userns", e.UserNS, "seccomp", e.Seccomp,
+			"network", d.Network(), "proxy", network.ProxyURL)
 		if !e.Rootless && !e.UserNS {
 			log.Warn("sandbox driver: the engine runs without user namespaces; root in a sandbox is root on the engine host")
 		}
@@ -155,7 +166,8 @@ func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger) (ht
 }
 
 // Proxy returns the egress proxy for the sandboxes driver holds. With no
-// credential backend wired, every reference is refused.
+// credential backend wired, a host that names a credential is refused and
+// every other allowed host tunnels.
 func Proxy(driver Driver, log *slog.Logger) http.Handler {
 	return egress.Proxy{Book: driver, Inject: inject.Injector{Resolver: inject.Refuse{}}, Log: log}
 }

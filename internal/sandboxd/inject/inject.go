@@ -42,15 +42,17 @@ type Rewrite struct {
 
 // For resolves every credential whose host is host. A credential for another
 // host is never resolved, so its value cannot leave toward the wrong host.
+// A host with no credential gets an empty rewrite and no error, even with no
+// resolver; only a credential the host names that cannot be resolved fails.
 func (i Injector) For(ctx context.Context, host string, creds []runtime.Credential) (Rewrite, error) {
-	if i.Resolver == nil {
-		return Rewrite{}, ErrNoBackend
-	}
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	var pairs []string
 	for _, c := range creds {
 		if c.Host != host {
 			continue
+		}
+		if i.Resolver == nil {
+			return Rewrite{}, ErrNoBackend
 		}
 		value, err := i.Resolver.Resolve(ctx, c.Ref)
 		if err != nil {

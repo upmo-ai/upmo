@@ -19,6 +19,15 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
 )
 
+// testNetwork keeps the suite off the sandbox network a running stack uses,
+// like the driver's own integration tests.
+func testNetwork() string {
+	if v := os.Getenv("UPMO_TEST_SANDBOX_NETWORK"); v != "" {
+		return v
+	}
+	return docker.DefaultNetwork + "-test"
+}
+
 // TestBrainClientOverDocker runs brain's runtime client against the real
 // sandboxd routes and the Docker driver. It reads UPMO_TEST_DOCKER_HOST like
 // the driver's own integration tests: unset skips, set but unreachable fails.
@@ -30,7 +39,7 @@ func TestBrainClientOverDocker(t *testing.T) {
 	t.Setenv("DOCKER_HOST", host)
 	openCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	driver, err := docker.Open(openCtx, docker.Options{})
+	driver, err := docker.Open(openCtx, docker.Options{Network: testNetwork()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +152,8 @@ func TestBrainClientOverDocker(t *testing.T) {
 // TestBrainSeatsProvisionOverDocker runs the Preparing path brain takes on
 // the real sandboxd routes and the Docker driver: a task without a
 // repository reaches ready, and a task with one fails in the clone phase,
-// because a sandbox has no network (and the default image has no git).
+// because a seat's allow-list is empty and no egress proxy serves this test
+// (and the default image has no git).
 func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	host := os.Getenv("UPMO_TEST_DOCKER_HOST")
 	if host == "" {
@@ -152,7 +162,7 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	t.Setenv("DOCKER_HOST", host)
 	openCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	driver, err := docker.Open(openCtx, docker.Options{})
+	driver, err := docker.Open(openCtx, docker.Options{Network: testNetwork()})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -264,6 +264,9 @@ func TestLoadSandboxd(t *testing.T) {
 	if cfg.Driver != "auto" {
 		t.Fatalf("Driver = %q, want auto", cfg.Driver)
 	}
+	if cfg.EgressProxyURL != "http://host.docker.internal:3128" || cfg.SandboxNetwork != "upmo-sandbox-egress" {
+		t.Fatalf("egress defaults = %q %q", cfg.EgressProxyURL, cfg.SandboxNetwork)
+	}
 
 	cfg, err = loadSandboxd(lookupFrom(map[string]string{
 		"UPMO_SERVICE_KEY":          "upmo_svc_x",
@@ -273,12 +276,17 @@ func TestLoadSandboxd(t *testing.T) {
 		"UPMO_SHUTDOWN_TIMEOUT":     "3s",
 		"UPMO_LOG_LEVEL":            "debug",
 		"UPMO_SANDBOX_DRIVER":       " Docker ",
+		"UPMO_EGRESS_PROXY_URL":     " http://sandboxd:3128/ ",
+		"UPMO_SANDBOX_NETWORK":      " upm114_sandbox-egress ",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ListenAddr != ":9000" || cfg.ProxyAddr != ":9001" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevel != "debug" || cfg.ServiceKeyPrevious != "upmo_svc_y" || cfg.Driver != "docker" {
 		t.Fatalf("overrides = %+v", cfg)
+	}
+	if cfg.EgressProxyURL != "http://sandboxd:3128" || cfg.SandboxNetwork != "upm114_sandbox-egress" {
+		t.Fatalf("egress overrides = %q %q", cfg.EgressProxyURL, cfg.SandboxNetwork)
 	}
 
 	for name, env := range map[string]map[string]string{
@@ -287,6 +295,10 @@ func TestLoadSandboxd(t *testing.T) {
 		"same address": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
 		"bad timeout":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
 		"bad driver":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "nomad"},
+		"https proxy":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "https://sandboxd:3128"},
+		"proxy user":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://box@sandboxd:3128"},
+		"proxy path":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://sandboxd:3128/x"},
+		"proxy host":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "sandboxd:3128"},
 	} {
 		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
 			t.Errorf("%s: want an error", name)
