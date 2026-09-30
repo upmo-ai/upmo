@@ -22,6 +22,42 @@ type (
 	Shape           = domain.Shape
 )
 
+// Seats holds the sandbox each task occupies, in process memory. Class is
+// a tool class NeedsSandbox reads.
+type (
+	Seats = app.Seats
+	Class = domain.Class
+)
+
+// Tool classes.
+const (
+	ClassShell     = domain.ClassShell
+	ClassFile      = domain.ClassFile
+	ClassConnector = domain.ClassConnector
+	ClassKnowledge = domain.ClassKnowledge
+	ClassWeb       = domain.ClassWeb
+)
+
+// Seat defaults.
+const (
+	SeatImage = app.SeatImage
+	SeatTTL   = app.SeatTTL
+)
+
+// Errors Seats reports.
+var (
+	ErrSandboxdUnset = app.ErrSandboxdUnset
+	ErrSeated        = app.ErrSeated
+	ErrReleased      = app.ErrReleased
+	ErrClass         = domain.ErrClass
+)
+
+// NeedsSandbox reports whether a task with repo and classes needs a
+// sandbox, or ErrClass for an empty or unknown class.
+func NeedsSandbox(repo string, classes []Class) (bool, error) {
+	return domain.NeedsSandbox(repo, classes)
+}
+
 // Egress decisions, so sandboxd applies the rules the domain owns.
 type (
 	Decision = domain.Decision

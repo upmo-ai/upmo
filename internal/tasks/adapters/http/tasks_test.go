@@ -137,14 +137,18 @@ type fakeBook struct {
 	lists  int
 	taskID string
 	input  domain.Input
+	inputs []domain.Input
 	err    error
 	listed []app.Task
+	// openID is the id Open returns; empty means task-1.
+	openID string
 }
 
 func (f *fakeBook) Transition(_ context.Context, _ app.Access, taskID string, input domain.Input) (app.Task, error) {
 	f.calls++
 	f.taskID = taskID
 	f.input = input
+	f.inputs = append(f.inputs, input)
 	if f.err != nil {
 		return app.Task{}, f.err
 	}
@@ -154,9 +158,16 @@ func (f *fakeBook) Transition(_ context.Context, _ app.Access, taskID string, in
 	}
 	id := taskID
 	if id == "" {
+		id = f.openID
+	}
+	if id == "" {
 		id = "task-1"
 	}
-	return app.Task{ID: id, Status: domain.Preparing, Goal: goal}, nil
+	status := domain.Preparing
+	if input.Kind == domain.Fail {
+		status = domain.Failed
+	}
+	return app.Task{ID: id, Status: status, Goal: goal}, nil
 }
 
 func (f *fakeBook) List(context.Context, app.Access) ([]app.Task, error) {

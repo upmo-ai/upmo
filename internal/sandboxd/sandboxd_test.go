@@ -79,6 +79,35 @@ func TestBrainClientCreatesAndDestroys(t *testing.T) {
 	}
 }
 
+// TestBrainSeatsProvisionAndRelease runs the seats brain uses on the
+// Preparing path against the real sandboxd routes: Provision creates the
+// sandbox, and Release destroys it so sandboxd no longer holds it.
+func TestBrainSeatsProvisionAndRelease(t *testing.T) {
+	key := serviceKey('k')
+	srv := start(t, key, "")
+	provider, err := runtime.Open(srv.URL, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := &runtime.Seats{Provider: provider}
+	ctx := context.Background()
+	task := spec().Task
+	needed, err := seats.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell})
+	if err != nil || !needed {
+		t.Fatalf("provision = %t %v", needed, err)
+	}
+	id, ok := seats.Held(task)
+	if !ok {
+		t.Fatal("no seat after provision")
+	}
+	if err := seats.Release(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Destroy(ctx, id); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("sandbox still held after release: %v", err)
+	}
+}
+
 func TestRoutesRefuseWithoutServiceBearer(t *testing.T) {
 	key := serviceKey('k')
 	srv := start(t, key, "")
