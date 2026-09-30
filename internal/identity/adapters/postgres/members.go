@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
@@ -117,6 +118,37 @@ func (p Passkeys) MemberActor(ctx context.Context, id domain.UserID) (domain.Rol
 		return domain.RoleID{}, "", false, nil, err
 	}
 	return roleID, system, joined, raw, nil
+}
+
+// MemberTeams returns the ids of the teams a person is on.
+func (p Passkeys) MemberTeams(ctx context.Context, id domain.UserID) ([]string, error) {
+	rows, err := p.Pool.Query(ctx, `SELECT team_id::text FROM identity.team_members WHERE user_id = $1`, id)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// SharedObjects returns the objects of one type shared with a person, their
+// teams, or their role, with the share level.
+func (p Passkeys) SharedObjects(ctx context.Context, objectType domain.ObjectType, user domain.UserID, teams []string, role domain.RoleID) ([]app.ObjectShare, error) {
+	if teams == nil {
+		teams = []string{}
+	}
+	rows, err := p.Pool.Query(ctx, domain.SharedObjectsSQL(), string(objectType), user.String(), teams, role.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.ObjectShare
+	for rows.Next() {
+		var id, level string
+		if err := rows.Scan(&id, &level); err != nil {
+			return nil, err
+		}
+		out = append(out, app.ObjectShare{ObjectID: id, Level: domain.Level(level)})
+	}
+	return out, rows.Err()
 }
 
 func rolePermissions(system string, raw []string) ([]domain.Permission, error) {

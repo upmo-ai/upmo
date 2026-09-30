@@ -21,6 +21,7 @@ type (
 const (
 	IdleTimeout = domain.IdleTimeout
 	MaxAge      = domain.MaxAge
+	TypeTask    = domain.TypeTask
 )
 
 var (

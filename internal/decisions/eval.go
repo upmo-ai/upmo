@@ -59,9 +59,13 @@ type Runner interface {
 }
 
 // Access is the caller. Managing a gate needs settings:manage.
+// Teams, SharedView and SharedEdit are uuid array literals; empty is "{}".
 type Access struct {
-	UserID string
-	Allow  string
+	UserID     string
+	Allow      string
+	Teams      string
+	SharedView string
+	SharedEdit string
 }
 
 // Fingerprint is the hex SHA-256 of the route name, kind and hops.

@@ -14,6 +14,8 @@ type MemberStore interface {
 	ListRoles(ctx context.Context) ([]domain.MemberRole, error)
 	ListMembers(ctx context.Context) ([]domain.Member, error)
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
+	MemberTeams(ctx context.Context, id domain.UserID) ([]string, error)
+	SharedObjects(ctx context.Context, objectType domain.ObjectType, user domain.UserID, teams []string, role domain.RoleID) ([]ObjectShare, error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
 	InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
@@ -184,6 +186,50 @@ func (m Members) TaskAllow(ctx context.Context, id domain.UserID) (string, error
 		}
 	}
 	return strings.Join(names, ","), nil
+}
+
+// ObjectShare is one row from SharedObjectsSQL.
+type ObjectShare struct {
+	ObjectID string
+	Level    domain.Level
+}
+
+// Shares is a joined person's teams and the objects of one type shared with
+// them, as Postgres uuid array literals for upmo.teams, upmo.shared_view and
+// upmo.shared_edit. Any level can view; only editor can edit.
+type Shares struct {
+	Teams      string
+	SharedView string
+	SharedEdit string
+}
+
+// ShareAccess loads the person's teams and shares for one object type. The
+// object stores write the result into each transaction.
+func (m Members) ShareAccess(ctx context.Context, id domain.UserID, objectType domain.ObjectType) (Shares, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return Shares{}, err
+	}
+	teams, err := m.Store.MemberTeams(ctx, id)
+	if err != nil {
+		return Shares{}, err
+	}
+	rows, err := m.Store.SharedObjects(ctx, objectType, id, teams, subject.RoleID)
+	if err != nil {
+		return Shares{}, err
+	}
+	var view, edit []string
+	for _, row := range rows {
+		view = append(view, row.ObjectID)
+		if row.Level == domain.LevelEditor {
+			edit = append(edit, row.ObjectID)
+		}
+	}
+	return Shares{
+		Teams:      domain.UUIDArray(teams),
+		SharedView: domain.UUIDArray(view),
+		SharedEdit: domain.UUIDArray(edit),
+	}, nil
 }
 
 func (m Members) actor(ctx context.Context, id domain.UserID) (domain.Subject, error) {
