@@ -70,8 +70,14 @@ var (
 	ErrIsolation   = app.ErrIsolation
 	ErrNotFound    = app.ErrNotFound
 	ErrUnsupported = app.ErrUnsupported
+	ErrPaused      = app.ErrPaused
+	ErrTooLarge    = app.ErrTooLarge
+	ErrNotFile     = app.ErrNotFile
 	ErrEgress      = domain.ErrEgress
 )
+
+// MaxFile is the largest file ReadFile returns or WriteFile copies.
+const MaxFile = app.MaxFile
 
 // Tiers and verdicts.
 const (

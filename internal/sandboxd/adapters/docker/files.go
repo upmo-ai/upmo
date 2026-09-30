@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -17,14 +16,16 @@ import (
 	"github.com/upmo-ai/upmo/internal/runtime"
 )
 
-// MaxFile is the largest file ReadFile returns or WriteFile copies.
-const MaxFile = 16 << 20
+// MaxFile is the largest file ReadFile returns or WriteFile copies. It is
+// the port's limit, which the HTTP routes size their bodies by.
+const MaxFile = runtime.MaxFile
 
-// ErrTooLarge reports a file larger than MaxFile.
-var ErrTooLarge = errors.New("docker: file is too large")
+// ErrTooLarge reports a file larger than MaxFile. Like ErrNotFile, it is the
+// port's error, so the HTTP routes can name it without importing this driver.
+var ErrTooLarge = runtime.ErrTooLarge
 
 // ErrNotFile reports a path that names a directory, link or device.
-var ErrNotFile = errors.New("docker: not a regular file")
+var ErrNotFile = runtime.ErrNotFile
 
 // ReadFile copies one regular file out of the sandbox through the engine's
 // archive API. It works on a paused sandbox too. A relative path starts at

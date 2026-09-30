@@ -59,8 +59,9 @@ const (
 var keepCaps = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID", "NET_BIND_SERVICE"}
 
 // ErrPaused reports a command sent to a paused sandbox. Its files can still
-// be read and written.
-var ErrPaused = errors.New("docker: sandbox is paused")
+// be read and written. It is the port's error, so the HTTP routes can name
+// it without importing this driver.
+var ErrPaused = runtime.ErrPaused
 
 // engine is the part of the Engine API client the driver uses.
 type engine interface {
