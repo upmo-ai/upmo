@@ -320,6 +320,9 @@ func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 	if !slices.Equal(cfg.Entrypoint, []string{"sleep", "infinity"}) || host.Init == nil || !*host.Init {
 		t.Fatalf("entrypoint %v init %v", cfg.Entrypoint, host.Init)
 	}
+	if host.Runtime != "" {
+		t.Fatalf("container runtime = %q, want empty", host.Runtime)
+	}
 
 	// Only the internal sandbox network: the only route out is the sandboxd
 	// proxy, and nothing is published.
@@ -484,15 +487,32 @@ func TestCreateRefuses(t *testing.T) {
 	if _, err := d.Create(context.Background(), bad); !errors.Is(err, runtime.ErrSpec) {
 		t.Fatalf("spec err = %v", err)
 	}
-	for _, tier := range []string{runtime.TierGVisor, runtime.TierKata} {
-		s := spec()
-		s.Tier = tier
-		if _, err := d.Create(context.Background(), s); !errors.Is(err, runtime.ErrIsolation) {
-			t.Fatalf("%s err = %v, want ErrIsolation", tier, err)
-		}
+	kata := spec()
+	kata.Tier = runtime.TierKata
+	if _, err := d.Create(context.Background(), kata); !errors.Is(err, runtime.ErrIsolation) {
+		t.Fatalf("kata err = %v, want ErrIsolation", err)
 	}
 	if len(f.created) != 0 || len(f.pulled) != 0 {
 		t.Fatalf("a refused spec reached the engine: created %d pulled %v", len(f.created), f.pulled)
+	}
+}
+
+func TestCreateGVisorUsesRunsc(t *testing.T) {
+	d, f, _ := setup(t)
+	s := spec()
+	s.Tier = runtime.TierGVisor
+	box, err := d.Create(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if box.Tier != runtime.TierGVisor {
+		t.Fatalf("tier = %q", box.Tier)
+	}
+	if len(f.created) != 1 {
+		t.Fatalf("created = %d", len(f.created))
+	}
+	if got := f.created[0].HostConfig.Runtime; got != runtime.RuntimeRunsc {
+		t.Fatalf("runtime = %q, want %q", got, runtime.RuntimeRunsc)
 	}
 }
 

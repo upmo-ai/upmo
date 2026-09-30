@@ -247,7 +247,8 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	if err != nil {
 		return runtime.Sandbox{}, err
 	}
-	if spec.Tier != runtime.TierContainer {
+	place, err := runtime.Place(spec.Tier, runtime.PlatformCompose)
+	if err != nil {
 		return runtime.Sandbox{}, runtime.ErrIsolation
 	}
 	uid, err := uuid.NewV7()
@@ -288,6 +289,7 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode:   container.NetworkMode(d.network),
+			Runtime:       place.Runtime,
 			CapDrop:       []string{"ALL"},
 			CapAdd:        slices.Clone(keepCaps),
 			SecurityOpt:   []string{"no-new-privileges:true"},

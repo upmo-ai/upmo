@@ -49,6 +49,7 @@ type (
 	Size            = app.Size
 	Endpoint        = app.Endpoint
 	Shape           = domain.Shape
+	Placement       = domain.Placement
 )
 
 // Seats holds the sandbox each task occupies and records it in a SeatBook.
@@ -142,14 +143,29 @@ var (
 // MaxFile is the largest file ReadFile returns or WriteFile copies.
 const MaxFile = app.MaxFile
 
-// Tiers and verdicts.
+// Tiers, platforms, runtimes and verdicts.
 const (
-	TierContainer = domain.TierContainer
-	TierGVisor    = domain.TierGVisor
-	TierKata      = domain.TierKata
-	VerdictAllow  = domain.VerdictAllow
-	VerdictRefuse = domain.VerdictRefuse
+	TierContainer      = domain.TierContainer
+	TierGVisor         = domain.TierGVisor
+	TierKata           = domain.TierKata
+	PlatformCompose    = domain.PlatformCompose
+	PlatformKubernetes = domain.PlatformKubernetes
+	RuntimeRunsc       = domain.RuntimeRunsc
+	RuntimeClassGVisor = domain.RuntimeClassGVisor
+	RuntimeClassKata   = domain.RuntimeClassKata
+	VerdictAllow       = domain.VerdictAllow
+	VerdictRefuse      = domain.VerdictRefuse
 )
+
+// ErrTier reports an unknown tier or platform, or a platform that cannot
+// meet the tier.
+var ErrTier = domain.ErrTier
+
+// Place returns a placement that meets tier on platform, and never names a
+// weaker runtime.
+func Place(tier, platform string) (Placement, error) {
+	return domain.Place(tier, platform)
+}
 
 // CheckSpec returns spec normalised, or ErrSpec when admission refuses it.
 func CheckSpec(spec Spec) (Spec, error) { return app.CheckSpec(spec) }
