@@ -10,7 +10,7 @@ import (
 )
 
 // ErrSandbox is a task that needs a sandbox brain could not start: sandboxd
-// is not configured, or its Create failed.
+// is not configured, its Create failed, or a provisioning phase failed.
 var ErrSandbox = errors.New("tasks: sandbox")
 
 // ErrSandboxUnset is the ErrSandbox for a task that needs a sandbox while
@@ -22,7 +22,9 @@ var ErrSandboxUnset = fmt.Errorf("%w: sandboxd is not configured", ErrSandbox)
 type Sandboxes interface {
 	// Ready reports whether a sandbox can be created at all.
 	Ready() bool
-	// Provision creates the sandbox when repo or classes need one.
+	// Provision creates the sandbox when repo or classes need one, then
+	// runs clone, toolchain and probe in it. A phase that fails
+	// is a runtime.PhaseError.
 	Provision(ctx context.Context, taskID, repo string, classes []runtime.Class) (bool, error)
 	// Release destroys the sandbox the task holds, if any.
 	Release(ctx context.Context, taskID string) error
@@ -37,12 +39,15 @@ type Opening struct {
 }
 
 // OpenTask opens a task in Preparing and, when its repository or tool
-// classes need a sandbox, creates one through boxes.
+// classes need a sandbox, creates and provisions one through boxes. The
+// task stays in Preparing; the provisioning record is runtime's, not a
+// task event.
 //
-// An unknown class is refused before the task exists. A needed sandbox with
-// no sandboxd configured is refused before the task exists too, with
-// ErrSandbox. When Create fails after the task is open, the task is moved
-// to Failed, any sandbox is released, and the Failed task is returned with
+// An unknown class or a repository that cannot be cloned is refused before
+// the task exists. A needed sandbox with no sandboxd configured is refused
+// before the task exists too, with ErrSandbox. When Create or a
+// provisioning phase fails after the task is open, the task is moved to
+// Failed, any sandbox is released, and the Failed task is returned with
 // ErrSandbox, so no container or Preparing task is left behind silently.
 func OpenTask(ctx context.Context, book Book, boxes Sandboxes, access Access, open Opening) (Task, error) {
 	classes := make([]runtime.Class, 0, len(open.Classes))
@@ -51,6 +56,9 @@ func OpenTask(ctx context.Context, book Book, boxes Sandboxes, access Access, op
 	}
 	needs, err := runtime.NeedsSandbox(open.Repo, classes)
 	if err != nil {
+		return Task{}, fmt.Errorf("%w: %w", domain.ErrInput, err)
+	}
+	if _, err := runtime.CloneURL(open.Repo); err != nil {
 		return Task{}, fmt.Errorf("%w: %w", domain.ErrInput, err)
 	}
 	if needs && (boxes == nil || !boxes.Ready()) {

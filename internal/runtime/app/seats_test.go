@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"slices"
 	"sync"
 	"testing"
@@ -59,7 +60,99 @@ func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
 			if book.ttl[task] != SeatTTL || !book.expires[task].Equal(boxExpires) {
 				t.Fatalf("book ttl = %v expires = %v", book.ttl[task], book.expires[task])
 			}
+			if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseReady {
+				t.Fatalf("progress = %+v %t", rec, ok)
+			}
+			for _, call := range p.execCalls() {
+				if call.id != "box-1" {
+					t.Fatalf("exec on %q", call.id)
+				}
+			}
+			if len(p.execCalls()) == 0 {
+				t.Fatal("provisioned without an exec")
+			}
 		})
+	}
+}
+
+func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
+	ctx := context.Background()
+	p := &fakeProvider{run: func(cmd Command) (Exit, string, error) {
+		if slices.Contains(cmd.Args, "clone") {
+			return Exit{Code: 128}, "fatal: unable to access the repository", nil
+		}
+		return Exit{}, "", nil
+	}}
+	s, book := newSeats(p)
+	needed, err := s.Provision(ctx, task, "org/name", nil)
+	var phase *PhaseError
+	if !needed || !errors.As(err, &phase) || phase.Phase != domain.PhaseClone || !errors.Is(err, ErrProvisionFailed) || !errors.Is(err, ErrCommand) {
+		t.Fatalf("provision = %t %v", needed, err)
+	}
+	if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseFailed {
+		t.Fatalf("progress = %+v %t", rec, ok)
+	}
+	// The caller fails the task and releases; until then the seat is held.
+	if id, ok := held(t, s, task); !ok || id != "box-1" || len(p.destroyedIDs()) != 0 {
+		t.Fatalf("held = %q %t destroyed = %v", id, ok, p.destroyedIDs())
+	}
+	if err := s.Release(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.destroyedIDs(), []string{"box-1"}) || book.size() != 0 {
+		t.Fatalf("destroyed = %v seats = %d", p.destroyedIDs(), book.size())
+	}
+	if _, ok := s.Progress(task); ok {
+		t.Fatal("progress kept after release")
+	}
+}
+
+func TestSeatsProvisionRefusesABadRepoBeforeCreate(t *testing.T) {
+	p := &fakeProvider{}
+	s, book := newSeats(p)
+	needed, err := s.Provision(context.Background(), task, "https://ada@example.com/org/name", nil)
+	if !needed || !errors.Is(err, domain.ErrRepo) || len(p.created) != 0 || book.size() != 0 {
+		t.Fatalf("provision = %t %v creates=%d", needed, err, len(p.created))
+	}
+	if _, ok := s.Progress(task); ok {
+		t.Fatal("progress for a refused repo")
+	}
+}
+
+func TestSeatsProvisionCreateFailureLeavesNoProgress(t *testing.T) {
+	p := &fakeProvider{createErr: ErrIsolation}
+	s, _ := newSeats(p)
+	if _, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("provision = %v", err)
+	}
+	if _, ok := s.Progress(task); ok || len(p.execCalls()) != 0 {
+		t.Fatalf("progress kept or exec ran: %v", p.execCalls())
+	}
+}
+
+func TestSeatsReleaseDuringProvisionLeavesNoProgress(t *testing.T) {
+	ctx := context.Background()
+	p := &fakeProvider{}
+	s, _ := newSeats(p)
+	entered, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	p.run = func(Command) (Exit, string, error) {
+		once.Do(func() { close(entered); <-gate })
+		return Exit{}, "", nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Provision(ctx, task, "", []domain.Class{domain.ClassShell})
+		done <- err
+	}()
+	<-entered
+	if err := s.Release(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	<-done
+	if _, ok := s.Progress(task); ok {
+		t.Fatal("progress came back after release")
 	}
 }
 
@@ -376,8 +469,8 @@ func (b *fakeBook) size() int {
 	return len(b.seats)
 }
 
-// fakeProvider records Create and Destroy. gate, when set, holds Create
-// until it is closed, after signalling entered.
+// fakeProvider records Create, Destroy and Exec, and keeps files in memory.
+// gate, when set, holds Create until it is closed, after signalling entered.
 type fakeProvider struct {
 	mu         sync.Mutex
 	created    []Spec
@@ -386,6 +479,17 @@ type fakeProvider struct {
 	destroyErr error
 	gate       chan struct{}
 	entered    chan struct{}
+
+	execs    []execCall
+	run      func(Command) (Exit, string, error)
+	files    map[string][]byte
+	readErr  error
+	writeErr error
+}
+
+type execCall struct {
+	id  string
+	cmd Command
 }
 
 var _ SandboxProvider = (*fakeProvider)(nil)
@@ -420,20 +524,59 @@ func (f *fakeProvider) destroyedIDs() []string {
 	return slices.Clone(f.destroyed)
 }
 
-func (f *fakeProvider) Exec(context.Context, string, Command, func(Output) error) (Exit, error) {
-	return Exit{}, ErrUnsupported
+// Exec records cmd and answers through run, or exits 0 when run is nil.
+// stderr from run is streamed before the exit.
+func (f *fakeProvider) Exec(_ context.Context, id string, cmd Command, out func(Output) error) (Exit, error) {
+	f.mu.Lock()
+	f.execs = append(f.execs, execCall{id: id, cmd: cmd})
+	run := f.run
+	f.mu.Unlock()
+	if run == nil {
+		return Exit{}, nil
+	}
+	exit, stderr, err := run(cmd)
+	if stderr != "" && out != nil {
+		if oerr := out(Output{Stream: "stderr", Data: []byte(stderr)}); oerr != nil {
+			return Exit{}, oerr
+		}
+	}
+	return exit, err
 }
 
 func (f *fakeProvider) PTY(context.Context, string, Size) (io.ReadWriteCloser, error) {
 	return nil, ErrUnsupported
 }
 
-func (f *fakeProvider) ReadFile(context.Context, string, string) ([]byte, error) {
-	return nil, ErrUnsupported
+func (f *fakeProvider) ReadFile(_ context.Context, _ string, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	data, ok := f.files[path]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return slices.Clone(data), nil
 }
 
-func (f *fakeProvider) WriteFile(context.Context, string, string, []byte) error {
-	return ErrUnsupported
+func (f *fakeProvider) WriteFile(_ context.Context, _ string, path string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[path] = slices.Clone(data)
+	return nil
+}
+
+func (f *fakeProvider) execCalls() []execCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.execs)
 }
 
 func (f *fakeProvider) Expose(context.Context, string, int) (Endpoint, error) {

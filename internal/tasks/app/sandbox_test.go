@@ -95,6 +95,32 @@ func TestOpenTaskFailsTheTaskWhenCreateFails(t *testing.T) {
 	}
 }
 
+func TestOpenTaskFailsTheTaskWhenAPhaseFails(t *testing.T) {
+	book := &fake{}
+	cause := &runtime.PhaseError{Phase: runtime.PhaseToolchain, Err: runtime.ErrCommand}
+	boxes := &fakeBoxes{ready: true, err: cause}
+	task, err := OpenTask(context.Background(), book, boxes, openAccess, Opening{Goal: "Fix the build", Classes: []string{"shell"}})
+	var phase *runtime.PhaseError
+	if !errors.Is(err, ErrSandbox) || !errors.Is(err, runtime.ErrProvisionFailed) || !errors.As(err, &phase) || phase.Phase != runtime.PhaseToolchain {
+		t.Fatalf("err = %v", err)
+	}
+	if task.Status != domain.Failed || book.status != domain.Failed {
+		t.Fatalf("task = %+v book = %s", task, book.status)
+	}
+	if !slices.Equal(boxes.released, []string{task.ID}) {
+		t.Fatalf("released = %v", boxes.released)
+	}
+}
+
+func TestOpenTaskRefusesARepoItCannotCloneBeforeOpening(t *testing.T) {
+	book := &fake{}
+	boxes := &fakeBoxes{ready: true}
+	_, err := OpenTask(context.Background(), book, boxes, openAccess, Opening{Goal: "Fix the build", Repo: "https://ada@example.com/org/name"})
+	if !errors.Is(err, domain.ErrInput) || !errors.Is(err, runtime.ErrRepo) || book.calls != 0 || len(boxes.provisioned) != 0 {
+		t.Fatalf("err = %v calls = %d provisioned = %v", err, book.calls, boxes.provisioned)
+	}
+}
+
 func TestStepTaskReleasesWhenTheTaskEnds(t *testing.T) {
 	ctx := context.Background()
 	book := &fake{}

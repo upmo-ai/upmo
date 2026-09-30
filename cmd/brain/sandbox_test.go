@@ -37,12 +37,15 @@ func TestSandboxSeatsWithoutURLHasNoProvider(t *testing.T) {
 func TestSandboxSeatsWithURLOpensTheClient(t *testing.T) {
 	raw := make([]byte, 32)
 	key := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
-	seats, err := sandboxSeats(config.Config{SandboxdURL: "http://sandboxd:8083", ServiceKey: key}, nil, nil)
+	seats, err := sandboxSeats(config.Config{SandboxdURL: "http://sandboxd:8083", ServiceKey: key, SeatImage: "upmo/sandbox:base"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !seats.Ready() {
 		t.Fatal("not ready with UPMO_SANDBOXD_URL set")
+	}
+	if seats.Image != "upmo/sandbox:base" {
+		t.Fatalf("image = %q", seats.Image)
 	}
 }
 

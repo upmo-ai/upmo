@@ -40,6 +40,9 @@ type Config struct {
 	GatewayURL string
 	// SandboxdURL is the sandbox process (UPMO_SANDBOXD_URL). Empty until brain calls it.
 	SandboxdURL string
+	// SeatImage is the image a task sandbox starts from (UPMO_SEAT_IMAGE).
+	// Empty means the runtime default, which has no git.
+	SeatImage string
 	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
 	// is empty when mail is unset, and links are then only copied.
 	SMTP SMTP
@@ -158,6 +161,13 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("config: UPMO_SANDBOXD_URL must be an absolute http(s) URL")
 		}
 		cfg.SandboxdURL = strings.TrimRight(v, "/")
+	}
+	if v, ok := lookup("UPMO_SEAT_IMAGE"); ok && strings.TrimSpace(v) != "" {
+		v = strings.TrimSpace(v)
+		if strings.ContainsFunc(v, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+			return Config{}, fmt.Errorf("config: UPMO_SEAT_IMAGE must be one image reference")
+		}
+		cfg.SeatImage = v
 	}
 	smtp, err := loadSMTP(lookup)
 	if err != nil {

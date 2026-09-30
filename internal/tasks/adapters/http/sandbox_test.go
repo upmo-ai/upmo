@@ -19,14 +19,29 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
 )
 
-// fakeSandboxd answers Create and Destroy behind the service HMAC for the
-// sandboxd audience, as cmd/sandboxd does, and records what it was asked.
+// fakeSandboxd answers Create, Destroy, Exec and the file calls behind the
+// service HMAC for the sandboxd audience, as cmd/sandboxd does, and records
+// what it was asked. Every command exits 0 unless failOn names one of its
+// arguments, which then exits 128.
 type fakeSandboxd struct {
 	mu       sync.Mutex
 	calls    []string
 	created  []map[string]any
 	destroys []string
+	execs    [][]string
+	files    map[string][]byte
 	refuse   int
+	failOn   string
+}
+
+// provisionCalls is what a sandbox without a repository is provisioned
+// with: the marker, the toolchain check, the probe and the marker read back.
+var provisionCalls = []string{
+	"/upmo.sandboxd.v1.Runtime/Create",
+	"/upmo.sandboxd.v1.Runtime/WriteFile",
+	"/upmo.sandboxd.v1.Runtime/Exec",
+	"/upmo.sandboxd.v1.Runtime/Exec",
+	"/upmo.sandboxd.v1.Runtime/ReadFile",
 }
 
 func (f *fakeSandboxd) serve(t *testing.T, secret string) *httptest.Server {
@@ -68,6 +83,52 @@ func (f *fakeSandboxd) serve(t *testing.T, secret string) *httptest.Server {
 			}
 			f.destroys = append(f.destroys, body["id"])
 			_, _ = w.Write([]byte("{}"))
+		case "/upmo.sandboxd.v1.Runtime/Exec":
+			var body struct {
+				ID   string   `json:"id"`
+				Args []string `json:"args"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID != "box-1" {
+				t.Errorf("exec body: %+v %v", body, err)
+			}
+			f.execs = append(f.execs, body.Args)
+			code := 0
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			enc := json.NewEncoder(w)
+			if f.failOn != "" && slices.Contains(body.Args, f.failOn) {
+				code = 128
+				_ = enc.Encode(map[string]any{"type": "output", "stream": "stderr", "data": []byte("fatal: no network")})
+			}
+			_ = enc.Encode(map[string]any{"type": "exit", "code": code})
+		case "/upmo.sandboxd.v1.Runtime/WriteFile":
+			var body struct {
+				ID   string `json:"id"`
+				Path string `json:"path"`
+				Data []byte `json:"data"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("write body: %v", err)
+			}
+			if f.files == nil {
+				f.files = map[string][]byte{}
+			}
+			f.files[body.Path] = body.Data
+			_, _ = w.Write([]byte("{}"))
+		case "/upmo.sandboxd.v1.Runtime/ReadFile":
+			var body struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("read body: %v", err)
+			}
+			data, ok := f.files[body.Path]
+			if !ok {
+				w.Header().Set("Upmo-Error", "no_file")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte("{}"))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 		default:
 			http.NotFound(w, r)
 		}
@@ -136,8 +197,20 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 		t.Fatalf("open status = %d body %s", rec.Code, rec.Body.String())
 	}
 	calls, created, _ := sd.seen()
-	if !slices.Equal(calls, []string{"/upmo.sandboxd.v1.Runtime/Create"}) || len(created) != 1 {
+	wantCalls := []string{
+		"/upmo.sandboxd.v1.Runtime/Create",
+		"/upmo.sandboxd.v1.Runtime/Exec", // clone
+		"/upmo.sandboxd.v1.Runtime/WriteFile",
+		"/upmo.sandboxd.v1.Runtime/Exec", // toolchain
+		"/upmo.sandboxd.v1.Runtime/Exec", // probe
+		"/upmo.sandboxd.v1.Runtime/Exec", // the clone has a commit
+		"/upmo.sandboxd.v1.Runtime/ReadFile",
+	}
+	if !slices.Equal(calls, wantCalls) || len(created) != 1 {
 		t.Fatalf("calls = %v", calls)
+	}
+	if rec, ok := boxes.Progress(taskID); !ok || rec.Phase != runtime.PhaseReady {
+		t.Fatalf("progress = %+v %t", rec, ok)
 	}
 	if created[0]["task_id"] != taskID || created[0]["tier"] != "container" || created[0]["image"] != runtime.SeatImage {
 		t.Fatalf("create body = %v", created[0])
@@ -156,6 +229,72 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 	}
 	if _, ok := held(t, boxes); ok {
 		t.Fatal("still held after the task failed")
+	}
+}
+
+func TestOpenWithAShellProvisionsWithoutAClone(t *testing.T) {
+	sd := &fakeSandboxd{}
+	boxes := seats(t, sd, testKey('s'))
+	book := &fakeBook{openID: taskID}
+	rec := post(sandboxHandler(book, boxes), "/api/tasks", `{"goal":"Tidy the notes","tool_classes":["shell"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["status"] != string(domain.Preparing) {
+		t.Fatalf("body = %v %v", got, err)
+	}
+	if calls, _, _ := sd.seen(); !slices.Equal(calls, provisionCalls) {
+		t.Fatalf("calls = %v", calls)
+	}
+	if progress, ok := boxes.Progress(taskID); !ok || progress.Phase != runtime.PhaseReady {
+		t.Fatalf("progress = %+v %t", progress, ok)
+	}
+}
+
+func TestOpenWhenACloneFailsFailsTheTaskAndDestroysTheSandbox(t *testing.T) {
+	sd := &fakeSandboxd{failOn: "clone"}
+	boxes := seats(t, sd, testKey('s'))
+	book := &fakeBook{openID: taskID}
+	rec := post(sandboxHandler(book, boxes), "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != taskID || got["status"] != string(domain.Failed) || got["phase"] != string(runtime.PhaseClone) {
+		t.Fatalf("body = %v", got)
+	}
+	// The cause stays in the brain log; the body names the phase only.
+	if strings.Contains(rec.Body.String(), "no network") || strings.Contains(rec.Body.String(), "github.com") {
+		t.Fatalf("body leaks the cause: %s", rec.Body.String())
+	}
+	if len(book.inputs) != 2 || book.inputs[1].Kind != domain.Fail {
+		t.Fatalf("inputs = %v", book.inputs)
+	}
+	calls, _, destroys := sd.seen()
+	if !slices.Equal(destroys, []string{"box-1"}) || slices.Contains(calls, "/upmo.sandboxd.v1.Runtime/WriteFile") {
+		t.Fatalf("calls = %v destroys = %v", calls, destroys)
+	}
+	if _, ok := held(t, boxes); ok {
+		t.Fatal("held after a failed clone")
+	}
+	if _, ok := boxes.Progress(taskID); ok {
+		t.Fatal("progress kept after release")
+	}
+}
+
+func TestOpenWithARepoItCannotCloneIsRefused(t *testing.T) {
+	sd := &fakeSandboxd{}
+	book := &fakeBook{openID: taskID}
+	rec := post(sandboxHandler(book, seats(t, sd, testKey('s'))), "/api/tasks", `{"goal":"Fix the build","repo":"--upload-pack=sh"}`)
+	if rec.Code != http.StatusBadRequest || book.calls != 0 || !strings.Contains(rec.Body.String(), "owner/name") {
+		t.Fatalf("status = %d calls = %d body %s", rec.Code, book.calls, rec.Body.String())
+	}
+	if calls, _, _ := sd.seen(); len(calls) != 0 {
+		t.Fatalf("sandboxd called: %v", calls)
 	}
 }
 

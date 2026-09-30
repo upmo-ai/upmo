@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -79,6 +80,13 @@ func (h Handler) open(w http.ResponseWriter, r *http.Request) {
 		// The task opened, then its sandbox failed and it was moved to Failed.
 		body := taskJSON(task)
 		body["error"] = "the task sandbox could not start"
+		// A provisioning phase that failed is named, and only named: its
+		// cause may quote the sandbox, so it stays in the brain log.
+		var phase *runtime.PhaseError
+		if errors.As(err, &phase) {
+			body["error"] = "the task sandbox failed while provisioning"
+			body["phase"] = string(phase.Phase)
+		}
 		writeJSON(w, http.StatusServiceUnavailable, body)
 		return
 	}
@@ -155,6 +163,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusServiceUnavailable, "the task needs a sandbox and none is configured")
 	case errors.Is(err, app.ErrSandbox):
 		writeError(w, http.StatusServiceUnavailable, "the task sandbox could not start")
+	case errors.Is(err, runtime.ErrRepo):
+		writeError(w, http.StatusBadRequest, "the repository must be owner/name or an https URL")
 	case errors.Is(err, app.ErrAccess):
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, app.ErrGone):

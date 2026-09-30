@@ -45,6 +45,10 @@ services:
       # never gets the engine socket. A task that needs a sandbox
       # fails with 503 while sandboxd is not running.
       UPMO_SANDBOXD_URL: http://sandboxd:8083
+      # The image each task sandbox starts from. Empty is debian:bookworm-slim,
+      # which provisions a task without a repository. A repository needs git:
+      # build sandbox-image and set UPMO_SEAT_IMAGE=upmo/sandbox:base.
+      UPMO_SEAT_IMAGE: ${UPMO_SEAT_IMAGE:-}
       # Dev only. Never reuse outside the local compose stack.
       UPMO_SERVICE_KEY: upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
     healthcheck:
@@ -112,6 +116,17 @@ services:
       timeout: 3s
       retries: 5
       start_period: 60s
+
+  # The seat image with git, from the base target of deploy/sandbox/Dockerfile.
+  # It is built on the engine sandboxd drives, so the Docker driver finds it
+  # without a pull: `docker compose build sandbox-image`. Never started.
+  sandbox-image:
+    image: upmo/sandbox:base
+    profiles: ["sandbox"]
+    build:
+      context: .
+      dockerfile: deploy/sandbox/Dockerfile
+      target: base
 
   golangci-lint:
     # v2.13.2 is the oldest v2 image whose Go (1.27) can load a go 1.26.5 module.
