@@ -57,6 +57,10 @@ type Secrets interface {
 	Get(ref string) (string, error)
 }
 
+// Caps reports the capabilities one model offers. ok is false when the model
+// is absent from the catalog.
+type Caps func(model string) (have []string, ok bool)
+
 // Dispatch walks a route's links using the failover table.
 type Dispatch struct {
 	Routes  Routes
@@ -67,6 +71,8 @@ type Dispatch struct {
 	Decide  map[string]Decider
 	Chat    map[string]Chatter
 	Embed   map[string]Embedder
+	Gates   *Gates
+	Caps    Caps
 }
 
 func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) error {
@@ -118,11 +124,16 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 			last = fmt.Errorf("gateway: no decide adapter %q", link.Account.Adapter)
 			continue
 		}
+		if skip, err := d.skip(link); skip {
+			last = err
+			continue
+		}
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return domain.DecideResult{}, werr
 			}
+			d.seen(link.Account.CredentialRef, domain.ClassCredential)
 			if domain.NextAction(domain.ClassCredential, 0) == domain.ActionNext {
 				last = err
 				continue
@@ -136,6 +147,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
 				return domain.DecideResult{}, werr
 			}
+			d.seen(link.Account.CredentialRef, class)
 			if class == domain.ClassOK && err == nil {
 				return result, nil
 			}
@@ -226,11 +238,16 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 			last = fmt.Errorf("gateway: no chat adapter %q", link.Account.Adapter)
 			continue
 		}
+		if skip, err := d.skip(link); skip {
+			last = err
+			continue
+		}
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return "", werr
 			}
+			d.seen(link.Account.CredentialRef, domain.ClassCredential)
 			last = err
 			continue
 		}
@@ -241,6 +258,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
 				return "", werr
 			}
+			d.seen(link.Account.CredentialRef, class)
 			if class == domain.ClassOK && err == nil {
 				return text, nil
 			}
@@ -290,11 +308,16 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 			last = fmt.Errorf("gateway: no embed adapter %q", link.Account.Adapter)
 			continue
 		}
+		if skip, err := d.skip(link); skip {
+			last = err
+			continue
+		}
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return "", nil, werr
 			}
+			d.seen(link.Account.CredentialRef, domain.ClassCredential)
 			last = err
 			continue
 		}
@@ -312,6 +335,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
 				return "", nil, werr
 			}
+			d.seen(link.Account.CredentialRef, class)
 			if class == domain.ClassOK && err == nil {
 				return link.Model, vectors, nil
 			}
@@ -334,4 +358,27 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 		last = fmt.Errorf("gateway: route %q exhausted", routeName)
 	}
 	return "", nil, last
+}
+
+func (d Dispatch) skip(link domain.Link) (bool, error) {
+	if d.Gates != nil && !d.Gates.Closed(link.Account.CredentialRef) {
+		return true, domain.ErrCooling
+	}
+	if len(link.Need) == 0 {
+		return false, nil
+	}
+	if d.Caps == nil {
+		return true, domain.ErrCapability
+	}
+	have, ok := d.Caps(link.Model)
+	if !ok || domain.Fit(link.Need, have) != nil {
+		return true, domain.ErrCapability
+	}
+	return false, nil
+}
+
+func (d Dispatch) seen(ref string, class domain.FailureClass) {
+	if d.Gates != nil {
+		d.Gates.Observe(ref, class, 0)
+	}
 }
