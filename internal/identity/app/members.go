@@ -255,6 +255,22 @@ func (m Members) ArtifactAllow(ctx context.Context, id domain.UserID) (string, e
 	return strings.Join(names, ","), nil
 }
 
+// ChatAllow is the chat permissions a joined person holds, comma-separated.
+func (m Members) ChatAllow(ctx context.Context, id domain.UserID) (string, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, permission := range subject.Permissions {
+		name := string(permission)
+		if strings.HasPrefix(name, "chat:") {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ","), nil
+}
+
 // ObjectShare is one row from SharedObjectsSQL.
 type ObjectShare struct {
 	ObjectID string
