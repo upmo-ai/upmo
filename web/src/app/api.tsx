@@ -236,7 +236,7 @@ const taskFixtures: Task[] = [
     status: "Done",
     phase: "Checking",
     result: "The receipts are filed.",
-    detail: "File the receipts for Aster.",
+    detail: "File the receipts for Kodeeo Limited.",
   },
   {
     id: "aster-failed",
@@ -244,7 +244,7 @@ const taskFixtures: Task[] = [
     status: "Failed",
     phase: "Checking",
     result: "",
-    detail: "Close the week for Aster.",
+    detail: "Close the week for Kodeeo Limited.",
   },
 ];
 

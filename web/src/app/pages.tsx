@@ -10,24 +10,10 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { IconSearch } from "@tabler/icons-react";
+import { IconActivity, IconSearch } from "@tabler/icons-react";
 import { useState } from "react";
 
-import { ShellIcon } from "../ui/icons";
-
-function Caret({ size = 20 }: { size?: number }) {
-  return (
-    <svg viewBox="0 0 64 64" width={size} height={size} fill="none" aria-hidden>
-      <path
-        d="M10 44 32 22l22 22"
-        stroke="currentColor"
-        strokeWidth="10"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+import { CaretIcon, ShellIcon } from "../ui/icons";
 import { Section } from "../ui/section";
 
 import "../features/chat/chat.css";
@@ -201,7 +187,7 @@ export function ChatPage() {
             </div>
             <div className="chat-message chat-message-assistant">
               <span className="chat-avatar" aria-hidden>
-                <Caret />
+                <CaretIcon size={20} />
               </span>
               <div className="chat-reply">
                 <Text>
@@ -209,9 +195,32 @@ export function ChatPage() {
                   support rota and agree the release date. The release date is the only open
                   decision.
                 </Text>
-                <Text className="chat-message-meta">
-                  Upmo · 184 tokens · 1.4 s
-                </Text>
+                <div className="chat-message-meta">
+                  <span>Upmo</span>
+                  <span>·</span>
+                  <span>184 tokens</span>
+                  <span>·</span>
+                  <span>1.4 s</span>
+                  <Tooltip label="Copy reply" position="bottom" openDelay={400}>
+                    <ActionIcon
+                      aria-label="Copy reply"
+                      variant="subtle"
+                      size={28}
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(
+                          "The notes point to three priorities: finish the onboarding copy, confirm the support rota and agree the release date. The release date is the only open decision.",
+                        );
+                      }}
+                    >
+                      <ShellIcon concept="action.copy" size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label="Activity" position="bottom" openDelay={400}>
+                    <ActionIcon aria-label="Activity" variant="subtle" size={28}>
+                      <IconActivity size={16} stroke={1.75} aria-hidden="true" />
+                    </ActionIcon>
+                  </Tooltip>
+                </div>
               </div>
             </div>
           </Stack>
@@ -220,7 +229,10 @@ export function ChatPage() {
             <form
               className="chat-composer"
               aria-label="Chat composer"
-              onSubmit={(event) => event.preventDefault()}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (draft.trim() !== "") setDraft("");
+              }}
             >
               <Textarea
                 className="chat-composer-input"
@@ -229,13 +241,27 @@ export function ChatPage() {
                 rows={2}
                 value={draft}
                 onChange={(event) => setDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    if (draft.trim() !== "") setDraft("");
+                  }
+                }}
               />
               <Tooltip label="Send" position="top" openDelay={400}>
-                <ActionIcon aria-label="Send" type="submit" size={40} disabled={draft.trim() === ""}>
-                  <Caret />
+                <ActionIcon
+                  aria-label="Send"
+                  type="submit"
+                  size={40}
+                  disabled={draft.trim() === ""}
+                >
+                  <ShellIcon concept="action.send" size={20} />
                 </ActionIcon>
               </Tooltip>
             </form>
+            <div className="chat-composer-hint">
+              <kbd className="chat-kbd">Enter</kbd> to send · <kbd className="chat-kbd">Shift</kbd> <kbd className="chat-kbd">Enter</kbd> for a new line
+            </div>
           </div>
         </article>
       </div>
