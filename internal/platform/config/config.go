@@ -43,6 +43,9 @@ type Config struct {
 	// SeatImage is the image a task sandbox starts from (UPMO_SEAT_IMAGE).
 	// Empty means the runtime default, which has no git.
 	SeatImage string
+	// ArtifactsDir is the Compose volume root for artifact bytes (UPMO_ARTIFACTS_DIR).
+	// Empty refuses volume downloads until set.
+	ArtifactsDir string
 	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
 	// is empty when mail is unset, and links are then only copied.
 	SMTP SMTP
@@ -168,6 +171,13 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("config: UPMO_SEAT_IMAGE must be one image reference")
 		}
 		cfg.SeatImage = v
+	}
+	if v, ok := lookup("UPMO_ARTIFACTS_DIR"); ok && strings.TrimSpace(v) != "" {
+		v = strings.TrimSpace(v)
+		if strings.ContainsAny(v, "\x00") || !strings.HasPrefix(v, "/") {
+			return Config{}, fmt.Errorf("config: UPMO_ARTIFACTS_DIR must be an absolute path")
+		}
+		cfg.ArtifactsDir = v
 	}
 	smtp, err := loadSMTP(lookup)
 	if err != nil {

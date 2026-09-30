@@ -140,3 +140,32 @@ func up(t *testing.T) *pgxpool.Pool {
 	}
 	return pool
 }
+
+func TestListByTaskAndGet(t *testing.T) {
+	owner := up(t)
+	app := pgtest.App(t, owner)
+	store := artifacts.Store{Pool: app}
+	ctx := context.Background()
+	create := artifacts.Access{UserID: ownerUser, Allow: "artifact:create,artifact:view"}
+	id, err := store.Put(ctx, create, ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := artifacts.Access{UserID: ownerUser, Allow: "artifact:view"}
+	listed, err := store.ListByTask(ctx, view, taskID)
+	if err != nil || len(listed) != 1 || listed[0].ID != id || listed[0].Name != "report.pdf" {
+		t.Fatalf("listed = %#v err %v", listed, err)
+	}
+	got, err := store.Get(ctx, view, id)
+	if err != nil || got.Key != "task/report.pdf" {
+		t.Fatalf("get = %#v err %v", got, err)
+	}
+	other := artifacts.Access{UserID: otherUser, Allow: "artifact:view"}
+	listed, err = store.ListByTask(ctx, other, taskID)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("other list = %#v err %v", listed, err)
+	}
+	if _, err := store.Get(ctx, other, id); !errors.Is(err, artifacts.ErrGone) {
+		t.Fatalf("other get = %v", err)
+	}
+}

@@ -114,3 +114,23 @@ func (f allowFake) ReplaceMemberLink(context.Context, domain.UserID, string, []b
 func (f allowFake) Profile(context.Context, domain.UserID) (string, string, error) {
 	return "", "", nil
 }
+
+func TestArtifactAllowUsesTheMembersArtifactPermissions(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member", joined: true}}
+	got, err := members.ArtifactAllow(context.Background(), domain.UserID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "artifact:create,artifact:view,artifact:edit,artifact:share,artifact:delete"
+	if got != want {
+		t.Fatalf("allow = %q", got)
+	}
+}
+
+func TestArtifactAllowRefusesAPersonWhoHasNotJoined(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member"}}
+	_, err := members.ArtifactAllow(context.Background(), domain.UserID{})
+	if !errors.Is(err, domain.ErrNoSuchMember) {
+		t.Fatalf("error = %v", err)
+	}
+}

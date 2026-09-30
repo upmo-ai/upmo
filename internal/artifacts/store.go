@@ -2,6 +2,7 @@ package artifacts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -133,4 +134,83 @@ func arrayOr(literal string) string {
 		return "{}"
 	}
 	return literal
+}
+
+// ListByTask returns the artifacts for a task this person can see under row
+// security. An empty list is not an error.
+func (s Store) ListByTask(ctx context.Context, access Access, taskID string) ([]Record, error) {
+	taskID, ok := canonical(taskID)
+	if !ok {
+		return nil, ErrArtifact
+	}
+	user, ok := canonical(access.UserID)
+	if !ok || access.Allow == "" {
+		return nil, ErrArtifact
+	}
+	access.UserID = user
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, task_id::text, name, store, object_key
+		FROM artifacts.artifacts
+		WHERE task_id = $1::uuid
+		ORDER BY name`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Record, 0)
+	for rows.Next() {
+		var rec Record
+		if err := rows.Scan(&rec.ID, &rec.Task, &rec.Name, &rec.Store, &rec.Key); err != nil {
+			return nil, fmt.Errorf("artifacts: list: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("artifacts: list: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Get returns one artifact this person can see under row security.
+func (s Store) Get(ctx context.Context, access Access, id string) (Record, error) {
+	id, ok := canonical(id)
+	if !ok {
+		return Record{}, ErrArtifact
+	}
+	user, ok := canonical(access.UserID)
+	if !ok || access.Allow == "" {
+		return Record{}, ErrArtifact
+	}
+	access.UserID = user
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return Record{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var rec Record
+	err = tx.QueryRow(ctx, `
+		SELECT id::text, task_id::text, name, store, object_key
+		FROM artifacts.artifacts
+		WHERE id = $1::uuid`, id).Scan(&rec.ID, &rec.Task, &rec.Name, &rec.Store, &rec.Key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Record{}, ErrGone
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("artifacts: get: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Record{}, err
+	}
+	return rec, nil
 }

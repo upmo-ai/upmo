@@ -19,9 +19,10 @@ type (
 )
 
 const (
-	IdleTimeout = domain.IdleTimeout
-	MaxAge      = domain.MaxAge
-	TypeTask    = domain.TypeTask
+	IdleTimeout  = domain.IdleTimeout
+	MaxAge       = domain.MaxAge
+	TypeTask     = domain.TypeTask
+	TypeArtifact = domain.TypeArtifact
 )
 
 var (

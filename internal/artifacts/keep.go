@@ -19,7 +19,10 @@ const (
 const keyBytes = 1024
 
 // ErrArtifact is returned for any artifact or owner that breaks the rules.
-var ErrArtifact = errors.New("artifacts: artifact")
+var (
+	ErrArtifact = errors.New("artifacts: artifact")
+	ErrGone     = errors.New("artifacts: gone")
+)
 
 // Artifact is one file a task produced, held apart from the sandbox.
 type Artifact struct {
