@@ -1,12 +1,41 @@
 // Package runtime is the runtime context facade. It owns the SandboxProvider
 // port; sandboxd implements it and brain calls it through Open.
+// It embeds this context's SQL, which records the seat each task holds.
 package runtime
 
 import (
+	"embed"
+	"io/fs"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/upmo-ai/upmo/internal/runtime/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/runtime/adapters/sandboxd"
 	"github.com/upmo-ai/upmo/internal/runtime/app"
 	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
+
+// Schema is the Postgres schema this context owns.
+const Schema = "runtime"
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+// Migrations returns this context's migration files. A runner applies them
+// and nothing from any other context.
+func Migrations() fs.FS {
+	files, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		panic("runtime: embed migrations: " + err.Error())
+	}
+	return files
+}
+
+// SeatStore returns the SeatBook kept in the runtime schema, so a seat
+// outlives the brain process that created it.
+func SeatStore(pool *pgxpool.Pool) SeatBook {
+	return postgres.Seats{Pool: pool}
+}
 
 // The port and its messages.
 type (
@@ -22,11 +51,12 @@ type (
 	Shape           = domain.Shape
 )
 
-// Seats holds the sandbox each task occupies, in process memory. Class is
-// a tool class NeedsSandbox reads.
+// Seats holds the sandbox each task occupies and records it in a SeatBook.
+// Class is a tool class NeedsSandbox reads.
 type (
-	Seats = app.Seats
-	Class = domain.Class
+	Seats    = app.Seats
+	SeatBook = app.SeatBook
+	Class    = domain.Class
 )
 
 // Tool classes.
@@ -47,6 +77,7 @@ const (
 // Errors Seats reports.
 var (
 	ErrSandboxdUnset = app.ErrSandboxdUnset
+	ErrNoSeatBook    = app.ErrNoSeatBook
 	ErrSeated        = app.ErrSeated
 	ErrReleased      = app.ErrReleased
 	ErrClass         = domain.ErrClass
