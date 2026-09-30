@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -109,11 +110,49 @@ func TestListEmptyAllowDoesNotCallTheLister(t *testing.T) {
 
 const taskID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
+func TestPreparingReturnsProgress(t *testing.T) {
+	book := &fakeBook{}
+	progress := fakeProgress{taskID: {Phase: "toolchain", Events: 3}}
+	rec := callPreparing(t, book, progress, "/api/tasks/"+taskID+"/preparing", true)
+	if rec.Code != http.StatusOK || book.views != 1 {
+		t.Fatalf("status %d views %d body %s", rec.Code, book.views, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["phase"] != "toolchain" || got["events"] != float64(3) {
+		t.Fatalf("body = %#v", got)
+	}
+}
+
+func TestPreparingMissingIsNotFound(t *testing.T) {
+	book := &fakeBook{}
+	rec := callPreparing(t, book, fakeProgress{}, "/api/tasks/"+taskID+"/preparing", true)
+	if rec.Code != http.StatusNotFound || book.views != 1 {
+		t.Fatalf("status %d views %d", rec.Code, book.views)
+	}
+}
+
+func TestPreparingGoneTaskIsNotFound(t *testing.T) {
+	book := &fakeBook{err: app.ErrGone}
+	rec := callPreparing(t, book, fakeProgress{taskID: {Phase: "clone", Events: 1}}, "/api/tasks/"+taskID+"/preparing", true)
+	if rec.Code != http.StatusNotFound || book.views != 1 {
+		t.Fatalf("status %d views %d", rec.Code, book.views)
+	}
+}
+
 func handler(book *fakeBook, allow bool) http.Handler {
+	return handlerWithProgress(book, nil, allow)
+}
+
+func handlerWithProgress(book *fakeBook, progress app.Progresses, allow bool) http.Handler {
 	mux := http.NewServeMux()
 	Handler{
-		Book: book,
-		List: book,
+		Book:     book,
+		List:     book,
+		View:     book,
+		Progress: progress,
 		Access: func(*http.Request) (app.Access, bool) {
 			if !allow {
 				return app.Access{}, false
@@ -122,6 +161,14 @@ func handler(book *fakeBook, allow bool) http.Handler {
 		},
 	}.Mount(mux, nil)
 	return mux
+}
+
+func callPreparing(t *testing.T, book *fakeBook, progress app.Progresses, path string, allow bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handlerWithProgress(book, progress, allow).ServeHTTP(rec, req)
+	return rec
 }
 
 func call(t *testing.T, book *fakeBook, method, path, body string, allow bool) *httptest.ResponseRecorder {
@@ -135,6 +182,7 @@ func call(t *testing.T, book *fakeBook, method, path, body string, allow bool) *
 type fakeBook struct {
 	calls  int
 	lists  int
+	views  int
 	taskID string
 	input  domain.Input
 	inputs []domain.Input
@@ -142,6 +190,13 @@ type fakeBook struct {
 	listed []app.Task
 	// openID is the id Open returns; empty means task-1.
 	openID string
+}
+
+type fakeProgress map[string]runtime.Record
+
+func (f fakeProgress) Progress(taskID string) (runtime.Record, bool) {
+	rec, ok := f[taskID]
+	return rec, ok
 }
 
 func (f *fakeBook) Transition(_ context.Context, _ app.Access, taskID string, input domain.Input) (app.Task, error) {
@@ -176,6 +231,14 @@ func (f *fakeBook) List(context.Context, app.Access) ([]app.Task, error) {
 		return nil, f.err
 	}
 	return append([]app.Task(nil), f.listed...), nil
+}
+
+func (f *fakeBook) View(_ context.Context, _ app.Access, taskID string) (app.Task, error) {
+	f.views++
+	if f.err != nil {
+		return app.Task{}, f.err
+	}
+	return app.Task{ID: taskID, Status: domain.Preparing, Goal: "File the receipts"}, nil
 }
 
 func (f *fakeBook) Record(context.Context, app.Access, string, []domain.Check) (bool, error) {

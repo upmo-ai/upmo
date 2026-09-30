@@ -16,11 +16,15 @@ import (
 type Handler struct {
 	Book   app.Book
 	List   app.Lister
+	View   app.Viewer
 	Access func(r *http.Request) (app.Access, bool)
 	// Sandboxes starts a task's sandbox on Open and releases it when the
 	// task ends. Open answers once the sandbox is created; provisioning runs
 	// on after the response. Nil refuses any task that needs one.
 	Sandboxes app.Sandboxes
+	// Progress returns the in-process Preparing record. Nil answers not found
+	// for GET /api/tasks/{id}/preparing.
+	Progress app.Progresses
 }
 
 // Mount registers the task routes. guard runs first.
@@ -32,8 +36,24 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 		return guard(next)
 	}
 	mux.Handle("GET /api/tasks", wrap(http.HandlerFunc(h.list)))
+	mux.Handle("GET /api/tasks/{id}/preparing", wrap(http.HandlerFunc(h.preparing)))
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
+}
+
+func (h Handler) preparing(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	rec, err := app.PreparingProgress(r.Context(), h.View, h.Progress, access, r.PathValue("id"))
+	if refuse(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"phase":  string(rec.Phase),
+		"events": rec.Events,
+	})
 }
 
 func (h Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +183,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "no such task")
+	case errors.Is(err, app.ErrPreparing):
+		writeError(w, http.StatusNotFound, "no preparing progress")
 	case errors.Is(err, app.ErrTask), errors.Is(err, domain.ErrInput), errors.Is(err, domain.ErrGoal), errors.Is(err, domain.ErrChat):
 		writeError(w, http.StatusBadRequest, "the task input was refused")
 	case errors.Is(err, domain.ErrTerminal), errors.Is(err, domain.ErrEvidence), errors.Is(err, domain.ErrTurn), errors.Is(err, domain.ErrExhausted), errors.Is(err, domain.ErrStatus):
