@@ -110,6 +110,38 @@ func TestListEmptyAllowDoesNotCallTheLister(t *testing.T) {
 
 const taskID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
+
+func TestGetReturnsATask(t *testing.T) {
+	book := &fakeBook{viewed: app.Task{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}
+	rec := call(t, book, http.MethodGet, "/api/tasks/"+taskID, "", true)
+	if rec.Code != http.StatusOK || book.views != 1 {
+		t.Fatalf("status %d views %d body %s", rec.Code, book.views, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != taskID || got["status"] != string(domain.Working) || got["goal"] != "File the receipts" {
+		t.Fatalf("task = %#v", got)
+	}
+}
+
+func TestGetMissingIsNotFound(t *testing.T) {
+	book := &fakeBook{err: app.ErrGone}
+	rec := call(t, book, http.MethodGet, "/api/tasks/"+taskID, "", true)
+	if rec.Code != http.StatusNotFound || book.views != 1 {
+		t.Fatalf("status %d views %d", rec.Code, book.views)
+	}
+}
+
+func TestGetEmptyAllowDoesNotCallTheViewer(t *testing.T) {
+	book := &fakeBook{}
+	rec := call(t, book, http.MethodGet, "/api/tasks/"+taskID, "", false)
+	if rec.Code != http.StatusUnauthorized || book.views != 0 {
+		t.Fatalf("status %d views %d", rec.Code, book.views)
+	}
+}
+
 func TestPreparingReturnsProgress(t *testing.T) {
 	book := &fakeBook{}
 	progress := fakeProgress{taskID: {Phase: "toolchain", Events: 3}}
@@ -183,6 +215,7 @@ type fakeBook struct {
 	calls  int
 	lists  int
 	views  int
+	viewed app.Task
 	taskID string
 	input  domain.Input
 	inputs []domain.Input
@@ -237,6 +270,9 @@ func (f *fakeBook) View(_ context.Context, _ app.Access, taskID string) (app.Tas
 	f.views++
 	if f.err != nil {
 		return app.Task{}, f.err
+	}
+	if f.viewed.ID != "" {
+		return f.viewed, nil
 	}
 	return app.Task{ID: taskID, Status: domain.Preparing, Goal: "File the receipts"}, nil
 }

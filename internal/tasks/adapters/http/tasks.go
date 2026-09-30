@@ -37,6 +37,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	}
 	mux.Handle("GET /api/tasks", wrap(http.HandlerFunc(h.list)))
 	mux.Handle("GET /api/tasks/{id}/preparing", wrap(http.HandlerFunc(h.preparing)))
+	mux.Handle("GET /api/tasks/{id}", wrap(http.HandlerFunc(h.get)))
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
 }
@@ -74,6 +75,18 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 		body = append(body, taskJSON(task))
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (h Handler) get(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	task, err := app.ViewTask(r.Context(), h.View, access, r.PathValue("id"))
+	if refuse(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, taskJSON(task))
 }
 
 func (h Handler) open(w http.ResponseWriter, r *http.Request) {
