@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
+	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
 )
 
 // fakeSandboxd answers Create and Destroy behind the service HMAC for the
@@ -92,7 +94,16 @@ func seats(t *testing.T, f *fakeSandboxd, key string) *runtime.Seats {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &runtime.Seats{Provider: provider}
+	return &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}}
+}
+
+func held(t *testing.T, boxes *runtime.Seats) (string, bool) {
+	t.Helper()
+	id, ok, err := boxes.Held(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, ok
 }
 
 func sandboxHandler(book *fakeBook, boxes app.Sandboxes) http.Handler {
@@ -131,7 +142,7 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 	if created[0]["task_id"] != taskID || created[0]["tier"] != "container" || created[0]["image"] != runtime.SeatImage {
 		t.Fatalf("create body = %v", created[0])
 	}
-	if id, ok := boxes.Held(taskID); !ok || id != "box-1" {
+	if id, ok := held(t, boxes); !ok || id != "box-1" {
 		t.Fatalf("held = %q %t", id, ok)
 	}
 
@@ -143,7 +154,7 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 	if !slices.Equal(destroys, []string{"box-1"}) {
 		t.Fatalf("destroys = %v", destroys)
 	}
-	if _, ok := boxes.Held(taskID); ok {
+	if _, ok := held(t, boxes); ok {
 		t.Fatal("still held after the task failed")
 	}
 }
@@ -207,7 +218,7 @@ func TestOpenWhenCreateFailsReturnsTheFailedTask(t *testing.T) {
 	if len(book.inputs) != 2 || book.inputs[1].Kind != domain.Fail {
 		t.Fatalf("inputs = %v", book.inputs)
 	}
-	if _, ok := boxes.Held(taskID); ok {
+	if _, ok := held(t, boxes); ok {
 		t.Fatal("held after a failed create")
 	}
 }

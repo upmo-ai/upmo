@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +26,9 @@ var (
 	// ErrSandboxdUnset reports a sandbox that is needed while no provider is
 	// wired, because UPMO_SANDBOXD_URL is unset.
 	ErrSandboxdUnset = errors.New("runtime: sandboxd is not configured")
+	// ErrNoSeatBook reports Seats wired to sandboxd with nowhere to record
+	// the seat, so a sandbox it created could not be released after a restart.
+	ErrNoSeatBook = errors.New("runtime: seats have no seat book")
 	// ErrSeated reports a task that already holds a sandbox, or has one
 	// being created.
 	ErrSeated = errors.New("runtime: task already holds a sandbox")
@@ -35,29 +37,47 @@ var (
 	ErrReleased = errors.New("runtime: task released during create")
 )
 
-// Seats remembers which sandbox each task holds, in process memory, and
-// creates and destroys it through the provider. It holds no durable state:
-// a restart forgets every seat and sandboxd reclaims the sandbox at its TTL.
-// The zero value is ready. A nil Provider means sandboxd is not configured:
-// Start refuses with ErrSandboxdUnset and Release has nothing to release.
+// SeatBook is the durable record of which sandbox each task holds, so a
+// seat outlives the process that created it. Task ids are canonical uuids.
+// A seat with no sandbox id is a Create still in flight.
+type SeatBook interface {
+	// Claim records a pending seat for taskID that lapses after ttl. It
+	// answers ErrSeated when the task already has a seat.
+	Claim(ctx context.Context, taskID string, ttl time.Duration) error
+	// Fill records sandboxID on taskID's pending seat, and expires when it
+	// is not zero. It reports false when no pending seat is left, because a
+	// Release dropped it.
+	Fill(ctx context.Context, taskID, sandboxID string, expires time.Time) (bool, error)
+	// Seat returns the sandbox id taskID holds, empty while pending, and
+	// whether the task has a seat at all.
+	Seat(ctx context.Context, taskID string) (string, bool, error)
+	// Drop forgets taskID's seat if it still holds sandboxID. An empty
+	// sandboxID drops only a pending seat. A seat that is gone is not an error.
+	Drop(ctx context.Context, taskID, sandboxID string) error
+}
+
+// Seats records which sandbox each task holds in its Book and creates and
+// destroys it through the provider. Because the Book is durable, a brain
+// that restarts can still Release a seat an earlier process created.
+//
+// A nil Provider means sandboxd is not configured: Start refuses with
+// ErrSandboxdUnset and Release leaves any recorded seat for a brain that can
+// reach sandboxd. sandboxd still reclaims every sandbox at its TTL.
 type Seats struct {
 	// Provider is the sandboxd client, or nil when UPMO_SANDBOXD_URL is unset.
 	Provider SandboxProvider
+	// Book records each seat. Production keeps it in the runtime schema.
+	Book SeatBook
 	// Image and TTL fill the spec Provision builds. Empty means SeatImage and SeatTTL.
 	Image string
 	TTL   time.Duration
 	// Log records a Destroy that failed. Nil logs nothing.
 	Log *slog.Logger
-
-	mu sync.Mutex
-	// held maps a task id to its seat. An empty container marks a Create
-	// still in flight.
-	held map[string]domain.Seat
 }
 
 // Ready reports whether Seats can create a sandbox.
 func (s *Seats) Ready() bool {
-	return s != nil && s.Provider != nil
+	return s != nil && s.Provider != nil && s.Book != nil
 }
 
 // Provision creates a sandbox for taskID when repo or classes need one.
@@ -85,11 +105,16 @@ func (s *Seats) spec(taskID string) Spec {
 	return spec
 }
 
-// Start admits spec, creates its sandbox and remembers it for taskID. A
-// blank spec task takes taskID; a different one is refused with ErrSpec.
+// Start admits spec, claims taskID's seat, creates its sandbox and records
+// it. A blank spec task takes taskID; a different one is refused with
+// ErrSpec. A sandbox that cannot be recorded is destroyed, so no sandbox is
+// left that a restarted brain could not release.
 func (s *Seats) Start(ctx context.Context, taskID string, spec Spec) (Sandbox, error) {
-	if !s.Ready() {
+	if s == nil || s.Provider == nil {
 		return Sandbox{}, ErrSandboxdUnset
+	}
+	if s.Book == nil {
+		return Sandbox{}, ErrNoSeatBook
 	}
 	key, ok := taskKey(taskID)
 	if !ok {
@@ -106,52 +131,38 @@ func (s *Seats) Start(ctx context.Context, taskID string, spec Spec) (Sandbox, e
 		return Sandbox{}, ErrSpec
 	}
 
-	s.mu.Lock()
-	if s.held == nil {
-		s.held = map[string]domain.Seat{}
-	}
-	if _, taken := s.held[key]; taken {
-		s.mu.Unlock()
-		return Sandbox{}, ErrSeated
-	}
-	s.held[key] = domain.Seat{}
-	s.mu.Unlock()
-
-	box, err := s.Provider.Create(ctx, spec)
-
-	s.mu.Lock()
-	seat, still := s.held[key]
-	pending := still && seat.Container == ""
-	if err != nil {
-		if pending {
-			delete(s.held, key)
-		}
-		s.mu.Unlock()
+	if err := s.Book.Claim(ctx, key, spec.TTL); err != nil {
 		return Sandbox{}, err
 	}
-	held, herr := domain.Hold(box.ID)
-	if !pending || herr != nil {
-		if pending {
-			delete(s.held, key)
-		}
-		s.mu.Unlock()
-		if herr != nil {
-			return Sandbox{}, herr
-		}
+	box, err := s.Provider.Create(ctx, spec)
+	// The caller may have gone; the seat is still settled.
+	settle := context.WithoutCancel(ctx)
+	if err != nil {
+		return Sandbox{}, errors.Join(err, s.Book.Drop(settle, key, ""))
+	}
+	held, err := domain.Hold(box.ID)
+	if err != nil {
+		return Sandbox{}, errors.Join(err, s.Book.Drop(settle, key, ""))
+	}
+	filled, err := s.Book.Fill(settle, key, held.Container, box.Expires)
+	if err != nil || !filled {
 		// Best effort: a failure is logged and sandboxd reclaims it at its TTL.
-		_ = s.destroy(context.WithoutCancel(ctx), key, box.ID)
+		_ = s.destroy(settle, key, held.Container)
+		if err != nil {
+			return Sandbox{}, errors.Join(err, s.Book.Drop(settle, key, ""))
+		}
 		return Sandbox{}, ErrReleased
 	}
-	s.held[key] = held
-	s.mu.Unlock()
 	return box, nil
 }
 
 // Release destroys the sandbox taskID holds and forgets it. A task that
-// holds none, or a nil Seats, is a no-op. A Create still in flight is
-// destroyed by Start once it returns. A sandbox sandboxd no longer has is
-// forgotten. Any other Destroy failure keeps the seat, so a later Release
-// can retry, and sandboxd still reclaims the sandbox at its TTL.
+// holds none, or a nil Seats, is a no-op. A pending seat is dropped, and
+// the Start still creating it destroys the sandbox once Create returns; a
+// pending seat whose process is gone has no sandbox id to destroy, and
+// sandboxd reclaims that sandbox at its TTL. A sandbox sandboxd no longer
+// has is forgotten. Any other Destroy failure keeps the seat, so a later
+// Release can retry, and sandboxd still reclaims the sandbox at its TTL.
 func (s *Seats) Release(ctx context.Context, taskID string) error {
 	if s == nil {
 		return nil
@@ -160,43 +171,32 @@ func (s *Seats) Release(ctx context.Context, taskID string) error {
 	if !ok {
 		return ErrSpec
 	}
-	s.mu.Lock()
-	seat, held := s.held[key]
-	if !held {
-		s.mu.Unlock()
+	if s.Provider == nil || s.Book == nil {
 		return nil
 	}
-	if seat.Container == "" {
-		delete(s.held, key)
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-
-	if err := s.destroy(ctx, key, seat.Container); err != nil {
+	id, held, err := s.Book.Seat(ctx, key)
+	if err != nil || !held {
 		return err
 	}
-	s.mu.Lock()
-	if s.held[key].Container == seat.Container {
-		delete(s.held, key)
+	if id != "" {
+		if err := s.destroy(ctx, key, id); err != nil {
+			return err
+		}
 	}
-	s.mu.Unlock()
-	return nil
+	return s.Book.Drop(ctx, key, id)
 }
 
-// Held returns the sandbox id taskID holds, if any.
-func (s *Seats) Held(taskID string) (string, bool) {
+// Held returns the sandbox id taskID holds, if any. A pending seat holds none.
+func (s *Seats) Held(ctx context.Context, taskID string) (string, bool, error) {
 	key, ok := taskKey(taskID)
-	if s == nil || !ok {
-		return "", false
+	if s == nil || s.Book == nil || !ok {
+		return "", false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	seat, held := s.held[key]
-	if !held || seat.Container == "" {
-		return "", false
+	id, held, err := s.Book.Seat(ctx, key)
+	if err != nil || !held || id == "" {
+		return "", false, err
 	}
-	return seat.Container, true
+	return id, true, nil
 }
 
 // destroy calls the provider and treats a sandbox it no longer has as gone.

@@ -19,6 +19,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	httpapi "github.com/upmo-ai/upmo/internal/sandboxd/adapters/http"
+	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
 )
 
 const (
@@ -236,22 +237,26 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seats := &runtime.Seats{Provider: provider}
+	book := &seatbook.Memory{}
+	seats := &runtime.Seats{Provider: provider, Book: book}
 	ctx := context.Background()
 	task := spec().Task
 	needed, err := seats.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell})
 	if err != nil || !needed {
 		t.Fatalf("provision = %t %v", needed, err)
 	}
-	id, ok := seats.Held(task)
-	if !ok {
-		t.Fatal("no seat after provision")
+	id, ok, err := seats.Held(ctx, task)
+	if err != nil || !ok {
+		t.Fatalf("no seat after provision: %v", err)
 	}
 	if err := seats.Release(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	if err := provider.Destroy(ctx, id); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("sandbox still held after release: %v", err)
+	}
+	if book.Len() != 0 {
+		t.Fatalf("seats after release = %d", book.Len())
 	}
 }
 

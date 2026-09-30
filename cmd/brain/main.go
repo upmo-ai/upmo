@@ -81,6 +81,9 @@ func run() error {
 	if err == nil {
 		err = migrate.Up(ctx, owner, artifacts.Schema, artifacts.Migrations())
 	}
+	if err == nil {
+		err = migrate.Up(ctx, owner, runtime.Schema, runtime.Migrations())
+	}
 	owner.Close()
 	if err != nil {
 		return err
@@ -108,10 +111,12 @@ func linkMail(s config.SMTP) mail.Sender {
 }
 
 // sandboxSeats holds task sandboxes through sandboxd, signed with the
-// service key. With UPMO_SANDBOXD_URL unset it has no
-// provider, and a task that needs a sandbox is refused rather than opened.
-func sandboxSeats(cfg config.Config, log *slog.Logger) (*runtime.Seats, error) {
-	seats := &runtime.Seats{Log: log}
+// service key, and records each seat in the runtime
+// schema through pool, so a restarted brain can still release it. With
+// UPMO_SANDBOXD_URL unset it has no provider, and a task that needs a
+// sandbox is refused rather than opened.
+func sandboxSeats(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*runtime.Seats, error) {
+	seats := &runtime.Seats{Book: runtime.SeatStore(pool), Log: log}
 	if cfg.SandboxdURL == "" {
 		return seats, nil
 	}
@@ -158,7 +163,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
-	seats, err := sandboxSeats(cfg, log)
+	seats, err := sandboxSeats(cfg, pool, log)
 	if err != nil {
 		return nil, err
 	}
