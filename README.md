@@ -21,7 +21,7 @@ Copy `.env.example` to `.env` to override settings. `.env` is never committed.
 
 - `brain` hosts every bounded context in one process.
 - `gateway` routes model calls and holds provider credentials. It listens on localhost:8082. Chat is built as tools, then system, then messages. Each attempt writes a ledger row.
-- `sandboxd` runs sandbox drivers and the egress proxy and arrives with its epic.
+- `sandboxd` serves the sandbox port, the egress proxy and the credential injector. It listens on localhost:8083. The driver is a stub for now.
 
 ## Layout
 

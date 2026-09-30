@@ -203,3 +203,68 @@ func TestLoadSMTPPartialOrInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadSandboxdURL(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SandboxdURL != "" {
+		t.Fatalf("SandboxdURL = %q, want empty", cfg.SandboxdURL)
+	}
+	base["UPMO_SANDBOXD_URL"] = "http://sandboxd:8083/"
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SandboxdURL != "http://sandboxd:8083" {
+		t.Fatalf("SandboxdURL = %q", cfg.SandboxdURL)
+	}
+	base["UPMO_SANDBOXD_URL"] = "sandboxd:8083"
+	if _, err := load(lookupFrom(base)); err == nil {
+		t.Fatal("relative sandboxd url")
+	}
+}
+
+func TestLoadSandboxd(t *testing.T) {
+	cfg, err := loadSandboxd(lookupFrom(map[string]string{"UPMO_SERVICE_KEY": "upmo_svc_x"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenAddr != ":8083" || cfg.ProxyAddr != ":3128" || cfg.ShutdownTimeout != 10*time.Second || cfg.LogLevel != "info" {
+		t.Fatalf("defaults = %+v", cfg)
+	}
+	if cfg.ServiceKey != "upmo_svc_x" || cfg.ServiceKeyPrevious != "" {
+		t.Fatalf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	}
+
+	cfg, err = loadSandboxd(lookupFrom(map[string]string{
+		"UPMO_SERVICE_KEY":          "upmo_svc_x",
+		"UPMO_SERVICE_KEY_PREVIOUS": "upmo_svc_y",
+		"UPMO_LISTEN_ADDR":          ":9000",
+		"UPMO_PROXY_ADDR":           ":9001",
+		"UPMO_SHUTDOWN_TIMEOUT":     "3s",
+		"UPMO_LOG_LEVEL":            "debug",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenAddr != ":9000" || cfg.ProxyAddr != ":9001" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevel != "debug" || cfg.ServiceKeyPrevious != "upmo_svc_y" {
+		t.Fatalf("overrides = %+v", cfg)
+	}
+
+	for name, env := range map[string]map[string]string{
+		"no key":       {},
+		"empty key":    {"UPMO_SERVICE_KEY": ""},
+		"same address": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
+		"bad timeout":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
+	} {
+		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

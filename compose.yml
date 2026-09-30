@@ -73,6 +73,27 @@ services:
       retries: 5
       start_period: 60s
 
+  sandboxd:
+    <<: *go
+    command: ["sh", "-c", "go build -o /tmp/sandboxd ./cmd/sandboxd && exec /tmp/sandboxd"]
+    env_file:
+      - path: .env
+        required: false
+    # The port only. The egress proxy on 3128 stays on the compose network.
+    ports:
+      - "127.0.0.1:8083:8083"
+    environment:
+      UPMO_LISTEN_ADDR: ":8083"
+      UPMO_PROXY_ADDR: ":3128"
+      # Dev only. Never reuse outside the local compose stack.
+      UPMO_SERVICE_KEY: upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
   golangci-lint:
     # v2.13.2 is the oldest v2 image whose Go (1.27) can load a go 1.26.5 module.
     # v2.12.2 ships Go 1.26.2, which refuses this module under GOTOOLCHAIN=local.
