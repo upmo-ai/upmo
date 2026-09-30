@@ -25,20 +25,34 @@ var (
 	ErrNotFound = errors.New("runtime: sandbox not found")
 	// ErrUnsupported reports a provider method that is not built yet.
 	ErrUnsupported = errors.New("runtime: not built")
+	// ErrPaused reports a command sent to a paused sandbox. Its files can
+	// still be read and written.
+	ErrPaused = errors.New("runtime: sandbox is paused")
+	// ErrTooLarge reports a file larger than MaxFile.
+	ErrTooLarge = errors.New("runtime: file is too large")
+	// ErrNotFile reports a path that names a directory, link or device.
+	ErrNotFile = errors.New("runtime: not a regular file")
 )
+
+// MaxFile is the largest file ReadFile returns or WriteFile copies.
+const MaxFile = 16 << 20
 
 // SandboxProvider creates, controls and destroys sandboxes. Every method
 // names a sandbox by the id Create returned.
 type SandboxProvider interface {
 	// Create starts a sandbox from spec.
 	Create(ctx context.Context, spec Spec) (Sandbox, error)
-	// Exec runs a command and streams its output to out as it arrives.
+	// Exec runs a command and streams its output to out as it arrives. A
+	// command that outlives its timeout ends with an error that wraps
+	// context.DeadlineExceeded; a paused sandbox reports ErrPaused.
 	Exec(ctx context.Context, id string, cmd Command, out func(Output) error) (Exit, error)
 	// PTY opens an interactive terminal of the given size.
 	PTY(ctx context.Context, id string, size Size) (io.ReadWriteCloser, error)
-	// ReadFile returns the contents of a file inside the sandbox.
+	// ReadFile returns the contents of a file inside the sandbox. A missing
+	// path wraps fs.ErrNotExist; anything but a regular file is ErrNotFile.
 	ReadFile(ctx context.Context, id, path string) ([]byte, error)
-	// WriteFile copies data to a file inside the sandbox.
+	// WriteFile copies data to a file inside the sandbox. A missing parent
+	// directory wraps fs.ErrNotExist.
 	WriteFile(ctx context.Context, id, path string, data []byte) error
 	// Expose publishes a port inside the sandbox and returns where it is reached.
 	Expose(ctx context.Context, id string, port int) (Endpoint, error)
