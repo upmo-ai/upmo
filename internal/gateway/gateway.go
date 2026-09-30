@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"net/http"
@@ -45,6 +46,13 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 			Chat:    map[string]app.Chatter{"fake": f, "openai_compat": o},
 			Embed:   map[string]app.Embedder{"fake": f, "openai_compat": o},
 			Gates:   app.NewGates(),
+			Caps: func(model string) ([]string, bool) {
+				have, ok, err := store.Capabilities(context.Background(), model)
+				if err != nil || !ok {
+					return nil, false
+				}
+				return have, true
+			},
 		},
 		Names: func(r *http.Request) ([]string, error) {
 			return store.Names(r.Context())

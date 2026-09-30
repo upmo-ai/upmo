@@ -75,6 +75,19 @@ func routes(pool *pgxpool.Pool, cfg config.Config) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	gateway.Mount(mux, pool, gateway.EnvSecrets{})
+	gateway.Mount(mux, pool, secretBackends())
 	return svcsig.Handler(keys, svcsig.AudienceGateway, mux)
+}
+
+func secretBackends() gateway.Chain {
+	chain := gateway.Chain{gateway.EnvSecrets{}}
+	if addr, token := os.Getenv("UPMO_VAULT_ADDR"), os.Getenv("UPMO_VAULT_TOKEN"); addr != "" && token != "" {
+		chain = append(chain, gateway.VaultSecrets{
+			Addr:  addr,
+			Token: token,
+			Path:  os.Getenv("UPMO_VAULT_PATH"),
+			Fetch: gateway.VaultHTTP,
+		})
+	}
+	return chain
 }
