@@ -74,7 +74,14 @@ CREATE TABLE gateway.prices (
   output_usd_per_mtok numeric,
   cache_read_usd_per_mtok numeric,
   cache_write_usd_per_mtok numeric,
+  capabilities text[] NOT NULL DEFAULT '{}',
   CONSTRAINT prices_version_check CHECK (version <> '')
+);
+
+CREATE TABLE gateway.catalog_meta (
+  id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  version text NOT NULL,
+  CONSTRAINT catalog_meta_version_check CHECK (version <> '')
 );
 
 CREATE TABLE gateway.ledger (
@@ -138,6 +145,7 @@ $$;
 DROP FUNCTION IF EXISTS gateway.cache_hit_alert(int, int);
 DROP VIEW IF EXISTS gateway.task_tokens;
 DROP TABLE IF EXISTS gateway.ledger;
+DROP TABLE IF EXISTS gateway.catalog_meta;
 DROP TABLE IF EXISTS gateway.prices;
 DROP TABLE IF EXISTS gateway.agent_bundles;
 DROP TABLE IF EXISTS gateway.tool_bundle_tools;
