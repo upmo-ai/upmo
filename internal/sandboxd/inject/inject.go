@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
+	"unicode"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
 )
@@ -27,6 +29,45 @@ type Refuse struct{}
 // Resolve always reports ErrNoBackend.
 func (Refuse) Resolve(context.Context, string) (string, error) {
 	return "", ErrNoBackend
+}
+
+// Env resolves refs of the form env:NAME from the process environment.
+// Other schemes, a blank name, or a missing or empty value
+// report ErrNoBackend.
+type Env struct{}
+
+// Resolve returns the value of NAME when ref is env:NAME and that name is
+// set to a non-empty value in the process environment.
+func (Env) Resolve(_ context.Context, ref string) (string, error) {
+	name, ok := strings.CutPrefix(strings.TrimSpace(ref), "env:")
+	if !ok || !envName(name) {
+		return "", ErrNoBackend
+	}
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		return "", ErrNoBackend
+	}
+	return value, nil
+}
+
+// envName reports whether name is a portable environment variable name:
+// letters, digits and underscore, not starting with a digit.
+func envName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_', unicode.IsLetter(r):
+		case unicode.IsDigit(r):
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Injector resolves the credentials of one sandbox for one host.

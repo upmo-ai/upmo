@@ -165,9 +165,10 @@ func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger) (ht
 	return svcsig.Handler(keys, svcsig.AudienceSandboxd, mux)
 }
 
-// Proxy returns the egress proxy for the sandboxes driver holds. With no
-// credential backend wired, a host that names a credential is refused and
-// every other allowed host tunnels.
+// Proxy returns the egress proxy for the sandboxes driver holds. env:
+// references resolve from sandboxd's environment. A host that
+// names a credential the process cannot resolve is refused; every other
+// allowed host tunnels. CONNECT still does not rewrite TLS bytes.
 func Proxy(driver Driver, log *slog.Logger) http.Handler {
-	return egress.Proxy{Book: driver, Inject: inject.Injector{Resolver: inject.Refuse{}}, Log: log}
+	return egress.Proxy{Book: driver, Inject: inject.Injector{Resolver: inject.Env{}}, Log: log}
 }

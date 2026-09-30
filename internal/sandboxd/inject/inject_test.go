@@ -75,3 +75,38 @@ func TestRefuseResolvesNothing(t *testing.T) {
 		t.Fatalf("empty value err = %v", err)
 	}
 }
+
+func TestEnvResolvesFromTheProcess(t *testing.T) {
+	t.Setenv("UPMO_INJECT_TEST_TOKEN", "real-from-env")
+	rw, err := Injector{Resolver: Env{}}.For(context.Background(), "github.com", []runtime.Credential{
+		{Sentinel: "upmo_sentinel_gh", Ref: "env:UPMO_INJECT_TEST_TOKEN", Host: "github.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := rw.Apply(http.Header{"Authorization": {"Bearer upmo_sentinel_gh"}})
+	if out.Get("Authorization") != "Bearer real-from-env" {
+		t.Fatalf("authorization = %q", out.Get("Authorization"))
+	}
+}
+
+func TestEnvRefusesBadRefs(t *testing.T) {
+	t.Setenv("UPMO_INJECT_TEST_TOKEN", "real")
+	cases := []string{
+		"vault:secret",
+		"env:",
+		"env:1BAD",
+		"env:HAS-DASH",
+		"env:MISSING_NAME",
+		"ENV:UPMO_INJECT_TEST_TOKEN",
+	}
+	for _, ref := range cases {
+		if _, err := (Env{}).Resolve(context.Background(), ref); !errors.Is(err, ErrNoBackend) {
+			t.Fatalf("Resolve(%q) = %v, want ErrNoBackend", ref, err)
+		}
+	}
+	t.Setenv("UPMO_INJECT_EMPTY", "")
+	if _, err := (Env{}).Resolve(context.Background(), "env:UPMO_INJECT_EMPTY"); !errors.Is(err, ErrNoBackend) {
+		t.Fatalf("empty env = %v", err)
+	}
+}
