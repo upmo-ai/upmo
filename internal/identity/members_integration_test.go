@@ -25,7 +25,8 @@ func TestMembersIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	pool, handler, passkeys, ctx := identityMux(t, now)
 	mux := handler.(*http.ServeMux)
-	members := identity.Members(pool)
+	sent := &sentMail{}
+	members := identity.Members(pool, "https://upmo.test", sent, nil)
 	members.Now = func() time.Time { return now }
 	identity.MountMembers(mux, members, passkeys.Sessions)
 	store := postgres.Passkeys{Pool: pool}
@@ -64,6 +65,9 @@ func TestMembersIntegration(t *testing.T) {
 	}
 	if !invited.Invited || invited.Token == "" {
 		t.Fatalf("invite body %+v", invited)
+	}
+	if want := "invite bob@example.com https://upmo.test/login/link#" + invited.Token; sent.last() != want {
+		t.Fatalf("invite mail = %q, want %q", sent.last(), want)
 	}
 	bobSoft, err := webauthn.NewSoft()
 	if err != nil {
@@ -110,6 +114,22 @@ func TestMembersIntegration(t *testing.T) {
 	reset := call(mux, http.MethodPost, "/api/members/"+invited.ID+"/reset-link", ownerCookie, nil)
 	if reset.Code != http.StatusOK {
 		t.Fatalf("reset %d %s", reset.Code, reset.Body.String())
+	}
+	var resetBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(reset.Body.Bytes(), &resetBody); err != nil {
+		t.Fatal(err)
+	}
+	if want := "recover bob@example.com https://upmo.test/login/link#" + resetBody.Token; resetBody.Token == "" || sent.last() != want {
+		t.Fatalf("reset mail = %q, want %q", sent.last(), want)
+	}
+	recovered, err := members.Recover(ctx, " BOB@example.com ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "recover bob@example.com https://upmo.test/login/link#" + recovered; sent.last() != want {
+		t.Fatalf("recover mail = %q, want %q", sent.last(), want)
 	}
 	again := call(mux, http.MethodPost, "/api/members/"+invited.ID+"/reset-link", ownerCookie, nil)
 	if again.Code != http.StatusOK {
@@ -209,6 +229,36 @@ func TestMembersIntegration(t *testing.T) {
 	if (first == nil) == (second == nil) || (!errors.Is(first, domain.ErrAlreadyMember) && !errors.Is(second, domain.ErrAlreadyMember)) {
 		t.Fatalf("concurrent invite = %v, %v", first, second)
 	}
+}
+
+// sentMail records each link email as "purpose to link".
+type sentMail struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (s *sentMail) SendInvite(_ context.Context, to, link string) error {
+	return s.add("invite " + to + " " + link)
+}
+
+func (s *sentMail) SendRecover(_ context.Context, to, link string) error {
+	return s.add("recover " + to + " " + link)
+}
+
+func (s *sentMail) add(line string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, line)
+	return nil
+}
+
+func (s *sentMail) last() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sent) == 0 {
+		return ""
+	}
+	return s.sent[len(s.sent)-1]
 }
 
 func inviteOnce(ctx context.Context, store postgres.Passkeys, email string, role domain.RoleID, now time.Time) error {

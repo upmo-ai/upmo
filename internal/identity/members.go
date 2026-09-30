@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -8,14 +9,16 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/app"
+	"github.com/upmo-ai/upmo/internal/platform/mail"
 )
 
 // MemberService is the members use case. Commands use this name so they do not import the app package.
 type MemberService = app.Members
 
-// Members builds the members use case.
-func Members(pool *pgxpool.Pool) app.Members {
-	return app.Members{Store: postgres.Passkeys{Pool: pool}}
+// Members builds the members use case. Invite and recover links are emailed
+// through sender, which may be nil; publicURL is the origin they open.
+func Members(pool *pgxpool.Pool, publicURL string, sender mail.Sender, log *slog.Logger) app.Members {
+	return app.Members{Store: postgres.Passkeys{Pool: pool}, Mail: sender, PublicURL: publicURL, Log: log}
 }
 
 // MountMembers registers the member routes.

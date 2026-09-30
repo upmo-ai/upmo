@@ -24,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
+	"github.com/upmo-ai/upmo/internal/platform/mail"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	taskhttp "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
@@ -95,6 +96,15 @@ func run() error {
 	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
 }
 
+// linkMail is the sender for invite and recover links. With SMTP unset it
+// sends nothing and the links are only copied.
+func linkMail(s config.SMTP) mail.Sender {
+	if s.Host == "" {
+		return mail.Noop{}
+	}
+	return mail.SMTP{Host: s.Host, Port: s.Port, User: s.User, Password: s.Password, From: s.From}
+}
+
 // requestPool opens connections that run as upmo_app, which owns nothing, and
 // sets that role again on every checkout.
 func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
@@ -125,11 +135,11 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 		return nil, err
 	}
 	identity.MountPasskeys(mux, passkeys, passwords, cfg.TrustedProxies)
-	identity.MountMembers(mux, identity.Members(pool), sessions)
+	members := identity.Members(pool, cfg.PublicURL, linkMail(cfg.SMTP), log)
+	identity.MountMembers(mux, members, sessions)
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
-	members := identity.Members(pool)
 	taskBook := taskstore.Store{Pool: pool}
 	taskhttp.Handler{
 		Book: taskBook,

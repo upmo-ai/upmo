@@ -54,7 +54,8 @@ func command(name string, args []string) error {
 		return err
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return err
 	}
@@ -62,7 +63,7 @@ func command(name string, args []string) error {
 	case "bootstrap":
 		return bootstrap(ctx, passkeys, args)
 	case "recover":
-		return recover(ctx, passkeys, identity.Members(pool), args)
+		return recover(ctx, passkeys, identity.Members(pool, cfg.PublicURL, linkMail(cfg.SMTP), log), args)
 	default:
 		return fmt.Errorf("brain: unknown command %q", name)
 	}

@@ -4,8 +4,10 @@ package config
 import (
 	"fmt"
 	"net"
+	netmail "net/mail"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,6 +38,22 @@ type Config struct {
 	ServiceKeyPrevious string
 	// GatewayURL is the model gateway (UPMO_GATEWAY_URL). Empty until brain calls it.
 	GatewayURL string
+	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
+	// is empty when mail is unset, and links are then only copied.
+	SMTP SMTP
+}
+
+// SMTP is the mail relay settings.
+type SMTP struct {
+	// Host is the relay host (UPMO_SMTP_HOST). It is required when any UPMO_SMTP_ value is set.
+	Host string
+	// Port is the relay port (UPMO_SMTP_PORT), 587 by default.
+	Port int
+	// User and Password log in to the relay (UPMO_SMTP_USER, UPMO_SMTP_PASSWORD). Both or neither.
+	User     string
+	Password string
+	// From is the sender address (UPMO_SMTP_FROM). It is required when mail is set.
+	From string
 }
 
 // Load reads the configuration from the environment and applies defaults.
@@ -132,5 +150,53 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.GatewayURL = strings.TrimRight(v, "/")
 	}
+	smtp, err := loadSMTP(lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SMTP = smtp
 	return cfg, nil
+}
+
+// loadSMTP reads UPMO_SMTP_*. None set is mail unset; any set needs a host
+// and a sender.
+func loadSMTP(lookup func(string) (string, bool)) (SMTP, error) {
+	get := func(key string) string {
+		v, _ := lookup(key)
+		return v
+	}
+	s := SMTP{
+		Host:     get("UPMO_SMTP_HOST"),
+		User:     get("UPMO_SMTP_USER"),
+		Password: get("UPMO_SMTP_PASSWORD"),
+		From:     get("UPMO_SMTP_FROM"),
+	}
+	port := get("UPMO_SMTP_PORT")
+	if s.Host == "" && s.User == "" && s.Password == "" && s.From == "" && port == "" {
+		return SMTP{}, nil
+	}
+	if s.Host == "" {
+		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_HOST is required when any UPMO_SMTP_ value is set")
+	}
+	if strings.ContainsAny(s.Host, " \t\r\n/:") && net.ParseIP(s.Host) == nil {
+		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_HOST must be a host name or IP address")
+	}
+	s.Port = 587
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return SMTP{}, fmt.Errorf("config: UPMO_SMTP_PORT must be a port number")
+		}
+		s.Port = n
+	}
+	if (s.User == "") != (s.Password == "") {
+		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_USER and UPMO_SMTP_PASSWORD must be set together")
+	}
+	if s.From == "" {
+		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_FROM is required when UPMO_SMTP_HOST is set")
+	}
+	if _, err := netmail.ParseAddress(s.From); err != nil || strings.ContainsAny(s.From, "\r\n") {
+		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_FROM must be an email address")
+	}
+	return s, nil
 }
