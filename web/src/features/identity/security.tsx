@@ -15,6 +15,7 @@ import { addPasskey, confirmWithPasskey, removePasskey, renamePasskey } from "..
 import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
 import { canRemovePasskey, canRemovePassword, lastPasskeyReason, lastPasswordReason } from "./rules";
+import { RowAction } from "../../ui/icons";
 
 type PasswordMode = "set" | "change" | "remove";
 
@@ -467,12 +468,13 @@ function PasskeyRow({
           <Text fw={600}>{passkey.name}</Text>
           <Text size="sm">Added {formatDate(passkey.added)}</Text>
           <Text size="sm">Last used {formatDate(passkey.lastUsed)}</Text>
-          <Button type="button" variant="default" onClick={onStartRename}>
-            Rename {passkey.name}
-          </Button>
-          <Button type="button" variant="default" disabled={!canRemove} onClick={onRemove}>
-            Remove {passkey.name}
-          </Button>
+          <RowAction label="Edit" concept="action.edit" onClick={onStartRename} />
+          <RowAction
+            label="Remove"
+            concept="action.delete"
+            disabled={!canRemove}
+            onClick={onRemove}
+          />
           {canRemove ? null : <Text size="sm">{lastPasskeyReason}</Text>}
         </>
       )}

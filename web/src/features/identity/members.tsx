@@ -15,6 +15,7 @@ import {
   type WorkspaceRole,
 } from "../../app/api";
 import { fresh } from "../../app/passkeys";
+import { RowAction } from "../../ui/icons";
 import { ConfirmDialog } from "./confirm";
 import {
   canManageMembers,
@@ -55,7 +56,7 @@ export function MembersPage() {
   });
   if (probe.isPending) {
     return (
-      <Stack gap="lg" className="settings-page">
+      <Stack gap="lg" className="settings-content">
         <Title order={1}>Members</Title>
       </Stack>
     );
@@ -113,7 +114,7 @@ function StubMembers() {
   const removing = list.find((member) => member.id === removeId) ?? null;
 
   return (
-    <Stack gap="lg" className="settings-page">
+    <Stack gap="lg" className="settings-content">
       <Title order={1}>Members</Title>
       {members.isError ? (
         <Text role="alert" c="red">
@@ -267,15 +268,13 @@ function MemberRow({
       <Table.Td>{member.teams.length > 0 ? member.teams.join(", ") : "No team"}</Table.Td>
       {manage ? (
         <Table.Td aria-label="Actions">
-          <Button
-            type="button"
+          <RowAction
+            label="Remove"
             className="member-remove"
-            variant="default"
+            concept="action.delete"
             disabled={!removable}
             onClick={onRemove}
-          >
-            Remove {member.name}
-          </Button>
+          />
         </Table.Td>
       ) : null}
     </Table.Tr>
@@ -372,7 +371,7 @@ function LiveMembers() {
   }
 
   return (
-    <Stack gap="lg" className="settings-page">
+    <Stack gap="lg" className="settings-content">
       <Title order={1}>Members</Title>
       {error ? (
         <Text role="alert" c="red">
@@ -535,9 +534,11 @@ function LiveMembers() {
                     <Text size="sm">This signs them in and logs out their other browsers.</Text>
                   ) : null}
                   {member.id === actor?.id ? null : (
-                    <Button type="button" variant="default" onClick={() => setRemoveId(member.id)}>
-                      Remove {member.name}
-                    </Button>
+                    <RowAction
+                      label="Remove"
+                      concept="action.delete"
+                      onClick={() => setRemoveId(member.id)}
+                    />
                   )}
                 </Table.Td>
               ) : null}
@@ -716,23 +717,23 @@ function RolesCard({
                     Duplicate {role.name}
                   </Button>
                   {role.system ? null : (
-                    <Button type="button" variant="default" onClick={() => start(role, role.name)}>
-                      Edit {role.name}
-                    </Button>
+                    <RowAction
+                      label="Edit"
+                      concept="action.edit"
+                      onClick={() => start(role, role.name)}
+                    />
                   )}
                   {role.system ? null : (
-                    <Button
-                      type="button"
-                      variant="default"
+                    <RowAction
+                      label="Delete"
+                      concept="action.delete"
                       onClick={() => {
                         void run(async () => {
                           await memberWrite(`/api/roles/${role.id}`, "DELETE", null, passkeys);
                           await onChanged();
                         });
                       }}
-                    >
-                      Delete {role.name}
-                    </Button>
+                    />
                   )}
                 </Table.Td>
               ) : null}

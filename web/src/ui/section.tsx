@@ -1,8 +1,8 @@
 import { Button, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { Link } from "@tanstack/react-router";
-import { IconChevronUp } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 
+import { CaretIcon } from "./icons";
 import "./section.css";
 
 export function EmptyState({
@@ -26,7 +26,7 @@ export function EmptyState({
       className={firstRun ? "empty-state empty-state-first-run" : "empty-state"}
     >
       <ThemeIcon variant="light" size={48} radius="lg" aria-hidden>
-        <IconChevronUp size={28} stroke={2} />
+        <CaretIcon size={24} />
       </ThemeIcon>
       <Title order={3}>{title}</Title>
       <Text c="dimmed" maw={320} ta="center">
