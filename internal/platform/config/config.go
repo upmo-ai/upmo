@@ -194,6 +194,14 @@ type Sandboxd struct {
 	// Driver picks the sandbox driver (UPMO_SANDBOX_DRIVER): auto, docker,
 	// kubernetes or stub, auto by default. auto uses Docker when the engine answers.
 	Driver string
+	// EgressProxyURL is the egress proxy as a Docker sandbox reaches it
+	// (UPMO_EGRESS_PROXY_URL), http://host.docker.internal:3128 by default.
+	// It is http://host[:port] with no user, path or query; the driver adds
+	// the sandbox id as the proxy user name.
+	EgressProxyURL string
+	// SandboxNetwork is the internal Docker network sandboxes join
+	// (UPMO_SANDBOX_NETWORK), upmo-sandbox-egress by default.
+	SandboxNetwork string
 }
 
 // LoadSandboxd reads the sandboxd configuration from the environment.
@@ -208,9 +216,22 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		ShutdownTimeout: 10 * time.Second,
 		LogLevel:        "info",
 		Driver:          "auto",
+		EgressProxyURL:  "http://host.docker.internal:3128",
+		SandboxNetwork:  "upmo-sandbox-egress",
 	}
 	if v, ok := lookup("UPMO_LISTEN_ADDR"); ok && v != "" {
 		cfg.ListenAddr = v
+	}
+	if v, ok := lookup("UPMO_EGRESS_PROXY_URL"); ok && strings.TrimSpace(v) != "" {
+		u, err := url.Parse(strings.TrimSpace(v))
+		if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_EGRESS_PROXY_URL must be http://host[:port]")
+		}
+		cfg.EgressProxyURL = u.Scheme + "://" + u.Host
+	}
+	if v, ok := lookup("UPMO_SANDBOX_NETWORK"); ok && strings.TrimSpace(v) != "" {
+		cfg.SandboxNetwork = strings.TrimSpace(v)
 	}
 	if v, ok := lookup("UPMO_SANDBOX_DRIVER"); ok && v != "" {
 		switch v = strings.ToLower(strings.TrimSpace(v)); v {

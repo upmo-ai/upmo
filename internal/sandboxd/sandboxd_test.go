@@ -428,15 +428,21 @@ func TestRoutesNeedAKey(t *testing.T) {
 
 func TestProxyRefusesUnlistedHost(t *testing.T) {
 	driver := Stub()
-	box, err := driver.Create(context.Background(), spec())
+	s := spec()
+	s.Allow = append(s.Allow, "proxy.golang.org")
+	s.Credentials = []runtime.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:GITHUB_TOKEN", Host: "github.com"}}
+	box, err := driver.Create(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := Proxy(driver, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for target, code := range map[string]int{
 		"example.com:443": http.StatusForbidden,
-		// Listed, but the stub resolves no credential and builds no tunnel.
-		"github.com:443": http.StatusNotImplemented,
+		// Listed, but its credential has no backend to resolve it.
+		"github.com:443": http.StatusBadGateway,
+		// Listed with no credential: admitted as far as the tunnel, which a
+		// recorder cannot be hijacked for, so nothing is dialled.
+		"proxy.golang.org:443": http.StatusInternalServerError,
 	} {
 		r := httptest.NewRequest(http.MethodConnect, target, nil)
 		u := &http.Request{Header: http.Header{}}

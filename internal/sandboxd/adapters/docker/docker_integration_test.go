@@ -28,7 +28,7 @@ func openEngine(t *testing.T) (*Driver, *client.Client) {
 	t.Setenv("DOCKER_HOST", host)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	d, err := Open(ctx, Options{})
+	d, err := Open(ctx, Options{Network: testNetwork()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +39,16 @@ func openEngine(t *testing.T) (*Driver, *client.Client) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 	return d, cli
+}
+
+// testNetwork keeps the suite off the network a running stack uses. Set
+// UPMO_TEST_SANDBOX_NETWORK to an internal network made in advance (with an
+// explicit subnet) on an engine whose address pools are exhausted.
+func testNetwork() string {
+	if v := os.Getenv("UPMO_TEST_SANDBOX_NETWORK"); v != "" {
+		return v
+	}
+	return DefaultNetwork + "-test"
 }
 
 func image() string {
@@ -96,9 +106,26 @@ func TestDockerSandboxLifecycle(t *testing.T) {
 		t.Fatalf("pwd = %q", out)
 	}
 
-	// Only the loopback interface: no route out but the proxy, once it tunnels.
-	if out, _, _ := run(t, d, box.ID, "ls /sys/class/net"); strings.TrimSpace(out) != "lo" {
+	// One interface on the internal sandbox network, no default route and no
+	// outside DNS: the only route out is the egress proxy.
+	inspect, err := cli.ContainerInspect(ctx, containerName(box.ID), client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nets := inspect.Container.NetworkSettings.Networks; len(nets) != 1 || nets[testNetwork()] == nil {
+		t.Fatalf("networks = %v", nets)
+	}
+	if out, _, _ := run(t, d, box.ID, "ls /sys/class/net | sort | tr '\\n' ' '"); strings.TrimSpace(out) != "eth0 lo" {
 		t.Fatalf("interfaces = %q", out)
+	}
+	if out, _, _ := run(t, d, box.ID, "awk 'NR>1 && $2==\"00000000\"' /proc/net/route"); strings.TrimSpace(out) != "" {
+		t.Fatalf("default route = %q", out)
+	}
+	if _, _, code := run(t, d, box.ID, "getent hosts github.com"); code == 0 {
+		t.Fatal("a sandbox resolved an outside name")
+	}
+	if out, _, _ := run(t, d, box.ID, "echo $HTTPS_PROXY $https_proxy $no_proxy$NO_PROXY"); strings.TrimSpace(out) != "http://"+box.ID+":@host.docker.internal:3128 http://"+box.ID+":@host.docker.internal:3128" {
+		t.Fatalf("proxy env = %q", out)
 	}
 	if _, _, code := run(t, d, box.ID, "test -e /var/run/docker.sock || test -e /run/docker.sock"); code == 0 {
 		t.Fatal("an engine socket is visible in the sandbox")
@@ -141,7 +168,7 @@ func TestDockerSandboxLifecycle(t *testing.T) {
 	if err := d.Pause(ctx, box.ID); err != nil {
 		t.Fatal(err)
 	}
-	inspect, err := cli.ContainerInspect(ctx, containerName(box.ID), client.ContainerInspectOptions{})
+	inspect, err = cli.ContainerInspect(ctx, containerName(box.ID), client.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,6 +44,11 @@ type fake struct {
 	files   map[string][]byte
 	listed  []container.Summary
 
+	// networks maps a network name to whether it is internal.
+	networks   map[string]bool
+	netCreated []client.NetworkCreateOptions
+	netErr     error
+
 	startErr error
 	// script is the multiplexed output and exit code of the next exec. A nil
 	// script holds the stream open until the driver closes it.
@@ -58,7 +63,33 @@ type frame struct {
 }
 
 func newFake() *fake {
-	return &fake{images: map[string]bool{"upmo/sandbox:base": true}, files: map[string][]byte{}}
+	return &fake{images: map[string]bool{"upmo/sandbox:base": true}, files: map[string][]byte{}, networks: map[string]bool{}}
+}
+
+func (f *fake) NetworkInspect(_ context.Context, id string, _ client.NetworkInspectOptions) (client.NetworkInspectResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.netErr != nil {
+		return client.NetworkInspectResult{}, f.netErr
+	}
+	internal, ok := f.networks[id]
+	if !ok {
+		return client.NetworkInspectResult{}, cerrdefs.ErrNotFound
+	}
+	var res client.NetworkInspectResult
+	res.Network.Name, res.Network.Internal = id, internal
+	return res, nil
+}
+
+func (f *fake) NetworkCreate(_ context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.netCreated = append(f.netCreated, opts)
+	if _, ok := f.networks[name]; ok {
+		return client.NetworkCreateResult{}, cerrdefs.ErrConflict
+	}
+	f.networks[name] = opts.Internal
+	return client.NetworkCreateResult{ID: "n-" + name}, nil
 }
 
 func (f *fake) ImageInspect(_ context.Context, image string, _ ...client.ImageInspectOption) (client.ImageInspectResult, error) {
@@ -253,7 +284,11 @@ func setup(t *testing.T) (*Driver, *fake, *clock) {
 	t.Helper()
 	f := newFake()
 	c := &clock{t: time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)}
-	return newDriver(f, Options{Now: c.now}), f, c
+	d, err := newDriver(f, Options{Now: c.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, f, c
 }
 
 func create(t *testing.T, d *Driver) runtime.Sandbox {
@@ -286,9 +321,33 @@ func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 		t.Fatalf("entrypoint %v init %v", cfg.Entrypoint, host.Init)
 	}
 
-	// No network at all: the only route out is the sandboxd proxy.
-	if host.NetworkMode != "none" || !cfg.NetworkDisabled || opts.NetworkingConfig != nil || len(cfg.ExposedPorts) != 0 || len(host.PortBindings) != 0 {
+	// Only the internal sandbox network: the only route out is the sandboxd
+	// proxy, and nothing is published.
+	if host.NetworkMode != DefaultNetwork || cfg.NetworkDisabled || len(cfg.ExposedPorts) != 0 || len(host.PortBindings) != 0 || host.PublishAllPorts {
 		t.Fatalf("network = %q disabled=%v", host.NetworkMode, cfg.NetworkDisabled)
+	}
+	if opts.NetworkingConfig == nil || len(opts.NetworkingConfig.EndpointsConfig) != 1 || opts.NetworkingConfig.EndpointsConfig[DefaultNetwork] == nil {
+		t.Fatalf("endpoints = %+v", opts.NetworkingConfig)
+	}
+	if len(host.ExtraHosts) != 0 || len(host.DNS) != 0 {
+		t.Fatalf("extra hosts %v dns %v", host.ExtraHosts, host.DNS)
+	}
+	if internal, ok := f.networks[DefaultNetwork]; !ok || !internal || len(f.netCreated) != 1 || f.netCreated[0].Driver != "bridge" {
+		t.Fatalf("network created = %+v", f.netCreated)
+	}
+	proxy := "http://" + box.ID + ":@host.docker.internal:3128"
+	wantEnv := []string{
+		"HTTP_PROXY=" + proxy, "http_proxy=" + proxy,
+		"HTTPS_PROXY=" + proxy, "https_proxy=" + proxy,
+		"ALL_PROXY=" + proxy, "all_proxy=" + proxy,
+	}
+	if !slices.Equal(cfg.Env, wantEnv) {
+		t.Fatalf("env = %q", cfg.Env)
+	}
+	for _, e := range cfg.Env {
+		if strings.HasPrefix(strings.ToUpper(e), "NO_PROXY=") || strings.Contains(e, "GITHUB_TOKEN") {
+			t.Fatalf("env %q", e)
+		}
 	}
 	// No host path, and so no engine socket, is mounted.
 	if len(host.Binds) != 0 || len(host.VolumesFrom) != 0 || host.Privileged {
@@ -344,6 +403,65 @@ func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 	allow, creds, ok := d.Egress(box.ID)
 	if !ok || !slices.Equal(allow, []string{"github.com"}) || len(creds) != 1 {
 		t.Fatalf("egress = %v %v %v", allow, creds, ok)
+	}
+}
+
+func TestCreateUsesTheConfiguredNetworkAndProxy(t *testing.T) {
+	f := newFake()
+	f.networks["upm114_sandbox-egress"] = true
+	d, err := newDriver(f, Options{Network: " upm114_sandbox-egress ", ProxyURL: "http://sandboxd:3128/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	box := create(t, d)
+	if len(f.netCreated) != 0 {
+		t.Fatalf("created an existing network: %+v", f.netCreated)
+	}
+	opts := f.created[0]
+	if opts.HostConfig.NetworkMode != "upm114_sandbox-egress" || opts.NetworkingConfig.EndpointsConfig["upm114_sandbox-egress"] == nil {
+		t.Fatalf("network = %q %+v", opts.HostConfig.NetworkMode, opts.NetworkingConfig)
+	}
+	if want := "HTTPS_PROXY=http://" + box.ID + ":@sandboxd:3128"; !slices.Contains(opts.Config.Env, want) {
+		t.Fatalf("env = %q, want %q", opts.Config.Env, want)
+	}
+	if d.Network() != "upm114_sandbox-egress" {
+		t.Fatalf("Network() = %q", d.Network())
+	}
+}
+
+func TestCreateRefusesANetworkWithARouteOut(t *testing.T) {
+	d, f, _ := setup(t)
+	f.networks[DefaultNetwork] = false
+	if _, err := d.Create(context.Background(), spec()); err == nil || !strings.Contains(err.Error(), "not internal") {
+		t.Fatalf("err = %v", err)
+	}
+	f.networks = map[string]bool{}
+	f.netErr = errors.New("engine down")
+	if _, err := d.Create(context.Background(), spec()); err == nil {
+		t.Fatal("want an error when the network cannot be inspected")
+	}
+	if len(f.created) != 0 {
+		t.Fatalf("a container was created without a safe network: %d", len(f.created))
+	}
+}
+
+func TestProxyURLMustBePlainHTTP(t *testing.T) {
+	for _, raw := range []string{
+		"https://sandboxd:3128",
+		"http://user:pw@sandboxd:3128",
+		"http://sandboxd:3128/path",
+		"http://sandboxd:3128?x=1",
+		"http://:3128",
+		"sandboxd:3128",
+		"://",
+	} {
+		if _, err := newDriver(newFake(), Options{ProxyURL: raw}); err == nil {
+			t.Errorf("%q accepted", raw)
+		}
+	}
+	u, err := ParseProxyURL("http://sandboxd:3128/")
+	if err != nil || u.String() != "http://sandboxd:3128" {
+		t.Fatalf("parse = %v %v", u, err)
 	}
 }
 

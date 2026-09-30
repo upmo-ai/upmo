@@ -2,13 +2,20 @@
 // It talks to the engine named by DOCKER_HOST, or the default
 // socket, through the official Engine API client.
 //
-// Every sandbox is one container with no network, all capabilities dropped
-// but a small set, no-new-privileges, the engine's default seccomp and
-// AppArmor profiles, docker-init as PID 1 and the fixed resource shape.
-// Its private scratch volume is mounted at /scratch. No host path
-// and no engine socket is ever mounted into a sandbox. User namespaces are a
-// daemon setting (userns-remap or rootless Docker); the driver reports them
-// but cannot turn them on per container.
+// Every sandbox is one container with all capabilities dropped but a small
+// set, no-new-privileges, the engine's default seccomp and AppArmor profiles,
+// docker-init as PID 1 and the fixed resource shape. Its private
+// scratch volume is mounted at /scratch. No host path and no engine socket is
+// ever mounted into a sandbox. User namespaces are a daemon setting
+// (userns-remap or rootless Docker); the driver reports them but cannot turn
+// them on per container.
+//
+// Every sandbox joins one internal bridge network (Options.Network), which
+// has no route off the bridge and no outside DNS. The only thing a sandbox
+// can reach there is the sandboxd egress proxy, which is attached to the
+// same network; HTTP_PROXY, HTTPS_PROXY and ALL_PROXY point at it with the
+// sandbox id as the proxy user name. The driver creates the network when it
+// is missing and refuses one that is not internal.
 //
 // Commands run under the image's timeout program, so an image must ship
 // coreutils or busybox timeout and a sleep that accepts infinity.
@@ -19,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +36,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
@@ -40,6 +49,13 @@ const (
 	// DefaultMemory is the memory limit of a sandbox. The runtime sets none, so
 	// the driver bounds it to keep one sandbox from starving the host.
 	DefaultMemory int64 = 2 << 30
+	// DefaultNetwork is the internal bridge every sandbox joins.
+	DefaultNetwork = "upmo-sandbox-egress"
+	// DefaultProxyURL is where a sandbox finds the egress proxy when nothing
+	// else is set: sandboxd on the engine host. Compose sets the sandboxd
+	// service on the sandbox network instead, because an internal network
+	// cannot reach the engine host.
+	DefaultProxyURL = "http://host.docker.internal:3128"
 
 	namePrefix = "upmo-sandbox-"
 
@@ -47,6 +63,7 @@ const (
 	labelTask    = "ai.upmo.task"
 	labelTier    = "ai.upmo.tier"
 	labelExpires = "ai.upmo.expires"
+	labelNetwork = "ai.upmo.sandbox-network"
 
 	pingTimeout  = 5 * time.Second
 	stopSeconds  = 5
@@ -73,6 +90,8 @@ type engine interface {
 	ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerList(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error)
 	VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
+	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
+	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
 	ExecCreate(ctx context.Context, id string, opts client.ExecCreateOptions) (client.ExecCreateResult, error)
 	ExecAttach(ctx context.Context, id string, opts client.ExecAttachOptions) (client.ExecAttachResult, error)
 	ExecInspect(ctx context.Context, id string, opts client.ExecInspectOptions) (client.ExecInspectResult, error)
@@ -95,17 +114,25 @@ type Options struct {
 	Memory int64
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Network is the internal bridge network sandboxes join; empty means
+	// DefaultNetwork.
+	Network string
+	// ProxyURL is the egress proxy as a sandbox reaches it, an http URL with
+	// no user, path or query; empty means DefaultProxyURL.
+	ProxyURL string
 }
 
 // Driver runs sandboxes as Docker containers. It keeps the egress book in
 // memory; the containers carry labels, so Sweep can still find one an
 // earlier process left behind.
 type Driver struct {
-	api    engine
-	closer io.Closer
-	memory int64
-	now    func() time.Time
-	engine Engine
+	api     engine
+	closer  io.Closer
+	memory  int64
+	now     func() time.Time
+	engine  Engine
+	network string
+	proxy   *url.URL
 
 	mu    sync.Mutex
 	boxes map[string]box
@@ -142,7 +169,11 @@ func Open(ctx context.Context, opts Options) (*Driver, error) {
 		_ = cli.Close()
 		return nil, fmt.Errorf("docker: engine info: %w", err)
 	}
-	d := newDriver(cli, opts)
+	d, err := newDriver(cli, opts)
+	if err != nil {
+		_ = cli.Close()
+		return nil, err
+	}
 	d.closer = cli
 	d.engine = Engine{Host: cli.DaemonHost(), Version: info.Info.ServerVersion}
 	for _, opt := range info.Info.SecurityOptions {
@@ -158,18 +189,44 @@ func Open(ctx context.Context, opts Options) (*Driver, error) {
 	return d, nil
 }
 
-func newDriver(api engine, opts Options) *Driver {
+func newDriver(api engine, opts Options) (*Driver, error) {
 	if opts.Memory <= 0 {
 		opts.Memory = DefaultMemory
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Driver{api: api, memory: opts.Memory, now: opts.Now, boxes: map[string]box{}}
+	netName := strings.TrimSpace(opts.Network)
+	if netName == "" {
+		netName = DefaultNetwork
+	}
+	raw := strings.TrimSpace(opts.ProxyURL)
+	if raw == "" {
+		raw = DefaultProxyURL
+	}
+	proxy, err := ParseProxyURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &Driver{api: api, memory: opts.Memory, now: opts.Now, network: netName, proxy: proxy, boxes: map[string]box{}}, nil
+}
+
+// ParseProxyURL checks raw is an http URL with a host and no user, path,
+// query or fragment, so the driver can add the sandbox id as the user.
+func ParseProxyURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return nil, fmt.Errorf("docker: proxy URL %q must be http://host[:port]", raw)
+	}
+	return &url.URL{Scheme: u.Scheme, Host: u.Host}, nil
 }
 
 // Engine returns what Open learnt about the daemon.
 func (d *Driver) Engine() Engine { return d.engine }
+
+// Network returns the name of the network sandboxes join.
+func (d *Driver) Network() string { return d.network }
 
 // Close releases the engine client.
 func (d *Driver) Close() error {
@@ -179,8 +236,9 @@ func (d *Driver) Close() error {
 	return d.closer.Close()
 }
 
-// Create admits spec, makes sure the image is present, and starts a
-// container with no network and the fixed resource shape.
+// Create admits spec, makes sure the image and the sandbox network are
+// present, and starts a container on that network, pointed at the egress
+// proxy, with the fixed resource shape.
 func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox, error) {
 	if err := ctx.Err(); err != nil {
 		return runtime.Sandbox{}, err
@@ -200,6 +258,9 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	if err := d.ensureImage(ctx, spec.Image); err != nil {
 		return runtime.Sandbox{}, err
 	}
+	if err := d.ensureNetwork(ctx); err != nil {
+		return runtime.Sandbox{}, err
+	}
 
 	expires := d.now().UTC().Add(spec.TTL)
 	shape := runtime.ResourceShape()
@@ -214,16 +275,19 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	opts := client.ContainerCreateOptions{
 		Name: containerName(id),
 		Config: &container.Config{
-			Image:           spec.Image,
-			Entrypoint:      []string{"sleep", "infinity"},
-			Cmd:             []string{},
-			WorkingDir:      ScratchDir,
-			Hostname:        "sandbox",
-			Labels:          labels,
-			NetworkDisabled: true,
+			Image:      spec.Image,
+			Entrypoint: []string{"sleep", "infinity"},
+			Cmd:        []string{},
+			WorkingDir: ScratchDir,
+			Hostname:   "sandbox",
+			Labels:     labels,
+			Env:        d.proxyEnv(id),
+		},
+		NetworkingConfig: &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{d.network: {}},
 		},
 		HostConfig: &container.HostConfig{
-			NetworkMode:   "none",
+			NetworkMode:   container.NetworkMode(d.network),
 			CapDrop:       []string{"ALL"},
 			CapAdd:        slices.Clone(keepCaps),
 			SecurityOpt:   []string{"no-new-privileges:true"},
@@ -257,6 +321,52 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	d.boxes[id] = box{spec: spec, expires: expires}
 	d.mu.Unlock()
 	return runtime.Sandbox{ID: id, Tier: spec.Tier, Shape: shape, Expires: expires}, nil
+}
+
+// proxyEnv points every common proxy variable at the egress proxy, with the
+// sandbox id as the Basic user name the proxy reads. Both cases are set,
+// because curl reads only the lower-case http_proxy. NO_PROXY stays unset,
+// so every HTTP and HTTPS request goes to the proxy.
+func (d *Driver) proxyEnv(id string) []string {
+	u := *d.proxy
+	u.User = url.UserPassword(id, "")
+	v := u.String()
+	env := make([]string, 0, 6)
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
+		env = append(env, k+"="+v, strings.ToLower(k)+"="+v)
+	}
+	return env
+}
+
+// ensureNetwork makes sure the sandbox network exists and is internal. A
+// network that is not internal has a route off the bridge, so a sandbox on
+// it could bypass the proxy; the driver refuses it rather than use it.
+func (d *Driver) ensureNetwork(ctx context.Context) error {
+	for range 2 {
+		res, err := d.api.NetworkInspect(ctx, d.network, client.NetworkInspectOptions{})
+		if err == nil {
+			if !res.Network.Internal {
+				return fmt.Errorf("docker: network %s is not internal; a sandbox on it could bypass the egress proxy", d.network)
+			}
+			return nil
+		}
+		if !cerrdefs.IsNotFound(err) {
+			return fmt.Errorf("docker: network %s: %w", d.network, err)
+		}
+		_, err = d.api.NetworkCreate(ctx, d.network, client.NetworkCreateOptions{
+			Driver:   "bridge",
+			Internal: true,
+			Labels:   map[string]string{labelNetwork: "egress"},
+		})
+		if err == nil {
+			return nil
+		}
+		// Another Create made it first: inspect it again.
+		if !cerrdefs.IsConflict(err) {
+			return fmt.Errorf("docker: create network %s: %w", d.network, err)
+		}
+	}
+	return fmt.Errorf("docker: network %s: still missing after create", d.network)
 }
 
 // ensureImage uses a local image when there is one and pulls it otherwise.
