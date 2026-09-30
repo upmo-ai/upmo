@@ -2,8 +2,10 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -217,7 +219,7 @@ func TestExecStreamsOutput(t *testing.T) {
 }
 
 func TestPauseBlocksExec(t *testing.T) {
-	d, _ := testDriver(t, time.Now)
+	d, fake := testDriver(t, time.Now)
 	ctx := context.Background()
 	box, err := d.Create(ctx, spec())
 	if err != nil {
@@ -226,8 +228,34 @@ func TestPauseBlocksExec(t *testing.T) {
 	if err := d.Pause(ctx, box.ID); err != nil {
 		t.Fatal(err)
 	}
+	fake.mu.Lock()
+	freeze := append([]string(nil), fake.execCalls[0]...)
+	fake.mu.Unlock()
+	if !slices.Equal(freeze, []string{"kill", "-STOP", "-1"}) {
+		t.Fatalf("pause freeze = %v", freeze)
+	}
 	if _, err := d.Exec(ctx, box.ID, runtime.Command{Args: []string{"true"}}, nil); !errors.Is(err, ErrPaused) {
 		t.Fatalf("exec err = %v", err)
+	}
+	if _, _, ok := d.Egress(box.ID); ok {
+		t.Fatal("a paused sandbox has egress")
+	}
+}
+
+func TestPauseKeepsFilesReadable(t *testing.T) {
+	d, fake := testDriver(t, time.Now)
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Pause(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	fake.execOut = base64.StdEncoding.EncodeToString([]byte("kept"))
+	got, err := d.ReadFile(ctx, box.ID, "keep.txt")
+	if err != nil || string(got) != "kept" {
+		t.Fatalf("read on paused = %q %v", got, err)
 	}
 }
 
