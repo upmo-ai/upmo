@@ -18,6 +18,11 @@ COMMITS_RANGE ?= origin/main..HEAD
 # Dev only database for integration tests, served by the compose postgres.
 TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
 
+# The engine socket as the Docker daemon sees it. Bind mounts resolve on the
+# daemon side, so this is the same on Docker Desktop, Colima and CI.
+UPMO_DOCKER_SOCKET ?= /var/run/docker.sock
+export UPMO_DOCKER_SOCKET
+
 .PHONY: help build test test-integration test-live test-regression lint fmt up down ci web e2e arch vuln secrets commits docs fuzz canary
 
 help: ## List the targets
@@ -31,9 +36,9 @@ test: ## Run Go unit tests with the race detector and the web tests
 	$(GO) go test -race ./...
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm test"
 
-test-integration: ## Run Go integration tests against the compose postgres
+test-integration: ## Run Go integration tests against the compose postgres and the Docker engine
 	$(COMPOSE) up -d --wait postgres
-	$(COMPOSE) run --rm -e UPMO_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go go test -tags integration ./...
+	$(COMPOSE) run --rm -v "$(UPMO_DOCKER_SOCKET):/var/run/docker.sock" -e UPMO_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" -e UPMO_TEST_DOCKER_HOST=unix:///var/run/docker.sock go go test -tags integration ./...
 
 test-live: ## Run tests that call a real model provider
 	$(GO) go test -tags live ./...

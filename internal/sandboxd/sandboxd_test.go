@@ -186,3 +186,95 @@ func TestProxyRefusesUnlistedHost(t *testing.T) {
 		}
 	}
 }
+
+// swept is a driver that records sweeps.
+type swept struct {
+	Driver
+	n chan struct{}
+}
+
+func (s swept) Sweep(context.Context) (int, error) {
+	s.n <- struct{}{}
+	return 0, nil
+}
+
+func TestOpenPicksTheDriver(t *testing.T) {
+	ctx := context.Background()
+	var logs strings.Builder
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	docker := swept{Driver: Stub()}
+	reachable := func(context.Context) (Driver, error) { return docker, nil }
+	down := func(context.Context) (Driver, error) { return nil, errors.New("no socket") }
+	never := func(context.Context) (Driver, error) {
+		t.Fatal("the stub choice dialled the engine")
+		return nil, nil
+	}
+
+	for _, choice := range []string{"", DriverAuto, DriverDocker} {
+		d, err := open(ctx, choice, log, reachable)
+		if err != nil || d != Driver(docker) {
+			t.Fatalf("%q with an engine = %T %v", choice, d, err)
+		}
+	}
+
+	logs.Reset()
+	d, err := open(ctx, DriverAuto, log, down)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.(swept); ok {
+		t.Fatal("auto without an engine kept the docker driver")
+	}
+	if _, err := d.Exec(ctx, "x", runtime.Command{Args: []string{"true"}}, nil); !errors.Is(err, runtime.ErrUnsupported) {
+		t.Fatalf("fallback is not the stub: %v", err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "stub") {
+		t.Fatalf("fallback was not logged: %s", logs.String())
+	}
+
+	if _, err := open(ctx, DriverDocker, log, down); err == nil {
+		t.Fatal("docker without an engine fell back")
+	}
+	if _, err := open(ctx, DriverStub, log, never); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := open(ctx, "kubernetes", log, never); err == nil {
+		t.Fatal("unknown driver accepted")
+	}
+}
+
+func TestSweepRunsUntilCancelled(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := swept{Driver: Stub(), n: make(chan struct{}, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Sweep(ctx, s, 10*time.Millisecond, log)
+		close(done)
+	}()
+	for range 2 {
+		select {
+		case <-s.n:
+		case <-time.After(2 * time.Second):
+			t.Fatal("no sweep")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sweep did not stop")
+	}
+
+	// The stub holds nothing outside the process, so there is nothing to sweep.
+	stubDone := make(chan struct{})
+	go func() {
+		Sweep(context.Background(), Stub(), time.Millisecond, log)
+		close(stubDone)
+	}()
+	select {
+	case <-stubDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sweep ran for the stub")
+	}
+}

@@ -181,6 +181,9 @@ type Sandboxd struct {
 	ServiceKey string
 	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
 	ServiceKeyPrevious string
+	// Driver picks the sandbox driver (UPMO_SANDBOX_DRIVER): auto, docker or
+	// stub, auto by default. auto uses Docker when the engine answers.
+	Driver string
 }
 
 // LoadSandboxd reads the sandboxd configuration from the environment.
@@ -194,9 +197,18 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		ProxyAddr:       ":3128",
 		ShutdownTimeout: 10 * time.Second,
 		LogLevel:        "info",
+		Driver:          "auto",
 	}
 	if v, ok := lookup("UPMO_LISTEN_ADDR"); ok && v != "" {
 		cfg.ListenAddr = v
+	}
+	if v, ok := lookup("UPMO_SANDBOX_DRIVER"); ok && v != "" {
+		switch v = strings.ToLower(strings.TrimSpace(v)); v {
+		case "auto", "docker", "stub":
+			cfg.Driver = v
+		default:
+			return Sandboxd{}, fmt.Errorf("config: UPMO_SANDBOX_DRIVER must be auto, docker or stub")
+		}
 	}
 	if v, ok := lookup("UPMO_PROXY_ADDR"); ok && v != "" {
 		cfg.ProxyAddr = v
