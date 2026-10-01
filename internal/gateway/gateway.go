@@ -59,3 +59,8 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 		},
 	}.Mount(mux)
 }
+
+// NewRouteBook reads routing rows for settings screens. It never resolves secrets.
+func NewRouteBook(pool *pgxpool.Pool) app.RouteBook {
+	return postgres.Store{Pool: pool}
+}
