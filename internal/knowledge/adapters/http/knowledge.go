@@ -35,8 +35,27 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/knowledge/folders", wrap(http.HandlerFunc(h.listFolders)))
 	mux.Handle("POST /api/knowledge/folders", wrap(http.HandlerFunc(h.createFolder)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.listSources)))
+	mux.Handle("GET /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.getSource)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("GET /api/knowledge/folders/{id}/search", wrap(http.HandlerFunc(h.search)))
+}
+
+func (h Handler) getSource(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	source, err := app.ViewSource(r.Context(), h.Sources, access, r.PathValue("id"), r.PathValue("sourceID"))
+	if refuse(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         source.ID,
+		"title":      source.Title,
+		"body":       source.Body,
+		"revision":   source.Revision,
+		"updated_at": source.UpdatedAt,
+	})
 }
 
 func (h Handler) listSources(w http.ResponseWriter, r *http.Request) {

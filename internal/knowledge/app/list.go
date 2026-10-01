@@ -43,9 +43,19 @@ type Source struct {
 	UpdatedAt string
 }
 
+// SourceDetail is one document including the body.
+type SourceDetail struct {
+	ID        string
+	Title     string
+	Body      string
+	Revision  int
+	UpdatedAt string
+}
+
 // SourceLister returns sources in one folder under row security.
 type SourceLister interface {
 	ListSources(ctx context.Context, access Access, folderID string) ([]Source, error)
+	ViewSource(ctx context.Context, access Access, folderID, sourceID string) (SourceDetail, error)
 }
 
 // ListSources validates the caller and returns sources in a visible folder.
@@ -67,4 +77,21 @@ func ListSources(ctx context.Context, book SourceLister, access Access, folderID
 		out = []Source{}
 	}
 	return out, nil
+}
+
+// ViewSource validates the caller and returns one source in a visible folder.
+func ViewSource(ctx context.Context, book SourceLister, access Access, folderID, sourceID string) (SourceDetail, error) {
+	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
+		return SourceDetail{}, ErrAccess
+	}
+	if _, err := uuid.Parse(folderID); err != nil {
+		return SourceDetail{}, ErrFolder
+	}
+	if _, err := uuid.Parse(sourceID); err != nil {
+		return SourceDetail{}, ErrFolder
+	}
+	if book == nil {
+		return SourceDetail{}, ErrGone
+	}
+	return book.ViewSource(ctx, access, folderID, sourceID)
 }
