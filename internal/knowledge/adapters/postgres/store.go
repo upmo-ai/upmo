@@ -336,3 +336,40 @@ func (s Store) ListSources(ctx context.Context, access app.Access, folderID stri
 	}
 	return out, nil
 }
+
+// ViewSource returns one source in a folder this person can see, including the body.
+func (s Store) ViewSource(ctx context.Context, access app.Access, folderID, sourceID string) (app.SourceDetail, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return app.SourceDetail{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var found string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM knowledge.folders WHERE id = $1::uuid`, folderID).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.SourceDetail{}, app.ErrGone
+	}
+	if err != nil {
+		return app.SourceDetail{}, fmt.Errorf("knowledge: view source: %w", err)
+	}
+
+	var source app.SourceDetail
+	var updated time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT id::text, title, body, revision, updated_at
+		FROM knowledge.sources
+		WHERE id = $1::uuid AND folder_id = $2::uuid`, sourceID, folderID).Scan(
+		&source.ID, &source.Title, &source.Body, &source.Revision, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.SourceDetail{}, app.ErrGone
+	}
+	if err != nil {
+		return app.SourceDetail{}, fmt.Errorf("knowledge: view source: %w", err)
+	}
+	source.UpdatedAt = updated.UTC().Format(time.RFC3339)
+	if err := tx.Commit(ctx); err != nil {
+		return app.SourceDetail{}, err
+	}
+	return source, nil
+}
