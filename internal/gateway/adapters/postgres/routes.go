@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
 
@@ -76,4 +77,49 @@ func (s Store) Names(ctx context.Context) ([]string, error) {
 		names = append(names, name)
 	}
 	return names, rows.Err()
+}
+
+// List returns every route with hops in position order. Credential refs stay out.
+func (s Store) List(ctx context.Context) ([]app.ListedRoute, error) {
+	rows, err := s.Pool.Query(ctx, `
+		SELECT r.name, r.capability, r.decision,
+			l.position, account.adapter, l.model, l.weight, l.retry_budget
+		FROM gateway.routes AS r
+		LEFT JOIN gateway.route_links AS l ON l.route_id = r.id
+		LEFT JOIN gateway.provider_accounts AS account ON account.id = l.provider_account_id
+		ORDER BY r.name, l.position`)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: list routes: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]app.ListedRoute, 0)
+	var cur *app.ListedRoute
+	for rows.Next() {
+		var name, capability, decision string
+		var position *int
+		var adapter, model *string
+		var weight, retry *int
+		if err := rows.Scan(&name, &capability, &decision, &position, &adapter, &model, &weight, &retry); err != nil {
+			return nil, fmt.Errorf("gateway: list routes: %w", err)
+		}
+		if cur == nil || cur.Name != name {
+			out = append(out, app.ListedRoute{Name: name, Capability: capability, Decision: decision, Hops: []app.ListedHop{}})
+			cur = &out[len(out)-1]
+		}
+		if position == nil || adapter == nil || model == nil || weight == nil || retry == nil {
+			continue
+		}
+		cur.Hops = append(cur.Hops, app.ListedHop{
+			Position: *position,
+			Adapter:  *adapter,
+			Model:    *model,
+			Weight:   *weight,
+			Retry:    *retry,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("gateway: list routes: %w", err)
+	}
+	return out, nil
 }
