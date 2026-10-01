@@ -256,3 +256,37 @@ func parseHalfvec(raw string) []float32 {
 	}
 	return out
 }
+
+// ListFolders returns folders this person can see under row security.
+func (s Store) ListFolders(ctx context.Context, access app.Access) ([]app.Folder, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, name
+		FROM knowledge.folders
+		ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: list folders: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]app.Folder, 0)
+	for rows.Next() {
+		var folder app.Folder
+		if err := rows.Scan(&folder.ID, &folder.Name); err != nil {
+			return nil, fmt.Errorf("knowledge: list folders: %w", err)
+		}
+		out = append(out, folder)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("knowledge: list folders: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
