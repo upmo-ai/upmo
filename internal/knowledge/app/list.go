@@ -34,3 +34,37 @@ func ListFolders(ctx context.Context, book FolderLister, access Access) ([]Folde
 	}
 	return out, nil
 }
+
+// Source is one document in a folder, without the body.
+type Source struct {
+	ID        string
+	Title     string
+	Revision  int
+	UpdatedAt string
+}
+
+// SourceLister returns sources in one folder under row security.
+type SourceLister interface {
+	ListSources(ctx context.Context, access Access, folderID string) ([]Source, error)
+}
+
+// ListSources validates the caller and returns sources in a visible folder.
+func ListSources(ctx context.Context, book SourceLister, access Access, folderID string) ([]Source, error) {
+	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
+		return nil, ErrAccess
+	}
+	if _, err := uuid.Parse(folderID); err != nil {
+		return nil, ErrFolder
+	}
+	if book == nil {
+		return []Source{}, nil
+	}
+	out, err := book.ListSources(ctx, access, folderID)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Source{}
+	}
+	return out, nil
+}

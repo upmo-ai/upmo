@@ -15,6 +15,7 @@ import (
 type Handler struct {
 	Store   app.Store
 	Folders app.FolderLister
+	Sources app.SourceLister
 	Finder  app.Finder
 	Access  func(r *http.Request) (app.Access, bool)
 	// Summariser and Embedder are optional. Nil still stores verbatim chunks.
@@ -33,8 +34,30 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	}
 	mux.Handle("GET /api/knowledge/folders", wrap(http.HandlerFunc(h.listFolders)))
 	mux.Handle("POST /api/knowledge/folders", wrap(http.HandlerFunc(h.createFolder)))
+	mux.Handle("GET /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.listSources)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("GET /api/knowledge/folders/{id}/search", wrap(http.HandlerFunc(h.search)))
+}
+
+func (h Handler) listSources(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	sources, err := app.ListSources(r.Context(), h.Sources, access, r.PathValue("id"))
+	if refuse(w, err) {
+		return
+	}
+	body := make([]map[string]any, 0, len(sources))
+	for _, source := range sources {
+		body = append(body, map[string]any{
+			"id":         source.ID,
+			"title":      source.Title,
+			"revision":   source.Revision,
+			"updated_at": source.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (h Handler) listFolders(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +175,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, app.ErrAccess):
 		writeError(w, http.StatusForbidden, "unauthorised")
+	case errors.Is(err, app.ErrGone):
+		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, domain.ErrEmpty):
 		writeError(w, http.StatusBadRequest, "the knowledge input was refused")
 	default:

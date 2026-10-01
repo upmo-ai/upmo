@@ -22,6 +22,8 @@ var (
 	ErrName = errors.New("knowledge: folder needs a name")
 	// ErrAccess is a missing person or an empty allow list.
 	ErrAccess = errors.New("knowledge: access")
+	// ErrGone is a folder the person cannot see.
+	ErrGone = errors.New("knowledge: gone")
 	// ErrFolder is a folder id that is not a UUID, or a source in another folder.
 	ErrFolder = errors.New("knowledge: folder")
 	// ErrQuery is a blank search query.

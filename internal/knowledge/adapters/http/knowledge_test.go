@@ -24,6 +24,7 @@ type fakeStore struct {
 	name    string
 	draft   app.Draft
 	rows    []app.Folder
+	sources []app.Source
 	err     error
 }
 
@@ -33,6 +34,14 @@ func (f *fakeStore) ListFolders(context.Context, app.Access) ([]app.Folder, erro
 		return nil, f.err
 	}
 	return append([]app.Folder(nil), f.rows...), nil
+}
+
+func (f *fakeStore) ListSources(context.Context, app.Access, string) ([]app.Source, error) {
+	f.lists++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]app.Source(nil), f.sources...), nil
 }
 
 func (f *fakeStore) InTx(_ context.Context, _ app.Access, fn func(app.Tx) error) error {
@@ -170,6 +179,7 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 	Handler{
 		Store:   store,
 		Folders: store,
+		Sources: store,
 		Finder:  finder,
 		Access: func(*http.Request) (app.Access, bool) {
 			if !allow {
@@ -208,6 +218,37 @@ func TestListFoldersBearerIsRefused(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler(store, nil, true).ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden || store.lists != 0 {
+		t.Fatalf("status %d lists %d", rec.Code, store.lists)
+	}
+}
+
+func TestListSources(t *testing.T) {
+	store := &fakeStore{sources: []app.Source{{ID: sourceID, Title: "Guide", Revision: 2, UpdatedAt: "2026-10-01T00:00:00Z"}}}
+	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders/"+folderID+"/sources", "", true)
+	if rec.Code != http.StatusOK || store.lists != 1 {
+		t.Fatalf("status %d lists %d body %s", rec.Code, store.lists, rec.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 1 || got[0]["title"] != "Guide" {
+		t.Fatalf("got %#v err %v", got, err)
+	}
+	if strings.Contains(rec.Body.String(), "body") {
+		t.Fatalf("body leaked: %s", rec.Body.String())
+	}
+}
+
+func TestListSourcesGoneFolder(t *testing.T) {
+	store := &fakeStore{err: app.ErrGone}
+	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders/"+folderID+"/sources", "", true)
+	if rec.Code != http.StatusNotFound || store.lists != 1 {
+		t.Fatalf("status %d lists %d", rec.Code, store.lists)
+	}
+}
+
+func TestListSourcesEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders/"+folderID+"/sources", "", false)
+	if rec.Code != http.StatusUnauthorized || store.lists != 0 {
 		t.Fatalf("status %d lists %d", rec.Code, store.lists)
 	}
 }
