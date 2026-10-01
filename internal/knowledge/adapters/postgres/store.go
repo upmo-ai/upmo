@@ -290,3 +290,49 @@ func (s Store) ListFolders(ctx context.Context, access app.Access) ([]app.Folder
 	}
 	return out, nil
 }
+
+// ListSources returns sources in a folder this person can see. The body stays out.
+func (s Store) ListSources(ctx context.Context, access app.Access, folderID string) ([]app.Source, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var found string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM knowledge.folders WHERE id = $1::uuid`, folderID).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, app.ErrGone
+	}
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: list sources: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, title, revision, updated_at
+		FROM knowledge.sources
+		WHERE folder_id = $1::uuid
+		ORDER BY updated_at DESC, id`, folderID)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: list sources: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]app.Source, 0)
+	for rows.Next() {
+		var source app.Source
+		var updated time.Time
+		if err := rows.Scan(&source.ID, &source.Title, &source.Revision, &updated); err != nil {
+			return nil, fmt.Errorf("knowledge: list sources: %w", err)
+		}
+		source.UpdatedAt = updated.UTC().Format(time.RFC3339)
+		out = append(out, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("knowledge: list sources: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

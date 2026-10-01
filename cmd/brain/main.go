@@ -290,6 +290,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	knowledgehttp.Handler{
 		Store:   knowledgeBook,
 		Folders: knowledgeBook,
+		Sources: knowledgeBook,
 		Finder:  knowledgeBook,
 		Access: func(r *http.Request) (knowledgeapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
