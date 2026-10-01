@@ -24,6 +24,7 @@ import {
   IconMoon,
   IconPlug,
   IconSelector,
+  IconServer,
   IconShieldCheck,
   IconSparkles,
   IconSun,
@@ -59,17 +60,24 @@ type NavItem = {
   icon?: React.ReactNode;
 };
 
-const connectorsItem: NavItem = {
-  to: "/settings/connectors",
-  label: "Connectors",
-  icon: <IconPlug size={16} stroke={1.75} aria-hidden="true" />,
-};
+const workspaceItems: NavItem[] = [
+  {
+    to: "/providers",
+    label: "Providers",
+    icon: <IconServer size={16} stroke={1.75} aria-hidden="true" />,
+  },
+  {
+    to: "/connectors",
+    label: "Connectors",
+    icon: <IconPlug size={16} stroke={1.75} aria-hidden="true" />,
+  },
+];
 
-const managementItem: NavItem = {
-  to: "/admin",
-  label: "Management",
-  concept: "nav.settings",
-};
+const managementSubItems = [
+  { to: "/admin/members", label: "Members" },
+  { to: "/admin/teams", label: "Teams" },
+  { to: "/admin/roles", label: "Roles" },
+] as const;
 
 function useShellLayout(): "drawer" | "rail" | "full" {
   const full = useMediaQuery("(min-width: 62em)", false, { getInitialValueInEffect: false });
@@ -81,8 +89,11 @@ function useShellLayout(): "drawer" | "rail" | "full" {
 
 function isCurrent(pathname: string, to: string) {
   if (to === "/") return pathname === "/";
-  if (to === "/settings/connectors") {
-    return pathname === "/settings/connectors" || pathname.startsWith("/settings/connectors/");
+  if (to === "/connectors") {
+    return pathname === "/connectors" || pathname.startsWith("/connectors/");
+  }
+  if (to === "/providers") {
+    return pathname === "/providers" || pathname.startsWith("/providers/");
   }
   if (to === "/admin" || to === "/tasks") {
     return pathname === to || pathname.startsWith(`${to}/`);
@@ -108,7 +119,13 @@ function NavEntry({
         className="shell-nav-link"
         component={Link}
         to={item.to}
-        activeOptions={{ exact: item.to !== "/admin" && item.to !== "/tasks" && item.to !== "/settings/connectors" }}
+        activeOptions={{
+          exact:
+            item.to !== "/admin" &&
+            item.to !== "/tasks" &&
+            item.to !== "/connectors" &&
+            item.to !== "/providers",
+        }}
         active={current}
         aria-current={current ? "page" : undefined}
         aria-label={item.label}
@@ -122,10 +139,10 @@ function NavEntry({
 }
 
 function ShellBreadcrumb({ pathname }: { pathname: string }) {
-  if (pathname === "/settings/connectors" || pathname.startsWith("/settings/connectors/")) {
+  if (pathname === "/connectors") {
     return (
       <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/settings/connectors" size="sm">
+        <Anchor component={Link} to="/connectors" size="sm">
           Workspace
         </Anchor>
         <Text size="sm" fw={600} aria-current="page">
@@ -135,25 +152,90 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
     );
   }
 
-  const settingsSection = settingsSections.find((item) => item.to === pathname);
-  if (settingsSection) {
+  if (pathname === "/connectors/new") {
     return (
       <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/settings" size="sm">
-          Settings
+        <Anchor component={Link} to="/connectors" size="sm">
+          Workspace
+        </Anchor>
+        <Anchor component={Link} to="/connectors" size="sm">
+          Connectors
         </Anchor>
         <Text size="sm" fw={600} aria-current="page">
-          {settingsSection.label}
+          Connect tool
         </Text>
       </Breadcrumbs>
     );
   }
 
-  const adminSection = adminSections.find((item) => item.to === pathname);
+  if (pathname.startsWith("/connectors/") && pathname.endsWith("/edit")) {
+    return (
+      <Breadcrumbs separator="/">
+        <Anchor component={Link} to="/connectors" size="sm">
+          Workspace
+        </Anchor>
+        <Anchor component={Link} to="/connectors" size="sm">
+          Connectors
+        </Anchor>
+        <Text size="sm" fw={600} aria-current="page">
+          Edit permissions
+        </Text>
+      </Breadcrumbs>
+    );
+  }
+
+  if (pathname === "/providers") {
+    return (
+      <Breadcrumbs separator="/">
+        <Anchor component={Link} to="/providers" size="sm">
+          Workspace
+        </Anchor>
+        <Text size="sm" fw={600} aria-current="page">
+          Providers
+        </Text>
+      </Breadcrumbs>
+    );
+  }
+
+  if (pathname === "/providers/new") {
+    return (
+      <Breadcrumbs separator="/">
+        <Anchor component={Link} to="/providers" size="sm">
+          Workspace
+        </Anchor>
+        <Anchor component={Link} to="/providers" size="sm">
+          Providers
+        </Anchor>
+        <Text size="sm" fw={600} aria-current="page">
+          Connect provider
+        </Text>
+      </Breadcrumbs>
+    );
+  }
+
+  if (pathname.startsWith("/providers/") && pathname.endsWith("/edit")) {
+    return (
+      <Breadcrumbs separator="/">
+        <Anchor component={Link} to="/providers" size="sm">
+          Workspace
+        </Anchor>
+        <Anchor component={Link} to="/providers" size="sm">
+          Providers
+        </Anchor>
+        <Text size="sm" fw={600} aria-current="page">
+          Edit provider
+        </Text>
+      </Breadcrumbs>
+    );
+  }
+
+  const adminSection = adminSections.find(
+    (item) => item.to === pathname || (item.to === "/admin/members" && pathname === "/admin"),
+  );
   if (adminSection) {
     return (
       <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/admin" size="sm">
+        <Anchor component={Link} to="/admin/members" size="sm">
           Management
         </Anchor>
         <Text size="sm" fw={600} aria-current="page">
@@ -163,15 +245,24 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
     );
   }
 
+  const personalSection = settingsSections.find((item) => item.to === pathname);
+  if (personalSection) {
+    return (
+      <Breadcrumbs separator="/">
+        <Text size="sm" fw={600} aria-current="page">
+          {personalSection.label}
+        </Text>
+      </Breadcrumbs>
+    );
+  }
+
   const label =
     primary.find((item) => item.to === pathname)?.label ??
     (pathname.startsWith("/tasks/")
       ? "Tasks"
-      : pathname === "/settings"
-        ? "Settings"
-        : pathname === "/admin"
-          ? "Management"
-          : "");
+      : pathname === "/admin"
+        ? "Management"
+        : "");
 
   return (
     <Breadcrumbs separator="/">
@@ -329,19 +420,81 @@ export function Shell() {
             />
           ))}
           <Text className="shell-group">Workspace</Text>
-          <NavEntry
-            item={connectorsItem}
-            pathname={pathname}
-            rail={effectiveLayout === "rail"}
-            onNavigate={close}
-          />
-          {isManagement && (
+          {workspaceItems.map((item) => (
             <NavEntry
-              item={managementItem}
+              key={item.to}
+              item={item}
               pathname={pathname}
               rail={effectiveLayout === "rail"}
               onNavigate={close}
             />
+          ))}
+          {isManagement && (
+            effectiveLayout === "rail" ? (
+              <Menu
+                position="right-start"
+                offset={8}
+                width={180}
+                withinPortal
+                transitionProps={{ duration: 0 }}
+              >
+                <Menu.Target>
+                  <Tooltip label="Management" position="right" openDelay={400}>
+                    <ActionIcon
+                      className="shell-nav-link"
+                      variant="subtle"
+                      size={32}
+                      aria-label="Management"
+                      data-active={pathname.startsWith("/admin") ? "true" : undefined}
+                    >
+                      <ShellIcon concept="nav.settings" size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Label>Management</Menu.Label>
+                  {managementSubItems.map((sub) => (
+                    <Menu.Item
+                      key={sub.to}
+                      component={Link}
+                      to={sub.to}
+                      onClick={close}
+                    >
+                      {sub.label}
+                    </Menu.Item>
+                  ))}
+                </Menu.Dropdown>
+              </Menu>
+            ) : (
+              <NavLink
+                className="shell-nav-link shell-nav-parent"
+                label={<span className="shell-nav-label">Management</span>}
+                leftSection={<ShellIcon concept="nav.settings" size={16} />}
+                defaultOpened
+                childrenOffset={0}
+                active={false}
+              >
+                {managementSubItems.map((sub) => {
+                  const isSubActive =
+                    pathname === sub.to || (sub.to === "/admin/members" && pathname === "/admin");
+                  return (
+                    <NavLink
+                      key={sub.to}
+                      className="shell-nav-link shell-nav-sublink"
+                      component={Link}
+                      to={sub.to}
+                      activeOptions={{ exact: true }}
+                      active={isSubActive}
+                      aria-current={isSubActive ? "page" : undefined}
+                      aria-label={sub.label}
+                      label={<span className="shell-nav-label">{sub.label}</span>}
+                      variant="subtle"
+                      onClick={close}
+                    />
+                  );
+                })}
+              </NavLink>
+            )
           )}
         </div>
         <div className="shell-footer">
@@ -390,7 +543,7 @@ export function Shell() {
               <Menu.Divider />
               <Menu.Item
                 component={Link}
-                to="/settings/personalization"
+                to="/personalisation"
                 leftSection={<IconSparkles size={16} stroke={1.75} aria-hidden="true" />}
                 onClick={close}
               >
@@ -398,7 +551,7 @@ export function Shell() {
               </Menu.Item>
               <Menu.Item
                 component={Link}
-                to="/settings"
+                to="/security"
                 leftSection={<IconShieldCheck size={16} stroke={1.75} aria-hidden="true" />}
                 onClick={close}
               >
@@ -406,7 +559,7 @@ export function Shell() {
               </Menu.Item>
               <Menu.Item
                 component={Link}
-                to="/settings/tokens"
+                to="/tokens"
                 leftSection={<IconKey size={16} stroke={1.75} aria-hidden="true" />}
                 onClick={close}
               >
@@ -448,7 +601,7 @@ export function Shell() {
             </ActionIcon>
           </Tooltip>
           <div className="shell-footer-bar">
-            <span className="shell-version">0.1.0</span>
+            <span className="shell-version">v0.1.0</span>
           </div>
         </div>
       </AppShell.Navbar>

@@ -25,7 +25,7 @@ describe("API tokens", () => {
   });
 
   it("shows the secret only while the create dialog is open", async () => {
-    renderAt("/settings/tokens");
+    renderAt("/tokens");
     expect(await screen.findByRole("heading", { level: 1, name: "API tokens" })).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Create token" })).toBeTruthy();
     act(() => {
@@ -144,7 +144,7 @@ describe("live tokens", () => {
       return new Response("missing", { status: 404 });
     }) as typeof fetch;
 
-    renderAt("/settings/tokens");
+    renderAt("/tokens");
     expect(await screen.findByText("Ship")).toBeTruthy();
     expect(screen.getByText("task:view")).toBeTruthy();
     expect(screen.queryByTestId("token-hint")).toBeNull();

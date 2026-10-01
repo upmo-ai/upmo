@@ -52,14 +52,34 @@
 
 .record {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-100);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.record:hover {
+  background: var(--surface-hover);
+}
+
+.record-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.record-actions {
+  display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface-100);
+  flex-shrink: 0;
 }
 
 .record > span,
@@ -70,34 +90,138 @@
   overflow-wrap: anywhere;
 }
 
-.members-table {
+/* Design system Table container */
+.u-table-wrap,
+.mantine-Table-scrollContainer.u-table-wrap {
   width: 100%;
-  max-width: 100%;
-  table-layout: auto;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-100);
+}
+
+/* Design system Table element */
+.u-table,
+.members-table,
+.u-table-wrap table {
+  width: 100%;
   border-collapse: collapse;
+  font-size: 15px;
+  min-width: 560px;
+  background: var(--surface-100);
 }
 
-.members-table th,
-.members-table td {
-  overflow-wrap: anywhere;
+.u-table caption,
+.members-table caption,
+.u-table-wrap caption {
   text-align: left;
-  vertical-align: top;
-  padding: var(--space-2);
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink-muted);
 }
 
-.members-table select,
-.members-table .member-remove {
-  max-width: 100%;
-  height: auto;
-  white-space: normal;
+/* Table headers */
+.u-table th,
+.members-table th,
+.u-table-wrap th,
+.u-table-wrap .mantine-Table-th {
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background: var(--surface-200);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
 }
 
-.members-table .member-remove .mantine-Button-label {
-  height: auto;
-  overflow: visible;
-  white-space: normal;
-  text-overflow: clip;
-  line-height: 1.3;
+.u-table th button,
+.members-table th button,
+.u-table-wrap th button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-xs);
+}
+
+.u-table th button:hover,
+.members-table th button:hover,
+.u-table-wrap th button:hover {
+  color: var(--ink);
+}
+
+.u-table th[aria-sort] button,
+.members-table th[aria-sort] button,
+.u-table-wrap th[aria-sort] button {
+  color: var(--ink);
+}
+
+/* Table cells */
+.u-table td,
+.members-table td,
+.u-table-wrap td,
+.u-table-wrap .mantine-Table-td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  vertical-align: middle;
+}
+
+.u-table tr:last-child td,
+.members-table tr:last-child td,
+.u-table-wrap tr:last-child td,
+.u-table tbody tr:last-child td,
+.members-table tbody tr:last-child td,
+.u-table-wrap tbody tr:last-child td,
+.u-table-wrap .mantine-Table-tbody .mantine-Table-tr:last-child .mantine-Table-td {
+  border-bottom: 0;
+}
+
+/* Table row states */
+.u-table tbody tr,
+.members-table tbody tr,
+.u-table-wrap tbody tr,
+.u-table-wrap .mantine-Table-tbody .mantine-Table-tr {
+  transition: background-color 120ms;
+}
+
+.u-table tbody tr:hover,
+.members-table tbody tr:hover,
+.u-table-wrap tbody tr:hover,
+.u-table-wrap .mantine-Table-tbody .mantine-Table-tr:hover {
+  background: var(--surface-hover);
+}
+
+.u-table tbody tr[aria-selected="true"],
+.members-table tbody tr[aria-selected="true"],
+.u-table-wrap tbody tr[aria-selected="true"] {
+  background: var(--surface-selected);
+}
+
+/* Numeric & Monospace columns */
+.u-table .u-num,
+.members-table .u-num,
+.u-table-wrap .u-num,
+th.u-num,
+td.u-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.u-table .u-mono,
+.members-table .u-mono,
+.u-table-wrap .u-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
 .scope-list {
@@ -142,32 +266,6 @@
   min-width: 0;
 }
 
-@media (max-width: 47.99em) {
-  .members-table thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .members-table,
-  .members-table tbody,
-  .members-table tr,
-  .members-table td {
-    display: block;
-    width: auto;
-  }
-
-  .members-table tr {
-    padding: var(--space-3) 0;
-    border-bottom: 1px solid var(--border);
-  }
-}
 
 @media (pointer: fine) {
   .members-table select,

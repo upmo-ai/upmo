@@ -37,6 +37,10 @@ describe("Chat page", () => {
 
     const composer = screen.getByRole("form", { name: "Chat composer" });
     expect(within(composer).getByRole("textbox", { name: "Message" })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: "Agent, route, and model configuration" })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: "Attach file" })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: "Dictate" })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: "Tools mode" })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Send" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy reply" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();

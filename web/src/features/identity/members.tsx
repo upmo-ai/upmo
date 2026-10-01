@@ -1,4 +1,15 @@
-import { Button, Checkbox, NativeSelect, Stack, Table, Text, TextInput, Title } from "@mantine/core";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  Group,
+  NativeSelect,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -171,30 +182,32 @@ function StubMembers() {
         </form>
       ) : null}
       {members.data && actor && me.data ? (
-        <Table className="members-table" aria-label="Members">
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Name</Table.Th>
-              <Table.Th>Email</Table.Th>
-              <Table.Th>Role</Table.Th>
-              <Table.Th>Teams</Table.Th>
-              {manage ? <Table.Th aria-label="Actions">Actions</Table.Th> : null}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {list.map((member) => (
-              <MemberRow
-                key={member.id}
-                member={member}
-                manage={manage}
-                actorRole={actor.role}
-                ownerCount={owners}
-                onRole={(next) => setMemberRole.mutate({ id: member.id, role: next })}
-                onRemove={() => setRemoveId(member.id)}
-              />
-            ))}
-          </Table.Tbody>
-        </Table>
+        <Table.ScrollContainer minWidth={560} className="u-table-wrap">
+          <Table stickyHeader highlightOnHover verticalSpacing="sm" className="u-table members-table" aria-label="Members">
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Name</Table.Th>
+                <Table.Th>Email</Table.Th>
+                <Table.Th>Role</Table.Th>
+                <Table.Th>Teams</Table.Th>
+                {manage ? <Table.Th aria-label="Actions" ta="right">Actions</Table.Th> : null}
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {list.map((member) => (
+                <MemberRow
+                  key={member.id}
+                  member={member}
+                  manage={manage}
+                  actorRole={actor.role}
+                  ownerCount={owners}
+                  onRole={(next) => setMemberRole.mutate({ id: member.id, role: next })}
+                  onRemove={() => setRemoveId(member.id)}
+                />
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
       ) : null}
       <ConfirmDialog
         opened={removing !== null}
@@ -244,7 +257,7 @@ function MemberRow({
 
   return (
     <Table.Tr>
-      <Table.Td>{member.name}</Table.Td>
+      <Table.Td fw={500}>{member.name}</Table.Td>
       <Table.Td>{member.email}</Table.Td>
       <Table.Td>
         {manage ? (
@@ -253,37 +266,51 @@ function MemberRow({
               aria-label={`Role for ${member.name}`}
               value={member.role}
               disabled={!roleEditable}
+              size="xs"
               data={options}
               onChange={(event) => {
                 const next = event.currentTarget.value;
                 if (isInviteRole(next)) onRole(next);
               }}
             />
-            {lock ? <Text size="sm">{lock}</Text> : null}
+            {lock ? <Text size="xs" c="dimmed">{lock}</Text> : null}
           </Stack>
         ) : (
-          roleLabel[member.role]
+          <Badge variant="light" size="sm" radius="xl">
+            {roleLabel[member.role]}
+          </Badge>
         )}
       </Table.Td>
-      <Table.Td>{member.teams.length > 0 ? member.teams.join(", ") : "No team"}</Table.Td>
+      <Table.Td>
+        {member.teams.length > 0 ? (
+          member.teams.join(", ")
+        ) : (
+          <Text span c="dimmed">
+            No team
+          </Text>
+        )}
+      </Table.Td>
       {manage ? (
         <Table.Td aria-label="Actions">
-          <RowAction
-            label="Remove"
-            className="member-remove"
-            concept="action.delete"
-            disabled={!removable}
-            onClick={onRemove}
-          />
+          <Group gap="xs" justify="flex-end" wrap="nowrap">
+            <RowAction
+              label="Remove"
+              className="member-remove"
+              concept="action.delete"
+              size={30}
+              disabled={!removable}
+              onClick={onRemove}
+            />
+          </Group>
         </Table.Td>
       ) : null}
     </Table.Tr>
   );
 }
 
-type LiveRole = { id: string; name: string; system: string; permissions?: string[]; members?: number };
-type LiveTeam = { id: string; name: string };
-type LiveMember = {
+export type LiveRole = { id: string; name: string; system: string; permissions?: string[]; members?: number };
+export type LiveTeam = { id: string; name: string };
+export type LiveMember = {
   id: string;
   name: string;
   email: string;
@@ -292,7 +319,7 @@ type LiveMember = {
   role: LiveRole;
 };
 
-class ConfirmPassword extends Error {
+export class ConfirmPassword extends Error {
   constructor() {
     super("Confirm your password to continue.");
     this.name = "ConfirmPassword";
@@ -323,7 +350,6 @@ function LiveMembers() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [roleId, setRoleId] = useState("");
-  const [teamName, setTeamName] = useState("");
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
   const [password, setPassword] = useState("");
@@ -427,136 +453,114 @@ function LiveMembers() {
           </Stack>
         </form>
       ) : null}
-      {canTeams ? (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void run(async () => {
-              await memberWrite("/api/teams", "POST", { name: teamName }, passkeyCount);
-              setTeamName("");
-              await teams.refetch();
-            });
-          }}
-        >
-          <Stack gap="sm">
-            <TextInput label="Team name" value={teamName} onChange={(event) => setTeamName(event.currentTarget.value)} />
-            <div>
-              <Button type="submit" disabled={!teamName.trim()}>
-                New team
-              </Button>
-            </div>
-          </Stack>
-        </form>
-      ) : null}
-      <Table className="members-table" aria-label="Members">
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Name</Table.Th>
-            <Table.Th>Email</Table.Th>
-            <Table.Th>Role</Table.Th>
-            <Table.Th>Teams</Table.Th>
-            {manage ? <Table.Th aria-label="Actions">Actions</Table.Th> : null}
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {list.map((member) => (
-            <Table.Tr key={member.id}>
-              <Table.Td>{member.name}</Table.Td>
-              <Table.Td>{member.email}</Table.Td>
-              <Table.Td>
-                {manage && member.id !== actor?.id ? (
-                  <NativeSelect
-                    aria-label={`Role for ${member.name}`}
-                    value={member.role.id}
-                    data={(roles.data ?? []).map((role) => ({ value: role.id, label: role.name }))}
-                    onChange={(event) => {
-                      const nextRole = event.currentTarget.value;
-                      void run(async () => {
-                        await memberWrite(`/api/members/${member.id}/role`, "PUT", { role_id: nextRole }, passkeyCount);
-                        await members.refetch();
-                      });
-                    }}
-                  />
-                ) : (
-                  member.role.name
-                )}
-              </Table.Td>
-              <Table.Td>
-                {canTeams && !member.invited && teamChoices.length > 0 ? (
-                  <Stack gap={4}>
-                    {teamChoices.map((team) => (
-                      <Checkbox
-                        key={team.id}
-                        label={team.name}
-                        aria-label={`${team.name} for ${member.name}`}
-                        checked={member.teams.includes(team.name)}
-                        onChange={(event) => {
-                          const on = event.currentTarget.checked;
-                          void run(async () => {
-                            if (on) {
-                              await memberWrite(`/api/teams/${team.id}/members`, "POST", { user_id: member.id }, passkeyCount);
-                            } else {
-                              await memberWrite(`/api/teams/${team.id}/members/${member.id}`, "DELETE", null, passkeyCount);
-                            }
-                            await members.refetch();
-                          });
-                        }}
-                      />
-                    ))}
-                  </Stack>
-                ) : member.teams.length > 0 ? (
-                  member.teams.join(", ")
-                ) : (
-                  "No team"
-                )}
-              </Table.Td>
-              {manage ? (
-                <Table.Td aria-label="Actions">
-                  {member.id === actor?.id ? null : (
-                    <Button
-                      type="button"
-                      variant="default"
-                      onClick={() => {
-                        const path = member.invited
-                          ? `/api/members/${member.id}/invite-link`
-                          : `/api/members/${member.id}/reset-link`;
+      <Table.ScrollContainer minWidth={560} className="u-table-wrap">
+        <Table stickyHeader highlightOnHover verticalSpacing="sm" className="u-table members-table" aria-label="Members">
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>Email</Table.Th>
+              <Table.Th>Role</Table.Th>
+              <Table.Th>Teams</Table.Th>
+              {manage ? <Table.Th aria-label="Actions" ta="right">Actions</Table.Th> : null}
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {list.map((member) => (
+              <Table.Tr key={member.id}>
+                <Table.Td fw={500}>{member.name}</Table.Td>
+                <Table.Td>{member.email}</Table.Td>
+                <Table.Td>
+                  {manage && member.id !== actor?.id ? (
+                    <NativeSelect
+                      aria-label={`Role for ${member.name}`}
+                      value={member.role.id}
+                      size="xs"
+                      data={(roles.data ?? []).map((role) => ({ value: role.id, label: role.name }))}
+                      onChange={(event) => {
+                        const nextRole = event.currentTarget.value;
                         void run(async () => {
-                          const body = await memberWrite(path, "POST", null, passkeyCount);
-                          const token = typeof body === "object" && body && "token" in body ? String(body.token) : "";
-                          setLink(`${window.location.origin}/login/link#${token}`);
+                          await memberWrite(`/api/members/${member.id}/role`, "PUT", { role_id: nextRole }, passkeyCount);
+                          await members.refetch();
                         });
                       }}
-                    >
-                      {member.invited ? "New invite link" : "Reset link"}
-                    </Button>
-                  )}
-                  {!member.invited && member.id !== actor?.id ? (
-                    <Text size="sm">This signs them in and logs out their other browsers.</Text>
-                  ) : null}
-                  {member.id === actor?.id ? null : (
-                    <RowAction
-                      label="Remove"
-                      concept="action.delete"
-                      onClick={() => setRemoveId(member.id)}
                     />
+                  ) : (
+                    <Badge variant="light" size="sm" radius="xl">
+                      {member.role.name}
+                    </Badge>
                   )}
                 </Table.Td>
-              ) : null}
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-      <RolesCard
-        roles={roles.data ?? []}
-        held={new Set(choicesFor(actor?.role.id, roles.data ?? []))}
-        canManage={canManageRoles(actor?.role.id, roles.data ?? [])}
-        passkeys={passkeyCount}
-        onChanged={async () => {
-          await roles.refetch();
-          await members.refetch();
-        }}
-        run={run}
-      />
+                <Table.Td>
+                  {canTeams && !member.invited && teamChoices.length > 0 ? (
+                    <Stack gap={4}>
+                      {teamChoices.map((team) => (
+                        <Checkbox
+                          key={team.id}
+                          size="xs"
+                          label={team.name}
+                          aria-label={`${team.name} for ${member.name}`}
+                          checked={member.teams.includes(team.name)}
+                          onChange={(event) => {
+                            const on = event.currentTarget.checked;
+                            void run(async () => {
+                              if (on) {
+                                await memberWrite(`/api/teams/${team.id}/members`, "POST", { user_id: member.id }, passkeyCount);
+                              } else {
+                                await memberWrite(`/api/teams/${team.id}/members/${member.id}`, "DELETE", null, passkeyCount);
+                              }
+                              await members.refetch();
+                            });
+                          }}
+                        />
+                      ))}
+                    </Stack>
+                  ) : member.teams.length > 0 ? (
+                    member.teams.join(", ")
+                  ) : (
+                    <Text span c="dimmed">
+                      No team
+                    </Text>
+                  )}
+                </Table.Td>
+                {manage ? (
+                  <Table.Td aria-label="Actions">
+                    <Group gap="xs" justify="flex-end" wrap="nowrap">
+                      {member.id === actor?.id ? null : (
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="xs"
+                          title={!member.invited ? "This signs them in and logs out their other browsers." : undefined}
+                          onClick={() => {
+                            const path = member.invited
+                              ? `/api/members/${member.id}/invite-link`
+                              : `/api/members/${member.id}/reset-link`;
+                            void run(async () => {
+                              const body = await memberWrite(path, "POST", null, passkeyCount);
+                              const token = typeof body === "object" && body && "token" in body ? String(body.token) : "";
+                              setLink(`${window.location.origin}/login/link#${token}`);
+                            });
+                          }}
+                        >
+                          {member.invited ? "New invite link" : "Reset link"}
+                        </Button>
+                      )}
+                      {member.id === actor?.id ? null : (
+                        <RowAction
+                          label="Remove"
+                          concept="action.delete"
+                          size={30}
+                          onClick={() => setRemoveId(member.id)}
+                        />
+                      )}
+                    </Group>
+                  </Table.Td>
+                ) : null}
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
       <ConfirmDialog
         opened={removing !== null}
         title={removing ? `Remove ${removing.name}?` : "Remove this member?"}
@@ -595,19 +599,19 @@ function LiveMembers() {
   );
 }
 
-async function liveJSON<T>(path: string): Promise<T> {
+export async function liveJSON<T>(path: string): Promise<T> {
   const response = await fetch(path, { credentials: "include" });
   if (!response.ok) throw new Error("Failed to load members.");
   return (await response.json()) as T;
 }
 
-async function liveObject<T extends object>(path: string): Promise<T> {
+export async function liveObject<T extends object>(path: string): Promise<T> {
   const response = await fetch(path, { credentials: "include" });
   if (!response.ok) throw new Error("Failed to load members.");
   return (await response.json()) as T;
 }
 
-async function memberWrite(path: string, method: string, body: unknown, passkeys: number): Promise<unknown> {
+export async function memberWrite(path: string, method: string, body: unknown, passkeys: number): Promise<unknown> {
   const send = async () => {
     const response = await fetch(path, {
       method,
@@ -627,162 +631,16 @@ async function memberWrite(path: string, method: string, body: unknown, passkeys
   return fresh(send);
 }
 
-const roleObjects = ["task", "chat", "folder", "automation", "agent"] as const;
-const roleActions = ["create", "view", "edit", "share", "delete"] as const;
-const roleInstall = ["members:manage", "teams:manage", "roles:manage", "settings:manage", "connectors:manage"] as const;
+export const roleObjects = ["task", "chat", "folder", "automation", "agent"] as const;
+export const roleActions = ["create", "view", "edit", "share", "delete"] as const;
+export const roleInstall = ["members:manage", "teams:manage", "roles:manage", "settings:manage", "connectors:manage"] as const;
 
-function canManageRoles(roleId: string | undefined, roles: LiveRole[]): boolean {
+export function canManageRoles(roleId: string | undefined, roles: LiveRole[]): boolean {
   return roles.find((role) => role.id === roleId)?.permissions?.includes("roles:manage") ?? false;
 }
 
-function choicesFor(roleId: string | undefined, roles: LiveRole[]): string[] {
+export function choicesFor(roleId: string | undefined, roles: LiveRole[]): string[] {
   return roles.find((role) => role.id === roleId)?.permissions ?? [];
-}
-
-function RolesCard({
-  roles,
-  held,
-  canManage,
-  passkeys,
-  onChanged,
-  run,
-}: {
-  roles: LiveRole[];
-  held: Set<string>;
-  canManage: boolean;
-  passkeys: number;
-  onChanged: () => Promise<void>;
-  run: (action: () => Promise<void>) => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [editing, setEditing] = useState<string | null>(null);
-
-  function start(role: LiveRole | null, copyName: string) {
-    setEditing(role && role.system === "" ? role.id : null);
-    setName(copyName);
-    setSelected(role?.permissions ?? []);
-    setOpen(true);
-  }
-
-  const catalog = [
-    ...roleObjects.flatMap((object) => roleActions.map((action) => `${object}:${action}`)),
-    ...roleInstall,
-  ];
-
-  return (
-    <Stack gap="sm">
-      <Title order={2}>Roles</Title>
-      {canManage ? (
-        <Button type="button" onClick={() => start(null, "")}>
-          New role
-        </Button>
-      ) : null}
-      <Table className="members-table" aria-label="Roles">
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Name</Table.Th>
-            <Table.Th>Permissions</Table.Th>
-            <Table.Th>Members</Table.Th>
-            {canManage ? <Table.Th aria-label="Role actions">Actions</Table.Th> : null}
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {roles.map((role) => (
-            <Table.Tr key={role.id}>
-              <Table.Td>
-                {role.name}
-                {role.system ? <Text span> System</Text> : null}
-              </Table.Td>
-              <Table.Td>{(role.permissions ?? []).length}</Table.Td>
-              <Table.Td>{role.members ?? 0}</Table.Td>
-              {canManage ? (
-                <Table.Td>
-                  <Button
-                    type="button"
-                    variant="default"
-                    onClick={() => {
-                      void run(async () => {
-                        await memberWrite(
-                          `/api/roles/${role.id}/duplicate`,
-                          "POST",
-                          { name: `${role.name} copy` },
-                          passkeys,
-                        );
-                        await onChanged();
-                      });
-                    }}
-                  >
-                    Duplicate {role.name}
-                  </Button>
-                  {role.system ? null : (
-                    <RowAction
-                      label="Edit"
-                      concept="action.edit"
-                      onClick={() => start(role, role.name)}
-                    />
-                  )}
-                  {role.system ? null : (
-                    <RowAction
-                      label="Delete"
-                      concept="action.delete"
-                      onClick={() => {
-                        void run(async () => {
-                          await memberWrite(`/api/roles/${role.id}`, "DELETE", null, passkeys);
-                          await onChanged();
-                        });
-                      }}
-                    />
-                  )}
-                </Table.Td>
-              ) : null}
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-      <ConfirmDialog
-        opened={open}
-        title={editing ? "Edit role" : "New role"}
-        body="Choose permissions this role may use."
-        action="Save role"
-        confirmDisabled={!name.trim() || selected.length === 0}
-        onClose={() => setOpen(false)}
-        onConfirm={() => {
-          const id = editing;
-          const payload = { name, permissions: selected };
-          setOpen(false);
-          void run(async () => {
-            if (id) await memberWrite(`/api/roles/${id}`, "PUT", payload, passkeys);
-            else await memberWrite("/api/roles", "POST", payload, passkeys);
-            await onChanged();
-          });
-        }}
-      >
-        <TextInput label="Role name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
-        <Stack gap="xs">
-          {catalog.map((permission) => {
-            const locked = !held.has(permission);
-            return (
-              <Checkbox
-                key={permission}
-                label={permission}
-                checked={selected.includes(permission) || (locked && selected.includes(permission))}
-                disabled={locked}
-                onChange={(event) => {
-                  setSelected((current) =>
-                    event.currentTarget.checked
-                      ? [...current, permission]
-                      : current.filter((item) => item !== permission),
-                  );
-                }}
-              />
-            );
-          })}
-        </Stack>
-      </ConfirmDialog>
-    </Stack>
-  );
 }
 
 async function readPayload(response: Response): Promise<{ error: string; value: unknown }> {

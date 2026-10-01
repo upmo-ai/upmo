@@ -121,7 +121,7 @@ describe("sign in", () => {
       expect(screen.getByRole("link", { name: "Upmo" }).getAttribute("href")).toBe("/");
     });
     expect(screen.getByTestId("theme-switch")).toBeTruthy();
-    expect(screen.getByText("0.1.0")).toBeTruthy();
+    expect(screen.getByText("v0.1.0")).toBeTruthy();
 
     act(() => {
       screen.getByRole("button", { name: /Sam Rivera/i }).click();
