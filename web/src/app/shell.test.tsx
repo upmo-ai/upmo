@@ -25,14 +25,17 @@ const sidebarRoutes = [
   ["/agents", "Agents", "Agents"],
   ["/knowledge", "Knowledge", "Knowledge"],
   ["/usage", "Usage", "Usage"],
-  ["/settings/connectors", "Connectors", "Connectors"],
-  ["/admin", "Members", "Management"],
+  ["/providers", "Providers", "Providers"],
+  ["/connectors", "Connectors", "Connectors"],
+  ["/admin/members", "Members", "Members"],
+  ["/admin/teams", "Teams", "Teams"],
+  ["/admin/roles", "Roles", "Roles"],
 ] as const;
 
 const userSettingsRoutes = [
-  ["/settings", "Security"],
-  ["/settings/personalization", "Personalisation"],
-  ["/settings/tokens", "API tokens"],
+  ["/security", "Security"],
+  ["/personalisation", "Personalisation"],
+  ["/tokens", "API tokens"],
 ] as const;
 
 function renderAt(path: string, client?: ApiClient) {
@@ -56,7 +59,7 @@ const signedOut: CurrentUser = {
   offerDismissed: false,
 };
 
-function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens"> {
+function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers"> {
   const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
   const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
   const share = (taskId: string): TaskShare => ({
@@ -153,6 +156,49 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       },
       async revoke() {},
     },
+    connectors: {
+      async list() {
+        return [];
+      },
+      async put(grant) {
+        return grant;
+      },
+      async remove() {},
+      async test() {
+        return { ok: true, latency_ms: 50 };
+      },
+    },
+    providers: {
+      async list() {
+        return [];
+      },
+      async add(input) {
+        return {
+          id: "prov",
+          provider: input.provider,
+          name: input.name,
+          adapter: input.adapter,
+          plan_kind: input.plan_kind,
+          status: "Connected",
+          models: input.models,
+        };
+      },
+      async update(id, input) {
+        return {
+          id,
+          provider: "openai",
+          name: input.name ?? "OpenAI",
+          adapter: "openai",
+          plan_kind: input.plan_kind ?? "metered",
+          status: "Connected",
+          models: input.models ?? [],
+        };
+      },
+      async remove() {},
+      async test() {
+        return { ok: true, latency_ms: 50 };
+      },
+    },
   };
 }
 
@@ -201,14 +247,18 @@ describe("app shell", () => {
       "Agents",
       "Knowledge",
       "Usage",
+      "Providers",
       "Connectors",
-      "Management",
+      "Members",
+      "Teams",
+      "Roles",
     ]);
     expect(within(sidebar()).getByText("Workspace")).toBeTruthy();
+    expect(within(sidebar()).getByText("Management")).toBeTruthy();
     expect(within(sidebar()).getByText("Kodeeo Limited")).toBeTruthy();
     expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
     expect(within(sidebar()).getByTestId("theme-switch")).toBeTruthy();
-    expect(within(sidebar()).getByText("0.1.0")).toBeTruthy();
+    expect(within(sidebar()).getByText("v0.1.0")).toBeTruthy();
     expect(within(sidebar()).getByRole("img", { name: "Upmo" })).toBeTruthy();
   });
 
@@ -505,5 +555,30 @@ describe("app shell", () => {
       expect(screen.getByRole("link", { name: "Upmo" }).getAttribute("href")).toBe("/");
     });
     expect(sessionFetches).toBe(1);
+  });
+
+  it("redirects legacy /settings paths to new top-level paths", async () => {
+    renderAt("/settings");
+    expect(await screen.findByRole("heading", { level: 1, name: "Security" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/settings/connectors");
+    expect(await screen.findByRole("heading", { level: 1, name: "Connectors" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/settings/providers");
+    expect(await screen.findByRole("heading", { level: 1, name: "Providers" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/personalization");
+    expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/settings/personalization");
+    expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/settings/tokens");
+    expect(await screen.findByRole("heading", { level: 1, name: "API tokens" })).toBeTruthy();
   });
 });

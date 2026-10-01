@@ -34,8 +34,7 @@ describe("members", () => {
   it("hides invite, role, and remove controls for a member and a viewer", async () => {
     renderAt("/admin");
     expect(await screen.findByRole("heading", { level: 1, name: "Members" })).toBeTruthy();
-    const admin = screen.getByRole("navigation", { name: "Admin Settings" });
-    expect(within(admin).getByRole("link", { name: "Members" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("navigation", { name: "Admin Settings" })).toBeNull();
     expect(screen.queryByRole("navigation", { name: "Settings" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Invite" })).toBeTruthy();
     expect(screen.getByText("ada@aster.example")).toBeTruthy();
@@ -202,14 +201,11 @@ describe("live members", () => {
     expect(screen.queryByRole("group", { name: "View as" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
     expect(screen.getByLabelText("Role for Bob")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Roles" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "New role" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "New team" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New role" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New team" })).toBeNull();
     expect(screen.getByLabelText("Finance for Ada")).toBeTruthy();
     expect(screen.queryByLabelText("Finance for Bob")).toBeNull();
-    expect(screen.getByRole("button", { name: "Duplicate Owner" })).toBeTruthy();
-    const ownerRow = screen.getByRole("button", { name: "Duplicate Owner" }).closest("tr")!;
-    expect(within(ownerRow).queryByRole("button", { name: "Delete" })).toBeNull();
     expect(screen.getByRole("button", { name: "New invite link" })).toBeTruthy();
     const adaRow = screen.getByText("ada@example.com").closest("tr")!;
     expect(within(adaRow).queryByRole("button", { name: "Remove" })).toBeNull();
@@ -225,6 +221,18 @@ describe("live members", () => {
     await waitFor(() => {
       expect(copied).toBe(`${window.location.origin}/login/link#invite-token`);
     });
+
+    cleanup();
+    renderAt("/admin/teams");
+    expect(await screen.findByRole("button", { name: "New team" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/admin/roles");
+    expect(await screen.findByRole("heading", { name: "Roles" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New role" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Duplicate Owner" })).toBeTruthy();
+    const ownerRow = screen.getByRole("button", { name: "Duplicate Owner" }).closest("tr")!;
+    expect(within(ownerRow).queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
   it("decides the member controls from the role's permissions, not its name", async () => {

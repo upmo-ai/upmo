@@ -1,0 +1,171 @@
+/* Button styling strictly adhering to Design System specifications */
+
+.mantine-Button-root {
+  font-family: var(--font-ui, "Manrope", system-ui, sans-serif);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  transition: background-color 120ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 120ms cubic-bezier(0.4, 0, 0.2, 1),
+    color 120ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 120ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mantine-Button-root:active:not([data-disabled]) {
+  transform: scale(var(--press-scale, 0.98));
+}
+
+/* Consistent Button Sizing according to Design System:
+   Default / md: height 36px, padding 0 14px, font-size: 14px, radius-md (8px)
+   sm: height 30px, padding 0 10px, font-size: 13px, radius-sm (6px)
+   lg: height 42px, padding 0 16px, font-size: 15px, radius-md (8px)
+   xs: height 26px, padding 0 8px, font-size: 12px, radius-xs (4px)
+*/
+.mantine-Button-root:where([data-size="md"], :not([data-size])) {
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 14px !important;
+  font-size: 14px !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.mantine-Button-root[data-size="sm"] {
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0 10px !important;
+  font-size: 13px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.mantine-Button-root[data-size="lg"] {
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 0 16px !important;
+  font-size: 15px !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.mantine-Button-root[data-size="xs"] {
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 8px !important;
+  font-size: 12px !important;
+  border-radius: var(--radius-xs) !important;
+}
+
+/* ActionIcon (icon-focused buttons) styling */
+.mantine-ActionIcon-root {
+  border-radius: var(--radius-sm);
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.mantine-ActionIcon-root:active:not([data-disabled]) {
+  transform: scale(var(--press-scale, 0.96));
+}
+
+/* Filled (Primary) button */
+.mantine-Button-root[data-variant="filled"],
+.mantine-Button-root:not([data-variant]) {
+  --button-bg: var(--emerald-deep);
+  --button-color: var(--ink-on-brand);
+  --button-hover: var(--emerald-hover);
+  --button-active: var(--emerald-active);
+  background-color: var(--emerald-deep) !important;
+  color: var(--ink-on-brand) !important;
+  border: 1px solid transparent !important;
+}
+
+.mantine-Button-root[data-variant="filled"] .mantine-Button-label,
+.mantine-Button-root:not([data-variant]) .mantine-Button-label {
+  color: var(--ink-on-brand) !important;
+}
+
+.mantine-Button-root[data-variant="filled"]:hover:not([data-disabled]),
+.mantine-Button-root:not([data-variant]):hover:not([data-disabled]) {
+  background-color: var(--emerald-hover) !important;
+}
+
+.mantine-Button-root[data-variant="filled"]:active:not([data-disabled]),
+.mantine-Button-root:not([data-variant]):active:not([data-disabled]) {
+  background-color: var(--emerald-active) !important;
+}
+
+/* Light (Secondary brand) button */
+.mantine-Button-root[data-variant="light"] {
+  --button-bg: var(--emerald-soft);
+  --button-color: var(--emerald-deep);
+  --button-hover: var(--surface-hover);
+  background-color: var(--emerald-soft);
+  color: var(--emerald-deep);
+  border: 1px solid transparent;
+}
+
+.mantine-Button-root[data-variant="light"]:hover:not([data-disabled]) {
+  background-color: var(--surface-hover);
+}
+
+/* Outline button */
+.mantine-Button-root[data-variant="outline"] {
+  --button-bg: transparent;
+  --button-color: var(--ink);
+  --button-bd: 1px solid var(--border-strong);
+  --button-hover: var(--surface-hover);
+  background-color: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+}
+
+.mantine-Button-root[data-variant="outline"]:hover:not([data-disabled]) {
+  background-color: var(--surface-hover);
+}
+
+/* Default button styled as neutral outline */
+.mantine-Button-root[data-variant="default"] {
+  --button-bg: transparent;
+  --button-color: var(--ink);
+  --button-bd: 1px solid var(--border-strong);
+  --button-hover: var(--surface-hover);
+  background-color: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+}
+
+.mantine-Button-root[data-variant="default"]:hover:not([data-disabled]) {
+  background-color: var(--surface-hover);
+}
+
+/* Subtle button */
+.mantine-Button-root[data-variant="subtle"] {
+  background-color: transparent;
+  border: 1px solid transparent;
+  color: var(--ink);
+}
+
+.mantine-Button-root[data-variant="subtle"]:hover:not([data-disabled]) {
+  background-color: var(--surface-hover);
+}
+
+/* Danger button */
+.mantine-Button-root[data-variant="filled"][data-color="danger"],
+.mantine-Button-root[data-variant="filled"][data-color="red"] {
+  background-color: var(--danger);
+  color: var(--ink-on-brand);
+}
+
+[data-theme="dark"] .mantine-Button-root[data-variant="filled"][data-color="danger"],
+[data-theme="dark"] .mantine-Button-root[data-variant="filled"][data-color="red"],
+[data-mantine-color-scheme="dark"] .mantine-Button-root[data-variant="filled"][data-color="danger"],
+[data-mantine-color-scheme="dark"] .mantine-Button-root[data-variant="filled"][data-color="red"] {
+  color: var(--ink-inverse);
+}
+
+.mantine-Button-root[data-variant="outline"][data-color="danger"],
+.mantine-Button-root[data-variant="outline"][data-color="red"] {
+  background-color: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.mantine-Button-root[data-variant="outline"][data-color="danger"]:hover:not([data-disabled]),
+.mantine-Button-root[data-variant="outline"][data-color="red"]:hover:not([data-disabled]) {
+  background-color: var(--danger-soft);
+}

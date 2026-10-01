@@ -11,9 +11,15 @@ import {
 
 import { BrainError, sessionQueryKey, type ApiClient } from "./api";
 import { MembersPage } from "../features/identity/members";
+import { RolesPage } from "../features/identity/roles";
+import { TeamsPage } from "../features/identity/teams";
 import { SecurityPage } from "../features/identity/security";
 import { TokensPage } from "../features/identity/tokens";
-import { AdminSettingsLayout, ConnectorsPage, SettingsLayout } from "../features/settings/settings";
+import { AdminSettingsLayout } from "../features/settings/settings";
+import { ConnectorsPage } from "../features/connectors/connectors";
+import { EditConnectorPage, NewConnectorPage } from "../features/connectors/connector-form";
+import { ProvidersPage } from "../features/providers/providers";
+import { EditProviderPage, NewProviderPage } from "../features/providers/provider-form";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
 import { KnowledgePage } from "../features/knowledge/knowledge";
 import { PersonalisationPage } from "../features/memory/memory";
@@ -133,34 +139,132 @@ const usageRoute = createRoute({
   component: UsagePage,
 });
 
+const connectorsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/connectors",
+  component: () => <Outlet />,
+});
+
+const connectorsIndexRoute = createRoute({
+  getParentRoute: () => connectorsRoute,
+  path: "/",
+  component: ConnectorsPage,
+});
+
+const newConnectorRoute = createRoute({
+  getParentRoute: () => connectorsRoute,
+  path: "new",
+  component: NewConnectorPage,
+});
+
+const editConnectorRoute = createRoute({
+  getParentRoute: () => connectorsRoute,
+  path: "$connectorId/edit",
+  component: EditConnectorPage,
+});
+
+const providersRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/providers",
+  component: () => <Outlet />,
+});
+
+const providersIndexRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "/",
+  component: ProvidersPage,
+});
+
+const newProviderRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "new",
+  component: NewProviderPage,
+});
+
+const editProviderRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "$providerId/edit",
+  component: EditProviderPage,
+});
+
+const personalisationRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/personalisation",
+  component: PersonalisationPage,
+});
+
+const legacyPersonalizationRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/personalization",
+  beforeLoad: () => {
+    throw redirect({ to: "/personalisation" });
+  },
+});
+
+const securityRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/security",
+  component: SecurityPage,
+});
+
+const tokensRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/tokens",
+  component: TokensPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings",
-  component: SettingsLayout,
+  component: () => <Outlet />,
 });
 
 const settingsIndexRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/",
-  component: SecurityPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/security" });
+  },
 });
 
-const personalisationRoute = createRoute({
+const settingsPersonalisationRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "personalization",
-  component: PersonalisationPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/personalisation" });
+  },
 });
 
-const tokensRoute = createRoute({
+const settingsPersonalisationUKRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "personalisation",
+  beforeLoad: () => {
+    throw redirect({ to: "/personalisation" });
+  },
+});
+
+const settingsTokensRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "tokens",
-  component: TokensPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/tokens" });
+  },
 });
 
-const connectorsRoute = createRoute({
+const settingsConnectorsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "connectors",
-  component: ConnectorsPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/connectors" });
+  },
+});
+
+const settingsProvidersRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "providers",
+  beforeLoad: () => {
+    throw redirect({ to: "/providers" });
+  },
 });
 
 const adminRoute = createRoute({
@@ -172,7 +276,27 @@ const adminRoute = createRoute({
 const adminIndexRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: "/",
+  beforeLoad: () => {
+    throw redirect({ to: "/admin/members" });
+  },
+});
+
+const adminMembersRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "members",
   component: MembersPage,
+});
+
+const adminTeamsRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "teams",
+  component: TeamsPage,
+});
+
+const adminRolesRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "roles",
+  component: RolesPage,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -188,13 +312,34 @@ const routeTree = rootRoute.addChildren([
     agentsRoute,
     knowledgeRoute,
     usageRoute,
+    connectorsRoute.addChildren([
+      connectorsIndexRoute,
+      newConnectorRoute,
+      editConnectorRoute,
+    ]),
+    providersRoute.addChildren([
+      providersIndexRoute,
+      newProviderRoute,
+      editProviderRoute,
+    ]),
+    personalisationRoute,
+    legacyPersonalizationRoute,
+    securityRoute,
+    tokensRoute,
     settingsRoute.addChildren([
       settingsIndexRoute,
-      personalisationRoute,
-      tokensRoute,
-      connectorsRoute,
+      settingsPersonalisationRoute,
+      settingsPersonalisationUKRoute,
+      settingsTokensRoute,
+      settingsConnectorsRoute,
+      settingsProvidersRoute,
     ]),
-    adminRoute.addChildren([adminIndexRoute]),
+    adminRoute.addChildren([
+      adminIndexRoute,
+      adminMembersRoute,
+      adminTeamsRoute,
+      adminRolesRoute,
+    ]),
   ]),
 ]);
 

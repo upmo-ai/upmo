@@ -54,6 +54,24 @@ export type {
   WorkspaceRole,
 } from "../features/identity/types";
 
+export type ConnectorGrant = {
+  connector: string;
+  resource_scope: "all" | "these";
+  resource_ids: string[];
+  changes: "allow" | "ask" | "block";
+};
+
+export type ProviderAccount = {
+  id: string;
+  provider: string;
+  name: string;
+  adapter: string;
+  plan_kind: "metered" | "subscription" | "local";
+  base_url?: string;
+  status: "Connected" | "Not connected" | "Rate limited" | "Key rejected" | "Offline";
+  models: string[];
+};
+
 export class BrainError extends Error {
   readonly status: number;
   readonly error?: string;
@@ -64,6 +82,13 @@ export class BrainError extends Error {
     this.status = status;
     this.error = error;
   }
+}
+
+export interface TestResult {
+  ok: boolean;
+  latency_ms?: number;
+  error?: string;
+  model?: string;
 }
 
 export interface ApiClient {
@@ -119,6 +144,41 @@ export interface ApiClient {
     create(input: { name: string; scopes: string[]; days: number }): Promise<CreatedToken>;
     revoke(id: string): Promise<void>;
   };
+  connectors: {
+    list(): Promise<ConnectorGrant[]>;
+    put(grant: ConnectorGrant): Promise<ConnectorGrant>;
+    remove(connector: string): Promise<void>;
+    test(config: { connector: string; token?: string; endpoint?: string }): Promise<TestResult>;
+  };
+  providers: {
+    list(): Promise<ProviderAccount[]>;
+    add(input: {
+      provider: string;
+      name: string;
+      adapter: string;
+      plan_kind: "metered" | "subscription" | "local";
+      base_url?: string;
+      api_key?: string;
+      models: string[];
+    }): Promise<ProviderAccount>;
+    update(
+      id: string,
+      input: {
+        name?: string;
+        plan_kind?: "metered" | "subscription" | "local";
+        base_url?: string;
+        api_key?: string;
+        models?: string[];
+      },
+    ): Promise<ProviderAccount>;
+    remove(id: string): Promise<void>;
+    test(config: {
+      provider: string;
+      api_key?: string;
+      base_url?: string;
+      model?: string;
+    }): Promise<TestResult>;
+  };
 }
 
 export const TASKS_KEY = ["tasks"] as const;
@@ -129,6 +189,8 @@ export const PASSKEYS_KEY = ["passkeys"] as const;
 export const MEMBERS_KEY = ["members"] as const;
 export const TEAMS_KEY = ["teams"] as const;
 export const TOKENS_KEY = ["tokens"] as const;
+export const CONNECTORS_KEY = ["connectors"] as const;
+export const PROVIDERS_KEY = ["providers"] as const;
 
 export function tasksQueryKey() {
   return TASKS_KEY;
@@ -144,6 +206,14 @@ export function notificationsQueryKey() {
 
 export function meQueryKey() {
   return SESSION_KEY;
+}
+
+export function connectorsQueryKey() {
+  return CONNECTORS_KEY;
+}
+
+export function providersQueryKey() {
+  return PROVIDERS_KEY;
 }
 
 export function sessionQueryKey() {
@@ -365,6 +435,41 @@ export function createStubApi(): ApiClient {
     },
   ];
   const tokens: ApiToken[] = [];
+  const connectorGrants: ConnectorGrant[] = [
+    {
+      connector: "github",
+      resource_scope: "all",
+      resource_ids: [],
+      changes: "ask",
+    },
+    {
+      connector: "slack",
+      resource_scope: "these",
+      resource_ids: ["#general", "#engineering"],
+      changes: "allow",
+    },
+  ];
+  const providerAccounts: ProviderAccount[] = [
+    {
+      id: "provider-anthropic",
+      provider: "anthropic",
+      name: "Anthropic Claude",
+      adapter: "anthropic",
+      plan_kind: "metered",
+      status: "Connected",
+      models: ["claude-3-7-sonnet", "claude-3-5-haiku"],
+    },
+    {
+      id: "provider-ollama",
+      provider: "ollama",
+      name: "Ollama Local",
+      adapter: "ollama",
+      plan_kind: "local",
+      base_url: "http://localhost:11434",
+      status: "Connected",
+      models: ["llama3.3:70b", "deepseek-r1:14b"],
+    },
+  ];
   let serial = 0;
   let passwordSet = false;
   let signIn: CurrentUser["signIn"] = null;
@@ -685,6 +790,86 @@ export function createStubApi(): ApiClient {
         const index = tokens.findIndex((token) => token.id === id);
         if (index < 0) throw new Error("Token missing.");
         tokens.splice(index, 1);
+      },
+    },
+    connectors: {
+      async list() {
+        return connectorGrants.map((item) => copy(item));
+      },
+      async put(grant) {
+        const index = connectorGrants.findIndex((item) => item.connector === grant.connector);
+        const saved = copy(grant);
+        if (index >= 0) {
+          connectorGrants[index] = saved;
+        } else {
+          connectorGrants.push(saved);
+        }
+        return copy(saved);
+      },
+      async remove(connector) {
+        const index = connectorGrants.findIndex((item) => item.connector === connector);
+        if (index >= 0) {
+          connectorGrants.splice(index, 1);
+        }
+      },
+      async test(config) {
+        if (!config.connector) {
+          return { ok: false, error: "Connector is required." };
+        }
+        if (config.token && config.token.toLowerCase().includes("invalid")) {
+          return { ok: false, error: "Authentication failed: Invalid credentials or token." };
+        }
+        return {
+          ok: true,
+          latency_ms: 92,
+        };
+      },
+    },
+    providers: {
+      async list() {
+        return providerAccounts.map((item) => copy(item));
+      },
+      async add(input) {
+        const account: ProviderAccount = {
+          id: nextId("provider"),
+          provider: input.provider,
+          name: input.name,
+          adapter: input.adapter,
+          plan_kind: input.plan_kind,
+          base_url: input.base_url,
+          status: "Connected",
+          models: copy(input.models),
+        };
+        providerAccounts.push(account);
+        return copy(account);
+      },
+      async update(id, input) {
+        const account = providerAccounts.find((item) => item.id === id);
+        if (!account) throw new Error("Provider missing.");
+        if (input.name !== undefined) account.name = input.name;
+        if (input.plan_kind !== undefined) account.plan_kind = input.plan_kind;
+        if (input.base_url !== undefined) account.base_url = input.base_url;
+        if (input.models !== undefined) account.models = copy(input.models);
+        return copy(account);
+      },
+      async remove(id) {
+        const index = providerAccounts.findIndex((item) => item.id === id);
+        if (index >= 0) {
+          providerAccounts.splice(index, 1);
+        }
+      },
+      async test(config) {
+        if (!config.provider) {
+          return { ok: false, error: "Provider is required." };
+        }
+        if (config.api_key && config.api_key.toLowerCase().includes("invalid")) {
+          return { ok: false, error: "Authentication failed: Invalid API key or unauthorized." };
+        }
+        return {
+          ok: true,
+          latency_ms: 124,
+          model: config.model || "default",
+        };
       },
     },
   };

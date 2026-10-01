@@ -26,7 +26,7 @@ describe("security", () => {
   });
 
   it("refuses to remove the last passkey or the last password", async () => {
-    renderAt("/settings");
+    renderAt("/security");
     expect(await screen.findByRole("heading", { level: 1, name: "Security" })).toBeTruthy();
     expect(await screen.findByText("Laptop")).toBeTruthy();
     expect(screen.getByText(/Added/)).toBeTruthy();
@@ -72,7 +72,7 @@ describe("security", () => {
   });
 
   it("adds a passkey after the confirm step and renames it", async () => {
-    renderAt("/settings");
+    renderAt("/security");
     expect(await screen.findByText("Laptop")).toBeTruthy();
     act(() => {
       screen.getByRole("button", { name: "Add passkey" }).click();
@@ -135,7 +135,7 @@ describe("security", () => {
       },
     };
 
-    const history = createMemoryHistory({ initialEntries: ["/settings"] });
+    const history = createMemoryHistory({ initialEntries: ["/security"] });
     render(
       <AppProviders>
         <App history={history} client={client} />

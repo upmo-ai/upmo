@@ -75,8 +75,8 @@ describe("Personalisation page", () => {
     globalThis.fetch = original;
   });
 
-  it("shows the profile and sample facts under Settings", async () => {
-    renderAt("/settings/personalization");
+  it("shows the profile and sample facts under Personalisation", async () => {
+    renderAt("/personalisation");
     expect(await screen.findByRole("heading", { level: 1, name: "Personalisation" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Profile" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Memory" })).toBeTruthy();
@@ -89,14 +89,11 @@ describe("Personalisation page", () => {
     expect(screen.queryByRole("button", { name: "Promote" })).toBeNull();
     expect(screen.queryByText(/^Team /)).toBeNull();
     expect(screen.queryByText(/^Agent /)).toBeNull();
-    const settings = screen.getByRole("navigation", { name: "Settings" });
-    expect(within(settings).getByRole("link", { name: "Personalisation" }).getAttribute("aria-current")).toBe(
-      "page",
-    );
+    expect(screen.queryByRole("navigation", { name: "Settings" })).toBeNull();
   });
 
   it("adds, edits, and forgets a fact", async () => {
-    renderAt("/settings/personalization");
+    renderAt("/personalisation");
     await screen.findByRole("heading", { level: 1, name: "Personalisation" });
 
     await screen.findByText(sampleFacts[0]!.text);
@@ -131,7 +128,7 @@ describe("Personalisation page", () => {
   });
 
   it("saves an edited profile", async () => {
-    renderAt("/settings/personalization");
+    renderAt("/personalisation");
     await screen.findByText(sampleProfile);
     act(() => {
       screen.getAllByRole("button", { name: "Edit" })[0]!.click();

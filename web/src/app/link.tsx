@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { StatusAlert } from "../ui/status-alert";
 import { LoginAgreement } from "./agreement";
 import { BrandLink } from "./brand";
 import { createPasskeyFromLink } from "./passkeys";
@@ -44,7 +45,11 @@ export function LinkPage() {
         >
           Create your passkey
         </Button>
-        {message ? <Text role="status">{message}</Text> : null}
+        {message ? (
+          <StatusAlert tone="danger" role="status">
+            {message}
+          </StatusAlert>
+        ) : null}
         <LoginAgreement />
       </div>
     </main>

@@ -465,17 +465,24 @@ function PasskeyRow({
         </Group>
       ) : (
         <>
-          <Text fw={600}>{passkey.name}</Text>
-          <Text size="sm">Added {formatDate(passkey.added)}</Text>
-          <Text size="sm">Last used {formatDate(passkey.lastUsed)}</Text>
-          <RowAction label="Edit" concept="action.edit" onClick={onStartRename} />
-          <RowAction
-            label="Remove"
-            concept="action.delete"
-            disabled={!canRemove}
-            onClick={onRemove}
-          />
-          {canRemove ? null : <Text size="sm">{lastPasskeyReason}</Text>}
+          <div className="record-main">
+            <Text fw={600} size="sm">{passkey.name}</Text>
+            <Group gap="xs">
+              <Text size="xs" c="dimmed">Added {formatDate(passkey.added)}</Text>
+              <Text size="xs" c="dimmed">·</Text>
+              <Text size="xs" c="dimmed">Last used {formatDate(passkey.lastUsed)}</Text>
+            </Group>
+            {!canRemove && <Text size="xs" c="dimmed">{lastPasskeyReason}</Text>}
+          </div>
+          <div className="record-actions">
+            <RowAction label="Edit" concept="action.edit" onClick={onStartRename} />
+            <RowAction
+              label="Remove"
+              concept="action.delete"
+              disabled={!canRemove}
+              onClick={onRemove}
+            />
+          </div>
         </>
       )}
     </li>

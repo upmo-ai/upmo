@@ -2,6 +2,7 @@ import "@mantine/core/styles.css";
 import "@mantine/dates/styles.css";
 import "@upmo-ai/tokens/tokens.css";
 import "./mantine-tokens.css";
+import "./ui/buttons.css";
 import "@fontsource/manrope/400.css";
 import "@fontsource/manrope/500.css";
 import "@fontsource/manrope/600.css";

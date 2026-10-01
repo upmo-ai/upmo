@@ -1,9 +1,10 @@
-import { Button, Text, TextInput } from "@mantine/core";
+import { Button, PasswordInput, TextInput } from "@mantine/core";
 import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { StatusAlert } from "../ui/status-alert";
 import { LoginAgreement } from "./agreement";
 import { useApi } from "./api";
 import { BrandLink } from "./brand";
@@ -118,9 +119,8 @@ export function SignInPage() {
           value={email}
           onChange={(event) => setEmail(event.currentTarget.value)}
         />
-        <TextInput
+        <PasswordInput
           label="Password"
-          type="password"
           autoComplete="current-password"
           value={password}
           onChange={(event) => setPassword(event.currentTarget.value)}
@@ -130,13 +130,17 @@ export function SignInPage() {
         </Button>
         <Button
           type="button"
-          variant="default"
+          variant="outline"
           leftSection={<IconKey size={20} stroke={1.75} aria-hidden />}
           onClick={() => void passkey()}
         >
           Log in with a passkey
         </Button>
-        {message ? <Text role="status">{message}</Text> : null}
+        {message ? (
+          <StatusAlert tone="danger" role="status">
+            {message}
+          </StatusAlert>
+        ) : null}
         <LoginAgreement />
       </form>
     </main>
