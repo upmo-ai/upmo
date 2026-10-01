@@ -19,10 +19,20 @@ const (
 
 type fakeStore struct {
 	folders int
+	lists   int
 	ingests int
 	name    string
 	draft   app.Draft
+	rows    []app.Folder
 	err     error
+}
+
+func (f *fakeStore) ListFolders(context.Context, app.Access) ([]app.Folder, error) {
+	f.lists++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]app.Folder(nil), f.rows...), nil
 }
 
 func (f *fakeStore) InTx(_ context.Context, _ app.Access, fn func(app.Tx) error) error {
@@ -158,8 +168,9 @@ func call(t *testing.T, store *fakeStore, finder app.Finder, method, path, body 
 func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 	mux := http.NewServeMux()
 	Handler{
-		Store:  store,
-		Finder: finder,
+		Store:   store,
+		Folders: store,
+		Finder:  finder,
 		Access: func(*http.Request) (app.Access, bool) {
 			if !allow {
 				return app.Access{}, false
@@ -168,4 +179,35 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		},
 	}.Mount(mux, nil)
 	return mux
+}
+
+func TestListFolders(t *testing.T) {
+	store := &fakeStore{rows: []app.Folder{{ID: folderID, Name: "Specs"}}}
+	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders", "", true)
+	if rec.Code != http.StatusOK || store.lists != 1 {
+		t.Fatalf("status %d lists %d body %s", rec.Code, store.lists, rec.Body.String())
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 1 || got[0]["name"] != "Specs" {
+		t.Fatalf("got %#v err %v", got, err)
+	}
+}
+
+func TestListFoldersEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders", "", false)
+	if rec.Code != http.StatusUnauthorized || store.lists != 0 {
+		t.Fatalf("status %d lists %d", rec.Code, store.lists)
+	}
+}
+
+func TestListFoldersBearerIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	req := httptest.NewRequest(http.MethodGet, "/api/knowledge/folders", nil)
+	req.Header.Set("Authorization", "Bearer upmo_pat_secret")
+	rec := httptest.NewRecorder()
+	handler(store, nil, true).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || store.lists != 0 {
+		t.Fatalf("status %d lists %d", rec.Code, store.lists)
+	}
 }

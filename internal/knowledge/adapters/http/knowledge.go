@@ -13,9 +13,10 @@ import (
 
 // Handler creates folders, ingests sources and searches through the existing store.
 type Handler struct {
-	Store  app.Store
-	Finder app.Finder
-	Access func(r *http.Request) (app.Access, bool)
+	Store   app.Store
+	Folders app.FolderLister
+	Finder  app.Finder
+	Access  func(r *http.Request) (app.Access, bool)
 	// Summariser and Embedder are optional. Nil still stores verbatim chunks.
 	Summariser app.Summariser
 	Embedder   app.Embedder
@@ -30,9 +31,26 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 		}
 		return guard(next)
 	}
+	mux.Handle("GET /api/knowledge/folders", wrap(http.HandlerFunc(h.listFolders)))
 	mux.Handle("POST /api/knowledge/folders", wrap(http.HandlerFunc(h.createFolder)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("GET /api/knowledge/folders/{id}/search", wrap(http.HandlerFunc(h.search)))
+}
+
+func (h Handler) listFolders(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	folders, err := app.ListFolders(r.Context(), h.Folders, access)
+	if refuse(w, err) {
+		return
+	}
+	body := make([]map[string]string, 0, len(folders))
+	for _, folder := range folders {
+		body = append(body, map[string]string{"id": folder.ID, "name": folder.Name})
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (h Handler) createFolder(w http.ResponseWriter, r *http.Request) {
