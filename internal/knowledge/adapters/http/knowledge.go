@@ -49,13 +49,21 @@ func (h Handler) getSource(w http.ResponseWriter, r *http.Request) {
 	if refuse(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"id":         source.ID,
 		"title":      source.Title,
 		"body":       source.Body,
+		"kind":       source.Kind,
+		"source_ref": source.SourceRef,
+		"provenance": source.Provenance,
+		"status":     source.Status,
 		"revision":   source.Revision,
 		"updated_at": source.UpdatedAt,
-	})
+	}
+	if source.Error != "" {
+		body["error"] = source.Error
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (h Handler) listSources(w http.ResponseWriter, r *http.Request) {
@@ -69,12 +77,20 @@ func (h Handler) listSources(w http.ResponseWriter, r *http.Request) {
 	}
 	body := make([]map[string]any, 0, len(sources))
 	for _, source := range sources {
-		body = append(body, map[string]any{
+		row := map[string]any{
 			"id":         source.ID,
 			"title":      source.Title,
+			"kind":       source.Kind,
+			"source_ref": source.SourceRef,
+			"provenance": source.Provenance,
+			"status":     source.Status,
 			"revision":   source.Revision,
 			"updated_at": source.UpdatedAt,
-		})
+		}
+		if source.Error != "" {
+			row["error"] = source.Error
+		}
+		body = append(body, row)
 	}
 	writeJSON(w, http.StatusOK, body)
 }

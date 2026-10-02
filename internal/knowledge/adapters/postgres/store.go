@@ -169,8 +169,13 @@ func (t rowTx) Save(
 	revision := 0
 	if sourceID == "" {
 		err := t.tx.QueryRow(ctx, `
-			INSERT INTO knowledge.sources (folder_id, title, body, sha256, revision, updated_at)
-			VALUES ($1::uuid, $2, $3, $4, 0, $5)
+			INSERT INTO knowledge.sources (
+				folder_id, title, body, sha256, revision, updated_at,
+				kind, source_ref, provenance, status, error
+			) VALUES (
+				$1::uuid, $2, $3, $4, 0, $5,
+				'markdown', '', 'curated', 'ready', ''
+			)
 			RETURNING id::text`,
 			folderID, title, body, hash[:], time.Now().UTC()).Scan(&id)
 		if err != nil {
@@ -179,7 +184,8 @@ func (t rowTx) Save(
 	} else {
 		tag, err := t.tx.Exec(ctx, `
 			UPDATE knowledge.sources
-			SET title = $3, body = $4, sha256 = $5, updated_at = $6
+			SET title = $3, body = $4, sha256 = $5, updated_at = $6,
+			    status = 'ready', error = ''
 			WHERE id = $1::uuid AND folder_id = $2::uuid`,
 			sourceID, folderID, title, body, hash[:], time.Now().UTC())
 		if err != nil {
@@ -187,8 +193,13 @@ func (t rowTx) Save(
 		}
 		if tag.RowsAffected() == 0 {
 			err = t.tx.QueryRow(ctx, `
-				INSERT INTO knowledge.sources (id, folder_id, title, body, sha256, revision, updated_at)
-				VALUES ($1::uuid, $2::uuid, $3, $4, $5, 0, $6)
+				INSERT INTO knowledge.sources (
+					id, folder_id, title, body, sha256, revision, updated_at,
+					kind, source_ref, provenance, status, error
+				) VALUES (
+					$1::uuid, $2::uuid, $3, $4, $5, 0, $6,
+					'markdown', '', 'curated', 'ready', ''
+				)
 				RETURNING id::text`,
 				sourceID, folderID, title, body, hash[:], time.Now().UTC()).Scan(&id)
 			if err != nil {
@@ -309,7 +320,7 @@ func (s Store) ListSources(ctx context.Context, access app.Access, folderID stri
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, title, revision, updated_at
+		SELECT id::text, title, kind, source_ref, provenance, status, error, revision, updated_at
 		FROM knowledge.sources
 		WHERE folder_id = $1::uuid
 		ORDER BY updated_at DESC, id`, folderID)
@@ -322,7 +333,10 @@ func (s Store) ListSources(ctx context.Context, access app.Access, folderID stri
 	for rows.Next() {
 		var source app.Source
 		var updated time.Time
-		if err := rows.Scan(&source.ID, &source.Title, &source.Revision, &updated); err != nil {
+		if err := rows.Scan(
+			&source.ID, &source.Title, &source.Kind, &source.SourceRef, &source.Provenance,
+			&source.Status, &source.Error, &source.Revision, &updated,
+		); err != nil {
 			return nil, fmt.Errorf("knowledge: list sources: %w", err)
 		}
 		source.UpdatedAt = updated.UTC().Format(time.RFC3339)
@@ -357,10 +371,11 @@ func (s Store) ViewSource(ctx context.Context, access app.Access, folderID, sour
 	var source app.SourceDetail
 	var updated time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT id::text, title, body, revision, updated_at
+		SELECT id::text, title, body, kind, source_ref, provenance, status, error, revision, updated_at
 		FROM knowledge.sources
 		WHERE id = $1::uuid AND folder_id = $2::uuid`, sourceID, folderID).Scan(
-		&source.ID, &source.Title, &source.Body, &source.Revision, &updated)
+		&source.ID, &source.Title, &source.Body, &source.Kind, &source.SourceRef,
+		&source.Provenance, &source.Status, &source.Error, &source.Revision, &updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.SourceDetail{}, app.ErrGone
 	}
