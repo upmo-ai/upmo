@@ -130,6 +130,41 @@ func (s staticFetch) Fetch(context.Context, string) (string, []byte, error) {
 	return s.ctype, s.body, nil
 }
 
+func TestFileMarkdownPendingThenReady(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := app.IngestFile(ctx, store, ownerAccess, app.FileDraft{
+		FolderID: folder,
+		Title:    "Guide",
+		Name:     "guide.md",
+		Bytes:    []byte("Ada prefers oolong tea."),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ProcessFile(ctx, store, store, ownerAccess, app.PassThroughText{}, nil, nil,
+		folder, pending.ID, "guide.md", "Guide", []byte("Ada prefers oolong tea.")); err != nil {
+		t.Fatal(err)
+	}
+	var kind, status string
+	var chunks int
+	if err := owner.QueryRow(ctx, `
+		SELECT kind, status,
+		       (SELECT count(*) FROM knowledge.chunks WHERE source_id = $1::uuid AND revision = sources.revision)
+		FROM knowledge.sources AS sources WHERE id = $1::uuid`, pending.ID).
+		Scan(&kind, &status, &chunks); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "file" || status != "ready" || chunks < 1 {
+		t.Fatalf("kind=%q status=%q chunks=%d", kind, status, chunks)
+	}
+}
+
 func TestSourceKindConstraintRejectsUnknown(t *testing.T) {
 	owner := up(t)
 	ctx := context.Background()
