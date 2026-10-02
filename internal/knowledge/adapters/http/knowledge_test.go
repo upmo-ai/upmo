@@ -93,8 +93,12 @@ func (fakeTx) Current(context.Context, string, string) (app.Current, error) {
 	return app.Current{}, nil
 }
 
-func (fakeTx) Save(_ context.Context, _, _, _, _ string, _ [32]byte, pieces []app.Piece) (app.Result, error) {
+func (fakeTx) Save(_ context.Context, _ app.Draft, _ [32]byte, pieces []app.Piece) (app.Result, error) {
 	return app.Result{ID: sourceID, Revision: 1, Chunks: len(pieces)}, nil
+}
+
+func (fakeTx) FindClip(context.Context, string) (string, string, error) {
+	return "", "", nil
 }
 
 type fakeFinder struct {
@@ -284,6 +288,37 @@ func TestIngestFileEmptyAllowIsRefused(t *testing.T) {
 	rec := callMultipart(t, store, false, "guide.md", "hello", "")
 	if rec.Code != http.StatusUnauthorized || store.pending != 0 {
 		t.Fatalf("status %d pending %d", rec.Code, store.pending)
+	}
+}
+
+func TestIngestClipCreated(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/clip",
+		`{"url":"https://example.com/page","markdown":"Clipped body","title":"Page"}`, true)
+	if rec.Code != http.StatusCreated || store.ingests != 1 {
+		t.Fatalf("status %d ingests %d body %s", rec.Code, store.ingests, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["id"] != sourceID {
+		t.Fatalf("got %#v err %v", got, err)
+	}
+}
+
+func TestIngestClipEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/clip",
+		`{"url":"https://example.com/page","markdown":"body"}`, false)
+	if rec.Code != http.StatusUnauthorized || store.ingests != 0 {
+		t.Fatalf("status %d ingests %d", rec.Code, store.ingests)
+	}
+}
+
+func TestIngestClipOversizedIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	body := `{"url":"https://example.com/page","markdown":"` + strings.Repeat("a", 128<<10+1) + `"}`
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/clip", body, true)
+	if rec.Code != http.StatusBadRequest || store.ingests != 0 {
+		t.Fatalf("status %d ingests %d", rec.Code, store.ingests)
 	}
 }
 

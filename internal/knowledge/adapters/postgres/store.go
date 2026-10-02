@@ -217,12 +217,37 @@ func (t rowTx) Current(ctx context.Context, folderID, sourceID string) (app.Curr
 	return current, nil
 }
 
+func (t rowTx) FindClip(ctx context.Context, sourceRef string) (string, string, error) {
+	var id, folderID string
+	err := t.tx.QueryRow(ctx, `
+		SELECT id::text, folder_id::text
+		FROM knowledge.sources
+		WHERE kind = 'clip' AND source_ref = $1`, sourceRef).Scan(&id, &folderID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("knowledge: clip: %w", err)
+	}
+	return id, folderID, nil
+}
+
 func (t rowTx) Save(
 	ctx context.Context,
-	folderID, sourceID, title, body string,
+	draft app.Draft,
 	hash [32]byte,
 	pieces []app.Piece,
 ) (app.Result, error) {
+	folderID, sourceID, title, body := draft.FolderID, draft.SourceID, draft.Title, draft.Body
+	kind := draft.Kind
+	if kind == "" {
+		kind = "markdown"
+	}
+	provenance := draft.Provenance
+	if provenance == "" {
+		provenance = "curated"
+	}
+	ref := draft.SourceRef
 	id := sourceID
 	revision := 0
 	if sourceID == "" {
@@ -232,10 +257,11 @@ func (t rowTx) Save(
 				kind, source_ref, provenance, status, error
 			) VALUES (
 				$1::uuid, $2, $3, $4, 0, $5,
-				'markdown', '', 'curated', 'ready', ''
+				$6, $7, $8, 'ready', ''
 			)
 			RETURNING id::text`,
-			folderID, title, body, hash[:], time.Now().UTC()).Scan(&id)
+			folderID, title, body, hash[:], time.Now().UTC(),
+			kind, ref, provenance).Scan(&id)
 		if err != nil {
 			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 		}
@@ -243,9 +269,11 @@ func (t rowTx) Save(
 		tag, err := t.tx.Exec(ctx, `
 			UPDATE knowledge.sources
 			SET title = $3, body = $4, sha256 = $5, updated_at = $6,
-			    status = 'ready', error = ''
+			    status = 'ready', error = '',
+			    source_ref = CASE WHEN $7 <> '' THEN $7 ELSE source_ref END,
+			    provenance = CASE WHEN $8 <> '' THEN $8 ELSE provenance END
 			WHERE id = $1::uuid AND folder_id = $2::uuid`,
-			sourceID, folderID, title, body, hash[:], time.Now().UTC())
+			sourceID, folderID, title, body, hash[:], time.Now().UTC(), ref, provenance)
 		if err != nil {
 			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 		}
@@ -256,10 +284,11 @@ func (t rowTx) Save(
 					kind, source_ref, provenance, status, error
 				) VALUES (
 					$1::uuid, $2::uuid, $3, $4, $5, 0, $6,
-					'markdown', '', 'curated', 'ready', ''
+					$7, $8, $9, 'ready', ''
 				)
 				RETURNING id::text`,
-				sourceID, folderID, title, body, hash[:], time.Now().UTC()).Scan(&id)
+				sourceID, folderID, title, body, hash[:], time.Now().UTC(),
+				kind, ref, provenance).Scan(&id)
 			if err != nil {
 				return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 			}

@@ -42,11 +42,15 @@ type Access struct {
 }
 
 // Draft is one source to store. Body is kept verbatim.
+// Kind, SourceRef and Provenance apply on insert; empty Kind is markdown.
 type Draft struct {
-	FolderID string
-	SourceID string
-	Title    string
-	Body     string
+	FolderID   string
+	SourceID   string
+	Title      string
+	Body       string
+	Kind       string
+	SourceRef  string
+	Provenance string
 }
 
 // Result is what an ingest did. Skipped means the stored hash already matched.
@@ -86,7 +90,8 @@ type Piece struct {
 // Tx is one ingest transaction.
 type Tx interface {
 	Current(ctx context.Context, folderID, sourceID string) (Current, error)
-	Save(ctx context.Context, folderID, sourceID, title, body string, hash [32]byte, pieces []Piece) (Result, error)
+	Save(ctx context.Context, draft Draft, hash [32]byte, pieces []Piece) (Result, error)
+	FindClip(ctx context.Context, sourceRef string) (id, folderID string, err error)
 }
 
 // Store runs that transaction as the person in Access.
@@ -142,7 +147,9 @@ func Ingest(
 		if err != nil {
 			return err
 		}
-		result, err = tx.Save(ctx, draft.FolderID, draft.SourceID, title, draft.Body, hash, ready)
+		toSave := draft
+		toSave.Title = title
+		result, err = tx.Save(ctx, toSave, hash, ready)
 		return err
 	})
 	return result, err

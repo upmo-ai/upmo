@@ -116,9 +116,13 @@ func (s *ingestStore) Current(context.Context, string, string) (Current, error) 
 	return s.current, nil
 }
 
-func (s *ingestStore) Save(_ context.Context, _, _, _, _ string, _ [32]byte, pieces []Piece) (Result, error) {
+func (s *ingestStore) Save(_ context.Context, _ Draft, _ [32]byte, pieces []Piece) (Result, error) {
 	s.saved = pieces
 	return Result{ID: sourceID, Revision: 1, Chunks: len(pieces)}, nil
+}
+
+func (s *ingestStore) FindClip(context.Context, string) (string, string, error) {
+	return "", "", nil
 }
 
 type scriptPrefix struct {

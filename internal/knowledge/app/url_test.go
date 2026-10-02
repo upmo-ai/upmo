@@ -47,9 +47,13 @@ func (urlTx) Current(context.Context, string, string) (Current, error) {
 	return Current{Found: true, ID: sourceID, Revision: 0}, nil
 }
 
-func (t urlTx) Save(_ context.Context, _, _, _, body string, _ [32]byte, pieces []Piece) (Result, error) {
-	t.store.body = body
+func (t urlTx) Save(_ context.Context, draft Draft, _ [32]byte, pieces []Piece) (Result, error) {
+	t.store.body = draft.Body
 	return Result{ID: sourceID, Revision: 1, Chunks: len(pieces)}, nil
+}
+
+func (urlTx) FindClip(context.Context, string) (string, string, error) {
+	return "", "", nil
 }
 
 type fakeFetch struct {
