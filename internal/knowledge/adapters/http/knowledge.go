@@ -47,6 +47,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/url", wrap(http.HandlerFunc(h.ingestURL)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/file", wrap(http.HandlerFunc(h.ingestFile)))
+	mux.Handle("POST /api/knowledge/folders/{id}/sources/clip", wrap(http.HandlerFunc(h.ingestClip)))
 	mux.Handle("GET /api/knowledge/folders/{id}/search", wrap(http.HandlerFunc(h.search)))
 }
 
@@ -291,6 +292,41 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id":     pending.ID,
 		"status": pending.Status,
+	})
+}
+
+func (h Handler) ingestClip(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		URL      *string `json:"url"`
+		Markdown *string `json:"markdown"`
+		Title    string  `json:"title"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || input.URL == nil || input.Markdown == nil {
+		writeError(w, http.StatusBadRequest, "a clip needs a url and markdown")
+		return
+	}
+	result, err := app.IngestClip(r.Context(), h.Store, access, h.Summariser, h.Embedder, app.ClipDraft{
+		FolderID: r.PathValue("id"),
+		URL:      *input.URL,
+		Title:    input.Title,
+		Markdown: *input.Markdown,
+	})
+	if refuse(w, err) {
+		return
+	}
+	status := http.StatusCreated
+	if result.Skipped {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{
+		"id":       result.ID,
+		"revision": result.Revision,
+		"chunks":   result.Chunks,
+		"skipped":  result.Skipped,
 	})
 }
 

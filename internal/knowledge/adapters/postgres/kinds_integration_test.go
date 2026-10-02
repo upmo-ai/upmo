@@ -165,6 +165,52 @@ func TestFileMarkdownPendingThenReady(t *testing.T) {
 	}
 }
 
+func TestClipDedupesByNormalisedURL(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Clips")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := app.IngestClip(ctx, store, ownerAccess, nil, nil, app.ClipDraft{
+		FolderID: folder,
+		URL:      "https://Example.com/doc#a",
+		Title:    "Doc",
+		Markdown: "First clip body.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.IngestClip(ctx, store, ownerAccess, nil, nil, app.ClipDraft{
+		FolderID: folder,
+		URL:      "https://example.com/doc",
+		Markdown: "Second clip body revised.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID || second.Revision <= first.Revision {
+		t.Fatalf("first %#v second %#v", first, second)
+	}
+	var kind, provenance, ref string
+	if err := owner.QueryRow(ctx, `
+		SELECT kind, provenance, source_ref FROM knowledge.sources WHERE id = $1::uuid`, first.ID).
+		Scan(&kind, &provenance, &ref); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "clip" || provenance != "web" || ref != "https://example.com/doc" {
+		t.Fatalf("kind=%q provenance=%q ref=%q", kind, provenance, ref)
+	}
+	var n int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM knowledge.sources WHERE kind = 'clip'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("clip rows = %d", n)
+	}
+}
+
 func TestSourceKindConstraintRejectsUnknown(t *testing.T) {
 	owner := up(t)
 	ctx := context.Background()
