@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -45,6 +46,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.getSource)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/url", wrap(http.HandlerFunc(h.ingestURL)))
+	mux.Handle("POST /api/knowledge/folders/{id}/sources/file", wrap(http.HandlerFunc(h.ingestFile)))
 	mux.Handle("GET /api/knowledge/folders/{id}/search", wrap(http.HandlerFunc(h.search)))
 }
 
@@ -228,6 +230,70 @@ func (h Handler) ingestURL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if h.Pending == nil || h.Converter == nil {
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
+	const maxMemory = 32 << 20
+	if err := r.ParseMultipartForm(maxMemory); err != nil {
+		writeError(w, http.StatusBadRequest, "a source needs a file")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "a source needs a file")
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxMemory+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "a source needs a file")
+		return
+	}
+	folderID := r.PathValue("id")
+	title := r.FormValue("title")
+	name := header.Filename
+	pending, err := app.IngestFile(r.Context(), h.Pending, access, app.FileDraft{
+		FolderID: folderID,
+		Title:    title,
+		Name:     name,
+		Bytes:    raw,
+	})
+	if refuse(w, err) {
+		return
+	}
+	sourceID := pending.ID
+	run := h.AfterAccept
+	if run == nil {
+		run = func(fn func()) { go fn() }
+	}
+	run(func() {
+		_ = app.ProcessFile(
+			context.Background(),
+			h.Pending,
+			h.Store,
+			access,
+			h.Converter,
+			h.Summariser,
+			h.Embedder,
+			folderID,
+			sourceID,
+			name,
+			title,
+			raw,
+		)
+	})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"id":     pending.ID,
+		"status": pending.Status,
+	})
+}
+
 func (h Handler) search(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
 	if !ok {
@@ -275,7 +341,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, app.ErrURL), errors.Is(err, app.ErrURLBlocked), errors.Is(err, domain.ErrEmpty):
+	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, app.ErrURL), errors.Is(err, app.ErrURLBlocked), errors.Is(err, app.ErrFile), errors.Is(err, app.ErrFileSize), errors.Is(err, domain.ErrEmpty):
 		writeError(w, http.StatusBadRequest, "the knowledge input was refused")
 	default:
 		writeError(w, http.StatusInternalServerError, "knowledge")

@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -255,6 +257,60 @@ func TestIngestURLEmptyAllowIsRefused(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized || store.pending != 0 {
 		t.Fatalf("status %d pending %d", rec.Code, store.pending)
 	}
+}
+
+func TestIngestFileMarkdownAccepted(t *testing.T) {
+	store := &fakeStore{}
+	rec := callMultipart(t, store, true, "guide.md", "Ada prefers oolong tea.", "Guide")
+	if rec.Code != http.StatusAccepted || store.pending != 1 || store.ingests != 1 {
+		t.Fatalf("status %d pending %d ingests %d body %s", rec.Code, store.pending, store.ingests, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["status"] != "pending" {
+		t.Fatalf("got %#v err %v", got, err)
+	}
+}
+
+func TestIngestFileUnknownExtensionIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := callMultipart(t, store, true, "guide.exe", "x", "")
+	if rec.Code != http.StatusBadRequest || store.pending != 0 {
+		t.Fatalf("status %d pending %d body %s", rec.Code, store.pending, rec.Body.String())
+	}
+}
+
+func TestIngestFileEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := callMultipart(t, store, false, "guide.md", "hello", "")
+	if rec.Code != http.StatusUnauthorized || store.pending != 0 {
+		t.Fatalf("status %d pending %d", rec.Code, store.pending)
+	}
+}
+
+func callMultipart(t *testing.T, store *fakeStore, allow bool, filename, content, title string) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	part, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if title != "" {
+		if err := w.WriteField("title", title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/file", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	handler(store, nil, allow).ServeHTTP(rec, req)
+	return rec
 }
 
 func TestListFolders(t *testing.T) {
