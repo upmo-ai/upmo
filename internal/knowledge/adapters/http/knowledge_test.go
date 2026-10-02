@@ -232,7 +232,10 @@ func TestListFoldersBearerIsRefused(t *testing.T) {
 }
 
 func TestListSources(t *testing.T) {
-	store := &fakeStore{sources: []app.Source{{ID: sourceID, Title: "Guide", Revision: 2, UpdatedAt: "2026-10-01T00:00:00Z"}}}
+	store := &fakeStore{sources: []app.Source{{
+		ID: sourceID, Title: "Guide", Kind: "markdown", Provenance: "curated", Status: "ready",
+		Revision: 2, UpdatedAt: "2026-10-01T00:00:00Z",
+	}}}
 	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders/"+folderID+"/sources", "", true)
 	if rec.Code != http.StatusOK || store.lists != 1 {
 		t.Fatalf("status %d lists %d body %s", rec.Code, store.lists, rec.Body.String())
@@ -241,7 +244,10 @@ func TestListSources(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 1 || got[0]["title"] != "Guide" {
 		t.Fatalf("got %#v err %v", got, err)
 	}
-	if strings.Contains(rec.Body.String(), "body") {
+	if got[0]["kind"] != "markdown" || got[0]["provenance"] != "curated" || got[0]["status"] != "ready" {
+		t.Fatalf("kinds = %#v", got[0])
+	}
+	if _, ok := got[0]["body"]; ok {
 		t.Fatalf("body leaked: %s", rec.Body.String())
 	}
 }
@@ -263,7 +269,10 @@ func TestListSourcesEmptyAllowIsRefused(t *testing.T) {
 }
 
 func TestGetSource(t *testing.T) {
-	store := &fakeStore{detail: app.SourceDetail{ID: sourceID, Title: "Guide", Body: "Hello world", Revision: 2, UpdatedAt: "2026-10-01T00:00:00Z"}}
+	store := &fakeStore{detail: app.SourceDetail{
+		ID: sourceID, Title: "Guide", Body: "Hello world", Kind: "markdown",
+		Provenance: "curated", Status: "ready", Revision: 2, UpdatedAt: "2026-10-01T00:00:00Z",
+	}}
 	rec := call(t, store, nil, http.MethodGet, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID, "", true)
 	if rec.Code != http.StatusOK || store.lists != 1 {
 		t.Fatalf("status %d lists %d body %s", rec.Code, store.lists, rec.Body.String())
@@ -271,6 +280,9 @@ func TestGetSource(t *testing.T) {
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["body"] != "Hello world" || got["title"] != "Guide" {
 		t.Fatalf("got %#v err %v", got, err)
+	}
+	if got["kind"] != "markdown" || got["status"] != "ready" {
+		t.Fatalf("kinds = %#v", got)
 	}
 }
 

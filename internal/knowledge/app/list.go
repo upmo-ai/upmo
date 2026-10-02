@@ -37,19 +37,29 @@ func ListFolders(ctx context.Context, book FolderLister, access Access) ([]Folde
 
 // Source is one document in a folder, without the body.
 type Source struct {
-	ID        string
-	Title     string
-	Revision  int
-	UpdatedAt string
+	ID         string
+	Title      string
+	Kind       string
+	SourceRef  string
+	Provenance string
+	Status     string
+	Error      string
+	Revision   int
+	UpdatedAt  string
 }
 
 // SourceDetail is one document including the body.
 type SourceDetail struct {
-	ID        string
-	Title     string
-	Body      string
-	Revision  int
-	UpdatedAt string
+	ID         string
+	Title      string
+	Body       string
+	Kind       string
+	SourceRef  string
+	Provenance string
+	Status     string
+	Error      string
+	Revision   int
+	UpdatedAt  string
 }
 
 // SourceLister returns sources in one folder under row security.

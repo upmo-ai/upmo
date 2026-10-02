@@ -80,7 +80,7 @@ func TestListSourcesPropagatesGone(t *testing.T) {
 }
 
 func TestViewSourceNeedsAccess(t *testing.T) {
-	book := &fakeSources{detail: SourceDetail{ID: "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb", Title: "Guide", Body: "Hello", Revision: 1, UpdatedAt: "2026-10-01T00:00:00Z"}}
+	book := &fakeSources{detail: SourceDetail{ID: "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb", Title: "Guide", Body: "Hello", Kind: "markdown", Provenance: "curated", Status: "ready", Revision: 1, UpdatedAt: "2026-10-01T00:00:00Z"}}
 	access := Access{UserID: "018f3b2c-7a10-7c4a-8e11-111111111111", Allow: "folder:view"}
 	folder := "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
 	source := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
