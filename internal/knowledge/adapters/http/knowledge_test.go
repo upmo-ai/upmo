@@ -21,12 +21,27 @@ type fakeStore struct {
 	folders int
 	lists   int
 	ingests int
+	pending int
+	failed  int
 	name    string
 	draft   app.Draft
 	rows    []app.Folder
 	sources []app.Source
 	detail  app.SourceDetail
 	err     error
+}
+
+func (f *fakeStore) CreatePending(context.Context, app.Access, app.Pending) (string, error) {
+	f.pending++
+	if f.err != nil {
+		return "", f.err
+	}
+	return sourceID, nil
+}
+
+func (f *fakeStore) MarkFailed(context.Context, app.Access, string, string) error {
+	f.failed++
+	return f.err
 }
 
 func (f *fakeStore) ListFolders(context.Context, app.Access) ([]app.Folder, error) {
@@ -186,10 +201,14 @@ func call(t *testing.T, store *fakeStore, finder app.Finder, method, path, body 
 func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 	mux := http.NewServeMux()
 	Handler{
-		Store:   store,
-		Folders: store,
-		Sources: store,
-		Finder:  finder,
+		Store:       store,
+		Pending:     store,
+		Folders:     store,
+		Sources:     store,
+		Finder:      finder,
+		Fetcher:     stubFetch{ctype: "text/plain", body: []byte("Ada prefers oolong tea.")},
+		Converter:   app.PassThroughText{},
+		AfterAccept: func(fn func()) { fn() },
 		Access: func(*http.Request) (app.Access, bool) {
 			if !allow {
 				return app.Access{}, false
@@ -198,6 +217,44 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		},
 	}.Mount(mux, nil)
 	return mux
+}
+
+type stubFetch struct {
+	ctype string
+	body  []byte
+	err   error
+}
+
+func (s stubFetch) Fetch(context.Context, string) (string, []byte, error) {
+	return s.ctype, s.body, s.err
+}
+
+func TestIngestURLAccepted(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/url", `{"url":"https://example.com/guide.txt","title":"Guide"}`, true)
+	if rec.Code != http.StatusAccepted || store.pending != 1 || store.ingests != 1 {
+		t.Fatalf("status %d pending %d ingests %d body %s", rec.Code, store.pending, store.ingests, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got["id"] != sourceID || got["status"] != "pending" {
+		t.Fatalf("got %#v err %v", got, err)
+	}
+}
+
+func TestIngestURLPrivateIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/url", `{"url":"http://127.0.0.1/x"}`, true)
+	if rec.Code != http.StatusBadRequest || store.pending != 0 {
+		t.Fatalf("status %d pending %d body %s", rec.Code, store.pending, rec.Body.String())
+	}
+}
+
+func TestIngestURLEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/url", `{"url":"https://example.com/x"}`, false)
+	if rec.Code != http.StatusUnauthorized || store.pending != 0 {
+		t.Fatalf("status %d pending %d", rec.Code, store.pending)
+	}
 }
 
 func TestListFolders(t *testing.T) {

@@ -17,18 +17,19 @@ import (
 	"github.com/upmo-ai/upmo/internal/artifacts"
 	artifacthttp "github.com/upmo-ai/upmo/internal/artifacts/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat"
-	chatapp "github.com/upmo-ai/upmo/internal/chat/app"
 	chathttp "github.com/upmo-ai/upmo/internal/chat/adapters/http"
 	chatstore "github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
+	chatapp "github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/decisions"
+	decisionshttp "github.com/upmo-ai/upmo/internal/decisions/adapters/http"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	gatewayhttp "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
-	decisionshttp "github.com/upmo-ai/upmo/internal/decisions/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
-	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
+	knowledgefetch "github.com/upmo-ai/upmo/internal/knowledge/adapters/fetch"
 	knowledgehttp "github.com/upmo-ai/upmo/internal/knowledge/adapters/http"
 	knowledgestore "github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
+	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
 	"github.com/upmo-ai/upmo/internal/memory"
 	memoryhttp "github.com/upmo-ai/upmo/internal/memory/adapters/http"
 	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
@@ -288,10 +289,13 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	})
 	knowledgeBook := knowledgestore.Store{Pool: pool}
 	knowledgehttp.Handler{
-		Store:   knowledgeBook,
-		Folders: knowledgeBook,
-		Sources: knowledgeBook,
-		Finder:  knowledgeBook,
+		Store:     knowledgeBook,
+		Pending:   knowledgeBook,
+		Folders:   knowledgeBook,
+		Sources:   knowledgeBook,
+		Finder:    knowledgeBook,
+		Fetcher:   knowledgefetch.New(),
+		Converter: knowledgeapp.PassThroughText{},
 		Access: func(r *http.Request) (knowledgeapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
