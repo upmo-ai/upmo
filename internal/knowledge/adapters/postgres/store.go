@@ -55,6 +55,64 @@ func (s Store) CreateFolder(ctx context.Context, access app.Access, name string)
 	return id, nil
 }
 
+// CreatePending inserts a source waiting on fetch or conversion.
+func (s Store) CreatePending(ctx context.Context, access app.Access, pending app.Pending) (string, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var found string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM knowledge.folders WHERE id = $1::uuid`, pending.FolderID).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", app.ErrGone
+	}
+	if err != nil {
+		return "", fmt.Errorf("knowledge: pending: %w", err)
+	}
+	zero := make([]byte, 32)
+	var id string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO knowledge.sources (
+			folder_id, title, body, sha256, revision, updated_at,
+			kind, source_ref, provenance, status, error
+		) VALUES (
+			$1::uuid, $2, '', $3, 0, $4,
+			$5, $6, $7, 'pending', ''
+		)
+		RETURNING id::text`,
+		pending.FolderID, pending.Title, zero, time.Now().UTC(),
+		pending.Kind, pending.SourceRef, pending.Provenance).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("knowledge: pending: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// MarkFailed records a failed fetch or conversion without publishing chunks.
+func (s Store) MarkFailed(ctx context.Context, access app.Access, sourceID, message string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE knowledge.sources
+		SET status = 'failed', error = $2, updated_at = $3
+		WHERE id = $1::uuid AND status = 'pending'`,
+		sourceID, message, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("knowledge: fail: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}
+
 func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query string, limit int) ([]app.Lexical, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {

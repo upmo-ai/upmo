@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 // Handler creates folders, ingests sources and searches through the existing store.
 type Handler struct {
 	Store   app.Store
+	Pending app.PendingStore
 	Folders app.FolderLister
 	Sources app.SourceLister
 	Finder  app.Finder
@@ -22,6 +24,11 @@ type Handler struct {
 	Summariser app.Summariser
 	Embedder   app.Embedder
 	Reranker   app.Reranker
+	// Fetcher and Converter drive URL ingest. Nil refuses the URL route.
+	Fetcher   app.URLFetcher
+	Converter app.BodyConverter
+	// AfterAccept runs URL processing. Nil starts a goroutine.
+	AfterAccept func(func())
 }
 
 // Mount registers the knowledge routes. guard runs first.
@@ -37,6 +44,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.listSources)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.getSource)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
+	mux.Handle("POST /api/knowledge/folders/{id}/sources/url", wrap(http.HandlerFunc(h.ingestURL)))
 	mux.Handle("GET /api/knowledge/folders/{id}/search", wrap(http.HandlerFunc(h.search)))
 }
 
@@ -165,6 +173,61 @@ func (h Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h Handler) ingestURL(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if h.Pending == nil || h.Fetcher == nil || h.Converter == nil {
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
+	var input struct {
+		URL   *string `json:"url"`
+		Title string  `json:"title"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || input.URL == nil {
+		writeError(w, http.StatusBadRequest, "a source needs a url")
+		return
+	}
+	folderID := r.PathValue("id")
+	pending, err := app.IngestURL(r.Context(), h.Pending, access, app.URLDraft{
+		FolderID: folderID,
+		URL:      *input.URL,
+		Title:    input.Title,
+	})
+	if refuse(w, err) {
+		return
+	}
+	rawURL := strings.TrimSpace(*input.URL)
+	title := input.Title
+	sourceID := pending.ID
+	run := h.AfterAccept
+	if run == nil {
+		run = func(fn func()) { go fn() }
+	}
+	run(func() {
+		_ = app.ProcessURL(
+			context.Background(),
+			h.Pending,
+			h.Store,
+			access,
+			h.Fetcher,
+			h.Converter,
+			h.Summariser,
+			h.Embedder,
+			folderID,
+			sourceID,
+			rawURL,
+			title,
+		)
+	})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"id":     pending.ID,
+		"status": pending.Status,
+	})
+}
+
 func (h Handler) search(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
 	if !ok {
@@ -212,7 +275,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, domain.ErrEmpty):
+	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, app.ErrURL), errors.Is(err, app.ErrURLBlocked), errors.Is(err, domain.ErrEmpty):
 		writeError(w, http.StatusBadRequest, "the knowledge input was refused")
 	default:
 		writeError(w, http.StatusInternalServerError, "knowledge")
