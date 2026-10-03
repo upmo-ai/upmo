@@ -28,6 +28,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	knowledgeconvert "github.com/upmo-ai/upmo/internal/knowledge/adapters/convert"
 	knowledgefetch "github.com/upmo-ai/upmo/internal/knowledge/adapters/fetch"
+	knowledgegateway "github.com/upmo-ai/upmo/internal/knowledge/adapters/gateway"
 	knowledgehttp "github.com/upmo-ai/upmo/internal/knowledge/adapters/http"
 	knowledgestore "github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
 	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
@@ -293,6 +294,14 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	if markitdownURL := os.Getenv("UPMO_MARKITDOWN_URL"); markitdownURL != "" {
 		knowledgeConverter.Sidecar = &knowledgeconvert.Sidecar{BaseURL: markitdownURL}
 	}
+	var knowledgeEmbedFor func(userID string) knowledgeapp.Embedder
+	if cfg.GatewayURL != "" && cfg.ServiceKey != "" && cfg.EmbedRoute != "" {
+		embedClient, err := knowledgegateway.Open(cfg.GatewayURL, cfg.ServiceKey, cfg.EmbedRoute)
+		if err != nil {
+			return nil, fmt.Errorf("brain: knowledge embedder: %w", err)
+		}
+		knowledgeEmbedFor = embedClient.For
+	}
 	knowledgehttp.Handler{
 		Store:     knowledgeBook,
 		Pending:   knowledgeBook,
@@ -302,6 +311,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		Finder:    knowledgeBook,
 		Fetcher:   knowledgefetch.New(),
 		Converter: knowledgeConverter,
+		EmbedFor:  knowledgeEmbedFor,
 		Access: func(r *http.Request) (knowledgeapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

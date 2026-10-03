@@ -170,6 +170,32 @@ func TestSearchReturnsHits(t *testing.T) {
 	}
 }
 
+func TestSearchUsesEmbedForPerson(t *testing.T) {
+	store := &fakeStore{}
+	finder := &fakeFinder{hits: []app.Lexical{{SourceID: sourceID, Seq: 1, Body: "Hello world"}}}
+	var bound string
+	mux := http.NewServeMux()
+	Handler{
+		Store:   store,
+		Folders: store,
+		Sources: store,
+		Delete:  store,
+		Finder:  finder,
+		EmbedFor: func(id string) app.Embedder {
+			bound = id
+			return nil
+		},
+		Access: func(*http.Request) (app.Access, bool) {
+			return app.Access{UserID: userID, Allow: "folder:view"}, true
+		},
+	}.Mount(mux, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/knowledge/folders/"+folderID+"/search?q=Hello", nil))
+	if rec.Code != http.StatusOK || bound != userID {
+		t.Fatalf("status %d bound %q", rec.Code, bound)
+	}
+}
+
 func TestBearerIsRefused(t *testing.T) {
 	store := &fakeStore{}
 	req := httptest.NewRequest(http.MethodPost, "/api/knowledge/folders", strings.NewReader(`{"name":"Specs"}`))
