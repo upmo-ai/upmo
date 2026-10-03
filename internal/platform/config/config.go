@@ -38,8 +38,14 @@ type Config struct {
 	ServiceKeyPrevious string
 	// GatewayURL is the model gateway (UPMO_GATEWAY_URL). Empty until brain calls it.
 	GatewayURL string
+	// EmbedRoute is the gateway embed route name (UPMO_EMBED_ROUTE). Empty skips
+	// knowledge dense embed wiring in brain.
+	EmbedRoute string
 	// SandboxdURL is the sandbox process (UPMO_SANDBOXD_URL). Empty until brain calls it.
 	SandboxdURL string
+	// KnowledgeDir is the Compose volume root for original knowledge file bytes
+	// (UPMO_KNOWLEDGE_DIR). Empty refuses new file uploads that need storage.
+	KnowledgeDir string
 	// SeatImage is the image a task sandbox starts from (UPMO_SEAT_IMAGE).
 	// Empty means the runtime default, which has no git.
 	SeatImage string
@@ -158,6 +164,9 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.GatewayURL = strings.TrimRight(v, "/")
 	}
+	if v, ok := lookup("UPMO_EMBED_ROUTE"); ok && strings.TrimSpace(v) != "" {
+		cfg.EmbedRoute = strings.TrimSpace(v)
+	}
 	if v, ok := lookup("UPMO_SANDBOXD_URL"); ok && v != "" {
 		parsed, err := url.Parse(v)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
@@ -178,6 +187,13 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("config: UPMO_ARTIFACTS_DIR must be an absolute path")
 		}
 		cfg.ArtifactsDir = v
+	}
+	if v, ok := lookup("UPMO_KNOWLEDGE_DIR"); ok && strings.TrimSpace(v) != "" {
+		v = strings.TrimSpace(v)
+		if strings.ContainsAny(v, "\x00") || !strings.HasPrefix(v, "/") {
+			return Config{}, fmt.Errorf("config: UPMO_KNOWLEDGE_DIR must be an absolute path")
+		}
+		cfg.KnowledgeDir = v
 	}
 	smtp, err := loadSMTP(lookup)
 	if err != nil {

@@ -33,6 +33,7 @@ services:
       - upmo-gocache:/root/.cache/go-build
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - artifacts-data:/var/upmo/artifacts
+      - knowledge-data:/var/upmo/knowledge
     # Built then exec'd rather than go run, so SIGTERM reaches brain and it shuts
     # down gracefully; go run exits on SIGTERM without passing it on.
     command: ["sh", "-c", "go build -o /tmp/brain ./cmd/brain && exec /tmp/brain"]
@@ -58,6 +59,10 @@ services:
       # build sandbox-image and set UPMO_SEAT_IMAGE=upmo/sandbox:base.
       UPMO_SEAT_IMAGE: ${UPMO_SEAT_IMAGE:-}
       UPMO_ARTIFACTS_DIR: /var/upmo/artifacts
+      UPMO_KNOWLEDGE_DIR: /var/upmo/knowledge
+      # Optional dense retrieval. Empty EmbedRoute keeps FTS-only knowledge search.
+      UPMO_GATEWAY_URL: http://gateway:8082
+      UPMO_EMBED_ROUTE: ${UPMO_EMBED_ROUTE:-}
       # Dev only. Never reuse outside the local compose stack.
       UPMO_SERVICE_KEY: upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
     healthcheck:
@@ -306,6 +311,7 @@ networks:
 
 volumes:
   artifacts-data:
+  knowledge-data:
   upmo-gomodcache:
   upmo-gocache:
   upmo-golangci-cache:

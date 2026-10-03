@@ -25,7 +25,10 @@ type Handler struct {
 	// Summariser and Embedder are optional. Nil still stores verbatim chunks.
 	Summariser app.Summariser
 	Embedder   app.Embedder
-	Reranker   app.Reranker
+	// EmbedFor binds a gateway embed client to the signed-in person when set.
+	// It takes precedence over Embedder so the ledger records that user id.
+	EmbedFor func(userID string) app.Embedder
+	Reranker app.Reranker
 	// Fetcher and Converter drive URL ingest. Nil refuses the URL route.
 	Fetcher   app.URLFetcher
 	Converter app.BodyConverter
@@ -108,7 +111,7 @@ func (h Handler) reingest(w http.ResponseWriter, r *http.Request) {
 		h.Fetcher,
 		h.Converter,
 		h.Summariser,
-		h.Embedder,
+		h.embedder(access.UserID),
 		r.PathValue("id"),
 		r.PathValue("sourceID"),
 		h.AfterAccept,
@@ -244,7 +247,7 @@ func (h Handler) ingest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a source needs a title and body")
 		return
 	}
-	result, err := app.Ingest(r.Context(), h.Store, access, h.Summariser, h.Embedder, app.Draft{
+	result, err := app.Ingest(r.Context(), h.Store, access, h.Summariser, h.embedder(access.UserID), app.Draft{
 		FolderID: r.PathValue("id"),
 		SourceID: input.SourceID,
 		Title:    *input.Title,
@@ -298,6 +301,7 @@ func (h Handler) ingestURL(w http.ResponseWriter, r *http.Request) {
 	if run == nil {
 		run = func(fn func()) { go fn() }
 	}
+	embedder := h.embedder(access.UserID)
 	run(func() {
 		_ = app.ProcessURL(
 			context.Background(),
@@ -307,7 +311,7 @@ func (h Handler) ingestURL(w http.ResponseWriter, r *http.Request) {
 			h.Fetcher,
 			h.Converter,
 			h.Summariser,
-			h.Embedder,
+			embedder,
 			folderID,
 			sourceID,
 			rawURL,
@@ -362,6 +366,7 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 	if run == nil {
 		run = func(fn func()) { go fn() }
 	}
+	embedder := h.embedder(access.UserID)
 	run(func() {
 		_ = app.ProcessFile(
 			context.Background(),
@@ -370,7 +375,7 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 			access,
 			h.Converter,
 			h.Summariser,
-			h.Embedder,
+			embedder,
 			folderID,
 			sourceID,
 			name,
@@ -398,7 +403,7 @@ func (h Handler) ingestClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a clip needs a url and markdown")
 		return
 	}
-	result, err := app.IngestClip(r.Context(), h.Store, access, h.Summariser, h.Embedder, app.ClipDraft{
+	result, err := app.IngestClip(r.Context(), h.Store, access, h.Summariser, h.embedder(access.UserID), app.ClipDraft{
 		FolderID: r.PathValue("id"),
 		URL:      *input.URL,
 		Title:    input.Title,
@@ -424,7 +429,7 @@ func (h Handler) search(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	hits, err := app.Search(r.Context(), h.Finder, h.Embedder, h.Reranker, access, r.PathValue("id"), r.URL.Query().Get("q"))
+	hits, err := app.Search(r.Context(), h.Finder, h.embedder(access.UserID), h.Reranker, access, r.PathValue("id"), r.URL.Query().Get("q"))
 	if refuse(w, err) {
 		return
 	}
@@ -437,6 +442,13 @@ func (h Handler) search(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (h Handler) embedder(userID string) app.Embedder {
+	if h.EmbedFor != nil {
+		return h.EmbedFor(userID)
+	}
+	return h.Embedder
 }
 
 func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, bool) {

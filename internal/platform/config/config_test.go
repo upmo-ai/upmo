@@ -65,6 +65,41 @@ func TestLoadGatewayURL(t *testing.T) {
 	}
 }
 
+func TestLoadEmbedRoute(t *testing.T) {
+	cfg, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_EMBED_ROUTE":  " knowledge-embed ",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmbedRoute != "knowledge-embed" {
+		t.Fatalf("EmbedRoute = %q", cfg.EmbedRoute)
+	}
+}
+
+func TestLoadKnowledgeDir(t *testing.T) {
+	cfg, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":    "http://localhost:5173",
+		"UPMO_KNOWLEDGE_DIR": "/var/upmo/knowledge",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KnowledgeDir != "/var/upmo/knowledge" {
+		t.Fatalf("KnowledgeDir = %q", cfg.KnowledgeDir)
+	}
+	if _, err := load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":    "http://localhost:5173",
+		"UPMO_KNOWLEDGE_DIR": "relative/path",
+	})); err == nil {
+		t.Fatal("relative knowledge dir")
+	}
+}
+
 func TestLoadServiceKeys(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
 		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",
