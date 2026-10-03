@@ -26,6 +26,7 @@ import (
 	gatewayhttp "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
+	knowledgeconvert "github.com/upmo-ai/upmo/internal/knowledge/adapters/convert"
 	knowledgefetch "github.com/upmo-ai/upmo/internal/knowledge/adapters/fetch"
 	knowledgehttp "github.com/upmo-ai/upmo/internal/knowledge/adapters/http"
 	knowledgestore "github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
@@ -288,6 +289,10 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		return identity.RequireSession(sessions, next)
 	})
 	knowledgeBook := knowledgestore.Store{Pool: pool}
+	knowledgeConverter := knowledgeconvert.Client{Text: knowledgeapp.PassThroughText{}}
+	if markitdownURL := os.Getenv("UPMO_MARKITDOWN_URL"); markitdownURL != "" {
+		knowledgeConverter.Sidecar = &knowledgeconvert.Sidecar{BaseURL: markitdownURL}
+	}
 	knowledgehttp.Handler{
 		Store:     knowledgeBook,
 		Pending:   knowledgeBook,
@@ -295,7 +300,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		Sources:   knowledgeBook,
 		Finder:    knowledgeBook,
 		Fetcher:   knowledgefetch.New(),
-		Converter: knowledgeapp.PassThroughText{},
+		Converter: knowledgeConverter,
 		Access: func(r *http.Request) (knowledgeapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

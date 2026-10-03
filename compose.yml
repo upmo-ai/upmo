@@ -51,6 +51,8 @@ services:
       # never gets the engine socket. A task that needs a sandbox
       # fails with 503 while sandboxd is not running.
       UPMO_SANDBOXD_URL: http://sandboxd:8083
+      # Optional conversion sidecar (profile docs). Empty skips PDF/HTML convert.
+      UPMO_MARKITDOWN_URL: ${UPMO_MARKITDOWN_URL:-http://markitdown:8000}
       # The image each task sandbox starts from. Empty is debian:bookworm-slim,
       # which provisions a task without a repository. A repository needs git:
       # build sandbox-image and set UPMO_SEAT_IMAGE=upmo/sandbox:base.
@@ -145,6 +147,21 @@ services:
       context: .
       dockerfile: deploy/sandbox/Dockerfile
       target: base
+
+  # markitdown-compatible conversion for knowledge file and URL bodies.
+  # Internal only: no published ports. Start with `--profile docs`.
+  markitdown:
+    profiles: ["docs"]
+    build:
+      context: ./deploy/markitdown
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
 
   golangci-lint:
     # v2.13.2 is the oldest v2 image whose Go (1.27) can load a go 1.26.5 module.
