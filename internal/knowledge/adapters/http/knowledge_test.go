@@ -25,12 +25,18 @@ type fakeStore struct {
 	ingests int
 	pending int
 	failed  int
+	deletes int
 	name    string
 	draft   app.Draft
 	rows    []app.Folder
 	sources []app.Source
 	detail  app.SourceDetail
 	err     error
+}
+
+func (f *fakeStore) DeleteSource(context.Context, app.Access, string, string) error {
+	f.deletes++
+	return f.err
 }
 
 func (f *fakeStore) CreatePending(context.Context, app.Access, app.Pending) (string, error) {
@@ -215,6 +221,7 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		Pending:     store,
 		Folders:     store,
 		Sources:     store,
+		Delete:      store,
 		Finder:      finder,
 		Fetcher:     stubFetch{ctype: "text/plain", body: []byte("Ada prefers oolong tea.")},
 		Converter:   app.PassThroughText{},
@@ -227,6 +234,30 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		},
 	}.Mount(mux, nil)
 	return mux
+}
+
+func TestDeleteSourceNoContent(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodDelete, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID, "", true)
+	if rec.Code != http.StatusNoContent || store.deletes != 1 {
+		t.Fatalf("status %d deletes %d body %s", rec.Code, store.deletes, rec.Body.String())
+	}
+}
+
+func TestDeleteSourceGone(t *testing.T) {
+	store := &fakeStore{err: app.ErrGone}
+	rec := call(t, store, nil, http.MethodDelete, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID, "", true)
+	if rec.Code != http.StatusNotFound || store.deletes != 1 {
+		t.Fatalf("status %d deletes %d", rec.Code, store.deletes)
+	}
+}
+
+func TestDeleteSourceEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodDelete, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID, "", false)
+	if rec.Code != http.StatusUnauthorized || store.deletes != 0 {
+		t.Fatalf("status %d deletes %d", rec.Code, store.deletes)
+	}
 }
 
 type stubFetch struct {

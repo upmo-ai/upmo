@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
@@ -208,6 +209,52 @@ func TestClipDedupesByNormalisedURL(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("clip rows = %d", n)
+	}
+}
+
+func TestDeleteSourceRemovesChunksAndEmbeddings(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.Ingest(ctx, store, ownerAccess, nil, &recordingEmbed{model: "model-a"}, app.Draft{
+		FolderID: folder, Title: "Guide", Body: "Ada prefers oolong tea.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chunks, embedded int
+	if err := owner.QueryRow(ctx, `
+		SELECT count(*), count(embedding)
+		FROM knowledge.chunks WHERE source_id = $1::uuid`, result.ID).Scan(&chunks, &embedded); err != nil {
+		t.Fatal(err)
+	}
+	if chunks < 1 || embedded < 1 {
+		t.Fatalf("chunks=%d embedded=%d before delete", chunks, embedded)
+	}
+	if err := app.DeleteSource(ctx, store, ownerAccess, folder, result.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `
+		SELECT count(*), count(embedding)
+		FROM knowledge.chunks WHERE source_id = $1::uuid`, result.ID).Scan(&chunks, &embedded); err != nil {
+		t.Fatal(err)
+	}
+	if chunks != 0 || embedded != 0 {
+		t.Fatalf("chunks=%d embedded=%d after delete", chunks, embedded)
+	}
+	var sources int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM knowledge.sources WHERE id = $1::uuid`, result.ID).Scan(&sources); err != nil {
+		t.Fatal(err)
+	}
+	if sources != 0 {
+		t.Fatalf("source rows = %d", sources)
+	}
+	if err := app.DeleteSource(ctx, store, ownerAccess, folder, result.ID); !errors.Is(err, app.ErrGone) {
+		t.Fatalf("second delete err %v", err)
 	}
 }
 
