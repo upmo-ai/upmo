@@ -520,3 +520,33 @@ func (s Store) ViewSource(ctx context.Context, access app.Access, folderID, sour
 	}
 	return source, nil
 }
+
+// DeleteSource removes a source in a folder the person can edit. Chunks and
+// their embeddings go with it via ON DELETE CASCADE.
+func (s Store) DeleteSource(ctx context.Context, access app.Access, folderID, sourceID string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var found string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM knowledge.folders WHERE id = $1::uuid`, folderID).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrGone
+	}
+	if err != nil {
+		return fmt.Errorf("knowledge: delete source: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM knowledge.sources
+		WHERE id = $1::uuid AND folder_id = $2::uuid`, sourceID, folderID)
+	if err != nil {
+		return fmt.Errorf("knowledge: delete source: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}

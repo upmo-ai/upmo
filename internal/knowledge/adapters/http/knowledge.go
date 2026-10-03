@@ -19,6 +19,7 @@ type Handler struct {
 	Pending app.PendingStore
 	Folders app.FolderLister
 	Sources app.SourceLister
+	Delete  app.SourceDeleter
 	Finder  app.Finder
 	Access  func(r *http.Request) (app.Access, bool)
 	// Summariser and Embedder are optional. Nil still stores verbatim chunks.
@@ -44,6 +45,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/knowledge/folders", wrap(http.HandlerFunc(h.createFolder)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.listSources)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.getSource)))
+	mux.Handle("DELETE /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.deleteSource)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/url", wrap(http.HandlerFunc(h.ingestURL)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/file", wrap(http.HandlerFunc(h.ingestFile)))
@@ -75,6 +77,18 @@ func (h Handler) getSource(w http.ResponseWriter, r *http.Request) {
 		body["error"] = source.Error
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (h Handler) deleteSource(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	err := app.DeleteSource(r.Context(), h.Delete, access, r.PathValue("id"), r.PathValue("sourceID"))
+	if refuse(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h Handler) listSources(w http.ResponseWriter, r *http.Request) {
