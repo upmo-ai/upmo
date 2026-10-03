@@ -52,6 +52,11 @@ func (f *fakeStore) MarkFailed(context.Context, app.Access, string, string) erro
 	return f.err
 }
 
+func (f *fakeStore) ResetPending(context.Context, app.Access, string) error {
+	f.pending++
+	return f.err
+}
+
 func (f *fakeStore) ListFolders(context.Context, app.Access) ([]app.Folder, error) {
 	f.lists++
 	if f.err != nil {
@@ -257,6 +262,36 @@ func TestDeleteSourceEmptyAllowIsRefused(t *testing.T) {
 	rec := call(t, store, nil, http.MethodDelete, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID, "", false)
 	if rec.Code != http.StatusUnauthorized || store.deletes != 0 {
 		t.Fatalf("status %d deletes %d", rec.Code, store.deletes)
+	}
+}
+
+func TestReingestURLAccepted(t *testing.T) {
+	store := &fakeStore{detail: app.SourceDetail{
+		ID: sourceID, Title: "Guide", Kind: "url", SourceRef: "https://example.com/guide.txt",
+		Status: "failed", Error: "fetch failed",
+	}}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID+"/reingest", "", true)
+	if rec.Code != http.StatusAccepted || store.pending < 1 || store.ingests != 1 {
+		t.Fatalf("status %d pending %d ingests %d body %s", rec.Code, store.pending, store.ingests, rec.Body.String())
+	}
+}
+
+func TestReingestMarkdownOK(t *testing.T) {
+	store := &fakeStore{detail: app.SourceDetail{
+		ID: sourceID, Title: "Guide", Kind: "markdown", Body: "Ada prefers oolong tea.",
+		Status: "failed", Provenance: "curated",
+	}}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID+"/reingest", "", true)
+	if rec.Code != http.StatusOK || store.ingests != 1 {
+		t.Fatalf("status %d ingests %d body %s", rec.Code, store.ingests, rec.Body.String())
+	}
+}
+
+func TestReingestEmptyAllowIsRefused(t *testing.T) {
+	store := &fakeStore{detail: app.SourceDetail{ID: sourceID, Kind: "markdown", Body: "x", Status: "failed"}}
+	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources/"+sourceID+"/reingest", "", false)
+	if rec.Code != http.StatusUnauthorized || store.ingests != 0 {
+		t.Fatalf("status %d ingests %d", rec.Code, store.ingests)
 	}
 }
 

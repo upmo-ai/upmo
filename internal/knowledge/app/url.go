@@ -48,6 +48,7 @@ type Pending struct {
 type PendingStore interface {
 	CreatePending(ctx context.Context, access Access, pending Pending) (string, error)
 	MarkFailed(ctx context.Context, access Access, sourceID, message string) error
+	ResetPending(ctx context.Context, access Access, sourceID string) error
 }
 
 // URLFetcher loads one public URL. Production dials through netguard.

@@ -113,6 +113,27 @@ func (s Store) MarkFailed(ctx context.Context, access app.Access, sourceID, mess
 	return tx.Commit(ctx)
 }
 
+// ResetPending moves a failed or ready source back to pending for retry.
+func (s Store) ResetPending(ctx context.Context, access app.Access, sourceID string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE knowledge.sources
+		SET status = 'pending', error = '', updated_at = $2
+		WHERE id = $1::uuid AND status IN ('failed', 'ready')`,
+		sourceID, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("knowledge: reset: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}
+
 func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query string, limit int) ([]app.Lexical, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {

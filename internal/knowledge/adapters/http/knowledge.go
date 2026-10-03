@@ -46,6 +46,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.listSources)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.getSource)))
 	mux.Handle("DELETE /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.deleteSource)))
+	mux.Handle("POST /api/knowledge/folders/{id}/sources/{sourceID}/reingest", wrap(http.HandlerFunc(h.reingest)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.ingest)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/url", wrap(http.HandlerFunc(h.ingestURL)))
 	mux.Handle("POST /api/knowledge/folders/{id}/sources/file", wrap(http.HandlerFunc(h.ingestFile)))
@@ -89,6 +90,80 @@ func (h Handler) deleteSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h Handler) reingest(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if h.Store == nil || h.Pending == nil || h.Sources == nil {
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
+	result, err := app.Reingest(
+		r.Context(),
+		&httpReingest{Store: h.Store, Pending: h.Pending, Sources: h.Sources},
+		access,
+		h.Fetcher,
+		h.Converter,
+		h.Summariser,
+		h.Embedder,
+		r.PathValue("id"),
+		r.PathValue("sourceID"),
+		h.AfterAccept,
+	)
+	if refuse(w, err) {
+		return
+	}
+	if result.Async {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"id":     result.ID,
+			"status": result.Status,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":       result.ID,
+		"status":   result.Status,
+		"revision": result.Revision,
+		"chunks":   result.Chunks,
+	})
+}
+
+// httpReingest joins the handler dependencies behind app.ReingestStore.
+type httpReingest struct {
+	Store   app.Store
+	Pending app.PendingStore
+	Sources app.SourceLister
+}
+
+func (h *httpReingest) InTx(ctx context.Context, access app.Access, fn func(app.Tx) error) error {
+	return h.Store.InTx(ctx, access, fn)
+}
+
+func (h *httpReingest) CreateFolder(ctx context.Context, access app.Access, name string) (string, error) {
+	return h.Store.CreateFolder(ctx, access, name)
+}
+
+func (h *httpReingest) CreatePending(ctx context.Context, access app.Access, pending app.Pending) (string, error) {
+	return h.Pending.CreatePending(ctx, access, pending)
+}
+
+func (h *httpReingest) MarkFailed(ctx context.Context, access app.Access, sourceID, message string) error {
+	return h.Pending.MarkFailed(ctx, access, sourceID, message)
+}
+
+func (h *httpReingest) ResetPending(ctx context.Context, access app.Access, sourceID string) error {
+	return h.Pending.ResetPending(ctx, access, sourceID)
+}
+
+func (h *httpReingest) ListSources(ctx context.Context, access app.Access, folderID string) ([]app.Source, error) {
+	return h.Sources.ListSources(ctx, access, folderID)
+}
+
+func (h *httpReingest) ViewSource(ctx context.Context, access app.Access, folderID, sourceID string) (app.SourceDetail, error) {
+	return h.Sources.ViewSource(ctx, access, folderID, sourceID)
 }
 
 func (h Handler) listSources(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +466,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "not found")
-	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, app.ErrURL), errors.Is(err, app.ErrURLBlocked), errors.Is(err, app.ErrFile), errors.Is(err, app.ErrFileSize), errors.Is(err, domain.ErrEmpty):
+	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, app.ErrURL), errors.Is(err, app.ErrURLBlocked), errors.Is(err, app.ErrFile), errors.Is(err, app.ErrFileSize), errors.Is(err, app.ErrReingest), errors.Is(err, domain.ErrEmpty):
 		writeError(w, http.StatusBadRequest, "the knowledge input was refused")
 	default:
 		writeError(w, http.StatusInternalServerError, "knowledge")
