@@ -183,6 +183,63 @@ func TestPrefixRaisesTheRankOfABodyMatch(t *testing.T) {
 	}
 }
 
+func TestSearchRRFAddsDenseHitMissedByFTS(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Tea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingestEmbed := &axisEmbed{model: "model-a", axis: 0}
+	if _, err := app.Ingest(ctx, store, ownerAccess, nil, ingestEmbed, app.Draft{
+		FolderID: folder, Title: "Exact", Body: "Ada prefers oolong tea.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ingestEmbed.axis = 1
+	paraphrase, err := app.Ingest(ctx, store, ownerAccess, nil, ingestEmbed, app.Draft{
+		FolderID: folder, Title: "Dense", Body: "She likes a warm leaf infusion in the afternoon.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, err := app.Search(ctx, store, &axisEmbed{model: "model-a", axis: 1}, nil, ownerAccess, folder, "oolong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, hit := range hits {
+		if hit.SourceID == paraphrase.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("paraphrase missing from %+v", hits)
+	}
+}
+
+func TestMixedEmbeddingModelIsRefused(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Tea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Ingest(ctx, store, ownerAccess, nil, &recordingEmbed{model: "model-a"}, app.Draft{
+		FolderID: folder, Title: "A", Body: "Ada prefers oolong tea.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.Ingest(ctx, store, ownerAccess, nil, &recordingEmbed{model: "model-b"}, app.Draft{
+		FolderID: folder, Title: "B", Body: "The kettle holds tea for the team.",
+	})
+	if err == nil {
+		t.Fatal("mixed embedding_model was accepted")
+	}
+}
+
 func TestEmptySourceStoresNothing(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
@@ -281,4 +338,19 @@ func (r *recordingEmbed) Embed(_ context.Context, texts []string) (string, [][]f
 		vectors[i] = vector
 	}
 	return r.model, vectors, nil
+}
+
+type axisEmbed struct {
+	model string
+	axis  int
+}
+
+func (a *axisEmbed) Embed(_ context.Context, texts []string) (string, [][]float32, error) {
+	vector := make([]float32, domain.Dim)
+	vector[a.axis] = 1
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		vectors[i] = vector
+	}
+	return a.model, vectors, nil
 }

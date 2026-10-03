@@ -115,6 +115,10 @@ func (f *fakeFinder) Lexical(context.Context, app.Access, string, string, int) (
 	return f.hits, nil
 }
 
+func (f *fakeFinder) Near(context.Context, app.Access, string, []float32, int) ([]app.Lexical, error) {
+	return nil, nil
+}
+
 func TestCreateFolder(t *testing.T) {
 	store := &fakeStore{}
 	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders", `{"name":" Specs "}`, true)
