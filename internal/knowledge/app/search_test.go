@@ -5,35 +5,79 @@ import (
 	"testing"
 )
 
-func TestSearchDoesNotEmbedWhenNothingMatches(t *testing.T) {
-	finder := &lexicalFinder{}
+func TestSearchDenseWorksWhenFTSEmpty(t *testing.T) {
+	finder := &searchFinder{
+		near: []Lexical{{SourceID: sourceID, Seq: 0, Body: "paraphrase only"}},
+	}
 	embed := &scriptEmbed{model: "m", vector: hot(0)}
 	got, err := Search(context.Background(), finder, embed, nil, allowAll, folderID, "tea")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 || embed.calls != 0 {
-		t.Fatalf("hits=%d embed=%d", len(got), embed.calls)
+	if embed.calls != 1 || finder.nearCalls != 1 {
+		t.Fatalf("embed=%d near=%d", embed.calls, finder.nearCalls)
 	}
-}
-
-func TestSearchReordersLexicalHitsAndDoesNotAddAny(t *testing.T) {
-	finder := &lexicalFinder{hits: []Lexical{
-		{SourceID: sourceID, Seq: 0, Body: "first", Vector: hot(0)},
-		{SourceID: sourceID, Seq: 1, Body: "second", Vector: hot(1)},
-	}}
-	embed := &scriptEmbed{model: "m", vector: hot(1)}
-	got, err := Search(context.Background(), finder, embed, nil, allowAll, folderID, "tea")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].Body != "second" || got[1].Body != "first" {
+	if len(got) != 1 || got[0].Body != "paraphrase only" {
 		t.Fatalf("hits = %+v", got)
 	}
 }
 
-func TestSearchKeepsLexicalOrderWhenTheRerankerInventsIDs(t *testing.T) {
-	finder := &lexicalFinder{hits: []Lexical{
+func TestSearchEmptyWhenBothListsEmpty(t *testing.T) {
+	finder := &searchFinder{}
+	embed := &scriptEmbed{model: "m", vector: hot(0)}
+	got, err := Search(context.Background(), finder, embed, nil, allowAll, folderID, "tea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("hits=%d", len(got))
+	}
+}
+
+func TestSearchFTSOrderWithoutEmbedder(t *testing.T) {
+	finder := &searchFinder{lexical: []Lexical{
+		{SourceID: sourceID, Seq: 0, Body: "first"},
+		{SourceID: sourceID, Seq: 1, Body: "second"},
+	}}
+	got, err := Search(context.Background(), finder, nil, nil, allowAll, folderID, "tea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Body != "first" || got[1].Body != "second" {
+		t.Fatalf("hits = %+v", got)
+	}
+	if finder.nearCalls != 0 {
+		t.Fatalf("near calls = %d", finder.nearCalls)
+	}
+}
+
+func TestSearchDenseAddsParaphraseMissedByFTS(t *testing.T) {
+	other := "018f3b2c-7a10-7c4a-8e11-dddddddddddd"
+	finder := &searchFinder{
+		lexical: []Lexical{{SourceID: sourceID, Seq: 0, Body: "exact token tea"}},
+		near:    []Lexical{{SourceID: other, Seq: 0, Body: "a warm infusion she likes"}},
+	}
+	embed := &scriptEmbed{model: "m", vector: hot(0)}
+	got, err := Search(context.Background(), finder, embed, nil, allowAll, folderID, "oolong brew")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finder.nearCalls != 1 {
+		t.Fatalf("near calls = %d", finder.nearCalls)
+	}
+	found := false
+	for _, hit := range got {
+		if hit.SourceID == other && hit.Body == "a warm infusion she likes" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dense-only hit missing: %+v", got)
+	}
+}
+
+func TestSearchRerankerCannotInventIDs(t *testing.T) {
+	finder := &searchFinder{lexical: []Lexical{
 		{SourceID: sourceID, Seq: 0, Body: "first"},
 		{SourceID: sourceID, Seq: 1, Body: "second"},
 	}}
@@ -47,21 +91,28 @@ func TestSearchKeepsLexicalOrderWhenTheRerankerInventsIDs(t *testing.T) {
 }
 
 func TestSearchRejectsABlankQuery(t *testing.T) {
-	finder := &lexicalFinder{}
+	finder := &searchFinder{}
 	_, err := Search(context.Background(), finder, nil, nil, allowAll, folderID, "  ")
-	if err == nil || finder.calls != 0 {
-		t.Fatalf("err=%v calls=%d", err, finder.calls)
+	if err == nil || finder.lexicalCalls != 0 {
+		t.Fatalf("err=%v calls=%d", err, finder.lexicalCalls)
 	}
 }
 
-type lexicalFinder struct {
-	calls int
-	hits  []Lexical
+type searchFinder struct {
+	lexicalCalls int
+	nearCalls    int
+	lexical      []Lexical
+	near         []Lexical
 }
 
-func (f *lexicalFinder) Lexical(context.Context, Access, string, string, int) ([]Lexical, error) {
-	f.calls++
-	return f.hits, nil
+func (f *searchFinder) Lexical(context.Context, Access, string, string, int) ([]Lexical, error) {
+	f.lexicalCalls++
+	return f.lexical, nil
+}
+
+func (f *searchFinder) Near(context.Context, Access, string, []float32, int) ([]Lexical, error) {
+	f.nearCalls++
+	return f.near, nil
 }
 
 type inventedReranker struct{}

@@ -12,10 +12,14 @@ import (
 )
 
 const (
-	// LexicalCandidates is the body match list. A prefix match alone is not on it.
+	// LexicalCandidates is the FTS body match list. A prefix match alone is not on it.
 	LexicalCandidates = 50
-	// SearchLimit is how many of those matches a call returns.
+	// DenseCandidates is the halfvec neighbour list when embeddings exist.
+	DenseCandidates = 50
+	// SearchLimit is how many fused hits a call returns after optional rerank.
 	SearchLimit = 8
+	// RRFK is the reciprocal rank fusion constant (same as memory).
+	RRFK = 60
 )
 
 // Hit is evidence: the verbatim chunk. The ranking prefix is not included.
@@ -25,7 +29,7 @@ type Hit struct {
 	Body     string
 }
 
-// Lexical is one body match. Vector may be absent.
+// Lexical is one candidate chunk. Vector may be absent on FTS rows.
 type Lexical struct {
 	SourceID string
 	Seq      int
@@ -33,19 +37,21 @@ type Lexical struct {
 	Vector   []float32
 }
 
-// Finder runs the lexical query inside the folder. The folder filter is applied
-// before the limit.
+// Finder runs folder-scoped lexical and dense queries. The folder filter is
+// applied before each limit.
 type Finder interface {
 	Lexical(ctx context.Context, access Access, folderID, query string, limit int) ([]Lexical, error)
+	Near(ctx context.Context, access Access, folderID string, vector []float32, limit int) ([]Lexical, error)
 }
 
-// Reranker reorders lexical hits. It cannot add a chunk the body query missed.
+// Reranker reorders fused hits. It cannot add a chunk absent from the fused set.
 type Reranker interface {
 	Rerank(ctx context.Context, query string, hits []Hit) ([]Hit, error)
 }
 
-// Search returns verbatim chunks from one folder. Dense order and a reranker
-// only rearrange the lexical list. A failure of either leaves that list as it was.
+// Search returns verbatim chunks from one folder. FTS and halfvec lists are
+// fused with reciprocal rank fusion when an embedder answers; otherwise FTS
+// order stands. A nil or failing reranker leaves the fused order.
 func Search(
 	ctx context.Context,
 	finder Finder,
@@ -64,66 +70,98 @@ func Search(
 	if query == "" {
 		return nil, ErrQuery
 	}
-	matches, err := finder.Lexical(ctx, access, folderID, query, LexicalCandidates)
+	if finder == nil {
+		return []Hit{}, nil
+	}
+	lexical, err := finder.Lexical(ctx, access, folderID, query, LexicalCandidates)
 	if err != nil {
 		return nil, err
 	}
-	if len(matches) == 0 {
-		return []Hit{}, nil
+	denseHits := near(ctx, finder, embedder, access, folderID, query)
+	var fused []Hit
+	switch {
+	case len(denseHits) == 0:
+		fused = toHits(lexical)
+	case len(lexical) == 0:
+		fused = toHits(denseHits)
+	default:
+		fused = fuse(lexical, denseHits)
 	}
-	matches = dense(ctx, embedder, query, matches)
-	hits := make([]Hit, len(matches))
-	for i, match := range matches {
-		hits[i] = Hit{SourceID: match.SourceID, Seq: match.Seq, Body: match.Body}
+	fused = rerank(ctx, reranker, query, fused)
+	if len(fused) > SearchLimit {
+		fused = fused[:SearchLimit]
 	}
-	hits = rerank(ctx, reranker, query, hits)
-	if len(hits) > SearchLimit {
-		hits = hits[:SearchLimit]
+	if fused == nil {
+		fused = []Hit{}
 	}
-	return hits, nil
+	return fused, nil
 }
 
-func dense(ctx context.Context, embedder Embedder, query string, matches []Lexical) []Lexical {
+func near(
+	ctx context.Context,
+	finder Finder,
+	embedder Embedder,
+	access Access,
+	folderID, query string,
+) []Lexical {
 	if embedder == nil {
-		return matches
+		return nil
 	}
 	_, vectors, err := embedder.Embed(ctx, []string{query})
 	if err != nil || len(vectors) != 1 || domain.VectorOK(vectors[0]) != nil {
-		return matches
+		return nil
 	}
-	queryVec := vectors[0]
+	hits, err := finder.Near(ctx, access, folderID, vectors[0], DenseCandidates)
+	if err != nil || len(hits) == 0 {
+		return nil
+	}
+	return hits
+}
+
+func fuse(lists ...[]Lexical) []Hit {
 	type row struct {
-		hit   Lexical
+		hit   Hit
 		score float64
-		known bool
-		index int
 	}
-	rows := make([]row, len(matches))
-	for i, match := range matches {
-		rows[i].hit = match
-		rows[i].index = i
-		if match.Vector == nil {
-			continue
+	rows := map[string]*row{}
+	for _, list := range lists {
+		for i, match := range list {
+			key := match.SourceID + ":" + strconv.Itoa(match.Seq)
+			r, ok := rows[key]
+			if !ok {
+				r = &row{hit: Hit{SourceID: match.SourceID, Seq: match.Seq, Body: match.Body}}
+				rows[key] = r
+			}
+			r.score += 1 / float64(RRFK+i+1)
 		}
-		score, err := domain.Cosine(queryVec, match.Vector)
-		if err != nil {
-			continue
-		}
-		rows[i].score = score
-		rows[i].known = true
 	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].known != rows[j].known {
-			return rows[i].known
+	ranked := make([]*row, 0, len(rows))
+	for _, r := range rows {
+		ranked = append(ranked, r)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
 		}
-		if rows[i].score != rows[j].score {
-			return rows[i].score > rows[j].score
+		if ranked[i].hit.SourceID != ranked[j].hit.SourceID {
+			return ranked[i].hit.SourceID < ranked[j].hit.SourceID
 		}
-		return rows[i].index < rows[j].index
+		return ranked[i].hit.Seq < ranked[j].hit.Seq
 	})
-	out := make([]Lexical, len(rows))
-	for i := range rows {
-		out[i] = rows[i].hit
+	if len(ranked) > LexicalCandidates {
+		ranked = ranked[:LexicalCandidates]
+	}
+	out := make([]Hit, len(ranked))
+	for i, r := range ranked {
+		out[i] = r.hit
+	}
+	return out
+}
+
+func toHits(matches []Lexical) []Hit {
+	out := make([]Hit, len(matches))
+	for i, match := range matches {
+		out[i] = Hit{SourceID: match.SourceID, Seq: match.Seq, Body: match.Body}
 	}
 	return out
 }

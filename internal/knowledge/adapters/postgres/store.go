@@ -137,6 +137,54 @@ func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query s
 		return nil, fmt.Errorf("knowledge: search: %w", err)
 	}
 	defer rows.Close()
+	hits, err := scanLexical(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return hits, nil
+}
+
+// Near returns the closest embedded chunks in a folder.
+func (s Store) Near(ctx context.Context, access app.Access, folderID string, vector []float32, limit int) ([]app.Lexical, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = relaxed_order`); err != nil {
+		return nil, fmt.Errorf("knowledge: near: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.ef_search = 100`); err != nil {
+		return nil, fmt.Errorf("knowledge: near: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text
+		FROM knowledge.chunks AS chunk
+		JOIN knowledge.sources AS source
+		  ON source.id = chunk.source_id
+		 AND source.revision = chunk.revision
+		WHERE source.folder_id = $1::uuid
+		  AND chunk.embedding IS NOT NULL
+		ORDER BY chunk.embedding <=> $2::halfvec(1024)
+		LIMIT $3`, folderID, formatHalfvec(vector), limit)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: near: %w", err)
+	}
+	defer rows.Close()
+	hits, err := scanLexical(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return hits, nil
+}
+
+func scanLexical(rows pgx.Rows) ([]app.Lexical, error) {
 	var hits []app.Lexical
 	for rows.Next() {
 		var hit app.Lexical
@@ -151,9 +199,6 @@ func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query s
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("knowledge: search: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
 	}
 	return hits, nil
 }
