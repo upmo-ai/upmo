@@ -30,6 +30,10 @@ func (p *pendingBook) MarkFailed(_ context.Context, _ Access, id, message string
 	return p.err
 }
 
+func (p *pendingBook) ResetPending(context.Context, Access, string) error {
+	return p.err
+}
+
 type urlStore struct {
 	ingestStore
 	body string

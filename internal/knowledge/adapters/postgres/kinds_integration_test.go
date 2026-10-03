@@ -212,6 +212,52 @@ func TestClipDedupesByNormalisedURL(t *testing.T) {
 	}
 }
 
+func TestReingestFailedURLReachesReady(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := app.IngestURL(ctx, store, ownerAccess, app.URLDraft{
+		FolderID: folder, URL: "https://example.com/guide.txt", Title: "Guide",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ProcessURL(ctx, store, store, ownerAccess,
+		staticFetch{ctype: "text/html", body: []byte("<p>x</p>")},
+		app.PassThroughText{}, nil, nil,
+		folder, pending.ID, "https://example.com/guide.txt", "Guide"); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := owner.QueryRow(ctx, `SELECT status FROM knowledge.sources WHERE id = $1::uuid`, pending.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q", status)
+	}
+	got, err := app.Reingest(ctx, store, ownerAccess,
+		staticFetch{ctype: "text/plain", body: []byte("Ada prefers oolong tea.")},
+		app.PassThroughText{}, nil, nil,
+		folder, pending.ID, func(fn func()) { fn() })
+	if err != nil || !got.Async {
+		t.Fatalf("got %#v err %v", got, err)
+	}
+	var chunks int
+	if err := owner.QueryRow(ctx, `
+		SELECT status,
+		       (SELECT count(*) FROM knowledge.chunks WHERE source_id = $1::uuid AND revision = sources.revision)
+		FROM knowledge.sources AS sources WHERE id = $1::uuid`, pending.ID).Scan(&status, &chunks); err != nil {
+		t.Fatal(err)
+	}
+	if status != "ready" || chunks < 1 {
+		t.Fatalf("status=%q chunks=%d", status, chunks)
+	}
+}
+
 func TestDeleteSourceRemovesChunksAndEmbeddings(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
