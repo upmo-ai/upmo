@@ -28,12 +28,24 @@ type fakeStore struct {
 	pending int
 	failed  int
 	deletes int
+	renames int
 	name    string
 	draft   app.Draft
 	rows    []app.Folder
 	sources []app.Source
 	detail  app.SourceDetail
 	err     error
+}
+
+func (f *fakeStore) RenameFolder(_ context.Context, _ app.Access, _, name string) error {
+	f.renames++
+	f.name = name
+	return f.err
+}
+
+func (f *fakeStore) DeleteFolder(context.Context, app.Access, string) ([]string, error) {
+	f.deletes++
+	return nil, f.err
 }
 
 func (f *fakeStore) DeleteSource(context.Context, app.Access, string, string) (string, error) {
@@ -148,6 +160,22 @@ func TestCreateFolder(t *testing.T) {
 	}
 }
 
+func TestRenameFolder(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodPatch, "/api/knowledge/folders/"+folderID, `{"name":" Specs "}`, true)
+	if rec.Code != http.StatusNoContent || store.renames != 1 || store.name != "Specs" {
+		t.Fatalf("status %d renames %d name %q body %s", rec.Code, store.renames, store.name, rec.Body.String())
+	}
+}
+
+func TestDeleteFolder(t *testing.T) {
+	store := &fakeStore{}
+	rec := call(t, store, nil, http.MethodDelete, "/api/knowledge/folders/"+folderID, "", true)
+	if rec.Code != http.StatusNoContent || store.deletes != 1 {
+		t.Fatalf("status %d deletes %d body %s", rec.Code, store.deletes, rec.Body.String())
+	}
+}
+
 func TestIngestSource(t *testing.T) {
 	store := &fakeStore{}
 	rec := call(t, store, nil, http.MethodPost, "/api/knowledge/folders/"+folderID+"/sources", `{"title":"Guide","body":"Hello world"}`, true)
@@ -257,6 +285,7 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		Store:       store,
 		Pending:     store,
 		Folders:     store,
+		Mutate:      store,
 		Sources:     store,
 		Delete:      store,
 		Finder:      finder,
@@ -268,7 +297,7 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 			if !allow {
 				return app.Access{}, false
 			}
-			return app.Access{UserID: userID, Allow: "folder:create,folder:view,folder:edit"}, true
+			return app.Access{UserID: userID, Allow: "folder:create,folder:view,folder:edit,folder:delete"}, true
 		},
 	}.Mount(mux, nil)
 	return mux
