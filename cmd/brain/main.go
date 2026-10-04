@@ -307,6 +307,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		Store:     knowledgeBook,
 		Pending:   knowledgeBook,
 		Folders:   knowledgeBook,
+		Mutate:    knowledgeBook,
 		Sources:   knowledgeBook,
 		Delete:    knowledgeBook,
 		Finder:    knowledgeBook,

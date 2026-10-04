@@ -18,6 +18,7 @@ type Handler struct {
 	Store   app.Store
 	Pending app.PendingStore
 	Folders app.FolderLister
+	Mutate  app.FolderMutator
 	Sources app.SourceLister
 	Delete  app.SourceDeleter
 	Finder  app.Finder
@@ -52,6 +53,8 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	}
 	mux.Handle("GET /api/knowledge/folders", wrap(http.HandlerFunc(h.listFolders)))
 	mux.Handle("POST /api/knowledge/folders", wrap(http.HandlerFunc(h.createFolder)))
+	mux.Handle("PATCH /api/knowledge/folders/{id}", wrap(http.HandlerFunc(h.renameFolder)))
+	mux.Handle("DELETE /api/knowledge/folders/{id}", wrap(http.HandlerFunc(h.deleteFolder)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources", wrap(http.HandlerFunc(h.listSources)))
 	mux.Handle("GET /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.getSource)))
 	mux.Handle("DELETE /api/knowledge/folders/{id}/sources/{sourceID}", wrap(http.HandlerFunc(h.deleteSource)))
@@ -242,6 +245,45 @@ func (h Handler) createFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+func (h Handler) renameFolder(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if h.Mutate == nil {
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
+	var input struct {
+		Name *string `json:"name"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Name == nil {
+		writeError(w, http.StatusBadRequest, "a folder needs a name")
+		return
+	}
+	err := app.RenameFolder(r.Context(), h.Mutate, access, r.PathValue("id"), *input.Name)
+	if refuse(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h Handler) deleteFolder(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if h.Mutate == nil {
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
+	err := app.DeleteFolder(r.Context(), h.Mutate, h.Blobs, access, r.PathValue("id"))
+	if refuse(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h Handler) ingest(w http.ResponseWriter, r *http.Request) {

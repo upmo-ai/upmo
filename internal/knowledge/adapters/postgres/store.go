@@ -55,6 +55,66 @@ func (s Store) CreateFolder(ctx context.Context, access app.Access, name string)
 	return id, nil
 }
 
+// RenameFolder updates the folder name under edit policy.
+func (s Store) RenameFolder(ctx context.Context, access app.Access, folderID, name string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE knowledge.folders SET name = $2 WHERE id = $1::uuid`, folderID, name)
+	if err != nil {
+		return fmt.Errorf("knowledge: rename folder: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}
+
+// DeleteFolder removes a folder. Sources and chunks CASCADE. Blob keys for
+// original uploads are returned so the caller can remove volume files.
+func (s Store) DeleteFolder(ctx context.Context, access app.Access, folderID string) ([]string, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT blob_key FROM knowledge.sources
+		WHERE folder_id = $1::uuid AND blob_key <> ''`, folderID)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: delete folder: %w", err)
+	}
+	keys := make([]string, 0)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("knowledge: delete folder: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("knowledge: delete folder: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM knowledge.folders WHERE id = $1::uuid`, folderID)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: delete folder: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, app.ErrGone
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 // CreatePending inserts a source waiting on fetch or conversion.
 func (s Store) CreatePending(ctx context.Context, access app.Access, pending app.Pending) (string, error) {
 	tx, err := s.begin(ctx, access)
