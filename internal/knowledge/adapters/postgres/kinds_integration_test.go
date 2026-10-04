@@ -241,7 +241,7 @@ func TestReingestFailedURLReachesReady(t *testing.T) {
 	}
 	got, err := app.Reingest(ctx, store, ownerAccess,
 		staticFetch{ctype: "text/plain", body: []byte("Ada prefers oolong tea.")},
-		app.PassThroughText{}, nil, nil,
+		app.PassThroughText{}, nil, nil, nil,
 		folder, pending.ID, func(fn func()) { fn() })
 	if err != nil || !got.Async {
 		t.Fatalf("got %#v err %v", got, err)
@@ -281,7 +281,7 @@ func TestDeleteSourceRemovesChunksAndEmbeddings(t *testing.T) {
 	if chunks < 1 || embedded < 1 {
 		t.Fatalf("chunks=%d embedded=%d before delete", chunks, embedded)
 	}
-	if err := app.DeleteSource(ctx, store, ownerAccess, folder, result.ID); err != nil {
+	if err := app.DeleteSource(ctx, store, nil, ownerAccess, folder, result.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.QueryRow(ctx, `
@@ -299,7 +299,7 @@ func TestDeleteSourceRemovesChunksAndEmbeddings(t *testing.T) {
 	if sources != 0 {
 		t.Fatalf("source rows = %d", sources)
 	}
-	if err := app.DeleteSource(ctx, store, ownerAccess, folder, result.ID); !errors.Is(err, app.ErrGone) {
+	if err := app.DeleteSource(ctx, store, nil, ownerAccess, folder, result.ID); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("second delete err %v", err)
 	}
 }

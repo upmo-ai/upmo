@@ -58,6 +58,7 @@ type SourceDetail struct {
 	Provenance string
 	Status     string
 	Error      string
+	BlobKey    string
 	Revision   int
 	UpdatedAt  string
 }

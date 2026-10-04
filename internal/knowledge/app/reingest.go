@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/google/uuid"
@@ -29,8 +30,14 @@ type ReingestStore interface {
 	Store
 }
 
-// Reingest retries a failed or ready source. URL kinds re-fetch; others rechunk
-// from the stored body. Pending sources are refused.
+// FileBlobs opens original upload bytes by relative key.
+type FileBlobs interface {
+	Open(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
+// Reingest retries a failed or ready source. URL kinds re-fetch; file kinds
+// with a blob re-convert; others rechunk from the stored body. Pending
+// sources are refused.
 func Reingest(
 	ctx context.Context,
 	book ReingestStore,
@@ -39,6 +46,7 @@ func Reingest(
 	converter BodyConverter,
 	summariser Summariser,
 	embedder Embedder,
+	blobs FileBlobs,
 	folderID, sourceID string,
 	runAsync func(func()),
 ) (ReingestResult, error) {
@@ -98,31 +106,102 @@ func Reingest(
 		})
 		return ReingestResult{ID: sourceID, Status: "pending", Async: true}, nil
 
-	case "markdown", "clip", "file":
-		body := source.Body
-		if strings.TrimSpace(body) == "" {
-			return ReingestResult{}, ErrReingest
+	case "file":
+		if strings.TrimSpace(source.BlobKey) != "" {
+			return reingestFileBlob(ctx, book, access, converter, summariser, embedder, blobs, folderID, source, runAsync)
 		}
-		result, err := Ingest(ctx, book, access, summariser, embedder, Draft{
-			FolderID:   folderID,
-			SourceID:   sourceID,
-			Title:      source.Title,
-			Body:       body,
-			Kind:       source.Kind,
-			SourceRef:  source.SourceRef,
-			Provenance: source.Provenance,
-		})
-		if err != nil {
-			return ReingestResult{}, err
-		}
-		return ReingestResult{
-			ID:       result.ID,
-			Status:   "ready",
-			Revision: result.Revision,
-			Chunks:   result.Chunks,
-		}, nil
+		return reingestFromBody(ctx, book, access, summariser, embedder, folderID, sourceID, source)
+
+	case "markdown", "clip":
+		return reingestFromBody(ctx, book, access, summariser, embedder, folderID, sourceID, source)
 
 	default:
 		return ReingestResult{}, ErrReingest
 	}
+}
+
+func reingestFromBody(
+	ctx context.Context,
+	book ReingestStore,
+	access Access,
+	summariser Summariser,
+	embedder Embedder,
+	folderID, sourceID string,
+	source SourceDetail,
+) (ReingestResult, error) {
+	body := source.Body
+	if strings.TrimSpace(body) == "" {
+		return ReingestResult{}, ErrReingest
+	}
+	result, err := Ingest(ctx, book, access, summariser, embedder, Draft{
+		FolderID:   folderID,
+		SourceID:   sourceID,
+		Title:      source.Title,
+		Body:       body,
+		Kind:       source.Kind,
+		SourceRef:  source.SourceRef,
+		Provenance: source.Provenance,
+	})
+	if err != nil {
+		return ReingestResult{}, err
+	}
+	return ReingestResult{
+		ID:       result.ID,
+		Status:   "ready",
+		Revision: result.Revision,
+		Chunks:   result.Chunks,
+	}, nil
+}
+
+func reingestFileBlob(
+	ctx context.Context,
+	book ReingestStore,
+	access Access,
+	converter BodyConverter,
+	summariser Summariser,
+	embedder Embedder,
+	blobs FileBlobs,
+	folderID string,
+	source SourceDetail,
+	runAsync func(func()),
+) (ReingestResult, error) {
+	if converter == nil || blobs == nil {
+		return ReingestResult{}, ErrReingest
+	}
+	r, err := blobs.Open(ctx, source.BlobKey)
+	if err != nil {
+		return ReingestResult{}, ErrReingest
+	}
+	raw, err := io.ReadAll(io.LimitReader(r, maxUpload+1))
+	_ = r.Close()
+	if err != nil || len(raw) == 0 || len(raw) > maxUpload {
+		return ReingestResult{}, ErrReingest
+	}
+	if err := book.ResetPending(ctx, access, source.ID); err != nil {
+		return ReingestResult{}, err
+	}
+	name := source.SourceRef
+	title := source.Title
+	sourceID := source.ID
+	run := runAsync
+	if run == nil {
+		run = func(fn func()) { go fn() }
+	}
+	run(func() {
+		_ = ProcessFile(
+			context.Background(),
+			book,
+			book,
+			access,
+			converter,
+			summariser,
+			embedder,
+			folderID,
+			sourceID,
+			name,
+			title,
+			raw,
+		)
+	})
+	return ReingestResult{ID: sourceID, Status: "pending", Async: true}, nil
 }

@@ -26,6 +26,7 @@ import (
 	gatewayhttp "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
+	knowledgeblob "github.com/upmo-ai/upmo/internal/knowledge/adapters/blob"
 	knowledgeconvert "github.com/upmo-ai/upmo/internal/knowledge/adapters/convert"
 	knowledgefetch "github.com/upmo-ai/upmo/internal/knowledge/adapters/fetch"
 	knowledgegateway "github.com/upmo-ai/upmo/internal/knowledge/adapters/gateway"
@@ -302,7 +303,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		}
 		knowledgeEmbedFor = embedClient.For
 	}
-	knowledgehttp.Handler{
+	knowledgeHandler := knowledgehttp.Handler{
 		Store:     knowledgeBook,
 		Pending:   knowledgeBook,
 		Folders:   knowledgeBook,
@@ -333,7 +334,11 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 				SharedEdit: shares.SharedEdit,
 			}, true
 		},
-	}.Mount(mux, func(next http.Handler) http.Handler {
+	}
+	if cfg.KnowledgeDir != "" {
+		knowledgeHandler.Blobs = knowledgeblob.Volume{Root: cfg.KnowledgeDir}
+	}
+	knowledgeHandler.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
 	decisionshttp.Handler{
