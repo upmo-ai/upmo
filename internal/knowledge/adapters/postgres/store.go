@@ -92,6 +92,27 @@ func (s Store) CreatePending(ctx context.Context, access app.Access, pending app
 	return id, nil
 }
 
+// SetBlobKey records the relative key for original upload bytes.
+func (s Store) SetBlobKey(ctx context.Context, access app.Access, sourceID, blobKey string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE knowledge.sources
+		SET blob_key = $2, updated_at = $3
+		WHERE id = $1::uuid AND status = 'pending'`,
+		sourceID, blobKey, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("knowledge: blob key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}
+
 // MarkFailed records a failed fetch or conversion without publishing chunks.
 func (s Store) MarkFailed(ctx context.Context, access app.Access, sourceID, message string) error {
 	tx, err := s.begin(ctx, access)
@@ -524,11 +545,11 @@ func (s Store) ViewSource(ctx context.Context, access app.Access, folderID, sour
 	var source app.SourceDetail
 	var updated time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT id::text, title, body, kind, source_ref, provenance, status, error, revision, updated_at
+		SELECT id::text, title, body, kind, source_ref, provenance, status, error, blob_key, revision, updated_at
 		FROM knowledge.sources
 		WHERE id = $1::uuid AND folder_id = $2::uuid`, sourceID, folderID).Scan(
 		&source.ID, &source.Title, &source.Body, &source.Kind, &source.SourceRef,
-		&source.Provenance, &source.Status, &source.Error, &source.Revision, &updated)
+		&source.Provenance, &source.Status, &source.Error, &source.BlobKey, &source.Revision, &updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.SourceDetail{}, app.ErrGone
 	}
@@ -543,31 +564,46 @@ func (s Store) ViewSource(ctx context.Context, access app.Access, folderID, sour
 }
 
 // DeleteSource removes a source in a folder the person can edit. Chunks and
-// their embeddings go with it via ON DELETE CASCADE.
-func (s Store) DeleteSource(ctx context.Context, access app.Access, folderID, sourceID string) error {
+// their embeddings go with it via ON DELETE CASCADE. The blob_key is returned
+// so the caller can remove original upload bytes.
+func (s Store) DeleteSource(ctx context.Context, access app.Access, folderID, sourceID string) (string, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var found string
 	err = tx.QueryRow(ctx, `SELECT id::text FROM knowledge.folders WHERE id = $1::uuid`, folderID).Scan(&found)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return app.ErrGone
+		return "", app.ErrGone
 	}
 	if err != nil {
-		return fmt.Errorf("knowledge: delete source: %w", err)
+		return "", fmt.Errorf("knowledge: delete source: %w", err)
+	}
+
+	var blobKey string
+	err = tx.QueryRow(ctx, `
+		SELECT blob_key FROM knowledge.sources
+		WHERE id = $1::uuid AND folder_id = $2::uuid`, sourceID, folderID).Scan(&blobKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", app.ErrGone
+	}
+	if err != nil {
+		return "", fmt.Errorf("knowledge: delete source: %w", err)
 	}
 
 	tag, err := tx.Exec(ctx, `
 		DELETE FROM knowledge.sources
 		WHERE id = $1::uuid AND folder_id = $2::uuid`, sourceID, folderID)
 	if err != nil {
-		return fmt.Errorf("knowledge: delete source: %w", err)
+		return "", fmt.Errorf("knowledge: delete source: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return app.ErrGone
+		return "", app.ErrGone
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return blobKey, nil
 }

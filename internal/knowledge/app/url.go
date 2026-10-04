@@ -49,6 +49,7 @@ type PendingStore interface {
 	CreatePending(ctx context.Context, access Access, pending Pending) (string, error)
 	MarkFailed(ctx context.Context, access Access, sourceID, message string) error
 	ResetPending(ctx context.Context, access Access, sourceID string) error
+	SetBlobKey(ctx context.Context, access Access, sourceID, blobKey string) error
 }
 
 // URLFetcher loads one public URL. Production dials through netguard.

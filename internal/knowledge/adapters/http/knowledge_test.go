@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -34,8 +36,12 @@ type fakeStore struct {
 	err     error
 }
 
-func (f *fakeStore) DeleteSource(context.Context, app.Access, string, string) error {
+func (f *fakeStore) DeleteSource(context.Context, app.Access, string, string) (string, error) {
 	f.deletes++
+	return "", f.err
+}
+
+func (f *fakeStore) SetBlobKey(context.Context, app.Access, string, string) error {
 	return f.err
 }
 
@@ -256,6 +262,7 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		Finder:      finder,
 		Fetcher:     stubFetch{ctype: "text/plain", body: []byte("Ada prefers oolong tea.")},
 		Converter:   app.PassThroughText{},
+		Blobs:       &memBlobs{data: map[string][]byte{}},
 		AfterAccept: func(fn func()) { fn() },
 		Access: func(*http.Request) (app.Access, bool) {
 			if !allow {
@@ -265,6 +272,28 @@ func handler(store *fakeStore, finder app.Finder, allow bool) http.Handler {
 		},
 	}.Mount(mux, nil)
 	return mux
+}
+
+type memBlobs struct {
+	data map[string][]byte
+}
+
+func (m *memBlobs) Put(_ context.Context, key string, raw []byte) error {
+	m.data[key] = append([]byte(nil), raw...)
+	return nil
+}
+
+func (m *memBlobs) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	raw, ok := m.data[key]
+	if !ok {
+		return nil, errors.New("missing")
+	}
+	return io.NopCloser(strings.NewReader(string(raw))), nil
+}
+
+func (m *memBlobs) Remove(_ context.Context, key string) error {
+	delete(m.data, key)
+	return nil
 }
 
 func TestDeleteSourceNoContent(t *testing.T) {

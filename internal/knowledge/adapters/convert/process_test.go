@@ -30,6 +30,14 @@ func (b *book) MarkFailed(_ context.Context, _ app.Access, id, _ string) error {
 	return nil
 }
 
+func (b *book) ResetPending(context.Context, app.Access, string) error {
+	return nil
+}
+
+func (b *book) SetBlobKey(context.Context, app.Access, string, string) error {
+	return nil
+}
+
 func (b *book) InTx(_ context.Context, _ app.Access, fn func(app.Tx) error) error {
 	return fn(b)
 }

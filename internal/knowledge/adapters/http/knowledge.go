@@ -32,6 +32,12 @@ type Handler struct {
 	// Fetcher and Converter drive URL ingest. Nil refuses the URL route.
 	Fetcher   app.URLFetcher
 	Converter app.BodyConverter
+	// Blobs stores original file upload bytes. Nil refuses new file uploads.
+	Blobs interface {
+		app.FileBlobs
+		app.Originals
+		Put(ctx context.Context, key string, raw []byte) error
+	}
 	// AfterAccept runs URL processing. Nil starts a goroutine.
 	AfterAccept func(func())
 }
@@ -88,7 +94,7 @@ func (h Handler) deleteSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	err := app.DeleteSource(r.Context(), h.Delete, access, r.PathValue("id"), r.PathValue("sourceID"))
+	err := app.DeleteSource(r.Context(), h.Delete, h.Blobs, access, r.PathValue("id"), r.PathValue("sourceID"))
 	if refuse(w, err) {
 		return
 	}
@@ -112,6 +118,7 @@ func (h Handler) reingest(w http.ResponseWriter, r *http.Request) {
 		h.Converter,
 		h.Summariser,
 		h.embedder(access.UserID),
+		h.Blobs,
 		r.PathValue("id"),
 		r.PathValue("sourceID"),
 		h.AfterAccept,
@@ -159,6 +166,10 @@ func (h *httpReingest) MarkFailed(ctx context.Context, access app.Access, source
 
 func (h *httpReingest) ResetPending(ctx context.Context, access app.Access, sourceID string) error {
 	return h.Pending.ResetPending(ctx, access, sourceID)
+}
+
+func (h *httpReingest) SetBlobKey(ctx context.Context, access app.Access, sourceID, blobKey string) error {
+	return h.Pending.SetBlobKey(ctx, access, sourceID, blobKey)
 }
 
 func (h *httpReingest) ListSources(ctx context.Context, access app.Access, folderID string) ([]app.Source, error) {
@@ -329,7 +340,7 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.Pending == nil || h.Converter == nil {
+	if h.Pending == nil || h.Converter == nil || h.Blobs == nil {
 		writeError(w, http.StatusInternalServerError, "knowledge")
 		return
 	}
@@ -362,6 +373,17 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sourceID := pending.ID
+	if err := h.Blobs.Put(r.Context(), sourceID, raw); err != nil {
+		_ = h.Pending.MarkFailed(r.Context(), access, sourceID, "storage failed")
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
+	if err := h.Pending.SetBlobKey(r.Context(), access, sourceID, sourceID); err != nil {
+		_ = h.Blobs.Remove(r.Context(), sourceID)
+		_ = h.Pending.MarkFailed(r.Context(), access, sourceID, "storage failed")
+		writeError(w, http.StatusInternalServerError, "knowledge")
+		return
+	}
 	run := h.AfterAccept
 	if run == nil {
 		run = func(fn func()) { go fn() }
