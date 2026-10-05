@@ -15,7 +15,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
@@ -37,7 +39,11 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(pool, cfg, log, seats)
+	work, err := jobs.Open(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := routes(pool, cfg, log, seats, work, notices.Store{Pool: pool})
 	if err != nil {
 		t.Fatal(err)
 	}
