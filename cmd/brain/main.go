@@ -124,6 +124,7 @@ func run() error {
 
 	workers := river.NewWorkers()
 	noticeStore := notices.Store{Pool: pool}
+	memoryFacts := memorystore.Facts{Pool: pool}
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
 		embedRoute := cfg.EmbedRoute
 		if embedRoute == "" {
@@ -131,7 +132,7 @@ func run() error {
 		}
 		gw, err := memorygateway.Open(cfg.GatewayURL, cfg.ServiceKey, "memory-extract", embedRoute)
 		if err != nil {
-			return fmt.Errorf("brain: scout proposer: %w", err)
+			return fmt.Errorf("brain: memory gateway: %w", err)
 		}
 		taskapp.AddScoutWorker(workers, taskapp.ScoutDeps{
 			Goals: taskstore.Store{Pool: pool},
@@ -141,6 +142,10 @@ func run() error {
 			},
 			Notices: noticeStore,
 		})
+		memoryapp.AddExtractWorker(workers, memoryFacts,
+			func(userID string) memoryapp.Proposer { return gw.For(userID) },
+			func(userID string) memoryapp.Embedder { return gw.For(userID) },
+		)
 	}
 	work, err := jobs.Open(pool, jobs.WithWorkers(workers))
 	if err != nil {
