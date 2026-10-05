@@ -38,6 +38,7 @@ import (
 	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -98,6 +99,9 @@ func run() error {
 	if err == nil {
 		err = migrate.Up(ctx, owner, runtime.Schema, runtime.Migrations())
 	}
+	if err == nil {
+		err = jobs.Up(ctx, owner)
+	}
 	owner.Close()
 	if err != nil {
 		return err
@@ -107,6 +111,14 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	work, err := jobs.Open(pool)
+	if err != nil {
+		return err
+	}
+	if err := work.Start(ctx); err != nil {
+		return err
+	}
 
 	seats, err := sandboxSeats(cfg, pool, log)
 	if err != nil {
@@ -123,6 +135,9 @@ func run() error {
 	// its sandbox at the seat TTL.
 	wait, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
+	if werr := work.Stop(wait); werr != nil {
+		log.Warn("job workers still running at shutdown", "err", werr)
+	}
 	if werr := seats.Wait(wait); werr != nil {
 		log.Warn("sandbox provisioning still running at shutdown", "err", werr)
 	}
