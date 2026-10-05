@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -42,6 +43,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	taskhttp "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
@@ -101,6 +103,9 @@ func run() error {
 	}
 	if err == nil {
 		err = jobs.Up(ctx, owner)
+	}
+	if err == nil {
+		err = notices.Up(ctx, owner)
 	}
 	owner.Close()
 	if err != nil {
@@ -387,6 +392,19 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 			return person.UserID.String(), allow, true
 		},
 	}.MountRoutes(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	noticeStore := notices.Store{Pool: pool}
+	notices.Handler{
+		List: noticeStore,
+		User: func(r *http.Request) (uuid.UUID, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return uuid.Nil, false
+			}
+			return person.UserID.UUID, true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
 	return mux, nil
