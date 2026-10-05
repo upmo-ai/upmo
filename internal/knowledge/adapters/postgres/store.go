@@ -12,15 +12,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/knowledge/app"
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/tasks"
 )
 
 // Store is the knowledge tables. One method call is one transaction.
 type Store struct {
-	Pool *pgxpool.Pool
+	Pool     *pgxpool.Pool
+	Enqueuer jobs.Enqueuer
 }
 
 type rowTx struct {
-	tx pgx.Tx
+	tx     pgx.Tx
+	store  *Store
+	access app.Access
 }
 
 func (s Store) InTx(ctx context.Context, access app.Access, fn func(app.Tx) error) error {
@@ -29,7 +34,7 @@ func (s Store) InTx(ctx context.Context, access app.Access, fn func(app.Tx) erro
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := fn(rowTx{tx: tx}); err != nil {
+	if err := fn(rowTx{tx: tx, store: &s, access: access}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -468,6 +473,15 @@ func (t rowTx) Save(
 	if _, err := t.tx.Exec(ctx, `
 		DELETE FROM knowledge.chunks WHERE source_id = $1::uuid AND revision <> $2`, id, newRev); err != nil {
 		return app.Result{}, fmt.Errorf("knowledge: revision: %w", err)
+	}
+	if t.store != nil && t.store.Enqueuer != nil && t.access.UserID != "" {
+		if _, err := t.store.Enqueuer.InsertTx(ctx, t.tx, tasks.ScoutJobArgs{
+			UserID:   t.access.UserID,
+			Trigger:  "knowledge",
+			SourceID: id,
+		}, nil); err != nil {
+			return app.Result{}, fmt.Errorf("knowledge: scout enqueue: %w", err)
+		}
 	}
 	return app.Result{ID: id, Revision: newRev, Chunks: len(pieces)}, nil
 }

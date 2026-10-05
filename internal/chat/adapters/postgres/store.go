@@ -11,11 +11,14 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/tasks"
 )
 
 // Store is the Postgres writer for chats.
 type Store struct {
-	Pool *pgxpool.Pool
+	Pool     *pgxpool.Pool
+	Enqueuer jobs.Enqueuer
 }
 
 // Open inserts one private chat. It does not touch a login session or the profile.
@@ -63,6 +66,15 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 		       $2`, chatID, body)
 	if err != nil {
 		return writeErr(err)
+	}
+	if s.Enqueuer != nil && access.UserID != "" {
+		if _, err := s.Enqueuer.InsertTx(ctx, tx, tasks.ScoutJobArgs{
+			UserID:   access.UserID,
+			Trigger:  "chat",
+			SourceID: chatID,
+		}, nil); err != nil {
+			return fmt.Errorf("chat: scout enqueue: %w", err)
+		}
 	}
 	return tx.Commit(ctx)
 }

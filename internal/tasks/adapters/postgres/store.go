@@ -8,13 +8,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
 // Store is the task tables. One transition is one transaction.
 type Store struct {
-	Pool *pgxpool.Pool
+	Pool     *pgxpool.Pool
+	Enqueuer jobs.Enqueuer
 }
 
 // Transition locks the task, applies Step, and appends its events.
@@ -33,6 +35,11 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 	}
 	if err != nil {
 		return app.Task{}, err
+	}
+	if task.Status == domain.Done || task.Status == domain.Failed {
+		if err := enqueueScout(ctx, tx, s, access.UserID, "task", task.ID); err != nil {
+			return app.Task{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Task{}, err

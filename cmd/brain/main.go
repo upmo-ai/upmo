@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -35,8 +36,10 @@ import (
 	knowledgestore "github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
 	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
 	"github.com/upmo-ai/upmo/internal/memory"
+	memorygateway "github.com/upmo-ai/upmo/internal/memory/adapters/gateway"
 	memoryhttp "github.com/upmo-ai/upmo/internal/memory/adapters/http"
 	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
+	memoryapp "github.com/upmo-ai/upmo/internal/memory/app"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -49,6 +52,8 @@ import (
 	taskhttp "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
 	taskstore "github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
 	taskapp "github.com/upmo-ai/upmo/internal/tasks/app"
+
+	"github.com/riverqueue/river"
 )
 
 func main() {
@@ -117,7 +122,27 @@ func run() error {
 	}
 	defer pool.Close()
 
-	work, err := jobs.Open(pool)
+	workers := river.NewWorkers()
+	noticeStore := notices.Store{Pool: pool}
+	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
+		embedRoute := cfg.EmbedRoute
+		if embedRoute == "" {
+			embedRoute = "memory-embed"
+		}
+		gw, err := memorygateway.Open(cfg.GatewayURL, cfg.ServiceKey, "memory-extract", embedRoute)
+		if err != nil {
+			return fmt.Errorf("brain: scout proposer: %w", err)
+		}
+		taskapp.AddScoutWorker(workers, taskapp.ScoutDeps{
+			Goals: taskstore.Store{Pool: pool},
+			Chat:  chatstore.Store{Pool: pool},
+			Propose: func(_ context.Context, userID uuid.UUID) taskapp.Proposer {
+				return scoutProposer{inner: gw.For(userID.String())}
+			},
+			Notices: noticeStore,
+		})
+	}
+	work, err := jobs.Open(pool, jobs.WithWorkers(workers))
 	if err != nil {
 		return err
 	}
@@ -129,7 +154,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler, err := routes(pool, cfg, log, seats)
+	handler, err := routes(pool, cfg, log, seats, work, noticeStore)
 	if err != nil {
 		return err
 	}
@@ -197,7 +222,7 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runtime.Seats) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runtime.Seats, work *jobs.Client, noticeStore notices.Store) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -213,7 +238,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
-	taskBook := taskstore.Store{Pool: pool}
+	taskBook := taskstore.Store{Pool: pool, Enqueuer: work}
 	taskhttp.Handler{
 		Book:      taskBook,
 		List:      taskBook,
@@ -285,7 +310,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		return identity.RequireSession(sessions, next)
 	})
 	chathttp.Handler{
-		Book: chatstore.Store{Pool: pool},
+		Book: chatstore.Store{Pool: pool, Enqueuer: work},
 		Access: func(r *http.Request) (chatapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -310,7 +335,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	knowledgeBook := knowledgestore.Store{Pool: pool}
+	knowledgeBook := knowledgestore.Store{Pool: pool, Enqueuer: work}
 	knowledgeConverter := knowledgeconvert.Client{Text: knowledgeapp.PassThroughText{}}
 	if markitdownURL := os.Getenv("UPMO_MARKITDOWN_URL"); markitdownURL != "" {
 		knowledgeConverter.Sidecar = &knowledgeconvert.Sidecar{BaseURL: markitdownURL}
@@ -394,7 +419,6 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 	}.MountRoutes(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	noticeStore := notices.Store{Pool: pool}
 	notices.Handler{
 		List: noticeStore,
 		User: func(r *http.Request) (uuid.UUID, bool) {
@@ -408,4 +432,19 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		return identity.RequireSession(sessions, next)
 	})
 	return mux, nil
+}
+
+// scoutProposer maps memory gateway retries onto the tasks scout retry sentinel.
+type scoutProposer struct {
+	inner interface {
+		Propose(ctx context.Context, prompt string) (string, error)
+	}
+}
+
+func (p scoutProposer) Propose(ctx context.Context, prompt string) (string, error) {
+	text, err := p.inner.Propose(ctx, prompt)
+	if err != nil && errors.Is(err, memoryapp.ErrRetry) {
+		return "", fmt.Errorf("%w: %v", taskapp.ErrRetry, err)
+	}
+	return text, err
 }

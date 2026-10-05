@@ -17,10 +17,28 @@ type Client struct {
 	river *river.Client[pgx.Tx]
 }
 
+// Option configures Open.
+type Option func(*openConfig)
+
+type openConfig struct {
+	workers *river.Workers
+}
+
+// WithWorkers uses w for job handlers. Open always registers the test-only ping worker.
+func WithWorkers(w *river.Workers) Option {
+	return func(c *openConfig) {
+		c.workers = w
+	}
+}
+
 // Open builds a River client on pool. It registers the test-only ping worker;
 // product kinds are registered in cmd/brain later.
-func Open(pool *pgxpool.Pool) (*Client, error) {
-	workers := river.NewWorkers()
+func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
+	cfg := &openConfig{workers: river.NewWorkers()}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	workers := cfg.workers
 	river.AddWorker(workers, pingWorker{})
 	driver := riverpgxv5.New(pool)
 	inner, err := river.NewClient(driver, &river.Config{

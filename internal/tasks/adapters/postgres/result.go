@@ -81,6 +81,9 @@ func (s Store) Cancel(ctx context.Context, access app.Access, taskID string) (ap
 			return app.Task{}, app.ErrGone
 		}
 	}
+	if err := enqueueScout(ctx, tx, s, access.UserID, "task", taskID); err != nil {
+		return app.Task{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Task{}, err
 	}
