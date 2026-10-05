@@ -40,6 +40,9 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 		if err := enqueueScout(ctx, tx, s, access.UserID, "task", task.ID); err != nil {
 			return app.Task{}, err
 		}
+		if err := enqueueExtract(ctx, tx, s, access.UserID, task.ID, task.Goal); err != nil {
+			return app.Task{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Task{}, err

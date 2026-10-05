@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
@@ -59,11 +61,13 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 	if err != nil {
 		return fmt.Errorf("chat: lock: %w", err)
 	}
-	_, err = tx.Exec(ctx, `
+	var seq int
+	err = tx.QueryRow(ctx, `
 		INSERT INTO chat.lines (chat_id, seq, body)
 		SELECT $1::uuid,
 		       COALESCE((SELECT MAX(seq) FROM chat.lines WHERE chat_id = $1::uuid), 0) + 1,
-		       $2`, chatID, body)
+		       $2
+		RETURNING seq`, chatID, body).Scan(&seq)
 	if err != nil {
 		return writeErr(err)
 	}
@@ -74,6 +78,16 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 			SourceID: chatID,
 		}, nil); err != nil {
 			return fmt.Errorf("chat: scout enqueue: %w", err)
+		}
+		if _, err := s.Enqueuer.InsertTx(ctx, tx, memory.ExtractJobArgs{
+			UserID:     access.UserID,
+			SourceKind: "chat",
+			ID:         chatID,
+			Seq:        seq,
+			Text:       body,
+			AtUnix:     time.Now().UTC().Unix(),
+		}, nil); err != nil {
+			return fmt.Errorf("chat: extract enqueue: %w", err)
 		}
 	}
 	return tx.Commit(ctx)

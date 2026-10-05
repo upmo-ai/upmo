@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
@@ -40,6 +42,24 @@ func enqueueScout(ctx context.Context, tx pgx.Tx, s Store, userID, trigger, sour
 	}, nil)
 	if err != nil {
 		return fmt.Errorf("tasks: scout enqueue: %w", err)
+	}
+	return nil
+}
+
+func enqueueExtract(ctx context.Context, tx pgx.Tx, s Store, userID, taskID, goal string) error {
+	if s.Enqueuer == nil || userID == "" || taskID == "" {
+		return nil
+	}
+	_, err := s.Enqueuer.InsertTx(ctx, tx, memory.ExtractJobArgs{
+		UserID:     userID,
+		SourceKind: "task",
+		ID:         taskID,
+		Seq:        0,
+		Text:       goal,
+		AtUnix:     time.Now().UTC().Unix(),
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("tasks: extract enqueue: %w", err)
 	}
 	return nil
 }
