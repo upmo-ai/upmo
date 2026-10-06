@@ -24,15 +24,16 @@ type openConfig struct {
 	workers *river.Workers
 }
 
-// WithWorkers uses w for job handlers. Open always registers the test-only ping worker.
+// WithWorkers uses w for job handlers. Open always registers the test-only ping
+// worker and the outbox drain worker.
 func WithWorkers(w *river.Workers) Option {
 	return func(c *openConfig) {
 		c.workers = w
 	}
 }
 
-// Open builds a River client on pool. It registers the test-only ping worker;
-// product kinds are registered in cmd/brain later.
+// Open builds a River client on pool. It registers the test-only ping worker
+// and the outbox drain worker; product kinds are registered in cmd/brain.
 func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 	cfg := &openConfig{workers: river.NewWorkers()}
 	for _, opt := range opts {
@@ -40,6 +41,7 @@ func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 	}
 	workers := cfg.workers
 	river.AddWorker(workers, pingWorker{})
+	river.AddWorker(workers, &outboxDrainWorker{pool: pool})
 	driver := riverpgxv5.New(pool)
 	inner, err := river.NewClient(driver, &river.Config{
 		Schema:  Schema,
@@ -47,6 +49,7 @@ func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 		Queues: map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: 2},
 		},
+		PeriodicJobs: []*river.PeriodicJob{outboxDrainPeriodic()},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("jobs: client: %w", err)

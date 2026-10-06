@@ -5,6 +5,7 @@ package jobs_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -132,6 +133,149 @@ func TestOutboxInsert(t *testing.T) {
 	haveJSON, _ := json.Marshal(have)
 	if string(wantJSON) != string(haveJSON) {
 		t.Fatalf("payload = %s, want %s", haveJSON, wantJSON)
+	}
+}
+
+func TestOutboxDrainMarksProcessed(t *testing.T) {
+	// Not parallel: handler registry is package-global.
+	jobs.ClearHandlers()
+	t.Cleanup(jobs.ClearHandlers)
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	payload := []byte(`{"ok":true}`)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := jobs.OutboxInsert(ctx, tx, "test.drain", payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var sawTopic string
+	var sawPayload []byte
+	jobs.Register("test.drain", func(_ context.Context, topic string, p []byte) error {
+		sawTopic = topic
+		sawPayload = append([]byte(nil), p...)
+		return nil
+	})
+	n, err := jobs.DrainOnce(ctx, pool, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("processed = %d, want 1", n)
+	}
+	if sawTopic != "test.drain" {
+		t.Fatalf("topic = %q", sawTopic)
+	}
+	var want, have any
+	if err := json.Unmarshal(payload, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(sawPayload, &have); err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, _ := json.Marshal(want)
+	haveJSON, _ := json.Marshal(have)
+	if string(wantJSON) != string(haveJSON) {
+		t.Fatalf("payload = %s, want %s", haveJSON, wantJSON)
+	}
+	var processed bool
+	if err := pool.QueryRow(ctx, `
+SELECT processed_at IS NOT NULL FROM platform.outbox LIMIT 1
+`).Scan(&processed); err != nil {
+		t.Fatal(err)
+	}
+	if !processed {
+		t.Fatal("processed_at still null")
+	}
+}
+
+func TestOutboxDrainHandlerErrorLeavesPending(t *testing.T) {
+	jobs.ClearHandlers()
+	t.Cleanup(jobs.ClearHandlers)
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := jobs.OutboxInsert(ctx, tx, "test.fail", []byte(`{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	jobs.Register("test.fail", func(context.Context, string, []byte) error { return boom })
+	n, err := jobs.DrainOnce(ctx, pool, 32)
+	if n != 0 {
+		t.Fatalf("processed = %d, want 0", n)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	var pending bool
+	if err := pool.QueryRow(ctx, `
+SELECT processed_at IS NULL FROM platform.outbox LIMIT 1
+`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("row was marked processed")
+	}
+}
+
+func TestOutboxDrainUnknownTopicLeavesPending(t *testing.T) {
+	jobs.ClearHandlers()
+	t.Cleanup(jobs.ClearHandlers)
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := jobs.OutboxInsert(ctx, tx, "test.unknown", []byte(`{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n, err := jobs.DrainOnce(ctx, pool, 32)
+	if n != 0 {
+		t.Fatalf("processed = %d, want 0", n)
+	}
+	if !errors.Is(err, jobs.ErrOutboxUnknownTopic) {
+		t.Fatalf("err = %v, want ErrOutboxUnknownTopic", err)
+	}
+	var pending bool
+	if err := pool.QueryRow(ctx, `
+SELECT processed_at IS NULL FROM platform.outbox LIMIT 1
+`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("row was marked processed")
 	}
 }
 

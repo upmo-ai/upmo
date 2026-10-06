@@ -147,6 +147,8 @@ func run() error {
 			func(userID string) memoryapp.Embedder { return gw.For(userID) },
 		)
 	}
+	// Outbox drain runs with Open. Product topic handlers
+	// register here when they exist; this slice leaves the registry empty.
 	work, err := jobs.Open(pool, jobs.WithWorkers(workers))
 	if err != nil {
 		return err
