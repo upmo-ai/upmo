@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -142,5 +143,93 @@ func TestRunReturnsRetryForGateway(t *testing.T) {
 	})
 	if !IsRetry(err) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+type fakeMemory struct {
+	profile string
+	facts   []MemoryFact
+	err     error
+}
+
+func (f *fakeMemory) ProfileAndFacts(context.Context, uuid.UUID) (string, []MemoryFact, error) {
+	return f.profile, f.facts, f.err
+}
+
+type fakeKnowledge struct {
+	hits  []KnowledgeHit
+	err   error
+	query string
+}
+
+func (f *fakeKnowledge) Search(_ context.Context, _ uuid.UUID, query string, limit int) ([]KnowledgeHit, error) {
+	f.query = query
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := f.hits
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func TestRunIncludesMemoryAndKnowledgeInPrompt(t *testing.T) {
+	userID := uuid.New()
+	batch, _ := json.Marshal([]string{"Chase the invoice"})
+	prop := &scriptProposer{script: []string{string(batch)}}
+	notes := &fakeNotices{}
+	mem := &fakeMemory{
+		profile: "Prefers terse tasks",
+		facts:   []MemoryFact{{ID: "f1", Claim: "Works in EUR"}},
+	}
+	know := &fakeKnowledge{hits: []KnowledgeHit{{SourceID: "s1", Body: "Invoice policy: net 30"}}}
+	deps := scoutDeps(&fakeGoals{goals: []OpenGoal{{ID: "t1", Goal: "Open books"}}}, prop, notes)
+	deps.Memory = mem
+	deps.Knowledge = know
+	kept, audit, err := RunScout(context.Background(), deps, ScoutArgs{
+		UserID:  userID,
+		Trigger: scoutTriggerTask,
+	})
+	if err != nil || kept != 1 {
+		t.Fatalf("kept=%d err=%v", kept, err)
+	}
+	if know.query == "" {
+		t.Fatal("knowledge search query empty")
+	}
+	var sawMemory, sawKnowledge bool
+	for _, ref := range audit {
+		if ref.Kind == "memory" && ref.ID == "f1" {
+			sawMemory = true
+		}
+		if ref.Kind == "knowledge" && ref.ID == "s1" {
+			sawKnowledge = true
+		}
+	}
+	if !sawMemory || !sawKnowledge {
+		t.Fatalf("audit = %#v", audit)
+	}
+	prompt := scoutPrompt(scoutTriggerTask, "", []string{"Open books"}, nil, mem.profile, mem.facts, know.hits)
+	if !strings.Contains(prompt, "Prefers terse tasks") || !strings.Contains(prompt, "Works in EUR") || !strings.Contains(prompt, "Invoice policy") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+}
+
+func TestRunSkipsKnowledgeWithoutQuery(t *testing.T) {
+	userID := uuid.New()
+	batch, _ := json.Marshal([]string{"Chase the invoice"})
+	prop := &scriptProposer{script: []string{string(batch)}}
+	know := &fakeKnowledge{hits: []KnowledgeHit{{SourceID: "s1", Body: "secret"}}}
+	deps := scoutDeps(&fakeGoals{}, prop, &fakeNotices{})
+	deps.Knowledge = know
+	_, _, err := RunScout(context.Background(), deps, ScoutArgs{
+		UserID:  userID,
+		Trigger: scoutTriggerTask,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if know.query != "" {
+		t.Fatalf("query = %q", know.query)
 	}
 }

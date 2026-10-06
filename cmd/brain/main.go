@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -134,9 +135,17 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("brain: memory gateway: %w", err)
 		}
+		knowledgeBook := knowledgestore.Store{Pool: pool}
+		members := identity.Members(pool, cfg.PublicURL, linkMail(cfg.SMTP), log)
 		taskapp.AddScoutWorker(workers, taskapp.ScoutDeps{
-			Goals: taskstore.Store{Pool: pool},
-			Chat:  chatstore.Store{Pool: pool},
+			Goals:  taskstore.Store{Pool: pool},
+			Chat:   chatstore.Store{Pool: pool},
+			Memory: scoutMemory{editor: memoryFacts},
+			Knowledge: scoutKnowledge{
+				folders: knowledgeBook,
+				finder:  knowledgeBook,
+				members: members,
+			},
 			Propose: func(_ context.Context, userID uuid.UUID) taskapp.Proposer {
 				return scoutProposer{inner: gw.For(userID.String())}
 			},
@@ -454,4 +463,79 @@ func (p scoutProposer) Propose(ctx context.Context, prompt string) (string, erro
 		return "", fmt.Errorf("%w: %v", taskapp.ErrRetry, err)
 	}
 	return text, err
+}
+
+type scoutMemory struct {
+	editor memoryapp.Editor
+}
+
+func (s scoutMemory) ProfileAndFacts(ctx context.Context, userID uuid.UUID) (string, []taskapp.MemoryFact, error) {
+	page, err := memoryapp.LoadPage(ctx, s.editor, userID.String())
+	if err != nil {
+		return "", nil, err
+	}
+	facts := make([]taskapp.MemoryFact, 0, len(page.Facts))
+	for _, row := range page.Facts {
+		facts = append(facts, taskapp.MemoryFact{ID: row.ID, Claim: row.Claim})
+	}
+	return page.Profile, facts, nil
+}
+
+type scoutKnowledge struct {
+	folders knowledgeapp.FolderLister
+	finder  knowledgeapp.Finder
+	members identity.MemberService
+}
+
+func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query string, limit int) ([]taskapp.KnowledgeHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || limit <= 0 {
+		return nil, nil
+	}
+	person, err := identity.ParseUserID(userID.String())
+	if err != nil {
+		return nil, err
+	}
+	allow, err := s.members.FolderAllow(ctx, person)
+	if err != nil || allow == "" {
+		return nil, nil
+	}
+	shares, err := s.members.ShareAccess(ctx, person, identity.TypeFolder)
+	if err != nil {
+		return nil, err
+	}
+	access := knowledgeapp.Access{
+		UserID:     userID.String(),
+		Allow:      allow,
+		Teams:      shares.Teams,
+		SharedView: shares.SharedView,
+		SharedEdit: shares.SharedEdit,
+	}
+	folders, err := knowledgeapp.ListFolders(ctx, s.folders, access)
+	if err != nil {
+		return nil, err
+	}
+	var out []taskapp.KnowledgeHit
+	seen := map[string]bool{}
+	for _, folder := range folders {
+		if len(out) >= limit {
+			break
+		}
+		hits, err := knowledgeapp.Search(ctx, s.finder, nil, nil, access, folder.ID, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, hit := range hits {
+			if len(out) >= limit {
+				break
+			}
+			key := hit.SourceID + ":" + hit.Body
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, taskapp.KnowledgeHit{SourceID: hit.SourceID, Body: hit.Body})
+		}
+	}
+	return out, nil
 }
