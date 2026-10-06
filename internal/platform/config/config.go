@@ -52,6 +52,14 @@ type Config struct {
 	// ArtifactsDir is the Compose volume root for artifact bytes (UPMO_ARTIFACTS_DIR).
 	// Empty refuses volume downloads until set.
 	ArtifactsDir string
+	// ArtifactsS3Bucket enables object-store downloads (UPMO_ARTIFACTS_S3_BUCKET).
+	// Empty keeps store=object unavailable. Credentials use the AWS SDK default chain.
+	ArtifactsS3Bucket string
+	// ArtifactsS3Region is the bucket region (UPMO_ARTIFACTS_S3_REGION), us-east-1 by default.
+	ArtifactsS3Region string
+	// ArtifactsS3Endpoint is an optional path-style S3-compatible base URL
+	// (UPMO_ARTIFACTS_S3_ENDPOINT), for example MinIO.
+	ArtifactsS3Endpoint string
 	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
 	// is empty when mail is unset, and links are then only copied.
 	SMTP SMTP
@@ -187,6 +195,20 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("config: UPMO_ARTIFACTS_DIR must be an absolute path")
 		}
 		cfg.ArtifactsDir = v
+	}
+	if v, ok := lookup("UPMO_ARTIFACTS_S3_BUCKET"); ok && strings.TrimSpace(v) != "" {
+		cfg.ArtifactsS3Bucket = strings.TrimSpace(v)
+	}
+	if v, ok := lookup("UPMO_ARTIFACTS_S3_REGION"); ok && strings.TrimSpace(v) != "" {
+		cfg.ArtifactsS3Region = strings.TrimSpace(v)
+	}
+	if v, ok := lookup("UPMO_ARTIFACTS_S3_ENDPOINT"); ok && strings.TrimSpace(v) != "" {
+		v = strings.TrimSpace(v)
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Config{}, fmt.Errorf("config: UPMO_ARTIFACTS_S3_ENDPOINT must be an http(s) URL")
+		}
+		cfg.ArtifactsS3Endpoint = strings.TrimRight(v, "/")
 	}
 	if v, ok := lookup("UPMO_KNOWLEDGE_DIR"); ok && strings.TrimSpace(v) != "" {
 		v = strings.TrimSpace(v)
