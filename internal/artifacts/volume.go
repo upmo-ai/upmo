@@ -22,7 +22,7 @@ type Blobs interface {
 }
 
 // Volume reads artifact bytes from a directory on disk (the Compose path).
-// Object store keys are refused in this slice.
+// Object store keys are refused; use Object or Mux.
 type Volume struct {
 	Root string
 }
