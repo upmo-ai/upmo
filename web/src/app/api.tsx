@@ -281,6 +281,64 @@ const taskFixtures: Task[] = [
     phase: "Planning",
     result: "The daily finance digest is ready.",
     detail: "Send the daily finance digest.",
+    cost: "€2.10",
+    tokens: 38200,
+    spendLimit: "€5.00",
+    pausePercent: 90,
+    runNumber: 14,
+    model: "gpt-5.2",
+    engine: "Upmo",
+    startedAt: "08:00",
+    deliveryChannel: "#finance on Slack",
+    deliveryWhen: "After the task is done",
+    sources: ["Finance mailbox", "finance-policies", "vendor-contracts"],
+    runHistory: [
+      { run: 13, status: "Failed" },
+      { run: 12, status: "Done" },
+    ],
+    artifacts: [
+      {
+        id: "digest-draft",
+        name: "digest-draft.md",
+        kind: "markdown",
+        size: "2.8 KB",
+        time: "08:03",
+        content: `## October invoices over threshold
+
+Three of 31 invoices are over €1,000. Total spend this month is **€18,420**.
+
+- Hetzner: €2,140, due 24 Oct
+- Vercel: €1,310, due 28 Oct
+- Acme Design: €1,050, due 31 Oct
+
+Draft. Upmo sends it to finance after approval.`,
+      },
+      {
+        id: "invoices-oct",
+        name: "invoices-oct.csv",
+        kind: "csv",
+        size: "12 KB",
+        time: "08:01",
+        content: `Vendor,Amount,Due
+Hetzner,€2,140.00,24 Oct
+Vercel,€1,310.00,28 Oct
+Acme Design,€1,050.00,31 Oct
+GitHub,€420.00,1 Nov
+Linear,€192.00,3 Nov`,
+      },
+    ],
+    events: [
+      { id: "e1", time: "08:00:00", phase: "Preparing", message: "Task started by an automation" },
+      { id: "e2", time: "08:00:02", phase: "Preparing", message: "Found 2 facts in memory", detail: ["Hetzner invoices arrive on the 20th of each month.", "Finance wants invoices over €1,000 flagged."] },
+      { id: "e3", time: "08:00:04", phase: "Preparing", message: "Files ready: 2 sources read", detail: ["Finance mailbox", "finance-policies"] },
+      { id: "e4", time: "08:00:16", phase: "Planning", message: "Plan written: 4 steps", detail: ["1. Fetch October invoices", "2. Extract vendor, amount, due date", "3. Match contracts and flag over threshold", "4. Write the digest and email finance"] },
+      { id: "e5", time: "08:01:02", phase: "Working", message: "Step 1 of 4 · Fetch October invoices" },
+      { id: "e6", time: "08:01:15", phase: "Working", message: "Model turn done · 12.9 s · Upmo · gpt-5.2 · 6 tool calls" },
+      { id: "e7", time: "08:01:16", phase: "Working", message: "Artifact saved: invoices-oct.csv" },
+      { id: "e8", time: "08:02:51", phase: "Working", message: "Model turn done · 9.4 s · Upmo · gpt-5.2 · 1 tool call" },
+      { id: "e9", time: "08:03:05", phase: "Working", message: "Artifact saved: digest-draft.md" },
+      { id: "e10", time: "08:03:06", phase: "Working", message: "Approval asked: email to 3 external recipients", detail: ["ap@hetzner.com", "billing@vercel.com", "lead@acme.example"] },
+    ],
     subtasks: [{ id: "digest-figures", title: "Pull yesterday's figures", status: "Needs approval" }],
   },
   {
@@ -290,6 +348,39 @@ const taskFixtures: Task[] = [
     phase: "Preparing",
     result: "Mail triage is finished.",
     detail: "Sort the morning mail.",
+    cost: "€0.45",
+    tokens: 8900,
+    spendLimit: "€2.00",
+    pausePercent: 85,
+    runNumber: 3,
+    model: "gpt-5.2",
+    engine: "Upmo",
+    startedAt: "08:15",
+    deliveryChannel: "#general on Slack",
+    deliveryWhen: "After the task is done",
+    sources: ["Support mailbox", "mail-rules"],
+    runHistory: [
+      { run: 2, status: "Done" },
+      { run: 1, status: "Done" },
+    ],
+    artifacts: [
+      {
+        id: "triage-notes",
+        name: "triage-notes.md",
+        kind: "markdown",
+        size: "1.4 KB",
+        time: "08:16",
+        content: `## Morning Mail Triage
+
+- 24 messages checked
+- 3 invoices forwarded to finance
+- 2 tickets escalated to tier 2`,
+      },
+    ],
+    events: [
+      { id: "em1", time: "08:15:00", phase: "Preparing", message: "Started mail triage" },
+      { id: "em2", time: "08:15:05", phase: "Preparing", message: "Connected to Support mailbox" },
+    ],
     subtasks: [
       {
         id: "mail-read",
@@ -307,6 +398,34 @@ const taskFixtures: Task[] = [
     phase: "Checking",
     result: "The receipts are filed.",
     detail: "File the receipts for Kodeeo Limited.",
+    cost: "€1.20",
+    tokens: 24100,
+    spendLimit: "€3.00",
+    pausePercent: 90,
+    runNumber: 8,
+    model: "gpt-5.2",
+    engine: "Upmo",
+    startedAt: "07:30",
+    deliveryChannel: "Accounting drive",
+    deliveryWhen: "Immediately",
+    sources: ["Receipts folder"],
+    runHistory: [
+      { run: 7, status: "Done" },
+      { run: 6, status: "Done" },
+    ],
+    artifacts: [
+      {
+        id: "receipts-filed",
+        name: "receipts-filed.csv",
+        kind: "csv",
+        size: "8.5 KB",
+        time: "07:32",
+        content: `Receipt ID,Category,Amount
+REC-001,Travel,€84.50
+REC-002,Software,€49.00
+REC-003,Meals,€32.00`,
+      },
+    ],
   },
   {
     id: "aster-failed",
@@ -315,6 +434,18 @@ const taskFixtures: Task[] = [
     phase: "Checking",
     result: "",
     detail: "Close the week for Kodeeo Limited.",
+    cost: "€0.85",
+    tokens: 14300,
+    spendLimit: "€5.00",
+    pausePercent: 90,
+    runNumber: 5,
+    model: "gpt-5.2",
+    engine: "Upmo",
+    startedAt: "06:00",
+    deliveryChannel: "#finance on Slack",
+    deliveryWhen: "On error",
+    sources: ["Ledger database"],
+    runHistory: [{ run: 4, status: "Done" }],
   },
 ];
 

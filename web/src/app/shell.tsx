@@ -370,26 +370,28 @@ export function Shell() {
         Skip to content
       </a>
       <AppShell.Header className="shell-header">
-        <Group h="100%" px="sm" gap="xs" wrap="nowrap" justify="space-between">
-          <Group gap="xs" wrap="nowrap">
+        <div className="shell-header-inner">
+          <div className="shell-header-left">
             <Tooltip label="Toggle sidebar" position="bottom" openDelay={400}>
               <ActionIcon
-                className={effectiveLayout === "full" ? "shell-header-toggle shell-header-toggle--desktop-hide" : "shell-header-toggle"}
+                className="shell-header-toggle"
                 aria-label="Toggle sidebar"
                 variant="subtle"
-                size={40}
+                size={36}
                 onClick={toggleSidebar}
               >
                 <ShellIcon concept="nav.sidebar" />
               </ActionIcon>
             </Tooltip>
             <ShellBreadcrumb pathname={pathname} />
-          </Group>
-          <Group gap="xs" wrap="nowrap">
+          </div>
+          <div className="shell-header-center">
             <CommandLauncher />
+          </div>
+          <div className="shell-header-right">
             <NotificationsBell />
-          </Group>
-        </Group>
+          </div>
+        </div>
       </AppShell.Header>
       <AppShell.Navbar className="shell-navbar" aria-label="Sidebar" data-layout={effectiveLayout}>
         <div className="shell-nav-head">

@@ -114,6 +114,36 @@ const TOOLS_OPTIONS = [
   { id: "disabled", name: "Disabled", desc: "Pure model generation" },
 ];
 
+type ChatMessageItem = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  tokens: number;
+  cost: string;
+  duration?: string;
+  model?: string;
+};
+
+const initialChatMessages: ChatMessageItem[] = [
+  {
+    id: "m-user-1",
+    role: "user",
+    content: "Summarise the launch notes and highlight anything that needs a decision.",
+    tokens: 18,
+    cost: "$0.0002",
+  },
+  {
+    id: "m-assistant-1",
+    role: "assistant",
+    content:
+      "The notes point to three priorities: finish the onboarding copy, confirm the support rota and agree the release date. The release date is the only open decision.",
+    tokens: 184,
+    duration: "1.4 s",
+    model: "Upmo",
+    cost: "$0.002",
+  },
+];
+
 export function ChatPage() {
   const [activeChatId, setActiveChatId] = useState<string>(sampleChats[0].id);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -123,10 +153,38 @@ export function ChatPage() {
   const [selectedRoute, setSelectedRoute] = useState("Default");
   const [selectedModel, setSelectedModel] = useState("Gpt-5.6-Luna");
   const [selectedTools, setSelectedTools] = useState("Auto");
+  const [messages, setMessages] = useState<ChatMessageItem[]>(initialChatMessages);
   const activeChat = sampleChats.find((chat) => chat.id === activeChatId) ?? sampleChats[0];
   const matchingChats = sampleChats.filter((chat) =>
     chat.title.toLocaleLowerCase("en-GB").includes(query.trim().toLocaleLowerCase("en-GB")),
   );
+
+  const handleSendMessage = () => {
+    const text = draft.trim();
+    if (!text) return;
+    const userTokens = Math.max(6, Math.round(text.length / 4));
+    const userCost = `$${(userTokens * 0.00001).toFixed(4)}`;
+    const newUserMsg: ChatMessageItem = {
+      id: `m-user-${Date.now()}`,
+      role: "user",
+      content: text,
+      tokens: userTokens,
+      cost: userCost,
+    };
+    const assistantTokens = 140 + Math.floor(Math.random() * 60);
+    const assistantCost = `$${(assistantTokens * 0.000012).toFixed(3)}`;
+    const newAssistantMsg: ChatMessageItem = {
+      id: `m-asst-${Date.now() + 1}`,
+      role: "assistant",
+      content: `I have processed your request with ${selectedModel} via the ${selectedRoute} route.`,
+      tokens: assistantTokens,
+      duration: "1.2 s",
+      model: selectedModel,
+      cost: assistantCost,
+    };
+    setMessages((prev) => [...prev, newUserMsg, newAssistantMsg]);
+    setDraft("");
+  };
 
   return (
     <section className="chat-page">
@@ -245,49 +303,53 @@ export function ChatPage() {
           </div>
 
           <Stack className="chat-messages" gap="md" aria-label="Messages">
-            <div className="chat-message chat-message-user">
-              <Text>
-                Summarise the launch notes and highlight anything that needs a decision.
-              </Text>
-            </div>
-            <div className="chat-message chat-message-assistant">
-              <span className="chat-avatar" aria-hidden>
-                <CaretIcon size={18} />
-              </span>
-              <div className="chat-reply">
-                <Text>
-                  The notes point to three priorities: finish the onboarding copy, confirm the
-                  support rota and agree the release date. The release date is the only open
-                  decision.
-                </Text>
-                <div className="chat-message-meta">
-                  <span>Upmo</span>
-                  <span>·</span>
-                  <span>184 tokens</span>
-                  <span>·</span>
-                  <span>1.4 s</span>
-                  <Tooltip label="Copy reply" position="bottom" openDelay={300}>
-                    <ActionIcon
-                      aria-label="Copy reply"
-                      variant="subtle"
-                      size={24}
-                      onClick={() => {
-                        void navigator.clipboard?.writeText(
-                          "The notes point to three priorities: finish the onboarding copy, confirm the support rota and agree the release date. The release date is the only open decision.",
-                        );
-                      }}
-                    >
-                      <ShellIcon concept="action.copy" size={16} />
-                    </ActionIcon>
-                  </Tooltip>
-                  <Tooltip label="Activity" position="bottom" openDelay={300}>
-                    <ActionIcon aria-label="Activity" variant="subtle" size={24}>
-                      <IconActivity size={14} stroke={1.75} aria-hidden="true" />
-                    </ActionIcon>
-                  </Tooltip>
+            {messages.map((msg) =>
+              msg.role === "user" ? (
+                <div key={msg.id} className="chat-message chat-message-user">
+                  <Text>{msg.content}</Text>
+                  <div className="chat-message-meta chat-message-meta-user">
+                    <span>{msg.tokens} tokens</span>
+                    <span>·</span>
+                    <span className="chat-cost">{msg.cost}</span>
+                  </div>
                 </div>
-              </div>
-            </div>
+              ) : (
+                <div key={msg.id} className="chat-message chat-message-assistant">
+                  <span className="chat-avatar" aria-hidden>
+                    <CaretIcon size={18} />
+                  </span>
+                  <div className="chat-reply">
+                    <Text>{msg.content}</Text>
+                    <div className="chat-message-meta">
+                      <span>{msg.model ?? "Upmo"}</span>
+                      <span>·</span>
+                      <span>{msg.tokens} tokens</span>
+                      <span>·</span>
+                      <span>{msg.duration ?? "1.4 s"}</span>
+                      <span>·</span>
+                      <span className="chat-cost">{msg.cost}</span>
+                      <Tooltip label="Copy reply" position="bottom" openDelay={300}>
+                        <ActionIcon
+                          aria-label="Copy reply"
+                          variant="subtle"
+                          size={24}
+                          onClick={() => {
+                            void navigator.clipboard?.writeText(msg.content);
+                          }}
+                        >
+                          <ShellIcon concept="action.copy" size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Activity" position="bottom" openDelay={300}>
+                        <ActionIcon aria-label="Activity" variant="subtle" size={24}>
+                          <IconActivity size={14} stroke={1.75} aria-hidden="true" />
+                        </ActionIcon>
+                      </Tooltip>
+                    </div>
+                  </div>
+                </div>
+              ),
+            )}
           </Stack>
 
           <div className="chat-composer-wrap">
@@ -296,7 +358,7 @@ export function ChatPage() {
               aria-label="Chat composer"
               onSubmit={(event) => {
                 event.preventDefault();
-                if (draft.trim() !== "") setDraft("");
+                handleSendMessage();
               }}
             >
               <Textarea
@@ -309,7 +371,7 @@ export function ChatPage() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
-                    if (draft.trim() !== "") setDraft("");
+                    handleSendMessage();
                   }
                 }}
               />
