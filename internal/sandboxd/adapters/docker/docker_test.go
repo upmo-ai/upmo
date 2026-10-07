@@ -7,24 +7,29 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"iter"
 	"net"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"net/netip"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 // fake is an in-memory engine. It records what the driver asked for and
@@ -55,6 +60,18 @@ type fake struct {
 	script []frame
 	exit   int
 	conns  []net.Conn
+
+	containers   map[string]fakeCont
+	nextHostPort int
+}
+
+type fakeCont struct {
+	name     string
+	labels   map[string]string
+	started  bool
+	removed  bool
+	hostPort int
+	opts     client.ContainerCreateOptions
 }
 
 type frame struct {
@@ -63,7 +80,13 @@ type frame struct {
 }
 
 func newFake() *fake {
-	return &fake{images: map[string]bool{"upmo/sandbox:base": true}, files: map[string][]byte{}, networks: map[string]bool{}}
+	return &fake{
+		images:       map[string]bool{"upmo/sandbox:base": true, "upmo/editor:dev": true},
+		files:        map[string][]byte{},
+		networks:     map[string]bool{},
+		containers:   map[string]fakeCont{},
+		nextHostPort: 30000,
+	}
 }
 
 func (f *fake) NetworkInspect(_ context.Context, id string, _ client.NetworkInspectOptions) (client.NetworkInspectResult, error) {
@@ -120,6 +143,18 @@ func (f *fake) ContainerCreate(_ context.Context, opts client.ContainerCreateOpt
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, opts)
+	hostPort := 0
+	if opts.HostConfig != nil && len(opts.HostConfig.PortBindings) > 0 {
+		f.nextHostPort++
+		hostPort = f.nextHostPort
+	}
+	labels := map[string]string{}
+	if opts.Config != nil {
+		for k, v := range opts.Config.Labels {
+			labels[k] = v
+		}
+	}
+	f.containers[opts.Name] = fakeCont{name: opts.Name, labels: labels, hostPort: hostPort, opts: opts}
 	return client.ContainerCreateResult{ID: "c-" + opts.Name}, nil
 }
 
@@ -127,6 +162,10 @@ func (f *fake) ContainerStart(_ context.Context, id string, _ client.ContainerSt
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, id)
+	if c, ok := f.containers[id]; ok {
+		c.started = true
+		f.containers[id] = c
+	}
 	return client.ContainerStartResult{}, f.startErr
 }
 
@@ -140,20 +179,100 @@ func (f *fake) ContainerStop(_ context.Context, id string, _ client.ContainerSto
 func (f *fake) ContainerRemove(_ context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !opts.Force || !opts.RemoveVolumes {
-		return client.ContainerRemoveResult{}, errors.New("remove without force and volumes")
+	if !opts.Force {
+		return client.ContainerRemoveResult{}, errors.New("remove without force")
+	}
+	c, ok := f.containers[id]
+	if !ok || c.removed {
+		if opts.RemoveVolumes {
+			// Sweep lists containers an earlier process left behind; they may
+			// not be in this fake's create log.
+			f.removed = append(f.removed, id)
+			return client.ContainerRemoveResult{}, nil
+		}
+		return client.ContainerRemoveResult{}, cerrdefs.ErrNotFound
 	}
 	f.removed = append(f.removed, id)
+	c.removed = true
+	f.containers[id] = c
 	return client.ContainerRemoveResult{}, nil
 }
 
 func (f *fake) ContainerList(_ context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !opts.All || !opts.Filters["label"][labelSandbox] {
-		return client.ContainerListResult{}, errors.New("list without the sandbox label")
+	labelFilters := opts.Filters["label"]
+	if len(labelFilters) == 0 {
+		return client.ContainerListResult{}, errors.New("list without label filters")
 	}
-	return client.ContainerListResult{Items: slices.Clone(f.listed)}, nil
+	// Sweep uses only the sandbox label key; return scripted items.
+	if len(labelFilters) == 1 && labelFilters[labelSandbox] {
+		if !opts.All {
+			return client.ContainerListResult{}, errors.New("list sweep without all")
+		}
+		return client.ContainerListResult{Items: slices.Clone(f.listed)}, nil
+	}
+	var items []container.Summary
+	for _, c := range f.containers {
+		if c.removed || (!opts.All && !c.started) {
+			continue
+		}
+		if !matchLabelFilterMap(c.labels, labelFilters) {
+			continue
+		}
+		state := container.StateCreated
+		if c.started {
+			state = container.StateRunning
+		}
+		items = append(items, container.Summary{Labels: mapsClone(c.labels), State: state})
+	}
+	return client.ContainerListResult{Items: items}, nil
+}
+
+func (f *fake) ContainerInspect(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.containers[id]
+	if !ok || c.removed {
+		return client.ContainerInspectResult{}, cerrdefs.ErrNotFound
+	}
+	var res client.ContainerInspectResult
+	if c.hostPort > 0 {
+		port, _ := network.ParsePort(fmt.Sprintf("%d/tcp", editorListenPort))
+		res.Container.NetworkSettings = &container.NetworkSettings{
+			Ports: network.PortMap{
+				port: []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(c.hostPort)}},
+			},
+		}
+	}
+	return res, nil
+}
+
+func matchLabelFilterMap(labels map[string]string, filters map[string]bool) bool {
+	for f, want := range filters {
+		if !want {
+			continue
+		}
+		key, val, ok := strings.Cut(f, "=")
+		if ok {
+			if labels[key] != val {
+				return false
+			}
+			continue
+		}
+		if _, exists := labels[f]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func mapsClone(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func (f *fake) VolumeRemove(_ context.Context, id string, _ client.VolumeRemoveOptions) (client.VolumeRemoveResult, error) {
@@ -282,9 +401,20 @@ func (c *clock) add(d time.Duration) {
 
 func setup(t *testing.T) (*Driver, *fake, *clock) {
 	t.Helper()
+	return setupOpts(t, Options{})
+}
+
+func setupEditor(t *testing.T) (*Driver, *fake, *clock) {
+	t.Helper()
+	return setupOpts(t, Options{EditorImage: "upmo/editor:dev"})
+}
+
+func setupOpts(t *testing.T, opts Options) (*Driver, *fake, *clock) {
+	t.Helper()
 	f := newFake()
 	c := &clock{t: time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)}
-	d, err := newDriver(f, Options{Now: c.now})
+	opts.Now = c.now
+	d, err := newDriver(f, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,5 +883,87 @@ func TestUnbuiltMethods(t *testing.T) {
 	}
 	if _, err := d.Expose(ctx, "x", 3000); !errors.Is(err, runtime.ErrUnsupported) {
 		t.Error("expose")
+	}
+}
+
+func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
+	d, f, _ := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+
+	ep, err := d.StartEditor(ctx, box.ID, "Working")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.URL != "http://127.0.0.1:30001" {
+		t.Fatalf("url = %q", ep.URL)
+	}
+	if len(f.created) != 2 {
+		t.Fatalf("created %d containers", len(f.created))
+	}
+	editor := f.created[1]
+	if editor.Name != editorContainerName(box.ID) || editor.Config.Image != "upmo/editor:dev" {
+		t.Fatalf("editor create = %+v", editor)
+	}
+	if len(editor.HostConfig.Mounts) != 1 || editor.HostConfig.Mounts[0].Source != volumeName(box.ID) ||
+		editor.HostConfig.Mounts[0].Target != ScratchDir || !editor.HostConfig.Mounts[0].ReadOnly {
+		t.Fatalf("mount = %+v", editor.HostConfig.Mounts)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); !errors.Is(err, domain.ErrEditor) {
+		t.Fatalf("second start err = %v", err)
+	}
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	ep, err = d.StartEditor(ctx, box.ID, "Checking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.URL == "" {
+		t.Fatal("expected url after checking")
+	}
+	if len(f.created) != 3 {
+		t.Fatalf("created %d after status change", len(f.created))
+	}
+	if f.created[2].HostConfig.Mounts[0].ReadOnly {
+		t.Fatal("Checking should mount read-write")
+	}
+}
+
+func TestStartEditorWithoutImageRefuses(t *testing.T) {
+	d, _, _ := setup(t)
+	box := create(t, d)
+	_, err := d.StartEditor(context.Background(), box.ID, "Working")
+	if !errors.Is(err, runtime.ErrUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStopEditorAndDestroyRemoveEditor(t *testing.T) {
+	d, f, _ := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	if _, err := d.StartEditor(ctx, box.ID, "Done"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorContainerName(box.ID)
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.removed, name) {
+		t.Fatalf("removed %v", f.removed)
+	}
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal("second stop should be idempotent")
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Destroy(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{name, name, containerName(box.ID)}
+	if !slices.Equal(f.removed, want) {
+		t.Fatalf("removed %v want %v", f.removed, want)
 	}
 }

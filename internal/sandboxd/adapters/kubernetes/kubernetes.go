@@ -342,6 +342,16 @@ func (d *Driver) Expose(context.Context, string, int) (runtime.Endpoint, error) 
 	return runtime.Endpoint{}, runtime.ErrUnsupported
 }
 
+// StartEditor is not built in the Kubernetes driver.
+func (d *Driver) StartEditor(context.Context, string, string) (runtime.Endpoint, error) {
+	return runtime.Endpoint{}, runtime.ErrUnsupported
+}
+
+// StopEditor is not built in the Kubernetes driver.
+func (d *Driver) StopEditor(context.Context, string) error {
+	return runtime.ErrUnsupported
+}
+
 func (d *Driver) live(id string) (string, box, bool) {
 	id = strings.TrimSpace(id)
 	d.mu.Lock()

@@ -104,4 +104,10 @@ func TestUnbuiltMethods(t *testing.T) {
 	if _, err := d.Expose(ctx, "x", 3000); !errors.Is(err, runtime.ErrUnsupported) {
 		t.Error("expose")
 	}
+	if _, err := d.StartEditor(ctx, "x", "Working"); !errors.Is(err, runtime.ErrUnsupported) {
+		t.Error("start editor")
+	}
+	if err := d.StopEditor(ctx, "x"); !errors.Is(err, runtime.ErrUnsupported) {
+		t.Error("stop editor")
+	}
 }

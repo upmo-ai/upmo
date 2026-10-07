@@ -89,6 +89,7 @@ type engine interface {
 	ContainerStop(ctx context.Context, id string, opts client.ContainerStopOptions) (client.ContainerStopResult, error)
 	ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerList(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, id string, opts client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 	VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
@@ -120,6 +121,8 @@ type Options struct {
 	// ProxyURL is the egress proxy as a sandbox reaches it, an http URL with
 	// no user, path or query; empty means DefaultProxyURL.
 	ProxyURL string
+	// EditorImage is the code editor container image; empty refuses StartEditor.
+	EditorImage string
 }
 
 // Driver runs sandboxes as Docker containers. It keeps the egress book in
@@ -132,7 +135,8 @@ type Driver struct {
 	now     func() time.Time
 	engine  Engine
 	network string
-	proxy   *url.URL
+	proxy        *url.URL
+	editorImage  string
 
 	mu    sync.Mutex
 	boxes map[string]box
@@ -208,7 +212,15 @@ func newDriver(api engine, opts Options) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Driver{api: api, memory: opts.Memory, now: opts.Now, network: netName, proxy: proxy, boxes: map[string]box{}}, nil
+	return &Driver{
+		api:         api,
+		memory:      opts.Memory,
+		now:         opts.Now,
+		network:     netName,
+		proxy:       proxy,
+		editorImage: strings.TrimSpace(opts.EditorImage),
+		boxes:       map[string]box{},
+	}, nil
 }
 
 // ParseProxyURL checks raw is an http URL with a host and no user, path,
@@ -507,6 +519,9 @@ func (d *Driver) forget(id string) {
 // remove force-removes the container with its anonymous volumes, then the
 // named scratch volume. Either already gone is not an error.
 func (d *Driver) remove(ctx context.Context, id string) error {
+	if err := d.removeEditor(ctx, id); err != nil {
+		return err
+	}
 	_, err := d.api.ContainerRemove(ctx, containerName(id), client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	if err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("docker: remove: %w", err)
