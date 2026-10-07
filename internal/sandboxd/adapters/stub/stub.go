@@ -136,3 +136,13 @@ func (d *Driver) WriteFile(context.Context, string, string, []byte) error {
 func (d *Driver) Expose(context.Context, string, int) (runtime.Endpoint, error) {
 	return runtime.Endpoint{}, runtime.ErrUnsupported
 }
+
+// StartEditor is not built in the stub driver.
+func (d *Driver) StartEditor(context.Context, string, string) (runtime.Endpoint, error) {
+	return runtime.Endpoint{}, runtime.ErrUnsupported
+}
+
+// StopEditor is not built in the stub driver.
+func (d *Driver) StopEditor(context.Context, string) error {
+	return runtime.ErrUnsupported
+}

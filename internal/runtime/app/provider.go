@@ -60,6 +60,11 @@ type SandboxProvider interface {
 	Pause(ctx context.Context, id string) error
 	// Destroy removes the sandbox and everything in it.
 	Destroy(ctx context.Context, id string) error
+	// StartEditor starts the code editor beside the sandbox for status and
+	// returns where it listens. At most one editor runs per sandbox.
+	StartEditor(ctx context.Context, id, status string) (Endpoint, error)
+	// StopEditor stops and removes the editor beside the sandbox, if any.
+	StopEditor(ctx context.Context, id string) error
 }
 
 // Spec describes one sandbox. It never carries a credential value, only

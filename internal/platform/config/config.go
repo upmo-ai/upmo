@@ -228,6 +228,9 @@ type Sandboxd struct {
 	// SandboxNetwork is the internal Docker network sandboxes join
 	// (UPMO_SANDBOX_NETWORK), upmo-sandbox-egress by default.
 	SandboxNetwork string
+	// EditorImage is the code editor container image (UPMO_EDITOR_IMAGE).
+	// Empty refuses StartEditor on the Docker driver.
+	EditorImage string
 }
 
 // LoadSandboxd reads the sandboxd configuration from the environment.
@@ -290,6 +293,13 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 	cfg.ServiceKey = v
 	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
 		cfg.ServiceKeyPrevious = v
+	}
+	if v, ok := lookup("UPMO_EDITOR_IMAGE"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" && strings.ContainsAny(v, " \t\r\n") {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_EDITOR_IMAGE must be one image reference")
+		}
+		cfg.EditorImage = v
 	}
 	return cfg, nil
 }

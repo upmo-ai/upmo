@@ -41,7 +41,7 @@ func run() error {
 	defer stop()
 
 	network := sandboxd.Network{Name: cfg.SandboxNetwork, ProxyURL: cfg.EgressProxyURL}
-	driver, err := sandboxd.Open(ctx, cfg.Driver, network, log)
+	driver, err := sandboxd.Open(ctx, cfg.Driver, network, cfg.EditorImage, log)
 	if err != nil {
 		return err
 	}

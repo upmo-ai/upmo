@@ -39,7 +39,9 @@ const (
 	pathWriteFile = "/upmo.sandboxd.v1.Runtime/WriteFile"
 	pathExpose    = "/upmo.sandboxd.v1.Runtime/Expose"
 	pathPause     = "/upmo.sandboxd.v1.Runtime/Pause"
-	pathDestroy   = "/upmo.sandboxd.v1.Runtime/Destroy"
+	pathDestroy     = "/upmo.sandboxd.v1.Runtime/Destroy"
+	pathStartEditor = "/upmo.sandboxd.v1.Runtime/StartEditor"
+	pathStopEditor  = "/upmo.sandboxd.v1.Runtime/StopEditor"
 )
 
 // headerError carries a refusal's code; contentTypeStream marks an Exec stream.
@@ -327,6 +329,25 @@ func (c Client) Expose(ctx context.Context, id string, port int) (app.Endpoint, 
 	return app.Endpoint{}, unbuilt(err)
 }
 
+// StartEditor asks sandboxd to start the code editor beside the sandbox.
+func (c Client) StartEditor(ctx context.Context, id, status string) (app.Endpoint, error) {
+	var out struct {
+		URL string `json:"url"`
+	}
+	if err := c.post(ctx, pathStartEditor, map[string]string{"id": id, "status": status}, &out, bodyLimit); err != nil {
+		return app.Endpoint{}, err
+	}
+	if out.URL == "" {
+		return app.Endpoint{}, errBody
+	}
+	return app.Endpoint{URL: out.URL}, nil
+}
+
+// StopEditor asks sandboxd to stop the code editor beside the sandbox.
+func (c Client) StopEditor(ctx context.Context, id string) error {
+	return c.post(ctx, pathStopEditor, idBody{ID: id}, nil, bodyLimit)
+}
+
 // unbuilt keeps a transport or refusal error and turns success, which an
 // unbuilt route cannot honestly report, into app.ErrUnsupported.
 func unbuilt(err error) error {
@@ -413,6 +434,8 @@ func codeError(code string) error {
 		return fmt.Errorf("runtime: sandboxd: no such file: %w", fs.ErrNotExist)
 	case "timeout":
 		return fmt.Errorf("runtime: sandboxd: command timed out: %w", context.DeadlineExceeded)
+	case "editor":
+		return domain.ErrEditor
 	default:
 		return nil
 	}

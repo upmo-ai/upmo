@@ -797,3 +797,9 @@ func (f *fakeProvider) Expose(context.Context, string, int) (Endpoint, error) {
 }
 
 func (f *fakeProvider) Pause(context.Context, string) error { return ErrUnsupported }
+
+func (f *fakeProvider) StartEditor(context.Context, string, string) (Endpoint, error) {
+	return Endpoint{}, ErrUnsupported
+}
+
+func (f *fakeProvider) StopEditor(context.Context, string) error { return ErrUnsupported }

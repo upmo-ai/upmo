@@ -138,6 +138,7 @@ var (
 	ErrTooLarge    = app.ErrTooLarge
 	ErrNotFile     = app.ErrNotFile
 	ErrEgress      = domain.ErrEgress
+	ErrEditor      = domain.ErrEditor
 )
 
 // MaxFile is the largest file ReadFile returns or WriteFile copies.

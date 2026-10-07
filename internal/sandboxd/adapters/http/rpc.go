@@ -53,8 +53,10 @@ const (
 	PathReadFile  = "/upmo.sandboxd.v1.Runtime/ReadFile"
 	PathWriteFile = "/upmo.sandboxd.v1.Runtime/WriteFile"
 	PathExpose    = "/upmo.sandboxd.v1.Runtime/Expose"
-	PathPause     = "/upmo.sandboxd.v1.Runtime/Pause"
-	PathDestroy   = "/upmo.sandboxd.v1.Runtime/Destroy"
+	PathPause       = "/upmo.sandboxd.v1.Runtime/Pause"
+	PathDestroy     = "/upmo.sandboxd.v1.Runtime/Destroy"
+	PathStartEditor = "/upmo.sandboxd.v1.Runtime/StartEditor"
+	PathStopEditor  = "/upmo.sandboxd.v1.Runtime/StopEditor"
 )
 
 // HeaderError names the response header that carries a refusal's code.
@@ -72,6 +74,7 @@ const (
 	CodeNoFile      = "no_file"
 	CodeTimeout     = "timeout"
 	CodeUnavailable = "unavailable"
+	CodeEditor      = "editor"
 )
 
 // ContentTypeStream is the Content-Type of an Exec stream.
@@ -130,6 +133,15 @@ type idBody struct {
 	ID string `json:"id"`
 }
 
+type startEditorBody struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+type urlBody struct {
+	URL string `json:"url"`
+}
+
 type execBody struct {
 	ID        string   `json:"id"`
 	Args      []string `json:"args"`
@@ -165,6 +177,8 @@ func (h Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+PathWriteFile, h.writeFile)
 	mux.HandleFunc("POST "+PathPause, h.pause)
 	mux.HandleFunc("POST "+PathDestroy, h.destroy)
+	mux.HandleFunc("POST "+PathStartEditor, h.startEditor)
+	mux.HandleFunc("POST "+PathStopEditor, h.stopEditor)
 	for path, name := range map[string]string{
 		PathPTY:    "PTY",
 		PathExpose: "Expose",
@@ -392,6 +406,31 @@ func (h Handler) destroy(w http.ResponseWriter, r *http.Request) {
 	httpserver.WriteJSON(w, http.StatusOK, struct{}{})
 }
 
+func (h Handler) startEditor(w http.ResponseWriter, r *http.Request) {
+	var body startEditorBody
+	if !h.decode(w, r, &body, bodyLimit) {
+		return
+	}
+	ep, err := h.Provider.StartEditor(r.Context(), body.ID, body.Status)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	httpserver.WriteJSON(w, http.StatusOK, urlBody{URL: ep.URL})
+}
+
+func (h Handler) stopEditor(w http.ResponseWriter, r *http.Request) {
+	var body idBody
+	if !h.decode(w, r, &body, bodyLimit) {
+		return
+	}
+	if err := h.Provider.StopEditor(r.Context(), body.ID); err != nil {
+		h.fail(w, err)
+		return
+	}
+	httpserver.WriteJSON(w, http.StatusOK, struct{}{})
+}
+
 func notBuilt(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(HeaderError, CodeUnsupported)
@@ -432,6 +471,8 @@ func classify(err error) (code string, status int, text string) {
 		return CodeTooLarge, http.StatusRequestEntityTooLarge, "file is too large"
 	case errors.Is(err, runtime.ErrNotFile):
 		return CodeNotFile, http.StatusUnprocessableEntity, "not a regular file"
+	case errors.Is(err, runtime.ErrEditor):
+		return CodeEditor, http.StatusConflict, "editor refused"
 	case errors.Is(err, fs.ErrNotExist):
 		return CodeNoFile, http.StatusNotFound, "no such file"
 	case errors.Is(err, context.DeadlineExceeded):
