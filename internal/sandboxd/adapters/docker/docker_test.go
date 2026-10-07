@@ -930,12 +930,27 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 	}
 }
 
-func TestStartEditorWithoutImageRefuses(t *testing.T) {
-	d, _, _ := setup(t)
+func TestStartEditorUsesDefaultImage(t *testing.T) {
+	d, f, _ := setup(t)
 	box := create(t, d)
-	_, err := d.StartEditor(context.Background(), box.ID, "Working")
-	if !errors.Is(err, runtime.ErrUnsupported) {
-		t.Fatalf("err = %v", err)
+	if _, err := d.StartEditor(context.Background(), box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.created) < 2 {
+		t.Fatalf("created %d", len(f.created))
+	}
+	ed := f.created[len(f.created)-1]
+	if ed.Config == nil || ed.Config.Image != DefaultEditorImage {
+		t.Fatalf("image = %v, want %s", ed.Config, DefaultEditorImage)
+	}
+	wantCmd := []string{
+		"--host", "0.0.0.0",
+		"--port", "3000",
+		"--without-connection-token",
+		"--default-folder", ScratchDir,
+	}
+	if !slices.Equal(ed.Config.Cmd, wantCmd) {
+		t.Fatalf("cmd = %v, want %v", ed.Config.Cmd, wantCmd)
 	}
 }
 

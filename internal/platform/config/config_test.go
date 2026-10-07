@@ -265,23 +265,23 @@ func TestLoadSandboxdURL(t *testing.T) {
 	}
 }
 
-func TestLoadSeatImage(t *testing.T) {
+func TestLoadSandboxImage(t *testing.T) {
 	base := map[string]string{
 		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
-	if err != nil || cfg.SeatImage != "" {
-		t.Fatalf("default = %q %v", cfg.SeatImage, err)
+	if err != nil || cfg.SandboxImage != "" {
+		t.Fatalf("default = %q %v", cfg.SandboxImage, err)
 	}
-	base["UPMO_SEAT_IMAGE"] = " upmo/sandbox:base "
+	base["UPMO_SANDBOX_IMAGE"] = " upmo/sandbox:base "
 	cfg, err = load(lookupFrom(base))
-	if err != nil || cfg.SeatImage != "upmo/sandbox:base" {
-		t.Fatalf("SeatImage = %q %v", cfg.SeatImage, err)
+	if err != nil || cfg.SandboxImage != "upmo/sandbox:base" {
+		t.Fatalf("SandboxImage = %q %v", cfg.SandboxImage, err)
 	}
-	base["UPMO_SEAT_IMAGE"] = "upmo/sandbox:base --privileged"
+	base["UPMO_SANDBOX_IMAGE"] = "upmo/sandbox:base --privileged"
 	if _, err := load(lookupFrom(base)); err == nil {
-		t.Fatal("seat image with a space")
+		t.Fatal("sandbox image with a space")
 	}
 }
 

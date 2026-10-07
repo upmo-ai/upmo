@@ -14,38 +14,38 @@ import (
 	"github.com/upmo-ai/upmo/internal/runtime/app"
 )
 
-// errNoDatabase reports a Seats with no pool.
+// errNoDatabase reports a TaskSandboxes with no pool.
 var errNoDatabase = errors.New("runtime: no database")
 
-// Seats is the SeatBook in runtime.seats. Each method is one statement, so
-// it needs no transaction and no access settings: a seat is not a work object.
-type Seats struct {
+// TaskSandboxes is the TaskSandboxStore in runtime.task_sandboxes. Each method is one statement, so
+// it needs no transaction and no access settings: a task sandbox row is not a work object.
+type TaskSandboxes struct {
 	Pool *pgxpool.Pool
 }
 
-var _ app.SeatBook = Seats{}
+var _ app.TaskSandboxStore = TaskSandboxes{}
 
-// Claim inserts a pending seat that lapses after ttl.
-func (s Seats) Claim(ctx context.Context, taskID string, ttl time.Duration) error {
+// Claim inserts a pending task sandbox that lapses after ttl.
+func (s TaskSandboxes) Claim(ctx context.Context, taskID string, ttl time.Duration) error {
 	if s.Pool == nil {
 		return errNoDatabase
 	}
 	_, err := s.Pool.Exec(ctx, `
-		INSERT INTO runtime.seats (task_id, expires_at)
+		INSERT INTO runtime.task_sandboxes (task_id, expires_at)
 		VALUES ($1::uuid, now() + make_interval(secs => $2::double precision))`,
 		taskID, ttl.Seconds())
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return app.ErrSeated
+		return app.ErrAlreadyHeld
 	}
 	if err != nil {
-		return fmt.Errorf("runtime: claim seat: %w", err)
+		return fmt.Errorf("runtime: claim task sandbox: %w", err)
 	}
 	return nil
 }
 
-// Fill records the sandbox on a seat that is still pending.
-func (s Seats) Fill(ctx context.Context, taskID, sandboxID string, expires time.Time) (bool, error) {
+// Fill records the sandbox on a row that is still pending.
+func (s TaskSandboxes) Fill(ctx context.Context, taskID, sandboxID string, expires time.Time) (bool, error) {
 	if s.Pool == nil {
 		return false, errNoDatabase
 	}
@@ -54,46 +54,46 @@ func (s Seats) Fill(ctx context.Context, taskID, sandboxID string, expires time.
 		until = &expires
 	}
 	tag, err := s.Pool.Exec(ctx, `
-		UPDATE runtime.seats
+		UPDATE runtime.task_sandboxes
 		SET sandbox_id = $2, expires_at = coalesce($3::timestamptz, expires_at)
 		WHERE task_id = $1::uuid AND sandbox_id IS NULL`,
 		taskID, sandboxID, until)
 	if err != nil {
-		return false, fmt.Errorf("runtime: fill seat: %w", err)
+		return false, fmt.Errorf("runtime: fill task sandbox: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
 
-// Seat reads the sandbox a task holds.
-func (s Seats) Seat(ctx context.Context, taskID string) (string, bool, error) {
+// Lookup reads the sandbox a task holds.
+func (s TaskSandboxes) Lookup(ctx context.Context, taskID string) (string, bool, error) {
 	if s.Pool == nil {
 		return "", false, errNoDatabase
 	}
 	var id string
 	err := s.Pool.QueryRow(ctx, `
-		SELECT coalesce(sandbox_id, '') FROM runtime.seats WHERE task_id = $1::uuid`,
+		SELECT coalesce(sandbox_id, '') FROM runtime.task_sandboxes WHERE task_id = $1::uuid`,
 		taskID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("runtime: read seat: %w", err)
+		return "", false, fmt.Errorf("runtime: read task sandbox: %w", err)
 	}
 	return id, true, nil
 }
 
-// Drop deletes the seat if it still holds sandboxID, or is still pending
+// Drop deletes the row if it still holds sandboxID, or is still pending
 // when sandboxID is empty.
-func (s Seats) Drop(ctx context.Context, taskID, sandboxID string) error {
+func (s TaskSandboxes) Drop(ctx context.Context, taskID, sandboxID string) error {
 	if s.Pool == nil {
 		return errNoDatabase
 	}
 	_, err := s.Pool.Exec(ctx, `
-		DELETE FROM runtime.seats
+		DELETE FROM runtime.task_sandboxes
 		WHERE task_id = $1::uuid AND sandbox_id IS NOT DISTINCT FROM nullif($2::text, '')`,
 		taskID, sandboxID)
 	if err != nil {
-		return fmt.Errorf("runtime: drop seat: %w", err)
+		return fmt.Errorf("runtime: drop task sandbox: %w", err)
 	}
 	return nil
 }

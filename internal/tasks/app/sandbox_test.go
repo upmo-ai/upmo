@@ -65,7 +65,7 @@ func TestOpenTaskRefusesWhenSandboxdIsUnset(t *testing.T) {
 	for name, boxes := range map[string]Sandboxes{
 		"nil":       nil,
 		"not ready": &fakeBoxes{},
-		"seats":     &runtime.Seats{},
+		"task sandboxes":     &runtime.TaskSandboxes{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			book := &fake{}
@@ -188,7 +188,7 @@ func TestStepTaskKeepsTheTransitionWhenReleaseFails(t *testing.T) {
 	}
 }
 
-// fakeBoxes answers Provision at once, as Seats does, and keeps done so a
+// fakeBoxes answers Provision at once, as TaskSandboxes does, and keeps done so a
 // test can finish the background phases with finish. err is a Create that
 // fails, so done is not kept.
 type fakeBoxes struct {
@@ -214,7 +214,7 @@ func (f *fakeBoxes) Provision(_ context.Context, taskID, repo string, classes []
 	return true, f.err
 }
 
-// finish ends the phases Provision started with outcome, as Seats would.
+// finish ends the phases Provision started with outcome, as TaskSandboxes would.
 func (f *fakeBoxes) finish(outcome error) error {
 	if f.done == nil {
 		return errors.New("no provisioning to finish")

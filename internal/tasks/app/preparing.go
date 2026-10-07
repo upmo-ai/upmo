@@ -18,7 +18,7 @@ type Viewer interface {
 }
 
 // Progresses returns the in-process provisioning record for a task.
-// *runtime.Seats implements it.
+// *runtime.TaskSandboxes implements it.
 type Progresses interface {
 	Progress(taskID string) (runtime.Record, bool)
 }

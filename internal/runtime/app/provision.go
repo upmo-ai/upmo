@@ -78,7 +78,7 @@ type Provisioner struct {
 // Run provisions sandbox id for repo, which may be empty, and returns the
 // final record. A step that fails applies KindFail, so the record ends in
 // PhaseFailed, and Run returns a PhaseError naming the phase it stopped in.
-// Run does not destroy the sandbox; its caller releases the seat.
+// Run does not destroy the sandbox; its caller releases the sandbox.
 func (p Provisioner) Run(ctx context.Context, id, repo string) (domain.Record, error) {
 	r := &provisioning{Provisioner: p, id: strings.TrimSpace(id), rec: domain.Begin()}
 	r.track()

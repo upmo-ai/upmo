@@ -45,10 +45,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	if err := domain.AdmitEditor(open); err != nil {
 		return runtime.Endpoint{}, err
 	}
-	image := strings.TrimSpace(d.editorImage)
-	if image == "" {
-		return runtime.Endpoint{}, fmt.Errorf("docker: editor image is not configured: %w", runtime.ErrUnsupported)
-	}
+	image := d.editorImageRef()
 	if err := d.ensureImage(ctx, image); err != nil {
 		return runtime.Endpoint{}, err
 	}
@@ -73,6 +70,14 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			WorkingDir:   ScratchDir,
 			ExposedPorts: exposed,
 			Labels:       labels,
+			// Bind on all interfaces inside the container so host publish works;
+			// connection token is a later brain slice.
+			Cmd: []string{
+				"--host", "0.0.0.0",
+				"--port", strconv.Itoa(editorListenPort),
+				"--without-connection-token",
+				"--default-folder", ScratchDir,
+			},
 		},
 		HostConfig: &container.HostConfig{
 			CapDrop:       []string{"ALL"},

@@ -54,10 +54,9 @@ services:
       UPMO_SANDBOXD_URL: http://sandboxd:8083
       # Optional conversion sidecar (profile docs). Empty skips PDF/HTML convert.
       UPMO_MARKITDOWN_URL: ${UPMO_MARKITDOWN_URL:-http://markitdown:8000}
-      # The image each task sandbox starts from. Empty is debian:bookworm-slim,
-      # which provisions a task without a repository. A repository needs git:
-      # build sandbox-image and set UPMO_SEAT_IMAGE=upmo/sandbox:base.
-      UPMO_SEAT_IMAGE: ${UPMO_SEAT_IMAGE:-}
+      # Empty uses upmo/sandbox:base (build sandbox-image first). Override with
+      # UPMO_SANDBOX_IMAGE when the install tags the sandbox image differently.
+      UPMO_SANDBOX_IMAGE: ${UPMO_SANDBOX_IMAGE:-}
       UPMO_ARTIFACTS_DIR: /var/upmo/artifacts
       UPMO_KNOWLEDGE_DIR: /var/upmo/knowledge
       # Optional dense retrieval. Empty EmbedRoute keeps FTS-only knowledge search.
@@ -133,6 +132,8 @@ services:
       UPMO_SANDBOX_NETWORK: ${COMPOSE_PROJECT_NAME}_sandbox-egress
       UPMO_EGRESS_PROXY_URL: http://sandboxd:3128
       DOCKER_HOST: unix:///var/run/docker.sock
+      # Empty uses the Docker driver's published OpenVSCode default.
+      UPMO_EDITOR_IMAGE: ${UPMO_EDITOR_IMAGE:-}
       # Dev only. Never reuse outside the local compose stack.
       UPMO_SERVICE_KEY: upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
     healthcheck:
@@ -142,7 +143,7 @@ services:
       retries: 5
       start_period: 60s
 
-  # The seat image with git, from the base target of deploy/sandbox/Dockerfile.
+  # The sandbox image with git, from the base target of deploy/sandbox/Dockerfile.
   # It is built on the engine sandboxd drives, so the Docker driver finds it
   # without a pull: `docker compose build sandbox-image`. Never started.
   sandbox-image:

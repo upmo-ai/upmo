@@ -1,11 +1,12 @@
 -- +goose Up
 
--- seats records which sandbox each task holds, so a restarted brain can still
--- release it. A null sandbox_id is a Create still in flight. task_id names a
--- tasks.tasks row with no foreign key, because nothing crosses a schema.
--- A seat is not a work object: brain reads and releases it with no
--- person's access, so like the identity tables it stays outside row security,
--- and upmo_app may only fill the sandbox and its expiry.
+-- task_sandboxes (created as seats; renamed in 00002) records which sandbox
+-- each task holds, so a restarted brain can still release it. A null
+-- sandbox_id is a Create still in flight. task_id names a tasks.tasks row with
+-- no foreign key, because nothing crosses a schema. The row is not
+-- a work object: brain reads and releases it with no person's access, so like
+-- the identity tables it stays outside row security, and upmo_app
+-- may only fill the sandbox and its expiry.
 CREATE TABLE runtime.seats (
   task_id uuid PRIMARY KEY,
   sandbox_id text,

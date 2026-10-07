@@ -16,7 +16,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
-	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
+	"github.com/upmo-ai/upmo/internal/testutil/tasksandbox"
 )
 
 // fakeSandboxd answers Create, Destroy, Exec and the file calls behind the
@@ -157,18 +157,18 @@ func (f *fakeSandboxd) seen() ([]string, []map[string]any, []string) {
 	return slices.Clone(f.calls), slices.Clone(f.created), slices.Clone(f.destroys)
 }
 
-func seats(t *testing.T, f *fakeSandboxd, key string) *runtime.Seats {
+func taskBoxes(t *testing.T, f *fakeSandboxd, key string) *runtime.TaskSandboxes {
 	t.Helper()
 	srv := f.serve(t, testKey('s'))
 	provider, err := runtime.Open(srv.URL, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}}
+	return &runtime.TaskSandboxes{Provider: provider, Store: &tasksandbox.Memory{}}
 }
 
 // settle waits for the provisioning Open left running in the background.
-func settle(t *testing.T, boxes *runtime.Seats) {
+func settle(t *testing.T, boxes *runtime.TaskSandboxes) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -177,7 +177,7 @@ func settle(t *testing.T, boxes *runtime.Seats) {
 	}
 }
 
-func held(t *testing.T, boxes *runtime.Seats) (string, bool) {
+func held(t *testing.T, boxes *runtime.TaskSandboxes) (string, bool) {
 	t.Helper()
 	id, ok, err := boxes.Held(context.Background(), taskID)
 	if err != nil {
@@ -207,7 +207,7 @@ func post(h http.Handler, path, body string) *httptest.ResponseRecorder {
 
 func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 	sd := &fakeSandboxd{}
-	boxes := seats(t, sd, testKey('s'))
+	boxes := taskBoxes(t, sd, testKey('s'))
 	book := &fakeBook{openID: taskID}
 	h := sandboxHandler(book, boxes)
 
@@ -232,7 +232,7 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 	if rec, ok := boxes.Progress(taskID); !ok || rec.Phase != runtime.PhaseReady {
 		t.Fatalf("progress = %+v %t", rec, ok)
 	}
-	if created[0]["task_id"] != taskID || created[0]["tier"] != "container" || created[0]["image"] != runtime.SeatImage {
+	if created[0]["task_id"] != taskID || created[0]["tier"] != "container" || created[0]["image"] != runtime.SandboxImage {
 		t.Fatalf("create body = %v", created[0])
 	}
 	if id, ok := held(t, boxes); !ok || id != "box-1" {
@@ -254,7 +254,7 @@ func TestOpenWithRepoCreatesASignedSandboxAndFailDestroysIt(t *testing.T) {
 
 func TestOpenWithAShellProvisionsWithoutAClone(t *testing.T) {
 	sd := &fakeSandboxd{}
-	boxes := seats(t, sd, testKey('s'))
+	boxes := taskBoxes(t, sd, testKey('s'))
 	book := &fakeBook{openID: taskID}
 	rec := post(sandboxHandler(book, boxes), "/api/tasks", `{"goal":"Tidy the notes","tool_classes":["shell"]}`)
 	if rec.Code != http.StatusCreated {
@@ -275,7 +275,7 @@ func TestOpenWithAShellProvisionsWithoutAClone(t *testing.T) {
 
 func TestOpenAnswersBeforeASlowCloneFinishes(t *testing.T) {
 	sd := &fakeSandboxd{gate: make(chan struct{}), entered: make(chan struct{})}
-	boxes := seats(t, sd, testKey('s'))
+	boxes := taskBoxes(t, sd, testKey('s'))
 	book := &fakeBook{openID: taskID}
 	h := sandboxHandler(book, boxes)
 
@@ -313,7 +313,7 @@ func TestOpenAnswersBeforeASlowCloneFinishes(t *testing.T) {
 
 func TestOpenWhenACloneFailsFailsTheTaskAndDestroysTheSandbox(t *testing.T) {
 	sd := &fakeSandboxd{failOn: "clone"}
-	boxes := seats(t, sd, testKey('s'))
+	boxes := taskBoxes(t, sd, testKey('s'))
 	book := &fakeBook{openID: taskID}
 	rec := post(sandboxHandler(book, boxes), "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`)
 	// Open answers before the clone runs, so the failure comes after.
@@ -346,7 +346,7 @@ func TestOpenWhenACloneFailsFailsTheTaskAndDestroysTheSandbox(t *testing.T) {
 func TestOpenWithARepoItCannotCloneIsRefused(t *testing.T) {
 	sd := &fakeSandboxd{}
 	book := &fakeBook{openID: taskID}
-	rec := post(sandboxHandler(book, seats(t, sd, testKey('s'))), "/api/tasks", `{"goal":"Fix the build","repo":"--upload-pack=sh"}`)
+	rec := post(sandboxHandler(book, taskBoxes(t, sd, testKey('s'))), "/api/tasks", `{"goal":"Fix the build","repo":"--upload-pack=sh"}`)
 	if rec.Code != http.StatusBadRequest || book.calls != 0 || !strings.Contains(rec.Body.String(), "owner/name") {
 		t.Fatalf("status = %d calls = %d body %s", rec.Code, book.calls, rec.Body.String())
 	}
@@ -358,7 +358,7 @@ func TestOpenWithARepoItCannotCloneIsRefused(t *testing.T) {
 func TestOpenWithoutASandboxNeedDoesNotCallSandboxd(t *testing.T) {
 	sd := &fakeSandboxd{}
 	book := &fakeBook{openID: taskID}
-	h := sandboxHandler(book, seats(t, sd, testKey('s')))
+	h := sandboxHandler(book, taskBoxes(t, sd, testKey('s')))
 	rec := post(h, "/api/tasks", `{"goal":"File the receipts","tool_classes":["connector","knowledge"]}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
@@ -371,7 +371,7 @@ func TestOpenWithoutASandboxNeedDoesNotCallSandboxd(t *testing.T) {
 func TestOpenWithAnUnknownClassIsRefused(t *testing.T) {
 	sd := &fakeSandboxd{}
 	book := &fakeBook{openID: taskID}
-	h := sandboxHandler(book, seats(t, sd, testKey('s')))
+	h := sandboxHandler(book, taskBoxes(t, sd, testKey('s')))
 	rec := post(h, "/api/tasks", `{"goal":"File the receipts","tool_classes":["sideways"]}`)
 	if rec.Code != http.StatusBadRequest || book.calls != 0 {
 		t.Fatalf("status = %d calls = %d", rec.Code, book.calls)
@@ -380,8 +380,8 @@ func TestOpenWithAnUnknownClassIsRefused(t *testing.T) {
 
 func TestOpenNeedingASandboxWithSandboxdUnsetIsRefused(t *testing.T) {
 	for name, boxes := range map[string]app.Sandboxes{
-		"no seats":    nil,
-		"no provider": &runtime.Seats{},
+		"no sandboxes":    nil,
+		"no provider": &runtime.TaskSandboxes{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			book := &fakeBook{openID: taskID}
@@ -399,7 +399,7 @@ func TestOpenNeedingASandboxWithSandboxdUnsetIsRefused(t *testing.T) {
 func TestOpenWhenCreateFailsReturnsTheFailedTask(t *testing.T) {
 	sd := &fakeSandboxd{refuse: http.StatusConflict}
 	book := &fakeBook{openID: taskID}
-	boxes := seats(t, sd, testKey('s'))
+	boxes := taskBoxes(t, sd, testKey('s'))
 	rec := post(sandboxHandler(book, boxes), "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
@@ -422,7 +422,7 @@ func TestOpenWhenCreateFailsReturnsTheFailedTask(t *testing.T) {
 func TestOpenWithTheWrongServiceKeyFailsTheTask(t *testing.T) {
 	sd := &fakeSandboxd{}
 	book := &fakeBook{openID: taskID}
-	rec := post(sandboxHandler(book, seats(t, sd, testKey('x'))), "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`)
+	rec := post(sandboxHandler(book, taskBoxes(t, sd, testKey('x'))), "/api/tasks", `{"goal":"Fix the build","repo":"org/name"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
 	}

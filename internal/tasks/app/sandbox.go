@@ -19,7 +19,7 @@ var ErrSandbox = errors.New("tasks: sandbox")
 var ErrSandboxUnset = fmt.Errorf("%w: sandboxd is not configured", ErrSandbox)
 
 // Sandboxes holds the sandbox a task uses from Preparing until it ends.
-// *runtime.Seats implements it.
+// *runtime.TaskSandboxes implements it.
 type Sandboxes interface {
 	// Ready reports whether a sandbox can be created at all.
 	Ready() bool

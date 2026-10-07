@@ -92,12 +92,12 @@ func buildWorld(t *testing.T, pool *pgxpool.Pool, ctx context.Context, seed uint
 	owner := seedOwner(t, pool, ctx, "owner@example.com")
 	rng := rand.New(rand.NewPCG(seed, seed+1))
 
-	type seat struct {
+	type personSpec struct {
 		email, roleKey   string
 		joined, disabled bool
 		custom           []string
 	}
-	extra := []seat{
+	extra := []personSpec{
 		{"admin@example.com", "admin", true, false, nil},
 		{"custom@example.com", "", true, false, []string{"task:view", "task:edit"}},
 		{"viewer@example.com", "viewer", true, false, nil},
@@ -108,15 +108,15 @@ func buildWorld(t *testing.T, pool *pgxpool.Pool, ctx context.Context, seed uint
 	}
 	var people []held
 	people = append(people, hold(t, pool, ctx, "owner", owner, "owner", true, false, nil, nil))
-	for i, seat := range extra {
-		user := insertUser(t, pool, ctx, seat.email)
+	for i, spec := range extra {
+		user := insertUser(t, pool, ctx, spec.email)
 		var role string
-		if seat.custom != nil {
-			if err := pool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ($1, $2) RETURNING id`, fmt.Sprintf("Custom %d", i), seat.custom).Scan(&role); err != nil {
+		if spec.custom != nil {
+			if err := pool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ($1, $2) RETURNING id`, fmt.Sprintf("Custom %d", i), spec.custom).Scan(&role); err != nil {
 				t.Fatal(err)
 			}
 		}
-		people = append(people, hold(t, pool, ctx, fmt.Sprintf("p%d", i), user, seat.roleKey, seat.joined, seat.disabled, seat.custom, &role))
+		people = append(people, hold(t, pool, ctx, fmt.Sprintf("p%d", i), user, spec.roleKey, spec.joined, spec.disabled, spec.custom, &role))
 	}
 
 	teams := makeTeams(t, pool, ctx)

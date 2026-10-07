@@ -1,6 +1,6 @@
 // Package runtime is the runtime context facade. It owns the SandboxProvider
 // port; sandboxd implements it and brain calls it through Open.
-// It embeds this context's SQL, which records the seat each task holds.
+// It embeds this context's SQL, which records the sandbox each task holds.
 package runtime
 
 import (
@@ -31,10 +31,10 @@ func Migrations() fs.FS {
 	return files
 }
 
-// SeatStore returns the SeatBook kept in the runtime schema, so a seat
-// outlives the brain process that created it.
-func SeatStore(pool *pgxpool.Pool) SeatBook {
-	return postgres.Seats{Pool: pool}
+// NewTaskSandboxStore returns the TaskSandboxStore kept in the runtime schema, so a
+// task sandbox outlives the brain process that created it.
+func NewTaskSandboxStore(pool *pgxpool.Pool) TaskSandboxStore {
+	return postgres.TaskSandboxes{Pool: pool}
 }
 
 // The port and its messages.
@@ -52,14 +52,15 @@ type (
 	Placement       = domain.Placement
 )
 
-// Seats holds the sandbox each task occupies and records it in a SeatBook.
-// Done receives the outcome of the provisioning Seats.Provision runs in the
-// background. Class is a tool class NeedsSandbox reads.
+// TaskSandboxes holds the sandbox each task occupies and records it in a
+// TaskSandboxStore. Done receives the outcome of the provisioning
+// TaskSandboxes.Provision runs in the background. Class is a tool class
+// NeedsSandbox reads.
 type (
-	Seats    = app.Seats
-	SeatBook = app.SeatBook
-	Done     = app.Done
-	Class    = domain.Class
+	TaskSandboxes   = app.TaskSandboxes
+	TaskSandboxStore = app.TaskSandboxStore
+	Done            = app.Done
+	Class           = domain.Class
 )
 
 // Tool classes.
@@ -71,19 +72,19 @@ const (
 	ClassWeb       = domain.ClassWeb
 )
 
-// Seat defaults.
+// Sandbox defaults.
 const (
-	SeatImage = app.SeatImage
-	SeatTTL   = app.SeatTTL
+	SandboxImage = app.SandboxImage
+	SandboxTTL   = app.SandboxTTL
 )
 
-// Errors Seats reports.
+// Errors TaskSandboxes reports.
 var (
-	ErrSandboxdUnset = app.ErrSandboxdUnset
-	ErrNoSeatBook    = app.ErrNoSeatBook
-	ErrSeated        = app.ErrSeated
-	ErrReleased      = app.ErrReleased
-	ErrClass         = domain.ErrClass
+	ErrSandboxdUnset     = app.ErrSandboxdUnset
+	ErrNoTaskSandboxStore = app.ErrNoTaskSandboxStore
+	ErrAlreadyHeld       = app.ErrAlreadyHeld
+	ErrReleased          = app.ErrReleased
+	ErrClass             = domain.ErrClass
 )
 
 // NeedsSandbox reports whether a task with repo and classes needs a
@@ -97,7 +98,7 @@ func NeedsSandbox(repo string, classes []Class) (bool, error) {
 func CloneURL(repo string) (string, error) { return domain.CloneURL(repo) }
 
 // Provisioning runs clone, toolchain and probe in a new sandbox and records
-// each step as its own event. Seats.Provision runs it in the
+// each step as its own event. TaskSandboxes.Provision runs it in the
 // background after Create; a PhaseError names the phase that failed.
 type (
 	Provisioner = app.Provisioner
