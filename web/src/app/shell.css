@@ -28,6 +28,14 @@
   padding: var(--space-2);
   padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom));
   box-sizing: border-box;
+  transition: width var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              padding var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              transform var(--duration-enter, 240ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+  will-change: width, transform;
+}
+
+.mantine-AppShell-main {
+  transition: padding-left var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .shell-header {
@@ -37,28 +45,71 @@
   border-bottom: 1px solid var(--border);
 }
 
+.shell-header-inner {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 var(--space-3);
+  box-sizing: border-box;
+}
+
+.shell-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.shell-header-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.shell-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .shell-launcher {
   display: none;
   align-items: center;
   gap: 8px;
   height: 32px;
   min-height: 32px;
-  width: 250px;
+  width: 360px;
+  max-width: 100%;
   padding: 0 12px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-100);
+  border-radius: var(--radius-sm);
+  background: var(--surface-000);
   color: var(--ink-muted);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color 240ms cubic-bezier(.4, 0, .2, 1),
+              box-shadow 240ms cubic-bezier(.4, 0, .2, 1),
+              background-color 180ms ease;
   user-select: none;
 }
 
 .shell-launcher:hover {
   border-color: var(--ink-muted);
   background: var(--surface-hover);
+}
+
+.shell-launcher:focus-visible {
+  border-color: var(--emerald-deep);
+  box-shadow: 0 0 0 1px var(--emerald-deep);
+  outline: none;
 }
 
 .shell-launcher-text {
@@ -172,7 +223,7 @@
 }
 
 @media (min-width: 48em) {
-  .shell-header-toggle--desktop-hide {
+  .shell-header-toggle {
     display: none !important;
   }
 }
@@ -212,7 +263,18 @@
   line-height: 30px !important;
   border: 0 !important;
   background: transparent !important;
-  transition: background-color 120ms, color 120ms !important;
+  transition: background-color var(--duration-fast, 120ms) ease,
+              color var(--duration-fast, 120ms) ease,
+              width var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              transform var(--duration-fast, 120ms) ease !important;
+}
+
+.shell-nav-link:active {
+  transform: scale(var(--press-scale, 0.98));
+}
+
+.shell-nav-link .mantine-NavLink-chevron {
+  transition: transform var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)) !important;
 }
 
 .shell-nav-link .mantine-NavLink-section {
@@ -461,7 +523,7 @@
 .u-cmd-modal .mantine-Modal-content {
   background: var(--surface-100) !important;
   border: 1px solid var(--border) !important;
-  border-radius: var(--radius-xl) !important;
+  border-radius: var(--radius-lg) !important;
   box-shadow: var(--shadow-lg) !important;
   overflow: hidden !important;
   padding: 0 !important;

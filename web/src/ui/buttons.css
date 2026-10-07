@@ -3,7 +3,7 @@
 .mantine-Button-root {
   font-family: var(--font-ui, "Manrope", system-ui, sans-serif);
   font-weight: 600;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xs);
   transition: background-color 120ms cubic-bezier(0.4, 0, 0.2, 1),
     border-color 120ms cubic-bezier(0.4, 0, 0.2, 1),
     color 120ms cubic-bezier(0.4, 0, 0.2, 1),
@@ -15,17 +15,14 @@
 }
 
 /* Consistent Button Sizing according to Design System:
-   Default / md: height 36px, padding 0 14px, font-size: 14px, radius-md (8px)
-   sm: height 30px, padding 0 10px, font-size: 13px, radius-sm (6px)
-   lg: height 42px, padding 0 16px, font-size: 15px, radius-md (8px)
-   xs: height 26px, padding 0 8px, font-size: 12px, radius-xs (4px)
+   Sharp-lined buttons strictly using radius-xs (2px)
 */
 .mantine-Button-root:where([data-size="md"], :not([data-size])) {
   height: 36px !important;
   min-height: 36px !important;
   padding: 0 14px !important;
   font-size: 14px !important;
-  border-radius: var(--radius-md) !important;
+  border-radius: var(--radius-xs) !important;
 }
 
 .mantine-Button-root[data-size="sm"] {
@@ -33,7 +30,7 @@
   min-height: 30px !important;
   padding: 0 10px !important;
   font-size: 13px !important;
-  border-radius: var(--radius-sm) !important;
+  border-radius: var(--radius-xs) !important;
 }
 
 .mantine-Button-root[data-size="lg"] {
@@ -41,7 +38,7 @@
   min-height: 42px !important;
   padding: 0 16px !important;
   font-size: 15px !important;
-  border-radius: var(--radius-md) !important;
+  border-radius: var(--radius-xs) !important;
 }
 
 .mantine-Button-root[data-size="xs"] {
@@ -54,7 +51,7 @@
 
 /* ActionIcon (icon-focused buttons) styling */
 .mantine-ActionIcon-root {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
@@ -104,33 +101,35 @@
 }
 
 /* Outline button */
-.mantine-Button-root[data-variant="outline"] {
-  --button-bg: transparent;
-  --button-color: var(--ink);
-  --button-bd: 1px solid var(--border-strong);
-  --button-hover: var(--surface-hover);
-  background-color: transparent;
-  border: 1px solid var(--border-strong);
-  color: var(--ink);
+.mantine-Button-root[data-variant="outline"]:not([data-color="danger"]):not([data-color="red"]) {
+  --button-bg: transparent !important;
+  --button-color: var(--ink) !important;
+  --button-bd: 1px solid var(--border-strong) !important;
+  --button-hover: var(--surface-hover) !important;
+  background-color: transparent !important;
+  border: 1px solid var(--border-strong) !important;
+  color: var(--ink) !important;
 }
 
-.mantine-Button-root[data-variant="outline"]:hover:not([data-disabled]) {
-  background-color: var(--surface-hover);
+.mantine-Button-root[data-variant="outline"]:not([data-color="danger"]):not([data-color="red"]):hover:not([data-disabled]) {
+  background-color: var(--surface-hover) !important;
+  border-color: var(--ink-muted) !important;
 }
 
 /* Default button styled as neutral outline */
 .mantine-Button-root[data-variant="default"] {
-  --button-bg: transparent;
-  --button-color: var(--ink);
-  --button-bd: 1px solid var(--border-strong);
-  --button-hover: var(--surface-hover);
-  background-color: transparent;
-  border: 1px solid var(--border-strong);
-  color: var(--ink);
+  --button-bg: transparent !important;
+  --button-color: var(--ink) !important;
+  --button-bd: 1px solid var(--border-strong) !important;
+  --button-hover: var(--surface-hover) !important;
+  background-color: transparent !important;
+  border: 1px solid var(--border-strong) !important;
+  color: var(--ink) !important;
 }
 
 .mantine-Button-root[data-variant="default"]:hover:not([data-disabled]) {
-  background-color: var(--surface-hover);
+  background-color: var(--surface-hover) !important;
+  border-color: var(--ink-muted) !important;
 }
 
 /* Subtle button */
@@ -168,4 +167,104 @@
 .mantine-Button-root[data-variant="outline"][data-color="danger"]:hover:not([data-disabled]),
 .mantine-Button-root[data-variant="outline"][data-color="red"]:hover:not([data-disabled]) {
   background-color: var(--danger-soft);
+}
+
+/* ==========================================================================
+   Motion & Smooth Transitions: Tabs, Accordions, and Interactive Controls
+   ========================================================================== */
+
+/* Tab navigation smooth transitions */
+.mantine-Tabs-list {
+  position: relative;
+}
+
+.mantine-Tabs-tab {
+  position: relative;
+  transition: color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              background-color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              border-color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              transform var(--duration-fast, 120ms) ease !important;
+}
+
+.mantine-Tabs-tab:active:not([data-disabled]) {
+  transform: scale(var(--press-scale, 0.98));
+}
+
+@keyframes tab-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.mantine-Tabs-panel[data-active] {
+  animation: tab-panel-enter var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+/* SegmentedControl smooth sliding */
+.mantine-SegmentedControl-root {
+  position: relative;
+}
+
+.mantine-SegmentedControl-indicator {
+  transition: transform var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              width var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              height var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)) !important;
+}
+
+.mantine-SegmentedControl-label {
+  transition: color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.mantine-SegmentedControl-label:active {
+  transform: scale(var(--press-scale, 0.98));
+}
+
+/* Accordion smooth expansion and chevron rotation */
+.mantine-Accordion-control {
+  transition: background-color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.mantine-Accordion-chevron {
+  transition: transform var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)) !important;
+}
+
+.mantine-Accordion-panel,
+.mantine-Accordion-content {
+  transition: padding var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.mantine-Collapse-root {
+  transition: height var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+              opacity var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+/* Design System component classes for Accordion */
+.u-acc-btn {
+  transition: background-color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.u-acc-btn .u-icon,
+.u-acc-chevron,
+.u-ev-chev {
+  transition: transform var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)) !important;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .mantine-Tabs-panel[data-active] {
+    animation: none !important;
+  }
+  .mantine-Tabs-tab,
+  .mantine-SegmentedControl-indicator,
+  .mantine-SegmentedControl-label,
+  .mantine-Accordion-chevron,
+  .u-acc-chevron,
+  .u-ev-chev {
+    transition-duration: 0.01ms !important;
+  }
 }

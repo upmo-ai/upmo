@@ -1,4 +1,5 @@
-import { Alert, Button, Group, Text } from "@mantine/core";
+import { Button, Group } from "@mantine/core";
+import { IconAlertCircle } from "@tabler/icons-react";
 
 import {
   APPROVALS_KEY,
@@ -21,18 +22,23 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
   const busy = approve.isPending || deny.isPending;
 
   return (
-    <Alert role="alert" variant="light">
-      <Text>
-        {approval.action}. Approve to continue, deny to let the agent find another way.
-      </Text>
-      <Group gap="xs" mt="sm">
-        <Button size="sm" disabled={busy} onClick={() => approve.mutate()}>
-          Approve
-        </Button>
-        <Button size="sm" variant="default" disabled={busy} onClick={() => deny.mutate()}>
-          Deny
-        </Button>
-      </Group>
-    </Alert>
+    <div className="task-approval-alert" role="alert">
+      <span className="task-approval-icon" aria-hidden="true">
+        <IconAlertCircle size={16} stroke={2} />
+      </span>
+      <div className="task-approval-body">
+        <div className="task-approval-title">
+          {approval.action}. Approve to continue, deny to let the agent find another way.
+        </div>
+        <Group gap="xs" mt="xs">
+          <Button size="sm" disabled={busy} onClick={() => approve.mutate()}>
+            Approve
+          </Button>
+          <Button size="sm" variant="default" disabled={busy} onClick={() => deny.mutate()}>
+            Deny
+          </Button>
+        </Group>
+      </div>
+    </div>
   );
 }
