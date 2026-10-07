@@ -298,20 +298,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		return identity.RequireSession(sessions, next)
 	})
 	artifactStore := artifacts.Store{Pool: pool}
-	var artifactBlobs artifacts.Blobs = artifacts.Volume{Root: cfg.ArtifactsDir}
-	if cfg.ArtifactsS3Bucket != "" {
-		obj, err := artifacts.OpenObject(context.Background(), cfg.ArtifactsS3Bucket, cfg.ArtifactsS3Region, cfg.ArtifactsS3Endpoint)
-		if err != nil {
-			return nil, fmt.Errorf("brain: artifact object store: %w", err)
-		}
-		artifactBlobs = artifacts.Mux{
-			Volume: artifacts.Volume{Root: cfg.ArtifactsDir},
-			Object: obj,
-		}
-	}
 	artifacthttp.Handler{
 		Catalog: artifactStore,
-		Blobs:   artifactBlobs,
+		Blobs:   artifacts.Volume{Root: cfg.ArtifactsDir},
 		Access: func(r *http.Request) (artifacts.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

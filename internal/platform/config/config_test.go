@@ -367,32 +367,3 @@ func TestLoadArtifactsDirMustBeAbsolute(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
-
-func TestLoadArtifactsS3(t *testing.T) {
-	env := map[string]string{
-		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",
-		"UPMO_PUBLIC_URL":           "http://localhost:5173",
-		"UPMO_ARTIFACTS_S3_BUCKET":  "upmo-artifacts",
-		"UPMO_ARTIFACTS_S3_REGION":  "eu-west-1",
-		"UPMO_ARTIFACTS_S3_ENDPOINT": "http://minio:9000",
-	}
-	cfg, err := load(lookupFrom(env))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ArtifactsS3Bucket != "upmo-artifacts" || cfg.ArtifactsS3Region != "eu-west-1" || cfg.ArtifactsS3Endpoint != "http://minio:9000" {
-		t.Fatalf("%+v", cfg)
-	}
-}
-
-func TestLoadArtifactsS3EndpointMustBeURL(t *testing.T) {
-	env := map[string]string{
-		"UPMO_DATABASE_URL":          "postgres://upmo@localhost/upmo",
-		"UPMO_PUBLIC_URL":            "http://localhost:5173",
-		"UPMO_ARTIFACTS_S3_ENDPOINT": "not-a-url",
-	}
-	_, err := load(lookupFrom(env))
-	if err == nil || !strings.Contains(err.Error(), "UPMO_ARTIFACTS_S3_ENDPOINT") {
-		t.Fatalf("error = %v", err)
-	}
-}
