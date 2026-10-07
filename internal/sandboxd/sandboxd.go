@@ -67,7 +67,7 @@ type Network struct {
 // Docker engine from DOCKER_HOST or the default socket when it answers, and
 // falls back to the stub with a warning when it does not. docker fails
 // instead of falling back. network applies to the Docker driver only.
-// editorImage is the code editor image for the Docker driver; empty refuses StartEditor.
+// editorImage is the code editor image for the Docker driver; empty uses the driver default.
 func Open(ctx context.Context, choice string, network Network, editorImage string, log *slog.Logger) (Driver, error) {
 	return open(ctx, choice, log, func(ctx context.Context) (Driver, error) {
 		d, err := docker.Open(ctx, docker.Options{Network: network.Name, ProxyURL: network.ProxyURL, EditorImage: editorImage})

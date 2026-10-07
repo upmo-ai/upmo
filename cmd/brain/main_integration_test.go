@@ -35,7 +35,7 @@ func TestReadyAndSession(t *testing.T) {
 		PublicURL:     "http://localhost:5173",
 		WebAuthnRPID:  "localhost",
 	}
-	seats, err := sandboxSeats(cfg, pool, log)
+	boxes, err := taskSandboxes(cfg, pool, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(pool, cfg, log, seats, work, notices.Store{Pool: pool})
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool})
 	if err != nil {
 		t.Fatal(err)
 	}

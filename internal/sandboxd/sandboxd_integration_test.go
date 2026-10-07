@@ -16,7 +16,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/docker"
-	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
+	"github.com/upmo-ai/upmo/internal/testutil/tasksandbox"
 )
 
 // testNetwork keeps the suite off the sandbox network a running stack uses,
@@ -152,7 +152,7 @@ func TestBrainClientOverDocker(t *testing.T) {
 // TestBrainSeatsProvisionOverDocker runs the Preparing path brain takes on
 // the real sandboxd routes and the Docker driver: a task without a
 // repository reaches ready, and a task with one fails in the clone phase,
-// because a seat's allow-list is empty and no egress proxy serves this test
+// because a task sandbox's allow-list is empty and no egress proxy serves this test
 // (and the default image has no git).
 func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	host := os.Getenv("UPMO_TEST_DOCKER_HOST")
@@ -178,17 +178,17 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seats := &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}, TTL: 5 * time.Minute}
+	boxes := &runtime.TaskSandboxes{Provider: provider, Store: &tasksandbox.Memory{}, TTL: 5 * time.Minute}
 	if v := os.Getenv("UPMO_TEST_SANDBOX_IMAGE"); v != "" {
-		seats.Image = v
+		boxes.Image = v
 	}
 	ctx := context.Background()
-	// provision returns once the seat is held; the phases run on, and their
+	// provision returns once the sandbox is held; the phases run on, and their
 	// outcome arrives on the channel.
 	provision := func(t *testing.T, task, repo string, classes []runtime.Class) error {
 		t.Helper()
 		outcome := make(chan error, 1)
-		if _, err := seats.Provision(ctx, task, repo, classes, func(_ context.Context, err error) error {
+		if _, err := boxes.Provision(ctx, task, repo, classes, func(_ context.Context, err error) error {
 			outcome <- err
 			return nil
 		}); err != nil {
@@ -205,14 +205,14 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 
 	t.Run("no repository", func(t *testing.T) {
 		task := "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
-		t.Cleanup(func() { _ = seats.Release(context.Background(), task) })
+		t.Cleanup(func() { _ = boxes.Release(context.Background(), task) })
 		if err := provision(t, task, "", []runtime.Class{runtime.ClassShell}); err != nil {
 			t.Fatal(err)
 		}
-		if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
+		if rec, ok := boxes.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
 			t.Fatalf("progress = %+v %t", rec, ok)
 		}
-		id, ok, err := seats.Held(ctx, task)
+		id, ok, err := boxes.Held(ctx, task)
 		if err != nil || !ok {
 			t.Fatalf("held = %t %v", ok, err)
 		}
@@ -220,7 +220,7 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 		if err != nil || !strings.Contains(string(marker), "repo: none") {
 			t.Fatalf("marker = %q %v", marker, err)
 		}
-		if err := seats.Release(ctx, task); err != nil {
+		if err := boxes.Release(ctx, task); err != nil {
 			t.Fatal(err)
 		}
 		if err := provider.Destroy(ctx, id); !errors.Is(err, runtime.ErrNotFound) {
@@ -230,14 +230,14 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 
 	t.Run("repository without network", func(t *testing.T) {
 		task := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
-		t.Cleanup(func() { _ = seats.Release(context.Background(), task) })
+		t.Cleanup(func() { _ = boxes.Release(context.Background(), task) })
 		err := provision(t, task, "org/name", nil)
 		var phase *runtime.PhaseError
 		if !errors.As(err, &phase) || phase.Phase != runtime.PhaseClone || !errors.Is(err, runtime.ErrCommand) {
 			t.Fatalf("provision = %v", err)
 		}
 		t.Logf("clone failed as expected: %v", err)
-		if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
+		if rec, ok := boxes.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
 			t.Fatalf("progress = %+v %t", rec, ok)
 		}
 	})

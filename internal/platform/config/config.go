@@ -46,9 +46,9 @@ type Config struct {
 	// KnowledgeDir is the Compose volume root for original knowledge file bytes
 	// (UPMO_KNOWLEDGE_DIR). Empty refuses new file uploads that need storage.
 	KnowledgeDir string
-	// SeatImage is the image a task sandbox starts from (UPMO_SEAT_IMAGE).
-	// Empty means the runtime default, which has no git.
-	SeatImage string
+	// SandboxImage is the image a task sandbox starts from (UPMO_SANDBOX_IMAGE).
+	// Empty means the runtime default (upmo/sandbox:base).
+	SandboxImage string
 	// ArtifactsDir is the Compose volume root for artifact bytes (UPMO_ARTIFACTS_DIR).
 	// Empty refuses volume downloads until set.
 	ArtifactsDir string
@@ -174,12 +174,12 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.SandboxdURL = strings.TrimRight(v, "/")
 	}
-	if v, ok := lookup("UPMO_SEAT_IMAGE"); ok && strings.TrimSpace(v) != "" {
+	if v, ok := lookup("UPMO_SANDBOX_IMAGE"); ok && strings.TrimSpace(v) != "" {
 		v = strings.TrimSpace(v)
 		if strings.ContainsFunc(v, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-			return Config{}, fmt.Errorf("config: UPMO_SEAT_IMAGE must be one image reference")
+			return Config{}, fmt.Errorf("config: UPMO_SANDBOX_IMAGE must be one image reference")
 		}
-		cfg.SeatImage = v
+		cfg.SandboxImage = v
 	}
 	if v, ok := lookup("UPMO_ARTIFACTS_DIR"); ok && strings.TrimSpace(v) != "" {
 		v = strings.TrimSpace(v)
@@ -229,7 +229,7 @@ type Sandboxd struct {
 	// (UPMO_SANDBOX_NETWORK), upmo-sandbox-egress by default.
 	SandboxNetwork string
 	// EditorImage is the code editor container image (UPMO_EDITOR_IMAGE).
-	// Empty refuses StartEditor on the Docker driver.
+	// Empty means the Docker driver's built-in default.
 	EditorImage string
 }
 

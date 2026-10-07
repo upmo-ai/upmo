@@ -166,11 +166,11 @@ func run() error {
 		return err
 	}
 
-	seats, err := sandboxSeats(cfg, pool, log)
+	boxes, err := taskSandboxes(cfg, pool, log)
 	if err != nil {
 		return err
 	}
-	handler, err := routes(pool, cfg, log, seats, work, noticeStore)
+	handler, err := routes(pool, cfg, log, boxes, work, noticeStore)
 	if err != nil {
 		return err
 	}
@@ -178,13 +178,13 @@ func run() error {
 	// Provisioning still running in the background gets the shutdown
 	// timeout to settle its task before the pool closes. Any left after
 	// that is abandoned: its task stays in Preparing and sandboxd reclaims
-	// its sandbox at the seat TTL.
+	// its sandbox at the sandbox TTL.
 	wait, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if werr := work.Stop(wait); werr != nil {
 		log.Warn("job workers still running at shutdown", "err", werr)
 	}
-	if werr := seats.Wait(wait); werr != nil {
+	if werr := boxes.Wait(wait); werr != nil {
 		log.Warn("sandbox provisioning still running at shutdown", "err", werr)
 	}
 	return err
@@ -199,24 +199,24 @@ func linkMail(s config.SMTP) mail.Sender {
 	return mail.SMTP{Host: s.Host, Port: s.Port, User: s.User, Password: s.Password, From: s.From}
 }
 
-// sandboxSeats holds task sandboxes through sandboxd, signed with the
-// service key, and records each seat in the runtime
+// taskSandboxes holds task sandboxes through sandboxd, signed with the
+// service key, and records each task sandbox in the runtime
 // schema through pool, so a restarted brain can still release it. Each new
-// sandbox starts from UPMO_SEAT_IMAGE, or the runtime default, and is
+// sandbox starts from UPMO_SANDBOX_IMAGE, or the runtime default, and is
 // provisioned through sandboxd in the background once Open has returned.
 // With UPMO_SANDBOXD_URL unset it has no provider, and a task
 // that needs a sandbox is refused rather than opened.
-func sandboxSeats(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*runtime.Seats, error) {
-	seats := &runtime.Seats{Book: runtime.SeatStore(pool), Image: cfg.SeatImage, Log: log}
+func taskSandboxes(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*runtime.TaskSandboxes, error) {
+	boxes := &runtime.TaskSandboxes{Store: runtime.NewTaskSandboxStore(pool), Image: cfg.SandboxImage, Log: log}
 	if cfg.SandboxdURL == "" {
-		return seats, nil
+		return boxes, nil
 	}
 	provider, err := runtime.Open(cfg.SandboxdURL, cfg.ServiceKey)
 	if err != nil {
 		return nil, fmt.Errorf("brain: sandboxd: %w", err)
 	}
-	seats.Provider = provider
-	return seats, nil
+	boxes.Provider = provider
+	return boxes, nil
 }
 
 // requestPool opens connections that run as upmo_app, which owns nothing, and
@@ -238,7 +238,7 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runtime.Seats, work *jobs.Client, noticeStore notices.Store) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -259,8 +259,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, seats *runt
 		Book:      taskBook,
 		List:      taskBook,
 		View:      taskBook,
-		Sandboxes: seats,
-		Progress:  seats,
+		Sandboxes: boxes,
+		Progress:  boxes,
 		Access: func(r *http.Request) (taskapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

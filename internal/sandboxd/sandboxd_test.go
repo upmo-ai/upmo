@@ -19,7 +19,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	httpapi "github.com/upmo-ai/upmo/internal/sandboxd/adapters/http"
-	"github.com/upmo-ai/upmo/internal/testutil/seatbook"
+	"github.com/upmo-ai/upmo/internal/testutil/tasksandbox"
 )
 
 const (
@@ -235,11 +235,11 @@ func TestBrainClientExecAndFiles(t *testing.T) {
 	}
 }
 
-// TestBrainSeatsProvisionAndRelease runs the seats brain uses on the
+// TestBrainTaskSandboxesProvisionAndRelease runs the task sandboxes brain uses on the
 // Preparing path against the real sandboxd routes: Provision creates the
 // sandbox and runs every phase in the background through Exec and the file
 // routes, and Release destroys it so sandboxd no longer holds it.
-func TestBrainSeatsProvisionAndRelease(t *testing.T) {
+func TestBrainTaskSandboxesProvisionAndRelease(t *testing.T) {
 	key := serviceKey('k')
 	sh := newShell()
 	h, err := Routes(key, "", sh, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -252,12 +252,12 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	book := &seatbook.Memory{}
-	seats := &runtime.Seats{Provider: provider, Book: book}
+	book := &tasksandbox.Memory{}
+	boxes := &runtime.TaskSandboxes{Provider: provider, Store: book}
 	ctx := context.Background()
 	task := spec().Task
 	outcome := make(chan error, 1)
-	needed, err := seats.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell}, func(_ context.Context, err error) error {
+	needed, err := boxes.Provision(ctx, task, "org/name", []runtime.Class{runtime.ClassShell}, func(_ context.Context, err error) error {
 		outcome <- err
 		return nil
 	})
@@ -267,7 +267,7 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	if err := <-outcome; err != nil {
 		t.Fatalf("provisioning = %v", err)
 	}
-	if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
+	if rec, ok := boxes.Progress(task); !ok || rec.Phase != runtime.PhaseReady {
 		t.Fatalf("progress = %+v %t", rec, ok)
 	}
 	sh.mu.Lock()
@@ -276,24 +276,24 @@ func TestBrainSeatsProvisionAndRelease(t *testing.T) {
 	if !strings.Contains(ran, "git clone --depth=1 --quiet -- https://github.com/org/name.git /scratch/repo") || !strings.Contains(ran, "rev-parse") {
 		t.Fatalf("ran = %s", ran)
 	}
-	id, ok, err := seats.Held(ctx, task)
+	id, ok, err := boxes.Held(ctx, task)
 	if err != nil || !ok {
-		t.Fatalf("no seat after provision: %v", err)
+		t.Fatalf("no sandbox after provision: %v", err)
 	}
-	if err := seats.Release(ctx, task); err != nil {
+	if err := boxes.Release(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	if err := provider.Destroy(ctx, id); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("sandbox still held after release: %v", err)
 	}
 	if book.Len() != 0 {
-		t.Fatalf("seats after release = %d", book.Len())
+		t.Fatalf("rows after release = %d", book.Len())
 	}
 }
 
 // TestBrainSeatsProvisionOnTheStubFails shows the stub, which runs no
-// command, cannot provision: Provision returns once the seat is held, then
-// the clone phase fails with ErrUnsupported in the background and the seat
+// command, cannot provision: Provision returns once the sandbox is held, then
+// the clone phase fails with ErrUnsupported in the background and the binding
 // is still held for done to release.
 func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
 	key := serviceKey('k')
@@ -302,11 +302,11 @@ func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seats := &runtime.Seats{Provider: provider, Book: &seatbook.Memory{}}
+	boxes := &runtime.TaskSandboxes{Provider: provider, Store: &tasksandbox.Memory{}}
 	ctx := context.Background()
 	task := spec().Task
 	outcome := make(chan error, 1)
-	if _, err := seats.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell}, func(_ context.Context, err error) error {
+	if _, err := boxes.Provision(ctx, task, "", []runtime.Class{runtime.ClassShell}, func(_ context.Context, err error) error {
 		outcome <- err
 		return nil
 	}); err != nil {
@@ -317,10 +317,10 @@ func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
 	if !errors.As(err, &phase) || phase.Phase != runtime.PhaseClone || !errors.Is(err, runtime.ErrUnsupported) {
 		t.Fatalf("provisioning = %v", err)
 	}
-	if rec, ok := seats.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
+	if rec, ok := boxes.Progress(task); !ok || rec.Phase != runtime.PhaseFailed {
 		t.Fatalf("progress = %+v %t", rec, ok)
 	}
-	if err := seats.Release(ctx, task); err != nil {
+	if err := boxes.Release(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 }

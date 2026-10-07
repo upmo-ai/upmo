@@ -45,23 +45,23 @@ func TestMigrationRecordsItsVersionInTheRuntimeSchema(t *testing.T) {
 
 func TestSeatClaimFillAndDrop(t *testing.T) {
 	owner := up(t)
-	book := postgres.Seats{Pool: pgtest.App(t, owner)}
+	book := postgres.TaskSandboxes{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 
-	if _, held, err := book.Seat(ctx, task); err != nil || held {
-		t.Fatalf("seat before claim = %t %v", held, err)
+	if _, held, err := book.Lookup(ctx, task); err != nil || held {
+		t.Fatalf("row before claim = %t %v", held, err)
 	}
 	if err := book.Claim(ctx, task, 10*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := book.Claim(ctx, task, 10*time.Minute); !errors.Is(err, runtime.ErrSeated) {
+	if err := book.Claim(ctx, task, 10*time.Minute); !errors.Is(err, runtime.ErrAlreadyHeld) {
 		t.Fatalf("second claim = %v", err)
 	}
-	if id, held, err := book.Seat(ctx, task); err != nil || !held || id != "" {
-		t.Fatalf("pending seat = %q %t %v", id, held, err)
+	if id, held, err := book.Lookup(ctx, task); err != nil || !held || id != "" {
+		t.Fatalf("pending = %q %t %v", id, held, err)
 	}
 	var lapse int64
-	if err := owner.QueryRow(ctx, `SELECT extract(epoch FROM expires_at - created_at)::bigint FROM runtime.seats WHERE task_id = $1`, task).Scan(&lapse); err != nil {
+	if err := owner.QueryRow(ctx, `SELECT extract(epoch FROM expires_at - created_at)::bigint FROM runtime.task_sandboxes WHERE task_id = $1`, task).Scan(&lapse); err != nil {
 		t.Fatal(err)
 	}
 	if lapse != 600 {
@@ -73,42 +73,42 @@ func TestSeatClaimFillAndDrop(t *testing.T) {
 		t.Fatalf("fill = %t %v", ok, err)
 	}
 	if ok, err := book.Fill(ctx, task, "box-2", time.Time{}); err != nil || ok {
-		t.Fatalf("fill of a held seat = %t %v", ok, err)
+		t.Fatalf("fill of a held row = %t %v", ok, err)
 	}
-	if id, held, err := book.Seat(ctx, task); err != nil || !held || id != "box-1" {
-		t.Fatalf("held seat = %q %t %v", id, held, err)
+	if id, held, err := book.Lookup(ctx, task); err != nil || !held || id != "box-1" {
+		t.Fatalf("held = %q %t %v", id, held, err)
 	}
 	var stored time.Time
-	if err := owner.QueryRow(ctx, `SELECT expires_at FROM runtime.seats WHERE task_id = $1`, task).Scan(&stored); err != nil {
+	if err := owner.QueryRow(ctx, `SELECT expires_at FROM runtime.task_sandboxes WHERE task_id = $1`, task).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if !stored.Equal(expires) {
 		t.Fatalf("expires = %v", stored)
 	}
 
-	// Dropping the pending seat or another sandbox leaves the held seat.
+	// Dropping a pending id or another sandbox leaves the held row.
 	for _, id := range []string{"", "box-2"} {
 		if err := book.Drop(ctx, task, id); err != nil {
 			t.Fatal(err)
 		}
-		if _, held, _ := book.Seat(ctx, task); !held {
-			t.Fatalf("drop %q removed the held seat", id)
+		if _, held, _ := book.Lookup(ctx, task); !held {
+			t.Fatalf("drop %q removed the held row", id)
 		}
 	}
 	if err := book.Drop(ctx, task, "box-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, held, err := book.Seat(ctx, task); err != nil || held {
-		t.Fatalf("seat after drop = %t %v", held, err)
+	if _, held, err := book.Lookup(ctx, task); err != nil || held {
+		t.Fatalf("row after drop = %t %v", held, err)
 	}
 	if err := book.Drop(ctx, task, "box-1"); err != nil {
-		t.Fatalf("drop of a gone seat = %v", err)
+		t.Fatalf("drop of a gone row = %v", err)
 	}
 }
 
 func TestSeatFillAfterADroppedClaimRecordsNothing(t *testing.T) {
 	owner := up(t)
-	book := postgres.Seats{Pool: pgtest.App(t, owner)}
+	book := postgres.TaskSandboxes{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 	if err := book.Claim(ctx, task, time.Minute); err != nil {
 		t.Fatal(err)
@@ -119,14 +119,14 @@ func TestSeatFillAfterADroppedClaimRecordsNothing(t *testing.T) {
 	if ok, err := book.Fill(ctx, task, "box-1", time.Time{}); err != nil || ok {
 		t.Fatalf("fill = %t %v", ok, err)
 	}
-	if _, held, err := book.Seat(ctx, task); err != nil || held {
-		t.Fatalf("seat = %t %v", held, err)
+	if _, held, err := book.Lookup(ctx, task); err != nil || held {
+		t.Fatalf("held = %t %v", held, err)
 	}
 }
 
 func TestSeatRefusesABadRow(t *testing.T) {
 	owner := up(t)
-	book := postgres.Seats{Pool: pgtest.App(t, owner)}
+	book := postgres.TaskSandboxes{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 	if err := book.Claim(ctx, "00000000-0000-0000-0000-000000000000", time.Minute); err == nil {
 		t.Fatal("claimed a nil task id")
@@ -144,7 +144,7 @@ func TestSeatsReleaseAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	provider := &fakeProvider{}
 
-	before := &runtime.Seats{Provider: provider, Book: runtime.SeatStore(pgtest.App(t, owner))}
+	before := &runtime.TaskSandboxes{Provider: provider, Store: runtime.NewTaskSandboxStore(pgtest.App(t, owner))}
 	if needed, err := before.Provision(ctx, task, "org/name", nil, nil); err != nil || !needed {
 		t.Fatalf("provision = %t %v", needed, err)
 	}
@@ -152,8 +152,8 @@ func TestSeatsReleaseAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A new process with a new pool finds the seat and releases it.
-	after := &runtime.Seats{Provider: provider, Book: runtime.SeatStore(pgtest.App(t, owner))}
+	// A new process with a new pool finds the row and releases it.
+	after := &runtime.TaskSandboxes{Provider: provider, Store: runtime.NewTaskSandboxStore(pgtest.App(t, owner))}
 	if id, ok, err := after.Held(ctx, task); err != nil || !ok || id != "box-1" {
 		t.Fatalf("held after restart = %q %t %v", id, ok, err)
 	}
@@ -164,11 +164,11 @@ func TestSeatsReleaseAfterRestart(t *testing.T) {
 		t.Fatalf("destroyed = %v", got)
 	}
 	var n int
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM runtime.seats`).Scan(&n); err != nil {
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM runtime.task_sandboxes`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatalf("seats after release = %d", n)
+		t.Fatalf("rows after release = %d", n)
 	}
 }
 
@@ -176,26 +176,26 @@ func TestSeatsReleaseKeepsTheSeatWhenDestroyFails(t *testing.T) {
 	owner := up(t)
 	ctx := context.Background()
 	provider := &fakeProvider{}
-	seats := &runtime.Seats{Provider: provider, Book: runtime.SeatStore(pgtest.App(t, owner))}
-	if _, err := seats.Provision(ctx, task, "org/name", nil, nil); err != nil {
+	boxes := &runtime.TaskSandboxes{Provider: provider, Store: runtime.NewTaskSandboxStore(pgtest.App(t, owner))}
+	if _, err := boxes.Provision(ctx, task, "org/name", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := seats.Wait(ctx); err != nil {
+	if err := boxes.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
 	provider.fail(errors.New("sandboxd down"))
-	if err := seats.Release(ctx, task); err == nil {
+	if err := boxes.Release(ctx, task); err == nil {
 		t.Fatal("release hid the destroy failure")
 	}
-	if _, ok, err := seats.Held(ctx, task); err != nil || !ok {
-		t.Fatalf("seat forgotten after a failed destroy: %v", err)
+	if _, ok, err := boxes.Held(ctx, task); err != nil || !ok {
+		t.Fatalf("binding forgotten after a failed destroy: %v", err)
 	}
 	provider.fail(runtime.ErrNotFound)
-	if err := seats.Release(ctx, task); err != nil {
+	if err := boxes.Release(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := seats.Held(ctx, task); err != nil || ok {
-		t.Fatalf("seat kept after sandboxd lost the sandbox: %v", err)
+	if _, ok, err := boxes.Held(ctx, task); err != nil || ok {
+		t.Fatalf("binding kept after sandboxd lost the sandbox: %v", err)
 	}
 }
 

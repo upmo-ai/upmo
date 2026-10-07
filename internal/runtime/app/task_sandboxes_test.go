@@ -16,12 +16,12 @@ import (
 // boxExpires is when every sandbox fakeProvider creates lapses.
 var boxExpires = time.Date(2026, 11, 1, 12, 30, 0, 0, time.UTC)
 
-func newSeats(p SandboxProvider) (*Seats, *fakeBook) {
-	book := &fakeBook{}
-	return &Seats{Provider: p, Book: book}, book
+func newTaskSandboxes(p SandboxProvider) (*TaskSandboxes, *fakeStore) {
+	book := &fakeStore{}
+	return &TaskSandboxes{Provider: p, Store: book}, book
 }
 
-func held(t *testing.T, s *Seats, taskID string) (string, bool) {
+func held(t *testing.T, s *TaskSandboxes, taskID string) (string, bool) {
 	t.Helper()
 	id, ok, err := s.Held(context.Background(), taskID)
 	if err != nil {
@@ -65,7 +65,7 @@ func (o *outcome) result() (bool, error) {
 }
 
 // settle waits for every background provisioning on s to stop.
-func settle(t *testing.T, s *Seats) {
+func settle(t *testing.T, s *TaskSandboxes) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -76,7 +76,7 @@ func settle(t *testing.T, s *Seats) {
 
 // provisioned calls Provision for task and waits for its background phases.
 // It returns what done got, through the outcome, and what Provision returned.
-func provisioned(t *testing.T, s *Seats, repo string, classes []domain.Class) (*outcome, bool, error) {
+func provisioned(t *testing.T, s *TaskSandboxes, repo string, classes []domain.Class) (*outcome, bool, error) {
 	t.Helper()
 	o := newOutcome()
 	needed, err := s.Provision(context.Background(), task, repo, classes, o.done)
@@ -84,7 +84,7 @@ func provisioned(t *testing.T, s *Seats, repo string, classes []domain.Class) (*
 	return o, needed, err
 }
 
-func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
+func TestTaskSandboxesProvisionCreatesForShellAndRepo(t *testing.T) {
 	cases := map[string]struct {
 		repo    string
 		classes []domain.Class
@@ -96,7 +96,7 @@ func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			p := &fakeProvider{}
-			s, book := newSeats(p)
+			s, book := newTaskSandboxes(p)
 			o, needed, err := provisioned(t, s, tc.repo, tc.classes)
 			if err != nil || !needed {
 				t.Fatalf("provision = %t %v", needed, err)
@@ -112,13 +112,13 @@ func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
 			if tc.repo != "" {
 				wantAllow = []string{domain.RepoHost}
 			}
-			if spec.Task != task || spec.Image != SeatImage || spec.Tier != domain.TierContainer || spec.TTL != SeatTTL || !slices.Equal(spec.Allow, wantAllow) {
+			if spec.Task != task || spec.Image != SandboxImage || spec.Tier != domain.TierContainer || spec.TTL != SandboxTTL || !slices.Equal(spec.Allow, wantAllow) {
 				t.Fatalf("spec = %+v, want allow %v", spec, wantAllow)
 			}
 			if id, ok := held(t, s, task); !ok || id != "box-1" {
 				t.Fatalf("held = %q %t", id, ok)
 			}
-			if book.ttl[task] != SeatTTL || !book.expires[task].Equal(boxExpires) {
+			if book.ttl[task] != SandboxTTL || !book.expires[task].Equal(boxExpires) {
 				t.Fatalf("book ttl = %v expires = %v", book.ttl[task], book.expires[task])
 			}
 			if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseReady {
@@ -136,7 +136,7 @@ func TestSeatsProvisionCreatesForShellAndRepo(t *testing.T) {
 	}
 }
 
-func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
+func TestTaskSandboxesProvisionPhaseFailureKeepsTheBindingForRelease(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{run: func(cmd Command) (Exit, string, error) {
 		if slices.Contains(cmd.Args, "clone") {
@@ -144,7 +144,7 @@ func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
 		}
 		return Exit{}, "", nil
 	}}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	o, needed, err := provisioned(t, s, "org/name", nil)
 	if !needed || err != nil {
 		t.Fatalf("provision = %t %v", needed, err)
@@ -158,7 +158,7 @@ func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
 	if rec, ok := s.Progress(task); !ok || rec.Phase != domain.PhaseFailed {
 		t.Fatalf("progress = %+v %t", rec, ok)
 	}
-	// The caller fails the task and releases; until then the seat is held.
+	// The caller fails the task and releases; until then the task sandbox is held.
 	if id, ok := held(t, s, task); !ok || id != "box-1" || len(p.destroyedIDs()) != 0 {
 		t.Fatalf("held = %q %t destroyed = %v", id, ok, p.destroyedIDs())
 	}
@@ -166,16 +166,16 @@ func TestSeatsProvisionPhaseFailureKeepsTheSeatForRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Equal(p.destroyedIDs(), []string{"box-1"}) || book.size() != 0 {
-		t.Fatalf("destroyed = %v seats = %d", p.destroyedIDs(), book.size())
+		t.Fatalf("destroyed = %v rows = %d", p.destroyedIDs(), book.size())
 	}
 	if _, ok := s.Progress(task); ok {
 		t.Fatal("progress kept after release")
 	}
 }
 
-func TestSeatsProvisionRefusesABadRepoBeforeCreate(t *testing.T) {
+func TestTaskSandboxesProvisionRefusesABadRepoBeforeCreate(t *testing.T) {
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	needed, err := s.Provision(context.Background(), task, "https://ada@example.com/org/name", nil, nil)
 	if !needed || !errors.Is(err, domain.ErrRepo) || len(p.created) != 0 || book.size() != 0 {
 		t.Fatalf("provision = %t %v creates=%d", needed, err, len(p.created))
@@ -185,9 +185,9 @@ func TestSeatsProvisionRefusesABadRepoBeforeCreate(t *testing.T) {
 	}
 }
 
-func TestSeatsProvisionCreateFailureLeavesNoProgress(t *testing.T) {
+func TestTaskSandboxesProvisionCreateFailureLeavesNoProgress(t *testing.T) {
 	p := &fakeProvider{createErr: ErrIsolation}
-	s, _ := newSeats(p)
+	s, _ := newTaskSandboxes(p)
 	o := newOutcome()
 	if _, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}, o.done); !errors.Is(err, ErrIsolation) {
 		t.Fatalf("provision = %v", err)
@@ -213,9 +213,9 @@ func gated(p *fakeProvider) (entered, gate chan struct{}) {
 	return entered, gate
 }
 
-func TestSeatsProvisionReturnsBeforeASlowPhaseFinishes(t *testing.T) {
+func TestTaskSandboxesProvisionReturnsBeforeASlowPhaseFinishes(t *testing.T) {
 	p := &fakeProvider{}
-	s, _ := newSeats(p)
+	s, _ := newTaskSandboxes(p)
 	entered, gate := gated(p)
 	o := newOutcome()
 	needed, err := s.Provision(context.Background(), task, "", []domain.Class{domain.ClassShell}, o.done)
@@ -249,9 +249,9 @@ func TestSeatsProvisionReturnsBeforeASlowPhaseFinishes(t *testing.T) {
 	}
 }
 
-func TestSeatsProvisionOutlivesTheCallerWithinTheTTL(t *testing.T) {
+func TestTaskSandboxesProvisionOutlivesTheCallerWithinTheTTL(t *testing.T) {
 	p := &fakeProvider{}
-	s, _ := newSeats(p)
+	s, _ := newTaskSandboxes(p)
 	s.TTL = time.Minute
 	entered, gate := gated(p)
 	o := newOutcome()
@@ -284,10 +284,10 @@ func TestSeatsProvisionOutlivesTheCallerWithinTheTTL(t *testing.T) {
 	}
 }
 
-func TestSeatsReleaseDuringProvisionStopsThePhases(t *testing.T) {
+func TestTaskSandboxesReleaseDuringProvisionStopsThePhases(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
-	s, _ := newSeats(p)
+	s, _ := newTaskSandboxes(p)
 	entered, gate := gated(p)
 	o := newOutcome()
 	if _, err := s.Provision(ctx, task, "", []domain.Class{domain.ClassShell}, o.done); err != nil {
@@ -305,13 +305,13 @@ func TestSeatsReleaseDuringProvisionStopsThePhases(t *testing.T) {
 	if _, ok := s.Progress(task); ok {
 		t.Fatal("progress came back after release")
 	}
-	// Whoever released the seat has moved the task on already.
+	// Whoever released the task sandbox has moved the task on already.
 	if called, err := o.result(); called {
 		t.Fatalf("done called after release: %v", err)
 	}
 }
 
-func TestSeatsProvisionSurvivesAPanic(t *testing.T) {
+func TestTaskSandboxesProvisionSurvivesAPanic(t *testing.T) {
 	cases := map[string]struct {
 		run  func(Command) (Exit, string, error)
 		done func(context.Context, error) error
@@ -324,7 +324,7 @@ func TestSeatsProvisionSurvivesAPanic(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			p := &fakeProvider{run: tc.run}
-			s, _ := newSeats(p)
+			s, _ := newTaskSandboxes(p)
 			got := make(chan error, 1)
 			done := Done(func(ctx context.Context, err error) error {
 				got <- err
@@ -350,9 +350,9 @@ func TestSeatsProvisionSurvivesAPanic(t *testing.T) {
 	}
 }
 
-func TestSeatsProvisionSkipsCreateWhenNotNeeded(t *testing.T) {
+func TestTaskSandboxesProvisionSkipsCreateWhenNotNeeded(t *testing.T) {
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	needed, err := s.Provision(context.Background(), task, " ", []domain.Class{domain.ClassConnector, domain.ClassKnowledge}, nil)
 	if err != nil || needed || len(p.created) != 0 {
 		t.Fatalf("provision = %t %v creates=%d", needed, err, len(p.created))
@@ -360,14 +360,14 @@ func TestSeatsProvisionSkipsCreateWhenNotNeeded(t *testing.T) {
 	if _, err := s.Provision(context.Background(), task, "", []domain.Class{"sideways"}, nil); !errors.Is(err, domain.ErrClass) || len(p.created) != 0 {
 		t.Fatalf("unknown class = %v creates=%d", err, len(p.created))
 	}
-	if len(book.seats) != 0 {
-		t.Fatalf("seats = %v", book.seats)
+	if len(book.rows) != 0 {
+		t.Fatalf("rows = %v", book.rows)
 	}
 }
 
-func TestSeatsUsesImageAndTTL(t *testing.T) {
+func TestTaskSandboxesUsesImageAndTTL(t *testing.T) {
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	s.Image, s.TTL = "upmo/sandbox:base", time.Minute
 	if _, _, err := provisioned(t, s, "org/name", nil); err != nil {
 		t.Fatal(err)
@@ -380,10 +380,10 @@ func TestSeatsUsesImageAndTTL(t *testing.T) {
 	}
 }
 
-func TestSeatsWithoutProviderIsClear(t *testing.T) {
+func TestTaskSandboxesWithoutProviderIsClear(t *testing.T) {
 	ctx := context.Background()
-	book := &fakeBook{seats: map[string]string{task: "box-0"}}
-	for name, s := range map[string]*Seats{"zero": {}, "nil": nil, "book only": {Book: book}} {
+	book := &fakeStore{rows: map[string]string{task: "box-0"}}
+	for name, s := range map[string]*TaskSandboxes{"zero": {}, "nil": nil, "book only": {Store: book}} {
 		t.Run(name, func(t *testing.T) {
 			if s.Ready() {
 				t.Fatal("ready without a provider")
@@ -399,34 +399,34 @@ func TestSeatsWithoutProviderIsClear(t *testing.T) {
 			}
 		})
 	}
-	// The seat waits for a brain that can reach sandboxd.
-	if book.seats[task] != "box-0" {
-		t.Fatalf("seats = %v", book.seats)
+	// The task sandbox waits for a brain that can reach sandboxd.
+	if book.rows[task] != "box-0" {
+		t.Fatalf("rows = %v", book.rows)
 	}
 }
 
-func TestSeatsWithoutBookRefusesToCreate(t *testing.T) {
+func TestTaskSandboxesWithoutBookRefusesToCreate(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
-	s := &Seats{Provider: p}
+	s := &TaskSandboxes{Provider: p}
 	if s.Ready() {
-		t.Fatal("ready without a seat book")
+		t.Fatal("ready without a task sandbox store")
 	}
-	if _, err := s.Start(ctx, task, validSpec()); !errors.Is(err, ErrNoSeatBook) || len(p.created) != 0 {
+	if _, err := s.Start(ctx, task, validSpec()); !errors.Is(err, ErrNoTaskSandboxStore) || len(p.created) != 0 {
 		t.Fatalf("start = %v creates=%d", err, len(p.created))
 	}
 	if err := s.Release(ctx, task); err != nil {
 		t.Fatalf("release = %v", err)
 	}
 	if _, ok := held(t, s, task); ok {
-		t.Fatal("held without a seat book")
+		t.Fatal("held without a task sandbox store")
 	}
 }
 
-func TestSeatsReleaseDestroysAndForgets(t *testing.T) {
+func TestTaskSandboxesReleaseDestroysAndForgets(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	if _, err := s.Start(ctx, task, validSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -436,8 +436,8 @@ func TestSeatsReleaseDestroysAndForgets(t *testing.T) {
 	if !slices.Equal(p.destroyed, []string{"box-1"}) {
 		t.Fatalf("destroyed = %v", p.destroyed)
 	}
-	if _, ok := held(t, s, task); ok || len(book.seats) != 0 {
-		t.Fatalf("still held after release: %v", book.seats)
+	if _, ok := held(t, s, task); ok || len(book.rows) != 0 {
+		t.Fatalf("still held after release: %v", book.rows)
 	}
 	if err := s.Release(ctx, task); err != nil || len(p.destroyed) != 1 {
 		t.Fatalf("second release = %v destroyed=%v", err, p.destroyed)
@@ -447,53 +447,53 @@ func TestSeatsReleaseDestroysAndForgets(t *testing.T) {
 	}
 }
 
-func TestSeatsReleaseAfterRestart(t *testing.T) {
+func TestTaskSandboxesReleaseAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
-	before, book := newSeats(p)
+	before, book := newTaskSandboxes(p)
 	if _, err := before.Start(ctx, task, validSpec()); err != nil {
 		t.Fatal(err)
 	}
 	// A new process shares only the book.
-	after := &Seats{Provider: p, Book: book}
+	after := &TaskSandboxes{Provider: p, Store: book}
 	if id, ok := held(t, after, task); !ok || id != "box-1" {
 		t.Fatalf("held after restart = %q %t", id, ok)
 	}
 	if err := after.Release(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(p.destroyed, []string{"box-1"}) || len(book.seats) != 0 {
-		t.Fatalf("destroyed = %v seats = %v", p.destroyed, book.seats)
+	if !slices.Equal(p.destroyed, []string{"box-1"}) || len(book.rows) != 0 {
+		t.Fatalf("destroyed = %v rows = %v", p.destroyed, book.rows)
 	}
 }
 
-func TestSeatsReleaseDropsAPendingSeatLeftByAGoneProcess(t *testing.T) {
+func TestTaskSandboxesReleaseDropsAPendingBindingLeftByAGoneProcess(t *testing.T) {
 	p := &fakeProvider{}
-	book := &fakeBook{seats: map[string]string{task: ""}}
-	s := &Seats{Provider: p, Book: book}
+	book := &fakeStore{rows: map[string]string{task: ""}}
+	s := &TaskSandboxes{Provider: p, Store: book}
 	if err := s.Release(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.destroyed) != 0 || len(book.seats) != 0 {
-		t.Fatalf("destroyed = %v seats = %v", p.destroyed, book.seats)
+	if len(p.destroyed) != 0 || len(book.rows) != 0 {
+		t.Fatalf("destroyed = %v rows = %v", p.destroyed, book.rows)
 	}
 }
 
-func TestSeatsRefusesASecondSeat(t *testing.T) {
+func TestTaskSandboxesRefusesASecondBinding(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
-	s, _ := newSeats(p)
+	s, _ := newTaskSandboxes(p)
 	if _, err := s.Start(ctx, task, validSpec()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Start(ctx, task, validSpec()); !errors.Is(err, ErrSeated) || len(p.created) != 1 {
+	if _, err := s.Start(ctx, task, validSpec()); !errors.Is(err, ErrAlreadyHeld) || len(p.created) != 1 {
 		t.Fatalf("second start = %v creates=%d", err, len(p.created))
 	}
 }
 
-func TestSeatsStartRefusesASpecForAnotherTask(t *testing.T) {
+func TestTaskSandboxesStartRefusesASpecForAnotherTask(t *testing.T) {
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	if _, err := s.Start(context.Background(), "018f3b2c-7a10-7c4a-8e11-222222222222", validSpec()); !errors.Is(err, ErrSpec) || len(p.created) != 0 {
 		t.Fatalf("start = %v creates=%d", err, len(p.created))
 	}
@@ -502,20 +502,20 @@ func TestSeatsStartRefusesASpecForAnotherTask(t *testing.T) {
 	if _, err := s.Start(context.Background(), task, spec); !errors.Is(err, ErrSpec) || len(p.created) != 0 {
 		t.Fatalf("bad spec = %v creates=%d", err, len(p.created))
 	}
-	if len(book.seats) != 0 {
-		t.Fatalf("seats = %v", book.seats)
+	if len(book.rows) != 0 {
+		t.Fatalf("rows = %v", book.rows)
 	}
 }
 
-func TestSeatsCreateFailureHoldsNothing(t *testing.T) {
+func TestTaskSandboxesCreateFailureHoldsNothing(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{createErr: ErrIsolation}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	if _, err := s.Start(ctx, task, validSpec()); !errors.Is(err, ErrIsolation) {
 		t.Fatalf("start = %v", err)
 	}
-	if len(book.seats) != 0 {
-		t.Fatalf("seats after failed create = %v", book.seats)
+	if len(book.rows) != 0 {
+		t.Fatalf("rows after failed create = %v", book.rows)
 	}
 	p.createErr = nil
 	if _, err := s.Start(ctx, task, validSpec()); err != nil {
@@ -523,18 +523,18 @@ func TestSeatsCreateFailureHoldsNothing(t *testing.T) {
 	}
 }
 
-func TestSeatsClaimFailureCreatesNothing(t *testing.T) {
+func TestTaskSandboxesClaimFailureCreatesNothing(t *testing.T) {
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	book.claimErr = errors.New("database down")
 	if _, err := s.Start(context.Background(), task, validSpec()); !errors.Is(err, book.claimErr) || len(p.created) != 0 {
 		t.Fatalf("start = %v creates=%d", err, len(p.created))
 	}
 }
 
-func TestSeatsFillFailureDestroysTheNewSandbox(t *testing.T) {
+func TestTaskSandboxesFillFailureDestroysTheNewSandbox(t *testing.T) {
 	p := &fakeProvider{}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	book.fillErr = errors.New("database down")
 	if _, err := s.Start(context.Background(), task, validSpec()); !errors.Is(err, book.fillErr) {
 		t.Fatalf("start = %v", err)
@@ -542,15 +542,15 @@ func TestSeatsFillFailureDestroysTheNewSandbox(t *testing.T) {
 	if !slices.Equal(p.destroyedIDs(), []string{"box-1"}) {
 		t.Fatalf("destroyed = %v", p.destroyedIDs())
 	}
-	if len(book.seats) != 0 {
-		t.Fatalf("seats = %v", book.seats)
+	if len(book.rows) != 0 {
+		t.Fatalf("rows = %v", book.rows)
 	}
 }
 
-func TestSeatsReleaseDuringCreateDestroysTheNewSandbox(t *testing.T) {
+func TestTaskSandboxesReleaseDuringCreateDestroysTheNewSandbox(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{gate: make(chan struct{}), entered: make(chan struct{})}
-	s, book := newSeats(p)
+	s, book := newTaskSandboxes(p)
 	done := make(chan error, 1)
 	go func() {
 		_, err := s.Start(ctx, task, validSpec())
@@ -572,10 +572,10 @@ func TestSeatsReleaseDuringCreateDestroysTheNewSandbox(t *testing.T) {
 	}
 }
 
-func TestSeatsDestroyFailureKeepsTheSeat(t *testing.T) {
+func TestTaskSandboxesDestroyFailureKeepsTheBinding(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
-	s, _ := newSeats(p)
+	s, _ := newTaskSandboxes(p)
 	if _, err := s.Start(ctx, task, validSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -584,83 +584,83 @@ func TestSeatsDestroyFailureKeepsTheSeat(t *testing.T) {
 		t.Fatal("release hid the destroy failure")
 	}
 	if _, ok := held(t, s, task); !ok {
-		t.Fatal("seat forgotten after a failed destroy")
+		t.Fatal("task sandbox forgotten after a failed destroy")
 	}
 	p.destroyErr = ErrNotFound
 	if err := s.Release(ctx, task); err != nil {
 		t.Fatalf("gone sandbox = %v", err)
 	}
 	if _, ok := held(t, s, task); ok {
-		t.Fatal("seat kept after sandboxd lost the sandbox")
+		t.Fatal("task sandbox kept after sandboxd lost the sandbox")
 	}
 }
 
-// fakeBook is a SeatBook in memory. An empty sandbox id is a pending seat.
-type fakeBook struct {
+// fakeStore is a TaskSandboxStore in memory. An empty sandbox id is a pending task sandbox.
+type fakeStore struct {
 	mu       sync.Mutex
-	seats    map[string]string
+	rows     map[string]string
 	ttl      map[string]time.Duration
 	expires  map[string]time.Time
 	claimErr error
 	fillErr  error
 }
 
-var _ SeatBook = (*fakeBook)(nil)
+var _ TaskSandboxStore = (*fakeStore)(nil)
 
-func (b *fakeBook) Claim(_ context.Context, taskID string, ttl time.Duration) error {
+func (b *fakeStore) Claim(_ context.Context, taskID string, ttl time.Duration) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.claimErr != nil {
 		return b.claimErr
 	}
-	if _, taken := b.seats[taskID]; taken {
-		return ErrSeated
+	if _, taken := b.rows[taskID]; taken {
+		return ErrAlreadyHeld
 	}
-	if b.seats == nil {
-		b.seats, b.ttl, b.expires = map[string]string{}, map[string]time.Duration{}, map[string]time.Time{}
+	if b.rows == nil {
+		b.rows, b.ttl, b.expires = map[string]string{}, map[string]time.Duration{}, map[string]time.Time{}
 	}
-	b.seats[taskID] = ""
+	b.rows[taskID] = ""
 	b.ttl[taskID] = ttl
 	return nil
 }
 
-func (b *fakeBook) Fill(_ context.Context, taskID, sandboxID string, expires time.Time) (bool, error) {
+func (b *fakeStore) Fill(_ context.Context, taskID, sandboxID string, expires time.Time) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.fillErr != nil {
 		return false, b.fillErr
 	}
-	id, ok := b.seats[taskID]
+	id, ok := b.rows[taskID]
 	if !ok || id != "" {
 		return false, nil
 	}
-	b.seats[taskID] = sandboxID
+	b.rows[taskID] = sandboxID
 	if !expires.IsZero() {
 		b.expires[taskID] = expires
 	}
 	return true, nil
 }
 
-func (b *fakeBook) Seat(_ context.Context, taskID string) (string, bool, error) {
+func (b *fakeStore) Lookup(_ context.Context, taskID string) (string, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	id, ok := b.seats[taskID]
+	id, ok := b.rows[taskID]
 	return id, ok, nil
 }
 
-func (b *fakeBook) Drop(_ context.Context, taskID, sandboxID string) error {
+func (b *fakeStore) Drop(_ context.Context, taskID, sandboxID string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if id, ok := b.seats[taskID]; ok && id == sandboxID {
-		delete(b.seats, taskID)
+	if id, ok := b.rows[taskID]; ok && id == sandboxID {
+		delete(b.rows, taskID)
 	}
 	return nil
 }
 
-func (b *fakeBook) size() int {
+func (b *fakeStore) size() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.seats)
+	return len(b.rows)
 }
 
 // fakeProvider records Create, Destroy and Exec, and keeps files in memory.

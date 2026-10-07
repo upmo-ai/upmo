@@ -56,6 +56,9 @@ const (
 	// service on the sandbox network instead, because an internal network
 	// cannot reach the engine host.
 	DefaultProxyURL = "http://host.docker.internal:3128"
+	// DefaultEditorImage is the code editor when Options.EditorImage and
+	// UPMO_EDITOR_IMAGE are empty. Override to use an install-built image.
+	DefaultEditorImage = "gitpod/openvscode-server:1.92.1"
 
 	namePrefix = "upmo-sandbox-"
 
@@ -121,7 +124,7 @@ type Options struct {
 	// ProxyURL is the egress proxy as a sandbox reaches it, an http URL with
 	// no user, path or query; empty means DefaultProxyURL.
 	ProxyURL string
-	// EditorImage is the code editor container image; empty refuses StartEditor.
+	// EditorImage is the code editor container image; empty means DefaultEditorImage.
 	EditorImage string
 }
 
@@ -221,6 +224,13 @@ func newDriver(api engine, opts Options) (*Driver, error) {
 		editorImage: strings.TrimSpace(opts.EditorImage),
 		boxes:       map[string]box{},
 	}, nil
+}
+
+func (d *Driver) editorImageRef() string {
+	if img := strings.TrimSpace(d.editorImage); img != "" {
+		return img
+	}
+	return DefaultEditorImage
 }
 
 // ParseProxyURL checks raw is an http URL with a host and no user, path,
