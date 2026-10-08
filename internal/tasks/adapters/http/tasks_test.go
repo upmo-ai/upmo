@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	runtimedomain "github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -166,6 +168,33 @@ func TestProgressMissingIsNotFound(t *testing.T) {
 	}
 }
 
+func TestEditorReturnsURLTokenAndExpiry(t *testing.T) {
+	book := &fakeBook{viewed: app.Task{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}
+	editor := &fakeEditorSandboxes{url: "http://127.0.0.1:30001"}
+	now := time.Unix(1_700_000_000, 0)
+	rec := callEditor(t, book, editor, fakeEditorSigner{token: "signed"}, now)
+	if rec.Code != http.StatusOK || book.views != 1 || editor.calls != 1 {
+		t.Fatalf("status %d views %d calls %d body %s", rec.Code, book.views, editor.calls, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	wantExp := now.UTC().Add(runtimedomain.TokenTTL).Format(time.RFC3339)
+	if got["url"] != "http://127.0.0.1:30001" || got["token"] != "signed" || got["expires_at"] != wantExp {
+		t.Fatalf("body = %#v", got)
+	}
+}
+
+func TestEditorNoSandboxIsConflict(t *testing.T) {
+	book := &fakeBook{}
+	editor := &fakeEditorSandboxes{err: app.ErrNoTaskSandbox}
+	rec := callEditor(t, book, editor, fakeEditorSigner{token: "x"}, time.Now())
+	if rec.Code != http.StatusConflict || book.views != 1 {
+		t.Fatalf("status %d views %d", rec.Code, book.views)
+	}
+}
+
 func TestProgressGoneTaskIsNotFound(t *testing.T) {
 	book := &fakeBook{err: app.ErrGone}
 	rec := callProgress(t, book, fakeProgress{taskID: {Phase: "clone", Events: 1}}, "/api/tasks/"+taskID+"/progress", true)
@@ -176,6 +205,49 @@ func TestProgressGoneTaskIsNotFound(t *testing.T) {
 
 func handler(book *fakeBook, allow bool) http.Handler {
 	return handlerWithProgress(book, nil, allow)
+}
+
+type fakeEditorSandboxes struct {
+	url   string
+	err   error
+	calls int
+}
+
+func (f *fakeEditorSandboxes) StartEditor(context.Context, string, string) (runtime.Endpoint, error) {
+	f.calls++
+	if f.err != nil {
+		return runtime.Endpoint{}, f.err
+	}
+	return runtime.Endpoint{URL: f.url}, nil
+}
+
+type fakeEditorSigner struct {
+	token string
+}
+
+func (f fakeEditorSigner) Sign(string, string, string, time.Time) (string, error) {
+	return f.token, nil
+}
+
+func callEditor(t *testing.T, book *fakeBook, editor app.EditorSandboxes, signer app.EditorSigner, now time.Time) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	Handler{
+		Book:         book,
+		List:         book,
+		View:         book,
+		PublicURL:    "http://localhost:5173",
+		Editor:       editor,
+		EditorSigner: signer,
+		Now:          func() time.Time { return now },
+		Access: func(*http.Request) (app.Access, bool) {
+			return app.Access{UserID: "11111111-1111-1111-1111-111111111111", Allow: "task:view"}, true
+		},
+	}.Mount(mux, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/editor", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
 }
 
 func handlerWithProgress(book *fakeBook, progress app.Progresses, allow bool) http.Handler {

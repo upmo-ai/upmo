@@ -38,6 +38,8 @@ var (
 	// ErrAlreadyHeld reports a task that already holds a sandbox, or has one
 	// being created.
 	ErrAlreadyHeld = errors.New("runtime: task already holds a sandbox")
+	// ErrNoHeldSandbox reports a task with no held sandbox id in the store.
+	ErrNoHeldSandbox = errors.New("runtime: task holds no sandbox")
 	// ErrReleased reports a task released while its sandbox was being
 	// created. The new sandbox is destroyed.
 	ErrReleased = errors.New("runtime: task released during create")
@@ -416,6 +418,21 @@ func (s *TaskSandboxes) Held(ctx context.Context, taskID string) (string, bool, 
 		return "", false, err
 	}
 	return id, true, nil
+}
+
+// StartEditor starts the code editor beside the sandbox taskID holds.
+func (s *TaskSandboxes) StartEditor(ctx context.Context, taskID, status string) (Endpoint, error) {
+	if s == nil || s.Provider == nil {
+		return Endpoint{}, ErrSandboxdUnset
+	}
+	id, held, err := s.Held(ctx, taskID)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	if !held {
+		return Endpoint{}, ErrNoHeldSandbox
+	}
+	return s.Provider.StartEditor(ctx, id, status)
 }
 
 // destroy calls the provider and treats a sandbox it no longer has as gone.

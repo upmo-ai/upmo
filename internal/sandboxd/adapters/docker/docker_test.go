@@ -29,7 +29,6 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 // fake is an in-memory engine. It records what the driver asked for and
@@ -909,8 +908,12 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 		editor.HostConfig.Mounts[0].Target != ScratchDir || !editor.HostConfig.Mounts[0].ReadOnly {
 		t.Fatalf("mount = %+v", editor.HostConfig.Mounts)
 	}
-	if _, err := d.StartEditor(ctx, box.ID, "Working"); !errors.Is(err, domain.ErrEditor) {
-		t.Fatalf("second start err = %v", err)
+	ep2, err := d.StartEditor(ctx, box.ID, "Working")
+	if err != nil || ep2.URL != ep.URL {
+		t.Fatalf("second start = %+v %v, want url %q", ep2, err, ep.URL)
+	}
+	if len(f.created) != 2 {
+		t.Fatalf("second start created another container: %d", len(f.created))
 	}
 	if err := d.StopEditor(ctx, box.ID); err != nil {
 		t.Fatal(err)

@@ -43,6 +43,13 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 		return runtime.Endpoint{}, err
 	}
 	if err := domain.AdmitEditor(open); err != nil {
+		if open > 0 {
+			url, urlErr := d.editorURL(ctx, id)
+			if urlErr != nil {
+				return runtime.Endpoint{}, urlErr
+			}
+			return runtime.Endpoint{URL: url}, nil
+		}
 		return runtime.Endpoint{}, err
 	}
 	image := d.editorImageRef()
