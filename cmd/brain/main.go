@@ -255,12 +255,23 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
 	taskBook := taskstore.Store{Pool: pool, Enqueuer: work}
+	var editorSigner taskapp.EditorSigner
+	if cfg.ServiceKey != "" {
+		editorTokens, err := taskapp.NewEditorTokens(cfg.ServiceKey, cfg.ServiceKeyPrevious)
+		if err != nil {
+			return nil, err
+		}
+		editorSigner = editorTokens
+	}
 	taskhttp.Handler{
-		Book:      taskBook,
-		List:      taskBook,
-		View:      taskBook,
-		Sandboxes: boxes,
-		Progress:  boxes,
+		Book:         taskBook,
+		List:         taskBook,
+		View:         taskBook,
+		Sandboxes:    boxes,
+		Progress:     boxes,
+		PublicURL:    cfg.PublicURL,
+		Editor:       boxes,
+		EditorSigner: editorSigner,
 		Access: func(r *http.Request) (taskapp.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

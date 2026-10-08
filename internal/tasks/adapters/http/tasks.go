@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
@@ -25,6 +27,14 @@ type Handler struct {
 	// Progress returns the in-process Preparing record. Nil answers not found
 	// for GET /api/tasks/{id}/progress.
 	Progress app.Progresses
+	// PublicURL is the browser origin (UPMO_PUBLIC_URL) for editor origin checks.
+	PublicURL string
+	// Editor starts the code editor beside a held task sandbox. Nil refuses.
+	Editor app.EditorSandboxes
+	// EditorSigner mints the bound editor JWT. Nil refuses.
+	EditorSigner app.EditorSigner
+	// Now returns the current time. Nil uses time.Now().
+	Now func() time.Time
 }
 
 // Mount registers the task routes. guard runs first.
@@ -40,6 +50,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/tasks/{id}", wrap(http.HandlerFunc(h.get)))
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
+	mux.Handle("POST /api/tasks/{id}/editor", wrap(http.HandlerFunc(h.editor)))
 }
 
 func (h Handler) progress(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +86,26 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 		body = append(body, taskJSON(task))
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (h Handler) editor(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	now := time.Now
+	if h.Now != nil {
+		now = h.Now
+	}
+	out, err := app.OpenEditor(r.Context(), h.View, h.Editor, h.EditorSigner, h.PublicURL, access, r.PathValue("id"), now())
+	if refuse(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"url":        out.URL,
+		"token":      out.Token,
+		"expires_at": out.ExpiresAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func (h Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -188,8 +219,14 @@ func refuse(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, app.ErrSandboxUnset):
 		writeError(w, http.StatusServiceUnavailable, "the task needs a sandbox and none is configured")
+	case errors.Is(err, app.ErrNoTaskSandbox):
+		writeError(w, http.StatusConflict, "the task holds no sandbox")
 	case errors.Is(err, app.ErrSandbox):
 		writeError(w, http.StatusServiceUnavailable, "the task sandbox could not start")
+	case errors.Is(err, runtime.ErrUnsupported):
+		writeError(w, http.StatusServiceUnavailable, "the code editor is not available on this install")
+	case errors.Is(err, runtime.ErrEditor):
+		writeError(w, http.StatusConflict, "the task cannot open a code editor in this status")
 	case errors.Is(err, runtime.ErrRepo):
 		writeError(w, http.StatusBadRequest, "the repository must be owner/name or an https URL")
 	case errors.Is(err, app.ErrAccess):
@@ -202,6 +239,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusBadRequest, "the task input was refused")
 	case errors.Is(err, domain.ErrTerminal), errors.Is(err, domain.ErrEvidence), errors.Is(err, domain.ErrTurn), errors.Is(err, domain.ErrExhausted), errors.Is(err, domain.ErrStatus):
 		writeError(w, http.StatusConflict, "the task cannot take that step")
+	case errors.Is(err, editorjwt.ErrNoKey):
+		writeError(w, http.StatusInternalServerError, "task")
 	default:
 		writeError(w, http.StatusInternalServerError, "task")
 	}

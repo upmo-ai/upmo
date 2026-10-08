@@ -83,6 +83,7 @@ var (
 	ErrSandboxdUnset     = app.ErrSandboxdUnset
 	ErrNoTaskSandboxStore = app.ErrNoTaskSandboxStore
 	ErrAlreadyHeld       = app.ErrAlreadyHeld
+	ErrNoHeldSandbox     = app.ErrNoHeldSandbox
 	ErrReleased          = app.ErrReleased
 	ErrClass             = domain.ErrClass
 )

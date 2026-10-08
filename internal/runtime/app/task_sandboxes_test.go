@@ -405,6 +405,31 @@ func TestTaskSandboxesWithoutProviderIsClear(t *testing.T) {
 	}
 }
 
+func TestTaskSandboxesStartEditorNeedsHeldSandbox(t *testing.T) {
+	p := &fakeProvider{editorEp: Endpoint{URL: "http://127.0.0.1:30001"}}
+	s, _ := newTaskSandboxes(p)
+	task := "11111111-1111-1111-1111-111111111111"
+	if _, err := s.StartEditor(context.Background(), task, "Working"); !errors.Is(err, ErrNoHeldSandbox) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTaskSandboxesStartEditorCallsProvider(t *testing.T) {
+	p := &fakeProvider{editorEp: Endpoint{URL: "http://127.0.0.1:30001"}}
+	s, book := newTaskSandboxes(p)
+	task := "11111111-1111-1111-1111-111111111111"
+	if err := book.Claim(context.Background(), task, SandboxTTL); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := book.Fill(context.Background(), task, "box-1", time.Now().Add(SandboxTTL)); err != nil || !ok {
+		t.Fatalf("fill = %t %v", ok, err)
+	}
+	ep, err := s.StartEditor(context.Background(), task, "Working")
+	if err != nil || ep.URL != "http://127.0.0.1:30001" {
+		t.Fatalf("start editor = %+v %v", ep, err)
+	}
+}
+
 func TestTaskSandboxesWithoutBookRefusesToCreate(t *testing.T) {
 	ctx := context.Background()
 	p := &fakeProvider{}
@@ -680,6 +705,9 @@ type fakeProvider struct {
 	files    map[string][]byte
 	readErr  error
 	writeErr error
+
+	editorEp  Endpoint
+	editorErr error
 }
 
 type execCall struct {
@@ -798,8 +826,16 @@ func (f *fakeProvider) Expose(context.Context, string, int) (Endpoint, error) {
 
 func (f *fakeProvider) Pause(context.Context, string) error { return ErrUnsupported }
 
-func (f *fakeProvider) StartEditor(context.Context, string, string) (Endpoint, error) {
-	return Endpoint{}, ErrUnsupported
+func (f *fakeProvider) StartEditor(_ context.Context, id, status string) (Endpoint, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.editorErr != nil {
+		return Endpoint{}, f.editorErr
+	}
+	if f.editorEp.URL == "" {
+		return Endpoint{}, ErrUnsupported
+	}
+	return f.editorEp, nil
 }
 
 func (f *fakeProvider) StopEditor(context.Context, string) error { return ErrUnsupported }
