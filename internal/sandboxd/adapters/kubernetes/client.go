@@ -17,6 +17,12 @@ type cluster interface {
 	DeletePod(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	GetPod(ctx context.Context, name string) (*corev1.Pod, error)
 	ListPods(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error)
+	CreatePVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error)
+	GetPVC(ctx context.Context, name string) (*corev1.PersistentVolumeClaim, error)
+	DeletePVC(ctx context.Context, name string, opts metav1.DeleteOptions) error
+	CreateService(ctx context.Context, svc *corev1.Service) (*corev1.Service, error)
+	GetService(ctx context.Context, name string) (*corev1.Service, error)
+	DeleteService(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	Exec(ctx context.Context, podName string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
@@ -56,6 +62,30 @@ func (k *kubeClient) GetPod(ctx context.Context, name string) (*corev1.Pod, erro
 
 func (k *kubeClient) ListPods(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error) {
 	return k.cs.CoreV1().Pods(k.ns).List(ctx, opts)
+}
+
+func (k *kubeClient) CreatePVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error) {
+	return k.cs.CoreV1().PersistentVolumeClaims(k.ns).Create(ctx, pvc, metav1.CreateOptions{})
+}
+
+func (k *kubeClient) GetPVC(ctx context.Context, name string) (*corev1.PersistentVolumeClaim, error) {
+	return k.cs.CoreV1().PersistentVolumeClaims(k.ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (k *kubeClient) DeletePVC(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return k.cs.CoreV1().PersistentVolumeClaims(k.ns).Delete(ctx, name, opts)
+}
+
+func (k *kubeClient) CreateService(ctx context.Context, svc *corev1.Service) (*corev1.Service, error) {
+	return k.cs.CoreV1().Services(k.ns).Create(ctx, svc, metav1.CreateOptions{})
+}
+
+func (k *kubeClient) GetService(ctx context.Context, name string) (*corev1.Service, error) {
+	return k.cs.CoreV1().Services(k.ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (k *kubeClient) DeleteService(ctx context.Context, name string, opts metav1.DeleteOptions) error {
+	return k.cs.CoreV1().Services(k.ns).Delete(ctx, name, opts)
 }
 
 func (k *kubeClient) Exec(ctx context.Context, podName string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {

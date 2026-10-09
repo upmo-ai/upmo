@@ -21,9 +21,15 @@ import (
 type fakeCluster struct {
 	mu sync.Mutex
 
-	pods    map[string]*corev1.Pod
-	created []*corev1.Pod
-	deleted []string
+	pods      map[string]*corev1.Pod
+	pvcs      map[string]*corev1.PersistentVolumeClaim
+	services  map[string]*corev1.Service
+	created   []*corev1.Pod
+	pvcsMade  []*corev1.PersistentVolumeClaim
+	svcMade   []*corev1.Service
+	deleted   []string
+	pvcsDel   []string
+	svcDel    []string
 
 	execOut   string
 	execErr   error
@@ -32,7 +38,11 @@ type fakeCluster struct {
 }
 
 func newFakeCluster() *fakeCluster {
-	return &fakeCluster{pods: map[string]*corev1.Pod{}}
+	return &fakeCluster{
+		pods:     map[string]*corev1.Pod{},
+		pvcs:     map[string]*corev1.PersistentVolumeClaim{},
+		services: map[string]*corev1.Service{},
+	}
 }
 
 func (f *fakeCluster) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
@@ -42,9 +52,76 @@ func (f *fakeCluster) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod
 		return nil, apierrors.NewAlreadyExists(corev1.Resource("pods"), pod.Name)
 	}
 	clone := pod.DeepCopy()
+	clone.Status.Phase = corev1.PodRunning
 	f.pods[pod.Name] = clone
 	f.created = append(f.created, clone)
 	return clone, nil
+}
+
+func (f *fakeCluster) CreatePVC(_ context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.pvcs[pvc.Name]; ok {
+		return nil, apierrors.NewAlreadyExists(corev1.Resource("persistentvolumeclaims"), pvc.Name)
+	}
+	clone := pvc.DeepCopy()
+	f.pvcs[pvc.Name] = clone
+	f.pvcsMade = append(f.pvcsMade, clone)
+	return clone, nil
+}
+
+func (f *fakeCluster) GetPVC(_ context.Context, name string) (*corev1.PersistentVolumeClaim, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pvc, ok := f.pvcs[name]
+	if !ok {
+		return nil, apierrors.NewNotFound(corev1.Resource("persistentvolumeclaims"), name)
+	}
+	return pvc.DeepCopy(), nil
+}
+
+func (f *fakeCluster) DeletePVC(_ context.Context, name string, _ metav1.DeleteOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.pvcs[name]; !ok {
+		return apierrors.NewNotFound(corev1.Resource("persistentvolumeclaims"), name)
+	}
+	delete(f.pvcs, name)
+	f.pvcsDel = append(f.pvcsDel, name)
+	return nil
+}
+
+func (f *fakeCluster) CreateService(_ context.Context, svc *corev1.Service) (*corev1.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.services[svc.Name]; ok {
+		return nil, apierrors.NewAlreadyExists(corev1.Resource("services"), svc.Name)
+	}
+	clone := svc.DeepCopy()
+	f.services[svc.Name] = clone
+	f.svcMade = append(f.svcMade, clone)
+	return clone, nil
+}
+
+func (f *fakeCluster) GetService(_ context.Context, name string) (*corev1.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	svc, ok := f.services[name]
+	if !ok {
+		return nil, apierrors.NewNotFound(corev1.Resource("services"), name)
+	}
+	return svc.DeepCopy(), nil
+}
+
+func (f *fakeCluster) DeleteService(_ context.Context, name string, _ metav1.DeleteOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.services[name]; !ok {
+		return apierrors.NewNotFound(corev1.Resource("services"), name)
+	}
+	delete(f.services, name)
+	f.svcDel = append(f.svcDel, name)
+	return nil
 }
 
 func (f *fakeCluster) DeletePod(_ context.Context, name string, _ metav1.DeleteOptions) error {
@@ -108,8 +185,13 @@ func (e fakeExit) ExitStatus() int { return e.code }
 
 func testDriver(t *testing.T, now func() time.Time) (*Driver, *fakeCluster) {
 	t.Helper()
+	return testDriverEditor(t, now, "")
+}
+
+func testDriverEditor(t *testing.T, now func() time.Time, editorImage string) (*Driver, *fakeCluster) {
+	t.Helper()
 	fake := newFakeCluster()
-	d := &Driver{api: fake, ns: "test", now: now, boxes: map[string]box{}}
+	d := &Driver{api: fake, ns: "test", now: now, editorImage: editorImage, boxes: map[string]box{}}
 	return d, fake
 }
 
@@ -143,12 +225,22 @@ func TestCreateAdmitsContainerTierOnly(t *testing.T) {
 	if box.ID == "" || box.Tier != runtime.TierContainer || box.Shape != runtime.ResourceShape() || !box.Expires.Equal(now.Add(time.Hour)) {
 		t.Fatalf("box = %+v", box)
 	}
+	if len(fake.pvcsMade) != 1 {
+		t.Fatalf("pvcs = %d", len(fake.pvcsMade))
+	}
+	if fake.pvcsMade[0].Name != scratchPVCName(box.ID) {
+		t.Fatalf("pvc name = %q", fake.pvcsMade[0].Name)
+	}
 	if len(fake.created) != 1 {
 		t.Fatalf("created = %d", len(fake.created))
 	}
 	pod := fake.created[0]
 	if pod.Labels[labelSandbox] != box.ID || pod.Spec.Containers[0].Image != spec().Image {
 		t.Fatalf("pod = %+v", pod)
+	}
+	vol := pod.Spec.Volumes[0].PersistentVolumeClaim
+	if vol == nil || vol.ClaimName != scratchPVCName(box.ID) {
+		t.Fatalf("scratch volume = %+v", pod.Spec.Volumes[0])
 	}
 	if name := pod.Spec.RuntimeClassName; name != nil {
 		t.Fatalf("container RuntimeClassName = %v, want nil", *name)
@@ -195,7 +287,10 @@ func TestDestroyRemovesPod(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(fake.deleted) != 1 || fake.deleted[0] != podName(box.ID) {
-		t.Fatalf("deleted = %v", fake.deleted)
+		t.Fatalf("deleted pods = %v", fake.deleted)
+	}
+	if len(fake.pvcsDel) != 1 || fake.pvcsDel[0] != scratchPVCName(box.ID) {
+		t.Fatalf("deleted pvcs = %v", fake.pvcsDel)
 	}
 	if err := d.Destroy(ctx, box.ID); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("second destroy = %v", err)
@@ -282,6 +377,112 @@ func TestPauseKeepsFilesReadable(t *testing.T) {
 	got, err := d.ReadFile(ctx, box.ID, "keep.txt")
 	if err != nil || string(got) != "kept" {
 		t.Fatalf("read on paused = %q %v", got, err)
+	}
+}
+
+func TestStartEditorMountsScratchReadOnlyAndIdempotent(t *testing.T) {
+	d, fake := testDriverEditor(t, time.Now, "upmo/editor:dev")
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantURL := editorServiceURL("test", box.ID)
+	ep, err := d.StartEditor(ctx, box.ID, "Working")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.URL != wantURL {
+		t.Fatalf("url = %q, want %q", ep.URL, wantURL)
+	}
+	if len(fake.svcMade) != 1 || fake.svcMade[0].Name != editorPodName(box.ID) {
+		t.Fatalf("service = %+v", fake.svcMade)
+	}
+	if len(fake.created) != 2 {
+		t.Fatalf("pods = %d", len(fake.created))
+	}
+	editor := fake.created[1]
+	if editor.Name != editorPodName(box.ID) || editor.Spec.Containers[0].Image != "upmo/editor:dev" {
+		t.Fatalf("editor = %+v", editor)
+	}
+	mount := editor.Spec.Containers[0].VolumeMounts[0]
+	if mount.MountPath != ScratchDir || !mount.ReadOnly {
+		t.Fatalf("mount = %+v", mount)
+	}
+	ep2, err := d.StartEditor(ctx, box.ID, "Working")
+	if err != nil || ep2.URL != ep.URL {
+		t.Fatalf("second start = %+v %v", ep2, err)
+	}
+	if len(fake.created) != 2 {
+		t.Fatalf("second start created another pod: %d", len(fake.created))
+	}
+}
+
+func TestStartEditorUsesDefaultImage(t *testing.T) {
+	d, fake := testDriver(t, time.Now)
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	editor := fake.created[len(fake.created)-1]
+	if editor.Spec.Containers[0].Image != DefaultEditorImage {
+		t.Fatalf("image = %q, want %q", editor.Spec.Containers[0].Image, DefaultEditorImage)
+	}
+	wantCmd := []string{
+		"--host", "0.0.0.0",
+		"--port", "3000",
+		"--without-connection-token",
+		"--default-folder", ScratchDir,
+	}
+	if !slices.Equal(editor.Spec.Containers[0].Command, wantCmd) {
+		t.Fatalf("cmd = %v, want %v", editor.Spec.Containers[0].Command, wantCmd)
+	}
+}
+
+func TestStopEditorRemovesServiceAndPod(t *testing.T) {
+	d, fake := testDriver(t, time.Now)
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Done"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorPodName(box.ID)
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(fake.svcDel, name) || !slices.Contains(fake.deleted, name) {
+		t.Fatalf("deleted svc %v pod %v", fake.svcDel, fake.deleted)
+	}
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal("second stop should be idempotent")
+	}
+}
+
+func TestDestroyRemovesPVCEditorAndSandbox(t *testing.T) {
+	d, fake := testDriver(t, time.Now)
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Destroy(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(fake.deleted, editorPodName(box.ID)) || !slices.Contains(fake.deleted, podName(box.ID)) {
+		t.Fatalf("deleted pods = %v", fake.deleted)
+	}
+	if !slices.Contains(fake.pvcsDel, scratchPVCName(box.ID)) {
+		t.Fatalf("deleted pvcs = %v", fake.pvcsDel)
 	}
 }
 
