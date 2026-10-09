@@ -1,6 +1,6 @@
 // Package kubernetes is the Kubernetes API driver for the container tier.
-// Each sandbox is one Pod with an emptyDir scratch volume at
-// /scratch, no host mounts and the fixed resource shape.
+// Each sandbox is one Pod with a PVC scratch volume at /scratch,
+// no host mounts and the fixed resource shape.
 //
 // Open reads kubeconfig from KUBECONFIG or the default location, or the
 // in-cluster service account when sandboxd runs inside a cluster.
@@ -56,6 +56,8 @@ var ErrPaused = errors.New("kubernetes: sandbox is paused")
 type Options struct {
 	// Namespace holds sandbox Pods; empty means default or UPMO_SANDBOX_NAMESPACE.
 	Namespace string
+	// EditorImage is the code editor container image; empty means DefaultEditorImage.
+	EditorImage string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// ConfigLoader builds REST config; nil uses kubeconfig or in-cluster rules.
@@ -66,9 +68,10 @@ type Options struct {
 
 // Driver runs sandboxes as Kubernetes Pods.
 type Driver struct {
-	api cluster
-	ns  string
-	now func() time.Time
+	api         cluster
+	ns          string
+	now         func() time.Time
+	editorImage string
 
 	mu    sync.Mutex
 	boxes map[string]box
@@ -121,7 +124,13 @@ func Open(ctx context.Context, opts Options) (*Driver, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Driver{api: k, ns: ns, now: opts.Now, boxes: map[string]box{}}, nil
+	return &Driver{
+		api:         k,
+		ns:          ns,
+		now:         opts.Now,
+		editorImage: strings.TrimSpace(opts.EditorImage),
+		boxes:       map[string]box{},
+	}, nil
 }
 
 func loadRESTConfig() (*rest.Config, error) {
@@ -166,6 +175,9 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 		labelExpires: expires.Format(time.RFC3339Nano),
 	}
 	mem := int64(2 << 30)
+	if _, err := d.api.CreatePVC(ctx, scratchPVC(id, podLabels)); err != nil {
+		return runtime.Sandbox{}, fmt.Errorf("kubernetes: create scratch pvc: %w", err)
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   podName(id),
@@ -177,7 +189,9 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 			Volumes: []corev1.Volume{{
 				Name: scratchVolumeName,
 				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: scratchPVCName(id),
+					},
 				},
 			}},
 			Containers: []corev1.Container{{
@@ -216,7 +230,9 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 		pod.Spec.RuntimeClassName = &class
 	}
 	if _, err := d.api.CreatePod(ctx, pod); err != nil {
-		_ = d.api.DeletePod(context.WithoutCancel(ctx), podName(id), metav1.DeleteOptions{})
+		bg := context.WithoutCancel(ctx)
+		_ = d.api.DeletePod(bg, podName(id), metav1.DeleteOptions{})
+		_ = d.api.DeletePVC(bg, scratchPVCName(id), metav1.DeleteOptions{})
 		return runtime.Sandbox{}, fmt.Errorf("kubernetes: create: %w", err)
 	}
 	d.mu.Lock()
@@ -342,16 +358,6 @@ func (d *Driver) Expose(context.Context, string, int) (runtime.Endpoint, error) 
 	return runtime.Endpoint{}, runtime.ErrUnsupported
 }
 
-// StartEditor is not built in the Kubernetes driver.
-func (d *Driver) StartEditor(context.Context, string, string) (runtime.Endpoint, error) {
-	return runtime.Endpoint{}, runtime.ErrUnsupported
-}
-
-// StopEditor is not built in the Kubernetes driver.
-func (d *Driver) StopEditor(context.Context, string) error {
-	return runtime.ErrUnsupported
-}
-
 func (d *Driver) live(id string) (string, box, bool) {
 	id = strings.TrimSpace(id)
 	d.mu.Lock()
@@ -374,9 +380,16 @@ func (d *Driver) forget(id string) {
 }
 
 func (d *Driver) remove(ctx context.Context, id string) error {
+	if err := d.removeEditor(ctx, id); err != nil {
+		return err
+	}
 	err := d.api.DeletePod(ctx, podName(id), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("kubernetes: delete: %w", err)
+	}
+	err = d.api.DeletePVC(ctx, scratchPVCName(id), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("kubernetes: delete scratch pvc: %w", err)
 	}
 	return nil
 }

@@ -67,9 +67,9 @@ type Network struct {
 // Docker engine from DOCKER_HOST or the default socket when it answers, and
 // falls back to the stub with a warning when it does not. docker fails
 // instead of falling back. network applies to the Docker driver only.
-// editorImage is the code editor image for the Docker driver; empty uses the driver default.
+// editorImage is the code editor image for Docker and Kubernetes; empty uses the driver default.
 func Open(ctx context.Context, choice string, network Network, editorImage string, log *slog.Logger) (Driver, error) {
-	return open(ctx, choice, log, func(ctx context.Context) (Driver, error) {
+	return open(ctx, choice, editorImage, log, func(ctx context.Context) (Driver, error) {
 		d, err := docker.Open(ctx, docker.Options{Network: network.Name, ProxyURL: network.ProxyURL, EditorImage: editorImage})
 		if err != nil {
 			return nil, err
@@ -85,13 +85,13 @@ func Open(ctx context.Context, choice string, network Network, editorImage strin
 	})
 }
 
-func open(ctx context.Context, choice string, log *slog.Logger, dial func(context.Context) (Driver, error)) (Driver, error) {
+func open(ctx context.Context, choice, editorImage string, log *slog.Logger, dial func(context.Context) (Driver, error)) (Driver, error) {
 	switch choice {
 	case DriverStub:
 		log.Info("sandbox driver", "driver", DriverStub)
 		return Stub(), nil
 	case DriverKubernetes:
-		d, err := kubernetes.Open(ctx, kubernetes.Options{})
+		d, err := kubernetes.Open(ctx, kubernetes.Options{EditorImage: editorImage})
 		if err != nil {
 			return nil, fmt.Errorf("sandboxd: kubernetes driver: %w", err)
 		}
