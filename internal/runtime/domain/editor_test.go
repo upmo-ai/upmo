@@ -74,6 +74,38 @@ func TestAdmitEditor(t *testing.T) {
 	}
 }
 
+func TestEditorIdleSinceLabel(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	if idle := EditorIdleSinceLabel(recent, now); idle != 5*time.Minute {
+		t.Fatalf("recent idle = %v, want 5m", idle)
+	}
+	if idle := EditorIdleSinceLabel("", now); idle != EditorIdle {
+		t.Fatalf("missing idle = %v, want %v", idle, EditorIdle)
+	}
+	if idle := EditorIdleSinceLabel("not-a-time", now); idle != EditorIdle {
+		t.Fatalf("malformed idle = %v, want %v", idle, EditorIdle)
+	}
+}
+
+func TestStopIdleEditor(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	stop, err := StopIdleEditor(recent, now)
+	if err != nil || stop {
+		t.Fatalf("recent stop = %v %v, want false nil", stop, err)
+	}
+	old := now.Add(-EditorIdle).Format(time.RFC3339Nano)
+	stop, err = StopIdleEditor(old, now)
+	if err != nil || !stop {
+		t.Fatalf("old stop = %v %v, want true nil", stop, err)
+	}
+	stop, err = StopIdleEditor("", now)
+	if err != nil || !stop {
+		t.Fatalf("missing stop = %v %v, want true nil", stop, err)
+	}
+}
+
 func TestEditorLimits(t *testing.T) {
 	if EditorIdle != 15*time.Minute {
 		t.Fatalf("EditorIdle = %v, want %v", EditorIdle, 15*time.Minute)
