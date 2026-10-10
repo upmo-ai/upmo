@@ -29,6 +29,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 // fake is an in-memory engine. It records what the driver asked for and
@@ -226,6 +227,28 @@ func (f *fake) ContainerList(_ context.Context, opts client.ContainerListOptions
 		items = append(items, container.Summary{Labels: mapsClone(c.labels), State: state})
 	}
 	return client.ContainerListResult{Items: items}, nil
+}
+
+func (f *fake) ContainerSetLabels(_ context.Context, name string, labels map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.containers[name]
+	if !ok || c.removed {
+		return cerrdefs.ErrNotFound
+	}
+	for k, v := range labels {
+		c.labels[k] = v
+	}
+	if c.opts.Config != nil {
+		if c.opts.Config.Labels == nil {
+			c.opts.Config.Labels = map[string]string{}
+		}
+		for k, v := range labels {
+			c.opts.Config.Labels[k] = v
+		}
+	}
+	f.containers[name] = c
+	return nil
 }
 
 func (f *fake) ContainerInspect(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
@@ -954,6 +977,73 @@ func TestStartEditorUsesDefaultImage(t *testing.T) {
 	}
 	if !slices.Equal(ed.Config.Cmd, wantCmd) {
 		t.Fatalf("cmd = %v, want %v", ed.Config.Cmd, wantCmd)
+	}
+}
+
+func TestSweepRemovesIdleEditors(t *testing.T) {
+	d, f, c := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorContainerName(box.ID)
+	n, err := d.Sweep(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("sweep recent = %d %v", n, err)
+	}
+	if _, ok := f.containers[name]; !ok {
+		t.Fatal("editor removed early")
+	}
+	c.add(domain.EditorIdle)
+	n, err = d.Sweep(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("sweep idle = %d %v, want 1", n, err)
+	}
+	if !slices.Contains(f.removed, name) {
+		t.Fatalf("removed %v", f.removed)
+	}
+}
+
+func TestSweepRemovesEditorWithMissingTouched(t *testing.T) {
+	d, f, c := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorContainerName(box.ID)
+	f.mu.Lock()
+	delete(f.containers[name].labels, domain.EditorTouchedLabel)
+	f.mu.Unlock()
+	c.add(time.Minute)
+	n, err := d.Sweep(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("sweep missing touched = %d %v", n, err)
+	}
+}
+
+func TestStartEditorRefreshesTouched(t *testing.T) {
+	d, f, c := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorContainerName(box.ID)
+	first := f.containers[name].labels[domain.EditorTouchedLabel]
+	c.add(domain.EditorIdle - time.Minute)
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	second := f.containers[name].labels[domain.EditorTouchedLabel]
+	if second == first || second == "" {
+		t.Fatalf("touched = %q -> %q", first, second)
+	}
+	c.add(domain.EditorIdle - time.Minute)
+	n, err := d.Sweep(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("sweep after refresh = %d %v", n, err)
 	}
 }
 

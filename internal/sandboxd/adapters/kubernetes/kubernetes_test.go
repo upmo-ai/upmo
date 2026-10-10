@@ -13,9 +13,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/rest"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 type fakeCluster struct {
@@ -135,6 +137,28 @@ func (f *fakeCluster) DeletePod(_ context.Context, name string, _ metav1.DeleteO
 	return nil
 }
 
+func (f *fakeCluster) UpdatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored, ok := f.pods[pod.Name]
+	if !ok {
+		return nil, apierrors.NewNotFound(corev1.Resource("pods"), pod.Name)
+	}
+	stored.Labels = mapsCloneString(pod.Labels)
+	return stored.DeepCopy(), nil
+}
+
+func mapsCloneString(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 func (f *fakeCluster) GetPod(_ context.Context, name string) (*corev1.Pod, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -145,14 +169,32 @@ func (f *fakeCluster) GetPod(_ context.Context, name string) (*corev1.Pod, error
 	return pod.DeepCopy(), nil
 }
 
-func (f *fakeCluster) ListPods(_ context.Context, _ metav1.ListOptions) (*corev1.PodList, error) {
+func (f *fakeCluster) ListPods(_ context.Context, opts metav1.ListOptions) (*corev1.PodList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	items := make([]corev1.Pod, 0, len(f.pods))
 	for _, pod := range f.pods {
+		if !podMatchesSelector(pod, opts.LabelSelector) {
+			continue
+		}
 		items = append(items, *pod.DeepCopy())
 	}
 	return &corev1.PodList{Items: items}, nil
+}
+
+func podMatchesSelector(pod *corev1.Pod, sel string) bool {
+	if sel == "" {
+		return true
+	}
+	reqs, err := metav1.ParseToLabelSelector(sel)
+	if err != nil {
+		return true
+	}
+	s, err := metav1.LabelSelectorAsSelector(reqs)
+	if err != nil {
+		return true
+	}
+	return s.Matches(labels.Set(pod.Labels))
 }
 
 func (f *fakeCluster) Exec(_ context.Context, _ string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -179,6 +221,18 @@ func (f *fakeCluster) Exec(_ context.Context, _ string, cmd []string, stdin io.R
 }
 
 type fakeExit struct{ code int }
+
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *clock) add(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
 
 func (e fakeExit) Error() string   { return "exec failed" }
 func (e fakeExit) ExitStatus() int { return e.code }
@@ -377,6 +431,63 @@ func TestPauseKeepsFilesReadable(t *testing.T) {
 	got, err := d.ReadFile(ctx, box.ID, "keep.txt")
 	if err != nil || string(got) != "kept" {
 		t.Fatalf("read on paused = %q %v", got, err)
+	}
+}
+
+func TestSweepRemovesIdleEditors(t *testing.T) {
+	c := &clock{t: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)}
+	d, fake := testDriverEditor(t, c.now, "upmo/editor:dev")
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorPodName(box.ID)
+	n, err := d.Sweep(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("sweep recent = %d %v", n, err)
+	}
+	if _, ok := fake.pods[name]; !ok {
+		t.Fatal("editor removed early")
+	}
+	c.add(domain.EditorIdle)
+	n, err = d.Sweep(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("sweep idle = %d %v, want 1", n, err)
+	}
+	if !slices.Contains(fake.deleted, name) {
+		t.Fatalf("deleted %v", fake.deleted)
+	}
+}
+
+func TestStartEditorRefreshesTouched(t *testing.T) {
+	c := &clock{t: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)}
+	d, fake := testDriverEditor(t, c.now, "upmo/editor:dev")
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	name := editorPodName(box.ID)
+	first := fake.pods[name].Labels[domain.EditorTouchedLabel]
+	c.add(domain.EditorIdle - time.Minute)
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	second := fake.pods[name].Labels[domain.EditorTouchedLabel]
+	if second == first || second == "" {
+		t.Fatalf("touched = %q -> %q", first, second)
+	}
+	c.add(domain.EditorIdle - time.Minute)
+	n, err := d.Sweep(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("sweep after refresh = %d %v", n, err)
 	}
 }
 

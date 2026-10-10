@@ -16,6 +16,7 @@ type cluster interface {
 	CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
 	DeletePod(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	GetPod(ctx context.Context, name string) (*corev1.Pod, error)
+	UpdatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
 	ListPods(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error)
 	CreatePVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error)
 	GetPVC(ctx context.Context, name string) (*corev1.PersistentVolumeClaim, error)
@@ -58,6 +59,10 @@ func (k *kubeClient) DeletePod(ctx context.Context, name string, opts metav1.Del
 
 func (k *kubeClient) GetPod(ctx context.Context, name string) (*corev1.Pod, error) {
 	return k.cs.CoreV1().Pods(k.ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (k *kubeClient) UpdatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	return k.cs.CoreV1().Pods(k.ns).Update(ctx, pod, metav1.UpdateOptions{})
 }
 
 func (k *kubeClient) ListPods(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error) {

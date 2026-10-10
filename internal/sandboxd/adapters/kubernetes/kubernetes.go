@@ -307,8 +307,18 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
-// Sweep removes every sandbox Pod whose TTL has passed.
+// Sweep removes expired sandbox Pods and idle code editors, and returns how
+// many it removed.
 func (d *Driver) Sweep(ctx context.Context) (int, error) {
+	n, err := d.sweepExpiredSandboxes(ctx)
+	if err != nil {
+		return n, err
+	}
+	idle, err := d.sweepIdleEditors(ctx)
+	return n + idle, err
+}
+
+func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 	req, err := labels.NewRequirement(labelSandbox, selection.Exists, nil)
 	if err != nil {
 		return 0, err
@@ -322,6 +332,9 @@ func (d *Driver) Sweep(ctx context.Context) (int, error) {
 	removed := 0
 	var errs []error
 	for _, pod := range list.Items {
+		if pod.Labels[labelEditor] == "1" {
+			continue
+		}
 		id := pod.Labels[labelSandbox]
 		if _, err := uuid.Parse(id); err != nil {
 			continue

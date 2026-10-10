@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -45,6 +46,9 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	}
 	if err := domain.AdmitEditor(open); err != nil {
 		if open > 0 {
+			if err := d.touchEditor(ctx, id); err != nil {
+				return runtime.Endpoint{}, err
+			}
 			return runtime.Endpoint{URL: editorServiceURL(d.ns, id)}, nil
 		}
 		return runtime.Endpoint{}, err
@@ -62,6 +66,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	labels := map[string]string{
 		labelSandbox: id,
 		labelEditor:  "1",
+		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -165,6 +170,62 @@ func (d *Driver) removeEditor(ctx context.Context, sandboxID string) error {
 }
 
 func editorPodName(id string) string { return editorNamePrefix + id }
+
+func (d *Driver) touchEditor(ctx context.Context, sandboxID string) error {
+	pod, err := d.api.GetPod(ctx, editorPodName(sandboxID))
+	if err != nil {
+		return fmt.Errorf("kubernetes: touch editor: %w", err)
+	}
+	if pod.Labels == nil {
+		pod.Labels = map[string]string{}
+	}
+	pod.Labels[domain.EditorTouchedLabel] = domain.FormatEditorTouched(d.now())
+	if _, err := d.api.UpdatePod(ctx, pod); err != nil {
+		return fmt.Errorf("kubernetes: touch editor: %w", err)
+	}
+	return nil
+}
+
+func (d *Driver) sweepIdleEditors(ctx context.Context) (int, error) {
+	req, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
+		MatchLabels: map[string]string{labelEditor: "1"},
+	})
+	if err != nil {
+		return 0, err
+	}
+	list, err := d.api.ListPods(ctx, metav1.ListOptions{LabelSelector: req.String()})
+	if err != nil {
+		return 0, fmt.Errorf("kubernetes: list editors: %w", err)
+	}
+	now := d.now().UTC()
+	removed := 0
+	var errs []error
+	for _, pod := range list.Items {
+		if pod.Labels[labelEditor] != "1" {
+			continue
+		}
+		stop, err := domain.StopIdleEditor(pod.Labels[domain.EditorTouchedLabel], now)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !stop {
+			continue
+		}
+		sandboxID := strings.TrimSpace(pod.Labels[labelSandbox])
+		if sandboxID == "" {
+			if id, ok := strings.CutPrefix(pod.Name, editorNamePrefix); ok {
+				sandboxID = id
+			}
+		}
+		if err := d.removeEditor(ctx, sandboxID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(errs...)
+}
 
 func scratchPVCName(id string) string { return podName(id) + "-scratch" }
 

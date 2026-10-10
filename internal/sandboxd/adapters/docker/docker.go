@@ -93,6 +93,7 @@ type engine interface {
 	ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerList(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error)
 	ContainerInspect(ctx context.Context, id string, opts client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerSetLabels(ctx context.Context, name string, labels map[string]string) error
 	VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
@@ -176,7 +177,7 @@ func Open(ctx context.Context, opts Options) (*Driver, error) {
 		_ = cli.Close()
 		return nil, fmt.Errorf("docker: engine info: %w", err)
 	}
-	d, err := newDriver(cli, opts)
+	d, err := newDriver(cliEngine{cli}, opts)
 	if err != nil {
 		_ = cli.Close()
 		return nil, err
@@ -450,9 +451,18 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
-// Sweep removes every sandbox container whose TTL has passed, including any
-// an earlier process left behind, and returns how many it removed.
+// Sweep removes expired sandbox containers and idle code editors, and returns
+// how many it removed.
 func (d *Driver) Sweep(ctx context.Context) (int, error) {
+	n, err := d.sweepExpiredSandboxes(ctx)
+	if err != nil {
+		return n, err
+	}
+	idle, err := d.sweepIdleEditors(ctx)
+	return n + idle, err
+}
+
+func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 	list, err := d.api.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
 		Filters: client.Filters{}.Add("label", labelSandbox),
@@ -464,6 +474,9 @@ func (d *Driver) Sweep(ctx context.Context) (int, error) {
 	removed := 0
 	var errs []error
 	for _, c := range list.Items {
+		if c.Labels[labelEditor] == "1" {
+			continue
+		}
 		id := c.Labels[labelSandbox]
 		if _, err := uuid.Parse(id); err != nil {
 			continue

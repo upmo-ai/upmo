@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -44,6 +45,9 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	}
 	if err := domain.AdmitEditor(open); err != nil {
 		if open > 0 {
+			if err := d.touchEditor(ctx, id); err != nil {
+				return runtime.Endpoint{}, err
+			}
 			url, urlErr := d.editorURL(ctx, id)
 			if urlErr != nil {
 				return runtime.Endpoint{}, urlErr
@@ -67,6 +71,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	labels := map[string]string{
 		labelSandbox: id,
 		labelEditor:  "1",
+		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
 	}
 	readOnly := mountRule.Mode == domain.ModeReadOnly
 	init := true
@@ -176,3 +181,51 @@ func (d *Driver) removeEditor(ctx context.Context, sandboxID string) error {
 }
 
 func editorContainerName(id string) string { return editorNamePrefix + id }
+
+func (d *Driver) touchEditor(ctx context.Context, sandboxID string) error {
+	return d.api.ContainerSetLabels(ctx, editorContainerName(sandboxID), map[string]string{
+		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
+	})
+}
+
+func (d *Driver) sweepIdleEditors(ctx context.Context) (int, error) {
+	list, err := d.api.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: client.Filters{}.Add("label", labelEditor+"=1"),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("docker: list editors: %w", err)
+	}
+	now := d.now().UTC()
+	removed := 0
+	var errs []error
+	for _, c := range list.Items {
+		if c.Labels[labelEditor] != "1" {
+			continue
+		}
+		stop, err := domain.StopIdleEditor(c.Labels[domain.EditorTouchedLabel], now)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !stop {
+			continue
+		}
+		sandboxID := strings.TrimSpace(c.Labels[labelSandbox])
+		if sandboxID == "" {
+			for _, raw := range c.Names {
+				name := strings.TrimPrefix(raw, "/")
+				if id, ok := strings.CutPrefix(name, editorNamePrefix); ok {
+					sandboxID = id
+					break
+				}
+			}
+		}
+		if err := d.removeEditor(ctx, sandboxID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(errs...)
+}
