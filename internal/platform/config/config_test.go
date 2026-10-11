@@ -303,6 +303,9 @@ func TestLoadSandboxd(t *testing.T) {
 		t.Fatalf("egress defaults = %q %q", cfg.EgressProxyURL, cfg.SandboxNetwork)
 	}
 
+	if cfg.EditorAddr != ":8084" || cfg.EditorBaseURL != "http://127.0.0.1:8084" {
+		t.Fatalf("editor defaults = %q %q", cfg.EditorAddr, cfg.EditorBaseURL)
+	}
 	cfg, err = loadSandboxd(lookupFrom(map[string]string{
 		"UPMO_SERVICE_KEY":          "upmo_svc_x",
 		"UPMO_SERVICE_KEY_PREVIOUS": "upmo_svc_y",
@@ -327,7 +330,10 @@ func TestLoadSandboxd(t *testing.T) {
 	for name, env := range map[string]map[string]string{
 		"no key":       {},
 		"empty key":    {"UPMO_SERVICE_KEY": ""},
-		"same address": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
+		"same address":          {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
+		"editor same listen":    {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":8083"},
+		"editor same proxy":     {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":3128"},
+		"editor base https":     {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_BASE_URL": "https://127.0.0.1:8084"},
 		"bad timeout":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
 		"bad driver":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "nomad"},
 		"https proxy":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "https://sandboxd:3128"},

@@ -1,5 +1,6 @@
-// Command sandboxd serves the SandboxProvider port, the egress proxy and the
-// credential injector, so container privileges stay out of brain.
+// Command sandboxd serves the SandboxProvider port, the egress proxy, the
+// editor access gate and the credential injector, so container privileges
+// stay out of brain.
 // Brain calls it with the service HMAC for the sandboxd audience.
 package main
 
@@ -41,7 +42,7 @@ func run() error {
 	defer stop()
 
 	network := sandboxd.Network{Name: cfg.SandboxNetwork, ProxyURL: cfg.EgressProxyURL}
-	driver, err := sandboxd.Open(ctx, cfg.Driver, network, cfg.EditorImage, log)
+	driver, err := sandboxd.Open(ctx, cfg.Driver, network, cfg.EditorImage, cfg.EditorBaseURL, log)
 	if err != nil {
 		return err
 	}
@@ -57,16 +58,22 @@ func run() error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	proxy := httpserver.New(cfg.ProxyAddr, sandboxd.Proxy(driver, log))
+	gateHandler, err := sandboxd.EditorGate(cfg.ServiceKey, cfg.ServiceKeyPrevious, driver, log)
+	if err != nil {
+		return err
+	}
+	gate := httpserver.New(cfg.EditorAddr, gateHandler)
 	// Shutdown does not wait for hijacked connections, so every tunnel hangs
 	// off ctx and closes when sandboxd stops.
 	proxy.BaseContext = func(net.Listener) context.Context { return ctx }
+	gate.BaseContext = func(net.Listener) context.Context { return ctx }
 	go sandboxd.Sweep(ctx, driver, sweepEvery, log)
-	errc := make(chan error, 2)
-	for _, srv := range []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy} {
+	errc := make(chan error, 3)
+	for _, srv := range []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy, gate} {
 		go func() {
 			errc <- httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
 			cancel()
 		}()
 	}
-	return errors.Join(<-errc, <-errc)
+	return errors.Join(<-errc, <-errc, <-errc)
 }

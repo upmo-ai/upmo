@@ -71,7 +71,9 @@ func (t EditorTokens) Sign(user, task, session string, now time.Time) (string, e
 }
 
 // OpenEditor views the task, starts the editor beside its sandbox, and returns
-// a separate-origin URL with a short-lived bound token.
+// a separate-origin URL with a short-lived bound token. The browser
+// must send the token to that origin on every request (Authorization: Bearer
+// or query access_token / token); sandboxd verifies it at the editor gate.
 func OpenEditor(ctx context.Context, view Viewer, boxes EditorSandboxes, signer EditorSigner, publicURL string, access Access, taskID string, now time.Time) (EditorSession, error) {
 	task, err := ViewTask(ctx, view, access, taskID)
 	if err != nil {

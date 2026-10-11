@@ -40,6 +40,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
 const (
@@ -127,6 +128,8 @@ type Options struct {
 	ProxyURL string
 	// EditorImage is the code editor container image; empty means DefaultEditorImage.
 	EditorImage string
+	// EditorBaseURL is the public editor gate origin; empty means editorgate.DefaultBaseURL.
+	EditorBaseURL string
 }
 
 // Driver runs sandboxes as Docker containers. It keeps the egress book in
@@ -140,7 +143,8 @@ type Driver struct {
 	engine  Engine
 	network string
 	proxy        *url.URL
-	editorImage  string
+	editorImage   string
+	editorBaseURL string
 
 	mu    sync.Mutex
 	boxes map[string]box
@@ -216,14 +220,19 @@ func newDriver(api engine, opts Options) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
+	base := strings.TrimSpace(opts.EditorBaseURL)
+	if base == "" {
+		base = editorgate.DefaultBaseURL
+	}
 	return &Driver{
-		api:         api,
-		memory:      opts.Memory,
-		now:         opts.Now,
-		network:     netName,
-		proxy:       proxy,
-		editorImage: strings.TrimSpace(opts.EditorImage),
-		boxes:       map[string]box{},
+		api:           api,
+		memory:        opts.Memory,
+		now:           opts.Now,
+		network:       netName,
+		proxy:         proxy,
+		editorImage:   strings.TrimSpace(opts.EditorImage),
+		editorBaseURL: base,
+		boxes:         map[string]box{},
 	}, nil
 }
 

@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
 const (
@@ -58,6 +59,8 @@ type Options struct {
 	Namespace string
 	// EditorImage is the code editor container image; empty means DefaultEditorImage.
 	EditorImage string
+	// EditorBaseURL is the public editor gate origin; empty means editorgate.DefaultBaseURL.
+	EditorBaseURL string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// ConfigLoader builds REST config; nil uses kubeconfig or in-cluster rules.
@@ -71,7 +74,8 @@ type Driver struct {
 	api         cluster
 	ns          string
 	now         func() time.Time
-	editorImage string
+	editorImage   string
+	editorBaseURL string
 
 	mu    sync.Mutex
 	boxes map[string]box
@@ -124,12 +128,17 @@ func Open(ctx context.Context, opts Options) (*Driver, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	base := strings.TrimSpace(opts.EditorBaseURL)
+	if base == "" {
+		base = editorgate.DefaultBaseURL
+	}
 	return &Driver{
-		api:         k,
-		ns:          ns,
-		now:         opts.Now,
-		editorImage: strings.TrimSpace(opts.EditorImage),
-		boxes:       map[string]box{},
+		api:           k,
+		ns:            ns,
+		now:           opts.Now,
+		editorImage:   strings.TrimSpace(opts.EditorImage),
+		editorBaseURL: base,
+		boxes:         map[string]box{},
 	}, nil
 }
 

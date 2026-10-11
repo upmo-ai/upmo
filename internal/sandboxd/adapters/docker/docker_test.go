@@ -62,16 +62,18 @@ type fake struct {
 	conns  []net.Conn
 
 	containers   map[string]fakeCont
-	nextHostPort int
+	nextHostPort  int
+	nextEditorIP  int
 }
 
 type fakeCont struct {
-	name     string
-	labels   map[string]string
-	started  bool
-	removed  bool
-	hostPort int
-	opts     client.ContainerCreateOptions
+	name       string
+	labels     map[string]string
+	started    bool
+	removed    bool
+	hostPort   int
+	networkIP  string
+	opts       client.ContainerCreateOptions
 }
 
 type frame struct {
@@ -148,13 +150,18 @@ func (f *fake) ContainerCreate(_ context.Context, opts client.ContainerCreateOpt
 		f.nextHostPort++
 		hostPort = f.nextHostPort
 	}
+	networkIP := ""
+	if opts.Config != nil && opts.Config.Labels[labelEditor] == "1" {
+		f.nextEditorIP++
+		networkIP = fmt.Sprintf("172.20.0.%d", f.nextEditorIP)
+	}
 	labels := map[string]string{}
 	if opts.Config != nil {
 		for k, v := range opts.Config.Labels {
 			labels[k] = v
 		}
 	}
-	f.containers[opts.Name] = fakeCont{name: opts.Name, labels: labels, hostPort: hostPort, opts: opts}
+	f.containers[opts.Name] = fakeCont{name: opts.Name, labels: labels, hostPort: hostPort, networkIP: networkIP, opts: opts}
 	return client.ContainerCreateResult{ID: "c-" + opts.Name}, nil
 }
 
@@ -259,11 +266,24 @@ func (f *fake) ContainerInspect(_ context.Context, id string, _ client.Container
 		return client.ContainerInspectResult{}, cerrdefs.ErrNotFound
 	}
 	var res client.ContainerInspectResult
-	if c.hostPort > 0 {
+	res.Container.Config = &container.Config{Labels: mapsClone(c.labels)}
+	if c.networkIP != "" {
+		res.Container.NetworkSettings = &container.NetworkSettings{
+			Networks: map[string]*network.EndpointSettings{
+				DefaultNetwork: {IPAddress: netip.MustParseAddr(c.networkIP)},
+			},
+		}
+	} else if c.hostPort > 0 {
 		port, _ := network.ParsePort(fmt.Sprintf("%d/tcp", editorListenPort))
 		res.Container.NetworkSettings = &container.NetworkSettings{
 			Ports: network.PortMap{
 				port: []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(c.hostPort)}},
+			},
+		}
+	} else if strings.HasPrefix(c.name, namePrefix) {
+		res.Container.NetworkSettings = &container.NetworkSettings{
+			Networks: map[string]*network.EndpointSettings{
+				DefaultNetwork: {IPAddress: netip.MustParseAddr("172.20.0.2")},
 			},
 		}
 	}
@@ -428,7 +448,7 @@ func setup(t *testing.T) (*Driver, *fake, *clock) {
 
 func setupEditor(t *testing.T) (*Driver, *fake, *clock) {
 	t.Helper()
-	return setupOpts(t, Options{EditorImage: "upmo/editor:dev"})
+	return setupOpts(t, Options{EditorImage: "upmo/editor:dev", EditorBaseURL: "http://127.0.0.1:8084"})
 }
 
 func setupOpts(t *testing.T, opts Options) (*Driver, *fake, *clock) {
@@ -917,8 +937,9 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ep.URL != "http://127.0.0.1:30001" {
-		t.Fatalf("url = %q", ep.URL)
+	wantURL := "http://127.0.0.1:8084/e/" + box.ID + "/"
+	if ep.URL != wantURL {
+		t.Fatalf("url = %q, want %q", ep.URL, wantURL)
 	}
 	if len(f.created) != 2 {
 		t.Fatalf("created %d containers", len(f.created))
@@ -930,6 +951,15 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 	if len(editor.HostConfig.Mounts) != 1 || editor.HostConfig.Mounts[0].Source != volumeName(box.ID) ||
 		editor.HostConfig.Mounts[0].Target != ScratchDir || !editor.HostConfig.Mounts[0].ReadOnly {
 		t.Fatalf("mount = %+v", editor.HostConfig.Mounts)
+	}
+	if len(editor.HostConfig.PortBindings) != 0 || editor.HostConfig.NetworkMode != DefaultNetwork {
+		t.Fatalf("network = %q ports = %v", editor.HostConfig.NetworkMode, editor.HostConfig.PortBindings)
+	}
+	if editor.Config.Labels[labelEditorToken] == "" {
+		t.Fatal("missing connection token label")
+	}
+	if !slices.Contains(editor.Config.Cmd, "--connection-token") {
+		t.Fatalf("cmd = %v", editor.Config.Cmd)
 	}
 	ep2, err := d.StartEditor(ctx, box.ID, "Working")
 	if err != nil || ep2.URL != ep.URL {
@@ -969,14 +999,44 @@ func TestStartEditorUsesDefaultImage(t *testing.T) {
 	if ed.Config == nil || ed.Config.Image != DefaultEditorImage {
 		t.Fatalf("image = %v, want %s", ed.Config, DefaultEditorImage)
 	}
-	wantCmd := []string{
-		"--host", "0.0.0.0",
-		"--port", "3000",
-		"--without-connection-token",
-		"--default-folder", ScratchDir,
+	if !slices.Contains(ed.Config.Cmd, "--connection-token") || slices.Contains(ed.Config.Cmd, "--without-connection-token") {
+		t.Fatalf("cmd = %v", ed.Config.Cmd)
 	}
-	if !slices.Equal(ed.Config.Cmd, wantCmd) {
-		t.Fatalf("cmd = %v, want %v", ed.Config.Cmd, wantCmd)
+}
+
+func TestStartEditorKeepsConnectionToken(t *testing.T) {
+	d, f, _ := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	first := f.containers[editorContainerName(box.ID)].labels[labelEditorToken]
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	second := f.containers[editorContainerName(box.ID)].labels[labelEditorToken]
+	if first == "" || first != second {
+		t.Fatalf("token = %q -> %q", first, second)
+	}
+}
+
+func TestEditorRoute(t *testing.T) {
+	d, _, _ := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	route, err := d.EditorRoute(ctx, box.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.ConnToken == "" || route.Upstream == nil || route.Upstream.Host == "" {
+		t.Fatalf("route = %+v", route)
+	}
+	if route.TaskID != spec().Task {
+		t.Fatalf("task = %q", route.TaskID)
 	}
 }
 

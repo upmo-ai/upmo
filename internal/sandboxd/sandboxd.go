@@ -19,6 +19,7 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/sandboxd/adapters/http"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/kubernetes"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/stub"
+	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 	"github.com/upmo-ai/upmo/internal/sandboxd/inject"
 )
@@ -68,9 +69,13 @@ type Network struct {
 // falls back to the stub with a warning when it does not. docker fails
 // instead of falling back. network applies to the Docker driver only.
 // editorImage is the code editor image for Docker and Kubernetes; empty uses the driver default.
-func Open(ctx context.Context, choice string, network Network, editorImage string, log *slog.Logger) (Driver, error) {
-	return open(ctx, choice, editorImage, log, func(ctx context.Context) (Driver, error) {
-		d, err := docker.Open(ctx, docker.Options{Network: network.Name, ProxyURL: network.ProxyURL, EditorImage: editorImage})
+// editorBaseURL is the public editor gate origin for StartEditor URLs.
+func Open(ctx context.Context, choice string, network Network, editorImage, editorBaseURL string, log *slog.Logger) (Driver, error) {
+	return open(ctx, choice, editorImage, editorBaseURL, log, func(ctx context.Context) (Driver, error) {
+		d, err := docker.Open(ctx, docker.Options{
+			Network: network.Name, ProxyURL: network.ProxyURL,
+			EditorImage: editorImage, EditorBaseURL: editorBaseURL,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -85,13 +90,13 @@ func Open(ctx context.Context, choice string, network Network, editorImage strin
 	})
 }
 
-func open(ctx context.Context, choice, editorImage string, log *slog.Logger, dial func(context.Context) (Driver, error)) (Driver, error) {
+func open(ctx context.Context, choice, editorImage, editorBaseURL string, log *slog.Logger, dial func(context.Context) (Driver, error)) (Driver, error) {
 	switch choice {
 	case DriverStub:
 		log.Info("sandbox driver", "driver", DriverStub)
 		return Stub(), nil
 	case DriverKubernetes:
-		d, err := kubernetes.Open(ctx, kubernetes.Options{EditorImage: editorImage})
+		d, err := kubernetes.Open(ctx, kubernetes.Options{EditorImage: editorImage, EditorBaseURL: editorBaseURL})
 		if err != nil {
 			return nil, fmt.Errorf("sandboxd: kubernetes driver: %w", err)
 		}
@@ -164,6 +169,19 @@ func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger) (ht
 	httpserver.Health(mux, nil)
 	httpapi.Handler{Provider: driver, Log: log}.Mount(mux)
 	return svcsig.Handler(keys, svcsig.AudienceSandboxd, mux)
+}
+
+// EditorGate verifies editor JWTs and reverse-proxies to OpenVSCode.
+func EditorGate(serviceKey, previousKey string, driver Driver, log *slog.Logger) (http.Handler, error) {
+	book, ok := driver.(editorgate.Book)
+	if !ok {
+		return nil, fmt.Errorf("sandboxd: driver does not implement editor gate")
+	}
+	keys, err := editorgate.KeysFromService(serviceKey, previousKey)
+	if err != nil {
+		return nil, err
+	}
+	return editorgate.Handler{Book: book, Keys: keys, Log: log}, nil
 }
 
 // Proxy returns the egress proxy for the sandboxes driver holds. env:
