@@ -245,7 +245,7 @@ func testDriver(t *testing.T, now func() time.Time) (*Driver, *fakeCluster) {
 func testDriverEditor(t *testing.T, now func() time.Time, editorImage string) (*Driver, *fakeCluster) {
 	t.Helper()
 	fake := newFakeCluster()
-	d := &Driver{api: fake, ns: "test", now: now, editorImage: editorImage, boxes: map[string]box{}}
+	d := &Driver{api: fake, ns: "test", now: now, editorImage: editorImage, editorBaseURL: "http://127.0.0.1:8084", boxes: map[string]box{}}
 	return d, fake
 }
 
@@ -498,7 +498,7 @@ func TestStartEditorMountsScratchReadOnlyAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantURL := editorServiceURL("test", box.ID)
+	wantURL := "http://127.0.0.1:8084/e/" + box.ID + "/"
 	ep, err := d.StartEditor(ctx, box.ID, "Working")
 	if err != nil {
 		t.Fatal(err)
@@ -543,14 +543,12 @@ func TestStartEditorUsesDefaultImage(t *testing.T) {
 	if editor.Spec.Containers[0].Image != DefaultEditorImage {
 		t.Fatalf("image = %q, want %q", editor.Spec.Containers[0].Image, DefaultEditorImage)
 	}
-	wantCmd := []string{
-		"--host", "0.0.0.0",
-		"--port", "3000",
-		"--without-connection-token",
-		"--default-folder", ScratchDir,
+	cmd := editor.Spec.Containers[0].Command
+	if !slices.Contains(cmd, "--connection-token") || slices.Contains(cmd, "--without-connection-token") {
+		t.Fatalf("cmd = %v", cmd)
 	}
-	if !slices.Equal(editor.Spec.Containers[0].Command, wantCmd) {
-		t.Fatalf("cmd = %v, want %v", editor.Spec.Containers[0].Command, wantCmd)
+	if editor.Labels[labelEditorToken] == "" {
+		t.Fatal("missing connection token label")
 	}
 }
 

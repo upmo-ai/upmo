@@ -2,6 +2,8 @@ package kubernetes
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -20,6 +22,7 @@ import (
 const (
 	editorNamePrefix   = "upmo-editor-"
 	labelEditor        = "ai.upmo.editor"
+	labelEditorToken   = "ai.upmo.editor-tkn"
 	editorContainer    = "editor"
 	editorListenPort   = 3000
 	scratchPVCSize     = "1Gi"
@@ -49,7 +52,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			if err := d.touchEditor(ctx, id); err != nil {
 				return runtime.Endpoint{}, err
 			}
-			return runtime.Endpoint{URL: editorServiceURL(d.ns, id)}, nil
+			return runtime.Endpoint{URL: editorGateURL(d.editorBaseURL, id)}, nil
 		}
 		return runtime.Endpoint{}, err
 	}
@@ -63,9 +66,14 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	}
 	readOnly := mountRule.Mode == domain.ModeReadOnly
 	image := d.editorImageRef()
+	connToken, err := newEditorConnectionToken()
+	if err != nil {
+		return runtime.Endpoint{}, err
+	}
 	labels := map[string]string{
-		labelSandbox: id,
-		labelEditor:  "1",
+		labelSandbox:              id,
+		labelEditor:               "1",
+		labelEditorToken:          connToken,
 		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
 	}
 	pod := &corev1.Pod{
@@ -91,7 +99,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 				Command: []string{
 					"--host", "0.0.0.0",
 					"--port", strconv.Itoa(editorListenPort),
-					"--without-connection-token",
+					"--connection-token", connToken,
 					"--default-folder", ScratchDir,
 				},
 				SecurityContext: &corev1.SecurityContext{
@@ -125,7 +133,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 		_ = d.removeEditor(ctx, id)
 		return runtime.Endpoint{}, fmt.Errorf("kubernetes: create editor: %w", err)
 	}
-	return runtime.Endpoint{URL: editorServiceURL(d.ns, id)}, nil
+	return runtime.Endpoint{URL: editorGateURL(d.editorBaseURL, id)}, nil
 }
 
 // StopEditor deletes the editor Service and Pod beside the sandbox, if any.
@@ -229,10 +237,6 @@ func (d *Driver) sweepIdleEditors(ctx context.Context) (int, error) {
 
 func scratchPVCName(id string) string { return podName(id) + "-scratch" }
 
-func editorServiceURL(ns, sandboxID string) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", editorPodName(sandboxID), ns, editorListenPort)
-}
-
 func editorService(sandboxID string, labels map[string]string) *corev1.Service {
 	port := int32(editorListenPort)
 	return &corev1.Service{
@@ -269,4 +273,12 @@ func scratchPVC(id string, labels map[string]string) *corev1.PersistentVolumeCla
 			},
 		},
 	}
+}
+
+func newEditorConnectionToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

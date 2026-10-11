@@ -2,10 +2,10 @@ package docker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"net"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,11 +18,13 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/runtime/domain"
+	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
 const (
 	editorNamePrefix = "upmo-editor-"
 	labelEditor      = "ai.upmo.editor"
+	labelEditorToken = "ai.upmo.editor-tkn"
 	editorListenPort = 3000
 )
 
@@ -48,16 +50,16 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			if err := d.touchEditor(ctx, id); err != nil {
 				return runtime.Endpoint{}, err
 			}
-			url, urlErr := d.editorURL(ctx, id)
-			if urlErr != nil {
-				return runtime.Endpoint{}, urlErr
-			}
-			return runtime.Endpoint{URL: url}, nil
+			return runtime.Endpoint{URL: editorgate.PublicURL(d.editorBaseURL, id)}, nil
 		}
 		return runtime.Endpoint{}, err
 	}
 	image := d.editorImageRef()
 	if err := d.ensureImage(ctx, image); err != nil {
+		return runtime.Endpoint{}, err
+	}
+	connToken, err := newEditorConnectionToken()
+	if err != nil {
 		return runtime.Endpoint{}, err
 	}
 
@@ -66,11 +68,10 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 		return runtime.Endpoint{}, err
 	}
 	exposed := network.PortSet{port: struct{}{}}
-	hostIP := netip.MustParseAddr("0.0.0.0")
-	bindings := network.PortMap{port: []network.PortBinding{{HostIP: hostIP, HostPort: "0"}}}
 	labels := map[string]string{
-		labelSandbox: id,
-		labelEditor:  "1",
+		labelSandbox:              id,
+		labelEditor:               "1",
+		labelEditorToken:          connToken,
 		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
 	}
 	readOnly := mountRule.Mode == domain.ModeReadOnly
@@ -82,14 +83,15 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			WorkingDir:   ScratchDir,
 			ExposedPorts: exposed,
 			Labels:       labels,
-			// Bind on all interfaces inside the container so host publish works;
-			// connection token is a later brain slice.
 			Cmd: []string{
 				"--host", "0.0.0.0",
 				"--port", strconv.Itoa(editorListenPort),
-				"--without-connection-token",
+				"--connection-token", connToken,
 				"--default-folder", ScratchDir,
 			},
+		},
+		NetworkingConfig: &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{d.network: {}},
 		},
 		HostConfig: &container.HostConfig{
 			CapDrop:       []string{"ALL"},
@@ -97,7 +99,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			SecurityOpt:   []string{"no-new-privileges:true"},
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled},
 			Init:          &init,
-			PortBindings:  bindings,
+			NetworkMode:   container.NetworkMode(d.network),
 			Mounts: []mount.Mount{{
 				Type:     mount.TypeVolume,
 				Source:   volumeName(id),
@@ -114,12 +116,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 		_ = d.removeEditor(ctx, id)
 		return runtime.Endpoint{}, fmt.Errorf("docker: start editor: %w", err)
 	}
-	url, err := d.editorURL(ctx, id)
-	if err != nil {
-		_ = d.removeEditor(ctx, id)
-		return runtime.Endpoint{}, err
-	}
-	return runtime.Endpoint{URL: url}, nil
+	return runtime.Endpoint{URL: editorgate.PublicURL(d.editorBaseURL, id)}, nil
 }
 
 // StopEditor stops and removes the editor beside the sandbox, if any.
@@ -146,30 +143,6 @@ func (d *Driver) editorOpen(ctx context.Context, sandboxID string) (int, error) 
 		}
 	}
 	return n, nil
-}
-
-func (d *Driver) editorURL(ctx context.Context, sandboxID string) (string, error) {
-	res, err := d.api.ContainerInspect(ctx, editorContainerName(sandboxID), client.ContainerInspectOptions{})
-	if err != nil {
-		return "", fmt.Errorf("docker: inspect editor: %w", err)
-	}
-	port, err := network.ParsePort(fmt.Sprintf("%d/tcp", editorListenPort))
-	if err != nil {
-		return "", err
-	}
-	bindings, ok := res.Container.NetworkSettings.Ports[port]
-	if !ok || len(bindings) == 0 || bindings[0].HostPort == "" {
-		return "", fmt.Errorf("docker: editor port is not published")
-	}
-	hostPort, err := strconv.Atoi(bindings[0].HostPort)
-	if err != nil || hostPort <= 0 {
-		return "", fmt.Errorf("docker: editor port %q", bindings[0].HostPort)
-	}
-	host := bindings[0].HostIP
-	if !host.IsValid() || host.IsUnspecified() {
-		host = netip.MustParseAddr("127.0.0.1")
-	}
-	return fmt.Sprintf("http://%s", net.JoinHostPort(host.String(), strconv.Itoa(hostPort))), nil
 }
 
 func (d *Driver) removeEditor(ctx context.Context, sandboxID string) error {
@@ -228,4 +201,12 @@ func (d *Driver) sweepIdleEditors(ctx context.Context) (int, error) {
 		removed++
 	}
 	return removed, errors.Join(errs...)
+}
+
+func newEditorConnectionToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

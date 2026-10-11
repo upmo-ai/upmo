@@ -231,6 +231,10 @@ type Sandboxd struct {
 	// EditorImage is the code editor container image (UPMO_EDITOR_IMAGE).
 	// Empty means the Docker driver's built-in default.
 	EditorImage string
+	// EditorAddr serves the editor access gate (UPMO_EDITOR_ADDR), :8084 by default.
+	EditorAddr string
+	// EditorBaseURL is the public http origin for editor URLs (UPMO_EDITOR_BASE_URL).
+	EditorBaseURL string
 }
 
 // LoadSandboxd reads the sandboxd configuration from the environment.
@@ -242,6 +246,8 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 	cfg := Sandboxd{
 		ListenAddr:      ":8083",
 		ProxyAddr:       ":3128",
+		EditorAddr:      ":8084",
+		EditorBaseURL:   "http://127.0.0.1:8084",
 		ShutdownTimeout: 10 * time.Second,
 		LogLevel:        "info",
 		Driver:          "auto",
@@ -275,6 +281,23 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 	}
 	if cfg.ListenAddr == cfg.ProxyAddr {
 		return Sandboxd{}, fmt.Errorf("config: UPMO_PROXY_ADDR must differ from UPMO_LISTEN_ADDR")
+	}
+	if v, ok := lookup("UPMO_EDITOR_ADDR"); ok && v != "" {
+		cfg.EditorAddr = v
+	}
+	if v, ok := lookup("UPMO_EDITOR_BASE_URL"); ok && strings.TrimSpace(v) != "" {
+		u, err := url.Parse(strings.TrimSpace(v))
+		if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_EDITOR_BASE_URL must be http://host[:port]")
+		}
+		cfg.EditorBaseURL = u.Scheme + "://" + u.Host
+	}
+	if cfg.ListenAddr == cfg.EditorAddr {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_EDITOR_ADDR must differ from UPMO_LISTEN_ADDR")
+	}
+	if cfg.ProxyAddr == cfg.EditorAddr {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_EDITOR_ADDR must differ from UPMO_PROXY_ADDR")
 	}
 	if v, ok := lookup("UPMO_SHUTDOWN_TIMEOUT"); ok && v != "" {
 		d, err := time.ParseDuration(v)

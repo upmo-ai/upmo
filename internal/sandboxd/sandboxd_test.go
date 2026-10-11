@@ -495,14 +495,14 @@ func TestOpenPicksTheDriver(t *testing.T) {
 	}
 
 	for _, choice := range []string{"", DriverAuto, DriverDocker} {
-		d, err := open(ctx, choice, "", log, reachable)
+		d, err := open(ctx, choice, "", "", log, reachable)
 		if err != nil || d != Driver(docker) {
 			t.Fatalf("%q with an engine = %T %v", choice, d, err)
 		}
 	}
 
 	logs.Reset()
-	d, err := open(ctx, DriverAuto, "", log, down)
+	d, err := open(ctx, DriverAuto, "", "", log, down)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,13 +516,13 @@ func TestOpenPicksTheDriver(t *testing.T) {
 		t.Fatalf("fallback was not logged: %s", logs.String())
 	}
 
-	if _, err := open(ctx, DriverDocker, "", log, down); err == nil {
+	if _, err := open(ctx, DriverDocker, "", "", log, down); err == nil {
 		t.Fatal("docker without an engine fell back")
 	}
-	if _, err := open(ctx, DriverStub, "", log, never); err != nil {
+	if _, err := open(ctx, DriverStub, "", "", log, never); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := open(ctx, "nomad", "", log, never); err == nil {
+	if _, err := open(ctx, "nomad", "", "", log, never); err == nil {
 		t.Fatal("unknown driver accepted")
 	}
 }
