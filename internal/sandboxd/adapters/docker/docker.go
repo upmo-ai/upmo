@@ -40,6 +40,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
@@ -506,8 +507,20 @@ func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 }
 
 // Egress returns the allow-list and credentials of a live, unpaused sandbox
-// for the egress proxy.
+// for the egress proxy. An editor egress id allows only GalleryHost while
+// that sandbox's editor is running.
 func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
+	if sandboxID, editorID := domain.SandboxFromEditorEgress(id); editorID {
+		_, b, ok := d.live(sandboxID)
+		if !ok || b.paused {
+			return nil, nil, false
+		}
+		open, err := d.editorOpen(context.Background(), sandboxID)
+		if err != nil || open == 0 {
+			return nil, nil, false
+		}
+		return []string{domain.GalleryHost}, nil, true
+	}
 	_, b, ok := d.live(id)
 	if !ok || b.paused {
 		return nil, nil, false

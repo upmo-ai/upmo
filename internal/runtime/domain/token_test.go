@@ -114,6 +114,21 @@ func TestSeparateOrigin(t *testing.T) {
 	}
 }
 
+func TestEditorEgressID(t *testing.T) {
+	sandboxID := "018f3b2c-7a10-7c4a-8e11-111111111111"
+	eid := EditorEgressID(sandboxID)
+	if eid != "editor."+sandboxID {
+		t.Fatalf("EditorEgressID() = %q", eid)
+	}
+	got, ok := SandboxFromEditorEgress(eid)
+	if !ok || got != sandboxID {
+		t.Fatalf("SandboxFromEditorEgress(%q) = %q %t", eid, got, ok)
+	}
+	if _, ok := SandboxFromEditorEgress(sandboxID); ok {
+		t.Fatal("sandbox id alone is not editor egress")
+	}
+}
+
 func TestGallery(t *testing.T) {
 	cases := []struct {
 		host    string
