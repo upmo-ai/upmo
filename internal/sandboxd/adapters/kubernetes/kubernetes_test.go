@@ -245,7 +245,14 @@ func testDriver(t *testing.T, now func() time.Time) (*Driver, *fakeCluster) {
 func testDriverEditor(t *testing.T, now func() time.Time, editorImage string) (*Driver, *fakeCluster) {
 	t.Helper()
 	fake := newFakeCluster()
-	d := &Driver{api: fake, ns: "test", now: now, editorImage: editorImage, editorBaseURL: "http://127.0.0.1:8084", boxes: map[string]box{}}
+	proxy, err := ParseProxyURL(DefaultProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Driver{
+		api: fake, ns: "test", now: now, editorImage: editorImage,
+		editorBaseURL: "http://127.0.0.1:8084", proxy: proxy, boxes: map[string]box{},
+	}
 	return d, fake
 }
 
@@ -605,5 +612,75 @@ func TestEgress(t *testing.T) {
 	allow, creds, ok := d.Egress(box.ID)
 	if !ok || len(allow) != 1 || allow[0] != "github.com" || len(creds) != 0 {
 		t.Fatalf("egress = %v %v %t", allow, creds, ok)
+	}
+}
+
+func TestStartEditorProxyUser(t *testing.T) {
+	d, fake := testDriverEditor(t, time.Now, "upmo/editor:dev")
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	editor := fake.created[len(fake.created)-1]
+	wantUser := domain.EditorEgressID(box.ID)
+	proxy := "http://" + wantUser + ":@host.docker.internal:3128"
+	want := map[string]string{
+		"HTTP_PROXY": proxy, "http_proxy": proxy,
+		"HTTPS_PROXY": proxy, "https_proxy": proxy,
+		"ALL_PROXY": proxy, "all_proxy": proxy,
+	}
+	got := map[string]string{}
+	for _, e := range editor.Spec.Containers[0].Env {
+		got[e.Name] = e.Value
+	}
+	if len(got) != len(want) {
+		t.Fatalf("env = %v", got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestEditorGalleryEgress(t *testing.T) {
+	d, _ := testDriverEditor(t, time.Now, "upmo/editor:dev")
+	ctx := context.Background()
+	box, err := d.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eid := domain.EditorEgressID(box.ID)
+	if _, _, ok := d.Egress(eid); ok {
+		t.Fatal("editor egress before start")
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	allow, creds, ok := d.Egress(eid)
+	if !ok || len(creds) != 0 || len(allow) != 1 || allow[0] != domain.GalleryHost {
+		t.Fatalf("editor egress = %v %v %t", allow, creds, ok)
+	}
+	dec, err := runtime.AdmitEgress(domain.GalleryHost, allow)
+	if err != nil || dec.Verdict != runtime.VerdictAllow {
+		t.Fatalf("gallery admit = %+v %v", dec, err)
+	}
+	dec, err = runtime.AdmitEgress("evil.example", allow)
+	if err != nil || dec.Verdict != runtime.VerdictRefuse {
+		t.Fatalf("evil admit = %+v %v", dec, err)
+	}
+	sallow, _, sok := d.Egress(box.ID)
+	if !sok || !slices.Equal(sallow, spec().Allow) {
+		t.Fatalf("sandbox egress = %v %t", sallow, sok)
+	}
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := d.Egress(eid); ok {
+		t.Fatal("editor egress after stop")
 	}
 }

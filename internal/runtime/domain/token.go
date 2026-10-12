@@ -13,7 +13,22 @@ const (
 	TokenTTL = 15 * time.Minute
 	// GalleryHost is the only extension gallery host an editor may name.
 	GalleryHost = "open-vsx.org"
+	editorEgressPrefix = "editor."
 )
+
+// EditorEgressID is the CONNECT proxy Basic user for a sandbox code editor.
+func EditorEgressID(sandboxID string) string {
+	return editorEgressPrefix + strings.TrimSpace(sandboxID)
+}
+
+// SandboxFromEditorEgress returns the sandbox id when id is an editor egress id.
+func SandboxFromEditorEgress(id string) (sandboxID string, ok bool) {
+	sandboxID, ok = strings.CutPrefix(strings.TrimSpace(id), editorEgressPrefix)
+	if !ok || sandboxID == "" {
+		return "", false
+	}
+	return sandboxID, true
+}
 
 // Token binds editor access to one person, one task and one session until it expires.
 type Token struct {

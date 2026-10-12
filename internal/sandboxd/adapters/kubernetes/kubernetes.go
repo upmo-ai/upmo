@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
@@ -47,6 +49,9 @@ const (
 	defaultNamespace = "default"
 	configTimeout    = 10 * time.Second
 	pauseTimeout     = 10 * time.Second
+	// DefaultProxyURL is where an editor Pod reaches the egress proxy when
+	// Options.ProxyURL is empty (same default as the Docker driver).
+	DefaultProxyURL = "http://host.docker.internal:3128"
 )
 
 // ErrPaused reports a command sent to a paused sandbox. Its files can still
@@ -61,6 +66,9 @@ type Options struct {
 	EditorImage string
 	// EditorBaseURL is the public editor gate origin; empty means editorgate.DefaultBaseURL.
 	EditorBaseURL string
+	// ProxyURL is the egress proxy as an editor Pod reaches it, an http URL
+	// with no user, path or query; empty means DefaultProxyURL.
+	ProxyURL string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// ConfigLoader builds REST config; nil uses kubeconfig or in-cluster rules.
@@ -76,6 +84,7 @@ type Driver struct {
 	now         func() time.Time
 	editorImage   string
 	editorBaseURL string
+	proxy         *url.URL
 
 	mu    sync.Mutex
 	boxes map[string]box
@@ -132,12 +141,21 @@ func Open(ctx context.Context, opts Options) (*Driver, error) {
 	if base == "" {
 		base = editorgate.DefaultBaseURL
 	}
+	raw := strings.TrimSpace(opts.ProxyURL)
+	if raw == "" {
+		raw = DefaultProxyURL
+	}
+	proxy, err := ParseProxyURL(raw)
+	if err != nil {
+		return nil, err
+	}
 	return &Driver{
 		api:           k,
 		ns:            ns,
 		now:           opts.Now,
 		editorImage:   strings.TrimSpace(opts.EditorImage),
 		editorBaseURL: base,
+		proxy:         proxy,
 		boxes:         map[string]box{},
 	}, nil
 }
@@ -362,12 +380,52 @@ func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 }
 
 // Egress returns the allow-list and credentials of a live, unpaused sandbox.
+// An editor egress id allows only GalleryHost while that sandbox's editor is
+// running.
 func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
+	if sandboxID, editorID := domain.SandboxFromEditorEgress(id); editorID {
+		_, b, ok := d.live(sandboxID)
+		if !ok || b.paused {
+			return nil, nil, false
+		}
+		open, err := d.editorOpen(context.Background(), sandboxID)
+		if err != nil || open == 0 {
+			return nil, nil, false
+		}
+		return []string{domain.GalleryHost}, nil, true
+	}
 	_, b, ok := d.live(id)
 	if !ok || b.paused {
 		return nil, nil, false
 	}
 	return slices.Clone(b.spec.Allow), slices.Clone(b.spec.Credentials), true
+}
+
+// ParseProxyURL checks raw is an http URL with a host and no user, path,
+// query or fragment, so the driver can add the editor egress id as the user.
+func ParseProxyURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return nil, fmt.Errorf("kubernetes: proxy URL %q must be http://host[:port]", raw)
+	}
+	return &url.URL{Scheme: u.Scheme, Host: u.Host}, nil
+}
+
+// proxyEnv points every common proxy variable at the egress proxy, with user
+// as the Basic user name the proxy reads.
+func (d *Driver) proxyEnv(user string) []corev1.EnvVar {
+	u := *d.proxy
+	u.User = url.UserPassword(user, "")
+	v := u.String()
+	var out []corev1.EnvVar
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
+		out = append(out,
+			corev1.EnvVar{Name: k, Value: v},
+			corev1.EnvVar{Name: strings.ToLower(k), Value: v},
+		)
+	}
+	return out
 }
 
 // PTY is not built in the Kubernetes driver.

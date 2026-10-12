@@ -83,6 +83,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			WorkingDir:   ScratchDir,
 			ExposedPorts: exposed,
 			Labels:       labels,
+			Env:          d.proxyEnv(domain.EditorEgressID(id)),
 			Cmd: []string{
 				"--host", "0.0.0.0",
 				"--port", strconv.Itoa(editorListenPort),

@@ -96,6 +96,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 				Image:           image,
 				WorkingDir:      ScratchDir,
 				ImagePullPolicy: corev1.PullIfNotPresent,
+				Env:             d.proxyEnv(domain.EditorEgressID(id)),
 				Command: []string{
 					"--host", "0.0.0.0",
 					"--port", strconv.Itoa(editorListenPort),

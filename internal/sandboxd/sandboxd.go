@@ -67,11 +67,11 @@ type Network struct {
 // Open returns the driver named by choice. auto, the default, uses the
 // Docker engine from DOCKER_HOST or the default socket when it answers, and
 // falls back to the stub with a warning when it does not. docker fails
-// instead of falling back. network applies to the Docker driver only.
+// instead of falling back. network applies to the Docker and Kubernetes drivers.
 // editorImage is the code editor image for Docker and Kubernetes; empty uses the driver default.
 // editorBaseURL is the public editor gate origin for StartEditor URLs.
 func Open(ctx context.Context, choice string, network Network, editorImage, editorBaseURL string, log *slog.Logger) (Driver, error) {
-	return open(ctx, choice, editorImage, editorBaseURL, log, func(ctx context.Context) (Driver, error) {
+	return open(ctx, choice, network, editorImage, editorBaseURL, log, func(ctx context.Context) (Driver, error) {
 		d, err := docker.Open(ctx, docker.Options{
 			Network: network.Name, ProxyURL: network.ProxyURL,
 			EditorImage: editorImage, EditorBaseURL: editorBaseURL,
@@ -90,13 +90,15 @@ func Open(ctx context.Context, choice string, network Network, editorImage, edit
 	})
 }
 
-func open(ctx context.Context, choice, editorImage, editorBaseURL string, log *slog.Logger, dial func(context.Context) (Driver, error)) (Driver, error) {
+func open(ctx context.Context, choice string, network Network, editorImage, editorBaseURL string, log *slog.Logger, dial func(context.Context) (Driver, error)) (Driver, error) {
 	switch choice {
 	case DriverStub:
 		log.Info("sandbox driver", "driver", DriverStub)
 		return Stub(), nil
 	case DriverKubernetes:
-		d, err := kubernetes.Open(ctx, kubernetes.Options{EditorImage: editorImage, EditorBaseURL: editorBaseURL})
+		d, err := kubernetes.Open(ctx, kubernetes.Options{
+			EditorImage: editorImage, EditorBaseURL: editorBaseURL, ProxyURL: network.ProxyURL,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("sandboxd: kubernetes driver: %w", err)
 		}

@@ -1135,3 +1135,57 @@ func TestStopEditorAndDestroyRemoveEditor(t *testing.T) {
 		t.Fatalf("removed %v want %v", f.removed, want)
 	}
 }
+
+func TestStartEditorProxyUser(t *testing.T) {
+	d, f, _ := setupEditor(t)
+	box := create(t, d)
+	if _, err := d.StartEditor(context.Background(), box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	ed := f.created[len(f.created)-1]
+	wantUser := domain.EditorEgressID(box.ID)
+	proxy := "http://" + wantUser + ":@host.docker.internal:3128"
+	wantEnv := []string{
+		"HTTP_PROXY=" + proxy, "http_proxy=" + proxy,
+		"HTTPS_PROXY=" + proxy, "https_proxy=" + proxy,
+		"ALL_PROXY=" + proxy, "all_proxy=" + proxy,
+	}
+	if !slices.Equal(ed.Config.Env, wantEnv) {
+		t.Fatalf("env = %v", ed.Config.Env)
+	}
+}
+
+func TestEditorGalleryEgress(t *testing.T) {
+	d, _, _ := setupEditor(t)
+	box := create(t, d)
+	ctx := context.Background()
+	eid := domain.EditorEgressID(box.ID)
+	if _, _, ok := d.Egress(eid); ok {
+		t.Fatal("editor egress before start")
+	}
+	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	allow, creds, ok := d.Egress(eid)
+	if !ok || len(creds) != 0 || len(allow) != 1 || allow[0] != domain.GalleryHost {
+		t.Fatalf("editor egress = %v %v %t", allow, creds, ok)
+	}
+	dec, err := runtime.AdmitEgress(domain.GalleryHost, allow)
+	if err != nil || dec.Verdict != runtime.VerdictAllow {
+		t.Fatalf("gallery admit = %+v %v", dec, err)
+	}
+	dec, err = runtime.AdmitEgress("evil.example", allow)
+	if err != nil || dec.Verdict != runtime.VerdictRefuse {
+		t.Fatalf("evil admit = %+v %v", dec, err)
+	}
+	sallow, _, sok := d.Egress(box.ID)
+	if !sok || !slices.Equal(sallow, spec().Allow) {
+		t.Fatalf("sandbox egress = %v %t", sallow, sok)
+	}
+	if err := d.StopEditor(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := d.Egress(eid); ok {
+		t.Fatal("editor egress after stop")
+	}
+}
