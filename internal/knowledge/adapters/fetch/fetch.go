@@ -43,7 +43,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context, rawURL string) (string, []byte, 
 	if err != nil {
 		return "", nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		return "", nil, fmt.Errorf("fetch: status %d", resp.StatusCode)

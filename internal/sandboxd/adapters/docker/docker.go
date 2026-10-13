@@ -40,7 +40,6 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
@@ -137,13 +136,13 @@ type Options struct {
 // memory; the containers carry labels, so Sweep can still find one an
 // earlier process left behind.
 type Driver struct {
-	api     engine
-	closer  io.Closer
-	memory  int64
-	now     func() time.Time
-	engine  Engine
-	network string
-	proxy        *url.URL
+	api           engine
+	closer        io.Closer
+	memory        int64
+	now           func() time.Time
+	engine        Engine
+	network       string
+	proxy         *url.URL
 	editorImage   string
 	editorBaseURL string
 
@@ -510,7 +509,7 @@ func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 // for the egress proxy. An editor egress id allows only GalleryHost while
 // that sandbox's editor is running.
 func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
-	if sandboxID, editorID := domain.SandboxFromEditorEgress(id); editorID {
+	if sandboxID, editorID := runtime.SandboxFromEditorEgress(id); editorID {
 		_, b, ok := d.live(sandboxID)
 		if !ok || b.paused {
 			return nil, nil, false
@@ -519,7 +518,7 @@ func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
 		if err != nil || open == 0 {
 			return nil, nil, false
 		}
-		return []string{domain.GalleryHost}, nil, true
+		return []string{runtime.GalleryHost}, nil, true
 	}
 	_, b, ok := d.live(id)
 	if !ok || b.paused {

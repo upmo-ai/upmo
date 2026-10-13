@@ -17,14 +17,13 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
 const (
 	editorNamePrefix = "upmo-editor-"
 	labelEditor      = "ai.upmo.editor"
-	labelEditorToken = "ai.upmo.editor-tkn"
+	labelEditorToken = "ai.upmo.editor-tkn" //nolint:gosec // label key name, not a credential
 	editorListenPort = 3000
 )
 
@@ -37,7 +36,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	if !ok {
 		return runtime.Endpoint{}, runtime.ErrNotFound
 	}
-	mountRule, err := domain.MountRule(status)
+	mountRule, err := runtime.MountRule(status)
 	if err != nil {
 		return runtime.Endpoint{}, err
 	}
@@ -45,7 +44,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	if err != nil {
 		return runtime.Endpoint{}, err
 	}
-	if err := domain.AdmitEditor(open); err != nil {
+	if err := runtime.AdmitEditor(open); err != nil {
 		if open > 0 {
 			if err := d.touchEditor(ctx, id); err != nil {
 				return runtime.Endpoint{}, err
@@ -69,12 +68,12 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	}
 	exposed := network.PortSet{port: struct{}{}}
 	labels := map[string]string{
-		labelSandbox:              id,
-		labelEditor:               "1",
-		labelEditorToken:          connToken,
-		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
+		labelSandbox:               id,
+		labelEditor:                "1",
+		labelEditorToken:           connToken,
+		runtime.EditorTouchedLabel: runtime.FormatEditorTouched(d.now()),
 	}
-	readOnly := mountRule.Mode == domain.ModeReadOnly
+	readOnly := mountRule.Mode == runtime.ModeReadOnly
 	init := true
 	opts := client.ContainerCreateOptions{
 		Name: editorContainerName(id),
@@ -83,7 +82,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 			WorkingDir:   ScratchDir,
 			ExposedPorts: exposed,
 			Labels:       labels,
-			Env:          d.proxyEnv(domain.EditorEgressID(id)),
+			Env:          d.proxyEnv(runtime.EditorEgressID(id)),
 			Cmd: []string{
 				"--host", "0.0.0.0",
 				"--port", strconv.Itoa(editorListenPort),
@@ -158,7 +157,7 @@ func editorContainerName(id string) string { return editorNamePrefix + id }
 
 func (d *Driver) touchEditor(ctx context.Context, sandboxID string) error {
 	return d.api.ContainerSetLabels(ctx, editorContainerName(sandboxID), map[string]string{
-		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
+		runtime.EditorTouchedLabel: runtime.FormatEditorTouched(d.now()),
 	})
 }
 
@@ -177,7 +176,7 @@ func (d *Driver) sweepIdleEditors(ctx context.Context) (int, error) {
 		if c.Labels[labelEditor] != "1" {
 			continue
 		}
-		stop, err := domain.StopIdleEditor(c.Labels[domain.EditorTouchedLabel], now)
+		stop, err := runtime.StopIdleEditor(c.Labels[runtime.EditorTouchedLabel], now)
 		if err != nil {
 			errs = append(errs, err)
 			continue

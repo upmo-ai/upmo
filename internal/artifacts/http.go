@@ -1,5 +1,4 @@
-// Package httpapi serves artifact list and download for a signed-in person.
-package httpapi
+package artifacts
 
 import (
 	"encoding/json"
@@ -7,15 +6,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	"github.com/upmo-ai/upmo/internal/artifacts"
 )
 
 // Handler lists and serves artifacts through the existing store and volume.
 type Handler struct {
-	Catalog artifacts.Catalog
-	Blobs   artifacts.Blobs
-	Access  func(r *http.Request) (artifacts.Access, bool)
+	Catalog Catalog
+	Blobs   Blobs
+	Access  func(r *http.Request) (Access, bool)
 }
 
 // Mount registers the artifact routes. guard runs first.
@@ -35,7 +32,7 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := artifacts.ListForTask(r.Context(), h.Catalog, access, r.PathValue("id"))
+	items, err := ListForTask(r.Context(), h.Catalog, access, r.PathValue("id"))
 	if refuse(w, err) {
 		return
 	}
@@ -55,33 +52,33 @@ func (h Handler) download(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, headers, body, err := artifacts.OpenForDownload(r.Context(), h.Catalog, h.Blobs, access, r.PathValue("id"))
+	_, headers, body, err := OpenForDownload(r.Context(), h.Catalog, h.Blobs, access, r.PathValue("id"))
 	if refuse(w, err) {
 		return
 	}
-	defer body.Close()
-	w.Header().Set(artifacts.HeaderType, headers.Type)
-	w.Header().Set(artifacts.HeaderDisposition, headers.Disposition)
-	w.Header().Set(artifacts.HeaderSniff, headers.Sniff)
+	defer func() { _ = body.Close() }()
+	w.Header().Set(HeaderType, headers.Type)
+	w.Header().Set(HeaderDisposition, headers.Disposition)
+	w.Header().Set(HeaderSniff, headers.Sniff)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, body)
 }
 
-func (h Handler) person(w http.ResponseWriter, r *http.Request) (artifacts.Access, bool) {
+func (h Handler) person(w http.ResponseWriter, r *http.Request) (Access, bool) {
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		writeError(w, http.StatusForbidden, "needs a signed-in person")
-		return artifacts.Access{}, false
+		return Access{}, false
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorised")
-		return artifacts.Access{}, false
+		return Access{}, false
 	}
 	access, ok := h.Access(r)
 	if !ok || access.UserID == "" || access.Allow == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorised")
-		return artifacts.Access{}, false
+		return Access{}, false
 	}
 	return access, true
 }
@@ -91,9 +88,9 @@ func refuse(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
-	case errors.Is(err, artifacts.ErrArtifact):
+	case errors.Is(err, ErrArtifact):
 		writeError(w, http.StatusForbidden, "unauthorised")
-	case errors.Is(err, artifacts.ErrGone), errors.Is(err, artifacts.ErrNoBlob), errors.Is(err, artifacts.ErrBlob):
+	case errors.Is(err, ErrGone), errors.Is(err, ErrNoBlob), errors.Is(err, ErrBlob):
 		writeError(w, http.StatusNotFound, "no such artifact")
 	default:
 		writeError(w, http.StatusInternalServerError, "artifact")

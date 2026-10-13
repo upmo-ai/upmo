@@ -10,7 +10,6 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/runtime"
-	runtimedomain "github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 // ErrNoTaskSandbox is a task that needs an editor but holds no sandbox.
@@ -87,7 +86,7 @@ func OpenEditor(ctx context.Context, view Viewer, boxes EditorSandboxes, signer 
 		return EditorSession{}, mapEditorStart(err)
 	}
 	sessionID := uuid.New().String()
-	token, err := runtimedomain.Issue(access.UserID, task.ID, sessionID, now)
+	token, err := runtime.Issue(access.UserID, task.ID, sessionID, now)
 	if err != nil {
 		return EditorSession{}, err
 	}
@@ -98,7 +97,7 @@ func OpenEditor(ctx context.Context, view Viewer, boxes EditorSandboxes, signer 
 	if err != nil {
 		return EditorSession{}, err
 	}
-	if err := runtimedomain.SeparateOrigin(publicURL, ep.URL); err != nil {
+	if err := runtime.SeparateOrigin(publicURL, ep.URL); err != nil {
 		return EditorSession{}, err
 	}
 	return EditorSession{URL: ep.URL, Token: signed, ExpiresAt: token.Expires}, nil

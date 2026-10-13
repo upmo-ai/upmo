@@ -100,7 +100,7 @@ func TestEncodeChatOrderIsToolsSystemMessages(t *testing.T) {
 	toolsAt := strings.Index(text, `"tools"`)
 	systemAt := strings.Index(text, `"system"`)
 	messagesAt := strings.Index(text, `"messages"`)
-	if toolsAt < 0 || systemAt < 0 || messagesAt < 0 || !(toolsAt < systemAt && systemAt < messagesAt) {
+	if toolsAt < 0 || systemAt < 0 || messagesAt < 0 || toolsAt >= systemAt || systemAt >= messagesAt {
 		t.Fatalf("order = %s", text)
 	}
 	if !strings.Contains(text, `"cache_control"`) {

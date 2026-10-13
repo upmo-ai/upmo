@@ -14,17 +14,17 @@ import (
 func TestVolumeOpensAKeyUnderRoot(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "task")
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := os.MkdirAll(path, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(path, "report.pdf"), []byte("pdf"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(path, "report.pdf"), []byte("pdf"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	body, err := (artifacts.Volume{Root: root}).Open(context.Background(), artifacts.StoreVolume, "task/report.pdf")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	got, err := io.ReadAll(body)
 	if err != nil || string(got) != "pdf" {
 		t.Fatalf("body = %q err %v", got, err)

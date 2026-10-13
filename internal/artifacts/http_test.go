@@ -1,4 +1,4 @@
-package httpapi
+package artifacts_test
 
 import (
 	"context"
@@ -14,11 +14,10 @@ import (
 
 const (
 	userID = "018f3b2c-7a10-7c4a-8e11-111111111111"
-	taskID = "018f3b2c-7a10-7c4a-8e11-333333333333"
 	artID  = "018f3b2c-7a10-7c4a-8e11-444444444444"
 )
 
-type fakeCatalog struct {
+type httpCatalog struct {
 	listed []artifacts.Record
 	rec    artifacts.Record
 	err    error
@@ -26,7 +25,7 @@ type fakeCatalog struct {
 	gets   int
 }
 
-func (f *fakeCatalog) ListByTask(context.Context, artifacts.Access, string) ([]artifacts.Record, error) {
+func (f *httpCatalog) ListByTask(context.Context, artifacts.Access, string) ([]artifacts.Record, error) {
 	f.lists++
 	if f.err != nil {
 		return nil, f.err
@@ -34,7 +33,7 @@ func (f *fakeCatalog) ListByTask(context.Context, artifacts.Access, string) ([]a
 	return f.listed, nil
 }
 
-func (f *fakeCatalog) Get(context.Context, artifacts.Access, string) (artifacts.Record, error) {
+func (f *httpCatalog) Get(context.Context, artifacts.Access, string) (artifacts.Record, error) {
 	f.gets++
 	if f.err != nil {
 		return artifacts.Record{}, f.err
@@ -42,15 +41,15 @@ func (f *fakeCatalog) Get(context.Context, artifacts.Access, string) (artifacts.
 	return f.rec, nil
 }
 
-type fakeBlobs struct{ body string }
+type httpBlobs struct{ body string }
 
-func (f fakeBlobs) Open(context.Context, string, string) (io.ReadCloser, error) {
+func (f httpBlobs) Open(context.Context, string, string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(f.body)), nil
 }
 
 func TestListReturnsArtifacts(t *testing.T) {
-	cat := &fakeCatalog{listed: []artifacts.Record{{ID: artID, Name: "report.pdf", Store: artifacts.StoreVolume}}}
-	rec := call(t, cat, fakeBlobs{}, http.MethodGet, "/api/tasks/"+taskID+"/artifacts", true)
+	cat := &httpCatalog{listed: []artifacts.Record{{ID: artID, Name: "report.pdf", Store: artifacts.StoreVolume}}}
+	rec := call(t, cat, httpBlobs{}, http.MethodGet, "/api/tasks/"+taskID+"/artifacts", true)
 	if rec.Code != http.StatusOK || cat.lists != 1 {
 		t.Fatalf("status %d lists %d body %s", rec.Code, cat.lists, rec.Body.String())
 	}
@@ -64,8 +63,8 @@ func TestListReturnsArtifacts(t *testing.T) {
 }
 
 func TestDownloadServesWithNosniff(t *testing.T) {
-	cat := &fakeCatalog{rec: artifacts.Record{ID: artID, Name: "report.pdf", Store: artifacts.StoreVolume, Key: "task/report.pdf"}}
-	rec := call(t, cat, fakeBlobs{body: "pdf"}, http.MethodGet, "/api/artifacts/"+artID, true)
+	cat := &httpCatalog{rec: artifacts.Record{ID: artID, Name: "report.pdf", Store: artifacts.StoreVolume, Key: "task/report.pdf"}}
+	rec := call(t, cat, httpBlobs{body: "pdf"}, http.MethodGet, "/api/artifacts/"+artID, true)
 	if rec.Code != http.StatusOK || cat.gets != 1 {
 		t.Fatalf("status %d gets %d", rec.Code, cat.gets)
 	}
@@ -81,8 +80,8 @@ func TestDownloadServesWithNosniff(t *testing.T) {
 }
 
 func TestDownloadHTMLIsOctetStream(t *testing.T) {
-	cat := &fakeCatalog{rec: artifacts.Record{ID: artID, Name: "page.html", Store: artifacts.StoreVolume, Key: "task/page.html"}}
-	rec := call(t, cat, fakeBlobs{body: "<html>"}, http.MethodGet, "/api/artifacts/"+artID, true)
+	cat := &httpCatalog{rec: artifacts.Record{ID: artID, Name: "page.html", Store: artifacts.StoreVolume, Key: "task/page.html"}}
+	rec := call(t, cat, httpBlobs{body: "<html>"}, http.MethodGet, "/api/artifacts/"+artID, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -95,33 +94,33 @@ func TestDownloadHTMLIsOctetStream(t *testing.T) {
 }
 
 func TestMissingArtifactIsNotFound(t *testing.T) {
-	cat := &fakeCatalog{err: artifacts.ErrGone}
-	rec := call(t, cat, fakeBlobs{}, http.MethodGet, "/api/artifacts/"+artID, true)
+	cat := &httpCatalog{err: artifacts.ErrGone}
+	rec := call(t, cat, httpBlobs{}, http.MethodGet, "/api/artifacts/"+artID, true)
 	if rec.Code != http.StatusNotFound || cat.gets != 1 {
 		t.Fatalf("status %d gets %d", rec.Code, cat.gets)
 	}
 }
 
 func TestEmptyAllowDoesNotCallTheStore(t *testing.T) {
-	cat := &fakeCatalog{}
-	rec := call(t, cat, fakeBlobs{}, http.MethodGet, "/api/tasks/"+taskID+"/artifacts", false)
+	cat := &httpCatalog{}
+	rec := call(t, cat, httpBlobs{}, http.MethodGet, "/api/tasks/"+taskID+"/artifacts", false)
 	if rec.Code != http.StatusUnauthorized || cat.lists != 0 {
 		t.Fatalf("status %d lists %d", rec.Code, cat.lists)
 	}
 }
 
 func TestBearerIsRefused(t *testing.T) {
-	cat := &fakeCatalog{}
+	cat := &httpCatalog{}
 	req := httptest.NewRequest(http.MethodGet, "/api/artifacts/"+artID, nil)
 	req.Header.Set("Authorization", "Bearer upmo_pat_secret")
 	rec := httptest.NewRecorder()
-	handler(cat, fakeBlobs{}, true).ServeHTTP(rec, req)
+	handler(cat, httpBlobs{}, true).ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden || cat.gets != 0 {
 		t.Fatalf("status %d gets %d", rec.Code, cat.gets)
 	}
 }
 
-func call(t *testing.T, cat *fakeCatalog, blobs artifacts.Blobs, method, path string, allow bool) *httptest.ResponseRecorder {
+func call(t *testing.T, cat *httpCatalog, blobs artifacts.Blobs, method, path string, allow bool) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	rec := httptest.NewRecorder()
@@ -129,9 +128,9 @@ func call(t *testing.T, cat *fakeCatalog, blobs artifacts.Blobs, method, path st
 	return rec
 }
 
-func handler(cat *fakeCatalog, blobs artifacts.Blobs, allow bool) http.Handler {
+func handler(cat *httpCatalog, blobs artifacts.Blobs, allow bool) http.Handler {
 	mux := http.NewServeMux()
-	Handler{
+	artifacts.Handler{
 		Catalog: cat,
 		Blobs:   blobs,
 		Access: func(*http.Request) (artifacts.Access, bool) {

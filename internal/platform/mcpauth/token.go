@@ -77,7 +77,7 @@ func CanonicalResource(raw string) (string, error) {
 	u.Scheme = strings.ToLower(u.Scheme)
 	host := strings.ToLower(u.Hostname())
 	port := u.Port()
-	if port != "" && !((u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80")) {
+	if port != "" && (u.Scheme != "https" || port != "443") && (u.Scheme != "http" || port != "80") {
 		u.Host = net.JoinHostPort(host, port)
 	} else {
 		u.Host = host

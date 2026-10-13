@@ -384,7 +384,7 @@ Linear,€192.00,3 Nov`,
     subtasks: [
       {
         id: "mail-read",
-        title: "Read the inbox",
+        title: "Read the mailbox",
         status: "Done",
         children: [{ id: "mail-flag", title: "Flag the invoices", status: "Working" }],
       },

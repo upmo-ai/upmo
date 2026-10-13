@@ -1,4 +1,4 @@
-package httpapi
+package decisions_test
 
 import (
 	"context"
@@ -67,7 +67,7 @@ func call(t *testing.T, book *fakeList, allow bool) *httptest.ResponseRecorder {
 
 func handler(book *fakeList, allow bool) http.Handler {
 	mux := http.NewServeMux()
-	Handler{
+	decisions.Handler{
 		List: book,
 		Access: func(*http.Request) (decisions.Access, bool) {
 			if !allow {

@@ -158,7 +158,7 @@ func Extract(ctx context.Context, store Store, proposer Proposer, embedder Embed
 		for _, item := range batch {
 			got := domain.Gate(domain.Input{
 				PreparedSource:  prepared,
-				Candidate:       domain.Candidate{Claim: item.Claim, ChangesBehavior: item.ChangesBehavior},
+				Candidate:       domain.Candidate(item),
 				DenyClaims:      src.Deny,
 				ActiveHashes:    active,
 				ForgottenHashes: forgotten,

@@ -32,13 +32,13 @@ import (
 )
 
 const (
-	pathCreate    = "/upmo.sandboxd.v1.Runtime/Create"
-	pathExec      = "/upmo.sandboxd.v1.Runtime/Exec"
-	pathPTY       = "/upmo.sandboxd.v1.Runtime/PTY"
-	pathReadFile  = "/upmo.sandboxd.v1.Runtime/ReadFile"
-	pathWriteFile = "/upmo.sandboxd.v1.Runtime/WriteFile"
-	pathExpose    = "/upmo.sandboxd.v1.Runtime/Expose"
-	pathPause     = "/upmo.sandboxd.v1.Runtime/Pause"
+	pathCreate      = "/upmo.sandboxd.v1.Runtime/Create"
+	pathExec        = "/upmo.sandboxd.v1.Runtime/Exec"
+	pathPTY         = "/upmo.sandboxd.v1.Runtime/PTY"
+	pathReadFile    = "/upmo.sandboxd.v1.Runtime/ReadFile"
+	pathWriteFile   = "/upmo.sandboxd.v1.Runtime/WriteFile"
+	pathExpose      = "/upmo.sandboxd.v1.Runtime/Expose"
+	pathPause       = "/upmo.sandboxd.v1.Runtime/Pause"
 	pathDestroy     = "/upmo.sandboxd.v1.Runtime/Destroy"
 	pathStartEditor = "/upmo.sandboxd.v1.Runtime/StartEditor"
 	pathStopEditor  = "/upmo.sandboxd.v1.Runtime/StopEditor"

@@ -13,6 +13,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
+	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
 
 // Schema is the Postgres schema this process owns.
@@ -64,3 +65,24 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 func NewRouteBook(pool *pgxpool.Pool) app.RouteBook {
 	return postgres.Store{Pool: pool}
 }
+
+// RoutesHandler serves the routing rows to a signed-in settings manager.
+type RoutesHandler = httpapi.RoutesHandler
+
+// A model request and the input it is built from.
+type (
+	Input      = domain.Input
+	Message    = domain.Message
+	Request    = domain.Request
+	Role       = domain.Role
+	Breakpoint = domain.Breakpoint
+)
+
+// Message roles and cache breakpoints.
+const (
+	RoleUser    = domain.RoleUser
+	BreakSystem = domain.BreakSystem
+)
+
+// Build returns the provider-neutral request for in.
+func Build(in Input) (Request, error) { return domain.Build(in) }

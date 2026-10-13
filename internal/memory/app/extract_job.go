@@ -7,12 +7,10 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
-
-	"github.com/upmo-ai/upmo/internal/memory"
 )
 
 type extractWorker struct {
-	river.WorkerDefaults[memory.ExtractJobArgs]
+	river.WorkerDefaults[ExtractJobArgs]
 	store   Store
 	propose func(userID string) Proposer
 	embed   func(userID string) Embedder
@@ -23,7 +21,7 @@ func AddExtractWorker(workers *river.Workers, store Store, propose func(userID s
 	river.AddWorker(workers, &extractWorker{store: store, propose: propose, embed: embed})
 }
 
-func (w *extractWorker) Work(ctx context.Context, job *river.Job[memory.ExtractJobArgs]) error {
+func (w *extractWorker) Work(ctx context.Context, job *river.Job[ExtractJobArgs]) error {
 	if w.store == nil || w.propose == nil || w.embed == nil {
 		return fmt.Errorf("memory: extract worker deps")
 	}
@@ -50,3 +48,16 @@ func (w *extractWorker) Work(ctx context.Context, job *river.Job[memory.ExtractJ
 	}
 	return err
 }
+
+// ExtractJobArgs is the River payload for one memory extract run.
+type ExtractJobArgs struct {
+	UserID     string `json:"user_id"`
+	SourceKind string `json:"source_kind"`
+	ID         string `json:"id"`
+	Seq        int    `json:"seq"`
+	Text       string `json:"text"`
+	AtUnix     int64  `json:"at_unix"`
+}
+
+// Kind is the River job kind.
+func (ExtractJobArgs) Kind() string { return "memory_extract" }

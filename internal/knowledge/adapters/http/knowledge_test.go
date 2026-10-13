@@ -30,7 +30,6 @@ type fakeStore struct {
 	deletes int
 	renames int
 	name    string
-	draft   app.Draft
 	rows    []app.Folder
 	sources []app.Source
 	detail  app.SourceDetail

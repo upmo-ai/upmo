@@ -12,8 +12,10 @@ TOOL    := $(COMPOSE) run --rm
 UPMO_GIT_DIR := $(shell sed -n 's|^gitdir: \(.*\)/worktrees/[^/]*$$|\1|p' .git 2>/dev/null)
 export UPMO_GIT_DIR
 
-# Commits to check on this branch: everything not yet on main.
-COMMITS_RANGE ?= origin/main..HEAD
+# Commits to check on this branch: everything not yet on main. Uses the local
+# main when there is no origin/main yet.
+COMMITS_BASE := $(shell git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main || echo main)
+COMMITS_RANGE ?= $(COMMITS_BASE)..HEAD
 
 # Dev only database for integration tests, served by the compose postgres.
 TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable

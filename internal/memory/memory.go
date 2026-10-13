@@ -5,6 +5,16 @@ package memory
 import (
 	"embed"
 	"io/fs"
+
+	"context"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+
+	"github.com/upmo-ai/upmo/internal/memory/adapters/gateway"
+	httpapi "github.com/upmo-ai/upmo/internal/memory/adapters/http"
+	"github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/memory/app"
 )
 
 // Schema is the Postgres schema this context owns.
@@ -21,4 +31,44 @@ func Migrations() fs.FS {
 		panic("memory: embed migrations: " + err.Error())
 	}
 	return files
+}
+
+// Handler serves the personalisation page. Facts keeps facts in the memory
+// schema, and GatewayClient proposes and embeds through the gateway.
+type (
+	Handler       = httpapi.Handler
+	Facts         = postgres.Facts
+	GatewayClient = gateway.Client
+	Editor        = app.Editor
+	Proposer      = app.Proposer
+	Embedder      = app.Embedder
+	Page          = app.Page
+)
+
+// ErrRetry reports a gateway failure worth retrying.
+var ErrRetry = app.ErrRetry
+
+// NewFacts returns the memory Facts on pool.
+func NewFacts(pool *pgxpool.Pool) Facts { return postgres.Facts{Pool: pool} }
+
+// OpenGateway returns a gateway client that proposes on proposeRoute and
+// embeds on embedRoute, signed with serviceKey.
+func OpenGateway(baseURL, serviceKey, proposeRoute, embedRoute string) (GatewayClient, error) {
+	return gateway.Open(baseURL, serviceKey, proposeRoute, embedRoute)
+}
+
+// AddExtractWorker registers the memory extract worker on workers.
+func AddExtractWorker(workers *river.Workers, store app.Store, propose func(userID string) Proposer, embed func(userID string) Embedder) {
+	app.AddExtractWorker(workers, store, propose, embed)
+}
+
+// LoadPage returns the profile and facts a person sees.
+func LoadPage(ctx context.Context, editor Editor, userID string) (Page, error) {
+	return app.LoadPage(ctx, editor, userID)
+}
+
+// SystemPrefix places the profile after the standing instructions, as the
+// cacheable chat system text.
+func SystemPrefix(instructions, profile string) string {
+	return app.SystemPrefix(instructions, profile)
 }

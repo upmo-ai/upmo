@@ -1,5 +1,4 @@
-// Package httpapi serves decision gate reads for a signed-in settings manager.
-package httpapi
+package decisions
 
 import (
 	"encoding/json"
@@ -7,14 +6,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/upmo-ai/upmo/internal/decisions"
 )
 
 // Handler lists accepted decision gates.
 type Handler struct {
-	List   decisions.Lister
-	Access func(r *http.Request) (decisions.Access, bool)
+	List   Lister
+	Access func(r *http.Request) (Access, bool)
 }
 
 // Mount registers the decision routes. guard runs first.
@@ -33,7 +30,7 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := decisions.ListGates(r.Context(), h.List, access)
+	rows, err := ListGates(r.Context(), h.List, access)
 	if refuse(w, err) {
 		return
 	}
@@ -53,20 +50,20 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-func (h Handler) person(w http.ResponseWriter, r *http.Request) (decisions.Access, bool) {
+func (h Handler) person(w http.ResponseWriter, r *http.Request) (Access, bool) {
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		writeError(w, http.StatusForbidden, "needs a signed-in person")
-		return decisions.Access{}, false
+		return Access{}, false
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorised")
-		return decisions.Access{}, false
+		return Access{}, false
 	}
 	access, ok := h.Access(r)
 	if !ok || access.UserID == "" || access.Allow == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorised")
-		return decisions.Access{}, false
+		return Access{}, false
 	}
 	return access, true
 }
@@ -76,7 +73,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
-	case errors.Is(err, decisions.ErrAccess):
+	case errors.Is(err, ErrAccess):
 		writeError(w, http.StatusForbidden, "unauthorised")
 	default:
 		writeError(w, http.StatusInternalServerError, "decisions")

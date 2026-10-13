@@ -20,3 +20,24 @@ regexes = [
   '''upmo_svc_\.\.\.''',
   '''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
 ]
+
+[[allowlists]]
+description = "dev-only service key shared by the local compose stack, never used outside it"
+targetRules = ["upmo-service-key"]
+condition = "AND"
+paths = ['''^compose\.yml$''']
+regexes = ['''^upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c$''']
+
+[[allowlists]]
+description = "editor token test fixtures are user, task and session UUIDs, not secrets"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/runtime/domain/token_test\.go$''']
+regexes = ['''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''']
+
+[[allowlists]]
+description = "fake bearer value the extract test feeds to the redactor"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/memory/app/extract_test\.go$''']
+regexes = ['''^abcDEF123456$''']

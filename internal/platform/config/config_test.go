@@ -328,18 +328,18 @@ func TestLoadSandboxd(t *testing.T) {
 	}
 
 	for name, env := range map[string]map[string]string{
-		"no key":       {},
-		"empty key":    {"UPMO_SERVICE_KEY": ""},
-		"same address":          {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
-		"editor same listen":    {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":8083"},
-		"editor same proxy":     {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":3128"},
-		"editor base https":     {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_BASE_URL": "https://127.0.0.1:8084"},
-		"bad timeout":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
-		"bad driver":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "nomad"},
-		"https proxy":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "https://sandboxd:3128"},
-		"proxy user":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://box@sandboxd:3128"},
-		"proxy path":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://sandboxd:3128/x"},
-		"proxy host":   {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "sandboxd:3128"},
+		"no key":             {},
+		"empty key":          {"UPMO_SERVICE_KEY": ""},
+		"same address":       {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
+		"editor same listen": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":8083"},
+		"editor same proxy":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":3128"},
+		"editor base https":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_BASE_URL": "https://127.0.0.1:8084"},
+		"bad timeout":        {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
+		"bad driver":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "nomad"},
+		"https proxy":        {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "https://sandboxd:3128"},
+		"proxy user":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://box@sandboxd:3128"},
+		"proxy path":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://sandboxd:3128/x"},
+		"proxy host":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "sandboxd:3128"},
 	} {
 		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
 			t.Errorf("%s: want an error", name)

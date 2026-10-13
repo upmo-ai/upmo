@@ -18,29 +18,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/artifacts"
-	artifacthttp "github.com/upmo-ai/upmo/internal/artifacts/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat"
-	chathttp "github.com/upmo-ai/upmo/internal/chat/adapters/http"
-	chatstore "github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
-	chatapp "github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/decisions"
-	decisionshttp "github.com/upmo-ai/upmo/internal/decisions/adapters/http"
 	"github.com/upmo-ai/upmo/internal/gateway"
-	gatewayhttp "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
-	knowledgeblob "github.com/upmo-ai/upmo/internal/knowledge/adapters/blob"
-	knowledgeconvert "github.com/upmo-ai/upmo/internal/knowledge/adapters/convert"
-	knowledgefetch "github.com/upmo-ai/upmo/internal/knowledge/adapters/fetch"
-	knowledgegateway "github.com/upmo-ai/upmo/internal/knowledge/adapters/gateway"
-	knowledgehttp "github.com/upmo-ai/upmo/internal/knowledge/adapters/http"
-	knowledgestore "github.com/upmo-ai/upmo/internal/knowledge/adapters/postgres"
-	knowledgeapp "github.com/upmo-ai/upmo/internal/knowledge/app"
 	"github.com/upmo-ai/upmo/internal/memory"
-	memorygateway "github.com/upmo-ai/upmo/internal/memory/adapters/gateway"
-	memoryhttp "github.com/upmo-ai/upmo/internal/memory/adapters/http"
-	memorystore "github.com/upmo-ai/upmo/internal/memory/adapters/postgres"
-	memoryapp "github.com/upmo-ai/upmo/internal/memory/app"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -50,9 +33,6 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
-	taskhttp "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
-	taskstore "github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
-	taskapp "github.com/upmo-ai/upmo/internal/tasks/app"
 
 	"github.com/riverqueue/river"
 )
@@ -125,35 +105,35 @@ func run() error {
 
 	workers := river.NewWorkers()
 	noticeStore := notices.Store{Pool: pool}
-	memoryFacts := memorystore.Facts{Pool: pool}
+	memoryFacts := memory.NewFacts(pool)
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
 		embedRoute := cfg.EmbedRoute
 		if embedRoute == "" {
 			embedRoute = "memory-embed"
 		}
-		gw, err := memorygateway.Open(cfg.GatewayURL, cfg.ServiceKey, "memory-extract", embedRoute)
+		gw, err := memory.OpenGateway(cfg.GatewayURL, cfg.ServiceKey, "memory-extract", embedRoute)
 		if err != nil {
 			return fmt.Errorf("brain: memory gateway: %w", err)
 		}
-		knowledgeBook := knowledgestore.Store{Pool: pool}
+		knowledgeBook := knowledge.NewStore(pool, nil)
 		members := identity.Members(pool, cfg.PublicURL, linkMail(cfg.SMTP), log)
-		taskapp.AddScoutWorker(workers, taskapp.ScoutDeps{
-			Goals:  taskstore.Store{Pool: pool},
-			Chat:   chatstore.Store{Pool: pool},
+		tasks.AddScoutWorker(workers, tasks.ScoutDeps{
+			Goals:  tasks.NewStore(pool, nil),
+			Chat:   chat.NewStore(pool, nil),
 			Memory: scoutMemory{editor: memoryFacts},
 			Knowledge: scoutKnowledge{
 				folders: knowledgeBook,
 				finder:  knowledgeBook,
 				members: members,
 			},
-			Propose: func(_ context.Context, userID uuid.UUID) taskapp.Proposer {
+			Propose: func(_ context.Context, userID uuid.UUID) tasks.Proposer {
 				return scoutProposer{inner: gw.For(userID.String())}
 			},
 			Notices: noticeStore,
 		})
-		memoryapp.AddExtractWorker(workers, memoryFacts,
-			func(userID string) memoryapp.Proposer { return gw.For(userID) },
-			func(userID string) memoryapp.Embedder { return gw.For(userID) },
+		memory.AddExtractWorker(workers, memoryFacts,
+			func(userID string) memory.Proposer { return gw.For(userID) },
+			func(userID string) memory.Embedder { return gw.For(userID) },
 		)
 	}
 	// Outbox drain runs with Open. Product topic handlers
@@ -254,16 +234,16 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
-	taskBook := taskstore.Store{Pool: pool, Enqueuer: work}
-	var editorSigner taskapp.EditorSigner
+	taskBook := tasks.NewStore(pool, work)
+	var editorSigner tasks.EditorSigner
 	if cfg.ServiceKey != "" {
-		editorTokens, err := taskapp.NewEditorTokens(cfg.ServiceKey, cfg.ServiceKeyPrevious)
+		editorTokens, err := tasks.NewEditorTokens(cfg.ServiceKey, cfg.ServiceKeyPrevious)
 		if err != nil {
 			return nil, err
 		}
 		editorSigner = editorTokens
 	}
-	taskhttp.Handler{
+	tasks.Handler{
 		Book:         taskBook,
 		List:         taskBook,
 		View:         taskBook,
@@ -272,20 +252,20 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		PublicURL:    cfg.PublicURL,
 		Editor:       boxes,
 		EditorSigner: editorSigner,
-		Access: func(r *http.Request) (taskapp.Access, bool) {
+		Access: func(r *http.Request) (tasks.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
-				return taskapp.Access{}, false
+				return tasks.Access{}, false
 			}
 			allow, err := members.TaskAllow(r.Context(), person.UserID)
 			if err != nil || allow == "" {
-				return taskapp.Access{}, false
+				return tasks.Access{}, false
 			}
 			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeTask)
 			if err != nil {
-				return taskapp.Access{}, false
+				return tasks.Access{}, false
 			}
-			return taskapp.Access{
+			return tasks.Access{
 				UserID:     person.UserID.String(),
 				Allow:      allow,
 				Teams:      shares.Teams,
@@ -296,8 +276,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	memoryhttp.Handler{
-		Editor: memorystore.Facts{Pool: pool},
+	memory.Handler{
+		Editor: memory.NewFacts(pool),
 		User: func(r *http.Request) (string, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -309,7 +289,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		return identity.RequireSession(sessions, next)
 	})
 	artifactStore := artifacts.Store{Pool: pool}
-	artifacthttp.Handler{
+	artifacts.Handler{
 		Catalog: artifactStore,
 		Blobs:   artifacts.Volume{Root: cfg.ArtifactsDir},
 		Access: func(r *http.Request) (artifacts.Access, bool) {
@@ -336,22 +316,22 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	chathttp.Handler{
-		Book: chatstore.Store{Pool: pool, Enqueuer: work},
-		Access: func(r *http.Request) (chatapp.Access, bool) {
+	chat.Handler{
+		Book: chat.NewStore(pool, work),
+		Access: func(r *http.Request) (chat.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
-				return chatapp.Access{}, false
+				return chat.Access{}, false
 			}
 			allow, err := members.ChatAllow(r.Context(), person.UserID)
 			if err != nil || allow == "" {
-				return chatapp.Access{}, false
+				return chat.Access{}, false
 			}
 			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeChat)
 			if err != nil {
-				return chatapp.Access{}, false
+				return chat.Access{}, false
 			}
-			return chatapp.Access{
+			return chat.Access{
 				UserID:     person.UserID.String(),
 				Allow:      allow,
 				Teams:      shares.Teams,
@@ -362,20 +342,20 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	knowledgeBook := knowledgestore.Store{Pool: pool, Enqueuer: work}
-	knowledgeConverter := knowledgeconvert.Client{Text: knowledgeapp.PassThroughText{}}
+	knowledgeBook := knowledge.NewStore(pool, work)
+	knowledgeConverter := knowledge.Converter{Text: knowledge.PassThroughText{}}
 	if markitdownURL := os.Getenv("UPMO_MARKITDOWN_URL"); markitdownURL != "" {
-		knowledgeConverter.Sidecar = &knowledgeconvert.Sidecar{BaseURL: markitdownURL}
+		knowledgeConverter.Sidecar = &knowledge.Sidecar{BaseURL: markitdownURL}
 	}
-	var knowledgeEmbedFor func(userID string) knowledgeapp.Embedder
+	var knowledgeEmbedFor func(userID string) knowledge.Embedder
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" && cfg.EmbedRoute != "" {
-		embedClient, err := knowledgegateway.Open(cfg.GatewayURL, cfg.ServiceKey, cfg.EmbedRoute)
+		embedClient, err := knowledge.OpenEmbedder(cfg.GatewayURL, cfg.ServiceKey, cfg.EmbedRoute)
 		if err != nil {
 			return nil, fmt.Errorf("brain: knowledge embedder: %w", err)
 		}
 		knowledgeEmbedFor = embedClient.For
 	}
-	knowledgeHandler := knowledgehttp.Handler{
+	knowledgeHandler := knowledge.Handler{
 		Store:     knowledgeBook,
 		Pending:   knowledgeBook,
 		Folders:   knowledgeBook,
@@ -383,23 +363,23 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		Sources:   knowledgeBook,
 		Delete:    knowledgeBook,
 		Finder:    knowledgeBook,
-		Fetcher:   knowledgefetch.New(),
+		Fetcher:   knowledge.NewFetcher(),
 		Converter: knowledgeConverter,
 		EmbedFor:  knowledgeEmbedFor,
-		Access: func(r *http.Request) (knowledgeapp.Access, bool) {
+		Access: func(r *http.Request) (knowledge.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
-				return knowledgeapp.Access{}, false
+				return knowledge.Access{}, false
 			}
 			allow, err := members.FolderAllow(r.Context(), person.UserID)
 			if err != nil || allow == "" {
-				return knowledgeapp.Access{}, false
+				return knowledge.Access{}, false
 			}
 			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeFolder)
 			if err != nil {
-				return knowledgeapp.Access{}, false
+				return knowledge.Access{}, false
 			}
-			return knowledgeapp.Access{
+			return knowledge.Access{
 				UserID:     person.UserID.String(),
 				Allow:      allow,
 				Teams:      shares.Teams,
@@ -409,12 +389,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		},
 	}
 	if cfg.KnowledgeDir != "" {
-		knowledgeHandler.Blobs = knowledgeblob.Volume{Root: cfg.KnowledgeDir}
+		knowledgeHandler.Blobs = knowledge.Volume{Root: cfg.KnowledgeDir}
 	}
 	knowledgeHandler.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	decisionshttp.Handler{
+	decisions.Handler{
 		List: decisions.Store{Pool: pool},
 		Access: func(r *http.Request) (decisions.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
@@ -430,7 +410,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	gatewayhttp.RoutesHandler{
+	gateway.RoutesHandler{
 		Book: gateway.NewRouteBook(pool),
 		Access: func(r *http.Request) (string, string, bool) {
 			person, ok := identity.SessionFrom(r.Context())
@@ -470,35 +450,35 @@ type scoutProposer struct {
 
 func (p scoutProposer) Propose(ctx context.Context, prompt string) (string, error) {
 	text, err := p.inner.Propose(ctx, prompt)
-	if err != nil && errors.Is(err, memoryapp.ErrRetry) {
-		return "", fmt.Errorf("%w: %v", taskapp.ErrRetry, err)
+	if err != nil && errors.Is(err, memory.ErrRetry) {
+		return "", fmt.Errorf("%w: %v", tasks.ErrRetry, err)
 	}
 	return text, err
 }
 
 type scoutMemory struct {
-	editor memoryapp.Editor
+	editor memory.Editor
 }
 
-func (s scoutMemory) ProfileAndFacts(ctx context.Context, userID uuid.UUID) (string, []taskapp.MemoryFact, error) {
-	page, err := memoryapp.LoadPage(ctx, s.editor, userID.String())
+func (s scoutMemory) ProfileAndFacts(ctx context.Context, userID uuid.UUID) (string, []tasks.MemoryFact, error) {
+	page, err := memory.LoadPage(ctx, s.editor, userID.String())
 	if err != nil {
 		return "", nil, err
 	}
-	facts := make([]taskapp.MemoryFact, 0, len(page.Facts))
+	facts := make([]tasks.MemoryFact, 0, len(page.Facts))
 	for _, row := range page.Facts {
-		facts = append(facts, taskapp.MemoryFact{ID: row.ID, Claim: row.Claim})
+		facts = append(facts, tasks.MemoryFact{ID: row.ID, Claim: row.Claim})
 	}
 	return page.Profile, facts, nil
 }
 
 type scoutKnowledge struct {
-	folders knowledgeapp.FolderLister
-	finder  knowledgeapp.Finder
+	folders knowledge.FolderLister
+	finder  knowledge.Finder
 	members identity.MemberService
 }
 
-func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query string, limit int) ([]taskapp.KnowledgeHit, error) {
+func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query string, limit int) ([]tasks.KnowledgeHit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || limit <= 0 {
 		return nil, nil
@@ -515,24 +495,24 @@ func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query stri
 	if err != nil {
 		return nil, err
 	}
-	access := knowledgeapp.Access{
+	access := knowledge.Access{
 		UserID:     userID.String(),
 		Allow:      allow,
 		Teams:      shares.Teams,
 		SharedView: shares.SharedView,
 		SharedEdit: shares.SharedEdit,
 	}
-	folders, err := knowledgeapp.ListFolders(ctx, s.folders, access)
+	folders, err := knowledge.ListFolders(ctx, s.folders, access)
 	if err != nil {
 		return nil, err
 	}
-	var out []taskapp.KnowledgeHit
+	var out []tasks.KnowledgeHit
 	seen := map[string]bool{}
 	for _, folder := range folders {
 		if len(out) >= limit {
 			break
 		}
-		hits, err := knowledgeapp.Search(ctx, s.finder, nil, nil, access, folder.ID, query)
+		hits, err := knowledge.Search(ctx, s.finder, nil, nil, access, folder.ID, query)
 		if err != nil {
 			return nil, err
 		}
@@ -545,7 +525,7 @@ func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query stri
 				continue
 			}
 			seen[key] = true
-			out = append(out, taskapp.KnowledgeHit{SourceID: hit.SourceID, Body: hit.Body})
+			out = append(out, tasks.KnowledgeHit{SourceID: hit.SourceID, Body: hit.Body})
 		}
 	}
 	return out, nil

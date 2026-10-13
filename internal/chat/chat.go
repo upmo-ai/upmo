@@ -5,6 +5,13 @@ package chat
 import (
 	"embed"
 	"io/fs"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	httpapi "github.com/upmo-ai/upmo/internal/chat/adapters/http"
+	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
 )
 
 // Schema is the Postgres schema this context owns.
@@ -21,4 +28,17 @@ func Migrations() fs.FS {
 		panic("chat: embed migrations: " + err.Error())
 	}
 	return files
+}
+
+// Handler serves chats to a signed-in person. Access is who asks, and Store
+// keeps chats in the chat schema.
+type (
+	Handler = httpapi.Handler
+	Access  = app.Access
+	Store   = postgres.Store
+)
+
+// NewStore returns the chat Store on pool. A nil enqueuer enqueues no jobs.
+func NewStore(pool *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
+	return postgres.Store{Pool: pool, Enqueuer: enqueuer}
 }

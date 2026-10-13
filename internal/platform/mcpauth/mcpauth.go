@@ -214,11 +214,7 @@ func ParseResourceMetadata(raw []byte) (ResourceMetadata, error) {
 	if _, err := httpsURL(doc.Resource); err != nil {
 		return ResourceMetadata{}, fmt.Errorf("mcp: resource: %w", err)
 	}
-	return ResourceMetadata{
-		Resource:             doc.Resource,
-		AuthorizationServers: doc.AuthorizationServers,
-		ScopesSupported:      doc.ScopesSupported,
-	}, nil
+	return ResourceMetadata(doc), nil
 }
 
 // MetadataURL is the RFC 9728 well-known location for a resource URL.

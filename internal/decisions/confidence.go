@@ -61,7 +61,7 @@ func Confidence(ctx context.Context, book Gates, access Access, hops []Hop, bar 
 		}
 		if yes {
 			total++
-			if outputs[i].Yes {
+			if outputs[i].Yes { //nolint:gosec // prompts is built with len(outputs)
 				hit++
 			}
 		}

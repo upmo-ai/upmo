@@ -8,5 +8,6 @@
   },
   "globs": ["**/*.md"],
   // The pull request template starts at a second level heading by design.
-  "ignores": ["**/node_modules/**", ".github/pull_request_template.md"]
+  // AGENTS.md is a local, gitignored file.
+  "ignores": ["**/node_modules/**", ".github/pull_request_template.md", "AGENTS.md"]
 }

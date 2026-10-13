@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
@@ -80,7 +81,7 @@ func (f *fakeGate) Admit(_ context.Context, _ Access, taskID, runID string) (Run
 
 	state := domain.RunState("")
 	if runID == "" {
-		runID = "018f3b2c-7a10-7c4a-8e11-ccccccccccc" + string(rune('0'+f.admitCalls))
+		runID = "018f3b2c-7a10-7c4a-8e11-ccccccccccc" + strconv.Itoa(f.admitCalls)
 	} else {
 		state = domain.RunQueued
 	}

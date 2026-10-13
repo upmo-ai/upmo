@@ -10,22 +10,21 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 const (
-	editorNamePrefix   = "upmo-editor-"
-	labelEditor        = "ai.upmo.editor"
-	labelEditorToken   = "ai.upmo.editor-tkn"
-	editorContainer    = "editor"
-	editorListenPort   = 3000
-	scratchPVCSize     = "1Gi"
+	editorNamePrefix = "upmo-editor-"
+	labelEditor      = "ai.upmo.editor"
+	labelEditorToken = "ai.upmo.editor-tkn" //nolint:gosec // label key name, not a credential
+	editorContainer  = "editor"
+	editorListenPort = 3000
+	scratchPVCSize   = "1Gi"
 	// DefaultEditorImage is the code editor when Options.EditorImage is empty.
 	DefaultEditorImage = "gitpod/openvscode-server:1.92.1"
 )
@@ -39,7 +38,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	if !ok {
 		return runtime.Endpoint{}, runtime.ErrNotFound
 	}
-	mountRule, err := domain.MountRule(status)
+	mountRule, err := runtime.MountRule(status)
 	if err != nil {
 		return runtime.Endpoint{}, err
 	}
@@ -47,7 +46,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 	if err != nil {
 		return runtime.Endpoint{}, err
 	}
-	if err := domain.AdmitEditor(open); err != nil {
+	if err := runtime.AdmitEditor(open); err != nil {
 		if open > 0 {
 			if err := d.touchEditor(ctx, id); err != nil {
 				return runtime.Endpoint{}, err
@@ -64,17 +63,17 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 		}
 		return runtime.Endpoint{}, fmt.Errorf("kubernetes: start editor: sandbox pod: %w", err)
 	}
-	readOnly := mountRule.Mode == domain.ModeReadOnly
+	readOnly := mountRule.Mode == runtime.ModeReadOnly
 	image := d.editorImageRef()
 	connToken, err := newEditorConnectionToken()
 	if err != nil {
 		return runtime.Endpoint{}, err
 	}
 	labels := map[string]string{
-		labelSandbox:              id,
-		labelEditor:               "1",
-		labelEditorToken:          connToken,
-		domain.EditorTouchedLabel: domain.FormatEditorTouched(d.now()),
+		labelSandbox:               id,
+		labelEditor:                "1",
+		labelEditorToken:           connToken,
+		runtime.EditorTouchedLabel: runtime.FormatEditorTouched(d.now()),
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -96,7 +95,7 @@ func (d *Driver) StartEditor(ctx context.Context, id, status string) (runtime.En
 				Image:           image,
 				WorkingDir:      ScratchDir,
 				ImagePullPolicy: corev1.PullIfNotPresent,
-				Env:             d.proxyEnv(domain.EditorEgressID(id)),
+				Env:             d.proxyEnv(runtime.EditorEgressID(id)),
 				Command: []string{
 					"--host", "0.0.0.0",
 					"--port", strconv.Itoa(editorListenPort),
@@ -188,7 +187,7 @@ func (d *Driver) touchEditor(ctx context.Context, sandboxID string) error {
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
 	}
-	pod.Labels[domain.EditorTouchedLabel] = domain.FormatEditorTouched(d.now())
+	pod.Labels[runtime.EditorTouchedLabel] = runtime.FormatEditorTouched(d.now())
 	if _, err := d.api.UpdatePod(ctx, pod); err != nil {
 		return fmt.Errorf("kubernetes: touch editor: %w", err)
 	}
@@ -213,7 +212,7 @@ func (d *Driver) sweepIdleEditors(ctx context.Context) (int, error) {
 		if pod.Labels[labelEditor] != "1" {
 			continue
 		}
-		stop, err := domain.StopIdleEditor(pod.Labels[domain.EditorTouchedLabel], now)
+		stop, err := runtime.StopIdleEditor(pod.Labels[runtime.EditorTouchedLabel], now)
 		if err != nil {
 			errs = append(errs, err)
 			continue

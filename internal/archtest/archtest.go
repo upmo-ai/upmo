@@ -150,7 +150,9 @@ func Check(module string, pkgs []*packages.Package) []Violation {
 			if !ok {
 				continue
 			}
-			if to.cmd {
+			// The generated test main of a package sits beside it as path.test
+			// and imports that package.
+			if to.cmd && p.PkgPath != path+".test" {
 				add(Violation{p.PkgPath, path, "cmd is not importable"})
 			}
 			if to.context != "" && to.layer != "" && from.context != to.context {
