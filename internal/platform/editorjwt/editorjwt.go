@@ -88,14 +88,14 @@ func (k Keys) Sign(user, task, session string, now time.Time) (string, error) {
 	}
 	unix := now.Unix()
 	payload, err := json.Marshal(map[string]any{
-		"iss": issuer,
-		"aud": AudienceEditor,
-		"sub": user,
+		"iss":     issuer,
+		"aud":     AudienceEditor,
+		"sub":     user,
 		"task":    task,
 		"session": session,
-		"iat": unix,
-		"nbf": unix,
-		"exp": now.Add(lifetime).Unix(),
+		"iat":     unix,
+		"nbf":     unix,
+		"exp":     now.Add(lifetime).Unix(),
 	})
 	if err != nil {
 		return "", err

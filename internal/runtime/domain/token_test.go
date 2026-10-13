@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+//nolint:gosec // fixture UUIDs, not credentials
 const (
 	tokenUser    = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 	tokenTask    = "7a2b3c4d-5e6f-4a71-9b8c-0d1e2f3a4b5c"

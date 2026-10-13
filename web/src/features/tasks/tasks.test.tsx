@@ -123,7 +123,7 @@ describe("tasks", () => {
   it("shows a nested subtask under its parent", async () => {
     renderAt("/tasks/aster-mail");
     const tree = await screen.findByRole("list", { name: "Subtasks" });
-    const parent = within(tree).getByText("Read the inbox").closest("li");
+    const parent = within(tree).getByText("Read the mailbox").closest("li");
     expect(parent).toBeTruthy();
     expect(within(parent as HTMLElement).getByText("Flag the invoices")).toBeTruthy();
     expect(within(parent as HTMLElement).queryByText("Draft the replies")).toBeNull();

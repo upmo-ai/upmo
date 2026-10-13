@@ -73,7 +73,7 @@ func (s *Sidecar) ToMarkdown(ctx context.Context, contentType string, body []byt
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", app.ErrConvert, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20+1))
 	if err != nil {
 		return "", app.ErrConvert

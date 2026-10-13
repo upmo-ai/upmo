@@ -6,6 +6,7 @@ package runtime
 import (
 	"embed"
 	"io/fs"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -57,10 +58,10 @@ type (
 // TaskSandboxes.Provision runs in the background. Class is a tool class
 // NeedsSandbox reads.
 type (
-	TaskSandboxes   = app.TaskSandboxes
+	TaskSandboxes    = app.TaskSandboxes
 	TaskSandboxStore = app.TaskSandboxStore
-	Done            = app.Done
-	Class           = domain.Class
+	Done             = app.Done
+	Class            = domain.Class
 )
 
 // Tool classes.
@@ -80,12 +81,12 @@ const (
 
 // Errors TaskSandboxes reports.
 var (
-	ErrSandboxdUnset     = app.ErrSandboxdUnset
+	ErrSandboxdUnset      = app.ErrSandboxdUnset
 	ErrNoTaskSandboxStore = app.ErrNoTaskSandboxStore
-	ErrAlreadyHeld       = app.ErrAlreadyHeld
-	ErrNoHeldSandbox     = app.ErrNoHeldSandbox
-	ErrReleased          = app.ErrReleased
-	ErrClass             = domain.ErrClass
+	ErrAlreadyHeld        = app.ErrAlreadyHeld
+	ErrNoHeldSandbox      = app.ErrNoHeldSandbox
+	ErrReleased           = app.ErrReleased
+	ErrClass              = domain.ErrClass
 )
 
 // NeedsSandbox reports whether a task with repo and classes needs a
@@ -142,6 +143,51 @@ var (
 	ErrEgress      = domain.ErrEgress
 	ErrEditor      = domain.ErrEditor
 )
+
+// The code editor beside a sandbox: its scratch mount, idle clock, egress
+// identity and token.
+type (
+	Mount = domain.Mount
+	Token = domain.Token
+)
+
+// Editor modes, limits and labels.
+const (
+	ModeReadOnly       = domain.ModeReadOnly
+	EditorIdle         = domain.EditorIdle
+	EditorTouchedLabel = domain.EditorTouchedLabel
+	GalleryHost        = domain.GalleryHost
+	TokenTTL           = domain.TokenTTL
+)
+
+// MountRule returns the scratch mount for a task status.
+func MountRule(status string) (Mount, error) { return domain.MountRule(status) }
+
+// FormatEditorTouched formats now as the editor idle clock label value.
+func FormatEditorTouched(now time.Time) string { return domain.FormatEditorTouched(now) }
+
+// StopIdleEditor reports whether an editor with touched should stop at now.
+func StopIdleEditor(touched string, now time.Time) (bool, error) {
+	return domain.StopIdleEditor(touched, now)
+}
+
+// AdmitEditor refuses another editor when a task already holds open editors at the cap.
+func AdmitEditor(open int) error { return domain.AdmitEditor(open) }
+
+// EditorEgressID is the CONNECT proxy Basic user for a sandbox code editor.
+func EditorEgressID(sandboxID string) string { return domain.EditorEgressID(sandboxID) }
+
+// SandboxFromEditorEgress returns the sandbox id when id is an editor egress id.
+func SandboxFromEditorEgress(id string) (string, bool) { return domain.SandboxFromEditorEgress(id) }
+
+// Issue returns an unsigned editor token for user, task and session that
+// expires TokenTTL after now.
+func Issue(user, task, session string, now time.Time) (Token, error) {
+	return domain.Issue(user, task, session, now)
+}
+
+// SeparateOrigin refuses an editor URL that shares an origin with the app URL.
+func SeparateOrigin(app, editor string) error { return domain.SeparateOrigin(app, editor) }
 
 // MaxFile is the largest file ReadFile returns or WriteFile copies.
 const MaxFile = app.MaxFile

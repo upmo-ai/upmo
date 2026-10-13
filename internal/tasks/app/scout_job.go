@@ -7,12 +7,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
-
-	"github.com/upmo-ai/upmo/internal/tasks"
 )
 
 type scoutWorker struct {
-	river.WorkerDefaults[tasks.ScoutJobArgs]
+	river.WorkerDefaults[ScoutJobArgs]
 	deps ScoutDeps
 }
 
@@ -21,7 +19,7 @@ func AddScoutWorker(workers *river.Workers, deps ScoutDeps) {
 	river.AddWorker(workers, &scoutWorker{deps: deps})
 }
 
-func (w *scoutWorker) Work(ctx context.Context, job *river.Job[tasks.ScoutJobArgs]) error {
+func (w *scoutWorker) Work(ctx context.Context, job *river.Job[ScoutJobArgs]) error {
 	userID, err := uuid.Parse(job.Args.UserID)
 	if err != nil {
 		return fmt.Errorf("tasks: scout job: user: %w", err)
@@ -45,3 +43,13 @@ func (w *scoutWorker) Work(ctx context.Context, job *river.Job[tasks.ScoutJobArg
 	}
 	return err
 }
+
+// ScoutJobArgs is the River payload for a proposal scout run.
+type ScoutJobArgs struct {
+	UserID   string `json:"user_id"`
+	Trigger  string `json:"trigger"`
+	SourceID string `json:"source_id"`
+}
+
+// Kind is the River job kind.
+func (ScoutJobArgs) Kind() string { return "tasks_proposal_scout" }

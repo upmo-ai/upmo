@@ -17,21 +17,20 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 type fakeCluster struct {
 	mu sync.Mutex
 
-	pods      map[string]*corev1.Pod
-	pvcs      map[string]*corev1.PersistentVolumeClaim
-	services  map[string]*corev1.Service
-	created   []*corev1.Pod
-	pvcsMade  []*corev1.PersistentVolumeClaim
-	svcMade   []*corev1.Service
-	deleted   []string
-	pvcsDel   []string
-	svcDel    []string
+	pods     map[string]*corev1.Pod
+	pvcs     map[string]*corev1.PersistentVolumeClaim
+	services map[string]*corev1.Service
+	created  []*corev1.Pod
+	pvcsMade []*corev1.PersistentVolumeClaim
+	svcMade  []*corev1.Service
+	deleted  []string
+	pvcsDel  []string
+	svcDel   []string
 
 	execOut   string
 	execErr   error
@@ -460,7 +459,7 @@ func TestSweepRemovesIdleEditors(t *testing.T) {
 	if _, ok := fake.pods[name]; !ok {
 		t.Fatal("editor removed early")
 	}
-	c.add(domain.EditorIdle)
+	c.add(runtime.EditorIdle)
 	n, err = d.Sweep(ctx)
 	if err != nil || n != 1 {
 		t.Fatalf("sweep idle = %d %v, want 1", n, err)
@@ -482,16 +481,16 @@ func TestStartEditorRefreshesTouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := editorPodName(box.ID)
-	first := fake.pods[name].Labels[domain.EditorTouchedLabel]
-	c.add(domain.EditorIdle - time.Minute)
+	first := fake.pods[name].Labels[runtime.EditorTouchedLabel]
+	c.add(runtime.EditorIdle - time.Minute)
 	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
 		t.Fatal(err)
 	}
-	second := fake.pods[name].Labels[domain.EditorTouchedLabel]
+	second := fake.pods[name].Labels[runtime.EditorTouchedLabel]
 	if second == first || second == "" {
 		t.Fatalf("touched = %q -> %q", first, second)
 	}
-	c.add(domain.EditorIdle - time.Minute)
+	c.add(runtime.EditorIdle - time.Minute)
 	n, err := d.Sweep(ctx)
 	if err != nil || n != 0 {
 		t.Fatalf("sweep after refresh = %d %v", n, err)
@@ -626,7 +625,7 @@ func TestStartEditorProxyUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	editor := fake.created[len(fake.created)-1]
-	wantUser := domain.EditorEgressID(box.ID)
+	wantUser := runtime.EditorEgressID(box.ID)
 	proxy := "http://" + wantUser + ":@host.docker.internal:3128"
 	want := map[string]string{
 		"HTTP_PROXY": proxy, "http_proxy": proxy,
@@ -654,7 +653,7 @@ func TestEditorGalleryEgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eid := domain.EditorEgressID(box.ID)
+	eid := runtime.EditorEgressID(box.ID)
 	if _, _, ok := d.Egress(eid); ok {
 		t.Fatal("editor egress before start")
 	}
@@ -662,10 +661,10 @@ func TestEditorGalleryEgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	allow, creds, ok := d.Egress(eid)
-	if !ok || len(creds) != 0 || len(allow) != 1 || allow[0] != domain.GalleryHost {
+	if !ok || len(creds) != 0 || len(allow) != 1 || allow[0] != runtime.GalleryHost {
 		t.Fatalf("editor egress = %v %v %t", allow, creds, ok)
 	}
-	dec, err := runtime.AdmitEgress(domain.GalleryHost, allow)
+	dec, err := runtime.AdmitEgress(runtime.GalleryHost, allow)
 	if err != nil || dec.Verdict != runtime.VerdictAllow {
 		t.Fatalf("gallery admit = %+v %v", dec, err)
 	}

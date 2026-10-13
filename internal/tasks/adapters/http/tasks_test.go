@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	runtimedomain "github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -112,7 +111,6 @@ func TestListEmptyAllowDoesNotCallTheLister(t *testing.T) {
 
 const taskID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
-
 func TestGetReturnsATask(t *testing.T) {
 	book := &fakeBook{viewed: app.Task{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}
 	rec := call(t, book, http.MethodGet, "/api/tasks/"+taskID, "", true)
@@ -180,7 +178,7 @@ func TestEditorReturnsURLTokenAndExpiry(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	wantExp := now.UTC().Add(runtimedomain.TokenTTL).Format(time.RFC3339)
+	wantExp := now.UTC().Add(runtime.TokenTTL).Format(time.RFC3339)
 	if got["url"] != "http://127.0.0.1:30001" || got["token"] != "signed" || got["expires_at"] != wantExp {
 		t.Fatalf("body = %#v", got)
 	}

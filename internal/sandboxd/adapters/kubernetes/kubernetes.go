@@ -29,7 +29,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
 )
 
@@ -79,9 +78,9 @@ type Options struct {
 
 // Driver runs sandboxes as Kubernetes Pods.
 type Driver struct {
-	api         cluster
-	ns          string
-	now         func() time.Time
+	api           cluster
+	ns            string
+	now           func() time.Time
 	editorImage   string
 	editorBaseURL string
 	proxy         *url.URL
@@ -383,7 +382,7 @@ func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 // An editor egress id allows only GalleryHost while that sandbox's editor is
 // running.
 func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
-	if sandboxID, editorID := domain.SandboxFromEditorEgress(id); editorID {
+	if sandboxID, editorID := runtime.SandboxFromEditorEgress(id); editorID {
 		_, b, ok := d.live(sandboxID)
 		if !ok || b.paused {
 			return nil, nil, false
@@ -392,7 +391,7 @@ func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
 		if err != nil || open == 0 {
 			return nil, nil, false
 		}
-		return []string{domain.GalleryHost}, nil, true
+		return []string{runtime.GalleryHost}, nil, true
 	}
 	_, b, ok := d.live(id)
 	if !ok || b.paused {

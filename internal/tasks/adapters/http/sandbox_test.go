@@ -380,8 +380,8 @@ func TestOpenWithAnUnknownClassIsRefused(t *testing.T) {
 
 func TestOpenNeedingASandboxWithSandboxdUnsetIsRefused(t *testing.T) {
 	for name, boxes := range map[string]app.Sandboxes{
-		"no sandboxes":    nil,
-		"no provider": &runtime.TaskSandboxes{},
+		"no sandboxes": nil,
+		"no provider":  &runtime.TaskSandboxes{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			book := &fakeBook{openID: taskID}

@@ -4,15 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/upmo-ai/upmo/internal/gateway/domain"
-	"github.com/upmo-ai/upmo/internal/memory/app"
+	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/memory"
 )
 
 func TestProfileLandsInTheCachePrefix(t *testing.T) {
-	system := app.SystemPrefix("Be brief.", "Ada lives in Dhaka")
-	req, err := domain.Build(domain.Input{
+	system := memory.SystemPrefix("Be brief.", "Ada lives in Dhaka")
+	req, err := gateway.Build(gateway.Input{
 		System:   system,
-		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}},
+		Messages: []gateway.Message{{Role: gateway.RoleUser, Text: "hello"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +22,7 @@ func TestProfileLandsInTheCachePrefix(t *testing.T) {
 	}
 	cached := false
 	for _, mark := range req.Cache {
-		if mark == domain.BreakSystem {
+		if mark == gateway.BreakSystem {
 			cached = true
 		}
 	}

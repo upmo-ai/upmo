@@ -11,7 +11,6 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
-	runtimedomain "github.com/upmo-ai/upmo/internal/runtime/domain"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
@@ -56,7 +55,7 @@ func TestOpenEditorReturnsURLAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.URL != "http://127.0.0.1:30001" || got.Token != "signed" || !got.ExpiresAt.Equal(now.UTC().Add(runtimedomain.TokenTTL)) {
+	if got.URL != "http://127.0.0.1:30001" || got.Token != "signed" || !got.ExpiresAt.Equal(now.UTC().Add(runtime.TokenTTL)) {
 		t.Fatalf("session = %+v", got)
 	}
 	if boxes.calls != 1 || boxes.lastID != preparingTask || boxes.status != string(domain.Preparing) {

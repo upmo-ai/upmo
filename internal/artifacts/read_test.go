@@ -55,7 +55,7 @@ func TestOpenForDownloadServesHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	if rec.Name != "report.pdf" || headers.Type != "application/pdf" || headers.Sniff != artifacts.SniffValue {
 		t.Fatalf("rec=%#v headers=%#v", rec, headers)
 	}

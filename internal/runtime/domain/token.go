@@ -12,7 +12,7 @@ const (
 	// TokenTTL is how long an editor token stays valid after it is issued.
 	TokenTTL = 15 * time.Minute
 	// GalleryHost is the only extension gallery host an editor may name.
-	GalleryHost = "open-vsx.org"
+	GalleryHost        = "open-vsx.org"
 	editorEgressPrefix = "editor."
 )
 

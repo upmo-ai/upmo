@@ -387,7 +387,8 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	const maxMemory = 32 << 20
-	if err := r.ParseMultipartForm(maxMemory); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxMemory+1<<20)
+	if err := r.ParseMultipartForm(maxMemory); err != nil { //nolint:gosec // body is capped by MaxBytesReader above
 		writeError(w, http.StatusBadRequest, "a source needs a file")
 		return
 	}
@@ -396,7 +397,7 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a source needs a file")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(file, maxMemory+1))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "a source needs a file")

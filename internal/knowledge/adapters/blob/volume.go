@@ -31,7 +31,7 @@ func (v Volume) Put(_ context.Context, key string, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 		return fmt.Errorf("knowledge: blob: %w", err)
 	}
 	tmp := full + ".tmp"
@@ -51,7 +51,7 @@ func (v Volume) Open(_ context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(full)
+	f, err := os.Open(full) //nolint:gosec // resolve confines full under Root
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoBlob
 	}

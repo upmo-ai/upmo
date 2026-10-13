@@ -12,24 +12,23 @@ import (
 	"io/fs"
 	"iter"
 	"net"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"net/netip"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
 // fake is an in-memory engine. It records what the driver asked for and
@@ -62,18 +61,18 @@ type fake struct {
 	conns  []net.Conn
 
 	containers   map[string]fakeCont
-	nextHostPort  int
-	nextEditorIP  int
+	nextHostPort int
+	nextEditorIP int
 }
 
 type fakeCont struct {
-	name       string
-	labels     map[string]string
-	started    bool
-	removed    bool
-	hostPort   int
-	networkIP  string
-	opts       client.ContainerCreateOptions
+	name      string
+	labels    map[string]string
+	started   bool
+	removed   bool
+	hostPort  int
+	networkIP string
+	opts      client.ContainerCreateOptions
 }
 
 type frame struct {
@@ -1055,7 +1054,7 @@ func TestSweepRemovesIdleEditors(t *testing.T) {
 	if _, ok := f.containers[name]; !ok {
 		t.Fatal("editor removed early")
 	}
-	c.add(domain.EditorIdle)
+	c.add(runtime.EditorIdle)
 	n, err = d.Sweep(ctx)
 	if err != nil || n != 1 {
 		t.Fatalf("sweep idle = %d %v, want 1", n, err)
@@ -1074,7 +1073,7 @@ func TestSweepRemovesEditorWithMissingTouched(t *testing.T) {
 	}
 	name := editorContainerName(box.ID)
 	f.mu.Lock()
-	delete(f.containers[name].labels, domain.EditorTouchedLabel)
+	delete(f.containers[name].labels, runtime.EditorTouchedLabel)
 	f.mu.Unlock()
 	c.add(time.Minute)
 	n, err := d.Sweep(ctx)
@@ -1091,16 +1090,16 @@ func TestStartEditorRefreshesTouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := editorContainerName(box.ID)
-	first := f.containers[name].labels[domain.EditorTouchedLabel]
-	c.add(domain.EditorIdle - time.Minute)
+	first := f.containers[name].labels[runtime.EditorTouchedLabel]
+	c.add(runtime.EditorIdle - time.Minute)
 	if _, err := d.StartEditor(ctx, box.ID, "Working"); err != nil {
 		t.Fatal(err)
 	}
-	second := f.containers[name].labels[domain.EditorTouchedLabel]
+	second := f.containers[name].labels[runtime.EditorTouchedLabel]
 	if second == first || second == "" {
 		t.Fatalf("touched = %q -> %q", first, second)
 	}
-	c.add(domain.EditorIdle - time.Minute)
+	c.add(runtime.EditorIdle - time.Minute)
 	n, err := d.Sweep(ctx)
 	if err != nil || n != 0 {
 		t.Fatalf("sweep after refresh = %d %v", n, err)
@@ -1143,7 +1142,7 @@ func TestStartEditorProxyUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	ed := f.created[len(f.created)-1]
-	wantUser := domain.EditorEgressID(box.ID)
+	wantUser := runtime.EditorEgressID(box.ID)
 	proxy := "http://" + wantUser + ":@host.docker.internal:3128"
 	wantEnv := []string{
 		"HTTP_PROXY=" + proxy, "http_proxy=" + proxy,
@@ -1159,7 +1158,7 @@ func TestEditorGalleryEgress(t *testing.T) {
 	d, _, _ := setupEditor(t)
 	box := create(t, d)
 	ctx := context.Background()
-	eid := domain.EditorEgressID(box.ID)
+	eid := runtime.EditorEgressID(box.ID)
 	if _, _, ok := d.Egress(eid); ok {
 		t.Fatal("editor egress before start")
 	}
@@ -1167,10 +1166,10 @@ func TestEditorGalleryEgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	allow, creds, ok := d.Egress(eid)
-	if !ok || len(creds) != 0 || len(allow) != 1 || allow[0] != domain.GalleryHost {
+	if !ok || len(creds) != 0 || len(allow) != 1 || allow[0] != runtime.GalleryHost {
 		t.Fatalf("editor egress = %v %v %t", allow, creds, ok)
 	}
-	dec, err := runtime.AdmitEgress(domain.GalleryHost, allow)
+	dec, err := runtime.AdmitEgress(runtime.GalleryHost, allow)
 	if err != nil || dec.Verdict != runtime.VerdictAllow {
 		t.Fatalf("gallery admit = %+v %v", dec, err)
 	}

@@ -63,9 +63,9 @@ func TestOpenTaskRefusesAnUnknownClassBeforeOpening(t *testing.T) {
 
 func TestOpenTaskRefusesWhenSandboxdIsUnset(t *testing.T) {
 	for name, boxes := range map[string]Sandboxes{
-		"nil":       nil,
-		"not ready": &fakeBoxes{},
-		"task sandboxes":     &runtime.TaskSandboxes{},
+		"nil":            nil,
+		"not ready":      &fakeBoxes{},
+		"task sandboxes": &runtime.TaskSandboxes{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			book := &fake{}

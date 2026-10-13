@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // TestModule enforces the import rules on this repository.
@@ -48,6 +50,21 @@ func TestFixtureViolations(t *testing.T) {
 		if !slices.Contains(want, v) {
 			t.Errorf("unexpected violation: %s", v)
 		}
+	}
+}
+
+// TestCmdTestMain lets a cmd package's own generated test main import it,
+// and still refuses any other importer of cmd.
+func TestCmdTestMain(t *testing.T) {
+	const m = "example.com/fixture"
+	tool := &packages.Package{PkgPath: m + "/cmd/tool"}
+	pkgs := []*packages.Package{
+		{PkgPath: m + "/cmd/tool.test", Imports: map[string]*packages.Package{tool.PkgPath: tool}},
+		{PkgPath: m + "/cmd/other.test", Imports: map[string]*packages.Package{tool.PkgPath: tool}},
+	}
+	want := []Violation{{m + "/cmd/other.test", m + "/cmd/tool", "cmd is not importable"}}
+	if got := Check(m, pkgs); !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 

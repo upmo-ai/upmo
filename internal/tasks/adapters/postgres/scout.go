@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/upmo-ai/upmo/internal/memory"
-	"github.com/upmo-ai/upmo/internal/tasks"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -35,7 +34,7 @@ func enqueueScout(ctx context.Context, tx pgx.Tx, s Store, userID, trigger, sour
 	if s.Enqueuer == nil || userID == "" || sourceID == "" {
 		return nil
 	}
-	_, err := s.Enqueuer.InsertTx(ctx, tx, tasks.ScoutJobArgs{
+	_, err := s.Enqueuer.InsertTx(ctx, tx, app.ScoutJobArgs{
 		UserID:   userID,
 		Trigger:  trigger,
 		SourceID: sourceID,

@@ -54,7 +54,7 @@ func (v Volume) Open(_ context.Context, store, key string) (io.ReadCloser, error
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return nil, ErrBlob
 	}
-	f, err := os.Open(full)
+	f, err := os.Open(full) //nolint:gosec // full is confined under Root by the Rel check above
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoBlob
 	}

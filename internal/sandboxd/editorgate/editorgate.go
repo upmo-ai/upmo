@@ -56,7 +56,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tail == "" && !strings.HasSuffix(r.URL.Path, "/") {
-		http.Redirect(w, r, "/e/"+sandboxID+"/", http.StatusPermanentRedirect)
+		http.Redirect(w, r, "/e/"+sandboxID+"/", http.StatusPermanentRedirect) //nolint:gosec // same-origin path redirect; sandboxID holds no slash
 		return
 	}
 	token := clientToken(r)
@@ -88,21 +88,21 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := h.Book.TouchEditor(r.Context(), sandboxID); err != nil && h.Log != nil {
 		h.Log.Warn("editor gate touch", "sandbox", sandboxID, "err", err)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(route.Upstream)
-	origDirector := proxy.Director
 	connToken := route.ConnToken
-	proxy.Director = func(req *http.Request) {
-		origDirector(req)
-		req.URL.Path = singleJoin(route.Upstream.Path, tail)
-		q := req.URL.Query()
+	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+		pr.SetURL(route.Upstream)
+		pr.Out.Host = pr.In.Host
+		pr.SetXForwarded()
+		pr.Out.URL.Path = singleJoin(route.Upstream.Path, tail)
+		q := pr.Out.URL.Query()
 		q.Del("access_token")
 		q.Del("token")
 		if connToken != "" {
 			q.Set("tkn", connToken)
 		}
-		req.URL.RawQuery = q.Encode()
-		req.Header.Del("Authorization")
-	}
+		pr.Out.URL.RawQuery = q.Encode()
+		pr.Out.Header.Del("Authorization")
+	}}
 	proxy.ErrorHandler = func(_ http.ResponseWriter, _ *http.Request, err error) {
 		if h.Log != nil {
 			h.Log.Warn("editor gate proxy", "sandbox", sandboxID, "err", err)
@@ -117,7 +117,7 @@ func parsePath(path string) (sandboxID, tail string, ok bool) {
 		return "", "", false
 	}
 	rest := strings.TrimPrefix(path, "e/")
-	sandboxID, tail, ok = strings.Cut(rest, "/")
+	sandboxID, tail, _ = strings.Cut(rest, "/")
 	if sandboxID == "" {
 		return "", "", false
 	}

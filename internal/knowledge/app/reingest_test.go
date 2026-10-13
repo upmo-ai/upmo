@@ -17,8 +17,8 @@ type reingestBook struct {
 
 func (r *reingestBook) ViewSource(context.Context, Access, string, string) (SourceDetail, error) {
 	r.viewed++
-	if r.pendingBook.err != nil {
-		return SourceDetail{}, r.pendingBook.err
+	if r.err != nil {
+		return SourceDetail{}, r.err
 	}
 	return r.detail, nil
 }
@@ -28,7 +28,7 @@ func (r *reingestBook) ListSources(context.Context, Access, string) ([]Source, e
 }
 
 func (r *reingestBook) InTx(_ context.Context, _ Access, fn func(Tx) error) error {
-	r.clipStore.calls++
+	r.calls++
 	return fn(&r.clipStore)
 }
 

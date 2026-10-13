@@ -13,7 +13,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
-	"github.com/upmo-ai/upmo/internal/runtime/domain"
+	"github.com/upmo-ai/upmo/internal/runtime"
 )
 
 type fakeBook struct {
@@ -66,6 +66,9 @@ func TestGateProxiesValidJWT(t *testing.T) {
 		if r.Header.Get("Authorization") != "" {
 			t.Fatal("authorization forwarded")
 		}
+		if r.URL.Path != "/ws" || r.Host != "example.com" {
+			t.Fatalf("path = %q host = %q", r.URL.Path, r.Host)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -114,7 +117,7 @@ func TestGateUnauthorized(t *testing.T) {
 			return r
 		}()},
 	}
-	h := Handler{Book: book, Keys: keys, Now: func() time.Time { return now.Add(domain.EditorIdle + time.Minute) }}
+	h := Handler{Book: book, Keys: keys, Now: func() time.Time { return now.Add(runtime.EditorIdle + time.Minute) }}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

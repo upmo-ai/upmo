@@ -46,7 +46,7 @@ func TestResolveAllowEmptyBundleExposesNoTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != nil && len(got) != 0 {
+	if len(got) != 0 {
 		t.Fatalf("got = %v", got)
 	}
 }
