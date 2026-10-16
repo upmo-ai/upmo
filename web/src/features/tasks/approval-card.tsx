@@ -1,5 +1,6 @@
-import { Button, Group } from "@mantine/core";
+import { Group } from "@mantine/core";
 import { IconAlertCircle } from "@tabler/icons-react";
+import { Button } from "@upmo-ai/components";
 
 import {
   APPROVALS_KEY,

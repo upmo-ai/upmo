@@ -1,8 +1,9 @@
-import { Button, Text, Title } from "@mantine/core";
+import { Text, Title } from "@mantine/core";
 import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { Button } from "@upmo-ai/components";
 
 import { StatusAlert } from "../ui/status-alert";
 import { LoginAgreement } from "./agreement";

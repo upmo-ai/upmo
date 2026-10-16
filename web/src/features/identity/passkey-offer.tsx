@@ -1,5 +1,6 @@
-import { Button, Text } from "@mantine/core";
+import { Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@upmo-ai/components";
 
 import { meQueryKey, passkeysQueryKey, useApi } from "../../app/api";
 import { showPasskeyOffer } from "./rules";

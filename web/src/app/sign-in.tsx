@@ -1,8 +1,9 @@
-import { Button, PasswordInput, TextInput } from "@mantine/core";
+import { PasswordInput } from "@mantine/core";
 import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, Input } from "@upmo-ai/components";
 
 import { StatusAlert } from "../ui/status-alert";
 import { LoginAgreement } from "./agreement";
@@ -113,7 +114,7 @@ export function SignInPage() {
           void logIn();
         }}
       >
-        <TextInput
+        <Input
           label="Email"
           autoComplete="username webauthn"
           value={email}

@@ -1,22 +1,17 @@
-import {
-  ActionIcon,
-  Badge,
-  Button,
-  Group,
-  Progress,
-  SegmentedControl,
-  Stack,
-  Table,
-  Tabs,
-  Text,
-  Textarea,
-  Title,
-  Tooltip,
-} from "@mantine/core";
+import { Group, Progress, Stack, Text, Title } from "@mantine/core";
 import { IconDownload, IconPencil } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
+import {
+  Badge,
+  Button,
+  IconButton,
+  SegmentedControl,
+  Table,
+  Tabs,
+  Textarea,
+} from "@upmo-ai/components";
 
 import {
   TASKS_KEY,
@@ -86,7 +81,7 @@ export function TaskStatusBadge({
         label: {
           height: "auto",
           overflow: "visible",
-          whiteSpace: "normal",
+          whiteSpace: "nowrap",
           textOverflow: "clip",
           textTransform: "none",
         },
@@ -345,7 +340,7 @@ export function TaskPage() {
 
                   <div className="task-composer">
                     <Textarea
-                      rows={2}
+                      minRows={2}
                       placeholder="Message this task…"
                       aria-label="Message this task"
                       value={taskMessage}
@@ -361,19 +356,17 @@ export function TaskPage() {
                       <Text size="xs" c="dimmed">
                         Upmo reads it at the next step and replies here.
                       </Text>
-                      <Tooltip label="Send message" position="bottom" openDelay={300}>
-                        <ActionIcon
-                          size="sm"
-                          variant="filled"
-                          aria-label="Send message"
-                          disabled={!taskMessage.trim()}
-                          onClick={() => {
-                            if (taskMessage.trim()) setTaskMessage("");
-                          }}
-                        >
-                          <ShellIcon concept="action.send" size={16} />
-                        </ActionIcon>
-                      </Tooltip>
+                      <IconButton
+                        size="sm"
+                        variant="filled"
+                        aria-label="Send message"
+                        disabled={!taskMessage.trim()}
+                        onClick={() => {
+                          if (taskMessage.trim()) setTaskMessage("");
+                        }}
+                      >
+                        <ShellIcon concept="action.send" size={16} />
+                      </IconButton>
                     </div>
                   </div>
                 </div>
@@ -467,24 +460,22 @@ export function TaskPage() {
                                     ]}
                                   />
                                 ) : null}
-                                <Tooltip label="Download artifact" position="bottom" openDelay={300}>
-                                  <ActionIcon
-                                    size="sm"
-                                    variant="outline"
-                                    aria-label="Download artifact"
-                                    onClick={() => {
-                                      const blob = new Blob([activeArtifact.content], { type: "text/plain" });
-                                      const url = URL.createObjectURL(blob);
-                                      const a = document.createElement("a");
-                                      a.href = url;
-                                      a.download = activeArtifact.name;
-                                      a.click();
-                                      URL.revokeObjectURL(url);
-                                    }}
-                                  >
-                                    <IconDownload size={14} />
-                                  </ActionIcon>
-                                </Tooltip>
+                                <IconButton
+                                  size="sm"
+                                  variant="outline"
+                                  aria-label="Download artifact"
+                                  onClick={() => {
+                                    const blob = new Blob([activeArtifact.content], { type: "text/plain" });
+                                    const url = URL.createObjectURL(blob);
+                                    const a = document.createElement("a");
+                                    a.href = url;
+                                    a.download = activeArtifact.name;
+                                    a.click();
+                                    URL.revokeObjectURL(url);
+                                  }}
+                                >
+                                  <IconDownload size={14} />
+                                </IconButton>
                               </Group>
                             </div>
                             <div className="task-artifact-body">
@@ -559,11 +550,9 @@ export function TaskPage() {
           <div className="u-card task-side-card">
             <div className="task-side-card-head">
               <h4 className="task-side-card-title">Budget</h4>
-              <Tooltip label="Edit budget" position="bottom" openDelay={300}>
-                <ActionIcon size="sm" variant="subtle" aria-label="Edit budget">
-                  <IconPencil size={14} />
-                </ActionIcon>
-              </Tooltip>
+              <IconButton size="sm" variant="subtle" aria-label="Edit budget">
+                <IconPencil size={14} />
+              </IconButton>
             </div>
             <div className="task-budget-progress-row">
               <Progress
@@ -588,11 +577,9 @@ export function TaskPage() {
           <div className="u-card task-side-card">
             <div className="task-side-card-head">
               <h4 className="task-side-card-title">Delivery</h4>
-              <Tooltip label="Change delivery channel" position="bottom" openDelay={300}>
-                <ActionIcon size="sm" variant="subtle" aria-label="Change delivery channel">
-                  <IconPencil size={14} />
-                </ActionIcon>
-              </Tooltip>
+              <IconButton size="sm" variant="subtle" aria-label="Change delivery channel">
+                <IconPencil size={14} />
+              </IconButton>
             </div>
             <div className="task-delivery-body">
               <span className="task-delivery-icon">

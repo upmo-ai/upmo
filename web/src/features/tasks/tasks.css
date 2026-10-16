@@ -38,6 +38,8 @@
 }
 
 .task-tile-title {
+  flex: 1;
+  min-width: 0;
   white-space: normal;
   overflow: visible;
   max-width: 100%;
@@ -64,13 +66,14 @@
   overflow: visible !important;
   height: auto !important;
   max-width: 100%;
-  white-space: normal;
+  flex-shrink: 0;
+  white-space: nowrap;
   text-transform: none !important;
 }
 
 .task-badge-label {
   overflow: visible !important;
-  white-space: normal !important;
+  white-space: nowrap !important;
   text-overflow: clip !important;
   text-transform: none !important;
   height: auto !important;
@@ -653,9 +656,9 @@
   gap: var(--space-3);
   padding: 12px 14px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--amber);
-  background: var(--amber-soft);
-  color: var(--amber-deep);
+  border: 1px solid var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning);
   box-sizing: border-box;
 }
 
@@ -666,7 +669,7 @@
   width: 28px;
   height: 28px;
   border-radius: var(--radius-xs);
-  background: var(--amber);
+  background: var(--warning);
   color: var(--surface-000);
   flex-shrink: 0;
   margin-top: 1px;

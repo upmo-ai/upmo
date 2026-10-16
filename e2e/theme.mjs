@@ -114,7 +114,7 @@ try {
 
   const themeSwitch = page.getByTestId("theme-switch");
   await themeSwitch.waitFor();
-  for (const name of ["Light", "Dark", "System"]) {
+  for (const name of ["Light", "Dark", "High contrast", "System"]) {
     await themeSwitch.getByText(name, { exact: true }).waitFor();
   }
 
@@ -133,8 +133,24 @@ try {
     );
   }
 
+  await choose("High contrast");
+  const hc = await settle(page, "hc");
+  if (sameColor(light.token, hc.token) || sameColor(dark.token, hc.token)) {
+    throw new Error(`high contrast --surface-000 ${hc.token} matches another theme`);
+  }
+
+  // The browser context prefers light, so System resolves to light.
+  await choose("System");
+  await settle(page, "light");
+
+  await choose("Dark");
+  await settle(page, "dark");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await settle(page, "dark");
+
   console.log(`light --surface-000 ${light.token}`);
   console.log(`dark --surface-000 ${dark.token}`);
+  console.log(`hc --surface-000 ${hc.token}`);
   console.log("theme check passed");
 } finally {
   await browser.close();

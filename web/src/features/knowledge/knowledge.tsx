@@ -1,5 +1,6 @@
-import { Button, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { useState } from "react";
+import { Button } from "@upmo-ai/components";
 
 import { EmptyState } from "../../ui/section";
 import { ShellIcon } from "../../ui/icons";

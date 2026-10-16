@@ -15,6 +15,13 @@ function renderAt(path: string) {
   );
 }
 
+function selectOptions(name: string) {
+  const listbox = screen.getByRole("listbox", { name, hidden: true });
+  return within(listbox)
+    .getAllByRole("option", { hidden: true })
+    .map((option) => option.textContent);
+}
+
 function sidebar() {
   return screen.getByRole("navigation", { name: "Sidebar" });
 }
@@ -41,12 +48,8 @@ describe("sharing", () => {
     expect(within(owner).getByText("Owner")).toBeTruthy();
     expect(within(owner).queryByRole("button", { name: /Remove access/ })).toBeNull();
 
-    const leeAccess = within(dialog).getByLabelText("Access for Lee Chen");
-    expect(within(leeAccess).queryByRole("option", { name: "Owner" })).toBeNull();
-    expect(within(leeAccess).getByRole("option", { name: "Editor" })).toBeTruthy();
-    const level = within(dialog).getByLabelText("Level");
-    expect(within(level).queryByRole("option", { name: "Owner" })).toBeNull();
-    expect(within(level).getByRole("option", { name: "Viewer" })).toBeTruthy();
+    expect(selectOptions("Access for Lee Chen")).toEqual(["Editor", "Viewer"]);
+    expect(selectOptions("Level")).toEqual(["Editor", "Viewer"]);
   });
 
   it("opens read-only when the signed-in person cannot edit sharing", async () => {

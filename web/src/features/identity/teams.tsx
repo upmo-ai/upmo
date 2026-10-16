@@ -1,6 +1,7 @@
-import { Button, Group, Stack, Table, Text, TextInput, Title } from "@mantine/core";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Button, Input, Table } from "@upmo-ai/components";
 
 import { useApi } from "../../app/api";
 import {
@@ -138,7 +139,7 @@ export function TeamsPage() {
           }}
         >
           <Group gap="sm" align="flex-end">
-            <TextInput
+            <Input
               label="Team name"
               value={teamName}
               placeholder="e.g. Finance, Design"

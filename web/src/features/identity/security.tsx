@@ -1,6 +1,7 @@
-import { Button, Group, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Button, ConfirmDialog, Input } from "@upmo-ai/components";
 
 import {
   PASSKEYS_KEY,
@@ -12,7 +13,6 @@ import {
   type Passkey,
 } from "../../app/api";
 import { addPasskey, confirmWithPasskey, removePasskey, renamePasskey } from "../../app/passkeys";
-import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
 import { canRemovePasskey, canRemovePassword, lastPasskeyReason, lastPasswordReason } from "./rules";
 import { RowAction } from "../../ui/icons";
@@ -173,7 +173,7 @@ export function SecurityPage() {
   const allowPasswordRemoval = canRemovePassword(list.length, passwordSet);
   const removing = list.find((item) => item.id === removeId) ?? null;
   const passwordDialog = confirming
-    ? { title: "Confirm it is you", body: "Enter your password to continue.", action: "Confirm" }
+    ? { title: "Confirm it is you", body: "Enter your password to continue.", action: "Confirm password" }
     : passwordMode
       ? passwordCopy[passwordMode]
       : null;
@@ -233,7 +233,7 @@ export function SecurityPage() {
             {adding ? (
               <Stack gap="xs">
                 <Text>Confirm this passkey to finish adding it.</Text>
-                <TextInput
+                <Input
                   label="Passkey name"
                   value={addName}
                   onChange={(event) => setAddName(event.currentTarget.value)}
@@ -319,6 +319,7 @@ export function SecurityPage() {
         title={removing ? `Remove the ${removing.name} passkey?` : "Remove this passkey?"}
         body="You will lose this way to log in."
         action="Remove passkey"
+        destructive
         busy={remove.isPending}
         onClose={() => setRemoveId(null)}
         onConfirm={() => remove.mutate()}
@@ -347,14 +348,14 @@ export function SecurityPage() {
         }}
       >
         {confirming ? (
-          <TextInput
+          <Input
             label="Password"
             type="password"
             value={confirmDraft}
             onChange={(event) => setConfirmDraft(event.currentTarget.value)}
           />
         ) : passwordNeedsValue ? (
-          <TextInput
+          <Input
             label="New password"
             type="password"
             value={passwordDraft}
@@ -451,7 +452,7 @@ function PasskeyRow({
     <li className="record">
       {renaming ? (
         <Group gap="xs" wrap="wrap">
-          <TextInput
+          <Input
             aria-label={`New name for ${passkey.name}`}
             value={renameName}
             onChange={(event) => onRenameName(event.currentTarget.value)}

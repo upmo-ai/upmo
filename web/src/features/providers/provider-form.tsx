@@ -1,18 +1,11 @@
 import {
-  Badge,
-  Button,
   Card,
-  Checkbox,
   Group,
-  Loader,
-  Select,
   PasswordInput,
   SimpleGrid,
   Stack,
   Stepper,
-  Table,
   Text,
-  TextInput,
   Title,
   UnstyledButton,
 } from "@mantine/core";
@@ -27,6 +20,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
+import { Badge, Button, Checkbox, Input, Select, Spinner, Table } from "@upmo-ai/components";
 
 import {
   PROVIDERS_KEY,
@@ -302,7 +296,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
                   Choose an official cloud provider or local inference runtime.
                 </Text>
               </div>
-              <TextInput
+              <Input
                 placeholder="Filter providers..."
                 leftSection={<IconSearch size={16} aria-hidden="true" />}
                 size="sm"
@@ -406,7 +400,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
               </Stack>
             </Group>
 
-            <TextInput
+            <Input
               label="Provider display name"
               required
               size="md"
@@ -436,7 +430,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
                     setTestResult(null);
                   }}
                 />
-                <TextInput
+                <Input
                   label="Endpoint URL"
                   size="md"
                   description="API gateway endpoint URL (optional for standard cloud providers)."
@@ -449,7 +443,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
                 />
               </>
             ) : (
-              <TextInput
+              <Input
                 label="Base URL"
                 required
                 size="md"
@@ -614,7 +608,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
             </Table.ScrollContainer>
 
             <Group align="flex-end" gap="xs">
-              <TextInput
+              <Input
                 label="Add Custom Model Identifier"
                 size="md"
                 description="Type any additional model ID supported by this provider."
@@ -739,7 +733,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
               )}
 
               {isTesting && (
-                <StatusAlert tone="info" icon={<Loader size={16} />} title="Testing connection">
+                <StatusAlert tone="info" icon={<Spinner size={16} />} title="Testing connection">
                   Sending validation handshake to provider endpoint...
                 </StatusAlert>
               )}

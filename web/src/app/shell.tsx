@@ -1,18 +1,11 @@
 import {
-  ActionIcon,
   Alert,
-  Anchor,
   AppShell,
-  Breadcrumbs,
   CloseButton,
   Group,
-  Menu,
   NavLink,
   Text,
-  Tooltip,
   UnstyledButton,
-  useComputedColorScheme,
-  useMantineColorScheme,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,13 +22,21 @@ import {
   IconSparkles,
   IconSun,
 } from "@tabler/icons-react";
+import {
+  Breadcrumbs,
+  IconButton,
+  Menu,
+  Tooltip,
+  useUpmoTheme,
+  type BreadcrumbItem,
+} from "@upmo-ai/components";
 
 import { sessionQueryKey, useApi } from "./api";
 import { PasskeyOffer } from "../features/identity/passkey-offer";
 import { NotificationsBell } from "../features/notifications/bell";
 import { adminSections, settingsSections } from "../features/settings/settings";
 import { WorkspaceName, workspaceName } from "../features/workspaces/workspace";
-import { ThemeSwitch } from "../theme";
+import { ThemeSwitch, useThemeChoice } from "../theme";
 import { ShellIcon, type ShellConcept } from "../ui/icons";
 import { BrandLink } from "./brand";
 import { CommandLauncher } from "./command-launcher";
@@ -138,122 +139,49 @@ function NavEntry({
   );
 }
 
-function ShellBreadcrumb({ pathname }: { pathname: string }) {
+function crumb(label: string, to: string): BreadcrumbItem {
+  return { label, component: Link, linkProps: { to } };
+}
+
+function shellCrumbs(pathname: string): BreadcrumbItem[] {
   if (pathname === "/connectors") {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/connectors" size="sm">
-          Workspace
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          Connectors
-        </Text>
-      </Breadcrumbs>
-    );
+    return [crumb("Workspace", "/connectors"), { label: "Connectors" }];
   }
 
   if (pathname === "/connectors/new") {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/connectors" size="sm">
-          Workspace
-        </Anchor>
-        <Anchor component={Link} to="/connectors" size="sm">
-          Connectors
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          Connect tool
-        </Text>
-      </Breadcrumbs>
-    );
+    return [crumb("Workspace", "/connectors"), crumb("Connectors", "/connectors"), { label: "Connect tool" }];
   }
 
   if (pathname.startsWith("/connectors/") && pathname.endsWith("/edit")) {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/connectors" size="sm">
-          Workspace
-        </Anchor>
-        <Anchor component={Link} to="/connectors" size="sm">
-          Connectors
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          Edit permissions
-        </Text>
-      </Breadcrumbs>
-    );
+    return [
+      crumb("Workspace", "/connectors"),
+      crumb("Connectors", "/connectors"),
+      { label: "Edit permissions" },
+    ];
   }
 
   if (pathname === "/providers") {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/providers" size="sm">
-          Workspace
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          Providers
-        </Text>
-      </Breadcrumbs>
-    );
+    return [crumb("Workspace", "/providers"), { label: "Providers" }];
   }
 
   if (pathname === "/providers/new") {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/providers" size="sm">
-          Workspace
-        </Anchor>
-        <Anchor component={Link} to="/providers" size="sm">
-          Providers
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          Connect provider
-        </Text>
-      </Breadcrumbs>
-    );
+    return [crumb("Workspace", "/providers"), crumb("Providers", "/providers"), { label: "Connect provider" }];
   }
 
   if (pathname.startsWith("/providers/") && pathname.endsWith("/edit")) {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/providers" size="sm">
-          Workspace
-        </Anchor>
-        <Anchor component={Link} to="/providers" size="sm">
-          Providers
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          Edit provider
-        </Text>
-      </Breadcrumbs>
-    );
+    return [crumb("Workspace", "/providers"), crumb("Providers", "/providers"), { label: "Edit provider" }];
   }
 
   const adminSection = adminSections.find(
     (item) => item.to === pathname || (item.to === "/admin/members" && pathname === "/admin"),
   );
   if (adminSection) {
-    return (
-      <Breadcrumbs separator="/">
-        <Anchor component={Link} to="/admin/members" size="sm">
-          Management
-        </Anchor>
-        <Text size="sm" fw={600} aria-current="page">
-          {adminSection.label}
-        </Text>
-      </Breadcrumbs>
-    );
+    return [crumb("Management", "/admin/members"), { label: adminSection.label }];
   }
 
   const personalSection = settingsSections.find((item) => item.to === pathname);
   if (personalSection) {
-    return (
-      <Breadcrumbs separator="/">
-        <Text size="sm" fw={600} aria-current="page">
-          {personalSection.label}
-        </Text>
-      </Breadcrumbs>
-    );
+    return [{ label: personalSection.label }];
   }
 
   const label =
@@ -264,13 +192,11 @@ function ShellBreadcrumb({ pathname }: { pathname: string }) {
         ? "Management"
         : "");
 
-  return (
-    <Breadcrumbs separator="/">
-      <Text size="sm" fw={600} aria-current="page">
-        {label}
-      </Text>
-    </Breadcrumbs>
-  );
+  return [{ label }];
+}
+
+function ShellBreadcrumb({ pathname }: { pathname: string }) {
+  return <Breadcrumbs items={shellCrumbs(pathname)} />;
 }
 
 export function Shell() {
@@ -278,8 +204,8 @@ export function Shell() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const layout = useShellLayout();
-  const { setColorScheme } = useMantineColorScheme();
-  const computedColorScheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
+  const { setChoice } = useThemeChoice();
+  const resolvedTheme = useUpmoTheme();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [opened, setOpened] = useState(false);
   const [desktopOpened, setDesktopOpened] = useState(true);
@@ -372,17 +298,15 @@ export function Shell() {
       <AppShell.Header className="shell-header">
         <div className="shell-header-inner">
           <div className="shell-header-left">
-            <Tooltip label="Toggle sidebar" position="bottom" openDelay={400}>
-              <ActionIcon
-                className="shell-header-toggle"
-                aria-label="Toggle sidebar"
-                variant="subtle"
-                size={36}
-                onClick={toggleSidebar}
-              >
-                <ShellIcon concept="nav.sidebar" />
-              </ActionIcon>
-            </Tooltip>
+            <IconButton
+              className="shell-header-toggle"
+              aria-label="Toggle sidebar"
+              variant="subtle"
+              size={36}
+              onClick={toggleSidebar}
+            >
+              <ShellIcon concept="nav.sidebar" />
+            </IconButton>
             <ShellBreadcrumb pathname={pathname} />
           </div>
           <div className="shell-header-center">
@@ -399,17 +323,15 @@ export function Shell() {
             <BrandLink className="shell-brand-link" />
             <WorkspaceName />
           </div>
-          <Tooltip label="Toggle sidebar" position="bottom" openDelay={400}>
-            <ActionIcon
-              className="shell-nav-toggle"
-              aria-label="Toggle sidebar"
-              variant="subtle"
-              size={32}
-              onClick={toggleSidebar}
-            >
-              <ShellIcon concept="nav.sidebar" size={16} />
-            </ActionIcon>
-          </Tooltip>
+          <IconButton
+            className="shell-nav-toggle"
+            aria-label="Toggle sidebar"
+            variant="subtle"
+            size={32}
+            onClick={toggleSidebar}
+          >
+            <ShellIcon concept="nav.sidebar" size={16} />
+          </IconButton>
         </div>
         <div className="shell-nav-scroll">
           {primary.map((item) => (
@@ -441,17 +363,16 @@ export function Shell() {
                 transitionProps={{ duration: 0 }}
               >
                 <Menu.Target>
-                  <Tooltip label="Management" position="right" openDelay={400}>
-                    <ActionIcon
-                      className="shell-nav-link"
-                      variant="subtle"
-                      size={32}
-                      aria-label="Management"
-                      data-active={pathname.startsWith("/admin") ? "true" : undefined}
-                    >
-                      <ShellIcon concept="nav.settings" size={16} />
-                    </ActionIcon>
-                  </Tooltip>
+                  <IconButton
+                    className="shell-nav-link"
+                    variant="subtle"
+                    size={32}
+                    aria-label="Management"
+                    data-active={pathname.startsWith("/admin") ? "true" : undefined}
+                    tooltipPosition="right"
+                  >
+                    <ShellIcon concept="nav.settings" size={16} />
+                  </IconButton>
                 </Menu.Target>
                 <Menu.Dropdown>
                   <Menu.Label>Management</Menu.Label>
@@ -587,21 +508,20 @@ export function Shell() {
           <div className="shell-theme-row">
             <ThemeSwitch />
           </div>
-          <Tooltip label="Toggle colour scheme" position="right" openDelay={400}>
-            <ActionIcon
-              className="shell-rail-theme-toggle"
-              aria-label="Toggle colour scheme"
-              variant="subtle"
-              size={32}
-              onClick={() => setColorScheme(computedColorScheme === "dark" ? "light" : "dark")}
-            >
-              {computedColorScheme === "dark" ? (
-                <IconSun size={16} stroke={1.75} aria-hidden="true" />
-              ) : (
-                <IconMoon size={16} stroke={1.75} aria-hidden="true" />
-              )}
-            </ActionIcon>
-          </Tooltip>
+          <IconButton
+            className="shell-rail-theme-toggle"
+            aria-label="Toggle colour scheme"
+            variant="subtle"
+            size={32}
+            onClick={() => setChoice(resolvedTheme === "dark" ? "light" : "dark")}
+            tooltipPosition="right"
+          >
+            {resolvedTheme === "dark" ? (
+              <IconSun size={16} stroke={1.75} aria-hidden="true" />
+            ) : (
+              <IconMoon size={16} stroke={1.75} aria-hidden="true" />
+            )}
+          </IconButton>
           <div className="shell-footer-bar">
             <span className="shell-version">v0.1.0</span>
           </div>

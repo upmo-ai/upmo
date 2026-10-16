@@ -1,6 +1,7 @@
-import { Button, Modal, NativeSelect, Radio, Stack, Text } from "@mantine/core";
+import { Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Button, ConfirmDialog, Dialog, Radio, Select } from "@upmo-ai/components";
 
 import {
   meQueryKey,
@@ -15,7 +16,6 @@ import {
   type TaskVisibility,
   type Team,
 } from "../../app/api";
-import { ConfirmDialog } from "./confirm";
 import { canEditSharing, canRemoveShare, isGrantableShareLevel } from "./rules";
 
 import "./identity.css";
@@ -76,7 +76,7 @@ export function ShareDialog({
 
   return (
     <>
-      <Modal opened onClose={onClose} title="Share" withCloseButton={false}>
+      <Dialog opened onClose={onClose} title="Share" withCloseButton={false}>
         {ready && share.data ? (
           <Stack gap="md">
             <Visibility
@@ -100,16 +100,16 @@ export function ShareDialog({
                       <Text fw={600}>{name}</Text>
                       {editable && canRemoveShare(person.level) ? (
                         <>
-                          <NativeSelect
+                          <Select
                             aria-label={`Access for ${name}`}
                             value={person.level}
+                            allowDeselect={false}
                             data={[
                               { value: "editor", label: "Editor" },
                               { value: "viewer", label: "Viewer" },
                             ]}
-                            onChange={(event) => {
-                              const next = event.currentTarget.value;
-                              if (!isGrantableShareLevel(next)) return;
+                            onChange={(next) => {
+                              if (!next || !isGrantableShareLevel(next)) return;
                               void api.shares
                                 .setLevel(task.id, person.memberId, next)
                                 .then(() => {
@@ -131,25 +131,28 @@ export function ShareDialog({
             </Stack>
             {editable && candidates.length > 0 ? (
               <Stack gap="xs">
-                <NativeSelect
+                <Select
                   label="Person"
                   value={personId}
+                  allowDeselect={false}
                   data={candidates.map((member) => ({
                     value: member.id,
                     label: personLabel(member),
                   }))}
-                  onChange={(event) => setPicked(event.currentTarget.value)}
+                  onChange={(next) => {
+                    if (next) setPicked(next);
+                  }}
                 />
-                <NativeSelect
+                <Select
                   label="Level"
                   value={level}
+                  allowDeselect={false}
                   data={[
                     { value: "editor", label: "Editor" },
                     { value: "viewer", label: "Viewer" },
                   ]}
-                  onChange={(event) => {
-                    const next = event.currentTarget.value;
-                    if (isGrantableShareLevel(next)) setLevel(next);
+                  onChange={(next) => {
+                    if (next && isGrantableShareLevel(next)) setLevel(next);
                   }}
                 />
                 <div>
@@ -177,12 +180,13 @@ export function ShareDialog({
         ) : (
           <Text>Loading sharing.</Text>
         )}
-      </Modal>
+      </Dialog>
       <ConfirmDialog
         opened={removing !== null}
         title={removing ? `Remove ${removing.name}'s access?` : "Remove this access?"}
         body={removing ? `${removing.name} will lose access to this task.` : ""}
         action="Remove access"
+        destructive
         onClose={() => setRemoveId(null)}
         onConfirm={() => {
           if (!removeId) return;
@@ -251,11 +255,14 @@ function Visibility({
         </Stack>
       </Radio.Group>
       {share.visibility === "team" ? (
-        <NativeSelect
+        <Select
           label="Team"
-          value={share.teamId ?? teams[0]?.id ?? ""}
+          value={share.teamId ?? teams[0]?.id ?? null}
+          allowDeselect={false}
           data={teams.map((team) => ({ value: team.id, label: team.name }))}
-          onChange={(event) => onChange("team", event.currentTarget.value)}
+          onChange={(next) => {
+            if (next) onChange("team", next);
+          }}
         />
       ) : null}
     </Stack>

@@ -78,7 +78,7 @@ try {
   if (await drawerOpen(page)) {
     throw new Error("phone drawer started open");
   }
-  await page.getByRole("button", { name: "Toggle sidebar" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Toggle sidebar" }).click();
   const opened = Date.now() + 5000;
   while (Date.now() < opened && !(await drawerOpen(page))) {
     await new Promise((resolve) => setTimeout(resolve, 50));
