@@ -1,26 +1,14 @@
-import { ActionIcon, Tooltip } from "@mantine/core";
-import {
-  IconBell,
-  IconBooks,
-  IconChartBar,
-  IconClockPlay,
-  IconCopy,
-  IconDots,
-  IconFileSearch,
-  IconFolder,
-  IconHome,
-  IconLayoutSidebar,
-  IconListCheck,
-  IconMessage,
-  IconPencil,
-  IconPlus,
-  IconSettings,
-  IconTrash,
-  IconUserHexagon,
-  IconUsers,
-  IconX,
-} from "@tabler/icons-react";
-import { icons, type IconConcept } from "@upmo-ai/icons";
+import { IconFileSearch } from "@tabler/icons-react";
+import { Icon, IconButton } from "@upmo-ai/components";
+import { stroke, type IconConcept } from "@upmo-ai/icons";
+
+// Concepts the design-system map no longer carries, kept here until upstream
+// adds them back.
+const localConcepts = {
+  "object.source": IconFileSearch,
+} as const;
+
+type LocalConcept = keyof typeof localConcepts;
 
 export const shellConcepts = [
   "nav.home",
@@ -44,31 +32,13 @@ export const shellConcepts = [
   "object.source",
   "object.automation",
   "object.agent",
-] as const satisfies readonly IconConcept[];
+] as const satisfies readonly (IconConcept | LocalConcept)[];
 
 export type ShellConcept = (typeof shellConcepts)[number];
 
-const byName = {
-  home: IconHome,
-  message: IconMessage,
-  "list-check": IconListCheck,
-  "clock-play": IconClockPlay,
-  users: IconUsers,
-  books: IconBooks,
-  "chart-bar": IconChartBar,
-  settings: IconSettings,
-  "layout-sidebar": IconLayoutSidebar,
-  bell: IconBell,
-  pencil: IconPencil,
-  plus: IconPlus,
-  trash: IconTrash,
-  folder: IconFolder,
-  copy: IconCopy,
-  dots: IconDots,
-  x: IconX,
-  "file-search": IconFileSearch,
-  "user-hexagon": IconUserHexagon,
-} as const;
+function isLocal(concept: ShellConcept): concept is LocalConcept {
+  return concept in localConcepts;
+}
 
 export function CaretIcon({
   size = 20,
@@ -106,13 +76,11 @@ export function ShellIcon({
   concept: ShellConcept;
   size?: 16 | 20 | 24 | 28;
 }) {
-  const iconName = icons[concept];
-  if (iconName === "caret") {
-    return <CaretIcon size={size} />;
+  if (isLocal(concept)) {
+    const Local = localConcepts[concept];
+    return <Local size={size} stroke={stroke} aria-hidden="true" />;
   }
-  const Icon = byName[iconName as keyof typeof byName];
-  if (!Icon) return null;
-  return <Icon size={size} stroke={1.75} aria-hidden="true" />;
+  return <Icon concept={concept} size={size} />;
 }
 
 export function RowAction({
@@ -131,18 +99,15 @@ export function RowAction({
   className?: string;
 }) {
   return (
-    <Tooltip label={label} position="bottom" openDelay={400}>
-      <ActionIcon
-        aria-label={label}
-        className={className}
-        variant="subtle"
-        size={size}
-        disabled={disabled}
-        onClick={onClick}
-      >
-        <ShellIcon concept={concept} size={20} />
-      </ActionIcon>
-    </Tooltip>
+    <IconButton
+      aria-label={label}
+      className={className}
+      variant="subtle"
+      size={size}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <ShellIcon concept={concept} size={20} />
+    </IconButton>
   );
 }
-

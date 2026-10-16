@@ -1,17 +1,7 @@
-import {
-  Badge,
-  Button,
-  Checkbox,
-  Group,
-  NativeSelect,
-  Stack,
-  Table,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Badge, Button, Checkbox, ConfirmDialog, Input, Select, Table } from "@upmo-ai/components";
 
 import {
   MEMBERS_KEY,
@@ -27,7 +17,6 @@ import {
 } from "../../app/api";
 import { fresh } from "../../app/passkeys";
 import { RowAction } from "../../ui/icons";
-import { ConfirmDialog } from "./confirm";
 import {
   canManageMembers,
   canRemoveMember,
@@ -157,19 +146,19 @@ function StubMembers() {
           }}
         >
           <Stack gap="sm">
-            <TextInput
+            <Input
               label="Email"
               type="email"
               value={email}
               onChange={(event) => setEmail(event.currentTarget.value)}
             />
-            <NativeSelect
+            <Select
               label="Invite role"
               value={role}
+              allowDeselect={false}
               data={inviteRoles.map((item) => ({ value: item, label: roleLabel[item] }))}
-              onChange={(event) => {
-                const next = event.currentTarget.value;
-                if (isInviteRole(next)) setRole(next);
+              onChange={(next) => {
+                if (next && isInviteRole(next)) setRole(next);
               }}
             />
             {error ? <Text size="sm">{error}</Text> : null}
@@ -214,6 +203,7 @@ function StubMembers() {
         title={removing ? `Remove ${removing.name}?` : "Remove this member?"}
         body={removing ? `${removing.name} will lose access to this workspace.` : ""}
         action="Remove member"
+        destructive
         busy={remove.isPending}
         onClose={() => setRemoveId(null)}
         onConfirm={() => remove.mutate()}
@@ -262,15 +252,15 @@ function MemberRow({
       <Table.Td>
         {manage ? (
           <Stack gap={4}>
-            <NativeSelect
+            <Select
               aria-label={`Role for ${member.name}`}
               value={member.role}
               disabled={!roleEditable}
               size="xs"
+              allowDeselect={false}
               data={options}
-              onChange={(event) => {
-                const next = event.currentTarget.value;
-                if (isInviteRole(next)) onRole(next);
+              onChange={(next) => {
+                if (next && isInviteRole(next)) onRole(next);
               }}
             />
             {lock ? <Text size="xs" c="dimmed">{lock}</Text> : null}
@@ -406,7 +396,7 @@ function LiveMembers() {
       ) : null}
       {link ? (
         <Stack gap="xs">
-          <TextInput label="Invite link" readOnly value={link} />
+          <Input label="Invite link" readOnly value={link} />
           <Button
             type="button"
             onClick={() => {
@@ -437,13 +427,15 @@ function LiveMembers() {
           }}
         >
           <Stack gap="sm">
-            <TextInput label="Email" type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} />
-            <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
-            <NativeSelect
+            <Input label="Email" type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} />
+            <Input label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+            <Select
               label="Invite role"
-              value={roleId}
-              data={[{ value: "", label: "Choose a role" }, ...choices.map((role) => ({ value: role.id, label: role.name }))]}
-              onChange={(event) => setRoleId(event.currentTarget.value)}
+              placeholder="Choose a role"
+              value={roleId || null}
+              allowDeselect={false}
+              data={choices.map((role) => ({ value: role.id, label: role.name }))}
+              onChange={(next) => setRoleId(next ?? "")}
             />
             <div>
               <Button type="submit" disabled={!email.trim().includes("@") || !name.trim() || !roleId}>
@@ -471,13 +463,14 @@ function LiveMembers() {
                 <Table.Td>{member.email}</Table.Td>
                 <Table.Td>
                   {manage && member.id !== actor?.id ? (
-                    <NativeSelect
+                    <Select
                       aria-label={`Role for ${member.name}`}
                       value={member.role.id}
                       size="xs"
+                      allowDeselect={false}
                       data={(roles.data ?? []).map((role) => ({ value: role.id, label: role.name }))}
-                      onChange={(event) => {
-                        const nextRole = event.currentTarget.value;
+                      onChange={(nextRole) => {
+                        if (!nextRole) return;
                         void run(async () => {
                           await memberWrite(`/api/members/${member.id}/role`, "PUT", { role_id: nextRole }, passkeyCount);
                           await members.refetch();
@@ -566,6 +559,7 @@ function LiveMembers() {
         title={removing ? `Remove ${removing.name}?` : "Remove this member?"}
         body={removing ? `${removing.name} will lose access to this workspace.` : ""}
         action="Remove member"
+        destructive
         onClose={() => setRemoveId(null)}
         onConfirm={() => {
           const id = removeId;
@@ -581,14 +575,14 @@ function LiveMembers() {
         opened={confirm !== null}
         title="Confirm your password"
         body="Enter your password to continue."
-        action="Confirm"
+        action="Confirm password"
         confirmDisabled={!password}
         onClose={() => setConfirm(null)}
         onConfirm={() => {
           void confirmPassword();
         }}
       >
-        <TextInput
+        <Input
           label="Password"
           type="password"
           value={password}

@@ -1,23 +1,12 @@
-import {
-  Badge,
-  Button,
-  Card,
-  Group,
-  SimpleGrid,
-  Stack,
-  Text,
-  TextInput,
-  ThemeIcon,
-  Title,
-} from "@mantine/core";
+import { Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { IconCpu, IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { Badge, Button, ConfirmDialog, Input } from "@upmo-ai/components";
 
 import { PROVIDERS_KEY, providersQueryKey, useApi, type ProviderAccount } from "../../app/api";
 import { BrandMark } from "../../ui/brand-mark";
-import { ConfirmDialog } from "../identity/confirm";
 
 export interface KnownProvider {
   id: string;
@@ -303,7 +292,7 @@ function ProvidersView({
         </Stack>
         <Group gap="sm" wrap="wrap">
           {providers.length > 0 && (
-            <TextInput
+            <Input
               placeholder="Search providers..."
               leftSection={<IconSearch size={16} aria-hidden="true" />}
               size="sm"
@@ -442,7 +431,8 @@ function ProvidersView({
         opened={Boolean(disconnectTarget)}
         title={disconnectTarget ? `Disconnect ${disconnectTarget.name}` : "Disconnect provider"}
         body={`Agents and tasks using models from ${disconnectTarget ? disconnectTarget.name : "this provider"} will pause until another provider is configured.`}
-        action="Disconnect"
+        action="Disconnect provider"
+        destructive
         busy={removeMutation.isPending}
         onClose={() => setDisconnectTarget(null)}
         onConfirm={() => {

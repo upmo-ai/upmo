@@ -1,15 +1,4 @@
-import {
-  ActionIcon,
-  Badge,
-  Button,
-  Menu,
-  Stack,
-  Text,
-  Textarea,
-  TextInput,
-  Title,
-  Tooltip,
-} from "@mantine/core";
+import { Stack, Text, Title } from "@mantine/core";
 import {
   IconActivity,
   IconArrowUp,
@@ -23,6 +12,7 @@ import {
   IconSearch,
 } from "@tabler/icons-react";
 import { useState } from "react";
+import { Badge, Button, IconButton, Input, Kbd, KbdGroup, Menu, Textarea } from "@upmo-ai/components";
 
 import { CaretIcon, ShellIcon } from "../ui/icons";
 import { Section } from "../ui/section";
@@ -200,7 +190,7 @@ export function ChatPage() {
           data-open={sidebarOpen}
         >
           <div className="chat-list-head">
-            <TextInput
+            <Input
               size="xs"
               className="chat-search"
               aria-label="Search chats"
@@ -209,28 +199,24 @@ export function ChatPage() {
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
-            <Tooltip label="New chat" position="bottom" openDelay={300}>
-              <ActionIcon
-                aria-label="New chat"
-                variant="filled"
-                size={28}
-                className="chat-head-btn"
-                onClick={() => setDraft("")}
-              >
-                <ShellIcon concept="action.add" size={16} />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label="Collapse sidebar" position="bottom" openDelay={300}>
-              <ActionIcon
-                aria-label="Collapse sidebar"
-                variant="subtle"
-                size={28}
-                className="chat-head-btn chat-sidebar-collapse-btn"
-                onClick={() => setSidebarOpen(false)}
-              >
-                <IconLayoutSidebar size={16} stroke={1.75} aria-hidden="true" />
-              </ActionIcon>
-            </Tooltip>
+            <IconButton
+              aria-label="New chat"
+              variant="filled"
+              size={28}
+              className="chat-head-btn"
+              onClick={() => setDraft("")}
+            >
+              <ShellIcon concept="action.add" size={16} />
+            </IconButton>
+            <IconButton
+              aria-label="Collapse sidebar"
+              variant="subtle"
+              size={28}
+              className="chat-head-btn chat-sidebar-collapse-btn"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <IconLayoutSidebar size={16} stroke={1.75} aria-hidden="true" />
+            </IconButton>
           </div>
 
           <div className="chat-list-scroll">
@@ -285,16 +271,14 @@ export function ChatPage() {
           <div className="chat-thread-header">
             <div className="chat-thread-header-left">
               {!sidebarOpen ? (
-                <Tooltip label="Show chats" position="bottom" openDelay={300}>
-                  <ActionIcon
-                    aria-label="Show chats"
-                    variant="subtle"
-                    size={28}
-                    onClick={() => setSidebarOpen(true)}
-                  >
-                    <IconLayoutSidebar size={16} stroke={1.75} aria-hidden="true" />
-                  </ActionIcon>
-                </Tooltip>
+                <IconButton
+                  aria-label="Show chats"
+                  variant="subtle"
+                  size={28}
+                  onClick={() => setSidebarOpen(true)}
+                >
+                  <IconLayoutSidebar size={16} stroke={1.75} aria-hidden="true" />
+                </IconButton>
               ) : null}
               <Title order={2} id="current-chat-title" className="chat-thread-title">
                 {activeChat.title}
@@ -328,23 +312,19 @@ export function ChatPage() {
                       <span>{msg.duration ?? "1.4 s"}</span>
                       <span>·</span>
                       <span className="chat-cost">{msg.cost}</span>
-                      <Tooltip label="Copy reply" position="bottom" openDelay={300}>
-                        <ActionIcon
-                          aria-label="Copy reply"
-                          variant="subtle"
-                          size={24}
-                          onClick={() => {
-                            void navigator.clipboard?.writeText(msg.content);
-                          }}
-                        >
-                          <ShellIcon concept="action.copy" size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                      <Tooltip label="Activity" position="bottom" openDelay={300}>
-                        <ActionIcon aria-label="Activity" variant="subtle" size={24}>
-                          <IconActivity size={14} stroke={1.75} aria-hidden="true" />
-                        </ActionIcon>
-                      </Tooltip>
+                      <IconButton
+                        aria-label="Copy reply"
+                        variant="subtle"
+                        size={24}
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(msg.content);
+                        }}
+                      >
+                        <ShellIcon concept="action.copy" size={16} />
+                      </IconButton>
+                      <IconButton aria-label="Activity" variant="subtle" size={24}>
+                        <IconActivity size={14} stroke={1.75} aria-hidden="true" />
+                      </IconButton>
                     </div>
                   </div>
                 </div>
@@ -365,7 +345,7 @@ export function ChatPage() {
                 className="chat-composer-textarea"
                 aria-label="Message"
                 placeholder="Message Upmo…"
-                rows={2}
+                minRows={2}
                 value={draft}
                 onChange={(event) => setDraft(event.currentTarget.value)}
                 onKeyDown={(event) => {
@@ -481,29 +461,27 @@ export function ChatPage() {
                   </Menu.Dropdown>
                 </Menu>
 
-                <Tooltip label="Attach file" position="top" openDelay={300}>
-                  <ActionIcon
-                    aria-label="Attach file"
-                    variant="subtle"
-                    size={26}
-                    className="chat-composer-icon-btn"
-                    type="button"
-                  >
-                    <IconPaperclip size={16} stroke={1.75} aria-hidden />
-                  </ActionIcon>
-                </Tooltip>
+                <IconButton
+                  aria-label="Attach file"
+                  variant="subtle"
+                  size={26}
+                  className="chat-composer-icon-btn"
+                  type="button"
+                  tooltipPosition="top"
+                >
+                  <IconPaperclip size={16} stroke={1.75} aria-hidden />
+                </IconButton>
 
-                <Tooltip label="Dictate" position="top" openDelay={300}>
-                  <ActionIcon
-                    aria-label="Dictate"
-                    variant="subtle"
-                    size={26}
-                    className="chat-composer-icon-btn"
-                    type="button"
-                  >
-                    <IconMicrophone size={16} stroke={1.75} aria-hidden />
-                  </ActionIcon>
-                </Tooltip>
+                <IconButton
+                  aria-label="Dictate"
+                  variant="subtle"
+                  size={26}
+                  className="chat-composer-icon-btn"
+                  type="button"
+                  tooltipPosition="top"
+                >
+                  <IconMicrophone size={16} stroke={1.75} aria-hidden />
+                </IconButton>
 
                 <Menu position="top-start" offset={8} shadow="md" width={200} withinPortal transitionProps={{ duration: 0 }}>
                   <Menu.Target>
@@ -536,22 +514,27 @@ export function ChatPage() {
 
                 <span className="chat-composer-spacer" />
 
-                <Tooltip label="Send message" position="top" openDelay={300}>
-                  <ActionIcon
-                    aria-label="Send"
-                    type="submit"
-                    variant="filled"
-                    size={28}
-                    disabled={draft.trim() === ""}
-                    className="chat-composer-send"
-                  >
-                    <IconArrowUp size={16} stroke={2.5} aria-hidden />
-                  </ActionIcon>
-                </Tooltip>
+                <IconButton
+                  aria-label="Send"
+                  type="submit"
+                  variant="filled"
+                  size={28}
+                  disabled={draft.trim() === ""}
+                  className="chat-composer-send"
+                  tooltip="Send message"
+                  tooltipPosition="top"
+                >
+                  <IconArrowUp size={16} stroke={2.5} aria-hidden />
+                </IconButton>
               </div>
             </form>
             <div className="chat-composer-hint">
-              <kbd className="u-kbd">Enter</kbd> to send · <kbd className="u-kbd">Shift</kbd> <kbd className="u-kbd">Enter</kbd> for a new line
+              <Kbd>Enter</Kbd> to send ·{" "}
+              <KbdGroup>
+                <Kbd>Shift</Kbd>
+                <Kbd>Enter</Kbd>
+              </KbdGroup>{" "}
+              for a new line
             </div>
           </div>
         </article>

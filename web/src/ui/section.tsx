@@ -1,6 +1,7 @@
-import { Button, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { Button } from "@upmo-ai/components";
 
 import { CaretIcon } from "./icons";
 import "./section.css";

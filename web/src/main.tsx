@@ -1,12 +1,13 @@
 import "@mantine/core/styles.css";
 import "@mantine/dates/styles.css";
 import "@upmo-ai/tokens/tokens.css";
-import "./mantine-tokens.css";
-import "./ui/buttons.css";
+import "@upmo-ai/components/styles.css";
 import "@fontsource/manrope/400.css";
 import "@fontsource/manrope/500.css";
 import "@fontsource/manrope/600.css";
 import "@fontsource/manrope/700.css";
+import "@fontsource/familjen-grotesk/700.css";
+import "@fontsource/fira-code/400.css";
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

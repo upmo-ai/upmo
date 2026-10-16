@@ -16,6 +16,29 @@ function renderAt(path: string) {
   );
 }
 
+function selectInput(name: string) {
+  const input = screen.getAllByLabelText(name).find((element) => element.tagName === "INPUT");
+  if (!input) throw new Error(`no select named ${name}`);
+  return input as HTMLInputElement;
+}
+
+function selectOptions(name: string) {
+  const listbox = screen.getByRole("listbox", { name, hidden: true });
+  return within(listbox)
+    .getAllByRole("option", { hidden: true })
+    .map((option) => option.textContent);
+}
+
+function chooseOption(name: string, option: string) {
+  act(() => {
+    fireEvent.click(selectInput(name));
+  });
+  const listbox = screen.getByRole("listbox", { name, hidden: true });
+  act(() => {
+    fireEvent.click(within(listbox).getByRole("option", { name: option, hidden: true }));
+  });
+}
+
 function viewAs(name: "Admin" | "Member" | "Viewer") {
   act(() => {
     within(screen.getByRole("group", { name: "View as" })).getByRole("button", { name }).click();
@@ -61,16 +84,14 @@ describe("members", () => {
 
   it("keeps the last owner in place and does not offer Owner on invite", async () => {
     renderAt("/admin");
-    const ownerRole = (await screen.findByLabelText("Role for Ada Okonkwo")) as HTMLSelectElement;
-    expect(ownerRole.disabled).toBe(true);
+    await screen.findAllByLabelText("Role for Ada Okonkwo");
+    expect(selectInput("Role for Ada Okonkwo").disabled).toBe(true);
     expect(screen.getByText(lastOwnerReason)).toBeTruthy();
     const adaRow = screen.getByText("Ada Okonkwo").closest("tr")!;
-    const removeOwner = within(adaRow).getByRole("button", { name: "Remove" }) as HTMLButtonElement;
-    expect(removeOwner.disabled).toBe(true);
+    const removeOwner = within(adaRow).getByRole("button", { name: "Remove" });
+    expect(removeOwner.getAttribute("aria-disabled")).toBe("true");
 
-    const inviteRole = screen.getByLabelText("Invite role");
-    const options = within(inviteRole).getAllByRole("option").map((option) => option.textContent);
-    expect(options).toEqual(["Admin", "Member", "Viewer"]);
+    expect(selectOptions("Invite role")).toEqual(["Admin", "Member", "Viewer"]);
     expect(within(screen.getByRole("group", { name: "View as" })).queryByRole("button", { name: "Owner" })).toBeNull();
   });
 
@@ -107,10 +128,8 @@ describe("members", () => {
       </AppProviders>,
     );
 
-    const roleSelect = (await screen.findByLabelText("Role for Lee Chen")) as HTMLSelectElement;
-    act(() => {
-      fireEvent.change(roleSelect, { target: { value: "admin" } });
-    });
+    await screen.findAllByLabelText("Role for Lee Chen");
+    chooseOption("Role for Lee Chen", "Admin");
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Role change refused.");
@@ -200,7 +219,7 @@ describe("live members", () => {
     expect(await screen.findByLabelText("Name")).toBeTruthy();
     expect(screen.queryByRole("group", { name: "View as" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
-    expect(screen.getByLabelText("Role for Bob")).toBeTruthy();
+    expect(selectInput("Role for Bob")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New role" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New team" })).toBeNull();
@@ -212,7 +231,7 @@ describe("live members", () => {
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ned@example.com" } });
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ned" } });
-    fireEvent.change(screen.getByLabelText("Invite role"), { target: { value: "role-member" } });
+    chooseOption("Invite role", "Member");
     fireEvent.click(screen.getByRole("button", { name: "Invite" }));
 
     const link = await screen.findByLabelText("Invite link");
@@ -275,7 +294,7 @@ describe("live members", () => {
 
     globalThis.fetch = live(["members:manage", "task:view"]);
     renderAt("/admin");
-    expect(await screen.findByLabelText("Role for Bob")).toBeTruthy();
+    expect(await screen.findAllByLabelText("Role for Bob")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Invite" })).toBeTruthy();
     cleanup();
 

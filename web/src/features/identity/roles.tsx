@@ -1,9 +1,9 @@
-import { Badge, Button, Checkbox, Group, Stack, Table, Text, TextInput, Title } from "@mantine/core";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Badge, Button, Checkbox, ConfirmDialog, Input, Table } from "@upmo-ai/components";
 
 import { RowAction } from "../../ui/icons";
-import { ConfirmDialog } from "./confirm";
 import {
   ConfirmPassword,
   type LiveRole,
@@ -198,7 +198,7 @@ export function RolesCard({
           });
         }}
       >
-        <TextInput label="Role name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+        <Input label="Role name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
         <Stack gap="xs">
           {catalog.map((permission) => {
             const locked = !held.has(permission);

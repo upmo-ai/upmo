@@ -120,7 +120,7 @@ describe("Personalisation page", () => {
     });
     expect(await screen.findByRole("dialog", { name: "Forget this fact?" })).toBeTruthy();
     act(() => {
-      within(screen.getByRole("dialog")).getByRole("button", { name: "Forget" }).click();
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Forget fact" }).click();
     });
     expect(await screen.findByText(sampleFacts[1]!.text)).toBeTruthy();
     expect(screen.queryByText("Prefers British spelling in every reply.")).toBeNull();

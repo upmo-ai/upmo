@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { storagePath } from "./session.mjs";
+import { openAccountItem, storagePath } from "./session.mjs";
 
 // The official image ships browsers, not the npm package. e2e/run.sh installs
 // playwright@1.61.1 here. NODE_PATH does not apply to ESM imports.
@@ -50,7 +50,7 @@ async function identityFlow(page) {
   await page.goto(pageUrl("/"), { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
 
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await openAccountItem(page, "Security");
   await page.getByRole("heading", { level: 1, name: "Security" }).waitFor();
   await page.getByRole("link", { name: "Members", exact: true }).click();
   await page.getByRole("heading", { level: 1, name: "Members" }).waitFor();
@@ -61,15 +61,17 @@ async function identityFlow(page) {
   await page.getByRole("heading", { level: 1, name: "Daily finance digest" }).waitFor();
   await page.getByRole("button", { name: "Share" }).click();
   const share = page.getByRole("dialog");
-  await share.getByLabel("Person").selectOption({ label: "Noor Ali (noor@aster.example)" });
-  await share.getByLabel("Level").selectOption("viewer");
+  // The design-system Select opens a listbox in a portal outside the dialog.
+  await share.getByLabel("Person", { exact: true }).click();
+  await page.getByRole("option", { name: "Noor Ali (noor@aster.example)" }).click();
+  await share.getByLabel("Level", { exact: true }).click();
+  await page.getByRole("option", { name: "Viewer" }).click();
   await share.getByRole("button", { name: "Add person" }).click();
   await share.getByText("Noor Ali", { exact: true }).waitFor();
   await share.getByRole("button", { name: "Close" }).click();
   await share.waitFor({ state: "hidden" });
 
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
-  await page.getByRole("link", { name: "API tokens", exact: true }).click();
+  await openAccountItem(page, "API tokens");
   await page.getByRole("heading", { level: 1, name: "API tokens" }).waitFor();
   await page.getByRole("button", { name: "Create token" }).click();
   const create = page.getByRole("dialog");

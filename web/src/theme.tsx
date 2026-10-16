@@ -1,81 +1,85 @@
-import {
-  MantineProvider,
-  SegmentedControl,
-  useComputedColorScheme,
-  useMantineColorScheme,
-  type CSSVariablesResolver,
-  type MantineColorScheme,
-} from "@mantine/core";
-import { upmoTheme } from "@upmo-ai/ui";
-import { useLayoutEffect, type ReactNode } from "react";
+import { SegmentedControl, UpmoProvider, type UpmoThemeName } from "@upmo-ai/components";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
-// Mantine writes these onto the document as inline variables. A stylesheet
-// cannot override that, so the resolver is what makes the page ground follow
-// --surface-000.
-export const tokenVariables: Record<string, string> = {
-  "--mantine-color-body": "var(--surface-000)",
-  "--mantine-color-text": "var(--ink)",
-  "--mantine-color-dimmed": "var(--ink-muted)",
-  "--mantine-color-default": "var(--surface-100)",
-  "--mantine-color-default-hover": "var(--surface-hover)",
-  "--mantine-color-default-border": "var(--border-strong)",
-  "--mantine-color-placeholder": "var(--ink-muted)",
-  "--mantine-color-anchor": "var(--emerald-deep)",
-  "--mantine-color-error": "var(--danger)",
-  "--mantine-primary-color-filled": "var(--emerald-deep)",
-  "--mantine-primary-color-filled-hover": "var(--emerald-hover)",
-  "--mantine-primary-color-light": "var(--emerald-soft)",
-  "--mantine-primary-color-light-color": "var(--emerald-deep)",
-  "--mantine-primary-color-contrast": "var(--ink-on-brand)",
-};
+export type ThemeChoice = UpmoThemeName | "system";
 
-export const cssVariablesResolver: CSSVariablesResolver = () => ({
-  variables: {},
-  light: tokenVariables,
-  dark: tokenVariables,
-});
+export const themeStorageKey = "upmo-theme";
+// Before the design system provider, Mantine stored the choice under this key,
+// with "auto" for System.
+const legacyStorageKey = "mantine-color-scheme-value";
 
-const schemes: { label: string; value: MantineColorScheme }[] = [
+const choices: { label: string; value: ThemeChoice }[] = [
   { label: "Light", value: "light" },
   { label: "Dark", value: "dark" },
-  { label: "System", value: "auto" },
+  { label: "High contrast", value: "hc" },
+  { label: "System", value: "system" },
 ];
 
-function isScheme(value: string): value is MantineColorScheme {
-  return value === "light" || value === "dark" || value === "auto";
+function isChoice(value: string | null): value is ThemeChoice {
+  return value === "light" || value === "dark" || value === "hc" || value === "system";
 }
 
-/** Writes the computed light or dark scheme onto the document before paint. */
-function ThemeSync() {
-  const scheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
+function readChoice(): ThemeChoice {
+  try {
+    const stored = localStorage.getItem(themeStorageKey);
+    if (isChoice(stored)) return stored;
+    const legacy = localStorage.getItem(legacyStorageKey);
+    if (legacy === null) return "system";
+    localStorage.removeItem(legacyStorageKey);
+    const migrated = legacy === "auto" ? "system" : legacy;
+    if (!isChoice(migrated)) return "system";
+    localStorage.setItem(themeStorageKey, migrated);
+    return migrated;
+  } catch {
+    return "system";
+  }
+}
 
-  useLayoutEffect(() => {
-    document.documentElement.setAttribute("data-theme", scheme);
-  }, [scheme]);
+function storeChoice(choice: ThemeChoice) {
+  try {
+    localStorage.setItem(themeStorageKey, choice);
+  } catch {
+    // Storage is blocked: the choice still applies for this page.
+  }
+}
 
-  return null;
+const ThemeChoiceContext = createContext<{
+  choice: ThemeChoice;
+  setChoice: (choice: ThemeChoice) => void;
+} | null>(null);
+
+export function useThemeChoice() {
+  const value = useContext(ThemeChoiceContext);
+  if (!value) throw new Error("useThemeChoice needs AppProviders");
+  return value;
 }
 
 export function ThemeSwitch() {
-  const { colorScheme, setColorScheme } = useMantineColorScheme();
+  const { choice, setChoice } = useThemeChoice();
 
   return (
     <SegmentedControl
       data-testid="theme-switch"
-      value={colorScheme}
+      value={choice}
       onChange={(value) => {
-        if (isScheme(value)) setColorScheme(value);
+        if (isChoice(value)) setChoice(value);
       }}
-      data={schemes}
+      data={choices}
     />
   );
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {
+  const [choice, setChoiceState] = useState<ThemeChoice>(readChoice);
+  const setChoice = useCallback((next: ThemeChoice) => {
+    setChoiceState(next);
+    storeChoice(next);
+  }, []);
+  const value = useMemo(() => ({ choice, setChoice }), [choice, setChoice]);
+
   return (
-    <MantineProvider theme={upmoTheme} cssVariablesResolver={cssVariablesResolver}>
-      <ThemeSync />
-      {children}
-    </MantineProvider>
+    <ThemeChoiceContext value={value}>
+      <UpmoProvider theme={choice}>{children}</UpmoProvider>
+    </ThemeChoiceContext>
   );
 }

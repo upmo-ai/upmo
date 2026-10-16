@@ -1,8 +1,9 @@
-import { Button, Checkbox, Group, Modal, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { DateInput } from "@mantine/dates";
 import { IconCalendar } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Button, Checkbox, ConfirmDialog, Dialog, Input } from "@upmo-ai/components";
 
 import {
   TOKENS_KEY,
@@ -14,7 +15,6 @@ import {
   type ApiToken,
 } from "../../app/api";
 import { fresh } from "../../app/passkeys";
-import { ConfirmDialog } from "./confirm";
 import { formatDate } from "./format";
 import { actionsForRole, scopeActions, scopeObjects } from "./rules";
 import type { ScopeAction, ScopeObject } from "./types";
@@ -189,6 +189,7 @@ function StubTokens() {
         title={revoking ? `Revoke the ${revoking.name}?` : "Revoke this token?"}
         body="You will lose this token."
         action="Revoke token"
+        destructive
         busy={revoke.isPending}
         onClose={() => setRevokeId(null)}
         onConfirm={() => {
@@ -272,7 +273,7 @@ function CreateTokenDialog({
   if (!opened) return null;
 
   return (
-    <Modal opened onClose={close} title={secret ? "Token created" : "Create token"} withCloseButton={false}>
+    <Dialog opened onClose={close} title={secret ? "Token created" : "Create token"} withCloseButton={false}>
       {secret ? (
         <Stack gap="md">
           <Text className="token-secret code-sm" data-testid="token-secret">
@@ -295,7 +296,7 @@ function CreateTokenDialog({
         </Stack>
       ) : (
         <Stack gap="md">
-          <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+          <Input label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
           <ExpiryField value={expiry} onChange={setExpiry} />
           <div className="scope-list">
             {scopeObjects.map((object) => (
@@ -333,7 +334,7 @@ function CreateTokenDialog({
           </Group>
         </Stack>
       )}
-    </Modal>
+    </Dialog>
   );
 }
 
@@ -432,6 +433,7 @@ function LiveTokens() {
         title={revoking ? `Revoke the ${revoking.name}?` : "Revoke this token?"}
         body="You will lose this token."
         action="Revoke token"
+        destructive
         busy={revoke.isPending}
         onClose={() => setRevokeId(null)}
         onConfirm={() => {
@@ -478,7 +480,7 @@ function LiveCreate({
   });
   if (!opened) return null;
   return (
-    <Modal opened onClose={onClose} title={secret ? "Token created" : "Create token"} withCloseButton={false}>
+    <Dialog opened onClose={onClose} title={secret ? "Token created" : "Create token"} withCloseButton={false}>
       {secret ? (
         <Stack gap="md">
           <Text className="token-secret code-sm" data-testid="token-secret">
@@ -501,7 +503,7 @@ function LiveCreate({
         </Stack>
       ) : (
         <Stack gap="md">
-          <TextInput label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+          <Input label="Name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
           <ExpiryField value={expiry} onChange={setExpiry} />
           <div className="scope-list">
             {scopeObjects.map((object) => {
@@ -541,7 +543,7 @@ function LiveCreate({
           </Button>
         </Stack>
       )}
-    </Modal>
+    </Dialog>
   );
 }
 

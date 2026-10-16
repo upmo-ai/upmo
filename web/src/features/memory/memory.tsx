@@ -1,7 +1,7 @@
-import { ActionIcon, Button, Group, Stack, Text, Textarea, TextInput, Title, Tooltip } from "@mantine/core";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { useEffect, useState } from "react";
+import { Button, ConfirmDialog, IconButton, Input, Textarea } from "@upmo-ai/components";
 
-import { ConfirmDialog } from "../identity/confirm";
 import { EmptyState } from "../../ui/section";
 import { ShellIcon, type ShellConcept } from "../../ui/icons";
 
@@ -29,11 +29,9 @@ function IconAction({
   onClick: () => void;
 }) {
   return (
-    <Tooltip label={label} position="bottom" openDelay={400}>
-      <ActionIcon aria-label={label} variant="subtle" size={40} onClick={onClick}>
-        <ShellIcon concept={concept} />
-      </ActionIcon>
-    </Tooltip>
+    <IconButton aria-label={label} variant="subtle" size={40} onClick={onClick}>
+      <ShellIcon concept={concept} />
+    </IconButton>
   );
 }
 
@@ -201,7 +199,7 @@ export function PersonalisationPage() {
             });
           }}
         >
-          <TextInput
+          <Input
             aria-label="Add a fact"
             placeholder="Add a fact"
             value={draft}
@@ -279,7 +277,8 @@ export function PersonalisationPage() {
         opened={forget != null}
         title="Forget this fact?"
         body="Upmo will stop using it. You can add it again later if you still need it."
-        action="Forget"
+        action="Forget fact"
+        destructive
         onClose={() => setForgetId(null)}
         onConfirm={() => {
           if (!forget) return;

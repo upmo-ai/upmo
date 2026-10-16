@@ -1,4 +1,5 @@
 .chat-page {
+  --chat-container-width: 880px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -242,7 +243,7 @@
   min-height: 32px;
   flex-shrink: 0;
   width: 100%;
-  max-width: var(--chat-container-width, 880px);
+  max-width: var(--chat-container-width);
   margin-inline: auto;
   padding: 0 0 var(--space-2) 0;
   border-bottom: 1px solid var(--border);
@@ -265,7 +266,7 @@
 
 .chat-messages {
   width: 100%;
-  max-width: var(--chat-container-width, 880px);
+  max-width: var(--chat-container-width);
   margin-inline: auto;
   flex: 1;
   min-height: 0;
@@ -361,7 +362,7 @@
   flex-direction: column;
   gap: 6px;
   width: 100%;
-  max-width: var(--chat-container-width, 880px);
+  max-width: var(--chat-container-width);
   margin-inline: auto;
   padding: 10px 12px 8px 14px;
   border: 1px solid var(--border-strong);
@@ -444,34 +445,19 @@
 }
 
 .chat-composer-send {
-  width: 28px !important;
-  height: 28px !important;
-  min-height: 28px !important;
-  border-radius: var(--radius-md) !important;
-  background-color: var(--emerald-deep) !important;
-  color: var(--ink-on-brand) !important;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 0 !important;
-  transition: background-color 120ms ease, transform 120ms ease;
 }
 
-.chat-composer-send:hover:not(:disabled) {
-  background-color: var(--emerald-hover) !important;
-}
-
-.chat-composer-send:disabled {
-  opacity: 0.45 !important;
-  background-color: var(--surface-200) !important;
-  color: var(--ink-disabled) !important;
-  cursor: not-allowed !important;
+/* The design-system IconButton marks disabled with data-disabled and stays focusable. */
+.chat-composer-send[data-disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .chat-composer-hint {
   width: 100%;
-  max-width: var(--chat-container-width, 880px);
+  max-width: var(--chat-container-width);
   margin: var(--space-2) auto 0;
   color: var(--ink-muted);
   font-size: 11px;

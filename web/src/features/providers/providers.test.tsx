@@ -205,7 +205,7 @@ describe("providers", () => {
     expect(within(confirm).getByText(/Agents and tasks using models from Ollama Local will pause/)).toBeTruthy();
 
     act(() => {
-      within(confirm).getByRole("button", { name: "Disconnect" }).click();
+      within(confirm).getByRole("button", { name: "Disconnect provider" }).click();
     });
 
     await waitFor(() => {

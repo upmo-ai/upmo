@@ -1,9 +1,12 @@
 packages:
   - "."
 
-updateNotifier: false
+# First-party Upmo Design System packages, exempt from the release-age wait.
+minimumReleaseAgeExclude:
+  - '@upmo-ai/brands@1.0.0'
+  - '@upmo-ai/components@1.0.0'
+  - '@upmo-ai/icons@1.0.0'
+  - '@upmo-ai/theme@1.0.0'
+  - '@upmo-ai/tokens@1.0.0'
 
-allowBuilds:
-  '@upmo-ai/icons@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/icons': true
-  '@upmo-ai/tokens@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/tokens': true
-  '@upmo-ai/ui@https://codeload.github.com/upmo-ai/design-system/tar.gz/1fc53e6aaedcbcff4bbfbc0bb8dd415e6da09413#path:/packages/ui': true
+updateNotifier: false

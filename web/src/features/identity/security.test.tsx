@@ -33,9 +33,13 @@ describe("security", () => {
     expect(screen.getByText(/Last used/)).toBeTruthy();
 
     const passkeyItem = screen.getByText("Laptop").closest("li")!;
-    const remove = within(passkeyItem).getByRole("button", { name: "Remove" }) as HTMLButtonElement;
-    expect(remove.disabled).toBe(true);
+    const remove = within(passkeyItem).getByRole("button", { name: "Remove" });
+    expect(remove.getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByText(lastPasskeyReason)).toBeTruthy();
+    act(() => {
+      remove.click();
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
 
     act(() => {
       screen.getByRole("button", { name: "Set password" }).click();
@@ -48,17 +52,14 @@ describe("security", () => {
       within(setDialog).getByRole("button", { name: "Set password" }).click();
     });
     await waitFor(() => {
-      expect((within(passkeyItem).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      );
+      expect(within(passkeyItem).getByRole("button", { name: "Remove" }).getAttribute("aria-disabled")).toBeNull();
     });
     expect(screen.queryByText(lastPasskeyReason)).toBeNull();
 
     act(() => {
       within(passkeyItem).getByRole("button", { name: "Remove" }).click();
     });
-    const removeDialog = await screen.findByRole("dialog");
-    expect(within(removeDialog).getByText("Remove the Laptop passkey?")).toBeTruthy();
+    const removeDialog = await screen.findByRole("dialog", { name: "Remove the Laptop passkey?" });
     act(() => {
       within(removeDialog).getByRole("button", { name: "Remove passkey" }).click();
     });

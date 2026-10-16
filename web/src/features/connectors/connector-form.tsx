@@ -1,16 +1,11 @@
 import {
-  Badge,
-  Button,
   Card,
   Group,
-  Loader,
-  Radio,
+  PasswordInput,
   SimpleGrid,
   Stack,
   Stepper,
   Text,
-  TextInput,
-  PasswordInput,
   Title,
   UnstyledButton,
 } from "@mantine/core";
@@ -23,6 +18,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
+import { Badge, Button, Input, Radio, Spinner } from "@upmo-ai/components";
 
 import {
   CONNECTORS_KEY,
@@ -250,7 +246,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
                   Choose an external tool, integration, or Model Context Protocol endpoint.
                 </Text>
               </div>
-              <TextInput
+              <Input
                 placeholder="Filter tools..."
                 leftSection={<IconSearch size={16} aria-hidden="true" />}
                 size="sm"
@@ -353,7 +349,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
 
             {selectedTool === "mcp" ? (
               <>
-                <TextInput
+                <Input
                   label="MCP Server Endpoint URL"
                   required
                   size="md"
@@ -392,7 +388,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
               />
             ) : selectedTool === "gitlab" ? (
               <>
-                <TextInput
+                <Input
                   label="GitLab Host URL (Optional)"
                   size="md"
                   description="Defaults to https://gitlab.com. Enter your self-hosted URL if applicable."
@@ -444,7 +440,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
               />
             ) : selectedTool === "supabase" ? (
               <>
-                <TextInput
+                <Input
                   label="Supabase Project URL"
                   required
                   size="md"
@@ -510,7 +506,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
               />
             ) : selectedTool === "sentry" ? (
               <>
-                <TextInput
+                <Input
                   label="Sentry Organization Slug"
                   required
                   size="md"
@@ -563,7 +559,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
               />
             ) : selectedTool === "jira" ? (
               <>
-                <TextInput
+                <Input
                   label="Atlassian Cloud Site URL"
                   required
                   size="md"
@@ -665,7 +661,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
             </div>
 
             {reach === "these" && (
-              <TextInput
+              <Input
                 label="Resource IDs"
                 size="md"
                 description="Comma-separated IDs or repository names (e.g. org/repo, #general, team-calendar)."
@@ -798,7 +794,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
               )}
 
               {isTesting && (
-                <StatusAlert tone="info" icon={<Loader size={16} />} title="Testing connection">
+                <StatusAlert tone="info" icon={<Spinner size={16} />} title="Testing connection">
                   Pinging connector service and verifying credentials...
                 </StatusAlert>
               )}

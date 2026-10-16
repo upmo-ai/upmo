@@ -1,23 +1,12 @@
-import {
-  Badge,
-  Button,
-  Card,
-  Group,
-  SimpleGrid,
-  Stack,
-  Text,
-  TextInput,
-  ThemeIcon,
-  Title,
-} from "@mantine/core";
+import { Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { IconPlug, IconPlus, IconSearch, IconSettings } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { Badge, Button, ConfirmDialog, Input } from "@upmo-ai/components";
 
 import { CONNECTORS_KEY, connectorsQueryKey, useApi, type ConnectorGrant } from "../../app/api";
 import { BrandMark } from "../../ui/brand-mark";
-import { ConfirmDialog } from "../identity/confirm";
 
 export interface KnownConnector {
   id: string;
@@ -143,7 +132,7 @@ function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?
         </Stack>
         <Group gap="sm" wrap="wrap">
           {grants.length > 0 && (
-            <TextInput
+            <Input
               placeholder="Search connectors..."
               leftSection={<IconSearch size={16} aria-hidden="true" />}
               size="sm"
@@ -291,7 +280,8 @@ function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?
         opened={Boolean(disconnectTarget)}
         title={disconnectTarget ? `Disconnect ${toolMeta(disconnectTarget.connector).name}` : "Disconnect connector"}
         body={`Agents will lose access to ${disconnectTarget ? toolMeta(disconnectTarget.connector).name : "this tool"} immediately.`}
-        action="Disconnect"
+        action="Disconnect connector"
+        destructive
         busy={removeMutation.isPending}
         onClose={() => setDisconnectTarget(null)}
         onConfirm={() => {

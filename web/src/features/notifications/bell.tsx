@@ -1,5 +1,6 @@
-import { ActionIcon, Badge, Button, Popover, Text } from "@mantine/core";
+import { Popover, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Badge, Button, IconButton } from "@upmo-ai/components";
 
 import {
   approvalsQueryKey,
@@ -62,14 +63,14 @@ export function NotificationsBell() {
   return (
     <Popover position="bottom-end" width={320} shadow="md">
       <Popover.Target>
-        <ActionIcon className="shell-bell" aria-label={label} variant="subtle" size={40}>
+        <IconButton className="shell-bell" aria-label={label} variant="subtle" size={40}>
           <ShellIcon concept="nav.notifications" />
           {count > 0 ? (
             <Badge className="shell-count" size="xs" circle aria-hidden>
               {count}
             </Badge>
           ) : null}
-        </ActionIcon>
+        </IconButton>
       </Popover.Target>
       <Popover.Dropdown>
         {ready && items.length === 0 ? (

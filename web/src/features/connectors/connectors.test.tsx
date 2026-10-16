@@ -162,7 +162,7 @@ describe("connectors", () => {
     expect(within(confirm).getByText(/Agents will lose access to Slack immediately/)).toBeTruthy();
 
     act(() => {
-      within(confirm).getByRole("button", { name: "Disconnect" }).click();
+      within(confirm).getByRole("button", { name: "Disconnect connector" }).click();
     });
 
     await waitFor(() => {

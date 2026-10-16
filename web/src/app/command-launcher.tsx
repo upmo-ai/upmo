@@ -1,4 +1,4 @@
-import { Modal, UnstyledButton } from "@mantine/core";
+import { UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -20,6 +20,7 @@ import {
   IconUsers,
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Dialog, Kbd, KbdGroup } from "@upmo-ai/components";
 
 interface PaletteItem {
   to: string;
@@ -121,12 +122,12 @@ export function CommandLauncher() {
       >
         <IconSearch size={16} stroke={1.75} aria-hidden style={{ color: "var(--ink-muted)" }} />
         <span className="shell-launcher-text">Search or jump to…</span>
-        <span className="u-kbd-group" aria-hidden>
-          <kbd className="u-kbd">⌘</kbd>
-          <kbd className="u-kbd">K</kbd>
-        </span>
+        <KbdGroup className="shell-launcher-keys">
+          <Kbd>⌘</Kbd>
+          <Kbd>K</Kbd>
+        </KbdGroup>
       </UnstyledButton>
-      <Modal
+      <Dialog
         opened={opened}
         onClose={close}
         title="Go to"
@@ -152,6 +153,7 @@ export function CommandLauncher() {
               autoFocus
               aria-label="Search or jump to"
             />
+            {/* Local key cap: the design-system Kbd is not clickable. */}
             <kbd className="u-kbd" onClick={close} style={{ cursor: "pointer" }}>
               Esc
             </kbd>
@@ -187,17 +189,25 @@ export function CommandLauncher() {
           </div>
           <div className="u-cmd-foot">
             <span>
-              <kbd className="u-kbd">↑</kbd> <kbd className="u-kbd">↓</kbd> move
+              <KbdGroup>
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd>
+              </KbdGroup>{" "}
+              move
             </span>
             <span>
-              <kbd className="u-kbd">Enter</kbd> open
+              <Kbd>Enter</Kbd> open
             </span>
             <span>
-              <kbd className="u-kbd">⌘</kbd> <kbd className="u-kbd">K</kbd> toggle
+              <KbdGroup>
+                <Kbd>⌘</Kbd>
+                <Kbd>K</Kbd>
+              </KbdGroup>{" "}
+              toggle
             </span>
           </div>
         </div>
-      </Modal>
+      </Dialog>
     </>
   );
 }
