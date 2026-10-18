@@ -34,6 +34,7 @@ import {
 import { sessionQueryKey, useApi } from "./api";
 import { PasskeyOffer } from "../features/identity/passkey-offer";
 import { NotificationsBell } from "../features/notifications/bell";
+import { TasksLiveness } from "../features/tasks/liveness";
 import { adminSections, settingsSections } from "../features/settings/settings";
 import { WorkspaceName, workspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch, useThemeChoice } from "../theme";
@@ -313,6 +314,7 @@ export function Shell() {
             <CommandLauncher />
           </div>
           <div className="shell-header-right">
+            <TasksLiveness />
             <NotificationsBell />
           </div>
         </div>

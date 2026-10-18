@@ -32,13 +32,28 @@ function chooseFilter(page, name) {
   return page.getByTestId("task-filter").getByText(name, { exact: true }).click();
 }
 
+// The shell slides the sidebar away after a resize; measure once the tile
+// has stopped moving.
+async function settleBox(locator) {
+  const deadline = Date.now() + 5000;
+  let last = "";
+  while (Date.now() < deadline) {
+    const box = JSON.stringify(await locator.boundingBox());
+    if (box === last) return;
+    last = box;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`box kept moving: ${last}`);
+}
+
 async function expectBadgesFullyVisible(page) {
   await page.setViewportSize({ width: 360, height: 800 });
   const badges = page.locator(".task-tile [data-testid='task-status']");
   await badges.first().waitFor();
+  await settleBox(page.locator(".task-tile").first());
   const results = await badges.evaluateAll((nodes) =>
     nodes.map((el) => {
-      const label = el.querySelector(".task-badge-label") ?? el;
+      const label = el.querySelector(".mantine-Badge-label") ?? el;
       const text = (label.textContent ?? "").replace(/\s+/g, " ").trim();
       const range = document.createRange();
       range.selectNodeContents(label);
@@ -88,8 +103,12 @@ async function signIn(page) {
   await signInWithPassword(page, url);
 }
 
+function headerStatus(page) {
+  return page.locator(".task-header .upmo-status-badge");
+}
+
 async function walkToDone(page) {
-  const status = page.getByTestId("task-status");
+  const status = headerStatus(page);
   for (let step = 0; step < 4; step += 1) {
     if ((await status.innerText()).trim() === "Done") return;
     const before = (await page.locator("[aria-current='step']").innerText()).trim();
@@ -132,7 +151,7 @@ async function taskFlow(page, { checkBadges, theme }) {
 
   await page.getByRole("link", { name: "Daily finance digest" }).click();
   await page.getByRole("heading", { level: 1, name: "Daily finance digest" }).waitFor();
-  const card = page.getByRole("alert");
+  const card = page.getByRole("group", { name: "Send the daily finance digest" });
   const cardText = await card.innerText();
   if (!cardText.includes("Approve to continue, deny to let the agent find another way.")) {
     throw new Error(`approval card copy missing: ${cardText}`);
@@ -149,11 +168,11 @@ async function taskFlow(page, { checkBadges, theme }) {
   if (await next.isEnabled()) throw new Error("next phase was enabled while waiting");
   await card.getByRole("button", { name: "Approve" }).click();
   await card.waitFor({ state: "hidden" });
-  await settleText(page.getByTestId("task-status"), "Working");
+  await settleText(headerStatus(page), "Planning");
   if (await next.isDisabled()) throw new Error("next phase stayed disabled after approve");
 
   await walkToDone(page);
-  await settleText(page.getByTestId("task-status"), "Done");
+  await settleText(headerStatus(page), "Done");
   await page.getByRole("tab", { name: "Result" }).click();
   const result = (await page.getByTestId("task-result").innerText()).trim();
   if (result === pendingResult || result.length === 0) {

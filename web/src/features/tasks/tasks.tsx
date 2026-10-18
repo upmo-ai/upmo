@@ -1,16 +1,23 @@
 import { Group, Progress, Stack, Text, Title } from "@mantine/core";
-import { IconDownload, IconPencil } from "@tabler/icons-react";
+import { IconPencil } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import {
-  Badge,
-  Button,
+  ArtifactViewer,
+  DeliveryCard,
+  EventStream,
   IconButton,
+  PageHeader,
+  PhaseRail,
   SegmentedControl,
-  Table,
+  StatusBadge,
+  StatusDot,
   Tabs,
+  TaskHeader,
   Textarea,
+  ToolCallTrace,
+  type EventItem,
 } from "@upmo-ai/components";
 
 import {
@@ -20,19 +27,17 @@ import {
   useApi,
   useWrite,
   type Approval,
-  type Task,
-  type TaskStatus,
 } from "../../app/api";
 import { ShareDialog } from "../identity/share-dialog";
-import { CaretIcon, ShellIcon } from "../../ui/icons";
+import { ShellIcon } from "../../ui/icons";
 import { EmptyState } from "../../ui/section";
-import { ApprovalCard } from "./approval-card";
+import { ApprovalAnnouncer, ApprovalCard } from "./approval-card";
+import { taskPhase, taskStatus } from "./status";
 import {
   isTaskFilter,
   pendingResult,
-  phases,
-  type Phase,
   type Subtask,
+  type Task,
   type TaskArtifact,
   type TaskEvent,
   type TaskFilter,
@@ -42,7 +47,7 @@ import "./tasks.css";
 
 const filters: { label: string; value: TaskFilter }[] = [
   { label: "All", value: "All" },
-  { label: "Working", value: "Working" },
+  { label: "Underway", value: "Working" },
   { label: "Needs approval", value: "Needs approval" },
   { label: "Done", value: "Done" },
   { label: "Failed", value: "Failed" },
@@ -58,38 +63,10 @@ function pendingFor(approvals: Approval[] | undefined, taskId?: string) {
   );
 }
 
-export function TaskStatusBadge({
-  status,
-  marker = "task-status",
-}: {
-  status: TaskStatus;
-  marker?: string;
-}) {
-  return (
-    <Badge
-      className="task-badge"
-      classNames={{ label: "task-badge-label" }}
-      data-testid={marker}
-      variant="light"
-      styles={{
-        root: {
-          height: "auto",
-          overflow: "visible",
-          maxWidth: "100%",
-          textTransform: "none",
-        },
-        label: {
-          height: "auto",
-          overflow: "visible",
-          whiteSpace: "nowrap",
-          textOverflow: "clip",
-          textTransform: "none",
-        },
-      }}
-    >
-      {status}
-    </Badge>
-  );
+/** The spent share of the limit. pausePercent is the threshold, never this. */
+function budgetPercent(task: Task) {
+  if (!task.limitCents || task.limitCents <= 0) return 0;
+  return Math.min(100, Math.round(((task.spentCents ?? 0) / task.limitCents) * 100));
 }
 
 export function TasksPage() {
@@ -109,7 +86,7 @@ export function TasksPage() {
 
   return (
     <Stack gap="md" className="task-screen">
-      <Title order={1}>Tasks</Title>
+      <PageHeader title="Tasks" />
       {tasks.isError ? (
         <Text role="alert" c="red">
           {tasks.error?.message ?? "Failed to load tasks."}
@@ -120,6 +97,7 @@ export function TasksPage() {
           {approvals.error?.message ?? "Failed to load approvals."}
         </Text>
       ) : null}
+      <ApprovalAnnouncer pending={approvals.data ? pending : undefined} />
       {pending.map((approval) => (
         <ApprovalCard key={approval.id} approval={approval} />
       ))}
@@ -150,7 +128,11 @@ export function TasksPage() {
               <Link to="/tasks/$taskId" params={{ taskId: task.id }} className="task-tile">
                 <div className="task-tile-head">
                   <span className="task-tile-title">{task.title}</span>
-                  <TaskStatusBadge status={task.status} />
+                  <StatusBadge
+                    className="task-tile-badge"
+                    status={taskStatus(task)}
+                    data-testid="task-status"
+                  />
                 </div>
                 <div className="task-tile-meta">
                   <span className="task-tile-cost">{task.cost ?? "€0.00"}</span>
@@ -172,17 +154,39 @@ export function TasksPage() {
   );
 }
 
-function markedPhase(task: Task): Phase | null {
-  if (task.status === "Done") return null;
-  return task.phase;
-}
-
 const defaultTaskEvents: TaskEvent[] = [
   { id: "de1", time: "08:00:00", phase: "Preparing", message: "Task initialized by user" },
   { id: "de2", time: "08:00:04", phase: "Preparing", message: "Sources verified and context loaded" },
   { id: "de3", time: "08:00:16", phase: "Planning", message: "Execution plan created" },
   { id: "de4", time: "08:01:02", phase: "Working", message: "Started executing step 1" },
 ];
+
+function streamEvents(events: TaskEvent[], live: boolean): EventItem[] {
+  return events.map((ev, index) => ({
+    id: ev.id,
+    time: ev.time,
+    status: ev.phase,
+    message: ev.message,
+    detail:
+      ev.detail || ev.tools
+        ? [
+            ...(ev.detail ?? []),
+            ...(ev.tools ?? []).map((tool) => (
+              <ToolCallTrace
+                key={tool.id}
+                name={tool.name}
+                status={tool.status}
+                args={tool.args}
+                result={tool.result}
+                error={tool.error}
+                duration={tool.duration}
+              />
+            )),
+          ]
+        : undefined,
+    live: live && index === events.length - 1,
+  }));
+}
 
 export function TaskPage() {
   const params = useParams({ strict: false });
@@ -191,9 +195,9 @@ export function TaskPage() {
   const [shareOpen, setShareOpen] = useState(false);
   const [paused, setPaused] = useState(false);
   const [activityView, setActivityView] = useState<"summary" | "events">("summary");
+  const [following, setFollowing] = useState(true);
   const [taskMessage, setTaskMessage] = useState("");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>("");
-  const [markdownView, setMarkdownView] = useState<"rendered" | "source">("rendered");
 
   const tasks = useQuery({
     queryKey: tasksQueryKey(),
@@ -211,73 +215,44 @@ export function TaskPage() {
   if (!tasks.data || !approvals.data) return null;
   if (!task) return <Text>This task is not in the workspace.</Text>;
 
-  const current = markedPhase(task);
+  const phase = taskPhase(task);
+  const status = taskStatus(task, paused);
   const advance = task.status === "Working" && pending.length === 0;
+  const live = task.status === "Working" && !paused;
 
   const artifacts: TaskArtifact[] = task.artifacts ?? [];
   const currentArtifactId =
     selectedArtifactId && artifacts.some((a) => a.id === selectedArtifactId)
       ? selectedArtifactId
       : artifacts[0]?.id ?? "";
-  const activeArtifact = artifacts.find((a) => a.id === currentArtifactId);
 
-  const budgetPercent = task.pausePercent ?? 42;
+  const budget = budgetPercent(task);
 
   return (
     <Stack gap="md" className="task-screen task-detail-page">
+      <ApprovalAnnouncer pending={pending} />
       {pending.map((approval) => (
         <ApprovalCard key={approval.id} approval={approval} />
       ))}
 
-      <header className="task-page-head">
-        <div className="task-head-main">
-          <div className="task-head-title-row">
-            <Title order={1}>{task.title}</Title>
-            <TaskStatusBadge status={task.status} />
-          </div>
-          <div className="task-meta-desc">
-            <span>Run {task.runNumber ?? 14}</span>
-            <span>·</span>
-            <span>{task.engine ?? "Upmo"}</span>
-            <span>·</span>
-            <span>{task.model ?? "gpt-5.2"}</span>
-            <span>·</span>
-            <span>started {task.startedAt ?? "08:00"}</span>
-            <span>·</span>
-            <span className="task-cost-highlight">{task.cost ?? "€2.10"}</span>
-            <span>·</span>
-            <span className="task-status-indicator">
-              <CaretIcon size={12} strokeWidth={12} className="task-status-caret" />
-              {task.status}
-            </span>
-          </div>
-          <Text className="task-meta">{task.detail}</Text>
-        </div>
-
-        <Group gap="xs" className="task-head-actions">
-          <Button
-            size="sm"
-            variant="default"
-            onClick={() => setPaused(!paused)}
-          >
-            {paused ? "Resume" : "Pause"}
-          </Button>
-          <Button
-            size="sm"
-            disabled={!advance || next.isPending}
-            onClick={() => next.mutate()}
-          >
-            Next phase
-          </Button>
-          <Button
-            size="sm"
-            variant="default"
-            onClick={() => setShareOpen(true)}
-          >
-            Share
-          </Button>
-        </Group>
-      </header>
+      <TaskHeader
+        className="task-header"
+        title={task.title}
+        status={status}
+        meta={{
+          runNumber: task.runNumber ?? 14,
+          engine: task.engine ?? "Upmo",
+          model: task.model ?? "gpt-5.2",
+          startedAt: task.startedAt ?? "08:00",
+          cost: task.cost ?? "€2.10",
+        }}
+        detail={task.detail}
+        paused={paused}
+        onTogglePause={task.status === "Working" ? () => setPaused(!paused) : undefined}
+        canAdvance={advance && !next.isPending}
+        onNextPhase={() => next.mutate()}
+        onShare={() => setShareOpen(true)}
+      />
 
       <ShareDialog opened={shareOpen} task={task} onClose={() => setShareOpen(false)} />
 
@@ -299,6 +274,7 @@ export function TaskPage() {
             <Tabs.Panel value="activity" pt="md">
               <SegmentedControl
                 size="xs"
+                aria-label="Activity view"
                 value={activityView}
                 onChange={(val) => setActivityView(val as "summary" | "events")}
                 data={[
@@ -310,26 +286,12 @@ export function TaskPage() {
 
               {activityView === "summary" ? (
                 <div className="task-summary-view">
-                  <ol className="task-phases u-tl" aria-label="Phases">
-                    {phases.map((phase) => {
-                      const isDone =
-                        task.status === "Done" ||
-                        (task.status !== "Failed" &&
-                          phases.indexOf(phase) < phases.indexOf(task.phase));
-                      const isCurrent = phase === current;
-                      return (
-                        <li
-                          key={phase}
-                          className={`task-phase ${isCurrent ? "task-phase-current" : ""}`}
-                          data-done={isDone ? "true" : undefined}
-                          data-current={isCurrent ? "true" : undefined}
-                          aria-current={isCurrent ? "step" : undefined}
-                        >
-                          {phase}
-                        </li>
-                      );
-                    })}
-                  </ol>
+                  <PhaseRail
+                    className="task-phases"
+                    current={phase === "Done" ? null : task.phase}
+                    done={phase === "Done"}
+                    failed={phase === "Failed"}
+                  />
 
                   {task.subtasks && task.subtasks.length > 0 ? (
                     <Stack gap="xs" mt="md">
@@ -371,33 +333,12 @@ export function TaskPage() {
                   </div>
                 </div>
               ) : (
-                <div className="task-events-view">
-                  <div className="task-evlog-head">
-                    <Text size="xs" fw={500}>
-                      {task.events?.length ?? defaultTaskEvents.length} events · Following live
-                    </Text>
-                  </div>
-                  <ol className="task-evlog-list">
-                    {(task.events ?? defaultTaskEvents).map((ev) => (
-                      <li key={ev.id} className="task-evlog-item">
-                        <div className="task-evlog-row">
-                          <time className="task-evlog-time">{ev.time}</time>
-                          <Badge size="xs" variant="outline" className="task-evlog-phase">
-                            {ev.phase}
-                          </Badge>
-                          <span className="task-evlog-msg">{ev.message}</span>
-                        </div>
-                        {ev.detail ? (
-                          <div className="task-evlog-detail">
-                            {ev.detail.map((d, i) => (
-                              <div key={i}>{d}</div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
+                <EventStream
+                  className="task-events"
+                  events={streamEvents(task.events ?? defaultTaskEvents, live)}
+                  following={following}
+                  onFollowChange={setFollowing}
+                />
               )}
             </Tabs.Panel>
 
@@ -419,125 +360,11 @@ export function TaskPage() {
                     <Title order={2} className="task-section-heading">
                       Artifacts
                     </Title>
-                    <div className="u-artifacts task-artifacts-layout">
-                      <div className="task-artifact-list">
-                        {artifacts.map((art) => (
-                          <button
-                            key={art.id}
-                            type="button"
-                            className={`task-artifact-tab ${currentArtifactId === art.id ? "active" : ""}`}
-                            onClick={() => setSelectedArtifactId(art.id)}
-                          >
-                            <span className="task-artifact-tab-name">{art.name}</span>
-                            <span className="task-artifact-tab-meta">
-                              {art.kind === "markdown" ? "Markdown" : "CSV"} · {art.size} · {art.time}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="task-artifact-view">
-                        {activeArtifact ? (
-                          <>
-                            <div className="task-artifact-head">
-                              <div>
-                                <Text fw={600} size="sm">
-                                  {activeArtifact.name}
-                                </Text>
-                                <Text size="xs" c="dimmed">
-                                  {activeArtifact.kind === "markdown" ? "Markdown" : "CSV"} · {activeArtifact.size} · {activeArtifact.time}
-                                </Text>
-                              </div>
-                              <Group gap="xs">
-                                {activeArtifact.kind === "markdown" ? (
-                                  <SegmentedControl
-                                    size="xs"
-                                    value={markdownView}
-                                    onChange={(val) => setMarkdownView(val as "rendered" | "source")}
-                                    data={[
-                                      { label: "Rendered", value: "rendered" },
-                                      { label: "Source", value: "source" },
-                                    ]}
-                                  />
-                                ) : null}
-                                <IconButton
-                                  size="sm"
-                                  variant="outline"
-                                  aria-label="Download artifact"
-                                  onClick={() => {
-                                    const blob = new Blob([activeArtifact.content], { type: "text/plain" });
-                                    const url = URL.createObjectURL(blob);
-                                    const a = document.createElement("a");
-                                    a.href = url;
-                                    a.download = activeArtifact.name;
-                                    a.click();
-                                    URL.revokeObjectURL(url);
-                                  }}
-                                >
-                                  <IconDownload size={14} />
-                                </IconButton>
-                              </Group>
-                            </div>
-                            <div className="task-artifact-body">
-                              {activeArtifact.kind === "csv" ? (
-                                <Table striped highlightOnHover withTableBorder withColumnBorders>
-                                  <Table.Thead>
-                                    <Table.Tr>
-                                      {activeArtifact.content
-                                        .split("\n")[0]
-                                        .split(",")
-                                        .map((col, idx) => (
-                                          <Table.Th key={idx}>{col}</Table.Th>
-                                        ))}
-                                    </Table.Tr>
-                                  </Table.Thead>
-                                  <Table.Tbody>
-                                    {activeArtifact.content
-                                      .split("\n")
-                                      .slice(1)
-                                      .filter((row) => row.trim().length > 0)
-                                      .map((row, rIdx) => (
-                                        <Table.Tr key={rIdx}>
-                                          {row.split(",").map((cell, cIdx) => (
-                                            <Table.Td key={cIdx}>{cell}</Table.Td>
-                                          ))}
-                                        </Table.Tr>
-                                      ))}
-                                  </Table.Tbody>
-                                </Table>
-                              ) : markdownView === "source" ? (
-                                <pre className="task-artifact-pre">
-                                  <code>{activeArtifact.content}</code>
-                                </pre>
-                              ) : (
-                                <div className="task-artifact-prose">
-                                  {activeArtifact.content.split("\n\n").map((para, pIdx) => {
-                                    if (para.startsWith("## ")) {
-                                      return (
-                                        <Title order={3} key={pIdx} style={{ fontSize: "16px", marginTop: "8px" }}>
-                                          {para.replace("## ", "")}
-                                        </Title>
-                                      );
-                                    }
-                                    if (para.startsWith("- ")) {
-                                      const items = para.split("\n").filter((l) => l.startsWith("- "));
-                                      return (
-                                        <ul key={pIdx} style={{ paddingLeft: "20px", margin: "6px 0" }}>
-                                          {items.map((item, iIdx) => (
-                                            <li key={iIdx}>{item.replace("- ", "")}</li>
-                                          ))}
-                                        </ul>
-                                      );
-                                    }
-                                    return <p key={pIdx}>{para}</p>;
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
+                    <ArtifactViewer
+                      artifacts={artifacts}
+                      selectedId={currentArtifactId}
+                      onSelect={setSelectedArtifactId}
+                    />
                   </section>
                 ) : null}
               </Stack>
@@ -546,7 +373,6 @@ export function TaskPage() {
         </div>
 
         <aside className="u-task-side">
-          {/* Budget Card */}
           <div className="u-card task-side-card">
             <div className="task-side-card-head">
               <h4 className="task-side-card-title">Budget</h4>
@@ -556,12 +382,12 @@ export function TaskPage() {
             </div>
             <div className="task-budget-progress-row">
               <Progress
-                value={budgetPercent}
+                value={budget}
                 size="sm"
                 aria-label="Budget used"
                 className="task-budget-bar"
               />
-              <span className="task-budget-pct">{budgetPercent}%</span>
+              <span className="task-budget-pct">{budget}%</span>
             </div>
             <div className="task-side-card-meta">
               {task.cost ?? "€2.10"} of {task.spendLimit ?? "€5.00"} ·{" "}
@@ -573,30 +399,11 @@ export function TaskPage() {
             </Link>
           </div>
 
-          {/* Delivery Card */}
-          <div className="u-card task-side-card">
-            <div className="task-side-card-head">
-              <h4 className="task-side-card-title">Delivery</h4>
-              <IconButton size="sm" variant="subtle" aria-label="Change delivery channel">
-                <IconPencil size={14} />
-              </IconButton>
-            </div>
-            <div className="task-delivery-body">
-              <span className="task-delivery-icon">
-                <ShellIcon concept="action.send" size={16} />
-              </span>
-              <div className="task-delivery-text">
-                <span className="task-delivery-name">
-                  {task.deliveryChannel ?? "#finance on Slack"}
-                </span>
-                <span className="task-delivery-when">
-                  {task.deliveryWhen ?? "After the task is done"}
-                </span>
-              </div>
-            </div>
-          </div>
+          <DeliveryCard
+            channel={task.deliveryChannel ?? "#finance on Slack"}
+            when={task.deliveryWhen ?? "After the task is done"}
+          />
 
-          {/* Sources Card */}
           <div className="u-card task-side-card">
             <h4 className="task-side-card-title">Sources</h4>
             <div className="task-sources-chips">
@@ -610,18 +417,20 @@ export function TaskPage() {
             </div>
           </div>
 
-          {/* Run History Card */}
           {task.runHistory && task.runHistory.length > 0 ? (
             <div className="u-card task-side-card">
               <h4 className="task-side-card-title">Run history</h4>
-              <div className="task-run-history-list">
+              <ul className="task-run-history-list" aria-label="Run history">
                 {task.runHistory.map((item) => (
-                  <div key={item.run} className="task-run-history-item">
+                  <li key={item.run} className="task-run-history-item">
                     <span>Run {item.run}</span>
-                    <TaskStatusBadge status={item.status} marker={`run-${item.run}-status`} />
-                  </div>
+                    <span className="task-run-history-status">
+                      <StatusDot status={item.status} label={`Run ${item.run}: ${item.status}`} />
+                      <span aria-hidden="true">{item.status}</span>
+                    </span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           ) : null}
         </aside>
@@ -637,7 +446,7 @@ function SubtaskList({ nodes, label }: { nodes: Subtask[]; label?: string }) {
         <li key={node.id}>
           <span className="subtask-row">
             <span>{node.title}</span>
-            <TaskStatusBadge status={node.status} marker="subtask-status" />
+            <StatusBadge status={node.status} data-testid="subtask-status" />
           </span>
           {node.children && node.children.length > 0 ? <SubtaskList nodes={node.children} /> : null}
         </li>

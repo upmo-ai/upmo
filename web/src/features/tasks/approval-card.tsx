@@ -1,6 +1,6 @@
-import { Group } from "@mantine/core";
-import { IconAlertCircle } from "@tabler/icons-react";
-import { Button } from "@upmo-ai/components";
+import { VisuallyHidden } from "@mantine/core";
+import { ApprovalCard as UpmoApprovalCard } from "@upmo-ai/components";
+import { useEffect, useRef, useState } from "react";
 
 import {
   APPROVALS_KEY,
@@ -20,26 +20,40 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
     () => api.approvals.deny(approval.id),
     [APPROVALS_KEY, TASKS_KEY],
   );
-  const busy = approve.isPending || deny.isPending;
 
   return (
-    <div className="task-approval-alert" role="alert">
-      <span className="task-approval-icon" aria-hidden="true">
-        <IconAlertCircle size={16} stroke={2} />
-      </span>
-      <div className="task-approval-body">
-        <div className="task-approval-title">
-          {approval.action}. Approve to continue, deny to let the agent find another way.
-        </div>
-        <Group gap="xs" mt="xs">
-          <Button size="sm" disabled={busy} onClick={() => approve.mutate()}>
-            Approve
-          </Button>
-          <Button size="sm" variant="default" disabled={busy} onClick={() => deny.mutate()}>
-            Deny
-          </Button>
-        </Group>
-      </div>
-    </div>
+    <UpmoApprovalCard
+      action={approval.action}
+      busy={approve.isPending || deny.isPending}
+      onApprove={() => approve.mutate()}
+      onDeny={() => deny.mutate()}
+    />
+  );
+}
+
+/**
+ * Announces approvals that arrive after the first render. The cards are
+ * labelled groups, not alerts, so screen readers hear new ones from here.
+ * Pass undefined until the approvals have loaded.
+ */
+export function ApprovalAnnouncer({ pending }: { pending: Approval[] | undefined }) {
+  const seen = useRef<Set<string> | null>(null);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!pending) return;
+    const previous = seen.current;
+    seen.current = new Set(pending.map((item) => item.id));
+    if (!previous) return;
+    const fresh = pending.filter((item) => !previous.has(item.id));
+    if (fresh.length > 0) {
+      setMessage(fresh.map((item) => `Approval needed: ${item.action}`).join(". "));
+    }
+  }, [pending]);
+
+  return (
+    <VisuallyHidden role="status" aria-live="polite" aria-atomic="true">
+      {message}
+    </VisuallyHidden>
   );
 }
