@@ -22,6 +22,16 @@ export interface TaskArtifact {
   content: string;
 }
 
+export interface TaskToolCall {
+  id: string;
+  name: string;
+  status: "pending" | "running" | "success" | "error";
+  args?: unknown;
+  result?: unknown;
+  error?: string;
+  duration?: string;
+}
+
 export interface TaskEvent {
   id: string;
   time: string;
@@ -29,6 +39,7 @@ export interface TaskEvent {
   message: string;
   type?: string;
   detail?: string[];
+  tools?: TaskToolCall[];
 }
 
 export interface TaskRunHistory {
@@ -47,6 +58,9 @@ export interface Task {
   cost?: string;
   tokens?: number;
   spendLimit?: string;
+  /** Spent and limit in cents, so the budget percent is computed, not asserted. */
+  spentCents?: number;
+  limitCents?: number;
   pausePercent?: number;
   runNumber?: number;
   model?: string;
