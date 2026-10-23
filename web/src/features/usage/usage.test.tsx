@@ -38,15 +38,17 @@ describe("Usage page", () => {
     expect(screen.getByText(tokens)).toBeTruthy();
     expect(screen.getAllByText(hit).length).toBeGreaterThan(0);
 
-    expect(screen.getByRole("figure", { name: "Spend" })).toBeTruthy();
-    expect(screen.getByRole("figure", { name: "Tokens per task" })).toBeTruthy();
-    expect(screen.getByRole("figure", { name: "Cache hit rate" })).toBeTruthy();
+    expect(screen.getByText("Excludes 1 day with unknown cost")).toBeTruthy();
 
-    const spendChart = screen.getByRole("figure", { name: "Spend" });
-    expect(within(spendChart).getByText("Unknown")).toBeTruthy();
-    expect(within(spendChart).getByText("Tue 28")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Spend" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Tokens per task" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Cache hit rate" })).toBeTruthy();
 
-    const tokensChart = screen.getByRole("figure", { name: "Tokens per task" });
-    expect(within(tokensChart).getByText(sampleTasks[0]!.title)).toBeTruthy();
+    const spendTable = screen.getByRole("table", { name: "Spend" });
+    const unknownRow = within(spendTable).getByRole("row", { name: /Tue 28/ });
+    expect(within(unknownRow).getByText("Unknown")).toBeTruthy();
+
+    const tokensTable = screen.getByRole("table", { name: "Tokens per task" });
+    expect(within(tokensTable).getByText(sampleTasks[0]!.title)).toBeTruthy();
   });
 });

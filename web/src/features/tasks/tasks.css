@@ -217,52 +217,11 @@
   gap: var(--space-3);
 }
 
-.task-side-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
 .task-side-card-title {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--ink);
-}
-
-.task-budget-progress-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.task-budget-bar {
-  flex: 1;
-}
-
-.task-budget-pct {
-  font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-}
-
-.task-side-card-meta {
-  font-size: 12px;
-  color: var(--ink-muted);
-  line-height: 1.4;
-}
-
-.task-usage-link {
-  font-size: 12px;
-  color: var(--emerald-deep);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.task-usage-link:hover {
-  text-decoration: underline;
 }
 
 .task-sources-chips {
