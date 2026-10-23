@@ -1,10 +1,10 @@
-import { Group, Progress, Stack, Text, Title } from "@mantine/core";
-import { IconPencil } from "@tabler/icons-react";
+import { Group, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   ArtifactViewer,
+  BudgetCard,
   DeliveryCard,
   EventStream,
   IconButton,
@@ -373,31 +373,15 @@ export function TaskPage() {
         </div>
 
         <aside className="u-task-side">
-          <div className="u-card task-side-card">
-            <div className="task-side-card-head">
-              <h4 className="task-side-card-title">Budget</h4>
-              <IconButton size="sm" variant="subtle" aria-label="Edit budget">
-                <IconPencil size={14} />
-              </IconButton>
-            </div>
-            <div className="task-budget-progress-row">
-              <Progress
-                value={budget}
-                size="sm"
-                aria-label="Budget used"
-                className="task-budget-bar"
-              />
-              <span className="task-budget-pct">{budget}%</span>
-            </div>
-            <div className="task-side-card-meta">
-              {task.cost ?? "€2.10"} of {task.spendLimit ?? "€5.00"} ·{" "}
-              {task.tokens ? `${Math.round(task.tokens / 1000)}k` : "38k"} tokens · pauses at{" "}
-              {task.pausePercent ?? 90}%
-            </div>
-            <Link to="/usage" className="task-usage-link">
-              See usage for this task
-            </Link>
-          </div>
+          <BudgetCard
+            percent={budget}
+            cost={task.cost ?? "€2.10"}
+            limit={task.spendLimit ?? "€5.00"}
+            tokens={task.tokens ?? 38000}
+            pauseAt={task.pausePercent ?? 90}
+            // A full page load is expected until the design system offers a router-aware link.
+            usageHref="/usage"
+          />
 
           <DeliveryCard
             channel={task.deliveryChannel ?? "#finance on Slack"}

@@ -26,7 +26,7 @@ try {
   await page.goto(new URL("/usage", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Usage" }).waitFor();
   for (const name of ["Spend", "Tokens per task", "Cache hit rate"]) {
-    if (!(await page.getByRole("figure", { name }).isVisible())) {
+    if (!(await page.getByRole("group", { name }).isVisible())) {
       throw new Error(`usage chart ${name} was not visible`);
     }
   }
@@ -39,7 +39,7 @@ try {
 
   await page.setViewportSize({ width: 360, height: 800 });
   await page.getByRole("heading", { level: 1, name: "Usage" }).waitFor();
-  if (!(await page.getByRole("figure", { name: "Spend" }).isVisible())) {
+  if (!(await page.getByRole("group", { name: "Spend" }).isVisible())) {
     throw new Error("spend chart hidden on a phone");
   }
 

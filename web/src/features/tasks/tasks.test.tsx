@@ -148,6 +148,14 @@ describe("tasks", () => {
     expect(screen.queryByRole("list", { name: "Subtasks" })).toBeNull();
   });
 
+  it("shows the budget with its cost, limit and pause threshold in words", async () => {
+    renderAt("/tasks/aster-done");
+    expect(await screen.findByRole("heading", { level: 4, name: "Budget" })).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Budget used" })).toBeTruthy();
+    expect(screen.getByText(/of .* · \d+k tokens · pauses at \d+%/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "See usage for this task" })).toBeTruthy();
+  });
+
   it("approves a waiting task and then advances it", async () => {
     renderAt("/tasks/aster-digest");
     const heading = await screen.findByRole("heading", { level: 1, name: "Daily finance digest" });
