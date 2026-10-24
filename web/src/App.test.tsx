@@ -28,9 +28,10 @@ function choose(name: "Light" | "Dark" | "High contrast" | "System") {
 }
 
 function prefer(...features: string[]) {
+  const layout = window.matchMedia;
   window.matchMedia = (query: string): MediaQueryList =>
     ({
-      matches: features.some((feature) => query.includes(feature)),
+      matches: features.some((feature) => query.includes(feature)) || layout(query).matches,
       media: query,
       onchange: null,
       addListener: () => {},
@@ -69,6 +70,19 @@ describe("App", () => {
     for (const name of ["Light", "Dark", "High contrast", "System"]) {
       expect(within(themeSwitch).getByText(name)).toBeTruthy();
     }
+  });
+
+  it("frames the page with the Main navigation, the skip link and the theme switch in the rail", async () => {
+    renderApp();
+    await screen.findByRole("heading", { name: "Home" });
+    const main = within(screen.getByRole("navigation", { name: "Main" }));
+    expect(main.getByRole("link", { name: "Home" }).getAttribute("href")).toBe("/");
+    expect(screen.getByRole("link", { name: "Upmo" }).getAttribute("href")).toBe("/");
+    const skip = screen.getByRole("link", { name: "Skip to content" }).getAttribute("href") ?? "";
+    expect(document.getElementById(skip.slice(1))).toBe(screen.getByRole("main"));
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeTruthy();
+    expect(main.queryByTestId("theme-switch")).toBeNull();
+    expect(screen.getByTestId("theme-switch").closest(".upmo-app-frame__rail")).toBeTruthy();
   });
 
   it("provides upmoTheme", () => {

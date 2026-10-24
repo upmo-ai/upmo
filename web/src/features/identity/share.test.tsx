@@ -23,7 +23,7 @@ function selectOptions(name: string) {
 }
 
 function sidebar() {
-  return screen.getByRole("navigation", { name: "Sidebar" });
+  return screen.getByRole("navigation", { name: "Main" });
 }
 
 describe("sharing", () => {

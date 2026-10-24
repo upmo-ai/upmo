@@ -134,7 +134,7 @@ describe("members", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Role change refused.");
 
-    const closeBtn = within(alert).getByRole("button", { name: "Close message" });
+    const closeBtn = within(alert).getByRole("button", { name: "Dismiss" });
     act(() => {
       closeBtn.click();
     });

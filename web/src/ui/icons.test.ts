@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { shellConcepts } from "./icons";
 
-const expected: Record<Exclude<(typeof shellConcepts)[number], "object.source">, string> = {
+const expected: Record<(typeof shellConcepts)[number], string> = {
   "nav.home": "home",
   "nav.chats": "message",
   "nav.tasks": "list-check",
@@ -22,20 +22,16 @@ const expected: Record<Exclude<(typeof shellConcepts)[number], "object.source">,
   "action.more": "dots",
   "action.send": "arrow-up",
   "object.folder": "folder",
+  "object.source": "file-search",
   "object.automation": "clock-play",
   "object.agent": "user-hexagon",
 };
 
 describe("shell icons", () => {
   it("matches the design-system map for every concept the module uses", () => {
-    expect(shellConcepts).toHaveLength(Object.keys(expected).length + 1);
+    expect(shellConcepts).toHaveLength(Object.keys(expected).length);
     for (const [concept, name] of Object.entries(expected)) {
       expect(icons[concept as keyof typeof expected]).toBe(name);
     }
-  });
-
-  it("keeps object.source local only while the design-system map lacks it", () => {
-    expect(shellConcepts).toContain("object.source");
-    expect(Object.keys(icons)).not.toContain("object.source");
   });
 });

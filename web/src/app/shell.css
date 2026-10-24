@@ -1,82 +1,35 @@
-.shell {
-  min-height: 100dvh;
-  --app-shell-header-height: calc(48px + env(safe-area-inset-top)) !important;
-}
-
-.shell-skip {
-  position: absolute;
-  left: var(--space-2);
-  top: var(--space-2);
-  z-index: 500;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--surface-100);
-  color: var(--ink);
-  transform: translateY(-150%);
-}
-
-.shell-skip:focus {
-  transform: none;
-}
-
-.shell-navbar {
-  background: var(--surface-200);
-  border-right: 1px solid var(--border);
-  flex-direction: column;
-  gap: 2px;
-  overflow: hidden;
-  padding: var(--space-2);
-  padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom));
-  box-sizing: border-box;
-  transition: width var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
-              padding var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
-              transform var(--duration-enter, 240ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
-  will-change: width, transform;
-}
-
-.mantine-AppShell-main {
-  transition: padding-left var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
-}
-
-.shell-header {
-  background: var(--surface-000);
-  box-sizing: border-box;
-  padding-top: env(safe-area-inset-top);
-  border-bottom: 1px solid var(--border);
-}
-
-.shell-header-inner {
-  height: 100%;
+.shell-top-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 var(--space-3);
-  box-sizing: border-box;
+  gap: var(--space-4);
+  width: 100%;
+  min-width: 0;
 }
 
-.shell-header-left {
+.shell-top-bar-start,
+.shell-top-bar-end {
   display: flex;
   align-items: center;
-  gap: 8px;
   flex: 1 1 0;
   min-width: 0;
 }
 
-.shell-header-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-}
-
-.shell-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 0;
+.shell-top-bar-end {
   justify-content: flex-end;
-  min-width: 0;
+  gap: var(--space-2);
+}
+
+/* The frame puts its drawer class on Mantine's full-viewport inner wrapper as
+   well as on the panel, which turns the wrapper into a column with the panel
+   ground. Put the wrapper back to a transparent row so the panel is full
+   height and the page shows behind the scrim. */
+.mantine-Drawer-inner.upmo-app-frame__drawer {
+  flex-direction: row;
+  background: none;
+}
+
+.shell-message {
+  margin-bottom: var(--space-4);
 }
 
 .shell-launcher {
@@ -150,48 +103,6 @@
   }
 }
 
-.shell-nav-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  min-height: 32px;
-  padding: 2px 4px 6px;
-}
-
-.shell-brand-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  flex: 1;
-}
-
-.shell-brand-link {
-  display: flex;
-  align-items: center;
-  text-decoration: none;
-  flex-shrink: 0;
-}
-
-.shell-brand-icon {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  color: var(--emerald);
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
-
-.shell-wordmark {
-  display: block;
-  height: 20px;
-  width: auto;
-  margin-bottom: 0;
-  flex-shrink: 0;
-}
-
 .shell-workspace {
   margin-bottom: 0;
   font-size: 13px;
@@ -203,134 +114,7 @@
   min-width: 0;
 }
 
-.shell-nav-toggle {
-  width: 28px;
-  height: 28px;
-  color: var(--ink-muted);
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-}
-
-.shell-nav-toggle:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
-}
-
-@media (min-width: 48em) {
-  .shell-header-toggle {
-    display: none !important;
-  }
-}
-
-.shell-nav-scroll {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-.shell-group {
-  margin: var(--space-3) 0 var(--space-1);
-  padding-left: var(--space-2);
-  color: var(--ink-muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.shell-nav-link {
-  display: flex !important;
-  align-items: center !important;
-  height: 30px !important;
-  min-height: 30px !important;
-  padding: 0 var(--space-2) !important;
-  border-radius: var(--radius-sm) !important;
-  color: var(--ink) !important;
-  text-decoration: none !important;
-  font: inherit !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  line-height: 30px !important;
-  border: 0 !important;
-  background: transparent !important;
-  transition: background-color var(--duration-fast, 120ms) ease,
-              color var(--duration-fast, 120ms) ease,
-              width var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
-              transform var(--duration-fast, 120ms) ease !important;
-}
-
-.shell-nav-link:active {
-  transform: scale(var(--press-scale, 0.98));
-}
-
-.shell-nav-link .mantine-NavLink-chevron {
-  transition: transform var(--duration-base, 200ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)) !important;
-}
-
-.shell-nav-link .mantine-NavLink-section {
-  margin-right: var(--space-2) !important;
-  color: inherit !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  width: 16px !important;
-}
-
-.shell-nav-link .mantine-NavLink-body {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell-nav-link:hover {
-  background: var(--surface-hover) !important;
-}
-
-.shell-nav-link[data-active],
-.shell-nav-link[aria-current="page"] {
-  background: var(--surface-selected) !important;
-  color: var(--emerald-deep) !important;
-  font-weight: 600 !important;
-}
-
-.shell-nav-sublink {
-  height: 28px !important;
-  min-height: 28px !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  margin-top: 2px !important;
-}
-
-.shell-navbar .mantine-NavLink-children {
-  padding-left: 28px !important;
-}
-
-@media (pointer: fine) {
-  .shell-nav-scroll {
-    gap: 2px;
-  }
-
-  .shell-nav-link {
-    height: 30px !important;
-    min-height: 30px !important;
-  }
-
-  .shell-sign-out {
-    min-height: 30px;
-  }
-}
-
 @media (pointer: coarse) {
-  .shell-nav-scroll {
-    gap: var(--space-2);
-  }
-
-  .shell-nav-link,
-  .shell-sign-out,
   .shell-launcher {
     min-height: 40px !important;
   }
@@ -340,15 +124,6 @@
   .shell select {
     font-size: 16px;
   }
-}
-
-.shell-footer {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) 0 0;
-  border-top: 1px solid var(--border);
 }
 
 .shell-user-card {
@@ -413,42 +188,20 @@
   white-space: nowrap;
 }
 
-.shell-theme-row {
-  width: 100%;
+.shell-user-card[data-rail] {
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-inline: auto;
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 
-.shell-theme-row [data-testid="theme-switch"] {
-  display: flex;
-  width: 100%;
-  height: 28px;
-  background: var(--surface-100);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 2px;
-}
-
-.shell-theme-row [data-testid="theme-switch"] .mantine-SegmentedControl-indicator {
-  background: var(--surface-200);
-  box-shadow: var(--shadow-sm);
-  border-radius: var(--radius-xs);
-}
-
-/* Size each segment to its label so "High contrast" gets the room it needs. */
-.shell-theme-row [data-testid="theme-switch"] .mantine-SegmentedControl-control {
-  flex: 1 1 auto;
-}
-
-.shell-theme-row [data-testid="theme-switch"] .mantine-SegmentedControl-label {
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 6px;
-  color: var(--ink-muted);
-  text-align: center;
-}
-
-.shell-theme-row [data-testid="theme-switch"] .mantine-SegmentedControl-label[data-active] {
-  color: var(--ink);
-  font-weight: 600;
+.shell-user-card[data-rail] .shell-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
 }
 
 .shell-user-chevron {
@@ -634,45 +387,13 @@
   background: var(--surface-200);
 }
 
-.shell-footer-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  padding: 4px 0 2px;
-  min-height: 18px;
-}
-
-.shell-version {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-muted);
-  text-align: center;
-  margin: 0 auto;
-}
-
-.shell-content {
-  min-width: 0;
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: var(--space-4);
-  padding-top: var(--space-4);
-  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
-  padding-left: calc(var(--space-4) + env(safe-area-inset-left));
-  padding-right: calc(var(--space-4) + env(safe-area-inset-right));
-}
-
-.shell-notes {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
 .shell-notes {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .shell-note {
@@ -701,193 +422,4 @@
   line-height: 16px;
   text-align: center;
   pointer-events: none;
-}
-
-@media (hover: hover) {
-  .shell-nav-link:hover {
-    background: var(--surface-hover);
-  }
-
-  .shell-nav-link[aria-current="page"]:hover {
-    background: var(--surface-selected);
-  }
-}
-
-/* Rail layout (56px width) */
-.shell-navbar[data-layout="rail"] {
-  width: 56px !important;
-  padding: var(--space-2) 0 !important;
-  gap: var(--space-1) !important;
-  align-items: center;
-}
-
-.shell-navbar[data-layout="rail"] .shell-nav-head {
-  justify-content: center;
-  padding: 6px 0 10px;
-  width: 100%;
-}
-
-.shell-navbar[data-layout="rail"] .shell-brand-group {
-  justify-content: center;
-  align-items: center;
-  flex: 0 0 auto;
-  width: 100%;
-}
-
-.shell-navbar[data-layout="rail"] .shell-brand-link {
-  display: flex !important;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto;
-}
-
-.shell-navbar[data-layout="rail"] .shell-brand-icon {
-  display: flex !important;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto;
-}
-
-.shell-navbar[data-layout="rail"] .shell-wordmark,
-.shell-navbar[data-layout="rail"] .shell-workspace,
-.shell-navbar[data-layout="rail"] .shell-nav-toggle,
-.shell-navbar[data-layout="rail"] .shell-group,
-.shell-navbar[data-layout="rail"] .shell-theme-row,
-.shell-navbar[data-layout="rail"] .shell-footer-bar,
-.shell-navbar[data-layout="rail"] .shell-footer-meta,
-.shell-navbar[data-layout="rail"] .shell-sign-out,
-.shell-navbar[data-layout="rail"] .shell-user-info,
-.shell-navbar[data-layout="rail"] .shell-user-chevron {
-  display: none !important;
-}
-
-.shell-navbar[data-layout="rail"] .shell-nav-scroll {
-  width: 100%;
-  gap: 2px !important;
-  align-items: center;
-}
-
-.shell-navbar[data-layout="rail"] .shell-nav-link {
-  width: 32px !important;
-  height: 32px !important;
-  min-height: 32px !important;
-  padding: 0 !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  margin-inline: auto;
-}
-
-.shell-navbar[data-layout="rail"] .shell-nav-link .mantine-NavLink-section {
-  margin: 0 !important;
-  padding: 0 !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  width: 100% !important;
-  height: 100% !important;
-}
-
-.shell-navbar[data-layout="rail"] .shell-nav-link .mantine-NavLink-body {
-  display: none !important;
-}
-
-.shell-navbar[data-layout="rail"] .shell-nav-label {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  padding: 0 !important;
-  margin: -1px !important;
-  overflow: hidden !important;
-  clip: rect(0, 0, 0, 0) !important;
-  white-space: nowrap !important;
-  border: 0 !important;
-}
-
-.shell-rail-theme-toggle {
-  display: none !important;
-}
-
-.shell-navbar[data-layout="rail"] .shell-rail-theme-toggle {
-  display: flex !important;
-  order: 1;
-  align-items: center;
-  justify-content: center;
-  width: 32px !important;
-  height: 32px !important;
-  min-height: 32px !important;
-  margin: 0 auto 6px;
-  color: var(--ink-muted);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  transition: background-color 120ms, color 120ms;
-}
-
-.shell-navbar[data-layout="rail"] .shell-rail-theme-toggle:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
-}
-
-.shell-navbar[data-layout="rail"] .shell-footer {
-  padding: var(--space-2) 0;
-  align-items: center;
-}
-
-.shell-navbar[data-layout="rail"] .shell-user-card {
-  order: 2;
-  justify-content: center;
-  padding: 0 !important;
-  background: transparent !important;
-  border: 0 !important;
-  width: 32px !important;
-  height: 32px !important;
-  margin-inline: auto;
-}
-
-.shell-navbar[data-layout="rail"] .shell-avatar {
-  width: 32px;
-  height: 32px;
-  font-size: 12px;
-}
-
-@media (min-width: 48em) {
-  .shell-content {
-    padding: var(--space-6);
-    padding-top: var(--space-6);
-    padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom));
-    padding-left: calc(var(--space-6) + env(safe-area-inset-left));
-    padding-right: calc(var(--space-6) + env(safe-area-inset-right));
-  }
-}
-
-@media (min-width: 62em) {
-  .shell-navbar:not([data-layout="rail"]) {
-    padding: var(--space-3);
-    gap: var(--space-2);
-  }
-
-  .shell-navbar:not([data-layout="rail"]) .shell-wordmark {
-    display: block;
-  }
-
-  .shell-navbar:not([data-layout="rail"]) .shell-workspace,
-  .shell-navbar:not([data-layout="rail"]) .shell-group {
-    display: block;
-  }
-
-  .shell-navbar:not([data-layout="rail"]) .shell-nav-label {
-    position: static;
-    width: auto;
-    height: auto;
-    margin: 0;
-    overflow: visible;
-    clip: auto;
-    white-space: normal;
-  }
-
-  .shell-navbar:not([data-layout="rail"]) .shell-nav-link {
-    justify-content: flex-start;
-  }
 }
