@@ -19,7 +19,7 @@ function renderAt(path: string) {
 }
 
 function sidebar() {
-  return screen.getByRole("navigation", { name: "Sidebar" });
+  return screen.getByRole("navigation", { name: "Main" });
 }
 
 function chooseFilter(name: "All" | "Underway" | "Needs approval" | "Done" | "Failed") {

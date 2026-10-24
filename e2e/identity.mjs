@@ -52,6 +52,7 @@ async function identityFlow(page) {
 
   await openAccountItem(page, "Security");
   await page.getByRole("heading", { level: 1, name: "Security" }).waitFor();
+  await page.getByRole("button", { name: "Management", exact: true }).click();
   await page.getByRole("link", { name: "Members", exact: true }).click();
   await page.getByRole("heading", { level: 1, name: "Members" }).waitFor();
   await page.getByText("ada@example.com").waitFor();

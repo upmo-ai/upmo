@@ -1,14 +1,5 @@
-import { IconFileSearch } from "@tabler/icons-react";
 import { Icon, IconButton } from "@upmo-ai/components";
-import { stroke, type IconConcept } from "@upmo-ai/icons";
-
-// Concepts the design-system map no longer carries, kept here until upstream
-// adds them back.
-const localConcepts = {
-  "object.source": IconFileSearch,
-} as const;
-
-type LocalConcept = keyof typeof localConcepts;
+import type { IconConcept } from "@upmo-ai/icons";
 
 export const shellConcepts = [
   "nav.home",
@@ -32,13 +23,9 @@ export const shellConcepts = [
   "object.source",
   "object.automation",
   "object.agent",
-] as const satisfies readonly (IconConcept | LocalConcept)[];
+] as const satisfies readonly IconConcept[];
 
 export type ShellConcept = (typeof shellConcepts)[number];
-
-function isLocal(concept: ShellConcept): concept is LocalConcept {
-  return concept in localConcepts;
-}
 
 export function CaretIcon({
   size = 20,
@@ -76,10 +63,6 @@ export function ShellIcon({
   concept: ShellConcept;
   size?: 16 | 20 | 24 | 28;
 }) {
-  if (isLocal(concept)) {
-    const Local = localConcepts[concept];
-    return <Local size={size} stroke={stroke} aria-hidden="true" />;
-  }
   return <Icon concept={concept} size={size} />;
 }
 

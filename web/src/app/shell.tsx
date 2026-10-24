@@ -1,12 +1,4 @@
-import {
-  Alert,
-  AppShell,
-  CloseButton,
-  Group,
-  NavLink,
-  Text,
-  UnstyledButton,
-} from "@mantine/core";
+import { Text, UnstyledButton, useMantineTheme } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
@@ -23,10 +15,16 @@ import {
   IconSun,
 } from "@tabler/icons-react";
 import {
+  AppFrame,
   Breadcrumbs,
   IconButton,
   Menu,
-  Tooltip,
+  NavItem,
+  NavSection,
+  SideNav,
+  StatusAlert,
+  Wordmark,
+  useAppFrame,
   useUpmoTheme,
   type BreadcrumbItem,
 } from "@upmo-ai/components";
@@ -38,8 +36,7 @@ import { TasksLiveness } from "../features/tasks/liveness";
 import { adminSections, settingsSections } from "../features/settings/settings";
 import { WorkspaceName, workspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch, useThemeChoice } from "../theme";
-import { ShellIcon, type ShellConcept } from "../ui/icons";
-import { BrandLink } from "./brand";
+import { ShellIcon } from "../ui/icons";
 import { CommandLauncher } from "./command-launcher";
 import { endThisSession } from "./passkeys";
 
@@ -55,14 +52,7 @@ const primary = [
   { to: "/usage", label: "Usage", concept: "nav.usage" },
 ] as const;
 
-type NavItem = {
-  to: string;
-  label: string;
-  concept?: ShellConcept;
-  icon?: React.ReactNode;
-};
-
-const workspaceItems: NavItem[] = [
+const workspaceItems = [
   {
     to: "/providers",
     label: "Providers",
@@ -81,14 +71,6 @@ const managementSubItems = [
   { to: "/admin/roles", label: "Roles" },
 ] as const;
 
-function useShellLayout(): "drawer" | "rail" | "full" {
-  const full = useMediaQuery("(min-width: 62em)", false, { getInitialValueInEffect: false });
-  const atLeastSm = useMediaQuery("(min-width: 48em)", false, { getInitialValueInEffect: false });
-  if (full) return "full";
-  if (atLeastSm) return "rail";
-  return "drawer";
-}
-
 function isCurrent(pathname: string, to: string) {
   if (to === "/") return pathname === "/";
   if (to === "/connectors") {
@@ -103,41 +85,12 @@ function isCurrent(pathname: string, to: string) {
   return pathname === to;
 }
 
-function NavEntry({
-  item,
-  pathname,
-  rail,
-  onNavigate,
-}: {
-  item: NavItem;
-  pathname: string;
-  rail: boolean;
-  onNavigate: () => void;
-}) {
-  const current = isCurrent(pathname, item.to);
-  return (
-    <Tooltip label={item.label} disabled={!rail} position="right" openDelay={400}>
-      <NavLink
-        className="shell-nav-link"
-        component={Link}
-        to={item.to}
-        activeOptions={{
-          exact:
-            item.to !== "/admin" &&
-            item.to !== "/tasks" &&
-            item.to !== "/connectors" &&
-            item.to !== "/providers",
-        }}
-        active={current}
-        aria-current={current ? "page" : undefined}
-        aria-label={item.label}
-        label={<span className="shell-nav-label">{item.label}</span>}
-        leftSection={item.icon ?? (item.concept ? <ShellIcon concept={item.concept} size={16} /> : null)}
-        variant="subtle"
-        onClick={onNavigate}
-      />
-    </Tooltip>
-  );
+function underAdmin(pathname: string) {
+  return isCurrent(pathname, "/admin");
+}
+
+function isManagementCurrent(pathname: string, to: string) {
+  return isCurrent(pathname, to) || (to === "/admin/members" && pathname === "/admin");
 }
 
 function crumb(label: string, to: string): BreadcrumbItem {
@@ -196,27 +149,263 @@ function shellCrumbs(pathname: string): BreadcrumbItem[] {
   return [{ label }];
 }
 
-function ShellBreadcrumb({ pathname }: { pathname: string }) {
-  return <Breadcrumbs items={shellCrumbs(pathname)} />;
+type ShellUser = {
+  name: string;
+  initials: string;
+  roleName: string;
+  management: boolean;
+};
+
+function CloseDrawerOnNavigate() {
+  const { closeDrawer } = useAppFrame();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const previous = useRef(pathname);
+
+  useEffect(() => {
+    if (previous.current === pathname) return;
+    previous.current = pathname;
+    closeDrawer();
+  }, [pathname, closeDrawer]);
+
+  return null;
+}
+
+function ShellHeader() {
+  const { rail, closeDrawer } = useAppFrame();
+  return (
+    <>
+      <CloseDrawerOnNavigate />
+      <Link to="/" className="wordmark-link" aria-label="Upmo" onClick={closeDrawer}>
+        <Wordmark decorative compact={rail} height={rail ? 22 : 20} />
+      </Link>
+      {rail ? null : <WorkspaceName />}
+    </>
+  );
+}
+
+function ShellNavigation({ pathname, management }: { pathname: string; management: boolean }) {
+  const { rail } = useAppFrame();
+  const inAdmin = underAdmin(pathname);
+  const [managementOpened, setManagementOpened] = useState(inAdmin);
+  const [wasInAdmin, setWasInAdmin] = useState(inAdmin);
+
+  if (inAdmin !== wasInAdmin) {
+    setWasInAdmin(inAdmin);
+    if (inAdmin) setManagementOpened(true);
+  }
+
+  return (
+    <SideNav label="Main">
+      <NavSection>
+        {primary.map((item) => (
+          <NavItem
+            key={item.to}
+            label={item.label}
+            icon={<ShellIcon concept={item.concept} size={16} />}
+            component={Link}
+            linkProps={{ to: item.to }}
+            active={isCurrent(pathname, item.to)}
+          />
+        ))}
+      </NavSection>
+      <NavSection label="Workspace">
+        {workspaceItems.map((item) => (
+          <NavItem
+            key={item.to}
+            label={item.label}
+            icon={item.icon}
+            component={Link}
+            linkProps={{ to: item.to }}
+            active={isCurrent(pathname, item.to)}
+          />
+        ))}
+      </NavSection>
+      {management ? (
+        <NavSection>
+          <NavItem
+            label="Management"
+            icon={<ShellIcon concept="nav.settings" size={16} />}
+            active={inAdmin && (rail || !managementOpened)}
+            opened={managementOpened}
+            onOpenedChange={setManagementOpened}
+          >
+            {managementSubItems.map((item) => (
+              <NavItem
+                key={item.to}
+                label={item.label}
+                component={Link}
+                linkProps={{ to: item.to }}
+                active={isManagementCurrent(pathname, item.to)}
+              />
+            ))}
+          </NavItem>
+        </NavSection>
+      ) : null}
+    </SideNav>
+  );
+}
+
+function ShellTopBar({ pathname }: { pathname: string }) {
+  return (
+    <div className="shell-top-bar">
+      <div className="shell-top-bar-start">
+        <Breadcrumbs items={shellCrumbs(pathname)} />
+      </div>
+      <CommandLauncher />
+      <div className="shell-top-bar-end">
+        <TasksLiveness />
+        <NotificationsBell />
+      </div>
+    </div>
+  );
+}
+
+function ShellFooter({ user }: { user: ShellUser }) {
+  const { rail, closeDrawer } = useAppFrame();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { setChoice } = useThemeChoice();
+  const resolvedTheme = useUpmoTheme();
+  const summary = `${user.roleName} · ${workspaceName}`;
+
+  const account = (
+    <Menu
+      position={rail ? "right-end" : "top-start"}
+      offset={8}
+      shadow="md"
+      width={240}
+      withinPortal
+      transitionProps={{ duration: 0 }}
+    >
+      <Menu.Target>
+        <UnstyledButton
+          className="shell-user-card"
+          data-rail={rail || undefined}
+          aria-label={`User account: ${user.name}`}
+        >
+          <span className="shell-avatar" aria-hidden="true">
+            {user.initials}
+          </span>
+          {rail ? null : (
+            <>
+              <div className="shell-user-info">
+                <span className="shell-user-name" title={user.name}>
+                  {user.name}
+                </span>
+                <span className="shell-user-desc" title={summary}>
+                  {summary}
+                </span>
+              </div>
+              <IconSelector size={14} stroke={1.75} className="shell-user-chevron" aria-hidden="true" />
+            </>
+          )}
+        </UnstyledButton>
+      </Menu.Target>
+
+      <Menu.Dropdown className="shell-user-dropdown">
+        <div className="shell-user-dropdown-header">
+          <span className="shell-avatar" aria-hidden="true">
+            {user.initials}
+          </span>
+          <div className="shell-user-info">
+            <span className="shell-user-name" title={user.name}>
+              {user.name}
+            </span>
+            <span className="shell-user-desc" title={summary}>
+              {summary}
+            </span>
+          </div>
+        </div>
+        <Menu.Divider />
+        <Menu.Item
+          component={Link}
+          to="/personalisation"
+          leftSection={<IconSparkles size={16} stroke={1.75} aria-hidden="true" />}
+          onClick={closeDrawer}
+        >
+          Personalisation
+        </Menu.Item>
+        <Menu.Item
+          component={Link}
+          to="/security"
+          leftSection={<IconShieldCheck size={16} stroke={1.75} aria-hidden="true" />}
+          onClick={closeDrawer}
+        >
+          Security
+        </Menu.Item>
+        <Menu.Item
+          component={Link}
+          to="/tokens"
+          leftSection={<IconKey size={16} stroke={1.75} aria-hidden="true" />}
+          onClick={closeDrawer}
+        >
+          API tokens
+        </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item
+          color="red"
+          className="shell-menu-logout"
+          leftSection={<IconLogout size={16} stroke={1.75} aria-hidden="true" />}
+          onClick={async () => {
+            closeDrawer();
+            await endThisSession();
+            queryClient.clear();
+            await navigate({ to: "/login" });
+          }}
+        >
+          Log out
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+
+  if (rail) {
+    return (
+      <>
+        <IconButton
+          aria-label="Toggle colour scheme"
+          size="lg"
+          tooltipPosition="right"
+          onClick={() => setChoice(resolvedTheme === "dark" ? "light" : "dark")}
+        >
+          {resolvedTheme === "dark" ? (
+            <IconSun size={16} stroke={1.75} aria-hidden="true" />
+          ) : (
+            <IconMoon size={16} stroke={1.75} aria-hidden="true" />
+          )}
+        </IconButton>
+        {account}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {account}
+      <ThemeSwitch />
+      <Text size="xs" ta="center" c="dimmed" ff="monospace">
+        v0.1.0
+      </Text>
+    </>
+  );
 }
 
 export function Shell() {
   const api = useApi();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const layout = useShellLayout();
-  const { setChoice } = useThemeChoice();
-  const resolvedTheme = useUpmoTheme();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const [opened, setOpened] = useState(false);
-  const [desktopOpened, setDesktopOpened] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
   const [dismissedAt, setDismissedAt] = useState<number>(0);
-  const previous = useRef(pathname);
+
+  const theme = useMantineTheme();
+  const wide = useMediaQuery(`(min-width: ${theme.breakpoints.md})`, true, {
+    getInitialValueInEffect: false,
+  });
 
   const toggleSidebar = useCallback(() => {
-    setDesktopOpened((val) => !val);
-    setOpened((val) => !val);
-  }, []);
+    // Below md the drawer open state is internal to AppFrame (design system backlog).
+    if (!wide) return;
+    setCollapsed((val) => !val);
+  }, [wide]);
 
   const session = useQuery({
     queryKey: sessionQueryKey(),
@@ -229,16 +418,19 @@ export function Shell() {
   const currentMember = members.data?.find((m) => m.id === session.data?.memberId);
   const userName = currentMember?.name ?? "Muhammad Sumon Molla Selim";
   const userRole = session.data?.view ?? currentMember?.role ?? "owner";
-  const roleName = userRole.charAt(0).toUpperCase() + userRole.slice(1);
-  const isManagement = userRole === "owner" || userRole === "admin";
-  const initials =
-    userName
-      .split(" ")
-      .map((w) => w[0])
-      .filter(Boolean)
-      .join("")
-      .slice(0, 2)
-      .toUpperCase() || "U";
+  const user: ShellUser = {
+    name: userName,
+    initials:
+      userName
+        .split(" ")
+        .map((w) => w[0])
+        .filter(Boolean)
+        .join("")
+        .slice(0, 2)
+        .toUpperCase() || "U",
+    roleName: userRole.charAt(0).toUpperCase() + userRole.slice(1),
+    management: userRole === "owner" || userRole === "admin",
+  };
 
   const failedMutations = useMutationState({
     filters: { status: "error" },
@@ -260,12 +452,6 @@ export function Shell() {
     : null;
 
   useEffect(() => {
-    if (previous.current === pathname) return;
-    previous.current = pathname;
-    setOpened(false);
-  }, [pathname]);
-
-  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
         event.preventDefault();
@@ -276,281 +462,27 @@ export function Shell() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [toggleSidebar]);
 
-  const close = () => setOpened(false);
-  const effectiveLayout = !desktopOpened ? "rail" : layout;
-
   return (
-    <AppShell
+    <AppFrame
       className="shell"
-      layout="alt"
-      padding={0}
-      header={{ height: 48 }}
-      navbar={{
-        width: { sm: 56, md: desktopOpened ? 248 : 56 },
-        breakpoint: "sm",
-        collapsed: {
-          mobile: !opened,
-        },
-      }}
+      collapsed={collapsed}
+      onCollapsedChange={setCollapsed}
+      header={<ShellHeader />}
+      navigation={<ShellNavigation pathname={pathname} management={user.management} />}
+      topBar={<ShellTopBar pathname={pathname} />}
+      footer={<ShellFooter user={user} />}
     >
-      <a className="shell-skip" href="#content">
-        Skip to content
-      </a>
-      <AppShell.Header className="shell-header">
-        <div className="shell-header-inner">
-          <div className="shell-header-left">
-            <IconButton
-              className="shell-header-toggle"
-              aria-label="Toggle sidebar"
-              variant="subtle"
-              size={36}
-              onClick={toggleSidebar}
-            >
-              <ShellIcon concept="nav.sidebar" />
-            </IconButton>
-            <ShellBreadcrumb pathname={pathname} />
-          </div>
-          <div className="shell-header-center">
-            <CommandLauncher />
-          </div>
-          <div className="shell-header-right">
-            <TasksLiveness />
-            <NotificationsBell />
-          </div>
-        </div>
-      </AppShell.Header>
-      <AppShell.Navbar className="shell-navbar" aria-label="Sidebar" data-layout={effectiveLayout}>
-        <div className="shell-nav-head">
-          <div className="shell-brand-group">
-            <BrandLink className="shell-brand-link" />
-            <WorkspaceName />
-          </div>
-          <IconButton
-            className="shell-nav-toggle"
-            aria-label="Toggle sidebar"
-            variant="subtle"
-            size={32}
-            onClick={toggleSidebar}
-          >
-            <ShellIcon concept="nav.sidebar" size={16} />
-          </IconButton>
-        </div>
-        <div className="shell-nav-scroll">
-          {primary.map((item) => (
-            <NavEntry
-              key={item.to}
-              item={item}
-              pathname={pathname}
-              rail={effectiveLayout === "rail"}
-              onNavigate={close}
-            />
-          ))}
-          <Text className="shell-group">Workspace</Text>
-          {workspaceItems.map((item) => (
-            <NavEntry
-              key={item.to}
-              item={item}
-              pathname={pathname}
-              rail={effectiveLayout === "rail"}
-              onNavigate={close}
-            />
-          ))}
-          {isManagement && (
-            effectiveLayout === "rail" ? (
-              <Menu
-                position="right-start"
-                offset={8}
-                width={180}
-                withinPortal
-                transitionProps={{ duration: 0 }}
-              >
-                <Menu.Target>
-                  <IconButton
-                    className="shell-nav-link"
-                    variant="subtle"
-                    size={32}
-                    aria-label="Management"
-                    data-active={pathname.startsWith("/admin") ? "true" : undefined}
-                    tooltipPosition="right"
-                  >
-                    <ShellIcon concept="nav.settings" size={16} />
-                  </IconButton>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Label>Management</Menu.Label>
-                  {managementSubItems.map((sub) => (
-                    <Menu.Item
-                      key={sub.to}
-                      component={Link}
-                      to={sub.to}
-                      onClick={close}
-                    >
-                      {sub.label}
-                    </Menu.Item>
-                  ))}
-                </Menu.Dropdown>
-              </Menu>
-            ) : (
-              <NavLink
-                className="shell-nav-link shell-nav-parent"
-                label={<span className="shell-nav-label">Management</span>}
-                leftSection={<ShellIcon concept="nav.settings" size={16} />}
-                defaultOpened
-                childrenOffset={0}
-                active={false}
-              >
-                {managementSubItems.map((sub) => {
-                  const isSubActive =
-                    pathname === sub.to || (sub.to === "/admin/members" && pathname === "/admin");
-                  return (
-                    <NavLink
-                      key={sub.to}
-                      className="shell-nav-link shell-nav-sublink"
-                      component={Link}
-                      to={sub.to}
-                      activeOptions={{ exact: true }}
-                      active={isSubActive}
-                      aria-current={isSubActive ? "page" : undefined}
-                      aria-label={sub.label}
-                      label={<span className="shell-nav-label">{sub.label}</span>}
-                      variant="subtle"
-                      onClick={close}
-                    />
-                  );
-                })}
-              </NavLink>
-            )
-          )}
-        </div>
-        <div className="shell-footer">
-          <Menu
-            position={effectiveLayout === "rail" ? "right-end" : "top-start"}
-            offset={8}
-            shadow="md"
-            width={240}
-            withinPortal
-            transitionProps={{ duration: 0 }}
-          >
-            <Menu.Target>
-              <UnstyledButton
-                className="shell-user-card"
-                aria-label={`User account: ${userName}`}
-              >
-                <span className="shell-avatar" aria-hidden="true">
-                  {initials}
-                </span>
-                <div className="shell-user-info">
-                  <span className="shell-user-name" title={userName}>
-                    {userName}
-                  </span>
-                  <span className="shell-user-desc" title={`${roleName} · ${workspaceName}`}>
-                    {roleName} · {workspaceName}
-                  </span>
-                </div>
-                <IconSelector size={14} stroke={1.75} className="shell-user-chevron" aria-hidden="true" />
-              </UnstyledButton>
-            </Menu.Target>
-
-            <Menu.Dropdown className="shell-user-dropdown">
-              <div className="shell-user-dropdown-header">
-                <span className="shell-avatar" aria-hidden="true">
-                  {initials}
-                </span>
-                <div className="shell-user-info">
-                  <span className="shell-user-name" title={userName}>
-                    {userName}
-                  </span>
-                  <span className="shell-user-desc" title={`${roleName} · ${workspaceName}`}>
-                    {roleName} · {workspaceName}
-                  </span>
-                </div>
-              </div>
-              <Menu.Divider />
-              <Menu.Item
-                component={Link}
-                to="/personalisation"
-                leftSection={<IconSparkles size={16} stroke={1.75} aria-hidden="true" />}
-                onClick={close}
-              >
-                Personalisation
-              </Menu.Item>
-              <Menu.Item
-                component={Link}
-                to="/security"
-                leftSection={<IconShieldCheck size={16} stroke={1.75} aria-hidden="true" />}
-                onClick={close}
-              >
-                Security
-              </Menu.Item>
-              <Menu.Item
-                component={Link}
-                to="/tokens"
-                leftSection={<IconKey size={16} stroke={1.75} aria-hidden="true" />}
-                onClick={close}
-              >
-                API tokens
-              </Menu.Item>
-              <Menu.Divider />
-              <Menu.Item
-                color="red"
-                className="shell-menu-logout"
-                leftSection={<IconLogout size={16} stroke={1.75} aria-hidden="true" />}
-                onClick={async () => {
-                  close();
-                  await endThisSession();
-                  queryClient.clear();
-                  await navigate({ to: "/login" });
-                }}
-              >
-                Log out
-              </Menu.Item>
-            </Menu.Dropdown>
-          </Menu>
-
-          <div className="shell-theme-row">
-            <ThemeSwitch />
-          </div>
-          <IconButton
-            className="shell-rail-theme-toggle"
-            aria-label="Toggle colour scheme"
-            variant="subtle"
-            size={32}
-            onClick={() => setChoice(resolvedTheme === "dark" ? "light" : "dark")}
-            tooltipPosition="right"
-          >
-            {resolvedTheme === "dark" ? (
-              <IconSun size={16} stroke={1.75} aria-hidden="true" />
-            ) : (
-              <IconMoon size={16} stroke={1.75} aria-hidden="true" />
-            )}
-          </IconButton>
-          <div className="shell-footer-bar">
-            <span className="shell-version">v0.1.0</span>
-          </div>
-        </div>
-      </AppShell.Navbar>
-      <AppShell.Main id="content">
-        <div className="shell-content">
-          {errorMessage ? (
-            <Alert
-              className="shell-message"
-              role="alert"
-              color="red"
-              variant="light"
-            >
-              <Group justify="space-between" align="center" wrap="nowrap">
-                <Text>{errorMessage}</Text>
-                <CloseButton
-                  aria-label="Close message"
-                  onClick={() => setDismissedAt(latestMutation.submittedAt)}
-                />
-              </Group>
-            </Alert>
-          ) : null}
-          <PasskeyOffer />
-          <Outlet />
-        </div>
-      </AppShell.Main>
-    </AppShell>
+      {errorMessage ? (
+        <StatusAlert
+          tone="critical"
+          className="shell-message"
+          onDismiss={() => setDismissedAt(latestMutation.submittedAt)}
+        >
+          {errorMessage}
+        </StatusAlert>
+      ) : null}
+      <PasskeyOffer />
+      <Outlet />
+    </AppFrame>
   );
 }

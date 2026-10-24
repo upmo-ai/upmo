@@ -87,7 +87,7 @@ describe("sign in", () => {
       screen.getByRole("button", { name: /^Log in$/ }).click();
     });
     expect(await screen.findByRole("status")).toHaveProperty("textContent", "Email or password is wrong.");
-    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
   });
 
   it("puts Log in under the password and keeps the passkey as the other choice", async () => {
@@ -103,7 +103,7 @@ describe("sign in", () => {
     expect(screen.queryByRole("button", { name: "Use a password instead" })).toBeNull();
     expect(screen.getByRole("link", { name: "Terms of use" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Privacy policy" })).toBeTruthy();
-    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
 
     act(() => {
       passkey.click();
@@ -112,7 +112,7 @@ describe("sign in", () => {
       "textContent",
       "The passkey prompt was cancelled. Try again.",
     );
-    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
 
     stubPassword(true);
     await submitPassword();
@@ -130,7 +130,7 @@ describe("sign in", () => {
       screen.getByRole("menuitem", { name: "Log out" }).click();
     });
     expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
-    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
 
     await submitPassword();
     expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
@@ -143,7 +143,7 @@ describe("sign in", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Create your passkey" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Terms of use" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Privacy policy" })).toBeTruthy();
-    expect(screen.queryByRole("navigation", { name: "Sidebar" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
   });
 
   it("keeps the one-time link page when the session is empty", async () => {

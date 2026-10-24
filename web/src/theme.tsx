@@ -60,6 +60,8 @@ export function ThemeSwitch() {
   return (
     <SegmentedControl
       data-testid="theme-switch"
+      size="xs"
+      fullWidth
       value={choice}
       onChange={(value) => {
         if (isChoice(value)) setChoice(value);
