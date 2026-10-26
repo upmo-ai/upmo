@@ -31,6 +31,7 @@ fi
 node /src/e2e/passkeys.mjs
 node /src/e2e/theme.mjs
 node /src/e2e/shell.mjs
+node /src/e2e/chat.mjs
 node /src/e2e/usage.mjs
 node /src/e2e/flows.mjs
 exec node /src/e2e/identity.mjs

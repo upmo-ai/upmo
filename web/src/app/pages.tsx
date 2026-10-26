@@ -1,20 +1,10 @@
 import { Stack, Text, Title } from "@mantine/core";
-import {
-  IconActivity,
-  IconArrowUp,
-  IconCheck,
-  IconChevronDown,
-  IconChevronRight,
-  IconCpu,
-  IconLayoutSidebar,
-  IconMicrophone,
-  IconPaperclip,
-  IconSearch,
-} from "@tabler/icons-react";
+import { IconLayoutSidebar, IconSearch } from "@tabler/icons-react";
 import { useState } from "react";
-import { Badge, Button, IconButton, Input, Kbd, KbdGroup, Menu, Textarea } from "@upmo-ai/components";
+import { Badge, ChatMessage, Composer, IconButton, Input } from "@upmo-ai/components";
+import type { ComposerOption } from "@upmo-ai/components";
 
-import { CaretIcon, ShellIcon } from "../ui/icons";
+import { ShellIcon } from "../ui/icons";
 import { Section } from "../ui/section";
 
 import "../features/chat/chat.css";
@@ -73,36 +63,40 @@ export function HomePage() {
   );
 }
 
-const AGENTS = [
-  { id: "auto", name: "Auto", desc: "Intelligently select the best agent" },
-  { id: "general", name: "General Assistant", desc: "General tasks and questions" },
-  { id: "coder", name: "Code Specialist", desc: "Code generation and refactoring" },
-  { id: "research", name: "Research Agent", desc: "Web search and summarization" },
-  { id: "planner", name: "Planning Agent", desc: "Multi-step plan decomposition" },
+const AGENTS: ComposerOption[] = [
+  { value: "auto", label: "Auto", description: "Intelligently select the best agent" },
+  { value: "general", label: "General Assistant", description: "General tasks and questions" },
+  { value: "coder", label: "Code Specialist", description: "Code generation and refactoring" },
+  { value: "research", label: "Research Agent", description: "Web search and summarization" },
+  { value: "planner", label: "Planning Agent", description: "Multi-step plan decomposition" },
 ];
 
-const ROUTES = [
-  { id: "default", name: "Default", desc: "Optimized speed and quality" },
-  { id: "fastest", name: "Fastest", desc: "Lowest latency routing" },
-  { id: "cost", name: "Cost Optimized", desc: "Most economical model routing" },
-  { id: "direct", name: "Direct Provider", desc: "Direct upstream connection" },
+const ROUTES: ComposerOption[] = [
+  { value: "default", label: "Default", description: "Optimized speed and quality" },
+  { value: "fastest", label: "Fastest", description: "Lowest latency routing" },
+  { value: "cost", label: "Cost Optimized", description: "Most economical model routing" },
+  { value: "direct", label: "Direct Provider", description: "Direct upstream connection" },
 ];
 
-const MODELS = [
-  { id: "gpt-5.6-luna", name: "Gpt-5.6-Luna", provider: "OpenAI" },
-  { id: "claude-3.7-sonnet", name: "Claude 3.7 Sonnet", provider: "Anthropic" },
-  { id: "claude-3.5-haiku", name: "Claude 3.5 Haiku", provider: "Anthropic" },
-  { id: "gpt-4o", name: "GPT-4o", provider: "OpenAI" },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", provider: "Google" },
-  { id: "deepseek-r1", name: "DeepSeek R1", provider: "DeepSeek" },
+const MODELS: ComposerOption[] = [
+  { value: "gpt-5.6-luna", label: "Gpt-5.6-Luna", description: "OpenAI" },
+  { value: "claude-3.7-sonnet", label: "Claude 3.7 Sonnet", description: "Anthropic" },
+  { value: "claude-3.5-haiku", label: "Claude 3.5 Haiku", description: "Anthropic" },
+  { value: "gpt-4o", label: "GPT-4o", description: "OpenAI" },
+  { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "Google" },
+  { value: "deepseek-r1", label: "DeepSeek R1", description: "DeepSeek" },
 ];
 
-const TOOLS_OPTIONS = [
-  { id: "auto", name: "Auto", desc: "Allow model to call connected tools" },
-  { id: "all", name: "All Tools", desc: "Connectors and MCPs enabled" },
-  { id: "search", name: "Search Only", desc: "Only web search allowed" },
-  { id: "disabled", name: "Disabled", desc: "Pure model generation" },
+const TOOLS_OPTIONS: ComposerOption[] = [
+  { value: "auto", label: "Auto", description: "Allow model to call connected tools" },
+  { value: "all", label: "All Tools", description: "Connectors and MCPs enabled" },
+  { value: "search", label: "Search Only", description: "Only web search allowed" },
+  { value: "disabled", label: "Disabled", description: "Pure model generation" },
 ];
+
+function optionLabel(options: readonly ComposerOption[], value: string) {
+  return options.find((option) => option.value === value)?.label ?? value;
+}
 
 type ChatMessageItem = {
   id: string;
@@ -139,10 +133,10 @@ export function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
-  const [selectedAgent, setSelectedAgent] = useState("Auto");
-  const [selectedRoute, setSelectedRoute] = useState("Default");
-  const [selectedModel, setSelectedModel] = useState("Gpt-5.6-Luna");
-  const [selectedTools, setSelectedTools] = useState("Auto");
+  const [selectedAgent, setSelectedAgent] = useState("auto");
+  const [selectedRoute, setSelectedRoute] = useState("default");
+  const [selectedModel, setSelectedModel] = useState("gpt-5.6-luna");
+  const [selectedTools, setSelectedTools] = useState("auto");
   const [messages, setMessages] = useState<ChatMessageItem[]>(initialChatMessages);
   const activeChat = sampleChats.find((chat) => chat.id === activeChatId) ?? sampleChats[0];
   const matchingChats = sampleChats.filter((chat) =>
@@ -161,15 +155,16 @@ export function ChatPage() {
       tokens: userTokens,
       cost: userCost,
     };
+    const modelLabel = optionLabel(MODELS, selectedModel);
     const assistantTokens = 140 + Math.floor(Math.random() * 60);
     const assistantCost = `$${(assistantTokens * 0.000012).toFixed(3)}`;
     const newAssistantMsg: ChatMessageItem = {
       id: `m-asst-${Date.now() + 1}`,
       role: "assistant",
-      content: `I have processed your request with ${selectedModel} via the ${selectedRoute} route.`,
+      content: `I have processed your request with ${modelLabel} via the ${optionLabel(ROUTES, selectedRoute)} route.`,
       tokens: assistantTokens,
       duration: "1.2 s",
-      model: selectedModel,
+      model: modelLabel,
       cost: assistantCost,
     };
     setMessages((prev) => [...prev, newUserMsg, newAssistantMsg]);
@@ -286,256 +281,37 @@ export function ChatPage() {
             </div>
           </div>
 
-          <Stack className="chat-messages" gap="md" aria-label="Messages">
-            {messages.map((msg) =>
-              msg.role === "user" ? (
-                <div key={msg.id} className="chat-message chat-message-user">
-                  <Text>{msg.content}</Text>
-                  <div className="chat-message-meta chat-message-meta-user">
-                    <span>{msg.tokens} tokens</span>
-                    <span>·</span>
-                    <span className="chat-cost">{msg.cost}</span>
-                  </div>
-                </div>
-              ) : (
-                <div key={msg.id} className="chat-message chat-message-assistant">
-                  <span className="chat-avatar" aria-hidden>
-                    <CaretIcon size={18} />
-                  </span>
-                  <div className="chat-reply">
-                    <Text>{msg.content}</Text>
-                    <div className="chat-message-meta">
-                      <span>{msg.model ?? "Upmo"}</span>
-                      <span>·</span>
-                      <span>{msg.tokens} tokens</span>
-                      <span>·</span>
-                      <span>{msg.duration ?? "1.4 s"}</span>
-                      <span>·</span>
-                      <span className="chat-cost">{msg.cost}</span>
-                      <IconButton
-                        aria-label="Copy reply"
-                        variant="subtle"
-                        size={24}
-                        onClick={() => {
-                          void navigator.clipboard?.writeText(msg.content);
-                        }}
-                      >
-                        <ShellIcon concept="action.copy" size={16} />
-                      </IconButton>
-                      <IconButton aria-label="Activity" variant="subtle" size={24}>
-                        <IconActivity size={14} stroke={1.75} aria-hidden="true" />
-                      </IconButton>
-                    </div>
-                  </div>
-                </div>
-              ),
-            )}
+          <Stack className="chat-messages" gap={0} aria-label="Messages">
+            {messages.map((msg) => (
+              <ChatMessage
+                key={msg.id}
+                role={msg.role}
+                content={msg.content}
+                model={msg.model}
+                tokens={msg.tokens}
+                duration={msg.duration}
+                cost={msg.cost}
+              />
+            ))}
           </Stack>
 
           <div className="chat-composer-wrap">
-            <form
-              className="chat-composer"
-              aria-label="Chat composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                handleSendMessage();
+            <Composer
+              value={draft}
+              onChange={setDraft}
+              onSend={handleSendMessage}
+              config={{
+                label: "Agent, route and model",
+                groups: [
+                  { label: "Agent", value: selectedAgent, options: AGENTS, onChange: setSelectedAgent },
+                  { label: "Route", value: selectedRoute, options: ROUTES, onChange: setSelectedRoute },
+                  { label: "Model", value: selectedModel, options: MODELS, onChange: setSelectedModel },
+                ],
               }}
-            >
-              <Textarea
-                className="chat-composer-textarea"
-                aria-label="Message"
-                placeholder="Message Upmo…"
-                minRows={2}
-                value={draft}
-                onChange={(event) => setDraft(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    handleSendMessage();
-                  }
-                }}
-              />
-              <div className="chat-composer-row">
-                <Menu position="top-start" offset={8} shadow="md" width={240} withinPortal transitionProps={{ duration: 0 }}>
-                  <Menu.Target>
-                    <Button
-                      variant="subtle"
-                      size="xs"
-                      className="chat-composer-pill"
-                      leftSection={<IconCpu size={14} stroke={1.75} aria-hidden />}
-                      rightSection={<IconChevronDown size={12} stroke={2} aria-hidden />}
-                      aria-label="Agent, route, and model configuration"
-                    >
-                      {selectedAgent} · {selectedRoute} · {selectedModel}
-                    </Button>
-                  </Menu.Target>
-                  <Menu.Dropdown className="chat-select-dropdown">
-                    <Menu.Label className="chat-select-label">SELECT</Menu.Label>
-
-                    <Menu.Sub>
-                      <Menu.Sub.Target>
-                        <Menu.Item
-                          className="chat-select-menu-item"
-                          rightSection={<IconChevronRight size={14} stroke={1.75} aria-hidden />}
-                        >
-                          <div className="chat-menu-item-content">
-                            <span className="chat-menu-item-title">Agent</span>
-                            <span className="chat-menu-item-sub">{selectedAgent}</span>
-                          </div>
-                        </Menu.Item>
-                      </Menu.Sub.Target>
-                      <Menu.Sub.Dropdown className="chat-select-dropdown">
-                        <Menu.Label className="chat-select-label">AGENT</Menu.Label>
-                        {AGENTS.map((item) => (
-                          <Menu.Item
-                            key={item.id}
-                            leftSection={selectedAgent === item.name ? <IconCheck size={14} stroke={2} color="var(--emerald-deep)" /> : <span style={{ width: 14 }} />}
-                            onClick={() => setSelectedAgent(item.name)}
-                          >
-                            <div>
-                              <div className="chat-menu-subitem-title">{item.name}</div>
-                              <div className="chat-menu-subitem-desc">{item.desc}</div>
-                            </div>
-                          </Menu.Item>
-                        ))}
-                      </Menu.Sub.Dropdown>
-                    </Menu.Sub>
-
-                    <Menu.Sub>
-                      <Menu.Sub.Target>
-                        <Menu.Item
-                          className="chat-select-menu-item"
-                          rightSection={<IconChevronRight size={14} stroke={1.75} aria-hidden />}
-                        >
-                          <div className="chat-menu-item-content">
-                            <span className="chat-menu-item-title">Route</span>
-                            <span className="chat-menu-item-sub">{selectedRoute}</span>
-                          </div>
-                        </Menu.Item>
-                      </Menu.Sub.Target>
-                      <Menu.Sub.Dropdown className="chat-select-dropdown">
-                        <Menu.Label className="chat-select-label">ROUTE</Menu.Label>
-                        {ROUTES.map((item) => (
-                          <Menu.Item
-                            key={item.id}
-                            leftSection={selectedRoute === item.name ? <IconCheck size={14} stroke={2} color="var(--emerald-deep)" /> : <span style={{ width: 14 }} />}
-                            onClick={() => setSelectedRoute(item.name)}
-                          >
-                            <div>
-                              <div className="chat-menu-subitem-title">{item.name}</div>
-                              <div className="chat-menu-subitem-desc">{item.desc}</div>
-                            </div>
-                          </Menu.Item>
-                        ))}
-                      </Menu.Sub.Dropdown>
-                    </Menu.Sub>
-
-                    <Menu.Sub>
-                      <Menu.Sub.Target>
-                        <Menu.Item
-                          className="chat-select-menu-item"
-                          rightSection={<IconChevronRight size={14} stroke={1.75} aria-hidden />}
-                        >
-                          <div className="chat-menu-item-content">
-                            <span className="chat-menu-item-title">Model</span>
-                            <span className="chat-menu-item-sub">{selectedModel}</span>
-                          </div>
-                        </Menu.Item>
-                      </Menu.Sub.Target>
-                      <Menu.Sub.Dropdown className="chat-select-dropdown">
-                        <Menu.Label className="chat-select-label">MODEL</Menu.Label>
-                        {MODELS.map((item) => (
-                          <Menu.Item
-                            key={item.id}
-                            leftSection={selectedModel === item.name ? <IconCheck size={14} stroke={2} color="var(--emerald-deep)" /> : <span style={{ width: 14 }} />}
-                            onClick={() => setSelectedModel(item.name)}
-                          >
-                            <div>
-                              <div className="chat-menu-subitem-title">{item.name}</div>
-                              <div className="chat-menu-subitem-desc">{item.provider}</div>
-                            </div>
-                          </Menu.Item>
-                        ))}
-                      </Menu.Sub.Dropdown>
-                    </Menu.Sub>
-                  </Menu.Dropdown>
-                </Menu>
-
-                <IconButton
-                  aria-label="Attach file"
-                  variant="subtle"
-                  size={26}
-                  className="chat-composer-icon-btn"
-                  type="button"
-                  tooltipPosition="top"
-                >
-                  <IconPaperclip size={16} stroke={1.75} aria-hidden />
-                </IconButton>
-
-                <IconButton
-                  aria-label="Dictate"
-                  variant="subtle"
-                  size={26}
-                  className="chat-composer-icon-btn"
-                  type="button"
-                  tooltipPosition="top"
-                >
-                  <IconMicrophone size={16} stroke={1.75} aria-hidden />
-                </IconButton>
-
-                <Menu position="top-start" offset={8} shadow="md" width={200} withinPortal transitionProps={{ duration: 0 }}>
-                  <Menu.Target>
-                    <Button
-                      variant="subtle"
-                      size="xs"
-                      className="chat-composer-pill"
-                      rightSection={<IconChevronDown size={12} stroke={2} aria-hidden />}
-                      aria-label="Tools mode"
-                    >
-                      {selectedTools}
-                    </Button>
-                  </Menu.Target>
-                  <Menu.Dropdown className="chat-select-dropdown">
-                    <Menu.Label className="chat-select-label">TOOLS & CONTEXT</Menu.Label>
-                    {TOOLS_OPTIONS.map((item) => (
-                      <Menu.Item
-                        key={item.id}
-                        leftSection={selectedTools === item.name ? <IconCheck size={14} stroke={2} color="var(--emerald-deep)" /> : <span style={{ width: 14 }} />}
-                        onClick={() => setSelectedTools(item.name)}
-                      >
-                        <div>
-                          <div className="chat-menu-subitem-title">{item.name}</div>
-                          <div className="chat-menu-subitem-desc">{item.desc}</div>
-                        </div>
-                      </Menu.Item>
-                    ))}
-                  </Menu.Dropdown>
-                </Menu>
-
-                <span className="chat-composer-spacer" />
-
-                <IconButton
-                  aria-label="Send"
-                  type="submit"
-                  variant="filled"
-                  size={28}
-                  disabled={draft.trim() === ""}
-                  className="chat-composer-send"
-                  tooltip="Send message"
-                  tooltipPosition="top"
-                >
-                  <IconArrowUp size={16} stroke={2.5} aria-hidden />
-                </IconButton>
-              </div>
-            </form>
-            <div className="chat-composer-hint">
-              <Kbd>Enter</Kbd> to send ·{" "}
-              <KbdGroup>
-                <Kbd>Shift</Kbd>
-                <Kbd>Enter</Kbd>
-              </KbdGroup>{" "}
-              for a new line
-            </div>
+              toolsMode={{ value: selectedTools, options: TOOLS_OPTIONS, onChange: setSelectedTools }}
+              onAttach={() => {}}
+              onDictate={() => {}}
+            />
           </div>
         </article>
       </div>
