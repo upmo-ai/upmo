@@ -32,6 +32,24 @@
   margin-bottom: var(--space-4);
 }
 
+/* Give the chat page the viewport height so the composer stays on screen when
+   the passkey offer or an alert sits above it. An AppFrame fill prop would
+   replace this :has() rule. */
+.shell .upmo-app-frame__main:has(> .chat-page) {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  height: 100dvh;
+  min-height: 0;
+  /* When .chat-page hits its floor (short viewport, offer plus alert), scroll
+     here instead of clipping the composer. */
+  overflow-y: auto;
+}
+
+.shell .upmo-app-frame__main:has(> .chat-page) > :not(.chat-page) {
+  flex: none;
+}
+
 .shell-launcher {
   display: none;
   align-items: center;
