@@ -3,9 +3,8 @@ import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Button } from "@upmo-ai/components";
+import { Button, StatusAlert } from "@upmo-ai/components";
 
-import { StatusAlert } from "../ui/status-alert";
 import { LoginAgreement } from "./agreement";
 import { BrandLink } from "./brand";
 import { createPasskeyFromLink } from "./passkeys";
@@ -47,7 +46,7 @@ export function LinkPage() {
           Create your passkey
         </Button>
         {message ? (
-          <StatusAlert tone="danger" role="status">
+          <StatusAlert tone="critical">
             {message}
           </StatusAlert>
         ) : null}

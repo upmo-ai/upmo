@@ -20,7 +20,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
-import { Badge, Button, Checkbox, Input, Select, Spinner, Table } from "@upmo-ai/components";
+import { Badge, Button, Checkbox, Input, Select, Spinner, StatusAlert, Table } from "@upmo-ai/components";
 
 import {
   PROVIDERS_KEY,
@@ -30,7 +30,6 @@ import {
   type TestResult,
 } from "../../app/api";
 import { BrandMark } from "../../ui/brand-mark";
-import { StatusAlert } from "../../ui/status-alert";
 import { formatPricing, getProviderModels, type ModelInfo } from "./models";
 import { KNOWN_PROVIDERS, type KnownProvider } from "./providers";
 
@@ -255,7 +254,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
       </Group>
 
       {submitError ? (
-        <StatusAlert tone="danger" title="Error">
+        <StatusAlert tone="critical" title="Error">
           {submitError}
         </StatusAlert>
       ) : null}
@@ -739,13 +738,13 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
               )}
 
               {testResult !== null && testResult.ok && (
-                <StatusAlert tone="success" title="Connection verified">
+                <StatusAlert tone="positive" title="Connection verified">
                   Handshake verified successfully with {testResult.latency_ms ?? 124} ms latency.
                 </StatusAlert>
               )}
 
               {testResult !== null && !testResult.ok && (
-                <StatusAlert tone="danger" title="Connection failed">
+                <StatusAlert tone="critical" title="Connection failed">
                   {testResult.error || "Failed to reach provider. Check your API key or endpoint URL."}
                 </StatusAlert>
               )}

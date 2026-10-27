@@ -18,7 +18,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
-import { Badge, Button, Input, Radio, Spinner } from "@upmo-ai/components";
+import { Badge, Button, Input, Radio, Spinner, StatusAlert } from "@upmo-ai/components";
 
 import {
   CONNECTORS_KEY,
@@ -28,7 +28,6 @@ import {
   type TestResult,
 } from "../../app/api";
 import { BrandMark } from "../../ui/brand-mark";
-import { StatusAlert } from "../../ui/status-alert";
 import { KNOWN_CONNECTORS } from "./connectors";
 
 interface ConnectorFormPageProps {
@@ -209,7 +208,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
       </Group>
 
       {submitError ? (
-        <StatusAlert tone="danger" title="Error">
+        <StatusAlert tone="critical" title="Error">
           {submitError}
         </StatusAlert>
       ) : null}
@@ -800,13 +799,13 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
               )}
 
               {testResult !== null && testResult.ok && (
-                <StatusAlert tone="success" title="Connection verified">
+                <StatusAlert tone="positive" title="Connection verified">
                   Handshake verified successfully with {testResult.latency_ms ?? 92} ms latency.
                 </StatusAlert>
               )}
 
               {testResult !== null && !testResult.ok && (
-                <StatusAlert tone="danger" title="Connection failed">
+                <StatusAlert tone="critical" title="Connection failed">
                   {testResult.error || "Failed to reach connector service. Check credentials."}
                 </StatusAlert>
               )}

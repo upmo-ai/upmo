@@ -27,12 +27,6 @@
   background: var(--surface-000);
 }
 
-.sign-in-wordmark {
-  display: block;
-  height: 28px;
-  width: auto;
-}
-
 .sign-in-actions {
   display: flex;
   width: min(20rem, 100%);

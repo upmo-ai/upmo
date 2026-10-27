@@ -86,13 +86,16 @@ describe("sign in", () => {
     act(() => {
       screen.getByRole("button", { name: /^Log in$/ }).click();
     });
-    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Email or password is wrong.");
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Email or password is wrong.");
     expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
   });
 
   it("puts Log in under the password and keeps the passkey as the other choice", async () => {
     renderAt("/login");
-    expect((await screen.findByRole("link", { name: "Upmo" })).getAttribute("href")).toBe("/login");
+    const brand = await screen.findByRole("link", { name: "Upmo" });
+    expect(brand.getAttribute("href")).toBe("/login");
+    expect(brand.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
+    expect(brand.querySelector("img")).toBeNull();
     expect(screen.getAllByRole("link")[0]?.textContent).toBe("Skip to content");
     const password = screen.getByLabelText("Password");
     const logIn = screen.getByRole("button", { name: /^Log in$/ });
@@ -108,7 +111,7 @@ describe("sign in", () => {
     act(() => {
       passkey.click();
     });
-    expect(await screen.findByRole("status")).toHaveProperty(
+    expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
       "The passkey prompt was cancelled. Try again.",
     );
@@ -271,14 +274,14 @@ describe("sign in", () => {
     act(() => {
       screen.getByRole("button", { name: /^Log in$/ }).click();
     });
-    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Email or password is wrong.");
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Email or password is wrong.");
     expect(conditionalSpy).toHaveBeenCalledTimes(2);
 
     const passkeyBtn = screen.getByRole("button", { name: "Log in with a passkey" });
     act(() => {
       passkeyBtn.click();
     });
-    expect(await screen.findByRole("status")).toHaveProperty(
+    expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
       "The passkey prompt was cancelled. Try again.",
     );

@@ -3,9 +3,8 @@ import { IconKey } from "@tabler/icons-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Input } from "@upmo-ai/components";
+import { Button, Input, StatusAlert } from "@upmo-ai/components";
 
-import { StatusAlert } from "../ui/status-alert";
 import { LoginAgreement } from "./agreement";
 import { useApi } from "./api";
 import { BrandLink } from "./brand";
@@ -138,7 +137,7 @@ export function SignInPage() {
           Log in with a passkey
         </Button>
         {message ? (
-          <StatusAlert tone="danger" role="status">
+          <StatusAlert tone="critical">
             {message}
           </StatusAlert>
         ) : null}
