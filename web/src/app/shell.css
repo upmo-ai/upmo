@@ -441,3 +441,9 @@
   text-align: center;
   pointer-events: none;
 }
+
+a.wordmark-link {
+  line-height: 0;
+  text-decoration: none;
+  color: inherit;
+}
