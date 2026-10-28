@@ -1,12 +1,11 @@
 import { Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconPlug, IconPlus, IconSearch, IconSettings } from "@tabler/icons-react";
+import { IconPlug, IconPlus, IconSearch } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Badge, Button, ConfirmDialog, Input } from "@upmo-ai/components";
+import { Button, ConfirmDialog, ConnectorCard, Input } from "@upmo-ai/components";
 
 import { CONNECTORS_KEY, connectorsQueryKey, useApi, type ConnectorGrant } from "../../app/api";
-import { BrandMark } from "../../ui/brand-mark";
 
 export interface KnownConnector {
   id: string;
@@ -67,6 +66,7 @@ export function ConnectorsPage() {
 function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?: ConnectorGrant[] }) {
   const api = useApi();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const grantsQuery = useQuery({
     queryKey: live ? ["connectors-live-data"] : connectorsQueryKey(),
@@ -182,94 +182,23 @@ function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?
           {filteredGrants.map((grant) => {
             const tool = toolMeta(grant.connector);
             return (
-              <Card
+              <ConnectorCard
                 key={grant.connector}
-                withBorder
-                radius="lg"
-                padding="md"
                 data-testid={`connector-card-${grant.connector}`}
-              >
-                <Stack justify="space-between" h="100%" gap="md">
-                  <Stack gap="sm">
-                    <Group justify="space-between" align="flex-start" wrap="nowrap">
-                      <Group gap="sm" wrap="nowrap">
-                        <BrandMark brand={grant.connector} size={32} />
-                        <Stack gap={0}>
-                          <Text fw={600} size="md">
-                            {tool.name}
-                          </Text>
-                          <Text size="xs" c="dimmed">
-                            {tool.description}
-                          </Text>
-                        </Stack>
-                      </Group>
-                      <Badge variant="light" color="teal" radius="xl" style={{ flexShrink: 0 }}>
-                        Connected
-                      </Badge>
-                    </Group>
-
-                    <Stack gap="xs" mt="xs">
-                      <Group justify="space-between" align="center">
-                        <Text size="xs" c="dimmed">
-                          What it can reach
-                        </Text>
-                        <Badge variant="outline" size="sm">
-                          {grant.resource_scope === "all" ? "All" : "Only these"}
-                        </Badge>
-                      </Group>
-
-                      {grant.resource_scope === "these" && grant.resource_ids.length > 0 && (
-                        <Group gap={4}>
-                          {grant.resource_ids.map((id) => (
-                            <Badge key={id} size="xs" variant="default">
-                              {id}
-                            </Badge>
-                          ))}
-                        </Group>
-                      )}
-
-                      <Group justify="space-between" align="center">
-                        <Text size="xs" c="dimmed">
-                          Changes
-                        </Text>
-                        {grant.changes === "allow" ? (
-                          <Badge variant="light" color="teal" size="sm">
-                            Allow
-                          </Badge>
-                        ) : grant.changes === "ask" ? (
-                          <Badge variant="light" color="yellow" size="sm">
-                            Ask first
-                          </Badge>
-                        ) : (
-                          <Badge variant="light" color="red" size="sm">
-                            Block
-                          </Badge>
-                        )}
-                      </Group>
-                    </Stack>
-                  </Stack>
-
-                  <Group justify="flex-end" gap="xs">
-                    <Button
-                      component={Link}
-                      to={`/connectors/${grant.connector}/edit` as any}
-                      variant="default"
-                      size="sm"
-                      leftSection={<IconSettings size={14} aria-hidden="true" />}
-                    >
-                      Edit permissions
-                    </Button>
-                    <Button
-                      variant="subtle"
-                      color="red"
-                      size="sm"
-                      onClick={() => setDisconnectTarget(grant)}
-                    >
-                      Disconnect
-                    </Button>
-                  </Group>
-                </Stack>
-              </Card>
+                id={grant.connector}
+                name={tool.name}
+                description={tool.description}
+                resourceScope={grant.resource_scope}
+                resourceIds={grant.resource_ids}
+                changes={grant.changes}
+                onEdit={() =>
+                  void navigate({
+                    to: "/connectors/$connectorId/edit",
+                    params: { connectorId: grant.connector },
+                  })
+                }
+                onDisconnect={() => setDisconnectTarget(grant)}
+              />
             );
           })}
         </SimpleGrid>
