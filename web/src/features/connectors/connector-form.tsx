@@ -1,24 +1,20 @@
-import {
-  Card,
-  Group,
-  PasswordInput,
-  SimpleGrid,
-  Stack,
-  Stepper,
-  Text,
-  Title,
-  UnstyledButton,
-} from "@mantine/core";
-import {
-  IconActivity,
-  IconArrowLeft,
-  IconCheck,
-  IconSearch,
-} from "@tabler/icons-react";
+import { Card, Group, PasswordInput, Stack, Text, Title } from "@mantine/core";
+import { IconArrowLeft, IconSearch } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
-import { Badge, Button, Input, Radio, Spinner, StatusAlert } from "@upmo-ai/components";
+import {
+  Badge,
+  BrandMark,
+  BrandTileGrid,
+  Button,
+  ConnectWizard,
+  Input,
+  Radio,
+  StatusAlert,
+  TestConnectionPanel,
+  type TestConnectionState,
+} from "@upmo-ai/components";
 
 import {
   CONNECTORS_KEY,
@@ -27,7 +23,6 @@ import {
   type ConnectorGrant,
   type TestResult,
 } from "../../app/api";
-import { BrandMark } from "../../ui/brand-mark";
 import { KNOWN_CONNECTORS } from "./connectors";
 
 interface ConnectorFormPageProps {
@@ -45,7 +40,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const [activeStep, setActiveStep] = useState<number>(mode === "edit" ? 1 : 0);
+  const [activeStep, setActiveStep] = useState<number>(mode === "edit" ? 2 : 0);
   const [selectedTool, setSelectedTool] = useState<string>(existing?.connector ?? "github");
   const [toolSearch, setToolSearch] = useState<string>("");
 
@@ -192,6 +187,553 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
   const canProceedStep3 = reach === "all" || resourceIdsInput.trim().length > 0;
   const canSubmit = testResult?.ok === true && !saveMutation.isPending;
 
+  const testState: TestConnectionState = isTesting
+    ? "testing"
+    : testResult === null
+      ? "idle"
+      : testResult.ok
+        ? "success"
+        : "error";
+  const testErrorMessage =
+    testResult?.error || "Failed to reach connector service. Check credentials.";
+
+  const toolStep = (
+    <Card withBorder radius="lg" padding="lg">
+      <Stack gap="md">
+        <Group justify="space-between" align="center" wrap="wrap" gap="sm">
+          <div>
+            <Text fw={600} size="sm">
+              Select Tool
+            </Text>
+            <Text size="xs" c="dimmed">
+              Choose an external tool, integration, or Model Context Protocol endpoint.
+            </Text>
+          </div>
+          <Input
+            placeholder="Filter tools..."
+            leftSection={<IconSearch size={16} aria-hidden="true" />}
+            size="sm"
+            value={toolSearch}
+            onChange={(e) => setToolSearch(e.target.value)}
+            style={{ width: 220 }}
+          />
+        </Group>
+
+        {filteredTools.length === 0 ? (
+          <Card withBorder radius="md" padding="md">
+            <Text c="dimmed" size="sm" ta="center">
+              No connectors found matching &ldquo;{toolSearch}&rdquo;.
+            </Text>
+          </Card>
+        ) : (
+          <BrandTileGrid
+            items={filteredTools}
+            selectedId={selectedTool}
+            onSelect={handleSelectTool}
+            kind="connector"
+          />
+        )}
+
+        <Group justify="space-between" mt="md">
+          <Button component={Link} to="/connectors" variant="subtle">
+            Cancel
+          </Button>
+          <Button
+            disabled={!canProceedStep1}
+            onClick={() => setActiveStep(1)}
+          >
+            Continue
+          </Button>
+        </Group>
+      </Stack>
+    </Card>
+  );
+
+  const authStep = (
+    <Card withBorder radius="lg" padding="lg">
+      <Stack gap="md">
+        <Group gap="md">
+          <BrandMark brand={selectedToolInfo.id} size={40} />
+          <Stack gap={2}>
+            <Text fw={600} size="lg">
+              {selectedToolInfo.name} Authentication
+            </Text>
+            <Text size="xs" c="dimmed">
+              {selectedToolInfo.description}
+            </Text>
+          </Stack>
+        </Group>
+
+        {selectedTool === "mcp" ? (
+          <>
+            <Input
+              label="MCP Server Endpoint URL"
+              required
+              size="md"
+              description="HTTP SSE URL or WebSocket server providing Model Context Protocol tools."
+              placeholder="http://localhost:8000/sse"
+              value={serverEndpoint}
+              onChange={(e) => {
+                setServerEndpoint(e.target.value);
+                setTestResult(null);
+              }}
+            />
+            <PasswordInput
+              label="Bearer Token (Optional)"
+              size="md"
+              description="Sent in the Authorization header for protected endpoints."
+              placeholder="Bearer token or secret"
+              value={authToken}
+              onChange={(e) => {
+                setAuthToken(e.target.value);
+                setTestResult(null);
+              }}
+            />
+          </>
+        ) : selectedTool === "github" ? (
+          <PasswordInput
+            label="GitHub Personal Access Token"
+            required
+            size="md"
+            description="Token with repo, read:org, and workflow scopes. Used only to test the connection."
+            placeholder="ghp_..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "gitlab" ? (
+          <>
+            <Input
+              label="GitLab Host URL (Optional)"
+              size="md"
+              description="Defaults to https://gitlab.com. Enter your self-hosted URL if applicable."
+              placeholder="https://gitlab.example.com"
+              value={serverEndpoint}
+              onChange={(e) => {
+                setServerEndpoint(e.target.value);
+                setTestResult(null);
+              }}
+            />
+            <PasswordInput
+              label="GitLab Personal Access Token"
+              required
+              size="md"
+              description="Token with api or read_api scopes. Used only to test the connection."
+              placeholder="glpat-..."
+              value={authToken}
+              onChange={(e) => {
+                setAuthToken(e.target.value);
+                setTestResult(null);
+              }}
+            />
+          </>
+        ) : selectedTool === "slack" ? (
+          <PasswordInput
+            label="Slack Bot Token"
+            required
+            size="md"
+            description="OAuth Bot User token starting with xoxb-."
+            placeholder="xoxb-..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "discord" ? (
+          <PasswordInput
+            label="Discord Bot Token"
+            required
+            size="md"
+            description="Bot user token from the Discord Developer Portal."
+            placeholder="MTE..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "supabase" ? (
+          <>
+            <Input
+              label="Supabase Project URL"
+              required
+              size="md"
+              description="Your project API URL (e.g. https://xyzcompany.supabase.co)."
+              placeholder="https://your-project.supabase.co"
+              value={serverEndpoint}
+              onChange={(e) => {
+                setServerEndpoint(e.target.value);
+                setTestResult(null);
+              }}
+            />
+            <PasswordInput
+              label="Supabase Service Role Key or API Key"
+              required
+              size="md"
+              description="Secret service role key for database operations."
+              placeholder="eyJhbGciOi..."
+              value={authToken}
+              onChange={(e) => {
+                setAuthToken(e.target.value);
+                setTestResult(null);
+              }}
+            />
+          </>
+        ) : selectedTool === "stripe" ? (
+          <PasswordInput
+            label="Stripe Secret API Key"
+            required
+            size="md"
+            description="Restricted or secret key starting with sk_live_ or sk_test_."
+            placeholder="sk_live_..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "hubspot" ? (
+          <PasswordInput
+            label="HubSpot Private App Access Token"
+            required
+            size="md"
+            description="Private app token with CRM scopes starting with pat-."
+            placeholder="pat-na1-..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "asana" ? (
+          <PasswordInput
+            label="Asana Personal Access Token"
+            required
+            size="md"
+            description="Personal access token generated from Asana developer console."
+            placeholder="1/120..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "sentry" ? (
+          <>
+            <Input
+              label="Sentry Organization Slug"
+              required
+              size="md"
+              description="The slug identifier of your Sentry organization."
+              placeholder="my-org"
+              value={serverEndpoint}
+              onChange={(e) => {
+                setServerEndpoint(e.target.value);
+                setTestResult(null);
+              }}
+            />
+            <PasswordInput
+              label="Sentry User Auth Token"
+              required
+              size="md"
+              description="User or custom integration token starting with sntrys_."
+              placeholder="sntrys_..."
+              value={authToken}
+              onChange={(e) => {
+                setAuthToken(e.target.value);
+                setTestResult(null);
+              }}
+            />
+          </>
+        ) : selectedTool === "notion" ? (
+          <PasswordInput
+            label="Notion Integration Secret"
+            required
+            size="md"
+            description="Internal integration token starting with secret_."
+            placeholder="secret_..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "linear" ? (
+          <PasswordInput
+            label="Linear API Key"
+            required
+            size="md"
+            description="Personal API key starting with lin_api_."
+            placeholder="lin_api_..."
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        ) : selectedTool === "jira" ? (
+          <>
+            <Input
+              label="Atlassian Cloud Site URL"
+              required
+              size="md"
+              description="Your Jira cloud workspace URL."
+              placeholder="https://company.atlassian.net"
+              value={serverEndpoint}
+              onChange={(e) => {
+                setServerEndpoint(e.target.value);
+                setTestResult(null);
+              }}
+            />
+            <PasswordInput
+              label="Atlassian API Token"
+              required
+              size="md"
+              description="API token generated from your Atlassian account security page."
+              placeholder="API token"
+              value={authToken}
+              onChange={(e) => {
+                setAuthToken(e.target.value);
+                setTestResult(null);
+              }}
+            />
+          </>
+        ) : (
+          <PasswordInput
+            label="OAuth Client Secret or Token"
+            size="md"
+            description="API key or OAuth credential for service authentication."
+            placeholder="API Key / Token"
+            value={authToken}
+            onChange={(e) => {
+              setAuthToken(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        )}
+
+        <Group justify="space-between" mt="md">
+          {mode === "create" ? (
+            <Button
+              variant="subtle"
+              leftSection={<IconArrowLeft size={16} />}
+              onClick={() => setActiveStep(0)}
+            >
+              Back
+            </Button>
+          ) : (
+            <Button component={Link} to="/connectors" variant="subtle">
+              Cancel
+            </Button>
+          )}
+          <Button
+            disabled={!canProceedStep2}
+            onClick={() => setActiveStep(2)}
+          >
+            Continue
+          </Button>
+        </Group>
+      </Stack>
+    </Card>
+  );
+
+  const permissionsStep = (
+    <Card withBorder radius="lg" padding="lg">
+      <Stack gap="md">
+        <Title order={3} size="h4">
+          Permissions & Scope
+        </Title>
+
+        <div>
+          <Text fw={600} size="sm" mb={4}>
+            Reach
+          </Text>
+          <Text size="xs" c="dimmed" mb="xs">
+            Determine whether agents can access all resources in this tool or only specific items.
+          </Text>
+          <Radio.Group
+            value={reach}
+            onChange={(val) => {
+              setReach(val as "all" | "these");
+              setTestResult(null);
+            }}
+          >
+            <Stack gap="xs">
+              <Radio
+                value="all"
+                label="All resources in this tool"
+                description="Agents can read and interact with all items accessible to this token."
+              />
+              <Radio
+                value="these"
+                label="Only these specific resources"
+                description="Restrict access strictly to the IDs or repository names listed below."
+              />
+            </Stack>
+          </Radio.Group>
+        </div>
+
+        {reach === "these" && (
+          <Input
+            label="Resource IDs"
+            size="md"
+            description="Comma-separated IDs or repository names (e.g. org/repo, #general, team-calendar)."
+            placeholder="e.g. upmo/web, #general, team-calendar"
+            value={resourceIdsInput}
+            onChange={(e) => {
+              setResourceIdsInput(e.target.value);
+              setTestResult(null);
+            }}
+          />
+        )}
+
+        <div>
+          <Text fw={600} size="sm" mb={4}>
+            Changes policy
+          </Text>
+          <Text size="xs" c="dimmed" mb="xs">
+            How should write or modification operations (e.g. sending messages, creating pull requests) be handled?
+          </Text>
+          <Radio.Group
+            value={changesPolicy}
+            onChange={(val) => {
+              setChangesPolicy(val as "ask" | "allow" | "block");
+              setTestResult(null);
+            }}
+          >
+            <Stack gap="xs">
+              <Radio
+                value="ask"
+                label="Ask first"
+                description="Human confirmation is required before mutating any resource."
+              />
+              <Radio
+                value="allow"
+                label="Allow"
+                description="Agents can perform edits directly without requesting manual approval."
+              />
+              <Radio
+                value="block"
+                label="Block"
+                description="Read-only mode. All write, update, or delete operations are rejected."
+              />
+            </Stack>
+          </Radio.Group>
+        </div>
+
+        <Group justify="space-between" mt="md">
+          <Button
+            variant="subtle"
+            leftSection={<IconArrowLeft size={16} />}
+            onClick={() => setActiveStep(1)}
+          >
+            Back
+          </Button>
+          <Button
+            disabled={!canProceedStep3}
+            onClick={() => setActiveStep(3)}
+          >
+            Continue
+          </Button>
+        </Group>
+      </Stack>
+    </Card>
+  );
+
+  const validationStep = (
+    <Stack gap="lg">
+      <Card withBorder radius="lg" padding="lg">
+        <Stack gap="md">
+          <Title order={3} size="h4">
+            Review Permissions
+          </Title>
+
+          <Group justify="space-between" align="center">
+            <Group gap="md">
+              <BrandMark brand={selectedToolInfo.id} size={40} />
+              <Stack gap={2}>
+                <Text fw={600} size="md">
+                  {selectedToolInfo.name}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {selectedToolInfo.description}
+                </Text>
+              </Stack>
+            </Group>
+            <Badge variant="light" color={changesPolicy === "block" ? "gray" : "teal"}>
+              Policy: {changesPolicy.toUpperCase()}
+            </Badge>
+          </Group>
+
+          <Group gap="xs">
+            <Badge size="xs" variant="outline">
+              Reach: {reach === "all" ? "All resources" : "Scoped"}
+            </Badge>
+            {reach === "these" && (
+              <Badge size="xs" variant="default">
+                {resourceIdsInput}
+              </Badge>
+            )}
+          </Group>
+        </Stack>
+      </Card>
+
+      <Card withBorder radius="lg" padding="lg">
+        <Stack gap="md">
+          <div>
+            <Text fw={600} size="sm">
+              Connection Verification
+            </Text>
+            <Text size="xs" c="dimmed">
+              Verify connectivity and credentials with {selectedToolInfo.name} before saving.
+            </Text>
+          </div>
+
+          <TestConnectionPanel
+            state={testState}
+            onTest={runTestConnection}
+            latencyMs={testResult?.latency_ms}
+            error={testResult?.ok === false ? testErrorMessage : undefined}
+          />
+        </Stack>
+      </Card>
+
+      <Group justify="space-between" mt="md">
+        <Button
+          variant="subtle"
+          leftSection={<IconArrowLeft size={16} />}
+          onClick={() => setActiveStep(2)}
+        >
+          Back
+        </Button>
+        <Group gap="xs">
+          <Button component={Link} to="/connectors" variant="subtle">
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={!canSubmit}
+            loading={saveMutation.isPending}
+            onClick={() => saveMutation.mutate()}
+          >
+            {mode === "create" ? "Connect tool" : "Save permissions"}
+          </Button>
+        </Group>
+      </Group>
+
+      {!canSubmit && (
+        <Text size="xs" c="dimmed" ta="right">
+          {testResult?.ok !== true
+            ? "You must run a passing connection test before connecting this tool."
+            : ""}
+        </Text>
+      )}
+    </Stack>
+  );
+
   return (
     <Stack gap="xl" className="identity-page" w="100%">
       <Group justify="space-between" align="flex-start" wrap="nowrap">
@@ -213,637 +755,16 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
         </StatusAlert>
       ) : null}
 
-      <Card withBorder radius="lg" padding="md">
-        <Stepper
-          active={activeStep}
-          allowNextStepsSelect={false}
-          completedIcon={<IconCheck size={16} stroke={2} />}
-          onStepClick={(step) => {
-            if (step < activeStep) {
-              setActiveStep(step);
-            }
-          }}
-          size="sm"
-        >
-          <Stepper.Step label="Tool" description="Select service" disabled={mode === "edit"} />
-          <Stepper.Step label="Authentication" description="Credentials & URL" />
-          <Stepper.Step label="Permissions" description="Scope & changes" />
-          <Stepper.Step label="Validation" description="Test connection" />
-        </Stepper>
-      </Card>
-
-      {/* STEP 1: Select Tool */}
-      {activeStep === 0 && (
-        <Card withBorder radius="lg" padding="lg">
-          <Stack gap="md">
-            <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-              <div>
-                <Text fw={600} size="sm">
-                  Select Tool
-                </Text>
-                <Text size="xs" c="dimmed">
-                  Choose an external tool, integration, or Model Context Protocol endpoint.
-                </Text>
-              </div>
-              <Input
-                placeholder="Filter tools..."
-                leftSection={<IconSearch size={16} aria-hidden="true" />}
-                size="sm"
-                value={toolSearch}
-                onChange={(e) => setToolSearch(e.target.value)}
-                style={{ width: 220 }}
-              />
-            </Group>
-
-            {filteredTools.length === 0 ? (
-              <Card withBorder radius="md" padding="md">
-                <Text c="dimmed" size="sm" ta="center">
-                  No connectors found matching &ldquo;{toolSearch}&rdquo;.
-                </Text>
-              </Card>
-            ) : (
-              <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
-                {filteredTools.map((tool) => {
-                const isSelected = selectedTool === tool.id;
-                return (
-                  <UnstyledButton
-                    key={tool.id}
-                    type="button"
-                    onClick={() => handleSelectTool(tool.id)}
-                    style={{
-                      padding: "16px 12px",
-                      borderRadius: "var(--radius-lg)",
-                      border: isSelected
-                        ? "2px solid var(--emerald-deep)"
-                        : "1px solid var(--border-strong)",
-                      background: isSelected
-                        ? "var(--surface-selected)"
-                        : "var(--surface-100)",
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      gap: 8,
-                      textAlign: "center",
-                      transition: "border-color 120ms ease, background 120ms ease",
-                    }}
-                    aria-label={tool.name}
-                    aria-pressed={isSelected}
-                  >
-                    <Group justify="space-between" w="100%" px={4}>
-                      <div
-                        style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: "var(--radius-full)",
-                          border: isSelected
-                            ? "4px solid var(--emerald-deep)"
-                            : "1.5px solid var(--border-strong)",
-                          background: "var(--surface-100)",
-                        }}
-                      />
-                    </Group>
-                    <BrandMark brand={tool.id} size={36} />
-                    <Text size="sm" fw={600} lineClamp={1}>
-                      {tool.name}
-                    </Text>
-                    <Text size="11px" c="dimmed" lineClamp={2}>
-                      {tool.description}
-                    </Text>
-                  </UnstyledButton>
-                );
-              })}
-            </SimpleGrid>
-            )}
-
-            <Group justify="space-between" mt="md">
-              <Button component={Link} to="/connectors" variant="subtle">
-                Cancel
-              </Button>
-              <Button
-                disabled={!canProceedStep1}
-                onClick={() => setActiveStep(1)}
-              >
-                Continue
-              </Button>
-            </Group>
-          </Stack>
-        </Card>
-      )}
-
-      {/* STEP 2: Authentication & Credentials */}
-      {activeStep === 1 && (
-        <Card withBorder radius="lg" padding="lg">
-          <Stack gap="md">
-            <Group gap="md">
-              <BrandMark brand={selectedToolInfo.id} size={40} />
-              <Stack gap={2}>
-                <Text fw={600} size="lg">
-                  {selectedToolInfo.name} Authentication
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {selectedToolInfo.description}
-                </Text>
-              </Stack>
-            </Group>
-
-            {selectedTool === "mcp" ? (
-              <>
-                <Input
-                  label="MCP Server Endpoint URL"
-                  required
-                  size="md"
-                  description="HTTP SSE URL or WebSocket server providing Model Context Protocol tools."
-                  placeholder="http://localhost:8000/sse"
-                  value={serverEndpoint}
-                  onChange={(e) => {
-                    setServerEndpoint(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-                <PasswordInput
-                  label="Bearer Token (Optional)"
-                  size="md"
-                  description="Sent in the Authorization header for protected endpoints."
-                  placeholder="Bearer token or secret"
-                  value={authToken}
-                  onChange={(e) => {
-                    setAuthToken(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-              </>
-            ) : selectedTool === "github" ? (
-              <PasswordInput
-                label="GitHub Personal Access Token"
-                required
-                size="md"
-                description="Token with repo, read:org, and workflow scopes. Stored encrypted."
-                placeholder="ghp_..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "gitlab" ? (
-              <>
-                <Input
-                  label="GitLab Host URL (Optional)"
-                  size="md"
-                  description="Defaults to https://gitlab.com. Enter your self-hosted URL if applicable."
-                  placeholder="https://gitlab.example.com"
-                  value={serverEndpoint}
-                  onChange={(e) => {
-                    setServerEndpoint(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-                <PasswordInput
-                  label="GitLab Personal Access Token"
-                  required
-                  size="md"
-                  description="Token with api or read_api scopes. Stored encrypted."
-                  placeholder="glpat-..."
-                  value={authToken}
-                  onChange={(e) => {
-                    setAuthToken(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-              </>
-            ) : selectedTool === "slack" ? (
-              <PasswordInput
-                label="Slack Bot Token"
-                required
-                size="md"
-                description="OAuth Bot User token starting with xoxb-."
-                placeholder="xoxb-..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "discord" ? (
-              <PasswordInput
-                label="Discord Bot Token"
-                required
-                size="md"
-                description="Bot user token from the Discord Developer Portal."
-                placeholder="MTE..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "supabase" ? (
-              <>
-                <Input
-                  label="Supabase Project URL"
-                  required
-                  size="md"
-                  description="Your project API URL (e.g. https://xyzcompany.supabase.co)."
-                  placeholder="https://your-project.supabase.co"
-                  value={serverEndpoint}
-                  onChange={(e) => {
-                    setServerEndpoint(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-                <PasswordInput
-                  label="Supabase Service Role Key or API Key"
-                  required
-                  size="md"
-                  description="Secret service role key for database operations."
-                  placeholder="eyJhbGciOi..."
-                  value={authToken}
-                  onChange={(e) => {
-                    setAuthToken(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-              </>
-            ) : selectedTool === "stripe" ? (
-              <PasswordInput
-                label="Stripe Secret API Key"
-                required
-                size="md"
-                description="Restricted or secret key starting with sk_live_ or sk_test_."
-                placeholder="sk_live_..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "hubspot" ? (
-              <PasswordInput
-                label="HubSpot Private App Access Token"
-                required
-                size="md"
-                description="Private app token with CRM scopes starting with pat-."
-                placeholder="pat-na1-..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "asana" ? (
-              <PasswordInput
-                label="Asana Personal Access Token"
-                required
-                size="md"
-                description="Personal access token generated from Asana developer console."
-                placeholder="1/120..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "sentry" ? (
-              <>
-                <Input
-                  label="Sentry Organization Slug"
-                  required
-                  size="md"
-                  description="The slug identifier of your Sentry organization."
-                  placeholder="my-org"
-                  value={serverEndpoint}
-                  onChange={(e) => {
-                    setServerEndpoint(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-                <PasswordInput
-                  label="Sentry User Auth Token"
-                  required
-                  size="md"
-                  description="User or custom integration token starting with sntrys_."
-                  placeholder="sntrys_..."
-                  value={authToken}
-                  onChange={(e) => {
-                    setAuthToken(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-              </>
-            ) : selectedTool === "notion" ? (
-              <PasswordInput
-                label="Notion Integration Secret"
-                required
-                size="md"
-                description="Internal integration token starting with secret_."
-                placeholder="secret_..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "linear" ? (
-              <PasswordInput
-                label="Linear API Key"
-                required
-                size="md"
-                description="Personal API key starting with lin_api_."
-                placeholder="lin_api_..."
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            ) : selectedTool === "jira" ? (
-              <>
-                <Input
-                  label="Atlassian Cloud Site URL"
-                  required
-                  size="md"
-                  description="Your Jira cloud workspace URL."
-                  placeholder="https://company.atlassian.net"
-                  value={serverEndpoint}
-                  onChange={(e) => {
-                    setServerEndpoint(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-                <PasswordInput
-                  label="Atlassian API Token"
-                  required
-                  size="md"
-                  description="API token generated from your Atlassian account security page."
-                  placeholder="API token"
-                  value={authToken}
-                  onChange={(e) => {
-                    setAuthToken(e.target.value);
-                    setTestResult(null);
-                  }}
-                />
-              </>
-            ) : (
-              <PasswordInput
-                label="OAuth Client Secret or Token"
-                size="md"
-                description="API key or OAuth credential for service authentication."
-                placeholder="API Key / Token"
-                value={authToken}
-                onChange={(e) => {
-                  setAuthToken(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            )}
-
-            <Group justify="space-between" mt="md">
-              {mode === "create" ? (
-                <Button
-                  variant="subtle"
-                  leftSection={<IconArrowLeft size={16} />}
-                  onClick={() => setActiveStep(0)}
-                >
-                  Back
-                </Button>
-              ) : (
-                <Button component={Link} to="/connectors" variant="subtle">
-                  Cancel
-                </Button>
-              )}
-              <Button
-                disabled={!canProceedStep2}
-                onClick={() => setActiveStep(2)}
-              >
-                Continue
-              </Button>
-            </Group>
-          </Stack>
-        </Card>
-      )}
-
-      {/* STEP 3: Permissions & Policies */}
-      {activeStep === 2 && (
-        <Card withBorder radius="lg" padding="lg">
-          <Stack gap="md">
-            <Title order={3} size="h4">
-              Permissions & Scope
-            </Title>
-
-            <div>
-              <Text fw={600} size="sm" mb={4}>
-                Reach
-              </Text>
-              <Text size="xs" c="dimmed" mb="xs">
-                Determine whether agents can access all resources in this tool or only specific items.
-              </Text>
-              <Radio.Group
-                value={reach}
-                onChange={(val) => {
-                  setReach(val as "all" | "these");
-                  setTestResult(null);
-                }}
-              >
-                <Stack gap="xs">
-                  <Radio
-                    value="all"
-                    label="All resources in this tool"
-                    description="Agents can read and interact with all items accessible to this token."
-                  />
-                  <Radio
-                    value="these"
-                    label="Only these specific resources"
-                    description="Restrict access strictly to the IDs or repository names listed below."
-                  />
-                </Stack>
-              </Radio.Group>
-            </div>
-
-            {reach === "these" && (
-              <Input
-                label="Resource IDs"
-                size="md"
-                description="Comma-separated IDs or repository names (e.g. org/repo, #general, team-calendar)."
-                placeholder="e.g. upmo/web, #general, team-calendar"
-                value={resourceIdsInput}
-                onChange={(e) => {
-                  setResourceIdsInput(e.target.value);
-                  setTestResult(null);
-                }}
-              />
-            )}
-
-            <div>
-              <Text fw={600} size="sm" mb={4}>
-                Changes policy
-              </Text>
-              <Text size="xs" c="dimmed" mb="xs">
-                How should write or modification operations (e.g. sending messages, creating pull requests) be handled?
-              </Text>
-              <Radio.Group
-                value={changesPolicy}
-                onChange={(val) => {
-                  setChangesPolicy(val as "ask" | "allow" | "block");
-                  setTestResult(null);
-                }}
-              >
-                <Stack gap="xs">
-                  <Radio
-                    value="ask"
-                    label="Ask first"
-                    description="Human confirmation is required before mutating any resource."
-                  />
-                  <Radio
-                    value="allow"
-                    label="Allow"
-                    description="Agents can perform edits directly without requesting manual approval."
-                  />
-                  <Radio
-                    value="block"
-                    label="Block"
-                    description="Read-only mode. All write, update, or delete operations are rejected."
-                  />
-                </Stack>
-              </Radio.Group>
-            </div>
-
-            <Group justify="space-between" mt="md">
-              <Button
-                variant="subtle"
-                leftSection={<IconArrowLeft size={16} />}
-                onClick={() => setActiveStep(1)}
-              >
-                Back
-              </Button>
-              <Button
-                disabled={!canProceedStep3}
-                onClick={() => setActiveStep(3)}
-              >
-                Continue
-              </Button>
-            </Group>
-          </Stack>
-        </Card>
-      )}
-
-      {/* STEP 4: Validation & Connect */}
-      {activeStep === 3 && (
-        <Stack gap="lg">
-          <Card withBorder radius="lg" padding="lg">
-            <Stack gap="md">
-              <Title order={3} size="h4">
-                Review Permissions
-              </Title>
-
-              <Group justify="space-between" align="center">
-                <Group gap="md">
-                  <BrandMark brand={selectedToolInfo.id} size={40} />
-                  <Stack gap={2}>
-                    <Text fw={600} size="md">
-                      {selectedToolInfo.name}
-                    </Text>
-                    <Text size="xs" c="dimmed">
-                      {selectedToolInfo.description}
-                    </Text>
-                  </Stack>
-                </Group>
-                <Badge variant="light" color={changesPolicy === "block" ? "gray" : "teal"}>
-                  Policy: {changesPolicy.toUpperCase()}
-                </Badge>
-              </Group>
-
-              <Group gap="xs">
-                <Badge size="xs" variant="outline">
-                  Reach: {reach === "all" ? "All resources" : "Scoped"}
-                </Badge>
-                {reach === "these" && (
-                  <Badge size="xs" variant="default">
-                    {resourceIdsInput}
-                  </Badge>
-                )}
-              </Group>
-            </Stack>
-          </Card>
-
-          <Card withBorder radius="lg" padding="lg">
-            <Stack gap="md">
-              <Group justify="space-between" align="center">
-                <div>
-                  <Text fw={600} size="sm">
-                    Connection Verification
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    Verify connectivity and credentials with {selectedToolInfo.name} before saving.
-                  </Text>
-                </div>
-                <Button
-                  variant="outline"
-                  leftSection={<IconActivity size={16} />}
-                  loading={isTesting}
-                  onClick={runTestConnection}
-                >
-                  Test Connection
-                </Button>
-              </Group>
-
-              {testResult === null && !isTesting && (
-                <StatusAlert tone="info" title="Ready to test">
-                  Click &ldquo;Test Connection&rdquo; to probe the connector and verify authentication.
-                </StatusAlert>
-              )}
-
-              {isTesting && (
-                <StatusAlert tone="info" icon={<Spinner size={16} />} title="Testing connection">
-                  Pinging connector service and verifying credentials...
-                </StatusAlert>
-              )}
-
-              {testResult !== null && testResult.ok && (
-                <StatusAlert tone="positive" title="Connection verified">
-                  Handshake verified successfully with {testResult.latency_ms ?? 92} ms latency.
-                </StatusAlert>
-              )}
-
-              {testResult !== null && !testResult.ok && (
-                <StatusAlert tone="critical" title="Connection failed">
-                  {testResult.error || "Failed to reach connector service. Check credentials."}
-                </StatusAlert>
-              )}
-            </Stack>
-          </Card>
-
-          <Group justify="space-between" mt="md">
-            <Button
-              variant="subtle"
-              leftSection={<IconArrowLeft size={16} />}
-              onClick={() => setActiveStep(2)}
-            >
-              Back
-            </Button>
-            <Group gap="xs">
-              <Button component={Link} to="/connectors" variant="subtle">
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                disabled={!canSubmit}
-                loading={saveMutation.isPending}
-                onClick={() => saveMutation.mutate()}
-              >
-                {mode === "create" ? "Connect tool" : "Save permissions"}
-              </Button>
-            </Group>
-          </Group>
-
-          {!canSubmit && (
-            <Text size="xs" c="dimmed" ta="right">
-              {testResult?.ok !== true
-                ? "You must run a passing connection test before connecting this tool."
-                : ""}
-            </Text>
-          )}
-        </Stack>
-      )}
+      <ConnectWizard
+        active={activeStep}
+        onStepChange={setActiveStep}
+        steps={[
+          { label: "Tool", description: "Select service", disabled: mode === "edit", content: toolStep },
+          { label: "Authentication", description: "Credentials & URL", content: authStep },
+          { label: "Permissions", description: "Scope & changes", content: permissionsStep },
+          { label: "Validation", description: "Test connection", content: validationStep },
+        ]}
+      />
     </Stack>
   );
 }
