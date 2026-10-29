@@ -1,12 +1,11 @@
 import { Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconCpu, IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
+import { IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Badge, Button, ConfirmDialog, Input } from "@upmo-ai/components";
+import { Button, ConfirmDialog, Input, ProviderCard } from "@upmo-ai/components";
 
 import { PROVIDERS_KEY, providersQueryKey, useApi, type ProviderAccount } from "../../app/api";
-import { BrandMark } from "../../ui/brand-mark";
 
 export interface KnownProvider {
   id: string;
@@ -216,6 +215,7 @@ function ProvidersView({
 }) {
   const api = useApi();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const providersQuery = useQuery({
     queryKey: live ? ["providers-live-data"] : providersQueryKey(),
@@ -266,20 +266,6 @@ function ProvidersView({
       prov.models.some((m) => m.toLowerCase().includes(q))
     );
   });
-
-  const statusColor = (status: ProviderAccount["status"]) => {
-    switch (status) {
-      case "Connected":
-        return "teal";
-      case "Rate limited":
-        return "yellow";
-      case "Key rejected":
-        return "red";
-      case "Offline":
-      default:
-        return "gray";
-    }
-  };
 
   return (
     <Stack gap="lg" className="identity-page">
@@ -340,88 +326,25 @@ function ProvidersView({
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
           {filteredProviders.map((prov) => (
-            <Card
+            <ProviderCard
               key={prov.id}
-              withBorder
-              radius="lg"
-              padding="md"
               data-testid={`provider-card-${prov.id}`}
-            >
-              <Stack justify="space-between" h="100%" gap="md">
-                <Stack gap="sm">
-                  <Group justify="space-between" align="flex-start" wrap="nowrap">
-                    <Group gap="sm" wrap="nowrap">
-                      <BrandMark brand={prov.provider} size={32} />
-                      <Stack gap={0}>
-                        <Text fw={600} size="md">
-                          {prov.name}
-                        </Text>
-                        <Text size="xs" c="dimmed">
-                          {prov.adapter}
-                        </Text>
-                      </Stack>
-                    </Group>
-                    <Badge variant="light" color={statusColor(prov.status)} radius="xl" style={{ flexShrink: 0 }}>
-                      {prov.status}
-                    </Badge>
-                  </Group>
-
-                  <Stack gap="xs" mt="xs">
-                    <Group justify="space-between" align="center">
-                      <Text size="xs" c="dimmed">
-                        Plan
-                      </Text>
-                      <Badge variant="outline" size="sm">
-                        {prov.plan_kind}
-                      </Badge>
-                    </Group>
-
-                    {prov.base_url && (
-                      <Group justify="space-between" align="center">
-                        <Text size="xs" c="dimmed">
-                          Endpoint
-                        </Text>
-                        <Text size="xs" ff="monospace">
-                          {prov.base_url}
-                        </Text>
-                      </Group>
-                    )}
-
-                    <Stack gap={4}>
-                      <Text size="xs" c="dimmed">
-                        Models
-                      </Text>
-                      <Group gap={4}>
-                        {prov.models.map((model) => (
-                          <Badge key={model} size="xs" variant="default" leftSection={<IconCpu size={10} />}>
-                            {model}
-                          </Badge>
-                        ))}
-                      </Group>
-                    </Stack>
-                  </Stack>
-                </Stack>
-
-                <Group justify="flex-end" gap="xs">
-                  <Button
-                    component={Link}
-                    to={`/providers/${prov.id}/edit` as any}
-                    variant="default"
-                    size="xs"
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="subtle"
-                    color="red"
-                    size="xs"
-                    onClick={() => setDisconnectTarget(prov)}
-                  >
-                    Disconnect
-                  </Button>
-                </Group>
-              </Stack>
-            </Card>
+              id={prov.id}
+              brand={prov.provider}
+              name={prov.name}
+              adapter={prov.adapter}
+              status={prov.status}
+              planKind={prov.plan_kind}
+              baseUrl={prov.base_url}
+              models={prov.models}
+              onEdit={() =>
+                void navigate({
+                  to: "/providers/$providerId/edit",
+                  params: { providerId: prov.id },
+                })
+              }
+              onDisconnect={() => setDisconnectTarget(prov)}
+            />
           ))}
         </SimpleGrid>
       )}
