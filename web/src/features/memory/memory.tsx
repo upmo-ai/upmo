@@ -1,9 +1,19 @@
-import { Group, Stack, Text, Title } from "@mantine/core";
+import { Group, Stack, Text, Title, VisuallyHidden } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { Button, ConfirmDialog, IconButton, Input, Textarea } from "@upmo-ai/components";
+import {
+  Button,
+  ConfirmDialog,
+  DataTable,
+  EmptyState,
+  IconButton,
+  Input,
+  PageHeader,
+  StatusAlert,
+  Textarea,
+  type DataTableColumn,
+} from "@upmo-ai/components";
 
-import { EmptyState } from "../../ui/section";
-import { ShellIcon, type ShellConcept } from "../../ui/icons";
+import { CaretIcon, ShellIcon, type ShellConcept } from "../../ui/icons";
 
 import "./memory.css";
 
@@ -22,14 +32,16 @@ type Page = {
 function IconAction({
   label,
   concept,
+  disabled,
   onClick,
 }: {
   label: string;
   concept: Extract<ShellConcept, "action.edit" | "action.delete">;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
-    <IconButton aria-label={label} variant="subtle" size={40} onClick={onClick}>
+    <IconButton aria-label={label} variant="subtle" size={40} disabled={disabled} onClick={onClick}>
       <ShellIcon concept={concept} />
     </IconButton>
   );
@@ -65,6 +77,7 @@ function source(fact: Fact): string {
 
 export function PersonalisationPage() {
   const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [message, setMessage] = useState("");
   const [profile, setProfile] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
@@ -81,6 +94,7 @@ export function PersonalisationPage() {
     const page = await read<Page>(await send("/api/personalization", "GET"));
     setProfile(page.profile);
     setFacts(page.facts ?? []);
+    setLoadFailed(false);
     setLoaded(true);
   };
 
@@ -97,6 +111,7 @@ export function PersonalisationPage() {
       .catch((err: unknown) => {
         if (!live) return;
         setMessage(err instanceof Error ? err.message : "Personalisation could not be loaded");
+        setLoadFailed(true);
         setLoaded(true);
       });
     return () => {
@@ -113,27 +128,88 @@ export function PersonalisationPage() {
     }
   };
 
+  const columns: DataTableColumn<Fact>[] = [
+    {
+      key: "claim",
+      header: "Fact",
+      render: (fact) =>
+        editId === fact.id ? (
+          <Stack gap="sm">
+            <Textarea
+              aria-label="Fact"
+              minRows={2}
+              value={editDraft}
+              onChange={(event) => setEditDraft(event.currentTarget.value)}
+            />
+            <Group gap="xs">
+              <Button
+                size="compact-sm"
+                onClick={() => {
+                  const claim = editDraft.trim();
+                  if (claim === "") return;
+                  void run(async () => {
+                    await read(await send(`/api/personalization/facts/${fact.id}`, "PUT", { claim }));
+                    setEditId(null);
+                    await load();
+                  });
+                }}
+              >
+                Save
+              </Button>
+              <Button size="compact-sm" variant="default" onClick={() => setEditId(null)}>
+                Cancel
+              </Button>
+            </Group>
+          </Stack>
+        ) : (
+          <Text>{fact.claim}</Text>
+        ),
+    },
+    {
+      key: "source",
+      header: "Source",
+      render: (fact) => (
+        <Text size="sm" c="dimmed">
+          {source(fact)}
+        </Text>
+      ),
+    },
+    {
+      key: "actions",
+      header: <VisuallyHidden>Actions</VisuallyHidden>,
+      render: (fact) =>
+        editId === fact.id ? null : (
+          <Group gap="xs" wrap="nowrap" justify="flex-end">
+            <IconAction
+              label="Edit fact"
+              concept="action.edit"
+              onClick={() => {
+                setEditId(fact.id);
+                setEditDraft(fact.claim);
+              }}
+            />
+            <IconAction label="Forget fact" concept="action.delete" onClick={() => setForgetId(fact.id)} />
+          </Group>
+        ),
+    },
+  ];
+
   return (
     <Stack gap="lg" className="memory-page">
-      <div>
-        <Title order={1}>Personalisation</Title>
-        <Text c="dimmed" size="sm" mt="xs">
-          What Upmo remembers about you. Facts stay personal. Documents belong in Knowledge.
-        </Text>
-      </div>
-      {message ? (
-        <Text role="alert" c="red">
-          {message}
-        </Text>
-      ) : null}
+      <PageHeader
+        title="Personalisation"
+        description="What Upmo remembers about you. Facts stay personal. Documents belong in Knowledge."
+      />
+      {message ? <StatusAlert tone="critical">{message}</StatusAlert> : null}
 
       <Stack gap="sm">
         <Group justify="space-between" align="flex-start" wrap="wrap">
           <Title order={2}>Profile</Title>
           {editingProfile ? null : (
             <IconAction
-              label="Edit"
+              label="Edit profile"
               concept="action.edit"
+              disabled={loadFailed}
               onClick={() => {
                 setProfileDraft(profile);
                 setEditingProfile(true);
@@ -209,68 +285,14 @@ export function PersonalisationPage() {
             Add
           </Button>
         </form>
-        {loaded && facts.length === 0 ? (
+        {loaded && !loadFailed && facts.length === 0 ? (
           <EmptyState
             title="Nothing remembered yet"
-            body="Upmo keeps facts you tell it and lessons from tasks. You can delete any of them."
+            description="Upmo keeps facts you tell it and lessons from tasks. You can delete any of them."
+            icon={<CaretIcon size={24} />}
           />
-        ) : (
-          <div className="memory-list">
-            {facts.map((fact) => (
-              <div key={fact.id} className="memory-row">
-                {editId === fact.id ? (
-                  <Stack gap="sm">
-                    <Textarea
-                      aria-label="Fact"
-                      minRows={2}
-                      value={editDraft}
-                      onChange={(event) => setEditDraft(event.currentTarget.value)}
-                    />
-                    <Group gap="xs">
-                      <Button
-                        size="compact-sm"
-                        onClick={() => {
-                          const claim = editDraft.trim();
-                          if (claim === "") return;
-                          void run(async () => {
-                            await read(await send(`/api/personalization/facts/${fact.id}`, "PUT", { claim }));
-                            setEditId(null);
-                            await load();
-                          });
-                        }}
-                      >
-                        Save
-                      </Button>
-                      <Button size="compact-sm" variant="default" onClick={() => setEditId(null)}>
-                        Cancel
-                      </Button>
-                    </Group>
-                  </Stack>
-                ) : (
-                  <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
-                    <Stack gap={4}>
-                      <Text>{fact.claim}</Text>
-                      <Text size="sm" c="dimmed">
-                        {source(fact)}
-                      </Text>
-                    </Stack>
-                    <Group gap="xs" wrap="nowrap">
-                      <IconAction
-                        label="Edit"
-                        concept="action.edit"
-                        onClick={() => {
-                          setEditId(fact.id);
-                          setEditDraft(fact.claim);
-                        }}
-                      />
-                      <IconAction label="Forget" concept="action.delete" onClick={() => setForgetId(fact.id)} />
-                    </Group>
-                  </Group>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        ) : null}
+        {facts.length > 0 ? <DataTable columns={columns} rows={facts} rowKey={(fact) => fact.id} /> : null}
       </Stack>
 
       <ConfirmDialog

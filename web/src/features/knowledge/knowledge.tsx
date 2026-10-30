@@ -1,9 +1,8 @@
 import { Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { useState } from "react";
-import { Button } from "@upmo-ai/components";
+import { Button, EmptyState } from "@upmo-ai/components";
 
-import { EmptyState } from "../../ui/section";
-import { ShellIcon } from "../../ui/icons";
+import { CaretIcon, ShellIcon } from "../../ui/icons";
 import { sampleFolders, type Folder } from "./sample";
 
 import "./knowledge.css";
@@ -58,7 +57,8 @@ export function KnowledgePage() {
       {folders.length === 0 ? (
         <EmptyState
           title="Give Upmo something to read"
-          body="Add a folder, then upload files or point to a source. Agents search it when it helps."
+          description="Add a folder, then upload files or point to a source. Agents search it when it helps."
+          icon={<CaretIcon size={24} />}
         />
       ) : (
         <Stack gap="sm">
