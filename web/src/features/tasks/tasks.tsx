@@ -5,7 +5,9 @@ import { useState } from "react";
 import {
   ArtifactViewer,
   BudgetCard,
+  Button,
   DeliveryCard,
+  EmptyState,
   EventStream,
   IconButton,
   PageHeader,
@@ -29,8 +31,7 @@ import {
   type Approval,
 } from "../../app/api";
 import { ShareDialog } from "../identity/share-dialog";
-import { ShellIcon } from "../../ui/icons";
-import { EmptyState } from "../../ui/section";
+import { CaretIcon, ShellIcon } from "../../ui/icons";
 import { ApprovalAnnouncer, ApprovalCard } from "./approval-card";
 import { taskPhase, taskStatus } from "./status";
 import {
@@ -116,8 +117,13 @@ export function TasksPage() {
       {tasks.data && all.length === 0 ? (
         <EmptyState
           title="Your first task"
-          body="Give Upmo a goal. It plans the work, does it and checks the result while you do something else."
-          action={{ label: "Create task", to: "/tasks" }}
+          description="Give Upmo a goal. It plans the work, does it and checks the result while you do something else."
+          icon={<CaretIcon size={24} />}
+          action={
+            <Button component={Link} to="/tasks">
+              Create task
+            </Button>
+          }
           firstRun
         />
       ) : null}

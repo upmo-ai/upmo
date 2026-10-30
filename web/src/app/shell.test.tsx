@@ -238,7 +238,10 @@ describe("app shell", () => {
     expect(target).toBeTruthy();
     expect(target).not.toBe("content");
     expect(document.getElementById(target ?? "")).toBe(screen.getByRole("main"));
-    expect(screen.getByRole("heading", { level: 3, name: "Your first task" }).closest(".empty-state")).toBeTruthy();
+    const empty = document.querySelector(".upmo-empty-state--first-run") as HTMLElement | null;
+    expect(empty).not.toBeNull();
+    expect(within(empty as HTMLElement).getByRole("heading", { level: 3, name: "Your first task" })).toBeTruthy();
+    expect(within(empty as HTMLElement).getByRole("link", { name: "Create task" })).toBeTruthy();
   });
 
   it("opens navigation from the command launcher", async () => {

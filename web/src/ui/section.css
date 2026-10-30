@@ -1,9 +1,0 @@
-.empty-state {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.empty-state-first-run {
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-lg);
-}

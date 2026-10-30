@@ -34,4 +34,5 @@ node /src/e2e/shell.mjs
 node /src/e2e/chat.mjs
 node /src/e2e/usage.mjs
 node /src/e2e/flows.mjs
+node /src/e2e/memory.mjs
 exec node /src/e2e/identity.mjs
