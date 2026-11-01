@@ -424,7 +424,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
           </Text>
         </div>
 
-        <Table.ScrollContainer minWidth={600} className="u-table-wrap">
+        <Table.ScrollContainer minWidth={600}>
           <Table verticalSpacing="xs" striped highlightOnHover>
             <Table.Thead>
               <Table.Tr>

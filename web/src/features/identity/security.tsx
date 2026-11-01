@@ -1,7 +1,7 @@
 import { Group, Stack, Text, Title } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Button, ConfirmDialog, Input } from "@upmo-ai/components";
+import { Button, ConfirmDialog, Input, PageHeader } from "@upmo-ai/components";
 
 import {
   PASSKEYS_KEY,
@@ -16,6 +16,8 @@ import { addPasskey, confirmWithPasskey, removePasskey, renamePasskey } from "..
 import { formatDate } from "./format";
 import { canRemovePasskey, canRemovePassword, lastPasskeyReason, lastPasswordReason } from "./rules";
 import { RowAction } from "../../ui/icons";
+
+import "./identity.css";
 
 type PasswordMode = "set" | "change" | "remove";
 
@@ -201,7 +203,7 @@ export function SecurityPage() {
 
   return (
     <Stack gap="lg">
-      <Title order={1}>Security</Title>
+      <PageHeader title="Security" />
       {passkeys.isError ? (
         <Text role="alert" c="red">
           {passkeys.error?.message ?? "Failed to load passkeys."}

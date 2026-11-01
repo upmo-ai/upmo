@@ -1,7 +1,7 @@
-import { Group, Stack, Text, Title } from "@mantine/core";
+import { Group, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Badge, Button, Checkbox, ConfirmDialog, Input, Select, Table } from "@upmo-ai/components";
+import { Badge, Button, Checkbox, ConfirmDialog, Input, PageHeader, Select, Table } from "@upmo-ai/components";
 
 import {
   MEMBERS_KEY,
@@ -25,6 +25,8 @@ import {
   isInviteRole,
   ownerLockReason,
 } from "./rules";
+
+import "./identity.css";
 
 const roleLabel: Record<WorkspaceRole, string> = {
   owner: "Owner",
@@ -57,7 +59,7 @@ export function MembersPage() {
   if (probe.isPending) {
     return (
       <Stack gap="lg" className="settings-content">
-        <Title order={1}>Members</Title>
+        <PageHeader title="Members" />
       </Stack>
     );
   }
@@ -115,7 +117,7 @@ function StubMembers() {
 
   return (
     <Stack gap="lg" className="settings-content">
-      <Title order={1}>Members</Title>
+      <PageHeader title="Members" />
       {members.isError ? (
         <Text role="alert" c="red">
           {members.error?.message ?? "Failed to load members."}
@@ -171,8 +173,8 @@ function StubMembers() {
         </form>
       ) : null}
       {members.data && actor && me.data ? (
-        <Table.ScrollContainer minWidth={560} className="u-table-wrap">
-          <Table stickyHeader highlightOnHover verticalSpacing="sm" className="u-table members-table" aria-label="Members">
+        <Table.ScrollContainer minWidth={560}>
+          <Table aria-label="Members">
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Name</Table.Th>
@@ -285,9 +287,7 @@ function MemberRow({
           <Group gap="xs" justify="flex-end" wrap="nowrap">
             <RowAction
               label="Remove"
-              className="member-remove"
               concept="action.delete"
-              size={30}
               disabled={!removable}
               onClick={onRemove}
             />
@@ -388,7 +388,7 @@ function LiveMembers() {
 
   return (
     <Stack gap="lg" className="settings-content">
-      <Title order={1}>Members</Title>
+      <PageHeader title="Members" />
       {error ? (
         <Text role="alert" c="red">
           {error}
@@ -445,8 +445,8 @@ function LiveMembers() {
           </Stack>
         </form>
       ) : null}
-      <Table.ScrollContainer minWidth={560} className="u-table-wrap">
-        <Table stickyHeader highlightOnHover verticalSpacing="sm" className="u-table members-table" aria-label="Members">
+      <Table.ScrollContainer minWidth={560}>
+        <Table aria-label="Members">
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Name</Table.Th>
@@ -542,7 +542,6 @@ function LiveMembers() {
                         <RowAction
                           label="Remove"
                           concept="action.delete"
-                          size={30}
                           onClick={() => setRemoveId(member.id)}
                         />
                       )}

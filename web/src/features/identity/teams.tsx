@@ -1,7 +1,7 @@
-import { Group, Stack, Text, Title } from "@mantine/core";
+import { Group, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Button, Input, Table } from "@upmo-ai/components";
+import { Button, Input, PageHeader, Table } from "@upmo-ai/components";
 
 import { useApi } from "../../app/api";
 import {
@@ -120,7 +120,7 @@ export function TeamsPage() {
 
   return (
     <Stack gap="lg" className="settings-content">
-      <Title order={1}>Teams</Title>
+      <PageHeader title="Teams" />
       {error ? (
         <Text role="alert" c="red">
           {error}
@@ -151,8 +151,8 @@ export function TeamsPage() {
           </Group>
         </form>
       ) : null}
-      <Table.ScrollContainer minWidth={560} className="u-table-wrap">
-        <Table stickyHeader highlightOnHover verticalSpacing="sm" className="u-table members-table" aria-label="Teams">
+      <Table.ScrollContainer minWidth={560}>
+        <Table aria-label="Teams">
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Team</Table.Th>
