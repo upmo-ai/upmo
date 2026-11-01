@@ -1,9 +1,5 @@
 import { Outlet } from "@tanstack/react-router";
 
-import { Section } from "../../ui/section";
-
-import "../identity/identity.css";
-
 export const settingsSections = [
   { to: "/personalisation", label: "Personalisation" },
   { to: "/security", label: "Security" },
@@ -17,21 +13,6 @@ export const adminSections = [
   { to: "/admin/roles", label: "Roles" },
 ] as const;
 
-export function SettingsLayout() {
-  return <Outlet />;
-}
-
 export function AdminSettingsLayout() {
   return <Outlet />;
-}
-
-export function ConnectorsPage() {
-  return (
-    <Section
-      title="Connectors"
-      emptyTitle="Connect your tools"
-      emptyBody="GitHub, email, calendar and any MCP server. Agents use only the connectors you add."
-      emptyAction={{ label: "Add connector", to: "/connectors" }}
-    />
-  );
 }

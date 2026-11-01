@@ -1,7 +1,7 @@
-import { Group, Stack, Text, Title } from "@mantine/core";
+import { Group, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Badge, Button, Checkbox, ConfirmDialog, Input, Table } from "@upmo-ai/components";
+import { Badge, Button, Checkbox, ConfirmDialog, Input, PageHeader, Table } from "@upmo-ai/components";
 
 import { RowAction } from "../../ui/icons";
 import {
@@ -64,7 +64,6 @@ export function RolesCard({
   passkeys,
   onChanged,
   run,
-  titleOrder = 1,
 }: {
   roles: LiveRole[];
   held: Set<string>;
@@ -72,7 +71,6 @@ export function RolesCard({
   passkeys: number;
   onChanged: () => Promise<void>;
   run: (action: () => Promise<void>) => Promise<void>;
-  titleOrder?: 1 | 2;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -93,7 +91,7 @@ export function RolesCard({
 
   return (
     <Stack gap="sm">
-      <Title order={titleOrder}>Roles</Title>
+      <PageHeader title="Roles" />
       {canManage ? (
         <div>
           <Button type="button" onClick={() => start(null, "")}>
@@ -101,13 +99,13 @@ export function RolesCard({
           </Button>
         </div>
       ) : null}
-      <Table.ScrollContainer minWidth={560} className="u-table-wrap">
-        <Table stickyHeader highlightOnHover verticalSpacing="sm" className="u-table members-table" aria-label="Roles">
+      <Table.ScrollContainer minWidth={560}>
+        <Table aria-label="Roles">
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Name</Table.Th>
-              <Table.Th className="u-num" ta="right">Permissions</Table.Th>
-              <Table.Th className="u-num" ta="right">Members</Table.Th>
+              <Table.Th ta="right">Permissions</Table.Th>
+              <Table.Th ta="right">Members</Table.Th>
               {canManage ? <Table.Th aria-label="Role actions" ta="right">Actions</Table.Th> : null}
             </Table.Tr>
           </Table.Thead>
@@ -124,12 +122,8 @@ export function RolesCard({
                     ) : null}
                   </Group>
                 </Table.Td>
-                <Table.Td className="u-num" ta="right">
-                  {(role.permissions ?? []).length}
-                </Table.Td>
-                <Table.Td className="u-num" ta="right">
-                  {role.members ?? 0}
-                </Table.Td>
+                <Table.Num>{(role.permissions ?? []).length}</Table.Num>
+                <Table.Num>{role.members ?? 0}</Table.Num>
                 {canManage ? (
                   <Table.Td>
                     <Group gap="xs" justify="flex-end" wrap="nowrap">
@@ -288,7 +282,6 @@ export function RolesPage() {
         held={new Set(held.length > 0 ? held : roleList.flatMap((r) => r.permissions ?? []))}
         canManage={canManage}
         passkeys={passkeyCount}
-        titleOrder={1}
         onChanged={async () => {
           await roles.refetch();
         }}

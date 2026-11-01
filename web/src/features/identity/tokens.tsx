@@ -1,9 +1,9 @@
-import { Group, Stack, Text, Title } from "@mantine/core";
+import { Group, Stack, Text } from "@mantine/core";
 import { DateInput } from "@mantine/dates";
 import { IconCalendar } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Button, Checkbox, ConfirmDialog, Dialog, Input } from "@upmo-ai/components";
+import { Button, Checkbox, ConfirmDialog, Dialog, Input, PageHeader } from "@upmo-ai/components";
 
 import {
   TOKENS_KEY,
@@ -18,6 +18,8 @@ import { fresh } from "../../app/passkeys";
 import { formatDate } from "./format";
 import { actionsForRole, scopeActions, scopeObjects } from "./rules";
 import type { ScopeAction, ScopeObject } from "./types";
+
+import "./identity.css";
 
 const objectLabel: Record<ScopeObject, string> = {
   task: "Task",
@@ -116,7 +118,7 @@ export function TokensPage() {
   if (probe.isPending) {
     return (
       <Stack gap="lg" className="settings-content">
-        <Title order={1}>API tokens</Title>
+        <PageHeader title="API tokens" />
       </Stack>
     );
   }
@@ -154,7 +156,7 @@ function StubTokens() {
 
   return (
     <Stack gap="lg" className="settings-content">
-      <Title order={1}>API tokens</Title>
+      <PageHeader title="API tokens" />
       {tokens.isError ? (
         <Text role="alert" c="red">
           {tokens.error?.message ?? "Failed to load tokens."}
@@ -205,7 +207,7 @@ function TokenRow({ token, onRevoke }: { token: ApiToken; onRevoke: () => void }
   return (
     <li className="record">
       <Text fw={600}>{token.name}</Text>
-      <Text className="token-hint code-sm" data-testid="token-hint">
+      <Text className="token-hint" data-testid="token-hint">
         {token.hint}
       </Text>
       <Text size="sm">{token.scopes.join(", ")}</Text>
@@ -276,7 +278,7 @@ function CreateTokenDialog({
     <Dialog opened onClose={close} title={secret ? "Token created" : "Create token"} withCloseButton={false}>
       {secret ? (
         <Stack gap="md">
-          <Text className="token-secret code-sm" data-testid="token-secret">
+          <Text className="token-secret" data-testid="token-secret">
             {secret}
           </Text>
           <Text>You will not see this token again</Text>
@@ -390,7 +392,7 @@ function LiveTokens() {
 
   return (
     <Stack gap="lg" className="settings-content">
-      <Title order={1}>API tokens</Title>
+      <PageHeader title="API tokens" />
       {tokens.isError ? (
         <Text role="alert" c="red">
           {tokens.error instanceof Error ? tokens.error.message : "Failed to load tokens."}
@@ -483,7 +485,7 @@ function LiveCreate({
     <Dialog opened onClose={onClose} title={secret ? "Token created" : "Create token"} withCloseButton={false}>
       {secret ? (
         <Stack gap="md">
-          <Text className="token-secret code-sm" data-testid="token-secret">
+          <Text className="token-secret" data-testid="token-secret">
             {secret}
           </Text>
           <Text>You will not see this token again</Text>
