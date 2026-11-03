@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -287,6 +288,75 @@ func TestPasswordStore(t *testing.T) {
 	}
 	if gone != nil {
 		t.Fatalf("password remained %q", *gone)
+	}
+}
+
+// e2e/reset.sql is what e2e/ensure-brain.sh runs before each browser run. The
+// offer is claimed once, the reset makes it available again for the e2e person
+// only, and the throttle starts empty.
+func TestE2EResetMakesTheOfferAvailable(t *testing.T) {
+	pool, ctx := up(t)
+	store := postgres.Passkeys{Pool: pool}
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	seed := func(email, role string) domain.UserID {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO identity.users (email, name, password_hash, role_id, joined_at)
+			VALUES ($1, 'Person', 'hash', (SELECT id FROM identity.roles WHERE key = $2), now())
+			RETURNING id::text`, email, role).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		user, err := domain.ParseUserID(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return user
+	}
+	ada := seed("ada@example.com", "owner")
+	bob := seed("bob@example.com", "member")
+	for _, user := range []domain.UserID{ada, bob} {
+		offer, err := store.ClaimOffer(ctx, user, now)
+		if err != nil || !offer {
+			t.Fatalf("first offer %v %v", offer, err)
+		}
+		offer, err = store.ClaimOffer(ctx, user, now.Add(time.Hour))
+		if err != nil || offer {
+			t.Fatalf("second offer %v %v", offer, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.throttle (key, tokens, updated_at) VALUES ('address:198.51.100.1', -3, now())`); err != nil {
+		t.Fatal(err)
+	}
+
+	script, err := os.ReadFile("../../e2e/reset.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(script)); err != nil {
+		t.Fatal(err)
+	}
+
+	offer, err := store.ClaimOffer(ctx, ada, now.Add(2*time.Hour))
+	if err != nil || !offer {
+		t.Fatalf("offer after the reset %v %v", offer, err)
+	}
+	offer, err = store.ClaimOffer(ctx, bob, now.Add(2*time.Hour))
+	if err != nil || offer {
+		t.Fatalf("another person's offer came back %v %v", offer, err)
+	}
+	for user, want := range map[domain.UserID]bool{ada: false, bob: true} {
+		has, err := store.HasPassword(ctx, user)
+		if err != nil || has != want {
+			t.Fatalf("has password %v, want %v (%v)", has, want, err)
+		}
+	}
+	var throttled int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM identity.throttle`).Scan(&throttled); err != nil {
+		t.Fatal(err)
+	}
+	if throttled != 0 {
+		t.Fatalf("%d throttle rows remain", throttled)
 	}
 }
 

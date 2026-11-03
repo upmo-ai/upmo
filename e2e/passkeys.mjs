@@ -23,14 +23,48 @@ try {
   });
   const page = await context.newPage();
   const notes = [];
+  let phase = "starting";
+
+  // The address throttle answers 429 and a denied attempt still costs a token,
+  // so the first 429 ends the run instead of leaving a wait to time out.
+  let rateLimited;
+  const limited = new Promise((_, reject) => {
+    rateLimited = reject;
+  });
+  limited.catch(() => {});
+  const within = (promise) => Promise.race([promise, limited]);
+
   page.on("console", (msg) => notes.push(`console ${msg.type()}: ${msg.text()}`));
   page.on("response", (response) => {
-    if (response.url().includes("/api/")) notes.push(`${response.status()} ${response.url()}`);
+    if (!response.url().includes("/api/")) return;
+    const request = response.request();
+    notes.push(`${response.status()} ${request.method()} ${response.url()}`);
+    if (response.status() === 429) {
+      const retry = response.headers()["retry-after"];
+      rateLimited(
+        new Error(
+          `${request.method()} ${new URL(response.url()).pathname} answered 429 (Retry-After ${retry ?? "unset"}s). ` +
+            "The address throttle is spent; e2e/ensure-brain.sh empties it before each run in an upmo-e2e-* project only.",
+        ),
+      );
+    }
   });
   const fail = async (err) => {
     const text = await page.locator("body").innerText().catch(() => "");
-    throw new Error(`${err instanceof Error ? err.message : String(err)}\n${text}\n${notes.join("\n")}`);
+    throw new Error(
+      `passkey check failed while ${phase}: ${err instanceof Error ? err.message : String(err)}\n${text}\n${notes.join("\n")}`,
+    );
   };
+  // A response to wait for, created before the click that causes it. The catch
+  // keeps an unused wait from becoming an unhandled rejection after a failure.
+  const expectResponse = (match) => {
+    const response = page.waitForResponse(match);
+    response.catch(() => {});
+    return response;
+  };
+  const isApi = (response, method, path) =>
+    response.request().method() === method && new URL(response.url()).pathname === path;
+
   const client = await context.newCDPSession(page);
   await client.send("WebAuthn.enable");
   const authenticator = await client.send("WebAuthn.addVirtualAuthenticator", {
@@ -45,54 +79,96 @@ try {
     },
   });
 
-  await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  const home = page.getByRole("heading", { level: 1, name: "Home" });
+  const offer = page.getByRole("region", { name: "Add a passkey for next time" });
+  const passkeyItems = page.getByRole("list", { name: "Passkeys" }).getByRole("listitem");
+  const setPassword = page.getByRole("button", { name: "Set password" });
+  const changePassword = page.getByRole("button", { name: "Change password" });
+
+  // Sign in with the password from the log in page. The server decides whether
+  // to offer a passkey; the page shows the offer once Home has rendered, so the
+  // session read that fills it has to be in before the offer can be judged.
+  const logInWithPassword = async (wantOffer) => {
+    await page.getByLabel("Email").fill("ada@example.com");
+    await page.getByLabel("Password", { exact: true }).fill("correct horse battery");
+    const answered = expectResponse((response) => isApi(response, "POST", "/api/sign-in/password"));
+    const read = expectResponse((response) => isApi(response, "GET", "/api/session") && response.ok());
+    await page.getByRole("button", { name: "Log in", exact: true }).click();
+    const response = await within(answered);
+    if (!response.ok()) {
+      throw new Error(`password sign-in answered ${response.status()}`);
+    }
+    const body = await response.json();
+    if (body.offer_passkey !== wantOffer) {
+      throw new Error(
+        `password sign-in said offer_passkey ${body.offer_passkey}, want ${wantOffer}. ` +
+          "The e2e person keeps passkey_offered_at between runs; e2e/ensure-brain.sh resets it in an upmo-e2e-* project only, never in the default project.",
+      );
+    }
+    await within(home.waitFor({ timeout: 15_000 }));
+    await within(read);
+  };
+
   try {
+    phase = "creating the passkey from the sign-in link";
+    await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30_000 });
     const create = page.getByRole("button", { name: "Create your passkey" });
-    await create.waitFor();
+    await within(create.waitFor());
     // Strict Mode remounts the button; noWaitAfter keeps the click from retrying
     // after the page leaves this screen.
     await create.click({ noWaitAfter: true });
-    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
-  } catch (err) {
-    await fail(err);
-  }
+    await within(home.waitFor({ timeout: 15_000 }));
 
-  await openAccountItem(page, "Security");
-  try {
-    await page.getByRole("heading", { level: 2, name: "Where you're logged in" }).waitFor();
-    await page.getByRole("list", { name: "Passkeys" }).getByRole("listitem").first().waitFor();
-    await page.getByRole("list", { name: "Sessions" }).getByRole("button", { name: "Log out" }).click();
-    await page.getByRole("heading", { level: 2, name: "Where you're logged in" }).waitFor({ state: "hidden" });
-
-    const signIn = new URL("/login", link);
-    await page.goto(signIn.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
-
+    phase = "ending this session from the Security page";
     await openAccountItem(page, "Security");
-    const setPassword = page.getByRole("button", { name: "Set password" });
-    if (await setPassword.count()) {
+    await within(page.getByRole("heading", { level: 2, name: "Where you're logged in" }).waitFor());
+    await within(passkeyItems.first().waitFor());
+    const ended = expectResponse(
+      (response) =>
+        response.request().method() === "DELETE" && /^\/api\/sessions\/[^/]+$/.test(new URL(response.url()).pathname),
+    );
+    await page.getByRole("list", { name: "Sessions" }).getByRole("button", { name: "Log out" }).click();
+    const gone = await within(ended);
+    if (!gone.ok()) {
+      throw new Error(`ending the session answered ${gone.status()}`);
+    }
+    await within(page.getByRole("heading", { level: 2, name: "Where you're logged in" }).waitFor({ state: "hidden" }));
+
+    phase = "signing in with the passkey from the log in page";
+    const finished = expectResponse((response) => isApi(response, "POST", "/api/passkeys/sign-in/finish"));
+    await page.goto(new URL("/login", link).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const finish = await within(finished);
+    if (!finish.ok()) {
+      throw new Error(`passkey sign-in answered ${finish.status()}`);
+    }
+    await within(home.waitFor({ timeout: 15_000 }));
+
+    phase = "setting a password";
+    await openAccountItem(page, "Security");
+    await within(passkeyItems.first().waitFor());
+    // The Password section follows the list, so either button means it has rendered.
+    await within(setPassword.or(changePassword).waitFor());
+    if (await setPassword.isVisible()) {
       await setPassword.click();
       await page.getByLabel("New password").fill("correct horse battery");
       await page.getByRole("dialog").getByRole("button", { name: "Set password" }).click();
     }
-    await page.getByRole("button", { name: "Change password" }).waitFor();
+    await within(changePassword.waitFor());
 
+    phase = "logging in with the password and getting the passkey offer";
     await client.send("WebAuthn.removeVirtualAuthenticator", {
       authenticatorId: authenticator.authenticatorId,
     });
     await openAccountItem(page, "Log out");
-    await page.getByLabel("Email").fill("ada@example.com");
-    await page.getByLabel("Password", { exact: true }).fill("correct horse battery");
-    await page.getByRole("button", { name: "Log in", exact: true }).click();
-    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
-    await page.getByRole("region", { name: "Add a passkey for next time" }).waitFor();
+    await logInWithPassword(true);
+    await within(offer.waitFor({ timeout: 10_000 }));
 
+    phase = "logging in with the password again and finding no offer";
     await openAccountItem(page, "Log out");
-    await page.getByLabel("Email").fill("ada@example.com");
-    await page.getByLabel("Password", { exact: true }).fill("correct horse battery");
-    await page.getByRole("button", { name: "Log in", exact: true }).click();
-    await page.getByRole("heading", { level: 1, name: "Home" }).waitFor({ timeout: 15_000 });
-    await page.getByRole("region", { name: "Add a passkey for next time" }).waitFor({ state: "hidden", timeout: 2_000 });
+    await logInWithPassword(false);
+    if (await offer.count()) {
+      throw new Error("the passkey offer showed a second time");
+    }
   } catch (err) {
     await fail(err);
   }
