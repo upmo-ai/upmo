@@ -9,6 +9,7 @@ import {
   createStubApi,
   type ApiClient,
   type ApiToken,
+  type AppNotification,
   type CreatedToken,
   type CurrentUser,
   type Member,
@@ -553,8 +554,71 @@ describe("app shell", () => {
     act(() => {
       bell.click();
     });
-    expect(await screen.findByText("You are up to date")).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 3, name: "You are up to date" })).toBeTruthy();
     expect(screen.getByText("Approvals and finished tasks show up here.")).toBeTruthy();
+  });
+
+  it("shows the empty state, a plain label and no badge after the last approval", async () => {
+    const stub = createStubApi();
+    let notes: AppNotification[] = [{ id: "note-question", kind: "question", title: "Which budget?" }];
+    let pending = true;
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications() {
+        return notes;
+      },
+      async approveNotification(id) {
+        notes = notes.filter((item) => item.id !== id);
+      },
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [
+            {
+              id: "approval-digest",
+              taskId: "task-digest",
+              title: "Approve the plan",
+              action: "Send",
+              state: pending ? "pending" : "approved",
+            },
+          ];
+        },
+        async approve(id) {
+          pending = false;
+          return { id, taskId: "task-digest", title: "Approve the plan", action: "Send", state: "approved" };
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 2 unread" });
+    expect(bell.querySelector(".shell-count")?.textContent).toBe("2");
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+
+    for (const title of ["Approve the plan", "Which budget?"]) {
+      const row = within(dialog)
+        .getAllByRole("listitem", { hidden: true })
+        .find((item) => item.textContent?.includes(title));
+      if (!row) throw new Error(`no row for ${title}`);
+      act(() => {
+        within(row).getByRole("button", { name: "Approve", hidden: true }).click();
+      });
+      await waitFor(() => {
+        expect(screen.queryByText(title)).toBeNull();
+      });
+    }
+
+    // jsdom reports the popover dropdown as display: none after its transition,
+    // like the listitem queries above, so the heading is looked up with hidden.
+    expect(
+      await screen.findByRole("heading", { level: 3, name: "You are up to date", hidden: true }),
+    ).toBeTruthy();
+    const plain = screen.getByRole("button", { name: /^Notifications$/ });
+    expect(plain.querySelector(".shell-count")).toBeNull();
+    expect(screen.queryByRole("button", { name: /unread/ })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Notifications", hidden: true })).toBeNull();
   });
 
   it.each(sidebarRoutes)("%s has one h1 %s and current nav %s", async (path, title, navLabel) => {

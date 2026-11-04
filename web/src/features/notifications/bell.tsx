@@ -1,6 +1,6 @@
-import { Popover, Text } from "@mantine/core";
+import { Popover } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Badge, Button, IconButton } from "@upmo-ai/components";
+import { Badge, Button, EmptyState, IconButton } from "@upmo-ai/components";
 
 import {
   approvalsQueryKey,
@@ -74,12 +74,11 @@ export function NotificationsBell() {
       </Popover.Target>
       <Popover.Dropdown>
         {ready && items.length === 0 ? (
-          <>
-            <Text fw={600}>You are up to date</Text>
-            <Text c="dimmed" size="sm">
-              Approvals and finished tasks show up here.
-            </Text>
-          </>
+          <EmptyState
+            className="shell-empty"
+            title="You are up to date"
+            description="Approvals and finished tasks show up here."
+          />
         ) : (
           <ul className="shell-notes" aria-label="Notifications">
             {items.map((item) => (
