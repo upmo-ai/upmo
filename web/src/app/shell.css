@@ -412,6 +412,11 @@
   gap: var(--space-2);
 }
 
+.shell-empty {
+  padding-block: var(--space-4) !important;
+  padding-inline: var(--space-2) !important;
+}
+
 .shell-bell {
   position: relative;
   overflow: visible;

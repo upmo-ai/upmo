@@ -32,6 +32,7 @@ node /src/e2e/passkeys.mjs
 node /src/e2e/theme.mjs
 node /src/e2e/shell.mjs
 node /src/e2e/chat.mjs
+node /src/e2e/bell.mjs
 node /src/e2e/usage.mjs
 node /src/e2e/flows.mjs
 node /src/e2e/memory.mjs
