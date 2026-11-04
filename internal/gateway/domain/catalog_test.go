@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,33 @@ func TestParseCatalog(t *testing.T) {
 	embed := rows[1]
 	if embed.Model != "embed-only" || len(embed.Caps) != 0 {
 		t.Fatalf("embed = %+v", embed)
+	}
+}
+
+func TestParseCatalogIsDeterministic(t *testing.T) {
+	const body = `{
+		"zeta": {"models": {"shared": {"tool_call": true, "cost": {"input": 9, "output": 9}}, "b": {}}},
+		"alpha": {"models": {"shared": {"modalities": {"input": ["image"]}, "cost": {"input": 1, "output": 1}}, "a": {}}},
+		"mid": {"models": {"shared": {"cost": {"input": 5, "output": 5}}}}
+	}`
+	first, err := ParseCatalog(strings.NewReader(body), "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 3 || first[0].Model != "a" || first[1].Model != "shared" || first[2].Model != "b" {
+		t.Fatalf("rows = %+v", first)
+	}
+	if got := first[1].Price.InputPerMTok; got == nil || *got != 1 {
+		t.Fatalf("shared price = %v, want the alphabetically first provider's", got)
+	}
+	for range 50 {
+		again, err := ParseCatalog(strings.NewReader(body), "v1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(first, again) {
+			t.Fatalf("rows differ between runs:\n%+v\n%+v", first, again)
+		}
 	}
 }
 

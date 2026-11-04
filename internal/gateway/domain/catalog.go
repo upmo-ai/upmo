@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -17,8 +18,10 @@ type CatalogRow struct {
 }
 
 // ParseCatalog reads a models.dev api.json document into catalog rows.
-// Capabilities map to CapTools, CapVision and CapStructured. Duplicate model
-// ids keep the first price and union the capabilities.
+// Capabilities map to CapTools, CapVision and CapStructured. Providers and
+// models are read in sorted order, so the rows and the winning price for a
+// duplicate model id are the same on every run. Duplicate model ids keep the
+// first price and union the capabilities.
 func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
@@ -30,9 +33,11 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 	}
 	byModel := map[string]*CatalogRow{}
 	order := []string{}
-	for _, provider := range root {
-		for id, model := range provider.Models {
-			id = strings.TrimSpace(id)
+	for _, name := range slices.Sorted(maps.Keys(root)) {
+		provider := root[name]
+		for _, key := range slices.Sorted(maps.Keys(provider.Models)) {
+			model := provider.Models[key]
+			id := strings.TrimSpace(key)
 			if id == "" {
 				continue
 			}
