@@ -107,28 +107,41 @@ function headerStatus(page) {
   return page.locator(".task-header .upmo-status-badge");
 }
 
+// The phase rail drops its aria-current marker once the task is Done, so the
+// badge and the marker are read together in one page evaluation. Reading them
+// with separate locator calls can see the marker, lose it to the Done render,
+// and then wait on a marker that never comes back.
+//
+// Resolves with the badge text and the current phase once the task is Done or
+// its phase differs from `from` (null accepts any phase).
+async function awaitPhase(page, from) {
+  const seen = await page.waitForFunction(
+    (before) => {
+      const badge = document.querySelector(".task-header .upmo-status-badge");
+      const marker = document.querySelector("[aria-current='step']");
+      const status = (badge?.innerText ?? "").trim();
+      const phase = (marker?.innerText ?? "").trim();
+      if (status === "Done" || (phase !== "" && phase !== before)) return { status, phase };
+      return null;
+    },
+    from,
+    { timeout: 5000 },
+  );
+  return seen.jsonValue();
+}
+
 async function walkToDone(page) {
-  const status = headerStatus(page);
+  let seen = await awaitPhase(page, null);
   for (let step = 0; step < 4; step += 1) {
-    if ((await status.innerText()).trim() === "Done") return;
-    const before = (await page.locator("[aria-current='step']").innerText()).trim();
+    if (seen.status === "Done") return;
     await page.getByRole("button", { name: "Next phase" }).click();
-    const deadline = Date.now() + 5000;
-    let moved = false;
-    while (Date.now() < deadline) {
-      const current = (await status.innerText()).trim();
-      if (current === "Done") return;
-      const marker = page.locator("[aria-current='step']");
-      const phase = (await marker.count()) === 0 ? "" : (await marker.innerText()).trim();
-      if (phase !== "" && phase !== before) {
-        moved = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      seen = await awaitPhase(page, seen.phase);
+    } catch {
+      throw new Error(`phase stayed ${seen.phase}`);
     }
-    if (!moved) throw new Error(`phase stayed ${before}`);
   }
-  await settleText(status, "Done");
+  await settleText(headerStatus(page), "Done");
 }
 
 async function taskFlow(page, { checkBadges, theme }) {
