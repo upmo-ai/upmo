@@ -1,6 +1,7 @@
 import { Popover } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, EmptyState, IconButton } from "@upmo-ai/components";
+import { useEffect, useRef } from "react";
 
 import {
   approvalsQueryKey,
@@ -37,17 +38,28 @@ export function NotificationsBell() {
     queryKey: approvalsQueryKey(),
     queryFn: () => api.approvals.list(),
   });
+  const bell = useRef<HTMLElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+  // Where the pressed Approve button sat among the approvable rows, and how
+  // many rows there were. Set on press, cleared once focus has been placed.
+  const pressed = useRef<{ index: number; actionable: number } | null>(null);
   const approveApproval = useMutation({
     mutationFn: (id: string) => api.approvals.approve(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: approvalsQueryKey() });
       void queryClient.invalidateQueries({ queryKey: tasksQueryKey() });
     },
+    onError: () => {
+      pressed.current = null;
+    },
   });
   const approveNote = useMutation({
     mutationFn: (id: string) => api.approveNotification(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: notificationsQueryKey() });
+    },
+    onError: () => {
+      pressed.current = null;
     },
   });
 
@@ -59,10 +71,27 @@ export function NotificationsBell() {
   const count = items.length;
   const label = count > 0 ? `Notifications, ${count} unread` : "Notifications";
   const pending = approveApproval.isPending || approveNote.isPending;
+  const actionable = items.filter((item) => needsApproval(item.kind)).length;
+
+  // The pressed Approve button leaves the list, which would drop focus to the
+  // body. Land on the next Approve button (the first one when the last row was
+  // pressed), or on the bell once nothing is left to approve. Wait until the
+  // row is gone and the buttons are enabled again.
+  useEffect(() => {
+    const from = pressed.current;
+    if (!from || !ready || pending || actionable >= from.actionable) return;
+    pressed.current = null;
+    if (actionable === 0) {
+      bell.current?.focus();
+      return;
+    }
+    const buttons = list.current?.querySelectorAll("button");
+    buttons?.[from.index < actionable ? from.index : 0]?.focus();
+  }, [ready, pending, actionable]);
 
   return (
     <Popover position="bottom-end" width={320} shadow="md">
-      <Popover.Target>
+      <Popover.Target ref={bell}>
         <IconButton className="shell-bell" aria-label={label} variant="subtle" size={40}>
           <ShellIcon concept="nav.notifications" />
           {count > 0 ? (
@@ -73,14 +102,17 @@ export function NotificationsBell() {
         </IconButton>
       </Popover.Target>
       <Popover.Dropdown>
-        {ready && items.length === 0 ? (
-          <EmptyState
-            className="shell-empty"
-            title="You are up to date"
-            description="Approvals and finished tasks show up here."
-          />
-        ) : (
-          <ul className="shell-notes" aria-label="Notifications">
+        <div role="status">
+          {ready && items.length === 0 ? (
+            <EmptyState
+              className="shell-empty"
+              title="You are up to date"
+              description="Approvals and finished tasks show up here."
+            />
+          ) : null}
+        </div>
+        {ready && items.length === 0 ? null : (
+          <ul ref={list} className="shell-notes" aria-label="Notifications">
             {items.map((item) => (
               <li key={item.id} className="shell-note">
                 <span>{item.title}</span>
@@ -90,6 +122,10 @@ export function NotificationsBell() {
                     variant="light"
                     disabled={pending}
                     onClick={() => {
+                      pressed.current = {
+                        index: items.filter((entry) => needsApproval(entry.kind)).indexOf(item),
+                        actionable,
+                      };
                       if (item.kind === "approval") approveApproval.mutate(item.id);
                       else approveNote.mutate(item.id);
                     }}
