@@ -8,9 +8,16 @@ import { Button, Input, StatusAlert } from "@upmo-ai/components";
 import { LoginAgreement } from "./agreement";
 import { useApi } from "./api";
 import { BrandLink } from "./brand";
-import { abortConditional, conditionalPasskey, signInWithPasskey } from "./passkeys";
+import { abortConditional, conditionalPasskey, conditionalPending, signInWithPasskey } from "./passkeys";
 
 import "./sign-in.css";
+
+function tryAgain(response: Response): string {
+  if (response.status !== 429) return "Try again.";
+  const seconds = Number(response.headers.get("Retry-After"));
+  if (!Number.isInteger(seconds) || seconds < 1) return "Try again.";
+  return `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+}
 
 export function SignInPage() {
   const api = useApi();
@@ -23,7 +30,6 @@ export function SignInPage() {
   const liveRef = useRef(true);
 
   const armConditional = useCallback(() => {
-    abortConditional();
     void conditionalPasskey(() => liveRef.current)
       .then(async (signedIn) => {
         if (!liveRef.current || !signedIn) return;
@@ -34,6 +40,12 @@ export function SignInPage() {
         // A missing passkey or a cancelled prompt leaves the person on this page.
       });
   }, [navigate, queryClient]);
+
+  // Each options request spends a token from the address throttle, so a live
+  // autofill request is kept rather than replaced.
+  const rearmConditional = useCallback(() => {
+    if (!conditionalPending()) armConditional();
+  }, [armConditional]);
 
   useEffect(() => {
     liveRef.current = true;
@@ -57,12 +69,12 @@ export function SignInPage() {
       });
       if (response.status === 401) {
         setMessage("Email or password is wrong.");
-        armConditional();
+        rearmConditional();
         return;
       }
       if (!response.ok) {
-        setMessage("Try again.");
-        armConditional();
+        setMessage(tryAgain(response));
+        rearmConditional();
         return;
       }
       const body = (await response.json()) as { offer_passkey?: boolean };
@@ -73,7 +85,7 @@ export function SignInPage() {
     } catch (err) {
       if (err instanceof TypeError) {
         setMessage("Try again.");
-        armConditional();
+        rearmConditional();
         return;
       }
       throw err;
@@ -85,7 +97,6 @@ export function SignInPage() {
   const passkey = async () => {
     if (busy) return;
     setBusy(true);
-    abortConditional();
     setMessage("");
     try {
       await signInWithPasskey();
@@ -93,7 +104,7 @@ export function SignInPage() {
       await navigate({ to: "/" });
     } catch {
       setMessage("The passkey prompt was cancelled. Try again.");
-      armConditional();
+      rearmConditional();
     } finally {
       setBusy(false);
     }

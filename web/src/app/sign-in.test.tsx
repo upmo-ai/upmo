@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
 import { AppProviders } from "../theme";
-import * as passkeys from "./passkeys";
 
 function renderAt(path: string) {
   const history = createMemoryHistory({ initialEntries: [path] });
@@ -37,6 +36,70 @@ async function submitPassword() {
   act(() => {
     screen.getByRole("button", { name: /^Log in$/ }).click();
   });
+}
+
+type Get = { mediation?: string; signal?: AbortSignal };
+
+// A browser that offers autofill. The conditional prompt stays open until it is
+// aborted; the modal prompt answers with a credential. firstGetEnds makes the
+// first conditional prompt end by itself, as when the person dismisses it.
+function stubPasskeyBrowser(opts: { firstGetEnds?: boolean } = {}) {
+  const events: string[] = [];
+  const gets: Get[] = [];
+  let options = 0;
+  let challenge = 0;
+  vi.stubGlobal("PublicKeyCredential", {
+    isConditionalMediationAvailable: async () => true,
+    parseRequestOptionsFromJSON: (value: unknown) => value,
+  });
+  const { platform, userAgent } = navigator;
+  vi.stubGlobal("navigator", {
+    platform,
+    userAgent,
+    credentials: {
+      get: (request: Get) =>
+        new Promise((resolve, reject) => {
+          gets.push(request);
+          events.push(`get ${request.mediation === "conditional" ? "conditional" : "modal"}`);
+          if (request.mediation !== "conditional") {
+            resolve({ toJSON: () => ({ id: "cred-1" }) });
+            return;
+          }
+          if (opts.firstGetEnds && gets.length === 1) {
+            resolve(null);
+            return;
+          }
+          request.signal?.addEventListener("abort", () => {
+            events.push("abort");
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/passkeys/sign-in/options")) {
+        options += 1;
+        challenge = options;
+        events.push(`options ${options}`);
+        return new Response(JSON.stringify({ publicKey: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/api/passkeys/sign-in/finish")) {
+        events.push(`finish ${challenge}`);
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes("/api/sign-in/password")) {
+        return new Response("{}", { status: 401 });
+      }
+      return new Response("", { status: 404 });
+    }),
+  );
+  return { events, gets, optionsRequests: () => options };
 }
 
 describe("sign in", () => {
@@ -257,17 +320,13 @@ describe("sign in", () => {
     expect(screen.queryByRole("region", { name: "Add a passkey for next time" })).toBeNull();
   });
 
-  it("autofill re-arms; a test fails if the re-arm is removed", async () => {
-    const conditionalSpy = vi.spyOn(passkeys, "conditionalPasskey").mockResolvedValue(false);
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn<() => Promise<Response>>(async () => new Response("{}", { status: 401 })),
-    );
-
+  it("keeps the autofill request alive after a wrong password", async () => {
+    const browser = stubPasskeyBrowser();
     renderAt("/login");
-    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
-    expect(conditionalSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(browser.gets).toHaveLength(1);
+    });
+    expect(browser.optionsRequests()).toBe(1);
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong password" } });
@@ -275,16 +334,76 @@ describe("sign in", () => {
       screen.getByRole("button", { name: /^Log in$/ }).click();
     });
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Email or password is wrong.");
-    expect(conditionalSpy).toHaveBeenCalledTimes(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(browser.optionsRequests()).toBe(1);
+    expect(browser.gets).toHaveLength(1);
+    expect(browser.gets[0]?.signal?.aborted).toBe(false);
+  });
 
-    const passkeyBtn = screen.getByRole("button", { name: "Log in with a passkey" });
-    act(() => {
-      passkeyBtn.click();
+  it("asks for the autofill again after a wrong password once the first request has ended", async () => {
+    const browser = stubPasskeyBrowser({ firstGetEnds: true });
+    renderAt("/login");
+    await waitFor(() => {
+      expect(browser.gets).toHaveLength(1);
     });
-    expect(await screen.findByRole("alert")).toHaveProperty(
-      "textContent",
-      "The passkey prompt was cancelled. Try again.",
+    await waitFor(() => {
+      expect(browser.optionsRequests()).toBe(1);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong password" } });
+    act(() => {
+      screen.getByRole("button", { name: /^Log in$/ }).click();
+    });
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Email or password is wrong.");
+    await waitFor(() => {
+      expect(browser.gets).toHaveLength(2);
+    });
+    expect(browser.optionsRequests()).toBe(2);
+  });
+
+  it("ends the autofill request before the passkey button asks for its own and finishes on that one", async () => {
+    const browser = stubPasskeyBrowser();
+    renderAt("/login");
+    await waitFor(() => {
+      expect(browser.gets).toHaveLength(1);
+    });
+
+    act(() => {
+      screen.getByRole("button", { name: "Log in with a passkey" }).click();
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    expect(browser.events).toEqual(["options 1", "get conditional", "abort", "options 2", "get modal", "finish 2"]);
+  });
+
+  it("says how long to wait when the server answers 429 with Retry-After", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<() => Promise<Response>>(
+        async () => new Response("{}", { status: 429, headers: { "retry-after": "12" } }),
+      ),
     );
-    expect(conditionalSpy).toHaveBeenCalledTimes(3);
+    renderAt("/login");
+    fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery" } });
+    act(() => {
+      screen.getByRole("button", { name: /^Log in$/ }).click();
+    });
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Try again in 12 seconds.");
+  });
+
+  it("keeps the plain message when a 429 names no wait", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<() => Promise<Response>>(async () => new Response("{}", { status: 429 })),
+    );
+    renderAt("/login");
+    fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery" } });
+    act(() => {
+      screen.getByRole("button", { name: /^Log in$/ }).click();
+    });
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Try again.");
   });
 });
