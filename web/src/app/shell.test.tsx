@@ -48,6 +48,16 @@ function renderAt(path: string, client?: ApiClient) {
   );
 }
 
+// With another approval left, focus moves to its button instead of the body.
+// jsdom reports the popover dropdown as display: none, which makes focus() a
+// no-op there, so the check is on which element was asked to take focus.
+async function expectFocusOnRemainingApprove(dialog: HTMLElement, focus: { mock: { contexts: unknown[] } }) {
+  await waitFor(() => {
+    const remaining = within(dialog).getByRole("button", { name: "Approve", hidden: true });
+    expect(focus.mock.contexts.at(-1)).toBe(remaining);
+  });
+}
+
 function sidebar() {
   return screen.getByRole("navigation", { name: "Main" });
 }
@@ -227,6 +237,7 @@ describe("app shell", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     setWidth(1024);
   });
 
@@ -602,8 +613,10 @@ describe("app shell", () => {
         .getAllByRole("listitem", { hidden: true })
         .find((item) => item.textContent?.includes(title));
       if (!row) throw new Error(`no row for ${title}`);
+      const approve = within(row).getByRole("button", { name: "Approve", hidden: true });
       act(() => {
-        within(row).getByRole("button", { name: "Approve", hidden: true }).click();
+        approve.focus();
+        approve.click();
       });
       await waitFor(() => {
         expect(screen.queryByText(title)).toBeNull();
@@ -619,6 +632,73 @@ describe("app shell", () => {
     expect(plain.querySelector(".shell-count")).toBeNull();
     expect(screen.queryByRole("button", { name: /unread/ })).toBeNull();
     expect(screen.queryByRole("list", { name: "Notifications", hidden: true })).toBeNull();
+  });
+
+  it("returns focus to the bell and announces the empty state after the last approval", async () => {
+    const stub = createStubApi();
+    let notes: AppNotification[] = [{ id: "note-question", kind: "question", title: "Which budget?" }];
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications() {
+        return notes;
+      },
+      async approveNotification(id) {
+        notes = notes.filter((item) => item.id !== id);
+      },
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [];
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 1 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const approve = within(dialog).getByRole("button", { name: "Approve", hidden: true });
+    act(() => {
+      approve.focus();
+      approve.click();
+    });
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Notifications$/ }));
+    });
+    const status = within(dialog).getByRole("status", { hidden: true });
+    expect(status.textContent).toContain("You are up to date");
+  });
+
+  it("returns focus to the bell when only finished tasks are left", async () => {
+    renderAt("/");
+    const bell = await screen.findByRole("button", { name: "Notifications, 4 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    for (const title of ["Approve the digest", "Question about the budget"]) {
+      const row = within(dialog)
+        .getAllByRole("listitem", { hidden: true })
+        .find((item) => item.textContent?.includes(title));
+      if (!row) throw new Error(`no row for ${title}`);
+      const approve = within(row).getByRole("button", { name: "Approve", hidden: true });
+      act(() => {
+        approve.focus();
+        approve.click();
+      });
+      await waitFor(() => {
+        expect(screen.queryByText(title)).toBeNull();
+      });
+      if (title === "Approve the digest") await expectFocusOnRemainingApprove(dialog, focus);
+    }
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Notifications, 2 unread" }));
+    });
+    expect(within(dialog).getByRole("status", { hidden: true }).textContent).toBe("");
   });
 
   it.each(sidebarRoutes)("%s has one h1 %s and current nav %s", async (path, title, navLabel) => {

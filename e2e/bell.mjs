@@ -60,6 +60,30 @@ async function approve(page, title) {
   await row.waitFor({ state: "detached" });
 }
 
+async function expectBellFocused(page, name) {
+  const bell = page.getByRole("button", { name });
+  const deadline = Date.now() + 5_000;
+  while (!(await bell.evaluate((node) => node === document.activeElement))) {
+    if (Date.now() > deadline) {
+      const active = await page.evaluate(() => document.activeElement?.tagName ?? "none");
+      throw new Error(`the bell does not have focus after the last approval, ${active} does`);
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+async function expectApproveFocused(page, title) {
+  const button = rows(page).filter({ hasText: title }).getByRole("button", { name: "Approve" });
+  const deadline = Date.now() + 5_000;
+  while (!(await button.evaluate((node) => node === document.activeElement))) {
+    if (Date.now() > deadline) {
+      const active = await page.evaluate(() => document.activeElement?.tagName ?? "none");
+      throw new Error(`the Approve button of ${JSON.stringify(title)} does not have focus, ${active} does`);
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
 async function newPage(browser) {
   const context = await browser.newContext({
     storageState: storagePath,
@@ -106,6 +130,8 @@ try {
       ["Mail triage done", false],
       ["Weekly close failed", false],
     ]);
+    // Another approval is left, so focus moves to its button, not to body.
+    await expectApproveFocused(page, "Question about the budget");
 
     await approve(page, "Question about the budget");
     await expectUnread(page, 2);
@@ -113,6 +139,8 @@ try {
       ["Mail triage done", false],
       ["Weekly close failed", false],
     ]);
+    // The pressed button is gone with its row, so focus must not fall to body.
+    await expectBellFocused(page, "Notifications, 2 unread");
     await context.close();
   }
 
