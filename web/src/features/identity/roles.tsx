@@ -6,6 +6,7 @@ import { Badge, Button, Checkbox, ConfirmDialog, Input, PageHeader, Table } from
 import { RowAction } from "../../ui/icons";
 import {
   ConfirmPassword,
+  type LiveMember,
   type LiveRole,
   canManageRoles,
   choicesFor,
@@ -239,6 +240,16 @@ export function RolesPage() {
       }
     },
   });
+  const members = useQuery({
+    queryKey: ["live-members"],
+    queryFn: async () => {
+      try {
+        return await liveJSON<LiveMember[]>("/api/members");
+      } catch {
+        return null;
+      }
+    },
+  });
   const passkeys = useQuery({
     queryKey: ["live-member-passkeys"],
     queryFn: async () => {
@@ -253,7 +264,8 @@ export function RolesPage() {
   const [error, setError] = useState("");
   const passkeyCount = passkeys.data?.length ?? 0;
   const roleList = roles.data && roles.data.length > 0 ? roles.data : defaultStubRoles;
-  const actorRoleId = session.data ? roleList.find((r) => r.id === session.data?.user_id)?.id : "role-owner";
+  const actor = members.data?.find((member) => member.id === session.data?.user_id);
+  const actorRoleId = session.data ? actor?.role.id : "role-owner";
   const held = choicesFor(actorRoleId, roleList);
   const canManage = canManageRoles(actorRoleId, roleList) || !session.data;
 
