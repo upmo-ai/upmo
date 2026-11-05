@@ -11,12 +11,30 @@ function credentialJSON(credential: Credential): unknown {
   return (credential as JSONCredential).toJSON();
 }
 
-let conditionalController: AbortController | null = null;
+// The autofill ceremony that has not ended yet. `done` settles when its options
+// request, prompt and finish have all stopped, even after an abort.
+let conditional: { controller: AbortController; done: Promise<void> } | null = null;
 
 export function abortConditional(): void {
-  if (conditionalController) {
-    conditionalController.abort();
-    conditionalController = null;
+  conditional?.controller.abort();
+}
+
+// True while an autofill ceremony is waiting on the person and has not been aborted.
+export function conditionalPending(): boolean {
+  return conditional !== null && !conditional.controller.signal.aborted;
+}
+
+// Aborts the autofill ceremony and waits for it to stop. The server keeps one
+// challenge per browser, so a new options request must not start while the
+// last one is still in flight.
+async function endConditional(): Promise<void> {
+  while (conditional) {
+    const running = conditional;
+    running.controller.abort();
+    await running.done;
+    if (conditional === running) {
+      conditional = null;
+    }
   }
 }
 
@@ -44,7 +62,7 @@ function creationUserId(options: PublicKeyOptions): string | undefined {
 }
 
 export async function signInWithPasskey(): Promise<void> {
-  abortConditional();
+  await endConditional();
   const options = await postJSON<PublicKeyOptions>("/api/passkeys/sign-in/options", {});
   const credential = await navigator.credentials.get({ publicKey: requestOptions(options) });
   if (!credential) {
@@ -63,23 +81,41 @@ export async function createPasskeyFromLink(token: string): Promise<void> {
 }
 
 export async function conditionalPasskey(current: () => boolean = () => true): Promise<boolean> {
-  abortConditional();
+  // Another call may start while this one waits, so look again before claiming the slot.
+  do {
+    await endConditional();
+  } while (conditional);
   const controller = new AbortController();
-  conditionalController = controller;
+  const running = runConditional(controller, current);
+  const entry = { controller, done: running.then(noop, noop) };
+  conditional = entry;
+  try {
+    return await running;
+  } finally {
+    if (conditional === entry) {
+      conditional = null;
+    }
+  }
+}
+
+function noop(): void {}
+
+async function runConditional(controller: AbortController, current: () => boolean): Promise<boolean> {
   const available = window.PublicKeyCredential?.isConditionalMediationAvailable;
   if (!available || !(await available.call(window.PublicKeyCredential))) {
     return false;
   }
-  if (!current()) return false;
+  const live = () => current() && !controller.signal.aborted;
+  if (!live()) return false;
   try {
     const options = await postJSON<PublicKeyOptions>("/api/passkeys/sign-in/options", {});
-    if (!current()) return false;
+    if (!live()) return false;
     const credential = await navigator.credentials.get({
       mediation: "conditional",
       publicKey: requestOptions(options),
       signal: controller.signal,
     });
-    if (!current() || !credential) return false;
+    if (!live() || !credential) return false;
     await postRaw("/api/passkeys/sign-in/finish", credentialJSON(credential));
     return current();
   } catch (err) {
