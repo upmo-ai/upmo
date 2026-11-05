@@ -68,6 +68,28 @@ try {
     if (input.value !== "") throw new Error(`add field not cleared: ${input.value}`);
   });
 
+  // On a phone the table keeps its width and scrolls sideways inside a region
+  // named like the table, which a keyboard reaches and scrolls. Squeezed
+  // narrower, the Fact column has too little room to read and edit in.
+  await page.setViewportSize({ width: 360, height: 800 });
+  const region = page.getByRole("region", { name: "Remembered facts" });
+  await region.waitFor();
+  const phone = await region.evaluate((el) => ({
+    scrolls: el.scrollWidth > el.clientWidth,
+    tabIndex: el.tabIndex,
+    tableWidth: Math.round(el.querySelector("table").getBoundingClientRect().width),
+  }));
+  if (!phone.scrolls || phone.tabIndex !== 0 || phone.tableWidth < 560) {
+    throw new Error(`UPM-196 facts table on a phone: ${JSON.stringify(phone)}`);
+  }
+  await region.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(
+    (label) => document.querySelector(`[role="region"][aria-label="${label}"]`)?.scrollLeft > 0,
+    "Remembered facts",
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
+
   // Cancel leaves the fact as it was.
   await row.getByRole("button", { name: "Edit fact", exact: true }).click();
   // While a row is edited its name no longer matches the fact text, so the

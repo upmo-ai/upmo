@@ -1,7 +1,7 @@
-import { Stack, Text, Title } from "@mantine/core";
+import { Text, Title } from "@mantine/core";
 import { IconLayoutSidebar, IconSearch } from "@tabler/icons-react";
 import { useState } from "react";
-import { Badge, ChatMessage, Composer, IconButton, Input } from "@upmo-ai/components";
+import { Badge, ChatMessage, ChatThread, Composer, IconButton, Input } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
 
 import { ShellIcon } from "../ui/icons";
@@ -138,6 +138,10 @@ export function ChatPage() {
   const [selectedModel, setSelectedModel] = useState("gpt-5.6-luna");
   const [selectedTools, setSelectedTools] = useState("auto");
   const [messages, setMessages] = useState<ChatMessageItem[]>(initialChatMessages);
+  const [lastSentId, setLastSentId] = useState<string>();
+  // The finished reply, for the thread to read out. It is reset when the next
+  // draft starts, so an identical reply is read again.
+  const [announcement, setAnnouncement] = useState<string>();
   const activeChat = sampleChats.find((chat) => chat.id === activeChatId) ?? sampleChats[0];
   const matchingChats = sampleChats.filter((chat) =>
     chat.title.toLocaleLowerCase("en-GB").includes(query.trim().toLocaleLowerCase("en-GB")),
@@ -168,7 +172,14 @@ export function ChatPage() {
       cost: assistantCost,
     };
     setMessages((prev) => [...prev, newUserMsg, newAssistantMsg]);
+    setLastSentId(newUserMsg.id);
+    setAnnouncement(newAssistantMsg.content);
     setDraft("");
+  };
+
+  const handleDraftChange = (value: string) => {
+    setDraft(value);
+    setAnnouncement(undefined);
   };
 
   return (
@@ -281,7 +292,7 @@ export function ChatPage() {
             </div>
           </div>
 
-          <Stack className="chat-messages" gap={0} aria-label="Messages">
+          <ChatThread className="chat-messages" scrollKey={lastSentId} announcement={announcement}>
             {messages.map((msg) => (
               <ChatMessage
                 key={msg.id}
@@ -293,12 +304,12 @@ export function ChatPage() {
                 cost={msg.cost}
               />
             ))}
-          </Stack>
+          </ChatThread>
 
           <div className="chat-composer-wrap">
             <Composer
               value={draft}
-              onChange={setDraft}
+              onChange={handleDraftChange}
               onSend={handleSendMessage}
               config={{
                 label: "Agent, route and model",

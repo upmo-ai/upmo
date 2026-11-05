@@ -13,7 +13,6 @@ const expected: Record<(typeof shellConcepts)[number], string> = {
   "nav.usage": "chart-bar",
   "nav.settings": "settings",
   "nav.sidebar": "layout-sidebar",
-  "nav.notifications": "bell",
   "action.edit": "pencil",
   "action.delete": "trash",
   "action.remove": "x",

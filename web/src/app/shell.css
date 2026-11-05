@@ -23,22 +23,16 @@
   margin-bottom: var(--space-4);
 }
 
-/* Give the chat page the viewport height so the composer stays on screen when
-   the passkey offer or an alert sits above it. An AppFrame fill prop would
-   replace this :has() rule. */
-.shell .upmo-app-frame__main:has(> .chat-page) {
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  height: 100dvh;
-  min-height: 0;
-  /* When .chat-page hits its floor (short viewport, offer plus alert), scroll
-     here instead of clipping the composer. */
-  overflow-y: auto;
+/* AppFrame fill drops main's padding. The chat page keeps the padding the other
+   routes have, so the page, the passkey offer and an alert line up as before. */
+.shell-main-fill {
+  --app-shell-padding: var(--mantine-spacing-md);
 }
 
-.shell .upmo-app-frame__main:has(> .chat-page) > :not(.chat-page) {
-  flex: none;
+@media (min-width: 48em) {
+  .shell-main-fill {
+    --app-shell-padding: var(--mantine-spacing-lg);
+  }
 }
 
 .shell-launcher {
@@ -396,46 +390,8 @@
   background: var(--surface-200);
 }
 
-.shell-notes {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.shell-note {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.shell-empty {
-  padding-block: var(--space-4) !important;
-  padding-inline: var(--space-2) !important;
-}
-
 .shell-bell {
-  position: relative;
-  overflow: visible;
-}
-
-.shell-count {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: var(--radius-full);
-  background: var(--emerald-deep);
-  color: var(--ink-on-brand);
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
-  pointer-events: none;
+  display: contents;
 }
 
 a.wordmark-link {

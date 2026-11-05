@@ -292,7 +292,15 @@ export function PersonalisationPage() {
             icon={<CaretIcon size={24} />}
           />
         ) : null}
-        {facts.length > 0 ? <DataTable columns={columns} rows={facts} rowKey={(fact) => fact.id} /> : null}
+        {facts.length > 0 ? (
+          <DataTable
+            aria-label="Remembered facts"
+            minWidth={560}
+            columns={columns}
+            rows={facts}
+            rowKey={(fact) => fact.id}
+          />
+        ) : null}
       </Stack>
 
       <ConfirmDialog

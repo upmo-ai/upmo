@@ -1,5 +1,5 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
@@ -56,6 +56,12 @@ async function expectFocusOnRemainingApprove(dialog: HTMLElement, focus: { mock:
     const remaining = within(dialog).getByRole("button", { name: "Approve", hidden: true });
     expect(focus.mock.contexts.at(-1)).toBe(remaining);
   });
+}
+
+// The bell's live region holds the empty-state line for a moment after the
+// last approval.
+function announced() {
+  return document.querySelector(".shell-bell [role='status']")?.textContent ?? "";
 }
 
 function sidebar() {
@@ -431,7 +437,7 @@ describe("app shell", () => {
     });
   });
 
-  it("leaves the collapsed state alone when Ctrl+B is pressed below md", async () => {
+  it("UPM-196 toggles the navigation drawer with Ctrl+B below md and leaves the rail state alone", async () => {
     setWidth(800);
     renderAt("/");
     await screen.findByRole("heading", { level: 1, name: "Home" });
@@ -440,8 +446,17 @@ describe("app shell", () => {
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true }));
     });
+    await screen.findByRole("dialog", { name: "Navigation" });
+    expect(screen.getByRole("button", { name: "Open navigation" }).getAttribute("aria-expanded")).toBe("true");
     expect(rail().getAttribute("data-rail")).toBe("true");
-    expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true }));
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull();
+    });
+    expect(rail().getAttribute("data-rail")).toBe("true");
 
     setWidth(1024);
     act(() => {
@@ -452,6 +467,42 @@ describe("app shell", () => {
     });
     expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeTruthy();
     expect(screen.getByTestId("theme-switch")).toBeTruthy();
+
+    // From md the same shortcut collapses the rail and opens no drawer.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true }));
+    });
+    expect(rail().getAttribute("data-rail")).toBe("true");
+    expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull();
+  });
+
+  it("UPM-196 does not bring the drawer back when the viewport widens and narrows again", async () => {
+    setWidth(800);
+    renderAt("/");
+    await screen.findByRole("heading", { level: 1, name: "Home" });
+    act(() => {
+      screen.getByRole("button", { name: "Open navigation" }).click();
+    });
+    await screen.findByRole("dialog", { name: "Navigation" });
+
+    setWidth(1024);
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull();
+    });
+    expect(rail().hasAttribute("inert")).toBe(false);
+
+    setWidth(800);
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Open navigation" })).toBeTruthy();
+    });
+    expect(screen.queryByRole("dialog", { name: "Navigation" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open navigation" }).getAttribute("aria-expanded")).toBe("false");
   });
 
   it("uses an injected API client", async () => {
@@ -505,12 +556,14 @@ describe("app shell", () => {
     act(() => {
       bell.click();
     });
-    const items = await screen.findAllByRole("listitem");
+    const list = await screen.findByRole("list", { name: "Notifications", hidden: true });
+    const items = within(list).getAllByRole("listitem", { hidden: true });
+    // Every listed notification is counted as unread, so each one says so.
     expect(items.map((item) => item.textContent)).toEqual([
-      "Approve the digestApprove",
-      "Question about the budgetApprove",
-      "Mail triage done",
-      "Weekly close failed",
+      "Unread: Approve the digestApprove",
+      "Unread: Question about the budgetApprove",
+      "Unread: Mail triage done",
+      "Unread: Weekly close failed",
     ]);
     expect(within(items[3]!).queryByRole("button", { name: "Approve" })).toBeNull();
   });
@@ -521,7 +574,10 @@ describe("app shell", () => {
     act(() => {
       bell.click();
     });
-    const [approval] = await screen.findAllByRole("listitem");
+    const [approval] = within(await screen.findByRole("list", { name: "Notifications", hidden: true })).getAllByRole(
+      "listitem",
+      { hidden: true },
+    );
     const approve = within(approval!).getByRole("button", { name: "Approve", hidden: true });
     act(() => {
       approve.click();
@@ -569,6 +625,91 @@ describe("app shell", () => {
     expect(screen.getByText("Approvals and finished tasks show up here.")).toBeTruthy();
   });
 
+  it("UPM-196 shows a spinner and holds back the empty state while the notifications load", async () => {
+    const stub = createStubApi();
+    let release: (items: AppNotification[]) => void = () => {};
+    const client: ApiClient = {
+      ...stub,
+      listNotifications: () =>
+        new Promise<AppNotification[]>((resolve) => {
+          release = resolve;
+        }),
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [];
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: /^Notifications$/ });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(within(dialog).getByRole("img", { name: "Loading", hidden: true })).toBeTruthy();
+    expect(within(dialog).queryByRole("heading", { level: 3, hidden: true })).toBeNull();
+
+    await act(async () => {
+      release([]);
+    });
+    expect(
+      await within(dialog).findByRole("heading", { level: 3, name: "You are up to date", hidden: true }),
+    ).toBeTruthy();
+    expect(dialog.getAttribute("aria-busy")).toBeNull();
+    expect(within(dialog).queryByRole("img", { name: "Loading", hidden: true })).toBeNull();
+  });
+
+  it("shows a spinner while the approvals load, even once the notifications have", async () => {
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications() {
+        return [];
+      },
+      approvals: {
+        ...stub.approvals,
+        list: () => new Promise(() => {}),
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: /^Notifications$/ });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    // Give the notifications time to settle: only the approvals are pending.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect(within(dialog).getByRole("img", { name: "Loading", hidden: true })).toBeTruthy();
+    expect(within(dialog).queryByRole("heading", { level: 3, hidden: true })).toBeNull();
+  });
+
+  it("UPM-196 does not claim the user is up to date when the notifications fail to load", async () => {
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications() {
+        throw new Error("notifications unavailable");
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: /^Notifications$/ });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    await waitFor(() => {
+      expect(dialog.getAttribute("aria-busy")).toBeNull();
+    });
+    expect(within(dialog).queryByRole("heading", { level: 3, hidden: true })).toBeNull();
+    expect(within(dialog).queryByRole("img", { name: "Loading", hidden: true })).toBeNull();
+    expect(within(dialog).queryByRole("list", { hidden: true })).toBeNull();
+  });
+
   it("shows the empty state, a plain label and no badge after the last approval", async () => {
     const stub = createStubApi();
     let notes: AppNotification[] = [{ id: "note-question", kind: "question", title: "Which budget?" }];
@@ -602,7 +743,8 @@ describe("app shell", () => {
     };
     renderAt("/", client);
     const bell = await screen.findByRole("button", { name: "Notifications, 2 unread" });
-    expect(bell.querySelector(".shell-count")?.textContent).toBe("2");
+    // The badge is hidden from assistive tech, so its text is the count itself.
+    expect(bell.textContent).toBe("2");
     act(() => {
       bell.click();
     });
@@ -623,13 +765,13 @@ describe("app shell", () => {
       });
     }
 
-    // jsdom reports the popover dropdown as display: none after its transition,
-    // like the listitem queries above, so the heading is looked up with hidden.
-    expect(
-      await screen.findByRole("heading", { level: 3, name: "You are up to date", hidden: true }),
-    ).toBeTruthy();
+    // Nothing is left to approve, so the popover closes and the empty state is
+    // said through the status line instead.
+    await waitFor(() => {
+      expect(announced()).toContain("You are up to date");
+    });
     const plain = screen.getByRole("button", { name: /^Notifications$/ });
-    expect(plain.querySelector(".shell-count")).toBeNull();
+    expect(plain.textContent).toBe("");
     expect(screen.queryByRole("button", { name: /unread/ })).toBeNull();
     expect(screen.queryByRole("list", { name: "Notifications", hidden: true })).toBeNull();
   });
@@ -667,9 +809,17 @@ describe("app shell", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Notifications$/ }));
     });
-    const status = within(dialog).getByRole("status", { hidden: true });
-    expect(status.textContent).toContain("You are up to date");
-  });
+    await waitFor(() => {
+      expect(announced()).toContain("You are up to date");
+    });
+    // The line does not linger in the reading order.
+    await waitFor(
+      () => {
+        expect(announced()).toBe("");
+      },
+      { timeout: 4000 },
+    );
+  }, 10_000);
 
   it("returns focus to the bell when only finished tasks are left", async () => {
     renderAt("/");
@@ -698,7 +848,35 @@ describe("app shell", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "Notifications, 2 unread" }));
     });
-    expect(within(dialog).getByRole("status", { hidden: true }).textContent).toBe("");
+    expect(announced()).toBe("");
+
+    // The popover traps focus while it is open and swallows Tab when nothing
+    // inside can take it. With focus back on the bell it must be closed, so Tab
+    // and Shift+Tab are left to the browser.
+    const settled = screen.getByRole("button", { name: "Notifications, 2 unread" });
+    await waitFor(() => {
+      expect(settled.getAttribute("aria-expanded")).toBe("false");
+    });
+    expect(fireEvent.keyDown(settled, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(settled, { key: "Tab", shiftKey: true })).toBe(true);
+  });
+
+  it("keeps the popover open while an approval is left", async () => {
+    renderAt("/");
+    const bell = await screen.findByRole("button", { name: "Notifications, 4 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const [first] = within(dialog).getAllByRole("button", { name: "Approve", hidden: true });
+    act(() => {
+      first!.focus();
+      first!.click();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Notifications, 3 unread" })).toBeTruthy();
+    });
+    expect(screen.getByRole("button", { name: "Notifications, 3 unread" }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it.each(sidebarRoutes)("%s has one h1 %s and current nav %s", async (path, title, navLabel) => {

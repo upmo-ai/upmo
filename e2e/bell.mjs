@@ -17,14 +17,14 @@ async function openBell(page, name) {
   await dialog(page).waitFor();
 }
 
-// The label and the badge come from the same count, so they must agree. This
-// also proves the badge selector still matches, which keeps a missing badge
-// from passing as "no unread".
+// The label and the badge come from the same count, so they must agree. The
+// badge is hidden from assistive tech, so it is read from the button's text. A
+// missing badge leaves the text empty and fails here, which keeps it from
+// passing as "no unread".
 async function expectUnread(page, count) {
-  await page.getByRole("button", { name: `Notifications, ${count} unread` }).waitFor();
-  const badge = page.locator(".shell-bell .shell-count");
-  await badge.waitFor();
-  const text = (await badge.textContent())?.trim();
+  const bell = page.getByRole("button", { name: `Notifications, ${count} unread` });
+  await bell.waitFor();
+  const text = (await bell.textContent())?.trim();
   if (text !== String(count)) {
     throw new Error(`badge shows ${JSON.stringify(text)}, expected ${JSON.stringify(String(count))}`);
   }
@@ -48,7 +48,8 @@ async function expectRows(page, titles) {
     await page.waitForTimeout(100);
   }
   const texts = (await list.allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
-  const want = titles.map(([title, approve]) => (approve ? `${title} Approve` : title));
+  // Every listed notification is counted as unread, so each row says so.
+  const want = titles.map(([title, approve]) => `Unread: ${approve ? `${title} Approve` : title}`);
   if (JSON.stringify(texts) !== JSON.stringify(want)) {
     throw new Error(`rows ${JSON.stringify(texts)}, expected ${JSON.stringify(want)}`);
   }
@@ -67,6 +68,43 @@ async function expectBellFocused(page, name) {
     if (Date.now() > deadline) {
       const active = await page.evaluate(() => document.activeElement?.tagName ?? "none");
       throw new Error(`the bell does not have focus after the last approval, ${active} does`);
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+// With focus on the bell and nothing left to approve, the popover is closed
+// and Tab moves on. An open popover traps focus and swallows Tab when nothing
+// inside can take it, which leaves the keyboard user stuck on the bell.
+async function expectTabLeavesBell(page, name) {
+  await dialog(page).waitFor({ state: "hidden", timeout: 5_000 });
+  const bell = page.getByRole("button", { name });
+  for (const [key, label] of [["Tab", "Tab"], ["Shift+Tab", "Shift+Tab"]]) {
+    // Put focus back on the bell between the two presses.
+    await bell.focus();
+    await page.keyboard.press(key);
+    const state = await bell.evaluate((node) => ({
+      onBell: node === document.activeElement,
+      active: document.activeElement?.tagName ?? "none",
+    }));
+    if (state.onBell || state.active === "BODY") {
+      throw new Error(`${label} does not leave the bell after the last approval, ${state.active} has focus`);
+    }
+  }
+}
+
+// Focus lands on the popover heading, not on the first Approve button: a key
+// held down on the bell must not press an approval.
+async function expectHeadingFocused(page, label) {
+  const heading = dialog(page).getByRole("heading", { level: 2, name: "Notifications" });
+  const deadline = Date.now() + 5_000;
+  while (!(await heading.evaluate((node) => node === document.activeElement))) {
+    if (Date.now() > deadline) {
+      const active = await page.evaluate(() => {
+        const node = document.activeElement;
+        return node ? `${node.tagName} ${node.textContent?.trim().slice(0, 40)}` : "none";
+      });
+      throw new Error(`${label}: the heading does not have focus on open, ${active} does`);
     }
     await page.waitForTimeout(100);
   }
@@ -113,6 +151,7 @@ try {
     const { context, page } = await newPage(browser);
     await expectUnread(page, 4);
     await openBell(page, "Notifications, 4 unread");
+    await expectHeadingFocused(page, "UPM-196 bell");
     await expectRows(page, [
       ["Approve the digest", true],
       ["Question about the budget", true],
@@ -135,12 +174,17 @@ try {
 
     await approve(page, "Question about the budget");
     await expectUnread(page, 2);
+    // The pressed button is gone with its row, so focus must not fall to body.
+    await expectBellFocused(page, "Notifications, 2 unread");
+    // Nothing is left to approve, so the popover has closed and Tab moves on.
+    await expectTabLeavesBell(page, "Notifications, 2 unread");
+
+    // Opening it again lists the two finished tasks.
+    await openBell(page, "Notifications, 2 unread");
     await expectRows(page, [
       ["Mail triage done", false],
       ["Weekly close failed", false],
     ]);
-    // The pressed button is gone with its row, so focus must not fall to body.
-    await expectBellFocused(page, "Notifications, 2 unread");
     await context.close();
   }
 

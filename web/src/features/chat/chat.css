@@ -5,7 +5,7 @@
   flex: 1 1 0;
   min-width: 0;
   /* Floor: thread header, composer (as tall as its draft) and one message
-     row. Below it the route's main scrolls (see shell.css) rather than
+     row. Below it the route's main scrolls (AppFrame fill) rather than
      clipping the composer. */
   min-height: min-content;
   width: 100%;
@@ -260,20 +260,24 @@
   color: var(--ink);
 }
 
-.chat-messages {
+/* The message list is a ChatThread: it scrolls and follows the newest message
+   itself. This only sizes it. Specific enough to beat the thread's own
+   min-height: 0. */
+.chat-thread > .chat-messages {
   width: 100%;
   max-width: var(--chat-container-width);
   margin-inline: auto;
-  flex: 1;
   /* One message row. contain: size keeps the whole history out of the thread's
      min-content height, so the list scrolls here and only this floor counts. */
   min-height: 4.5rem;
   contain: size;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: var(--space-2);
-  padding-bottom: var(--space-6);
-  box-sizing: border-box;
+}
+
+/* Room inside the scroller: the newest message clears the composer and the
+   "Jump to newest" pill, and the scrollbar does not touch the bubbles. */
+.chat-thread > .chat-messages .upmo-chat-thread__list {
+  padding-block-end: var(--space-6);
+  padding-inline-end: var(--space-2);
 }
 
 .chat-composer-wrap {
