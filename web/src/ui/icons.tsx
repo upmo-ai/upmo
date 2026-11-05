@@ -11,7 +11,6 @@ export const shellConcepts = [
   "nav.usage",
   "nav.settings",
   "nav.sidebar",
-  "nav.notifications",
   "action.edit",
   "action.delete",
   "action.remove",

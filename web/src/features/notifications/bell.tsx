@@ -1,7 +1,7 @@
-import { Popover } from "@mantine/core";
+import { VisuallyHidden } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Badge, Button, EmptyState, IconButton } from "@upmo-ai/components";
-import { useEffect, useRef } from "react";
+import { Button, EmptyState, NotificationBell, NotificationItem } from "@upmo-ai/components";
+import { useEffect, useRef, useState } from "react";
 
 import {
   approvalsQueryKey,
@@ -9,7 +9,6 @@ import {
   tasksQueryKey,
   useApi,
 } from "../../app/api";
-import { ShellIcon } from "../../ui/icons";
 import type { AppNotification, NotificationKind } from "./types";
 
 const kindOrder = {
@@ -18,6 +17,14 @@ const kindOrder = {
   finished: 2,
   failed: 3,
 } as const satisfies Record<NotificationKind, number>;
+
+// How long the empty-state announcement stays in the status region.
+const ANNOUNCEMENT_CLEAR_MS = 2000;
+
+const upToDate = {
+  title: "You are up to date",
+  description: "Approvals and finished tasks show up here.",
+} as const;
 
 function ordered(items: AppNotification[]) {
   return [...items].sort((left, right) => kindOrder[left.kind] - kindOrder[right.kind]);
@@ -38,8 +45,16 @@ export function NotificationsBell() {
     queryKey: approvalsQueryKey(),
     queryFn: () => api.approvals.list(),
   });
-  const bell = useRef<HTMLElement>(null);
-  const list = useRef<HTMLUListElement>(null);
+  // The popover traps focus while it is open, and that trap swallows Tab when
+  // the dialog has nothing left to tab to. So it is held here and closed when
+  // focus moves to the bell.
+  const [opened, setOpened] = useState(false);
+  // Holds the bell button, which NotificationBell does not hand out a ref to.
+  const root = useRef<HTMLSpanElement>(null);
+  // The live region and the timer that empties it. Written directly: the line
+  // is a message to assistive tech, not something the page renders.
+  const status = useRef<HTMLDivElement>(null);
+  const clearStatus = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Where the pressed Approve button sat among the approvable rows, and how
   // many rows there were. Set on press, cleared once focus has been placed.
   const pressed = useRef<{ index: number; actionable: number } | null>(null);
@@ -69,75 +84,94 @@ export function NotificationsBell() {
     .map((item) => ({ id: item.id, kind: "approval", title: item.title }));
   const items = ready ? ordered([...approvalItems, ...(notifications.data ?? [])]) : [];
   const count = items.length;
-  const label = count > 0 ? `Notifications, ${count} unread` : "Notifications";
   const pending = approveApproval.isPending || approveNote.isPending;
   const actionable = items.filter((item) => needsApproval(item.kind)).length;
+
+  useEffect(() => () => clearTimeout(clearStatus.current), []);
 
   // The pressed Approve button leaves the list, which would drop focus to the
   // body. Land on the next Approve button (the first one when the last row was
   // pressed), or on the bell once nothing is left to approve. Wait until the
-  // row is gone and the buttons are enabled again.
+  // row is gone and the buttons are enabled again. When that leaves the list
+  // empty, say so, once, and clear the line after a moment so it does not
+  // linger in the reading order: the popover is closed by then and the empty
+  // state is not a live region.
   useEffect(() => {
     const from = pressed.current;
     if (!from || !ready || pending || actionable >= from.actionable) return;
     pressed.current = null;
     if (actionable === 0) {
-      bell.current?.focus();
+      root.current?.querySelector("button")?.focus();
+      const region = status.current;
+      if (count === 0 && region) {
+        region.textContent = upToDate.title;
+        clearTimeout(clearStatus.current);
+        clearStatus.current = setTimeout(() => {
+          region.textContent = "";
+        }, ANNOUNCEMENT_CLEAR_MS);
+      }
       return;
     }
-    const buttons = list.current?.querySelectorAll("button");
-    buttons?.[from.index < actionable ? from.index : 0]?.focus();
-  }, [ready, pending, actionable]);
+    const buttons = document.querySelectorAll<HTMLElement>("[data-notification-approve]");
+    buttons[from.index < actionable ? from.index : 0]?.focus();
+  }, [ready, pending, actionable, count]);
 
   return (
-    <Popover position="bottom-end" width={320} shadow="md">
-      <Popover.Target ref={bell}>
-        <IconButton className="shell-bell" aria-label={label} variant="subtle" size={40}>
-          <ShellIcon concept="nav.notifications" />
-          {count > 0 ? (
-            <Badge className="shell-count" size="xs" circle aria-hidden>
-              {count}
-            </Badge>
-          ) : null}
-        </IconButton>
-      </Popover.Target>
-      <Popover.Dropdown>
-        <div role="status">
-          {ready && items.length === 0 ? (
+    <span ref={root} className="shell-bell">
+      <NotificationBell
+        count={count}
+        opened={opened}
+        onOpenedChange={setOpened}
+        busy={notifications.isPending || approvals.isPending}
+        empty={
+          ready ? (
             <EmptyState
-              className="shell-empty"
-              title="You are up to date"
-              description="Approvals and finished tasks show up here."
+              compact
+              headingLevel={3}
+              title={upToDate.title}
+              description={upToDate.description}
             />
-          ) : null}
-        </div>
-        {ready && items.length === 0 ? null : (
-          <ul ref={list} className="shell-notes" aria-label="Notifications">
-            {items.map((item) => (
-              <li key={item.id} className="shell-note">
-                <span>{item.title}</span>
-                {needsApproval(item.kind) ? (
-                  <Button
-                    size="xs"
-                    variant="light"
-                    disabled={pending}
-                    onClick={() => {
-                      pressed.current = {
-                        index: items.filter((entry) => needsApproval(entry.kind)).indexOf(item),
-                        actionable,
-                      };
-                      if (item.kind === "approval") approveApproval.mutate(item.id);
-                      else approveNote.mutate(item.id);
-                    }}
-                  >
-                    Approve
-                  </Button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Popover.Dropdown>
-    </Popover>
+          ) : (
+            false
+          )
+        }
+      >
+        {items.map((item) => (
+          <NotificationItem
+            key={item.id}
+            unread
+            title={item.title}
+            action={
+              needsApproval(item.kind) ? (
+                <Button
+                  size="xs"
+                  variant="light"
+                  disabled={pending}
+                  data-notification-approve
+                  onClick={() => {
+                    pressed.current = {
+                      index: items.filter((entry) => needsApproval(entry.kind)).indexOf(item),
+                      actionable,
+                    };
+                    // Approving the last row closes the popover, so its focus
+                    // trap lets go once focus is on the bell.
+                    const settle = {
+                      onSuccess: () => {
+                        if (actionable === 1) setOpened(false);
+                      },
+                    };
+                    if (item.kind === "approval") approveApproval.mutate(item.id, settle);
+                    else approveNote.mutate(item.id, settle);
+                  }}
+                >
+                  Approve
+                </Button>
+              ) : undefined
+            }
+          />
+        ))}
+      </NotificationBell>
+      <VisuallyHidden ref={status} role="status" />
+    </span>
   );
 }

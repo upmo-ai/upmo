@@ -156,6 +156,23 @@ describe("Personalisation page", () => {
     expect(screen.getAllByRole("heading", { level: 1 }).length).toBe(1);
   });
 
+  it("UPM-196 names the facts table and the region that scrolls it", async () => {
+    renderAt("/personalisation");
+    await screen.findByText(sampleFacts[0]!.text);
+    expect(screen.getByRole("table", { name: "Remembered facts" })).toBeTruthy();
+    const region = screen.getByRole("region", { name: "Remembered facts" });
+    expect(region.getAttribute("tabindex")).toBe("0");
+    expect(within(region).getByRole("table")).toBeTruthy();
+  });
+
+  it("keeps the facts table at least 560px wide, scrolling the region instead of squeezing it", async () => {
+    renderAt("/personalisation");
+    await screen.findByText(sampleFacts[0]!.text);
+    const region = screen.getByRole("region", { name: "Remembered facts" });
+    // Mantine writes the minimum as a rem value: 560px is 35rem.
+    expect(region.style.getPropertyValue("--table-min-width")).toContain("35rem");
+  });
+
   it("shows the empty state outside a table when nothing is remembered", async () => {
     page = { ...page, facts: [] };
     renderAt("/personalisation");

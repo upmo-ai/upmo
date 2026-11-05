@@ -90,6 +90,91 @@ async function expectComposerReachable(page, label) {
   );
 }
 
+function messageLog(page) {
+  return page.getByRole("log", { name: "Messages" });
+}
+
+async function send(page, text) {
+  const draft = page.getByRole("textbox", { name: "Message" });
+  await draft.fill(text);
+  await draft.press("Enter");
+  await messageLog(page).getByText(text, { exact: true }).waitFor();
+}
+
+// The thread, not the page, holds the history: it overflows, it sits at the
+// newest message, and the main region has nothing to scroll.
+async function expectThreadAtNewest(page, label) {
+  await until(`${label} thread`, () =>
+    messageLog(page).evaluate((log) => {
+      const main = document.querySelector(".upmo-app-frame__main");
+      const left = log.scrollHeight - log.scrollTop - log.clientHeight;
+      return {
+        ok: log.scrollHeight > log.clientHeight && left <= 2 && main.scrollHeight <= main.clientHeight,
+        left: Math.round(left),
+        logScroll: [log.scrollHeight, log.clientHeight],
+        mainScroll: [main.scrollHeight, main.clientHeight],
+      };
+    }),
+  );
+}
+
+// At the newest position the last message clears the foot of the list by its
+// bottom padding (24px) and the scrollbar by the inline-end padding (8px), so
+// the composer below and the "Jump to newest" pill are not drawn over it. The
+// message's own bottom margin comes on top, so 24px is the floor.
+async function expectLastMessageClear(page, label) {
+  await until(`${label} last message`, () =>
+    messageLog(page).evaluate((log) => {
+      const messages = log.querySelectorAll(".upmo-chat-msg");
+      const last = messages[messages.length - 1];
+      if (!last) return { ok: false, reason: "no message" };
+      const box = last.getBoundingClientRect();
+      const view = log.getBoundingClientRect();
+      const below = view.top + log.clientHeight - box.bottom;
+      const aside = view.left + log.clientWidth - box.right;
+      // The point just inside the message's lower edge is the message itself,
+      // not the composer or another control drawn over it.
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.bottom - 2);
+      return {
+        ok: below >= 24 && aside >= 8 && Boolean(hit && last.contains(hit)),
+        below: Math.round(below),
+        aside: Math.round(aside),
+        hit: hit ? hit.className : null,
+      };
+    }),
+  );
+}
+
+// main carries the page inset (Mantine reads --app-shell-padding). The chat
+// page fills the height and drops that padding, then puts it back, so its inset
+// must equal the one of any other route at the same viewport.
+async function mainInset(page) {
+  return page.evaluate(() => {
+    const style = getComputedStyle(document.querySelector(".upmo-app-frame__main"));
+    return {
+      top: style.paddingTop,
+      right: style.paddingRight,
+      bottom: style.paddingBottom,
+      left: style.paddingLeft,
+    };
+  });
+}
+
+async function expectChatInsetMatchesTasks(page, label) {
+  await page.goto(new URL("/tasks", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
+  const tasks = await mainInset(page);
+  await page.goto(new URL("/chat", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("heading", { level: 1, name: "Chat" }).waitFor();
+  const chat = await mainInset(page);
+  if (tasks.left === "0px" || tasks.right === "0px" || tasks.bottom === "0px") {
+    throw new Error(`${label}: the Tasks page has no inset to compare with, ${JSON.stringify(tasks)}`);
+  }
+  if (JSON.stringify(chat) !== JSON.stringify(tasks)) {
+    throw new Error(`${label}: chat inset ${JSON.stringify(chat)}, Tasks inset ${JSON.stringify(tasks)}`);
+  }
+}
+
 const browser = await chromium.launch({
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
@@ -134,10 +219,30 @@ try {
   await offer.waitFor();
   await expectComposerOnScreen(page, "with the passkey offer");
 
+  // A long history stays in the thread: the composer keeps its place, the
+  // thread follows the newest message, and the page and main do not scroll.
+  for (let n = 1; n <= 12; n += 1) {
+    await send(page, `History message ${n}`);
+  }
+  await expectComposerOnScreen(page, "UPM-196 with a long history");
+  await expectThreadAtNewest(page, "UPM-196 with a long history");
+  await expectLastMessageClear(page, "with a long history");
+
+  // A reader who scrolled up gets "Jump to newest", and sending returns to the
+  // newest message.
+  await messageLog(page).evaluate((log) => {
+    log.scrollTop = 0;
+  });
+  await page.getByRole("button", { name: "Jump to newest" }).waitFor();
+  await send(page, "Back at the newest");
+  await expectThreadAtNewest(page, "UPM-196 after sending from further up");
+  await expectLastMessageClear(page, "after sending from further up");
+  await page.getByRole("button", { name: "Jump to newest" }).waitFor({ state: "hidden" });
+
   // Phone landscape with the offer showing: the page keeps its floor and main
   // scrolls to the composer.
   await page.setViewportSize({ width: 700, height: 340 });
-  await expectComposerReachable(page, "700x340 with the passkey offer");
+  await expectComposerReachable(page, "700x340 with the passkey offer and a long history");
 
   // A 12 line draft grows the composer, which then has to stay reachable.
   // 340px cannot show a composer that tall under the top bar, so use 520px,
@@ -153,6 +258,13 @@ try {
   await offer.getByRole("button", { name: "Not now" }).click();
   await offer.waitFor({ state: "hidden" });
   await expectComposerOnScreen(page, "after dismissing the passkey offer");
+
+  // The inset matches another route's, wide and narrow. A full load keeps the
+  // session cookie; the passkey offer is gone by now and plays no part.
+  await expectChatInsetMatchesTasks(page, "1280x900 inset");
+  await page.setViewportSize({ width: 600, height: 900 });
+  await expectChatInsetMatchesTasks(page, "600x900 inset");
+  await page.setViewportSize(viewport);
 
   console.log("chat check passed");
 } finally {

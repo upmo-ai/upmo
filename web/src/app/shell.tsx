@@ -2,7 +2,7 @@ import { Text, UnstyledButton, useMantineTheme } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   IconKey,
   IconLogout,
@@ -38,6 +38,7 @@ import { WorkspaceName, workspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch, useThemeChoice } from "../theme";
 import { ShellIcon } from "../ui/icons";
 import { CommandLauncher } from "./command-launcher";
+import { fillsMain } from "./layout";
 import { endThisSession } from "./passkeys";
 
 import "./shell.css";
@@ -156,25 +157,10 @@ type ShellUser = {
   management: boolean;
 };
 
-function CloseDrawerOnNavigate() {
-  const { closeDrawer } = useAppFrame();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const previous = useRef(pathname);
-
-  useEffect(() => {
-    if (previous.current === pathname) return;
-    previous.current = pathname;
-    closeDrawer();
-  }, [pathname, closeDrawer]);
-
-  return null;
-}
-
 function ShellHeader() {
   const { rail, closeDrawer } = useAppFrame();
   return (
     <>
-      <CloseDrawerOnNavigate />
       <Link to="/" className="wordmark-link" aria-label="Upmo" onClick={closeDrawer}>
         <Wordmark decorative compact={rail} height={rail ? 22 : 20} />
       </Link>
@@ -394,18 +380,28 @@ export function Shell() {
   const api = useApi();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [collapsed, setCollapsed] = useState(false);
+  const [drawerOpened, setDrawerOpened] = useState(false);
   const [dismissedAt, setDismissedAt] = useState<number>(0);
+
+  const fillMain = fillsMain(pathname);
 
   const theme = useMantineTheme();
   const wide = useMediaQuery(`(min-width: ${theme.breakpoints.md})`, true, {
     getInitialValueInEffect: false,
   });
 
+  // Ctrl+B collapses the rail from md and toggles the navigation drawer below it.
   const toggleSidebar = useCallback(() => {
-    // Below md the drawer open state is internal to AppFrame (design system backlog).
-    if (!wide) return;
-    setCollapsed((val) => !val);
+    if (wide) setCollapsed((val) => !val);
+    else setDrawerOpened((val) => !val);
   }, [wide]);
+
+  // A route change closes the drawer, whether or not a nav item was clicked.
+  const [drawerPath, setDrawerPath] = useState(pathname);
+  if (drawerPath !== pathname) {
+    setDrawerPath(pathname);
+    setDrawerOpened(false);
+  }
 
   const session = useQuery({
     queryKey: sessionQueryKey(),
@@ -467,6 +463,10 @@ export function Shell() {
       className="shell"
       collapsed={collapsed}
       onCollapsedChange={setCollapsed}
+      drawerOpened={drawerOpened}
+      onDrawerOpenedChange={setDrawerOpened}
+      fill={fillMain}
+      mainClassName={fillMain ? "shell-main-fill" : undefined}
       header={<ShellHeader />}
       navigation={<ShellNavigation pathname={pathname} management={user.management} />}
       topBar={<ShellTopBar pathname={pathname} />}

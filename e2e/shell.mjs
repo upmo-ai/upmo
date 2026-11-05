@@ -128,6 +128,13 @@ try {
   }
   await page.mouse.move(400, 400);
 
+  // Ctrl+B opens and closes the drawer here, as it collapses the rail from md.
+  await page.keyboard.press("Control+b");
+  await drawer(page).waitFor({ timeout: 5000 });
+  await page.keyboard.press("Control+b");
+  await drawer(page).waitFor({ state: "hidden", timeout: 5000 });
+  await expectRail(page, "UPM-196 tablet after Ctrl+B", true, "--rail");
+
   // The same width opens the full navigation as a drawer.
   await page.getByRole("button", { name: "Open navigation" }).click();
   await drawer(page).waitFor({ timeout: 5000 });
