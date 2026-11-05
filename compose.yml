@@ -199,6 +199,8 @@ services:
       - upmo-corepack:/root/.cache/node/corepack
     environment:
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      # Absolute site origin for the og:image tags; empty leaves them out.
+      VITE_SITE_ORIGIN: ${VITE_SITE_ORIGIN:-}
       pnpm_config_store_dir: /root/.local/share/pnpm/store
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
