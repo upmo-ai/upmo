@@ -49,15 +49,15 @@ async function expectRows(page, titles) {
   }
   const texts = (await list.allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
   // Every listed notification is counted as unread, so each row says so.
-  const want = titles.map(([title, approve]) => `Unread: ${approve ? `${title} Approve` : title}`);
+  const want = titles.map(([title, meta, action]) => `Unread: ${title} ${meta} ${action}`);
   if (JSON.stringify(texts) !== JSON.stringify(want)) {
     throw new Error(`rows ${JSON.stringify(texts)}, expected ${JSON.stringify(want)}`);
   }
 }
 
-async function approve(page, title) {
+async function press(page, title, action) {
   const row = rows(page).filter({ hasText: title });
-  await row.getByRole("button", { name: "Approve" }).click();
+  await row.getByRole("button", { name: action }).click();
   await row.waitFor({ state: "detached" });
 }
 
@@ -67,7 +67,7 @@ async function expectBellFocused(page, name) {
   while (!(await bell.evaluate((node) => node === document.activeElement))) {
     if (Date.now() > deadline) {
       const active = await page.evaluate(() => document.activeElement?.tagName ?? "none");
-      throw new Error(`the bell does not have focus after the last approval, ${active} does`);
+      throw new Error(`the bell does not have focus after the last row, ${active} does`);
     }
     await page.waitForTimeout(100);
   }
@@ -88,12 +88,12 @@ async function expectTabLeavesBell(page, name) {
       active: document.activeElement?.tagName ?? "none",
     }));
     if (state.onBell || state.active === "BODY") {
-      throw new Error(`${label} does not leave the bell after the last approval, ${state.active} has focus`);
+      throw new Error(`${label} does not leave the bell after the last row, ${state.active} has focus`);
     }
   }
 }
 
-// Focus lands on the popover heading, not on the first Approve button: a key
+// Focus lands on the popover heading, not on the first row's button: a key
 // held down on the bell must not press an approval.
 async function expectHeadingFocused(page, label) {
   const heading = dialog(page).getByRole("heading", { level: 2, name: "Notifications" });
@@ -110,13 +110,13 @@ async function expectHeadingFocused(page, label) {
   }
 }
 
-async function expectApproveFocused(page, title) {
-  const button = rows(page).filter({ hasText: title }).getByRole("button", { name: "Approve" });
+async function expectRowButtonFocused(page, title) {
+  const button = rows(page).filter({ hasText: title }).getByRole("button");
   const deadline = Date.now() + 5_000;
   while (!(await button.evaluate((node) => node === document.activeElement))) {
     if (Date.now() > deadline) {
       const active = await page.evaluate(() => document.activeElement?.tagName ?? "none");
-      throw new Error(`the Approve button of ${JSON.stringify(title)} does not have focus, ${active} does`);
+      throw new Error(`the button of ${JSON.stringify(title)} does not have focus, ${active} does`);
     }
     await page.waitForTimeout(100);
   }
@@ -146,45 +146,73 @@ const browser = await chromium.launch({
 });
 
 try {
-  // Stock fixtures: four unread, two of them need approval.
+  // Stock fixtures: five unread. The approval is approved, the rest dismissed.
   {
     const { context, page } = await newPage(browser);
-    await expectUnread(page, 4);
-    await openBell(page, "Notifications, 4 unread");
+    await expectUnread(page, 5);
+    await openBell(page, "Notifications, 5 unread");
     await expectHeadingFocused(page, "UPM-196 bell");
     await expectRows(page, [
-      ["Approve the digest", true],
-      ["Question about the budget", true],
-      ["Mail triage done", false],
-      ["Weekly close failed", false],
+      ["Approve the digest", "Needs your approval", "Approve"],
+      ["Question about the budget", "Question", "Dismiss"],
+      ["Archive the filed receipts", "Proposal", "Dismiss"],
+      ["Mail triage done", "Finished", "Dismiss"],
+      ["Weekly close failed", "Failed", "Dismiss"],
     ]);
     if ((await dialog(page).getByRole("button", { name: "Deny" }).count()) !== 0) {
       throw new Error("the bell offers Deny");
     }
+    if ((await dialog(page).getByText(/Showing the latest/).count()) !== 0) {
+      throw new Error("the bell shows the overflow line with five notifications");
+    }
 
-    await approve(page, "Approve the digest");
+    await press(page, "Approve the digest", "Approve");
+    await expectUnread(page, 4);
+    await expectRows(page, [
+      ["Question about the budget", "Question", "Dismiss"],
+      ["Archive the filed receipts", "Proposal", "Dismiss"],
+      ["Mail triage done", "Finished", "Dismiss"],
+      ["Weekly close failed", "Failed", "Dismiss"],
+    ]);
+    // Another row is left, so focus moves to its button, not to body.
+    await expectRowButtonFocused(page, "Question about the budget");
+
+    await press(page, "Question about the budget", "Dismiss");
     await expectUnread(page, 3);
     await expectRows(page, [
-      ["Question about the budget", true],
-      ["Mail triage done", false],
-      ["Weekly close failed", false],
+      ["Archive the filed receipts", "Proposal", "Dismiss"],
+      ["Mail triage done", "Finished", "Dismiss"],
+      ["Weekly close failed", "Failed", "Dismiss"],
     ]);
-    // Another approval is left, so focus moves to its button, not to body.
-    await expectApproveFocused(page, "Question about the budget");
+    await expectRowButtonFocused(page, "Archive the filed receipts");
 
-    await approve(page, "Question about the budget");
-    await expectUnread(page, 2);
+    // A notification about a task links to it and closes the popover.
+    await dialog(page).getByRole("link", { name: "Archive the filed receipts" }).click();
+    await page.waitForURL(/\/tasks\/aster-done$/);
+    await dialog(page).waitFor({ state: "hidden", timeout: 5_000 });
+    await context.close();
+  }
+
+  // Dismissing everything leaves the empty state, with focus on the bell.
+  {
+    const { context, page } = await newPage(browser);
+    await openBell(page, "Notifications, 5 unread");
+    await press(page, "Approve the digest", "Approve");
+    for (const title of [
+      "Question about the budget",
+      "Archive the filed receipts",
+      "Mail triage done",
+      "Weekly close failed",
+    ]) {
+      await press(page, title, "Dismiss");
+    }
     // The pressed button is gone with its row, so focus must not fall to body.
-    await expectBellFocused(page, "Notifications, 2 unread");
-    // Nothing is left to approve, so the popover has closed and Tab moves on.
-    await expectTabLeavesBell(page, "Notifications, 2 unread");
+    await expectBellFocused(page, "Notifications");
+    // Nothing is left, so the popover has closed and Tab moves on.
+    await expectTabLeavesBell(page, "Notifications");
 
-    // Opening it again lists the two finished tasks.
-    await openBell(page, "Notifications, 2 unread");
-    await expectRows(page, [
-      ["Mail triage done", false],
-      ["Weekly close failed", false],
-    ]);
+    await openBell(page, "Notifications");
+    await dialog(page).getByRole("heading", { level: 3, name: "You are up to date" }).waitFor();
     await context.close();
   }
 

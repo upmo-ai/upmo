@@ -1,10 +1,15 @@
-export type NotificationKind = "approval" | "question" | "finished" | "failed";
+export type NotificationKind = "approval" | "proposal" | "question" | "finished" | "failed";
 
 export interface AppNotification {
   id: string;
   kind: NotificationKind;
   title: string;
+  /** The task the notification is about, when there is one. */
+  taskId?: string;
 }
+
+/** How many notifications the bell lists. Approvals are listed on top of these. */
+export const NOTIFICATION_LIMIT = 50;
 
 export type ApprovalState = "pending" | "approved" | "denied";
 

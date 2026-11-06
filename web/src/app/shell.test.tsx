@@ -51,10 +51,30 @@ function renderAt(path: string, client?: ApiClient) {
 // With another approval left, focus moves to its button instead of the body.
 // jsdom reports the popover dropdown as display: none, which makes focus() a
 // no-op there, so the check is on which element was asked to take focus.
-async function expectFocusOnRemainingApprove(dialog: HTMLElement, focus: { mock: { contexts: unknown[] } }) {
+async function expectFocusOnRowButton(
+  dialog: HTMLElement,
+  focus: { mock: { contexts: unknown[] } },
+  title: string,
+) {
   await waitFor(() => {
-    const remaining = within(dialog).getByRole("button", { name: "Approve", hidden: true });
-    expect(focus.mock.contexts.at(-1)).toBe(remaining);
+    const row = within(dialog)
+      .getAllByRole("listitem", { hidden: true })
+      .find((item) => item.textContent?.includes(title));
+    if (!row) throw new Error(`no row for ${title}`);
+    expect(focus.mock.contexts.at(-1)).toBe(within(row).getByRole("button", { hidden: true }));
+  });
+}
+
+// Presses the one button of the row with this title, as a keyboard user would.
+function pressRowButton(dialog: HTMLElement, title: string) {
+  const row = within(dialog)
+    .getAllByRole("listitem", { hidden: true })
+    .find((item) => item.textContent?.includes(title));
+  if (!row) throw new Error(`no row for ${title}`);
+  const button = within(row).getByRole("button", { hidden: true });
+  act(() => {
+    button.focus();
+    button.click();
   });
 }
 
@@ -540,7 +560,7 @@ describe("app shell", () => {
       async listNotifications() {
         return [];
       },
-      async approveNotification() {},
+      async dismissNotification() {},
       async nextPhase() {
         return {
           id: "custom-task",
@@ -569,9 +589,9 @@ describe("app shell", () => {
     expect(await screen.findByText("Custom task")).toBeTruthy();
   });
 
-  it("shows the unread count and lists approvals before finished tasks", async () => {
+  it("UPM-203 lists approvals, questions, proposals and finished tasks in that order, each with its action", async () => {
     renderAt("/");
-    const bell = await screen.findByRole("button", { name: "Notifications, 4 unread" });
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
     act(() => {
       bell.click();
     });
@@ -579,17 +599,205 @@ describe("app shell", () => {
     const items = within(list).getAllByRole("listitem", { hidden: true });
     // Every listed notification is counted as unread, so each one says so.
     expect(items.map((item) => item.textContent)).toEqual([
-      "Unread: Approve the digestApprove",
-      "Unread: Question about the budgetApprove",
-      "Unread: Mail triage done",
-      "Unread: Weekly close failed",
+      "Unread: Approve the digestNeeds your approvalApprove",
+      "Unread: Question about the budgetQuestionDismiss",
+      "Unread: Archive the filed receiptsProposalDismiss",
+      "Unread: Mail triage doneFinishedDismiss",
+      "Unread: Weekly close failedFailedDismiss",
     ]);
-    expect(within(items[3]!).queryByRole("button", { name: "Approve" })).toBeNull();
+    // Only an approval is approved. Everything else is dismissed.
+    expect(within(items[0]!).queryByRole("button", { name: "Dismiss", hidden: true })).toBeNull();
+    for (const item of items.slice(1)) {
+      expect(within(item).queryByRole("button", { name: "Approve", hidden: true })).toBeNull();
+      expect(within(item).getByRole("button", { name: "Dismiss", hidden: true })).toBeTruthy();
+    }
+  });
+
+  it("UPM-203 links a notification to its task when it has one", async () => {
+    renderAt("/");
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const hrefs = within(dialog)
+      .getAllByRole("link", { hidden: true })
+      .map((link) => [link.textContent, link.getAttribute("href")]);
+    expect(hrefs).toEqual([
+      ["Approve the digest", "/tasks/aster-digest"],
+      ["Archive the filed receipts", "/tasks/aster-done"],
+      ["Mail triage done", "/tasks/aster-mail"],
+      ["Weekly close failed", "/tasks/aster-failed"],
+    ]);
+    // The question has no task, so its title is plain text.
+    const question = screen.getByText("Question about the budget");
+    expect(question.closest("a")).toBeNull();
+
+    act(() => {
+      within(dialog).getByRole("link", { name: "Mail triage done", hidden: true }).click();
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+  });
+
+  it("UPM-203 dismisses a proposal and drops the unread count", async () => {
+    renderAt("/");
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const row = within(dialog)
+      .getAllByRole("listitem", { hidden: true })
+      .find((item) => item.textContent?.includes("Archive the filed receipts"));
+    act(() => {
+      within(row!).getByRole("button", { name: "Dismiss", hidden: true }).click();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
+    });
+    expect(screen.queryByText("Archive the filed receipts")).toBeNull();
+    expect(screen.getByText("Question about the budget")).toBeTruthy();
+  });
+
+  it("UPM-203 lists a proposal that arrives from the API", async () => {
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications() {
+        return [
+          { id: "n-failed", kind: "failed", title: "Close failed" },
+          { id: "n-proposal", kind: "proposal", title: "Proposal to rerun" },
+          { id: "n-finished", kind: "finished", title: "Digest sent" },
+        ];
+      },
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [];
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 3 unread" });
+    act(() => {
+      bell.click();
+    });
+    const list = await screen.findByRole("list", { name: "Notifications", hidden: true });
+    expect(
+      within(list)
+        .getAllByRole("listitem", { hidden: true })
+        .map((item) => item.textContent),
+    ).toEqual([
+      "Unread: Proposal to rerunProposalDismiss",
+      "Unread: Digest sentFinishedDismiss",
+      "Unread: Close failedFailedDismiss",
+    ]);
+  });
+
+  it("UPM-203 shows the latest 50 and says so when more exist", async () => {
+    const stub = createStubApi();
+    const asked: Array<number | undefined> = [];
+    const all: AppNotification[] = Array.from({ length: 60 }, (_, index) => ({
+      id: `n-${index}`,
+      kind: "finished",
+      title: `Finished ${index}`,
+    }));
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications(options) {
+        asked.push(options?.limit);
+        return all.slice(0, options?.limit);
+      },
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [];
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 50 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const rows = within(dialog).getAllByRole("listitem", { hidden: true });
+    expect(rows).toHaveLength(51);
+    expect(rows[0]!.textContent).toContain("Finished 0");
+    expect(rows[49]!.textContent).toContain("Finished 49");
+    expect(within(dialog).queryByText("Finished 50")).toBeNull();
+    expect(rows[50]!.textContent).toBe("Showing the latest 50 notifications");
+    // One more than is shown is asked for, which is how the bell knows.
+    expect(asked[0]).toBe(51);
+  });
+
+  it("UPM-203 says the cap leaves approvals out when approvals are listed beside a full page", async () => {
+    const stub = createStubApi();
+    const all: AppNotification[] = Array.from({ length: 60 }, (_, index) => ({
+      id: `n-${index}`,
+      kind: "finished",
+      title: `Finished ${index}`,
+    }));
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications(options) {
+        return all.slice(0, options?.limit);
+      },
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [
+            { id: "a-1", taskId: "t-1", title: "Approve one", action: "Send", state: "pending" },
+            { id: "a-2", taskId: "t-2", title: "Approve two", action: "Send", state: "pending" },
+          ];
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 52 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    const rows = within(dialog).getAllByRole("listitem", { hidden: true });
+    // 2 approvals and 50 notifications, then the line. The line must not claim
+    // a total of 50 when 52 rows are shown above it.
+    expect(rows).toHaveLength(53);
+    expect(rows[52]!.textContent).toBe("Showing the latest 50 notifications, besides approvals");
+  });
+
+  it("UPM-203 does not show the overflow line at exactly 50", async () => {
+    const stub = createStubApi();
+    const all: AppNotification[] = Array.from({ length: 50 }, (_, index) => ({
+      id: `n-${index}`,
+      kind: "finished",
+      title: `Finished ${index}`,
+    }));
+    const client: ApiClient = {
+      ...stub,
+      async listNotifications(options) {
+        return all.slice(0, options?.limit);
+      },
+      approvals: {
+        ...stub.approvals,
+        async list() {
+          return [];
+        },
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 50 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    expect(within(dialog).getAllByRole("listitem", { hidden: true })).toHaveLength(50);
+    expect(within(dialog).queryByText(/Showing the latest/)).toBeNull();
   });
 
   it("removes an approval and drops the unread count", async () => {
     renderAt("/");
-    const bell = await screen.findByRole("button", { name: "Notifications, 4 unread" });
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
     act(() => {
       bell.click();
     });
@@ -602,7 +810,7 @@ describe("app shell", () => {
       approve.click();
     });
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Notifications, 3 unread" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
     });
     const remaining = screen
       .getAllByRole("listitem", { hidden: true })
@@ -619,7 +827,7 @@ describe("app shell", () => {
       async listNotifications() {
         return [];
       },
-      async approveNotification() {},
+      async dismissNotification() {},
       async nextPhase() {
         throw new Error("task missing");
       },
@@ -642,7 +850,7 @@ describe("app shell", () => {
       bell.click();
     });
     expect(await screen.findByRole("heading", { level: 3, name: "You are up to date" })).toBeTruthy();
-    expect(screen.getByText("Approvals and finished tasks show up here.")).toBeTruthy();
+    expect(screen.getByText("Approvals, proposals and finished tasks show up here.")).toBeTruthy();
   });
 
   it("UPM-196 shows a spinner and holds back the empty state while the notifications load", async () => {
@@ -730,7 +938,7 @@ describe("app shell", () => {
     expect(within(dialog).queryByRole("list", { hidden: true })).toBeNull();
   });
 
-  it("shows the empty state, a plain label and no badge after the last approval", async () => {
+  it("shows the empty state, a plain label and no badge after the last row is settled", async () => {
     const stub = createStubApi();
     let notes: AppNotification[] = [{ id: "note-question", kind: "question", title: "Which budget?" }];
     let pending = true;
@@ -739,7 +947,7 @@ describe("app shell", () => {
       async listNotifications() {
         return notes;
       },
-      async approveNotification(id) {
+      async dismissNotification(id) {
         notes = notes.filter((item) => item.id !== id);
       },
       approvals: {
@@ -770,23 +978,26 @@ describe("app shell", () => {
     });
     const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
 
-    for (const title of ["Approve the plan", "Which budget?"]) {
+    for (const [title, action] of [
+      ["Approve the plan", "Approve"],
+      ["Which budget?", "Dismiss"],
+    ] as const) {
       const row = within(dialog)
         .getAllByRole("listitem", { hidden: true })
         .find((item) => item.textContent?.includes(title));
       if (!row) throw new Error(`no row for ${title}`);
-      const approve = within(row).getByRole("button", { name: "Approve", hidden: true });
+      const button = within(row).getByRole("button", { name: action, hidden: true });
       act(() => {
-        approve.focus();
-        approve.click();
+        button.focus();
+        button.click();
       });
       await waitFor(() => {
         expect(screen.queryByText(title)).toBeNull();
       });
     }
 
-    // Nothing is left to approve, so the popover closes and the empty state is
-    // said through the status line instead.
+    // Nothing is left, so the popover closes and the empty state is said
+    // through the status line instead.
     await waitFor(() => {
       expect(announced()).toContain("You are up to date");
     });
@@ -796,7 +1007,7 @@ describe("app shell", () => {
     expect(screen.queryByRole("list", { name: "Notifications", hidden: true })).toBeNull();
   });
 
-  it("returns focus to the bell and announces the empty state after the last approval", async () => {
+  it("returns focus to the bell and announces the empty state after the last dismissal", async () => {
     const stub = createStubApi();
     let notes: AppNotification[] = [{ id: "note-question", kind: "question", title: "Which budget?" }];
     const client: ApiClient = {
@@ -804,7 +1015,7 @@ describe("app shell", () => {
       async listNotifications() {
         return notes;
       },
-      async approveNotification(id) {
+      async dismissNotification(id) {
         notes = notes.filter((item) => item.id !== id);
       },
       approvals: {
@@ -820,10 +1031,10 @@ describe("app shell", () => {
       bell.click();
     });
     const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
-    const approve = within(dialog).getByRole("button", { name: "Approve", hidden: true });
+    const dismiss = within(dialog).getByRole("button", { name: "Dismiss", hidden: true });
     act(() => {
-      approve.focus();
-      approve.click();
+      dismiss.focus();
+      dismiss.click();
     });
 
     await waitFor(() => {
@@ -841,39 +1052,47 @@ describe("app shell", () => {
     );
   }, 10_000);
 
-  it("returns focus to the bell when only finished tasks are left", async () => {
+  it("UPM-203 keeps focus in the list after each press and returns it to the bell after the last row", async () => {
     renderAt("/");
-    const bell = await screen.findByRole("button", { name: "Notifications, 4 unread" });
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
     act(() => {
       bell.click();
     });
     const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
-    for (const title of ["Approve the digest", "Question about the budget"]) {
-      const row = within(dialog)
-        .getAllByRole("listitem", { hidden: true })
-        .find((item) => item.textContent?.includes(title));
-      if (!row) throw new Error(`no row for ${title}`);
-      const approve = within(row).getByRole("button", { name: "Approve", hidden: true });
-      act(() => {
-        approve.focus();
-        approve.click();
-      });
+
+    // A row in the middle: focus lands on the button that took its place.
+    pressRowButton(dialog, "Approve the digest");
+    await waitFor(() => {
+      expect(screen.queryByText("Approve the digest")).toBeNull();
+    });
+    await expectFocusOnRowButton(dialog, focus, "Question about the budget");
+
+    // The last row: focus wraps to the first one.
+    pressRowButton(dialog, "Weekly close failed");
+    await waitFor(() => {
+      expect(screen.queryByText("Weekly close failed")).toBeNull();
+    });
+    await expectFocusOnRowButton(dialog, focus, "Question about the budget");
+
+    for (const title of ["Question about the budget", "Archive the filed receipts", "Mail triage done"]) {
+      pressRowButton(dialog, title);
       await waitFor(() => {
         expect(screen.queryByText(title)).toBeNull();
       });
-      if (title === "Approve the digest") await expectFocusOnRemainingApprove(dialog, focus);
     }
 
     await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Notifications, 2 unread" }));
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Notifications$/ }));
     });
-    expect(announced()).toBe("");
+    await waitFor(() => {
+      expect(announced()).toContain("You are up to date");
+    });
 
     // The popover traps focus while it is open and swallows Tab when nothing
     // inside can take it. With focus back on the bell it must be closed, so Tab
     // and Shift+Tab are left to the browser.
-    const settled = screen.getByRole("button", { name: "Notifications, 2 unread" });
+    const settled = screen.getByRole("button", { name: /^Notifications$/ });
     await waitFor(() => {
       expect(settled.getAttribute("aria-expanded")).toBe("false");
     });
@@ -881,9 +1100,34 @@ describe("app shell", () => {
     expect(fireEvent.keyDown(settled, { key: "Tab", shiftKey: true })).toBe(true);
   });
 
-  it("keeps the popover open while an approval is left", async () => {
+  it("UPM-203 places focus on a button of the list, not on one elsewhere in the page", async () => {
+    // Another control that happens to share the attribute, earlier in the page.
+    const stray = document.createElement("button");
+    stray.setAttribute("data-notification-action", "");
+    document.body.prepend(stray);
+    try {
+      renderAt("/");
+      const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
+      act(() => {
+        bell.click();
+      });
+      const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+
+      pressRowButton(dialog, "Approve the digest");
+      await waitFor(() => {
+        expect(screen.queryByText("Approve the digest")).toBeNull();
+      });
+      await expectFocusOnRowButton(dialog, focus, "Question about the budget");
+      expect(focus.mock.contexts).not.toContain(stray);
+    } finally {
+      stray.remove();
+    }
+  });
+
+  it("UPM-203 keeps the popover open while a row is left", async () => {
     renderAt("/");
-    const bell = await screen.findByRole("button", { name: "Notifications, 4 unread" });
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
     act(() => {
       bell.click();
     });
@@ -894,9 +1138,33 @@ describe("app shell", () => {
       first!.click();
     });
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Notifications, 3 unread" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
     });
-    expect(screen.getByRole("button", { name: "Notifications, 3 unread" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "Notifications, 4 unread" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("UPM-203 keeps a row and its button when a dismissal fails", async () => {
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      async dismissNotification() {
+        throw new Error("offline");
+      },
+    };
+    renderAt("/", client);
+    const bell = await screen.findByRole("button", { name: "Notifications, 5 unread" });
+    act(() => {
+      bell.click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: /^Notifications/ });
+    pressRowButton(dialog, "Mail triage done");
+    await waitFor(() => {
+      const row = within(dialog)
+        .getAllByRole("listitem", { hidden: true })
+        .find((item) => item.textContent?.includes("Mail triage done"));
+      expect(within(row!).getByRole("button", { name: "Dismiss", hidden: true }).hasAttribute("disabled")).toBe(false);
+    });
+    expect(screen.getByRole("button", { name: "Notifications, 5 unread" })).toBeTruthy();
   });
 
   it.each(sidebarRoutes)("%s has one h1 %s and current nav %s", async (path, title, navLabel) => {

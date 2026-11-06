@@ -199,7 +199,7 @@ describe("tasks", () => {
       true,
     );
     expect(screen.getByRole("listitem", { current: "step" }).textContent).toBe("Planning");
-    expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Notifications, 5 unread" })).toBeTruthy();
 
     act(() => {
       within(alert).getByRole("button", { name: "Approve" }).click();
@@ -208,7 +208,7 @@ describe("tasks", () => {
     await waitFor(() => {
       expect(screen.queryByRole("group", { name: approvalName })).toBeNull();
       expect(headerStatus()).toBe("Planning");
-      expect(screen.getByRole("button", { name: "Notifications, 3 unread" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
     });
     expect(screen.getByRole("listitem", { current: "step" }).textContent).toBe("Planning");
 
@@ -234,7 +234,7 @@ describe("tasks", () => {
     await waitFor(() => {
       expect(screen.queryByRole("group", { name: approvalName })).toBeNull();
       expect(headerStatus()).toBe("Planning");
-      expect(screen.getByRole("button", { name: "Notifications, 3 unread" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
     });
 
     act(() => {
