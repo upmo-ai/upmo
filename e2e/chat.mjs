@@ -94,11 +94,19 @@ function messageLog(page) {
   return page.getByRole("log", { name: "Messages" });
 }
 
+function replies(page) {
+  return messageLog(page).getByRole("button", { name: "Copy reply" });
+}
+
+// Sends a line and waits for the reply, which the stub writes a moment later.
+// Send is blocked until then, so the next line cannot go early.
 async function send(page, text) {
+  const before = await replies(page).count();
   const draft = page.getByRole("textbox", { name: "Message" });
   await draft.fill(text);
   await draft.press("Enter");
   await messageLog(page).getByText(text, { exact: true }).waitFor();
+  await until(`reply to ${text}`, async () => ({ ok: (await replies(page).count()) === before + 1 }), 10_000);
 }
 
 // The thread, not the page, holds the history: it overflows, it sits at the
@@ -173,6 +181,47 @@ async function expectChatInsetMatchesTasks(page, label) {
   if (JSON.stringify(chat) !== JSON.stringify(tasks)) {
     throw new Error(`${label}: chat inset ${JSON.stringify(chat)}, Tasks inset ${JSON.stringify(tasks)}`);
   }
+}
+
+// The chat list drawer: whether it is open, whether a reader or the keyboard
+// can reach it, and where it sits on screen.
+async function drawer(page) {
+  return page.evaluate(() => {
+    const list = document.querySelector("#chat-list");
+    const box = list.getBoundingClientRect();
+    return {
+      open: list.getAttribute("data-open") === "true",
+      inert: list.hasAttribute("inert"),
+      opacity: getComputedStyle(list).opacity,
+      left: Math.round(box.left),
+      right: Math.round(box.right),
+      width: window.innerWidth,
+    };
+  });
+}
+
+const drawerShut = (d) => !d.open && d.inert && d.opacity === "0";
+const drawerOpen = (d) => d.open && !d.inert && d.opacity === "1" && d.left >= 0 && d.right <= d.width;
+
+async function expectNoSideScroll(page, label) {
+  await until(`${label} side scroll`, () =>
+    page.evaluate(() => ({
+      ok: document.scrollingElement.scrollWidth <= window.innerWidth,
+      scrollWidth: document.scrollingElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    })),
+  );
+}
+
+async function openChat(page, name) {
+  await page.getByRole("navigation", { name: "Chat list" }).getByRole("button", { name }).click();
+  await page.getByRole("heading", { level: 2, name }).waitFor();
+}
+
+async function openFreshChatPage(page) {
+  await page.goto(new URL("/chat", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("heading", { level: 1, name: "Chat" }).waitFor();
+  await page.getByRole("heading", { level: 2, name: "Roadmap priorities" }).waitFor();
 }
 
 const browser = await chromium.launch({
@@ -264,6 +313,70 @@ try {
   await expectChatInsetMatchesTasks(page, "1280x900 inset");
   await page.setViewportSize({ width: 600, height: 900 });
   await expectChatInsetMatchesTasks(page, "600x900 inset");
+  await page.setViewportSize(viewport);
+
+  // Chats come from the API. A fresh load gives a fresh stub.
+  await openFreshChatPage(page);
+  const list = page.getByRole("navigation", { name: "Chat list" });
+  await list.getByRole("button", { name: /Research summary/ }).waitFor();
+  await list.getByRole("button", { name: /Supplier review/ }).waitFor();
+
+  // Another chat shows its own lines, and keeps the layout guarantees.
+  await openChat(page, "Research summary");
+  await messageLog(page).getByText(/What did the interviews tell us/).waitFor();
+  await expectComposerOnScreen(page, "UPM-201 after opening another chat");
+
+  // An unknown cost reads Unknown, and nothing is shown as $0.00.
+  await openChat(page, "Supplier review");
+  await messageLog(page).getByText("llama3.3:70b · 61 tokens · Unknown").waitFor();
+  const supplierText = await messageLog(page).innerText();
+  if (/\$0\.00(?!\d)/.test(supplierText)) {
+    throw new Error(`UPM-201: a cost shows as zero, ${JSON.stringify(supplierText)}`);
+  }
+
+  // A new chat is named from its first line, shows that the reply is awaited,
+  // then shows the reply, and moves to the top of the list.
+  await list.getByRole("button", { name: "New chat" }).click();
+  await page.getByRole("heading", { level: 2, name: "New chat" }).waitFor();
+  await draft.fill("Plan the offsite");
+  await draft.press("Enter");
+  await messageLog(page).getByText("Plan the offsite", { exact: true }).waitFor();
+  await messageLog(page).getByText("Thinking", { exact: true }).waitFor({ timeout: 5000 });
+  await page.getByRole("button", { name: "Send" }).waitFor();
+  await messageLog(page).getByText(/A stubbed reply to: "Plan the offsite"/).waitFor({ timeout: 10_000 });
+  await messageLog(page).getByText("Thinking", { exact: true }).waitFor({ state: "hidden" });
+  await page.getByRole("heading", { level: 2, name: "Plan the offsite" }).waitFor();
+  const first = list.getByRole("button").filter({ hasText: /\d\d:\d\d$/ }).first();
+  const firstText = await first.innerText();
+  if (!firstText.includes("Plan the offsite") || (await first.getAttribute("aria-current")) !== "page") {
+    throw new Error(`UPM-201: the new chat is not first in the list, ${JSON.stringify(firstText)}`);
+  }
+  await expectComposerOnScreen(page, "UPM-201 after a new chat's reply");
+
+  // Phone width: the list is a drawer that starts shut, opens from the thread
+  // header, and shuts again once a chat is picked.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await openFreshChatPage(page);
+  await until("UPM-201 drawer starts shut", async () => {
+    const d = await drawer(page);
+    return { ok: drawerShut(d), ...d };
+  });
+  await expectNoSideScroll(page, "UPM-201 at 390x800");
+  await expectComposerOnScreen(page, "UPM-201 at 390x800");
+  await page.getByRole("button", { name: "Show chats" }).click();
+  await until("UPM-201 drawer opens", async () => {
+    const d = await drawer(page);
+    return { ok: drawerOpen(d), ...d };
+  });
+  await openChat(page, "Supplier review");
+  await until("UPM-201 drawer shuts after a pick", async () => {
+    const d = await drawer(page);
+    return { ok: drawerShut(d), ...d };
+  });
+  await messageLog(page).getByText("llama3.3:70b · 61 tokens · Unknown").waitFor();
+  await send(page, "Asked on a phone");
+  await expectComposerOnScreen(page, "UPM-201 at 390x800 after a reply");
+  await expectNoSideScroll(page, "UPM-201 at 390x800 after a reply");
   await page.setViewportSize(viewport);
 
   console.log("chat check passed");
