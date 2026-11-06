@@ -35,6 +35,8 @@ import { ShareDialog } from "../identity/share-dialog";
 import { CaretIcon, ShellIcon } from "../../ui/icons";
 import { ApprovalAnnouncer, ApprovalCard } from "./approval-card";
 import { NewTaskDialog } from "./new-task-dialog";
+import { preparingPollMs } from "./preparing";
+import { PreparingBlock } from "./preparing-block";
 import { messageMax, messageProblem } from "./rules";
 import { taskPhase, taskStatus } from "./status";
 import {
@@ -238,6 +240,7 @@ export function TaskPage() {
   const tasks = useQuery({
     queryKey: tasksQueryKey(),
     queryFn: () => api.listTasks(),
+    refetchInterval: (query) => preparingPollMs(query.state.data, taskId),
   });
   const approvals = useQuery({
     queryKey: approvalsQueryKey(),
@@ -329,6 +332,7 @@ export function TaskPage() {
 
       <div className="u-task-layout">
         <div className="task-main-col">
+          <PreparingBlock task={task} />
           <Tabs defaultValue="activity" onChange={setTab}>
             <Tabs.List>
               <Tabs.Tab value="activity">Activity</Tabs.Tab>

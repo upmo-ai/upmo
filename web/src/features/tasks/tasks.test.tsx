@@ -55,7 +55,7 @@ describe("tasks", () => {
   it("filters the list and counts the visible tasks", async () => {
     renderAt("/tasks");
     expect(await screen.findByText("Daily finance digest")).toBeTruthy();
-    expect(screen.getByTestId("task-count").textContent).toBe("4 tasks");
+    expect(screen.getByTestId("task-count").textContent).toBe("5 tasks");
     const alert = await approvalCard();
     expect(alert.textContent).toContain(approvalName);
     expect(alert.textContent).toContain(
@@ -79,8 +79,9 @@ describe("tasks", () => {
 
     chooseFilter("Failed");
     expect(within(taskList()).getByText("Weekly close")).toBeTruthy();
-    expect(within(taskList()).getByText("Failed")).toBeTruthy();
-    expect(screen.getByTestId("task-count").textContent).toBe("1 task");
+    expect(within(taskList()).getByText("Fix the flaky login test")).toBeTruthy();
+    expect(within(taskList()).getAllByText("Failed")).toHaveLength(2);
+    expect(screen.getByTestId("task-count").textContent).toBe("2 tasks");
 
     chooseFilter("All");
     expect(within(taskList()).getAllByTestId("task-status").map((badge) => badge.textContent)).toEqual([
@@ -88,8 +89,9 @@ describe("tasks", () => {
       "Preparing",
       "Done",
       "Failed",
+      "Failed",
     ]);
-    expect(screen.getByTestId("task-count").textContent).toBe("4 tasks");
+    expect(screen.getByTestId("task-count").textContent).toBe("5 tasks");
   });
 
   it("UPM-199 walks a task through its phases and stops at Checking", async () => {

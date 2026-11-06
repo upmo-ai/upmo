@@ -42,6 +42,13 @@ import type { DecisionBinding, DecisionGate, GatewayRoute } from "../features/mo
 import type { Approval, AppNotification } from "../features/notifications/types";
 import { goalProblem, messageProblem, repoProblem } from "../features/tasks/rules";
 import {
+  finishPreparing,
+  preparingProbeFailed,
+  preparingReady,
+  preparingReadyBare,
+  preparingRunning,
+} from "../features/tasks/preparing-sample";
+import {
   messageEventType,
   phases,
   type NewTask,
@@ -79,6 +86,15 @@ export type {
 export type { Approval, AppNotification, NotificationKind } from "../features/notifications/types";
 export type { Phase, Task, TaskStatus } from "../features/tasks/types";
 export type { NewTask, TaskEvent } from "../features/tasks/types";
+export type {
+  PrepareStep,
+  PrepareStepName,
+  PrepareStepState,
+  Preparing,
+  Runtime,
+  RuntimeLimits,
+  RuntimeTier,
+} from "../features/tasks/types";
 export type {
   ApiToken,
   CreatedToken,
@@ -189,6 +205,12 @@ export interface TestResult {
 }
 
 export interface ApiClient {
+  /**
+   * GET /api/tasks and GET /api/tasks/{id}. A task whose sandbox is prepared
+   * carries `preparing: {steps, runtime}`: clone, toolchain and probe steps with
+   * their state, message and timestamps, and the runtime settings. A task
+   * without one has no block.
+   */
   listTasks(): Promise<Task[]>;
   /** Newest first. At most `limit` notifications come back when it is given. */
   listNotifications(options?: { limit?: number }): Promise<AppNotification[]>;
@@ -553,6 +575,7 @@ Linear,€192.00,3 Nov`,
       { id: "e10", time: "08:03:06", phase: "Working", message: "Approval asked: email to 3 external recipients", detail: ["ap@hetzner.com", "billing@vercel.com", "lead@acme.example"] },
     ],
     subtasks: [{ id: "digest-figures", title: "Pull yesterday's figures", status: "Needs approval" }],
+    preparing: preparingReady,
   },
   {
     id: "aster-mail",
@@ -605,6 +628,7 @@ Linear,€192.00,3 Nov`,
       },
       { id: "mail-draft", title: "Draft the replies", status: "Working" },
     ],
+    preparing: preparingRunning,
   },
   {
     id: "aster-done",
@@ -651,6 +675,7 @@ REC-003,Meals,€32.00`,
       { id: "ed5", time: "07:32:10", phase: "Working", message: "Artifact saved: receipts-filed.csv" },
       { id: "ed6", time: "07:32:40", phase: "Checking", message: "Checks passed: 3 of 3 receipts filed" },
     ],
+    preparing: preparingReadyBare,
   },
   {
     id: "aster-failed",
@@ -680,6 +705,31 @@ REC-003,Meals,€32.00`,
       { id: "ef4", time: "06:01:30", phase: "Working", message: "Step 2 of 3 · Reconcile the accounts" },
       { id: "ef5", time: "06:03:12", phase: "Checking", message: "Check failed: 2 accounts do not reconcile" },
     ],
+    preparing: preparingReadyBare,
+  },
+  {
+    id: "aster-probe",
+    title: "Fix the flaky login test",
+    status: "Failed",
+    phase: "Preparing",
+    result: "",
+    detail: "Find out why the login test fails now and then.",
+    cost: "€0.02",
+    tokens: 600,
+    spendLimit: "€3.00",
+    spentCents: 2,
+    limitCents: 300,
+    pausePercent: 90,
+    runNumber: 1,
+    model: "gpt-5.2",
+    engine: "Upmo",
+    startedAt: "09:10",
+    sources: ["upmo-ai/upmo"],
+    events: [
+      { id: "ep1", time: "09:10:00", phase: "Preparing", message: "Task started by you" },
+      { id: "ep2", time: "09:10:05", phase: "Preparing", message: "Probe failed: the work directory is not writable" },
+    ],
+    preparing: preparingProbeFailed,
   },
 ];
 
@@ -770,6 +820,8 @@ function blocked(task: Task, approvals: Approval[]) {
 function advance(task: Task) {
   const index = phases.indexOf(task.phase);
   if (index < 0 || index >= phases.length - 1) return;
+  // Leaving Preparing means every step ran, so the payload no longer says one is waiting.
+  if (task.phase === "Preparing" && task.preparing) finishPreparing(task.preparing);
   task.phase = phases[index + 1] as Phase;
   task.status = "Working";
 }
@@ -850,6 +902,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     },
     "aster-done": asterShare(),
     "aster-failed": asterShare(),
+    "aster-probe": asterShare(),
   };
   const passkeys: Passkey[] = [
     {

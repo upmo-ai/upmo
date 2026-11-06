@@ -1,0 +1,102 @@
+.task-preparing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.task-prepare-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task-prepare-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.task-prepare-step-dot {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: var(--space-1);
+}
+
+.task-prepare-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.task-prepare-step-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.task-prepare-step-name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.task-prepare-step-state,
+.task-prepare-step-time {
+  font-size: 13px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.task-prepare-step[data-state="failed"] .task-prepare-step-state {
+  color: var(--danger);
+}
+
+.task-prepare-step-note {
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.task-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.task-runtime-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.task-runtime-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.task-runtime-row {
+  min-width: 0;
+}
+
+.task-runtime-row dt {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.task-runtime-row dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
