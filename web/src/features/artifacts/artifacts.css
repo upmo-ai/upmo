@@ -202,3 +202,26 @@
   background: var(--surface-200);
   font-weight: 600;
 }
+
+/* The read-only editor for code, text and diffs. Monaco fills this box. */
+.artifact-editor {
+  height: min(28rem, 70vh);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-200);
+}
+
+.artifact-editor[data-tall="true"] {
+  height: min(32rem, 75vh);
+}
+
+/* The editor is created while the box is hidden, so there is no flash of an unstyled editor. */
+.artifact-editor[data-phase="loading"] {
+  visibility: hidden;
+}
+
+.artifact-diff-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}

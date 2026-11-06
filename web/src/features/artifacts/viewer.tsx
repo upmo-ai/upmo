@@ -1,10 +1,11 @@
 import { Group, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
-import { Button, CodeBlock, StatusAlert, Table } from "@upmo-ai/components";
+import { Button, StatusAlert, Table } from "@upmo-ai/components";
 
-import { artifactTextQueryKey, useApi } from "../../app/api";
+import { artifactDiffQueryKey, artifactTextQueryKey, useApi } from "../../app/api";
 import { ShellIcon } from "../../ui/icons";
+import { CodeView, DiffView } from "./code-view";
 import { parseCsv } from "./csv";
 import { MarkdownView } from "./markdown-view";
 import { MAX_VIEW_BYTES, formatSize, kindLabel, type ArtifactRecord } from "./types";
@@ -14,42 +15,6 @@ export const htmlSandbox = "";
 
 /** The most CSV rows shown. The download has the rest. */
 export const MAX_CSV_ROWS = 500;
-
-const languages: Record<string, string> = {
-  py: "python",
-  js: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  jsx: "jsx",
-  ts: "typescript",
-  tsx: "tsx",
-  json: "json",
-  yml: "yaml",
-  yaml: "yaml",
-  go: "go",
-  rs: "rust",
-  sql: "sql",
-  css: "css",
-  diff: "diff",
-  patch: "diff",
-  xml: "markup",
-  svg: "markup",
-  c: "c",
-  h: "cpp",
-  cc: "cpp",
-  cpp: "cpp",
-  sh: "bash",
-  bash: "bash",
-  zsh: "bash",
-};
-
-/** The highlighting language for a file name. Unknown extensions show as plain text. */
-export function languageFor(name: string): string {
-  const dot = name.lastIndexOf(".");
-  if (dot < 0) return "text";
-  const extension = name.slice(dot + 1).toLowerCase();
-  return Object.hasOwn(languages, extension) ? (languages[extension] ?? "text") : "text";
-}
 
 const createdOn = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
@@ -63,13 +28,14 @@ export function createdLabel(iso: string): string {
   return Number.isNaN(date.getTime()) ? "Unknown" : createdOn.format(date);
 }
 
-type Viewer = "image" | "text" | "none" | "too-large";
+type Viewer = "image" | "text" | "diff" | "none" | "too-large";
 
 const textKinds = new Set(["markdown", "csv", "text", "code", "html"]);
 
-/** Which viewer opens an artifact. A kind with no viewer, or text over the limit, is a download. */
+/** Which viewer opens an artifact. A kind with no viewer, or content over the limit, is a download. */
 export function viewerFor(artifact: ArtifactRecord): Viewer {
   if (artifact.kind === "image") return "image";
+  if (artifact.kind === "diff") return artifact.size > MAX_VIEW_BYTES ? "too-large" : "diff";
   if (!textKinds.has(artifact.kind)) return "none";
   return artifact.size > MAX_VIEW_BYTES ? "too-large" : "text";
 }
@@ -104,6 +70,7 @@ export function ArtifactView({ artifact }: { artifact: ArtifactRecord }) {
       </Group>
       {viewer === "image" ? <ImageView artifact={artifact} url={url} /> : null}
       {viewer === "text" ? <TextView artifact={artifact} /> : null}
+      {viewer === "diff" ? <DiffArtifactView artifact={artifact} /> : null}
       {viewer === "too-large" ? (
         <Text c="dimmed" role="status">
           This file is {formatSize(artifact.size)}, too large to show here. Download it to read it.
@@ -142,13 +109,25 @@ function ImageView({ artifact, url }: { artifact: ArtifactRecord; url: string })
   );
 }
 
+/** Shown instead of an editor when a file or diff is missing, unreadable or empty. The Download button above gets the file. */
+function Unavailable({ children }: { children: string }) {
+  return (
+    <StatusAlert tone="attention">
+      {children} Use Download to get a copy.
+    </StatusAlert>
+  );
+}
+
 function TextView({ artifact }: { artifact: ArtifactRecord }) {
   const api = useApi();
   const text = useQuery({
     queryKey: artifactTextQueryKey(artifact.id),
     queryFn: () => api.artifacts.text(artifact.id),
   });
+  // Code and text open in the editor, which must never be shown blank.
+  const inEditor = artifact.kind === "code" || artifact.kind === "text";
   if (text.isError) {
+    if (inEditor) return <Unavailable>This file is missing or could not be read.</Unavailable>;
     return <StatusAlert tone="critical">{text.error.message || "This file could not be loaded."}</StatusAlert>;
   }
   if (text.data === undefined) {
@@ -162,10 +141,26 @@ function TextView({ artifact }: { artifact: ArtifactRecord }) {
   if (artifact.kind === "markdown") return <MarkdownView source={body} />;
   if (artifact.kind === "csv") return <CsvView name={artifact.name} source={body} />;
   if (artifact.kind === "html") return <HtmlView name={artifact.name} source={body} />;
-  if (artifact.kind === "code") {
-    return <CodeBlock code={body} language={languageFor(artifact.name)} lineNumbers />;
+  if (body.trim() === "") return <Unavailable>This file is empty.</Unavailable>;
+  return <CodeView name={artifact.name} text={body} />;
+}
+
+function DiffArtifactView({ artifact }: { artifact: ArtifactRecord }) {
+  const api = useApi();
+  const diff = useQuery({
+    queryKey: artifactDiffQueryKey(artifact.id),
+    queryFn: () => api.artifacts.diff(artifact.id),
+  });
+  if (diff.isError) return <Unavailable>This diff is missing or could not be read.</Unavailable>;
+  if (diff.data === undefined) {
+    return (
+      <Text c="dimmed" role="status">
+        Loading
+      </Text>
+    );
   }
-  return <CodeBlock code={body} language="text" />;
+  if (diff.data.files.length === 0) return <Unavailable>This diff has no changed files.</Unavailable>;
+  return <DiffView files={diff.data.files} />;
 }
 
 function CsvView({ name, source }: { name: string; source: string }) {

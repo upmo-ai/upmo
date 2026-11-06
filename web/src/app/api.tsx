@@ -69,7 +69,13 @@ export type {
   SourceStatus,
   UrlInput,
 } from "../features/knowledge/types";
-export type { ArtifactKind, ArtifactRecord, ArtifactsApi } from "../features/artifacts/types";
+export type {
+  ArtifactDiff,
+  ArtifactDiffFile,
+  ArtifactKind,
+  ArtifactRecord,
+  ArtifactsApi,
+} from "../features/artifacts/types";
 export type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 export type {
   DecisionBinding,
@@ -471,6 +477,10 @@ export function taskArtifactsQueryKey(taskId: string) {
 
 export function artifactTextQueryKey(id: string) {
   return [...ARTIFACTS_KEY, "text", id] as const;
+}
+
+export function artifactDiffQueryKey(id: string) {
+  return [...ARTIFACTS_KEY, "diff", id] as const;
 }
 
 export function useWrite<TData, TVariables = void>(
