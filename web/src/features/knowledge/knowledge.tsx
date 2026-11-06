@@ -1,9 +1,19 @@
 import { Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Button, EmptyState } from "@upmo-ai/components";
+import { Button, EmptyState, PageHeader, StatusAlert } from "@upmo-ai/components";
 
+import {
+  KNOWLEDGE_FOLDERS_KEY,
+  knowledgeFoldersQueryKey,
+  useApi,
+  useWrite,
+  type KnowledgeFolder,
+} from "../../app/api";
 import { CaretIcon, ShellIcon } from "../../ui/icons";
-import { sampleFolders, type Folder } from "./sample";
+import { FolderDialog } from "./folder-dialog";
+import { sourceCount } from "./types";
 
 import "./knowledge.css";
 
@@ -13,69 +23,78 @@ const updatedOn = new Intl.DateTimeFormat("en-GB", {
   year: "numeric",
 });
 
-function sourceCount(count: number) {
-  return count === 1 ? "1 source" : `${count} sources`;
-}
-
-function folderMeta(folder: Folder) {
-  return `${sourceCount(folder.sources.length)} · updated ${updatedOn.format(new Date(`${folder.updated}T00:00:00Z`))}`;
+function folderMeta(folder: KnowledgeFolder) {
+  return `${sourceCount(folder.source_count)} · updated ${updatedOn.format(new Date(folder.updated_at))}`;
 }
 
 export function KnowledgePage() {
-  const [folders, setFolders] = useState<Folder[]>(sampleFolders);
+  const api = useApi();
+  const navigate = useNavigate();
+  const folders = useQuery({
+    queryKey: knowledgeFoldersQueryKey(),
+    queryFn: () => api.knowledge.folders.list(),
+  });
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+
+  const create = useWrite((name: string) => api.knowledge.folders.create(name), [KNOWLEDGE_FOLDERS_KEY], {
+    shown: true,
+    onSuccess: async (folder) => {
+      setCreating(false);
+      await navigate({ to: "/knowledge/$folderId", params: { folderId: folder.id } });
+    },
+    onError: (cause) => setCreateError(cause.message),
+  });
+
+  const openCreate = () => {
+    setCreateError("");
+    setCreating(true);
+  };
+
+  const list = folders.data ?? [];
 
   return (
     <Stack gap="lg" className="knowledge-page">
-      <div className="knowledge-header">
-        <div className="knowledge-header-copy">
-          <Title order={1}>Knowledge</Title>
-          <Text c="dimmed" size="sm" mt="xs">
-            Folders group sources. Add files to a folder so tasks and chat can retrieve them.
-          </Text>
-        </div>
-        <div className="knowledge-actions">
-          <Button variant="default">Add source</Button>
-          <Button
-            leftSection={<ShellIcon concept="action.add" />}
-            onClick={() => {
-              setFolders((current) => [
-                {
-                  id: `folder-${current.length + 1}`,
-                  name: "New folder",
-                  summary: "Nothing in this folder yet.",
-                  updated: new Date().toISOString().slice(0, 10),
-                  sources: [],
-                },
-                ...current,
-              ]);
-            }}
-          >
+      <PageHeader
+        title="Knowledge"
+        description="Folders group sources. Add files, web pages or notes to a folder so tasks and chat can retrieve them."
+        actions={
+          <Button leftSection={<ShellIcon concept="action.add" />} onClick={openCreate}>
             New folder
           </Button>
-        </div>
-      </div>
-      {folders.length === 0 ? (
+        }
+      />
+      {folders.isError ? (
+        <StatusAlert tone="critical">{folders.error.message || "Folders could not be loaded."}</StatusAlert>
+      ) : null}
+      {folders.data && list.length === 0 ? (
         <EmptyState
           title="Give Upmo something to read"
           description="Add a folder, then upload files or point to a source. Agents search it when it helps."
           icon={<CaretIcon size={24} />}
+          headingLevel={2}
+          firstRun
         />
-      ) : (
+      ) : null}
+      {list.length > 0 ? (
         <Stack gap="sm">
-          <p className="knowledge-count">Folders · {folders.length}</p>
-          <ul className="knowledge-grid">
-            {folders.map((folder) => (
+          <p className="knowledge-count">Folders · {list.length}</p>
+          <ul className="knowledge-grid" aria-label="Folders">
+            {list.map((folder) => (
               <li key={folder.id}>
-                <article className="knowledge-card" aria-labelledby={folder.id}>
+                <article className="knowledge-card">
                   <ThemeIcon variant="light" size={40} radius="md" aria-hidden>
                     <ShellIcon concept="object.folder" />
                   </ThemeIcon>
-                  <Title order={2} id={folder.id} className="knowledge-card-title" size="h3">
-                    {folder.name}
+                  <Title order={2} className="knowledge-card-title" size="h3">
+                    <Link
+                      to="/knowledge/$folderId"
+                      params={{ folderId: folder.id }}
+                      className="knowledge-card-link"
+                    >
+                      {folder.name}
+                    </Link>
                   </Title>
-                  <Text size="sm" c="dimmed" className="knowledge-card-summary">
-                    {folder.summary}
-                  </Text>
                   <Text size="sm" c="dimmed">
                     {folderMeta(folder)}
                   </Text>
@@ -84,7 +103,19 @@ export function KnowledgePage() {
             ))}
           </ul>
         </Stack>
-      )}
+      ) : null}
+      <FolderDialog
+        opened={creating}
+        title="New folder"
+        action="Create folder"
+        busy={create.isPending}
+        error={createError}
+        onSubmit={(name) => {
+          setCreateError("");
+          create.mutate(name);
+        }}
+        onClose={() => setCreating(false)}
+      />
     </Stack>
   );
 }

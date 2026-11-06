@@ -32,9 +32,23 @@ import type {
   ViewRole,
   WorkspaceRole,
 } from "../features/identity/types";
+import { createKnowledgeStub } from "../features/knowledge/stub";
+import type { KnowledgeApi } from "../features/knowledge/types";
 import type { Approval, AppNotification } from "../features/notifications/types";
 import { phases, type Phase, type Task } from "../features/tasks/types";
 
+export type {
+  FileInput,
+  KnowledgeApi,
+  KnowledgeFolder,
+  KnowledgeHit,
+  KnowledgeSource,
+  MarkdownInput,
+  SourceKind,
+  SourceProvenance,
+  SourceStatus,
+  UrlInput,
+} from "../features/knowledge/types";
 export type { Approval, AppNotification, NotificationKind } from "../features/notifications/types";
 export type { Phase, Task, TaskStatus } from "../features/tasks/types";
 export type {
@@ -139,6 +153,7 @@ export interface ApiClient {
     setLevel(taskId: string, memberId: string, level: GrantableShareLevel): Promise<TaskShare>;
     removePerson(taskId: string, memberId: string): Promise<TaskShare>;
   };
+  knowledge: KnowledgeApi;
   tokens: {
     list(): Promise<ApiToken[]>;
     create(input: { name: string; scopes: string[]; days: number }): Promise<CreatedToken>;
@@ -238,6 +253,21 @@ export function teamsQueryKey() {
 
 export function tokensQueryKey() {
   return TOKENS_KEY;
+}
+
+export const KNOWLEDGE_FOLDERS_KEY = ["knowledge", "folders"] as const;
+export const KNOWLEDGE_SEARCH_KEY = ["knowledge", "search"] as const;
+
+export function knowledgeFoldersQueryKey() {
+  return KNOWLEDGE_FOLDERS_KEY;
+}
+
+export function knowledgeSourcesQueryKey(folderId: string) {
+  return ["knowledge", "sources", folderId] as const;
+}
+
+export function knowledgeSearchQueryKey(folderId: string, query: string) {
+  return ["knowledge", "search", folderId, query] as const;
 }
 
 export function useWrite<TData, TVariables = void>(
@@ -553,7 +583,7 @@ function isVisibility(value: string): value is TaskVisibility {
   return value === "private" || value === "team" || value === "everyone";
 }
 
-export function createStubApi(): ApiClient {
+export function createStubApi(options: { knowledgeIngestMs?: number } = {}): ApiClient {
   const tasks = copy(taskFixtures);
   let notifications = copy(notificationFixtures);
   const approvals = copy(approvalFixtures);
@@ -893,6 +923,7 @@ export function createStubApi(): ApiClient {
         return presentShare(taskId);
       },
     },
+    knowledge: createKnowledgeStub({ ingestMs: options.knowledgeIngestMs }),
     tokens: {
       async list() {
         return tokens.map((token) => copy(token));

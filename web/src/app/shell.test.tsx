@@ -92,7 +92,7 @@ const signedOut: CurrentUser = {
   offerDismissed: false,
 };
 
-function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers"> {
+function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers" | "knowledge"> {
   const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
   const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
   const share = (taskId: string): TaskShare => ({
@@ -232,6 +232,7 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
         return { ok: true, latency_ms: 50 };
       },
     },
+    knowledge: createStubApi().knowledge,
   };
 }
 
