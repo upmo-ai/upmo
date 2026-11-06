@@ -66,9 +66,25 @@ async function identityFlow(page) {
   await share.getByLabel("Person", { exact: true }).click();
   await page.getByRole("option", { name: "Noor Ali (noor@aster.example)" }).click();
   await share.getByLabel("Level", { exact: true }).click();
-  await page.getByRole("option", { name: "Viewer" }).click();
+  await page.getByRole("option", { name: "Editor" }).click();
   await share.getByRole("button", { name: "Add person" }).click();
   await share.getByText("Noor Ali", { exact: true }).waitFor();
+  // The owner sees the role next to each person, can widen who may open
+  // the task, and the choice is kept when the dialog is opened again.
+  const noorRole = share.getByRole("combobox", { name: "Access for Noor Ali" });
+  await noorRole.waitFor();
+  if ((await noorRole.inputValue()) !== "Editor") {
+    throw new Error("the chosen level was not granted");
+  }
+  await share.getByRole("button", { name: "Remove access for Noor Ali" }).waitFor();
+  await share.getByRole("radio", { name: "Everyone" }).check();
+  await share.getByRole("button", { name: "Close" }).click();
+  await share.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Share" }).click();
+  await share.getByRole("radio", { name: "Everyone" }).waitFor();
+  if (!(await share.getByRole("radio", { name: "Everyone" }).isChecked())) {
+    throw new Error("the visibility was not kept");
+  }
   await share.getByRole("button", { name: "Close" }).click();
   await share.waitFor({ state: "hidden" });
 
