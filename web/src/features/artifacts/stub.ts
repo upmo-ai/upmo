@@ -1,10 +1,14 @@
-import type { ArtifactKind, ArtifactRecord, ArtifactsApi } from "./types";
+import type { ArtifactDiffFile, ArtifactKind, ArtifactRecord, ArtifactsApi } from "./types";
 
 interface StoredArtifact extends ArtifactRecord {
   /** The body of a text file. */
   text?: string;
   /** The body of any other file, as base64. */
   base64?: string;
+  /** The changed files of a diff. */
+  diff?: ArtifactDiffFile[];
+  /** The record is listed but its content is gone from storage, so reading it fails as a 404 would. */
+  missing?: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -79,6 +83,87 @@ Fetched 31 invoices from the finance mailbox.
 Matched 28 to a contract.
 3 are over the threshold.`;
 
+const triageBefore = `def route(message):
+    if message.sender.startswith("billing@"):
+        return "finance"
+    return "review"
+`;
+
+const triageAfter = `def route(message):
+    if message.sender.startswith("billing@"):
+        return "finance"
+    if message.subject.lower().startswith("receipt"):
+        return "receipts"
+    return "review"
+`;
+
+const invoicesRuleBefore = `match:
+  from: billing@
+action: forward
+to: finance
+`;
+
+const invoicesRuleAfter = `match:
+  from: billing@
+action: forward
+to: finance
+label: invoice
+`;
+
+const receiptsRule = `match:
+  subject: receipt
+action: file
+to: receipts
+`;
+
+const legacyRule = `match:
+  from: accounts@
+action: forward
+to: finance
+`;
+
+const triageChanges: ArtifactDiffFile[] = [
+  { path: "triage.py", before: triageBefore, after: triageAfter },
+  { path: "rules/invoices.yaml", before: invoicesRuleBefore, after: invoicesRuleAfter },
+  { path: "rules/receipts.yaml", before: null, after: receiptsRule },
+  { path: "rules/legacy.yaml", before: legacyRule, after: null },
+];
+
+function lines(text: string): string[] {
+  return text === "" ? [] : text.replace(/\n$/, "").split("\n");
+}
+
+/**
+ * A patch for a set of changes, as the download of a diff. Each file is one
+ * hunk that removes the old lines and adds the new ones: valid, not minimal.
+ */
+function patchOf(files: ArtifactDiffFile[]): string {
+  return files
+    .map((file) => {
+      const before = lines(file.before ?? "");
+      const after = lines(file.after ?? "");
+      return [
+        `--- ${file.before === null ? "/dev/null" : `a/${file.path}`}`,
+        `+++ ${file.after === null ? "/dev/null" : `b/${file.path}`}`,
+        `@@ -${before.length === 0 ? 0 : 1},${before.length} +${after.length === 0 ? 0 : 1},${after.length} @@`,
+        ...before.map((line) => `-${line}`),
+        ...after.map((line) => `+${line}`),
+      ].join("\n");
+    })
+    .join("\n")
+    .concat("\n");
+}
+
+function diffFile(
+  id: string,
+  name: string,
+  created_at: string,
+  files: ArtifactDiffFile[],
+): StoredArtifact {
+  const text = patchOf(files);
+  return { id, name, kind: "diff", mime: "text/x-diff", size: encoder.encode(text).length, created_at, text, diff: files };
+}
+
 const seed: Record<string, StoredArtifact[]> = {
   "aster-digest": [
     textFile("digest-draft", "digest-draft.md", "markdown", "text/markdown", "2026-11-05T08:03:00.000Z", digestMarkdown),
@@ -99,6 +184,16 @@ const seed: Record<string, StoredArtifact[]> = {
       "2026-11-05T08:16:00.000Z",
       "## Morning Mail Triage\n\n- 24 messages checked\n- 3 invoices forwarded to finance\n- 2 tickets escalated to tier 2",
     ),
+    diffFile("triage-changes", "triage-rules.patch", "2026-11-05T08:17:00.000Z", triageChanges),
+    {
+      id: "rules-export",
+      name: "rules-export.json",
+      kind: "code",
+      mime: "application/json",
+      size: 2048,
+      created_at: "2026-11-05T08:18:00.000Z",
+      missing: true,
+    },
   ],
   "aster-done": [
     textFile(
@@ -143,12 +238,20 @@ export function createArtifactsStub(): ArtifactsApi {
     async text(id) {
       const item = find(id);
       if (!item) throw new Error("That artifact is not in the workspace.");
+      if (item.missing) throw new Error("That artifact's content is missing.");
       if (item.text === undefined) throw new Error("That artifact is not text.");
       return item.text;
     },
+    async diff(id) {
+      const item = find(id);
+      if (!item) throw new Error("That artifact is not in the workspace.");
+      if (item.missing) throw new Error("That artifact's content is missing.");
+      if (item.diff === undefined) throw new Error("That artifact is not a diff.");
+      return copy({ files: item.diff });
+    },
     downloadUrl(id) {
       const item = find(id);
-      if (!item) return `/api/artifacts/${encodeURIComponent(id)}/download`;
+      if (!item || item.missing) return `/api/artifacts/${encodeURIComponent(id)}/download`;
       if (item.base64 !== undefined) return `data:${item.mime};base64,${item.base64}`;
       return `data:${item.mime};charset=utf-8,${encodeURIComponent(item.text ?? "")}`;
     },

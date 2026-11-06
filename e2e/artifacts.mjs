@@ -20,6 +20,78 @@ function fail(message) {
   throw new Error(`UPM-74 ${message}`);
 }
 
+function fail77(message) {
+  throw new Error(`UPM-77 ${message}`);
+}
+
+// Monaco draws a space as a no-break space, so compare with plain spaces.
+async function editorText(locator) {
+  return (await locator.innerText()).replace(/\u00a0/g, " ");
+}
+
+// Waits for an editor to show `needle`. The text is drawn after the editor mounts.
+async function expectShown(page, locator, needle, what) {
+  const deadline = Date.now() + 15_000;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = await editorText(locator);
+    if (last.includes(needle)) return;
+    await page.waitForTimeout(100);
+  }
+  fail77(`${what} does not show ${JSON.stringify(needle)}, it shows ${JSON.stringify(last.slice(0, 200))}`);
+}
+
+// Waits for an editor to show no text at all.
+async function expectBlank(page, locator, what) {
+  const deadline = Date.now() + 15_000;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = (await editorText(locator)).trim();
+    if (last === "") return;
+    await page.waitForTimeout(100);
+  }
+  fail77(`${what} should be empty, it shows ${JSON.stringify(last.slice(0, 200))}`);
+}
+
+// Types into the editor and checks the text did not change: it is read only.
+async function expectReadOnly(page, region, lines, what) {
+  const inputs = region.locator("textarea.inputarea");
+  const count = await inputs.count();
+  if (count === 0) fail77(`${what} has no editor input`);
+  for (let index = 0; index < count; index += 1) {
+    if (!(await inputs.nth(index).evaluate((input) => input.readOnly))) {
+      fail77(`${what} has an input that can be edited`);
+    }
+  }
+  const before = await editorText(lines.first());
+  await lines.first().click();
+  await page.keyboard.type("zzz-typed");
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Enter");
+  if ((await editorText(lines.first())) !== before) {
+    fail77(`${what} changed when typed into`);
+  }
+}
+
+// The colour a design token has on the page now, as a computed colour.
+function tokenColour(page, token) {
+  return page.evaluate((name) => {
+    const probe = document.createElement("div");
+    probe.style.backgroundColor = `var(${name})`;
+    document.body.appendChild(probe);
+    const value = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return value;
+  }, token);
+}
+
+function editorBackground(region) {
+  return region
+    .locator(".monaco-editor-background")
+    .first()
+    .evaluate((node) => getComputedStyle(node).backgroundColor);
+}
+
 try {
   const context = await browser.newContext({
     storageState: storagePath,
@@ -54,6 +126,12 @@ try {
     fail("the oldest artifact should be the first row");
   }
 
+  // The oldest file is plain text and opens in the editor, read only.
+  const notes = page.getByRole("region", { name: "run-notes.txt" });
+  await notes.locator(".monaco-editor").waitFor();
+  await expectShown(page, notes.locator(".view-lines"), "Fetched 31 invoices from the finance mailbox.", "the text file");
+  await expectReadOnly(page, notes, notes.locator(".view-lines"), "the text file");
+
   // Markdown is drawn as elements.
   await list.getByRole("button", { name: "digest-draft.md", exact: true }).click();
   const markdown = page.getByRole("region", { name: "digest-draft.md" });
@@ -73,13 +151,42 @@ try {
   const sheet = page.getByRole("table", { name: "invoices-oct.csv as a table" });
   await sheet.getByRole("cell", { name: "€2,140.00", exact: true }).waitFor();
 
-  // Code is read only.
+  // Code opens in the editor: highlighted, read only, with its text.
   await list.getByRole("button", { name: "over_threshold.py", exact: true }).click();
   const code = page.getByRole("region", { name: "over_threshold.py" });
-  await code.getByText("over_threshold", { exact: false }).first().waitFor();
-  if ((await code.locator("textarea, input, [contenteditable]").count()) !== 0) {
-    fail("the code view is editable");
+  await code.locator(".monaco-editor").waitFor();
+  const codeLines = code.locator(".view-lines");
+  await expectShown(page, codeLines, "def over_threshold(invoices, limit=1000):", "the code file");
+  const colourClasses = await code
+    .locator(".view-line span span")
+    .evaluateAll((spans) => new Set(spans.map((span) => span.className)).size);
+  if (colourClasses < 3) {
+    fail77(`the code file is not highlighted, it has ${colourClasses} token classes`);
   }
+  await expectReadOnly(page, code, codeLines, "the code file");
+  if ((await code.locator(".monaco-editor").count()) !== 1) {
+    fail77("the code file should have one editor");
+  }
+
+  // The editor follows the app theme.
+  const themeSwitch = page.getByTestId("theme-switch");
+  const lightBackground = await editorBackground(code);
+  if (lightBackground !== (await tokenColour(page, "--surface-200"))) {
+    fail77(`the light editor background ${lightBackground} is not --surface-200`);
+  }
+  await themeSwitch.getByText("Dark", { exact: true }).click();
+  {
+    const deadline = Date.now() + 15_000;
+    let dark = lightBackground;
+    while (Date.now() < deadline && dark === lightBackground) {
+      await page.waitForTimeout(100);
+      dark = await editorBackground(code);
+    }
+    if (dark === lightBackground || dark !== (await tokenColour(page, "--surface-200"))) {
+      fail77(`the dark editor background ${dark} did not follow --surface-200`);
+    }
+  }
+  await themeSwitch.getByText("Light", { exact: true }).click();
 
   // HTML shows only in a sandboxed iframe, and its script did not run.
   await list.getByRole("button", { name: "digest-preview.html", exact: true }).click();
@@ -112,6 +219,81 @@ try {
   ]);
   if (download.suggestedFilename() !== "invoices-oct.csv") {
     fail(`the download is named ${download.suggestedFilename()}`);
+  }
+
+  // A diff opens in the diff editor, one tab per changed file, side by side on a wide screen.
+  await page.getByRole("link", { name: "Tasks", exact: true }).click();
+  await page.getByRole("link", { name: "Mail triage" }).click();
+  await page.getByRole("heading", { level: 1, name: "Mail triage" }).waitFor();
+  await page.getByRole("tab", { name: "Artifacts" }).click();
+  const mailList = page.getByRole("table", { name: "Artifacts" });
+  await mailList.waitFor();
+  await mailList.getByRole("button", { name: "triage-rules.patch", exact: true }).click();
+  const patch = page.getByRole("region", { name: "triage-rules.patch" });
+  const diffEditor = patch.locator(".monaco-diff-editor");
+  await diffEditor.waitFor();
+  if (!(await diffEditor.evaluate((node) => node.classList.contains("side-by-side")))) {
+    fail77("the diff should be side by side on a wide screen");
+  }
+  const tabs = patch.getByRole("tablist", { name: "Changed files" });
+  const tabNames = (await tabs.getByRole("tab").allInnerTexts()).map((text) => text.trim());
+  const expectedTabs = ["triage.py", "rules/invoices.yaml", "rules/receipts.yaml (added)", "rules/legacy.yaml (deleted)"];
+  if (tabNames.join("|") !== expectedTabs.join("|")) {
+    fail77(`the diff tabs are ${JSON.stringify(tabNames)}`);
+  }
+  const before = patch.locator(".editor.original .view-lines");
+  const after = patch.locator(".editor.modified .view-lines");
+  await expectShown(page, after, 'startswith("receipt")', "the changed side of triage.py");
+  await expectShown(page, before, 'return "review"', "the original side of triage.py");
+  if ((await editorText(before)).includes("receipt")) {
+    fail77("the original side of triage.py shows the new line");
+  }
+  if ((await patch.locator(".line-insert, .char-insert").count()) === 0) {
+    fail77("the diff marks no added lines");
+  }
+  await expectReadOnly(page, patch, after, "the diff");
+
+  // An added file is shown against nothing, a deleted file against nothing.
+  await tabs.getByRole("tab", { name: "rules/receipts.yaml (added)" }).click();
+  await expectShown(page, after, "subject: receipt", "the added file");
+  await expectBlank(page, before, "the original side of the added file");
+  await tabs.getByRole("tab", { name: "rules/legacy.yaml (deleted)" }).click();
+  await expectShown(page, before, "accounts@", "the deleted file");
+  await expectBlank(page, after, "the changed side of the deleted file");
+  await tabs.getByRole("tab", { name: "rules/invoices.yaml" }).click();
+  await expectShown(page, after, "label: invoice", "the changed yaml file");
+
+  // On a phone the same diff is inline, with a select instead of tabs.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const picker = patch.getByRole("combobox", { name: "Changed file" });
+  await picker.waitFor();
+  if ((await patch.getByRole("tablist").count()) !== 0) {
+    fail77("a phone should not show the file tabs");
+  }
+  {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && (await diffEditor.evaluate((node) => node.classList.contains("side-by-side")))) {
+      await page.waitForTimeout(100);
+    }
+    if (await diffEditor.evaluate((node) => node.classList.contains("side-by-side"))) {
+      fail77("the diff should be inline on a phone");
+    }
+  }
+  if ((await picker.inputValue()) !== "rules/invoices.yaml") {
+    fail77("the picked file should stay picked when the screen narrows");
+  }
+  await picker.click();
+  await page.getByRole("option", { name: "triage.py", exact: true }).click();
+  await expectShown(page, patch.locator(".view-lines").last(), 'startswith("receipt")', "the inline diff");
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // A file whose content is missing says so and offers the download, with no editor.
+  await mailList.getByRole("button", { name: "rules-export.json", exact: true }).click();
+  const missing = page.getByRole("region", { name: "rules-export.json" });
+  await missing.getByText("This file is missing or could not be read.", { exact: false }).waitFor();
+  await missing.getByRole("link", { name: "Download rules-export.json" }).waitFor();
+  if ((await missing.locator(".monaco-editor").count()) !== 0) {
+    fail77("a missing file should not show an editor");
   }
 
   // A task with no artifacts says so.

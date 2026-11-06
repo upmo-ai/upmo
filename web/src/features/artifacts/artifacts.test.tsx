@@ -5,8 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../App";
 import { createStubApi, type ApiClient, type ArtifactRecord } from "../../app/api";
 import { AppProviders } from "../../theme";
+import { languageFor } from "./editor-language";
+import { mounted, resetFake } from "./fake-surface";
 import { MAX_VIEW_BYTES, formatSize } from "./types";
-import { MAX_CSV_ROWS, htmlSandbox, languageFor, viewerFor } from "./viewer";
+import { MAX_CSV_ROWS, htmlSandbox, viewerFor } from "./viewer";
+
+// jsdom cannot run Monaco. monaco.test.tsx covers the editor views; here the
+// editor is the stand-in, and the real one is covered by e2e/artifacts.mjs.
+vi.mock("./monaco-surface", () => import("./fake-surface"));
 
 function renderAt(path: string, client?: ApiClient) {
   const history = createMemoryHistory({ initialEntries: [path] });
@@ -58,6 +64,7 @@ function withArtifacts(over: Partial<ApiClient["artifacts"]>): ApiClient {
 describe("task artifacts", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetFake();
   });
 
   afterEach(() => {
@@ -245,23 +252,24 @@ describe("task artifacts", () => {
     expect(screen.getByText(`Showing the first ${MAX_CSV_ROWS} of ${MAX_CSV_ROWS + 25} rows. Download the file for the rest.`)).toBeTruthy();
   });
 
-  it("UPM-74 shows code read only with its language", async () => {
+  it("UPM-74 shows code in the editor with the language of its file name", async () => {
     await openArtifacts("aster-digest");
     const view = await pick("over_threshold.py");
     await waitFor(() => {
       expect(view.textContent).toContain("def over_threshold(invoices, limit=1000):");
     });
-    expect(view.textContent).toContain("python");
-    expect(view.querySelector("textarea, input, [contenteditable]")).toBeNull();
+    const editor = mounted.code.at(-1);
+    expect(editor?.label).toBe("over_threshold.py");
+    expect(editor?.language).toBe("python");
   });
 
-  it("UPM-74 shows a plain text file as it is", async () => {
+  it("UPM-74 shows a plain text file in the editor as plain text", async () => {
     await openArtifacts("aster-digest");
     const view = await pick("run-notes.txt");
     await waitFor(() => {
       expect(view.textContent).toContain("Fetched 31 invoices from the finance mailbox.");
     });
-    expect(view.querySelector("textarea, input, [contenteditable]")).toBeNull();
+    expect(mounted.code.at(-1)?.language).toBe("plaintext");
   });
 
   it("UPM-74 shows HTML only in an iframe with an empty sandbox", async () => {
@@ -338,6 +346,21 @@ describe("task artifacts", () => {
       }),
     );
     const view = await screen.findByRole("region", { name: "run-notes.txt" });
+    expect(await within(view).findByText(/This file is missing or could not be read\./)).toBeTruthy();
+    expect(within(view).getByRole("link", { name: "Download run-notes.txt" })).toBeTruthy();
+    expect(mounted.code).toHaveLength(0);
+  });
+
+  it("UPM-74 says so when a Markdown file cannot be read", async () => {
+    await openArtifacts(
+      "aster-digest",
+      withArtifacts({
+        text: async () => {
+          throw new Error("The file is gone.");
+        },
+      }),
+    );
+    const view = await pick("digest-draft.md");
     expect(await within(view).findByText("The file is gone.")).toBeTruthy();
   });
 
@@ -370,9 +393,10 @@ describe("task artifacts", () => {
   it("UPM-74 gives each task its own artifacts", async () => {
     await openArtifacts("aster-mail");
     const table = await openList();
-    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).getAllByRole("row")).toHaveLength(4);
     expect(within(table).getByRole("button", { name: "triage-notes.md" })).toBeTruthy();
-    expect(screen.getByText("1 artifact")).toBeTruthy();
+    expect(screen.getByText("3 artifacts")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "run-notes.txt" })).toBeNull();
   });
 });
 
@@ -420,6 +444,7 @@ describe("artifact viewers", () => {
     for (const kind of ["markdown", "csv", "text", "code", "html"] as const) {
       expect(viewerFor(record({ kind }))).toBe("text");
     }
+    expect(viewerFor(record({ kind: "diff" }))).toBe("diff");
     expect(viewerFor(record({ kind: "pdf" }))).toBe("none");
     expect(viewerFor(record({ kind: "binary" }))).toBe("none");
     expect(viewerFor(record({ kind: "photo" as ArtifactRecord["kind"] }))).toBe("none");
@@ -428,14 +453,16 @@ describe("artifact viewers", () => {
   it("UPM-74 reads text up to the limit and not past it", () => {
     expect(viewerFor(record({ size: MAX_VIEW_BYTES }))).toBe("text");
     expect(viewerFor(record({ size: MAX_VIEW_BYTES + 1 }))).toBe("too-large");
+    expect(viewerFor(record({ kind: "diff", size: MAX_VIEW_BYTES }))).toBe("diff");
+    expect(viewerFor(record({ kind: "diff", size: MAX_VIEW_BYTES + 1 }))).toBe("too-large");
   });
 
   it("UPM-74 picks a highlight language from the file name", () => {
     expect(languageFor("a.py")).toBe("python");
     expect(languageFor("A.TS")).toBe("typescript");
-    expect(languageFor("Makefile")).toBe("text");
-    expect(languageFor("notes.unknown")).toBe("text");
-    expect(languageFor("x.constructor")).toBe("text");
+    expect(languageFor("Makefile")).toBe("plaintext");
+    expect(languageFor("notes.unknown")).toBe("plaintext");
+    expect(languageFor("x.constructor")).toBe("plaintext");
   });
 
   it("UPM-74 writes sizes in B, KB and MB", () => {

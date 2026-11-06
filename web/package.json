@@ -27,6 +27,7 @@
     "@upmo-ai/icons": "^1.4.0",
     "@upmo-ai/theme": "^1.4.0",
     "@upmo-ai/tokens": "^1.4.0",
+    "monaco-editor": "0.57.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
