@@ -25,6 +25,7 @@ import type {
   Passkey,
   ShareGrant,
   ShareUpdate,
+  SignInMethod,
   TaskShare,
   TaskVisibility,
   Team,
@@ -114,6 +115,7 @@ export type {
   ShareMember,
   ShareSubjectType,
   ShareUpdate,
+  SignInMethod,
   TaskShare,
   TaskVisibility,
   Team,
@@ -889,6 +891,11 @@ function usageFor(days: UsagePeriod): Usage {
   };
 }
 
+/** Where a member's dismissal of the passkey offer is kept between page loads. */
+export function passkeyOfferStorageKey(memberId: string): string {
+  return `upmo-passkey-offer-dismissed:${memberId}`;
+}
+
 export interface StubOptions {
   /** How long the stub takes to write an assistant reply, in milliseconds. */
   replyDelayMs?: number;
@@ -1000,7 +1007,8 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
   let serial = 0;
   let passwordSet = false;
   let signIn: CurrentUser["signIn"] = null;
-  let offerDismissed = false;
+  // Members whose offer was dismissed in this page, for when storage is blocked.
+  const dismissedHere = new Set<string>();
   let view: ViewRole = "admin";
   let currentMemberId: string = viewPersona.admin;
 
@@ -1009,8 +1017,44 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     return `${prefix}-${serial}`;
   }
 
-  function currentUser(): CurrentUser {
-    return { memberId: currentMemberId, view, signIn, passwordSet, offerDismissed };
+  function offerDismissed(): boolean {
+    if (dismissedHere.has(currentMemberId)) return true;
+    try {
+      return localStorage.getItem(passkeyOfferStorageKey(currentMemberId)) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function dismissOffer() {
+    dismissedHere.add(currentMemberId);
+    try {
+      localStorage.setItem(passkeyOfferStorageKey(currentMemberId), "1");
+    } catch {
+      // Storage is blocked: the offer stays dismissed for this page only.
+    }
+  }
+
+  // A new sign-in starts fresh: the brain decides again whether to offer a passkey.
+  function clearOffer() {
+    dismissedHere.delete(currentMemberId);
+    try {
+      localStorage.removeItem(passkeyOfferStorageKey(currentMemberId));
+    } catch {
+      // Storage is blocked: only the in-page flag was kept.
+    }
+  }
+
+  // passkeyCount is only ever what /api/session reported; unknown stays undefined.
+  function currentUser(passkeyCount?: number): CurrentUser {
+    return {
+      memberId: currentMemberId,
+      view,
+      signIn,
+      passwordSet,
+      ...(passkeyCount === undefined ? {} : { passkeyCount }),
+      offerDismissed: offerDismissed(),
+    };
   }
 
   function findMember(id: string) {
@@ -1122,16 +1166,24 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       }
       if (response.ok) {
         const body = (await response.json()) as {
-          sign_in_method?: "passkey" | "password";
+          sign_in_method?: SignInMethod;
           has_password?: boolean;
+          passkey_count?: number;
         };
-        if (body.sign_in_method === "passkey" || body.sign_in_method === "password") {
+        if (
+          body.sign_in_method === "passkey" ||
+          body.sign_in_method === "password" ||
+          body.sign_in_method === "link"
+        ) {
           signIn = body.sign_in_method;
-        } else if (signIn == null) {
+        } else if (body.sign_in_method == null && signIn == null) {
           signIn = "password";
         }
         if (body.has_password !== undefined) {
           passwordSet = Boolean(body.has_password);
+        }
+        if (typeof body.passkey_count === "number" && body.passkey_count >= 0) {
+          return copy(currentUser(body.passkey_count));
         }
       }
     } catch (err) {
@@ -1217,10 +1269,11 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async signIn(method) {
         if (method !== "passkey" && method !== "password") throw new Error("Unknown sign-in.");
         signIn = method;
+        clearOffer();
         return copy(currentUser());
       },
       async dismissPasskeyOffer() {
-        offerDismissed = true;
+        dismissOffer();
       },
       async viewAs(role) {
         if (!isViewRole(role)) throw new Error("You cannot view as the owner.");

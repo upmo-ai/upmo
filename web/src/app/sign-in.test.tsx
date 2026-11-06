@@ -25,9 +25,27 @@ function stubPassword(offer: boolean | (() => boolean)) {
           headers: { "content-type": "application/json" },
         });
       }
+      if (String(input).includes("/api/session")) {
+        return new Response(JSON.stringify({ sign_in_method: "password", passkey_count: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response("", { status: 404 });
     }),
   );
+}
+
+const offerName = "Add a passkey for next time";
+
+async function logOut() {
+  act(() => {
+    screen.getByRole("button", { name: /Sam Rivera/i }).click();
+  });
+  act(() => {
+    screen.getByRole("menuitem", { name: "Log out" }).click();
+  });
+  expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
 }
 
 async function submitPassword() {
@@ -112,11 +130,17 @@ describe("sign in", () => {
     vi.unstubAllGlobals();
   });
 
-  it("logs in through the password form when the server accepts it", async () => {
+  it("passkey offer: logs in through the password form when the server accepts it", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async (input) => {
         if (String(input).includes("/api/sign-in/password")) {
           return new Response(JSON.stringify({ offer_passkey: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (String(input).includes("/api/session")) {
+          return new Response(JSON.stringify({ sign_in_method: "password", passkey_count: 0 }), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
@@ -265,7 +289,7 @@ describe("sign in", () => {
     expect(screen.getByText(/does not sell personal information/)).toBeTruthy();
   });
 
-  it("offers a passkey only after a password sign-in, and only once", async () => {
+  it("passkey offer: shows only after a password sign-in, and only once", async () => {
     let posts = 0;
     stubPassword(() => {
       posts += 1;
@@ -298,7 +322,68 @@ describe("sign in", () => {
     ).rejects.toThrow(/Add a passkey for next time/);
   });
 
-  it("adds a passkey when the offer is accepted", async () => {
+  it("passkey offer: dismissed, a reload keeps it hidden", async () => {
+    stubPassword(true);
+    renderAt("/login");
+    await submitPassword();
+    const offer = await screen.findByRole("region", { name: offerName });
+    act(() => {
+      within(offer).getByRole("button", { name: "Not now" }).click();
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: offerName })).toBeNull();
+    });
+
+    cleanup();
+    renderAt("/");
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    await expect(screen.findByRole("region", { name: offerName }, { timeout: 300 })).rejects.toThrow(
+      /Add a passkey for next time/,
+    );
+  });
+
+  it("passkey offer: dismissed, signing in again with offer_passkey true shows it again", async () => {
+    stubPassword(true);
+    renderAt("/login");
+    await submitPassword();
+    const offer = await screen.findByRole("region", { name: offerName });
+    act(() => {
+      within(offer).getByRole("button", { name: "Not now" }).click();
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: offerName })).toBeNull();
+    });
+
+    await logOut();
+    await submitPassword();
+    expect(await screen.findByRole("region", { name: offerName })).toBeTruthy();
+  });
+
+  it("passkey offer: dismissed, signing in again with offer_passkey false stays hidden", async () => {
+    let posts = 0;
+    stubPassword(() => {
+      posts += 1;
+      return posts === 1;
+    });
+    renderAt("/login");
+    await submitPassword();
+    const offer = await screen.findByRole("region", { name: offerName });
+    act(() => {
+      within(offer).getByRole("button", { name: "Not now" }).click();
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: offerName })).toBeNull();
+    });
+
+    await logOut();
+    await submitPassword();
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    await expect(screen.findByRole("region", { name: offerName }, { timeout: 300 })).rejects.toThrow(
+      /Add a passkey for next time/,
+    );
+  });
+
+  it("passkey offer: adds a passkey when the offer is accepted", async () => {
     stubPassword(true);
     renderAt("/login");
     await submitPassword();

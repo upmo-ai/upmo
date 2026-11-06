@@ -55,6 +55,17 @@ describe("passkey offer", () => {
     expect(showPasskeyOffer({ method: "passkey", dismissed: false })).toBe(false);
     expect(showPasskeyOffer({ method: null, dismissed: false })).toBe(false);
   });
+
+  it("passkey offer: never follows a one-time link sign-in", () => {
+    expect(showPasskeyOffer({ method: "link", dismissed: false })).toBe(false);
+    expect(showPasskeyOffer({ method: "link", dismissed: false, passkeyCount: 0 })).toBe(false);
+  });
+
+  it("passkey offer: is hidden once the person has a passkey, and not hidden when the count is unknown", () => {
+    expect(showPasskeyOffer({ method: "password", dismissed: false, passkeyCount: 0 })).toBe(true);
+    expect(showPasskeyOffer({ method: "password", dismissed: false, passkeyCount: 1 })).toBe(false);
+    expect(showPasskeyOffer({ method: "password", dismissed: false, passkeyCount: undefined })).toBe(true);
+  });
 });
 
 describe("last owner", () => {
