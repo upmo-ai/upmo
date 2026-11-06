@@ -34,7 +34,14 @@ export function PasskeyOffer() {
   };
 
   const data = me.data;
-  if (!data || !showPasskeyOffer({ method: data.signIn, dismissed: data.offerDismissed })) {
+  if (
+    !data ||
+    !showPasskeyOffer({
+      method: data.signIn,
+      dismissed: data.offerDismissed,
+      passkeyCount: data.passkeyCount,
+    })
+  ) {
     return null;
   }
 

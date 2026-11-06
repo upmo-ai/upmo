@@ -21,10 +21,14 @@ export interface Member {
 export interface CurrentUser {
   memberId: string;
   view: ViewRole;
-  signIn: "passkey" | "password" | null;
+  signIn: SignInMethod | null;
   passwordSet: boolean;
+  /** How many passkeys the person has. Absent when the session does not say. */
+  passkeyCount?: number;
   offerDismissed: boolean;
 }
+
+export type SignInMethod = "passkey" | "password" | "link";
 
 export interface Passkey {
   id: string;

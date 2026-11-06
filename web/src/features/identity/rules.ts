@@ -9,6 +9,7 @@ import {
   type ScopeObject,
   type ShareLevel,
   type ShareUpdate,
+  type SignInMethod,
   type TaskShare,
   type ViewRole,
   type WorkspaceRole,
@@ -36,11 +37,17 @@ export function canRemovePassword(passkeyCount: number, passwordSet: boolean): b
   return passwordSet && passkeyCount > 0;
 }
 
+/**
+ * Offered only after a password sign-in, once, to someone with no passkey.
+ * An unknown passkey count does not hide the offer.
+ */
 export function showPasskeyOffer(input: {
-  method: "passkey" | "password" | null;
+  method: SignInMethod | null;
   dismissed: boolean;
+  passkeyCount?: number;
 }): boolean {
-  return input.method === "password" && !input.dismissed;
+  if (input.method !== "password" || input.dismissed) return false;
+  return !(input.passkeyCount !== undefined && input.passkeyCount > 0);
 }
 
 export function canManageMembers(role: WorkspaceRole): boolean {
