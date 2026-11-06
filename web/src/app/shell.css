@@ -394,6 +394,25 @@
   display: contents;
 }
 
+.shell-bell-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.shell-bell-link:hover,
+.shell-bell-link:focus-visible {
+  text-decoration: underline;
+}
+
+.shell-bell-more {
+  padding: var(--space-3);
+  border-block-start: 1px solid var(--border);
+  font-family: var(--font-ui);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  color: var(--ink-muted);
+}
+
 a.wordmark-link {
   line-height: 0;
   text-decoration: none;

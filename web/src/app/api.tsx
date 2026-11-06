@@ -131,8 +131,9 @@ export interface TestResult {
 
 export interface ApiClient {
   listTasks(): Promise<Task[]>;
-  listNotifications(): Promise<AppNotification[]>;
-  approveNotification(id: string): Promise<void>;
+  /** Newest first. At most `limit` notifications come back when it is given. */
+  listNotifications(options?: { limit?: number }): Promise<AppNotification[]>;
+  dismissNotification(id: string): Promise<void>;
   nextPhase(taskId: string): Promise<Task>;
   /**
    * POST /api/tasks {goal, repo?, tool_classes?} answers 201 {id, status, goal}.
@@ -579,8 +580,9 @@ REC-003,Meals,€32.00`,
 ];
 
 const notificationFixtures: AppNotification[] = [
-  { id: "aster-failed", kind: "failed", title: "Weekly close failed" },
-  { id: "aster-finished", kind: "finished", title: "Mail triage done" },
+  { id: "aster-failed", kind: "failed", title: "Weekly close failed", taskId: "aster-failed" },
+  { id: "aster-finished", kind: "finished", title: "Mail triage done", taskId: "aster-mail" },
+  { id: "aster-proposal", kind: "proposal", title: "Archive the filed receipts", taskId: "aster-done" },
   { id: "aster-question", kind: "question", title: "Question about the budget" },
 ];
 
@@ -855,10 +857,12 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     async listTasks() {
       return tasks.map((task) => copy(task));
     },
-    async listNotifications() {
-      return notifications.map((item) => copy(item));
+    async listNotifications(query) {
+      const limit = query?.limit ?? notifications.length;
+      return notifications.slice(0, limit).map((item) => copy(item));
     },
-    async approveNotification(id) {
+    async dismissNotification(id) {
+      if (!notifications.some((item) => item.id === id)) throw new Error("notification missing");
       notifications = notifications.filter((item) => item.id !== id);
     },
     async nextPhase(taskId) {
