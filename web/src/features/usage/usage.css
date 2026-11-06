@@ -21,3 +21,13 @@
 .usage-charts > * {
   min-width: 0;
 }
+
+/* Many narrow bars: the values and day labels stay in each bar's tooltip and the chart's data table. */
+.usage-dense .upmo-barchart__plot {
+  gap: 1px;
+}
+
+.usage-dense .upmo-barchart__value,
+.usage-dense .upmo-barchart__label {
+  display: none;
+}

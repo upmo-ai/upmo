@@ -584,6 +584,9 @@ describe("app shell", () => {
       },
       ...identityStub(),
       chats: createStubApi().chats,
+      async usage() {
+        return { days: [], tasks: [] };
+      },
     };
     renderAt("/tasks", client);
     expect(await screen.findByText("Custom task")).toBeTruthy();
@@ -844,6 +847,9 @@ describe("app shell", () => {
       },
       ...identityStub(),
       chats: createStubApi().chats,
+      async usage() {
+        return { days: [], tasks: [] };
+      },
     });
     const bell = await screen.findByRole("button", { name: /^Notifications$/ });
     act(() => {
