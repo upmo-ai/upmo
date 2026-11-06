@@ -130,10 +130,12 @@ async function awaitPhase(page, from) {
   return seen.jsonValue();
 }
 
-async function walkToDone(page) {
+// Checking is the last step a person can ask for. Upmo marks the task Done
+// itself, so Next phase turns off there and says why.
+async function walkToChecking(page) {
   let seen = await awaitPhase(page, null);
   for (let step = 0; step < 4; step += 1) {
-    if (seen.status === "Done") return;
+    if (seen.phase === "Checking") break;
     await page.getByRole("button", { name: "Next phase" }).click();
     try {
       seen = await awaitPhase(page, seen.phase);
@@ -141,7 +143,15 @@ async function walkToDone(page) {
       throw new Error(`phase stayed ${seen.phase}`);
     }
   }
-  await settleText(headerStatus(page), "Done");
+  if (seen.phase !== "Checking") throw new Error(`walk ended on ${seen.phase}, expected Checking`);
+  await settleText(headerStatus(page), "Checking");
+  if (await page.getByRole("button", { name: "Next phase" }).isEnabled()) {
+    throw new Error("next phase was enabled at Checking");
+  }
+  const note = (await page.getByTestId("next-phase-note").innerText()).trim();
+  if (!note.includes("Checking is the last step")) {
+    throw new Error(`no explanation for the disabled next phase: ${JSON.stringify(note)}`);
+  }
 }
 
 async function taskFlow(page, { checkBadges, theme }) {
@@ -184,13 +194,56 @@ async function taskFlow(page, { checkBadges, theme }) {
   await settleText(headerStatus(page), "Planning");
   if (await next.isDisabled()) throw new Error("next phase stayed disabled after approve");
 
-  await walkToDone(page);
-  await settleText(headerStatus(page), "Done");
+  await walkToChecking(page);
   await page.getByRole("tab", { name: "Result" }).click();
-  const result = (await page.getByTestId("task-result").innerText()).trim();
-  if (result === pendingResult || result.length === 0) {
-    throw new Error(`result after Done was ${JSON.stringify(result)}`);
+  await settleText(page.getByTestId("task-result"), pendingResult);
+}
+
+async function newTaskFlow(page) {
+  await signIn(page);
+  await page.getByRole("link", { name: "Tasks", exact: true }).click();
+  await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
+  await page.getByRole("button", { name: "New task" }).click();
+  const dialog = page.getByRole("dialog", { name: "New task" });
+  await dialog.waitFor();
+  await dialog.getByText("0 of 200 characters").waitFor();
+  if (await dialog.getByRole("button", { name: "Create task" }).isEnabled()) {
+    throw new Error("create was enabled without a goal");
   }
+
+  await dialog.getByLabel("Goal").fill("x".repeat(201));
+  await dialog.getByText("Keep the goal to 200 characters or fewer.").waitFor();
+  if (await dialog.getByRole("button", { name: "Create task" }).isEnabled()) {
+    throw new Error("create was enabled with a goal over 200 characters");
+  }
+  await dialog.getByLabel("Goal").fill("Tidy the shared drive");
+  await dialog.getByText("21 of 200 characters").waitFor();
+
+  if ((await dialog.getByLabel("Repository").count()) !== 0) {
+    throw new Error("the repository field showed before Advanced was opened");
+  }
+  await dialog.getByRole("button", { name: "Advanced" }).click();
+  await dialog.getByLabel("Repository").fill("not a repo");
+  await dialog.getByText("Use owner/name or an https URL.", { exact: true }).waitFor();
+  await dialog.getByLabel("Repository").fill("upmo-ai/upmo");
+  await dialog.getByRole("button", { name: "Create task" }).click();
+
+  await page.getByRole("heading", { level: 1, name: "Tidy the shared drive" }).waitFor();
+  await settleText(headerStatus(page), "Preparing");
+  const header = await page.locator(".task-header").innerText();
+  for (const invented of ["gpt-5.2", "Run 14", "€2.10"]) {
+    if (header.includes(invented)) throw new Error(`new task header shows ${invented}: ${header}`);
+  }
+
+  await page.getByLabel("Message this task").fill("Skip the drafts folder");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await page
+    .getByRole("list", { name: "Messages" })
+    .getByText("Skip the drafts folder")
+    .waitFor();
+  await page.waitForFunction(
+    () => document.querySelector("textarea[aria-label='Message this task']")?.value === "",
+  );
 }
 
 const browser = await chromium.launch({
@@ -210,6 +263,7 @@ try {
   await page.getByTestId("theme-switch").getByText("Dark", { exact: true }).click();
   await page.locator("html[data-theme='dark']").waitFor();
   await taskFlow(page, { checkBadges: false, theme: "dark" });
+  await newTaskFlow(page);
 
   console.log("task flow passed");
 } finally {

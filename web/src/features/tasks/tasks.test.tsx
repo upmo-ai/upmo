@@ -1,19 +1,19 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../../App";
-import { createStubApi } from "../../app/api";
+import { BrainError, createStubApi, type ApiClient, type Task } from "../../app/api";
 import { AppProviders } from "../../theme";
 import { ApprovalAnnouncer } from "./approval-card";
 
 const placeholder = "The final result shows up here when the task is done.";
 
-function renderAt(path: string) {
+function renderAt(path: string, client?: ApiClient) {
   const history = createMemoryHistory({ initialEntries: [path] });
   render(
     <AppProviders>
-      <App history={history} />
+      <App history={history} client={client} />
     </AppProviders>,
   );
 }
@@ -92,7 +92,7 @@ describe("tasks", () => {
     expect(screen.getByTestId("task-count").textContent).toBe("4 tasks");
   });
 
-  it("walks a task through its phases to Done", async () => {
+  it("UPM-199 walks a task through its phases and stops at Checking", async () => {
     renderAt("/tasks/aster-mail");
     expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
@@ -118,18 +118,51 @@ describe("tasks", () => {
       });
     }
 
-    act(() => {
-      screen.getByRole("button", { name: "Next phase" }).click();
-    });
-    await waitFor(() => {
-      expect(headerStatus()).toBe("Done");
-    });
-    expect(screen.queryByRole("listitem", { current: "step" })).toBeNull();
+    const nextPhase = screen.getByRole("button", { name: "Next phase" }) as HTMLButtonElement;
+    expect(nextPhase.disabled).toBe(true);
+    expect(headerStatus()).toBe("Checking");
+    expect(screen.getByTestId("next-phase-note").textContent).toContain("Checking is the last step");
+    expect(screen.getByTestId("next-phase-note").textContent).toContain("marks the task Done");
 
     act(() => {
       screen.getByRole("tab", { name: "Result" }).click();
     });
-    expect(screen.getByTestId("task-result").textContent).toBe("Mail triage is finished.");
+    expect(screen.getByTestId("task-result").textContent).toBe(placeholder);
+  });
+
+  it("UPM-199 gives no next-phase explanation before Checking", async () => {
+    renderAt("/tasks/aster-mail");
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Next phase" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(screen.queryByTestId("next-phase-note")).toBeNull();
+  });
+
+  it("UPM-199 the stub refuses to advance a task out of Checking", async () => {
+    const api = createStubApi();
+    for (const phase of ["Planning", "Working", "Checking"]) {
+      expect((await api.nextPhase("aster-mail")).phase).toBe(phase);
+    }
+    const again = await api.nextPhase("aster-mail");
+    expect(again.phase).toBe("Checking");
+    expect(again.status).toBe("Working");
+  });
+
+  it("UPM-200 shows a finished task's result and its recorded events", async () => {
+    renderAt("/tasks/aster-done");
+    expect(await screen.findByRole("heading", { level: 1, name: "File the receipts" })).toBeTruthy();
+    act(() => {
+      screen.getByRole("tab", { name: "Result" }).click();
+    });
+    expect(screen.getByTestId("task-result").textContent).toBe("The receipts are filed.");
+    act(() => {
+      screen.getByRole("tab", { name: "Activity" }).click();
+    });
+    act(() => {
+      screen.getByRole("radio", { name: "All events" }).click();
+    });
+    expect(within(screen.getByRole("region", { name: "Activity" })).getByText("6 events")).toBeTruthy();
   });
 
   it("shows a nested subtask under its parent", async () => {
@@ -325,6 +358,465 @@ describe("tasks", () => {
     });
     expect(screen.getByRole("columnheader", { name: "Vendor" })).toBeTruthy();
     expect(screen.getByRole("cell", { name: "Hetzner" })).toBeTruthy();
+  });
+
+  it("UPM-199 creates a task from the New task dialog and opens it", async () => {
+    renderAt("/tasks");
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    const goal = within(dialog).getByLabelText(/Goal/);
+    expect(within(dialog).getByText("0 of 200 characters")).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: "Create task" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(goal, { target: { value: "Tidy the shared drive" } });
+    expect(within(dialog).getByText("21 of 200 characters")).toBeTruthy();
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Tidy the shared drive" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull();
+    expect(headerStatus()).toBe("Preparing");
+    expect(screen.getByRole("listitem", { current: "step" }).textContent).toBe("Preparing");
+  });
+
+  it("UPM-199 refuses a goal over 200 characters and an empty one", async () => {
+    const stub = createStubApi();
+    const createTask = vi.fn<ApiClient["createTask"]>(stub.createTask);
+    renderAt("/tasks", { ...stub, createTask });
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    const goal = within(dialog).getByLabelText(/Goal/);
+    const create = within(dialog).getByRole("button", { name: "Create task" }) as HTMLButtonElement;
+
+    fireEvent.change(goal, { target: { value: "x".repeat(201) } });
+    expect(within(dialog).getByText("201 of 200 characters")).toBeTruthy();
+    expect(within(dialog).getByText("Keep the goal to 200 characters or fewer.")).toBeTruthy();
+    expect(create.disabled).toBe(true);
+
+    fireEvent.change(goal, { target: { value: "x".repeat(200) } });
+    expect(within(dialog).queryByText("Keep the goal to 200 characters or fewer.")).toBeNull();
+    expect(create.disabled).toBe(false);
+
+    fireEvent.change(goal, { target: { value: "   " } });
+    expect(within(dialog).getByText("Describe the goal in 1 to 200 characters.")).toBeTruthy();
+    expect(create.disabled).toBe(true);
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it("UPM-199 keeps the repository behind Advanced and checks its format", async () => {
+    const stub = createStubApi();
+    const createTask = vi.fn<ApiClient["createTask"]>(stub.createTask);
+    renderAt("/tasks", { ...stub, createTask });
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    expect(within(dialog).queryByLabelText("Repository")).toBeNull();
+    const advanced = within(dialog).getByRole("button", { name: "Advanced" });
+    expect(advanced.getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      advanced.click();
+    });
+    expect(advanced.getAttribute("aria-expanded")).toBe("true");
+    const repo = within(dialog).getByLabelText("Repository");
+
+    fireEvent.change(within(dialog).getByLabelText(/Goal/), { target: { value: "Fix the build" } });
+    fireEvent.change(repo, { target: { value: "not a repo" } });
+    expect(within(dialog).getByText("Use owner/name or an https URL.")).toBeTruthy();
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+    expect(createTask).not.toHaveBeenCalled();
+
+    fireEvent.change(repo, { target: { value: "http://example.com/org/name" } });
+    expect(within(dialog).getByText("Use owner/name or an https URL.")).toBeTruthy();
+
+    fireEvent.change(repo, { target: { value: "upmo-ai/upmo" } });
+    expect(within(dialog).queryByText("Use owner/name or an https URL.")).toBeNull();
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+    await waitFor(() => {
+      expect(createTask).toHaveBeenCalledWith("Fix the build", "upmo-ai/upmo");
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Fix the build" })).toBeTruthy();
+    expect(screen.getByText("upmo-ai/upmo")).toBeTruthy();
+  });
+
+  it("UPM-199 accepts an https repository URL and sends it to createTask", async () => {
+    const stub = createStubApi();
+    const createTask = vi.fn<ApiClient["createTask"]>(stub.createTask);
+    renderAt("/tasks", { ...stub, createTask });
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.change(within(dialog).getByLabelText(/Goal/), { target: { value: "Review the repo" } });
+    act(() => {
+      within(dialog).getByRole("button", { name: "Advanced" }).click();
+    });
+    fireEvent.change(within(dialog).getByLabelText("Repository"), {
+      target: { value: "  https://github.com/upmo-ai/upmo  " },
+    });
+    expect(within(dialog).queryByText("Use owner/name or an https URL.")).toBeNull();
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+    await waitFor(() => {
+      expect(createTask).toHaveBeenCalledWith("Review the repo", "https://github.com/upmo-ai/upmo");
+    });
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("heading", { level: 1, name: "Review the repo" })).toBeTruthy();
+  });
+
+  it("UPM-199 moves focus to the repository field when an invalid repository opens Advanced", async () => {
+    const stub = createStubApi();
+    const createTask = vi.fn<ApiClient["createTask"]>(stub.createTask);
+    renderAt("/tasks", { ...stub, createTask });
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    const advanced = within(dialog).getByRole("button", { name: "Advanced" });
+    act(() => {
+      advanced.click();
+    });
+    fireEvent.change(within(dialog).getByLabelText("Repository"), { target: { value: "not a repo" } });
+    act(() => {
+      advanced.click();
+    });
+    expect(within(dialog).queryByLabelText("Repository")).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText(/Goal/), { target: { value: "Fix the build" } });
+
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+    const repo = within(dialog).getByLabelText("Repository");
+    expect(advanced.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(repo);
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it("UPM-199 sends no repository when none is given", async () => {
+    const stub = createStubApi();
+    const createTask = vi.fn<ApiClient["createTask"]>(stub.createTask);
+    renderAt("/tasks", { ...stub, createTask });
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.change(within(dialog).getByLabelText(/Goal/), { target: { value: "  Plain goal  " } });
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+    await waitFor(() => {
+      expect(createTask).toHaveBeenCalledWith("Plain goal", undefined);
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Plain goal" })).toBeTruthy();
+    expect(createTask.mock.calls[0]).toHaveLength(2);
+  });
+
+  it("UPM-199 explains a 503 when the sandbox is not configured and stays in the dialog", async () => {
+    const stub = createStubApi();
+    const createTask = vi.fn<ApiClient["createTask"]>(async () => {
+      throw new BrainError(503, "sandbox_unavailable");
+    });
+    renderAt("/tasks", { ...stub, createTask });
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.change(within(dialog).getByLabelText(/Goal/), { target: { value: "Fix the build" } });
+    act(() => {
+      within(dialog).getByRole("button", { name: "Create task" }).click();
+    });
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("needs a sandbox");
+    expect(alert.textContent).not.toContain("503");
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Tasks" })).toBeTruthy();
+  });
+
+  it("UPM-199 opens the New task dialog from the empty state", async () => {
+    const stub = createStubApi();
+    renderAt("/tasks", {
+      ...stub,
+      async listTasks() {
+        return [];
+      },
+    });
+    expect(await screen.findByRole("heading", { level: 3, name: "Your first task" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "New task" })).toHaveLength(1);
+    expect(screen.queryByRole("link", { name: "Create task" })).toBeNull();
+    act(() => {
+      screen.getByRole("button", { name: "New task" }).click();
+    });
+    expect(await screen.findByRole("dialog", { name: "New task" })).toBeTruthy();
+  });
+
+  it("UPM-199 posts a message to the task and shows it in the activity", async () => {
+    const stub = createStubApi();
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(stub.postTaskMessage);
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task") as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByRole("list", { name: "Messages" })).toBeNull();
+
+    fireEvent.change(box, { target: { value: "  Skip the newsletters  " } });
+    expect(send.getAttribute("aria-disabled")).toBeNull();
+    act(() => {
+      send.click();
+    });
+
+    const list = await screen.findByRole("list", { name: "Messages" });
+    expect(postTaskMessage).toHaveBeenCalledWith("aster-mail", "Skip the newsletters");
+    expect(within(list).getByText("Skip the newsletters")).toBeTruthy();
+    await waitFor(() => {
+      expect(box.value).toBe("");
+    });
+
+    act(() => {
+      screen.getByRole("radio", { name: "All events" }).click();
+    });
+    const stream = screen.getByRole("region", { name: "Activity" });
+    expect(within(stream).getByText("3 events")).toBeTruthy();
+    expect(within(stream).getByText("You: Skip the newsletters")).toBeTruthy();
+  });
+
+  it("UPM-199 sends the message with Enter and keeps Shift+Enter for a new line", async () => {
+    const stub = createStubApi();
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(stub.postTaskMessage);
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task");
+    fireEvent.change(box, { target: { value: "First line" } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(postTaskMessage).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => {
+      expect(postTaskMessage).toHaveBeenCalledWith("aster-mail", "First line");
+    });
+  });
+
+  it("UPM-199 refuses a message over 4000 characters", async () => {
+    const stub = createStubApi();
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(stub.postTaskMessage);
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task");
+    const send = screen.getByRole("button", { name: "Send message" });
+
+    fireEvent.change(box, { target: { value: "y".repeat(4001) } });
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("alert").textContent).toContain("4000 characters");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(postTaskMessage).not.toHaveBeenCalled();
+
+    fireEvent.change(box, { target: { value: "y".repeat(4000) } });
+    expect(send.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    const stubbed = await stub.postTaskMessage("aster-mail", "y".repeat(4000));
+    expect(stubbed.message).toHaveLength(4000);
+    await expect(stub.postTaskMessage("aster-mail", "y".repeat(4001))).rejects.toThrow("4000");
+  });
+
+  it("UPM-199 does not send the message when Enter confirms an IME candidate", async () => {
+    const stub = createStubApi();
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(stub.postTaskMessage);
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "にほん" } });
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    expect(postTaskMessage).not.toHaveBeenCalled();
+    expect(box.value).toBe("にほん");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => {
+      expect(postTaskMessage).toHaveBeenCalledWith("aster-mail", "にほん");
+    });
+  });
+
+  it("UPM-199 keeps what is typed while a message is being posted", async () => {
+    const stub = createStubApi();
+    let release: () => void = () => {};
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(async (taskId, body) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return stub.postTaskMessage(taskId, body);
+    });
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "First" } });
+    act(() => {
+      screen.getByRole("button", { name: "Send message" }).click();
+    });
+    await waitFor(() => {
+      expect(postTaskMessage).toHaveBeenCalledWith("aster-mail", "First");
+    });
+    fireEvent.change(box, { target: { value: "Second" } });
+    act(() => {
+      release();
+    });
+    expect(await screen.findByRole("list", { name: "Messages" })).toBeTruthy();
+    expect(box.value).toBe("Second");
+  });
+
+  it("UPM-199 puts the unsent message back in front of a new draft when the post fails", async () => {
+    const stub = createStubApi();
+    let fail: (error: Error) => void = () => {};
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "First" } });
+    act(() => {
+      screen.getByRole("button", { name: "Send message" }).click();
+    });
+    await waitFor(() => {
+      expect(postTaskMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(box.value).toBe("");
+    fireEvent.change(box, { target: { value: "Second" } });
+    act(() => {
+      fail(new Error("The task is not taking messages."));
+    });
+    expect((await screen.findByRole("alert")).textContent).toBe("The task is not taking messages.");
+    expect(box.value).toBe("First\nSecond");
+  });
+
+  it("UPM-199 keeps the draft and says so when the message cannot be posted", async () => {
+    const stub = createStubApi();
+    const postTaskMessage = vi.fn<ApiClient["postTaskMessage"]>(async () => {
+      throw new Error("The task is not taking messages.");
+    });
+    renderAt("/tasks/aster-mail", { ...stub, postTaskMessage });
+    expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
+    const box = screen.getByLabelText("Message this task") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "Hello" } });
+    act(() => {
+      screen.getByRole("button", { name: "Send message" }).click();
+    });
+    expect((await screen.findByRole("alert")).textContent).toBe("The task is not taking messages.");
+    expect(box.value).toBe("Hello");
+    expect(screen.queryByRole("list", { name: "Messages" })).toBeNull();
+  });
+
+  it("UPM-200 invents no figures for a task that has reported none", async () => {
+    const bare: Task = {
+      id: "bare",
+      title: "Bare task",
+      status: "Working",
+      phase: "Planning",
+      result: "",
+      detail: "A task that has reported nothing yet.",
+    };
+    const stub = createStubApi();
+    renderAt("/tasks/bare", {
+      ...stub,
+      async listTasks() {
+        return [bare];
+      },
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Bare task" })).toBeTruthy();
+    const header = document.querySelector(".task-header") as HTMLElement;
+    for (const invented of ["Run 14", "gpt-5.2", "started 08:00", "€2.10", "Upmo ·"]) {
+      expect(header.textContent).not.toContain(invented);
+    }
+    expect(header.querySelector(".upmo-task-header__cost")).toBeNull();
+
+    expect(screen.getByText("Spent: Unknown")).toBeTruthy();
+    expect(screen.getByText("Limit: Unknown")).toBeTruthy();
+    expect(screen.queryByRole("progressbar", { name: "Budget used" })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 4, name: "Delivery" })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 4, name: "Sources" })).toBeNull();
+    expect(screen.queryByText("#finance on Slack")).toBeNull();
+    expect(document.body.textContent).not.toContain("Finance mailbox");
+    expect(document.body.textContent).not.toContain("38k tokens");
+
+    act(() => {
+      screen.getByRole("radio", { name: "All events" }).click();
+    });
+    expect(screen.getByText("No events yet.")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Activity" })).toBeNull();
+    expect(document.body.textContent).not.toContain("Task initialized by user");
+  });
+
+  it("UPM-200 names a missing delivery time Unknown instead of inventing one", async () => {
+    const partial: Task = {
+      id: "partial",
+      title: "Partial task",
+      status: "Working",
+      phase: "Working",
+      result: "",
+      detail: "Reports a channel only.",
+      deliveryChannel: "#ops on Slack",
+      sources: ["Ops mailbox"],
+    };
+    const stub = createStubApi();
+    renderAt("/tasks/partial", {
+      ...stub,
+      async listTasks() {
+        return [partial];
+      },
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Partial task" })).toBeTruthy();
+    expect(screen.getByText("#ops on Slack")).toBeTruthy();
+    expect(screen.getByText("Unknown")).toBeTruthy();
+    expect(screen.queryByText("After the task is done")).toBeNull();
+    expect(screen.getByText("Ops mailbox")).toBeTruthy();
+    expect(screen.queryByText("Finance mailbox")).toBeNull();
+  });
+
+  it("UPM-200 leaves a task tile without cost, tokens or model figures", async () => {
+    const stub = createStubApi();
+    renderAt("/tasks", {
+      ...stub,
+      async listTasks() {
+        return [
+          { id: "bare", title: "Bare task", status: "Working", phase: "Preparing", result: "", detail: "" },
+        ];
+      },
+    });
+    const tile = (await screen.findByText("Bare task")).closest("a") as HTMLElement;
+    expect(tile.querySelector(".task-tile-meta")).toBeNull();
+    expect(tile.textContent).not.toContain("€0.00");
+    expect(tile.textContent).not.toContain("0 tokens");
+  });
+
+  it("UPM-200 keeps the fixtures rich so the demo tasks still show their figures", async () => {
+    renderAt("/tasks/aster-digest");
+    expect(await screen.findByRole("heading", { level: 1, name: "Daily finance digest" })).toBeTruthy();
+    const header = document.querySelector(".task-header") as HTMLElement;
+    expect(header.textContent).toContain("Run 14 · Upmo · gpt-5.2 · started 08:00 · €2.10");
+    expect(screen.getByText(/€2.10 of €5.00 · 38k tokens · pauses at 90%/)).toBeTruthy();
+    expect(screen.getByText("After the task is done")).toBeTruthy();
+    expect(screen.getByText("Finance mailbox")).toBeTruthy();
+    cleanup();
+    renderAt("/tasks");
+    expect(await screen.findByText("Daily finance digest")).toBeTruthy();
+    expect(taskList().textContent).toContain("€2.10");
+    expect(taskList().textContent).toContain("38k tokens");
   });
 
   it("counts the working tasks in the shell", async () => {
