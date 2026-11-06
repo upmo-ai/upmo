@@ -115,12 +115,7 @@ const signedOut: CurrentUser = {
 function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers" | "knowledge" | "createTask" | "postTaskMessage" | "gateway" | "decisions"> {
   const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
   const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
-  const share = (taskId: string): TaskShare => ({
-    taskId,
-    visibility: "private",
-    teamId: null,
-    people: [],
-  });
+  const share: TaskShare = { visibility: "private", members: [] };
   const token: ApiToken = {
     id: "token",
     name: "Token",
@@ -187,20 +182,11 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       async teams() {
         return [] as Team[];
       },
-      async get(taskId) {
-        return share(taskId);
+      async get() {
+        return share;
       },
-      async setVisibility(taskId, visibility, teamId) {
-        return { ...share(taskId), visibility, teamId };
-      },
-      async addPerson(taskId, memberId, level) {
-        return { ...share(taskId), people: [{ memberId, level }] };
-      },
-      async setLevel(taskId, memberId, level) {
-        return { ...share(taskId), people: [{ memberId, level }] };
-      },
-      async removePerson(taskId) {
-        return share(taskId);
+      async put() {
+        return share;
       },
     },
     tokens: {

@@ -8,6 +8,8 @@ import {
   type ScopeAction,
   type ScopeObject,
   type ShareLevel,
+  type ShareUpdate,
+  type TaskShare,
   type ViewRole,
   type WorkspaceRole,
 } from "./types";
@@ -78,9 +80,29 @@ export function canRemoveMember(input: {
   return true;
 }
 
-/** The object owner and people with Editor access may change sharing. */
-export function canEditSharing(level: ShareLevel | null): boolean {
-  return level === "owner" || level === "editor";
+/** Only the owner of a task may change who it is shared with. */
+export function canEditSharing(role: ShareLevel | null): boolean {
+  return role === "owner";
+}
+
+/** The role a person holds directly on the task, or null when they hold none. */
+export function shareRole(share: TaskShare | undefined, memberId: string | undefined): ShareLevel | null {
+  if (!share || !memberId) return null;
+  const held = share.members.find(
+    (member) => member.subject_type === "person" && member.subject_id === memberId,
+  );
+  return held?.role ?? null;
+}
+
+export function toShareUpdate(share: TaskShare): ShareUpdate {
+  return {
+    visibility: share.visibility,
+    members: share.members.map(({ subject_type, subject_id, role }) => ({
+      subject_type,
+      subject_id,
+      role,
+    })),
+  };
 }
 
 export function canRemoveShare(level: ShareLevel): boolean {

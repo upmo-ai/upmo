@@ -89,9 +89,9 @@ describe("who may manage members", () => {
 });
 
 describe("who may edit sharing", () => {
-  it("allows the object owner and an editor", () => {
+  it("UPM-205: allows only the owner, not an editor", () => {
     expect(canEditSharing("owner")).toBe(true);
-    expect(canEditSharing("editor")).toBe(true);
+    expect(canEditSharing("editor")).toBe(false);
     expect(canEditSharing("viewer")).toBe(false);
     expect(canEditSharing(null)).toBe(false);
     expect(canRemoveShare("owner")).toBe(false);

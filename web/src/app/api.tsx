@@ -7,7 +7,6 @@ import {
   canManageMembers,
   canRemovePasskey,
   canRemovePassword,
-  canRemoveShare,
   isAllowedScope,
   isGrantableShareLevel,
   isInviteRole,
@@ -21,11 +20,11 @@ import type {
   ApiToken,
   CreatedToken,
   CurrentUser,
-  GrantableShareLevel,
   InviteRole,
   Member,
   Passkey,
-  PersonAccess,
+  ShareGrant,
+  ShareUpdate,
   TaskShare,
   TaskVisibility,
   Team,
@@ -85,7 +84,11 @@ export type {
   InviteRole,
   Member,
   Passkey,
+  ShareGrant,
   ShareLevel,
+  ShareMember,
+  ShareSubjectType,
+  ShareUpdate,
   TaskShare,
   TaskVisibility,
   Team,
@@ -230,16 +233,15 @@ export interface ApiClient {
     remove(id: string): Promise<void>;
   };
   shares: {
+    /** The teams a task can be shared with. Backend: GET /api/teams. */
     teams(): Promise<Team[]>;
+    /** GET /api/tasks/{id}/share */
     get(taskId: string): Promise<TaskShare>;
-    setVisibility(
-      taskId: string,
-      visibility: TaskVisibility,
-      teamId: string | null,
-    ): Promise<TaskShare>;
-    addPerson(taskId: string, memberId: string, level: GrantableShareLevel): Promise<TaskShare>;
-    setLevel(taskId: string, memberId: string, level: GrantableShareLevel): Promise<TaskShare>;
-    removePerson(taskId: string, memberId: string): Promise<TaskShare>;
+    /**
+     * PUT /api/tasks/{id}/share. Owner only: anyone else gets a BrainError 403,
+     * which is a refusal and not a sign-out.
+     */
+    put(taskId: string, update: ShareUpdate): Promise<TaskShare>;
   };
   knowledge: KnowledgeApi;
   tokens: {
@@ -726,17 +728,15 @@ const viewPersona: Record<ViewRole, string> = {
 
 interface StoredShare {
   visibility: TaskVisibility;
-  teamId: string | null;
-  people: PersonAccess[];
+  members: ShareGrant[];
 }
 
 function asterShare(): StoredShare {
   return {
     visibility: "private",
-    teamId: null,
-    people: [
-      { memberId: "sam", level: "owner" },
-      { memberId: "lee", level: "viewer" },
+    members: [
+      { subject_type: "person", subject_id: "sam", role: "owner" },
+      { subject_type: "person", subject_id: "lee", role: "viewer" },
     ],
   };
 }
@@ -825,7 +825,13 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
   const teams = copy(teamFixtures);
   const shares: Record<string, StoredShare> = {
     "aster-digest": asterShare(),
-    "aster-mail": asterShare(),
+    "aster-mail": {
+      visibility: "team",
+      members: [
+        { subject_type: "person", subject_id: "sam", role: "owner" },
+        { subject_type: "team", subject_id: "finance", role: "editor" },
+      ],
+    },
     "aster-done": asterShare(),
     "aster-failed": asterShare(),
   };
@@ -944,20 +950,61 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
 
   function mustShare(taskId: string) {
     const share = shares[taskId];
-    if (!share) throw new Error("task missing");
+    if (!share) throw new BrainError(404, "not_found", "This task is not in the workspace.");
     return share;
   }
 
   function presentShare(taskId: string): TaskShare {
     const share = mustShare(taskId);
-    return copy({ taskId, visibility: share.visibility, teamId: share.teamId, people: share.people });
+    return copy({
+      visibility: share.visibility,
+      members: share.members.map((grant) => ({
+        ...grant,
+        name:
+          (grant.subject_type === "team"
+            ? teams.find((team) => team.id === grant.subject_id)?.name
+            : findMember(grant.subject_id)?.name) ?? grant.subject_id,
+      })),
+    });
   }
 
-  function assertCanEditShare(taskId: string) {
-    const share = mustShare(taskId);
-    const level = share.people.find((person) => person.memberId === currentMemberId)?.level ?? null;
-    if (!canEditSharing(level)) throw new Error("You cannot change sharing.");
-    return share;
+  /** Checks an owner-only write the way the backend does, before anything is stored. */
+  function checkShareUpdate(share: StoredShare, update: ShareUpdate) {
+    const held = share.members.find(
+      (grant) => grant.subject_type === "person" && grant.subject_id === currentMemberId,
+    );
+    if (!canEditSharing(held?.role ?? null)) {
+      throw new BrainError(403, "forbidden", "Only the owner can change sharing.");
+    }
+    if (!isVisibility(update.visibility)) throw new BrainError(422, "invalid", "Unknown visibility.");
+    const seen = new Set<string>();
+    for (const grant of update.members) {
+      if (grant.subject_type !== "person" && grant.subject_type !== "team") {
+        throw new BrainError(422, "invalid", "Share with a person or a team.");
+      }
+      const key = `${grant.subject_type}:${grant.subject_id}`;
+      if (seen.has(key)) throw new BrainError(422, "invalid", "That access is listed twice.");
+      seen.add(key);
+      if (grant.subject_type === "person" && !findMember(grant.subject_id)) {
+        throw new BrainError(422, "invalid", "That person is not a member.");
+      }
+      if (grant.subject_type === "team" && !teams.some((team) => team.id === grant.subject_id)) {
+        throw new BrainError(422, "invalid", "That team does not exist.");
+      }
+      const stored = share.members.find(
+        (item) => item.subject_type === grant.subject_type && item.subject_id === grant.subject_id,
+      );
+      if (stored?.role === "owner") {
+        if (grant.role !== "owner") throw new BrainError(422, "invalid", "The owner cannot be changed.");
+      } else if (!isGrantableShareLevel(grant.role)) {
+        throw new BrainError(422, "invalid", "Owner is not a share level.");
+      }
+    }
+    for (const stored of share.members) {
+      if (stored.role === "owner" && !seen.has(`${stored.subject_type}:${stored.subject_id}`)) {
+        throw new BrainError(422, "invalid", "The owner cannot be removed.");
+      }
+    }
   }
 
   function addPasskey(name: string) {
@@ -1053,8 +1100,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       tasks.unshift(task);
       shares[id] = {
         visibility: "private",
-        teamId: null,
-        people: [{ memberId: currentMemberId, level: "owner" }],
+        members: [{ subject_type: "person", subject_id: currentMemberId, role: "owner" }],
       };
       return { id, status: task.phase, goal: title };
     },
@@ -1196,44 +1242,11 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async get(taskId) {
         return presentShare(taskId);
       },
-      async setVisibility(taskId, visibility, teamId) {
-        const share = assertCanEditShare(taskId);
-        if (!isVisibility(visibility)) throw new Error("Unknown visibility.");
-        if (visibility === "team") {
-          const known = teams.some((team) => team.id === teamId);
-          if (!teamId || !known) throw new Error("Choose a team.");
-          share.teamId = teamId;
-        } else {
-          share.teamId = null;
-        }
-        share.visibility = visibility;
-        return presentShare(taskId);
-      },
-      async addPerson(taskId, memberId, level) {
-        const share = assertCanEditShare(taskId);
-        if (!isGrantableShareLevel(level)) throw new Error("Owner is not a share level.");
-        if (!findMember(memberId)) throw new Error("That person is not a member.");
-        if (share.people.some((person) => person.memberId === memberId)) {
-          throw new Error("That person already has access.");
-        }
-        share.people.push({ memberId, level });
-        return presentShare(taskId);
-      },
-      async setLevel(taskId, memberId, level) {
-        const share = assertCanEditShare(taskId);
-        if (!isGrantableShareLevel(level)) throw new Error("Owner is not a share level.");
-        const person = share.people.find((item) => item.memberId === memberId);
-        if (!person) throw new Error("That person does not have access.");
-        if (!canRemoveShare(person.level)) throw new Error("The owner cannot be removed.");
-        person.level = level;
-        return presentShare(taskId);
-      },
-      async removePerson(taskId, memberId) {
-        const share = assertCanEditShare(taskId);
-        const person = share.people.find((item) => item.memberId === memberId);
-        if (!person) throw new Error("That person does not have access.");
-        if (!canRemoveShare(person.level)) throw new Error("The owner cannot be removed.");
-        share.people = share.people.filter((item) => item.memberId !== memberId);
+      async put(taskId, update) {
+        const share = mustShare(taskId);
+        checkShareUpdate(share, update);
+        share.visibility = update.visibility;
+        share.members = copy(update.members);
         return presentShare(taskId);
       },
     },

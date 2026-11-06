@@ -45,16 +45,39 @@ export const taskVisibilities = ["private", "team", "everyone"] as const;
 
 export type TaskVisibility = (typeof taskVisibilities)[number];
 
-export interface PersonAccess {
-  memberId: string;
-  level: ShareLevel;
+export type ShareSubjectType = "person" | "team";
+
+/**
+ * GET /api/tasks/{id}/share. The people and teams that hold a role on the
+ * task, with the names the backend resolved for them.
+ */
+export interface ShareMember {
+  subject_type: ShareSubjectType;
+  subject_id: string;
+  name: string;
+  role: ShareLevel;
 }
 
 export interface TaskShare {
-  taskId: string;
   visibility: TaskVisibility;
-  teamId: string | null;
-  people: PersonAccess[];
+  members: ShareMember[];
+}
+
+export interface ShareGrant {
+  subject_type: ShareSubjectType;
+  subject_id: string;
+  role: ShareLevel;
+}
+
+/**
+ * PUT /api/tasks/{id}/share. Replaces the visibility and the member list, and
+ * answers with the stored TaskShare. Only the owner may write: anyone else
+ * gets 403, and a 403 is not a sign-out. The owner entry must come back
+ * unchanged.
+ */
+export interface ShareUpdate {
+  visibility: TaskVisibility;
+  members: ShareGrant[];
 }
 
 export interface Team {
