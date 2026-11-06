@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Button, ConfirmDialog, ConnectorCard, Input } from "@upmo-ai/components";
 
 import { CONNECTORS_KEY, connectorsQueryKey, useApi, type ConnectorGrant } from "../../app/api";
+import { ConnectorRulesRow } from "./connector-rules";
 
 export interface KnownConnector {
   id: string;
@@ -151,7 +152,11 @@ function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?
         </Group>
       </Group>
 
-      {grants.length === 0 ? (
+      {grantsQuery.isPending ? (
+        <Text c="dimmed" size="sm" role="status">
+          Loading connectors
+        </Text>
+      ) : grants.length === 0 ? (
         <Card withBorder radius="lg" padding="xl" style={{ borderStyle: "dashed" }}>
           <Stack align="center" gap="sm" py={48}>
             <ThemeIcon variant="light" size={48} radius="lg" color="teal">
@@ -181,24 +186,37 @@ function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
           {filteredGrants.map((grant) => {
             const tool = toolMeta(grant.connector);
+            const global = grant.scope === "global";
             return (
-              <ConnectorCard
-                key={grant.connector}
-                data-testid={`connector-card-${grant.connector}`}
-                id={grant.connector}
-                name={tool.name}
-                description={tool.description}
-                resourceScope={grant.resource_scope}
-                resourceIds={grant.resource_ids}
-                changes={grant.changes}
-                onEdit={() =>
-                  void navigate({
-                    to: "/connectors/$connectorId/edit",
-                    params: { connectorId: grant.connector },
-                  })
-                }
-                onDisconnect={() => setDisconnectTarget(grant)}
-              />
+              <Stack key={grant.connector} gap="xs">
+                <ConnectorCard
+                  data-testid={`connector-card-${grant.connector}`}
+                  id={grant.connector}
+                  name={tool.name}
+                  description={tool.description}
+                  resourceScope={grant.resource_scope}
+                  resourceIds={grant.resource_ids}
+                  changes={grant.changes}
+                  onEdit={
+                    global
+                      ? undefined
+                      : () =>
+                          void navigate({
+                            to: "/connectors/$connectorId/edit",
+                            params: { connectorId: grant.connector },
+                          })
+                  }
+                  onDisconnect={global ? undefined : () => setDisconnectTarget(grant)}
+                />
+                {live ? (
+                  // Rules are not served by the live API yet, so none are shown.
+                  <Text size="xs" c="dimmed">
+                    Rules are not available.
+                  </Text>
+                ) : (
+                  <ConnectorRulesRow connector={grant.connector} name={tool.name} readOnly={global} />
+                )}
+              </Stack>
             );
           })}
         </SimpleGrid>

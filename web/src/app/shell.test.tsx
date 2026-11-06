@@ -216,6 +216,14 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       async revoke() {},
     },
     connectors: {
+      rules: {
+        async get() {
+          return { read: "allow", change: "ask", delete: "ask" };
+        },
+        async put() {
+          return { read: "allow", change: "ask", delete: "ask" };
+        },
+      },
       async list() {
         return [];
       },

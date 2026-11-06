@@ -149,6 +149,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
 
       const payload: ConnectorGrant = {
         connector: targetConnector,
+        scope: existing?.scope ?? "own",
         resource_scope: reach,
         resource_ids: reach === "these" ? ids : [],
         changes: changesPolicy,
@@ -804,6 +805,20 @@ export function ConnectorFormPage({ mode }: ConnectorFormPageProps) {
       <Stack gap="md" className="identity-page">
         <Title order={1}>Connector not found</Title>
         <Text c="dimmed">The requested connector configuration could not be located.</Text>
+        <div>
+          <Button component={Link} to="/connectors" variant="default">
+            Back to Connectors
+          </Button>
+        </div>
+      </Stack>
+    );
+  }
+
+  if (mode === "edit" && existing?.scope === "global") {
+    return (
+      <Stack gap="md" className="identity-page">
+        <Title order={1}>Global connector</Title>
+        <Text c="dimmed">This connector is shared by the workspace. Its permissions are read only here.</Text>
         <div>
           <Button component={Link} to="/connectors" variant="default">
             Back to Connectors
