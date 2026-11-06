@@ -110,6 +110,37 @@ export type ProviderAccount = {
   models: string[];
 };
 
+// Usage: GET /api/usage?days=N
+export type UsagePeriod = 7 | 30 | 90;
+
+export type UsageDay = {
+  /** Calendar day, YYYY-MM-DD. */
+  date: string;
+  /** Null when the cost of that day is not known. Never 0 for unknown. */
+  spend_usd: number | null;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  reasoning: number;
+};
+
+export type UsageTask = {
+  task_id: string;
+  goal: string;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  /** Null when the cost of the task is not known. Never 0 for unknown. */
+  cost_usd: number | null;
+};
+
+export type Usage = {
+  days: UsageDay[];
+  tasks: UsageTask[];
+};
+
 export class BrainError extends Error {
   readonly status: number;
   readonly error?: string;
@@ -251,6 +282,7 @@ export interface ApiClient {
     /** GET /api/decisions/gates */
     gates(): Promise<DecisionGate[]>;
   };
+  usage(days: UsagePeriod): Promise<Usage>;
 }
 
 export const TASKS_KEY = ["tasks"] as const;
@@ -264,6 +296,12 @@ export const TOKENS_KEY = ["tokens"] as const;
 export const CONNECTORS_KEY = ["connectors"] as const;
 export const PROVIDERS_KEY = ["providers"] as const;
 export const CHATS_KEY = ["chats"] as const;
+
+export const USAGE_KEY = ["usage"] as const;
+
+export function usageQueryKey(days: UsagePeriod) {
+  return [...USAGE_KEY, days] as const;
+}
 
 export function tasksQueryKey() {
   return TASKS_KEY;
@@ -678,6 +716,51 @@ function clock(date: Date) {
 
 function isVisibility(value: string): value is TaskVisibility {
   return value === "private" || value === "team" || value === "everyone";
+}
+
+// Usage fixtures. Days are derived from their distance to a fixed end date so a
+// longer period always contains the shorter one, with the same figures.
+const usageEnd = Date.UTC(2026, 10, 5);
+const usageDayMs = 86_400_000;
+
+function usageDayAt(offset: number): UsageDay {
+  const input = 60_000 + ((offset * 7) % 10) * 14_000;
+  const output = Math.round(input * 0.3);
+  const cacheRead = 20_000 + ((offset * 5) % 9) * 12_000;
+  const cacheWrite = Math.round(input * 0.1);
+  const cost = (input * 3 + output * 15 + cacheRead * 0.3 + cacheWrite * 3.75) / 1_000_000;
+  return {
+    date: new Date(usageEnd - offset * usageDayMs).toISOString().slice(0, 10),
+    spend_usd: offset % 9 === 3 ? null : Math.round(cost * 100) / 100,
+    input,
+    output,
+    cache_read: cacheRead,
+    cache_write: cacheWrite,
+    reasoning: Math.round(output * 0.2),
+  };
+}
+
+/** `age` is how many days ago the task last ran. */
+const usageTaskFixtures: { age: number; task: UsageTask }[] = [
+  { age: 1, task: { task_id: "weekly-review", goal: "Weekly review", input: 210_000, output: 60_000, cache_read: 150_000, cache_write: 30_000, cost_usd: 3.42 } },
+  { age: 2, task: { task_id: "draft-report", goal: "Draft the report", input: 160_000, output: 52_000, cache_read: 80_000, cache_write: 18_000, cost_usd: 2.61 } },
+  { age: 4, task: { task_id: "index-handbook", goal: "Index the handbook", input: 190_000, output: 12_000, cache_read: 40_000, cache_write: 23_000, cost_usd: null } },
+  { age: 6, task: { task_id: "board-pack", goal: "Summarise the board pack", input: 120_000, output: 34_000, cache_read: 30_000, cache_write: 14_000, cost_usd: 1.74 } },
+  { age: 12, task: { task_id: "vendor-invoices", goal: "Reconcile vendor invoices", input: 98_000, output: 21_000, cache_read: 112_000, cache_write: 9_000, cost_usd: 1.18 } },
+  { age: 20, task: { task_id: "support-triage", goal: "Triage the support requests", input: 75_000, output: 18_000, cache_read: 66_000, cache_write: 7_000, cost_usd: 0.92 } },
+  { age: 45, task: { task_id: "supplier-contracts", goal: "Review the supplier contracts", input: 240_000, output: 70_000, cache_read: 20_000, cache_write: 32_000, cost_usd: 4.05 } },
+  { age: 70, task: { task_id: "quarter-close", goal: "Prepare the quarter close pack", input: 310_000, output: 88_000, cache_read: 190_000, cache_write: 41_000, cost_usd: null } },
+];
+
+function usageFor(days: UsagePeriod): Usage {
+  const rows: UsageDay[] = [];
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    rows.push(usageDayAt(offset));
+  }
+  return {
+    days: rows,
+    tasks: usageTaskFixtures.filter((item) => item.age < days).map((item) => copy(item.task)),
+  };
 }
 
 export interface StubOptions {
@@ -1205,6 +1288,9 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         requireSettingsAccess();
         return copy(sampleGates);
       },
+    },
+    async usage(days) {
+      return usageFor(days);
     },
   };
 }
