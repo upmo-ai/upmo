@@ -20,6 +20,7 @@ const expected: Record<(typeof shellConcepts)[number], string> = {
   "action.copy": "copy",
   "action.more": "dots",
   "action.send": "arrow-up",
+  "action.download": "download",
   "object.folder": "folder",
   "object.source": "file-search",
   "object.automation": "clock-play",

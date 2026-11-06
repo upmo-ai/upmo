@@ -30,6 +30,7 @@ import {
   useWrite,
   type Approval,
 } from "../../app/api";
+import { ArtifactsTab } from "../artifacts/artifacts";
 import { ShareDialog } from "../identity/share-dialog";
 import { CaretIcon, ShellIcon } from "../../ui/icons";
 import { ApprovalAnnouncer, ApprovalCard } from "./approval-card";
@@ -232,6 +233,7 @@ export function TaskPage() {
   const [following, setFollowing] = useState(true);
   const [taskMessage, setTaskMessage] = useState("");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>("");
+  const [tab, setTab] = useState<string | null>("activity");
 
   const tasks = useQuery({
     queryKey: tasksQueryKey(),
@@ -327,7 +329,7 @@ export function TaskPage() {
 
       <div className="u-task-layout">
         <div className="task-main-col">
-          <Tabs defaultValue="activity">
+          <Tabs defaultValue="activity" onChange={setTab}>
             <Tabs.List>
               <Tabs.Tab value="activity">Activity</Tabs.Tab>
               <Tabs.Tab value="result">
@@ -338,6 +340,7 @@ export function TaskPage() {
                   </span>
                 ) : null}
               </Tabs.Tab>
+              <Tabs.Tab value="artifacts">Artifacts</Tabs.Tab>
             </Tabs.List>
 
             <Tabs.Panel value="activity" pt="md">
@@ -471,6 +474,10 @@ export function TaskPage() {
                   </section>
                 ) : null}
               </Stack>
+            </Tabs.Panel>
+
+            <Tabs.Panel value="artifacts" pt="md">
+              <ArtifactsTab key={taskId} taskId={taskId} active={tab === "artifacts"} />
             </Tabs.Panel>
           </Tabs>
         </div>

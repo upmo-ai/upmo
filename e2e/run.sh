@@ -40,4 +40,5 @@ node /src/e2e/models.mjs
 node /src/e2e/flows.mjs
 node /src/e2e/memory.mjs
 node /src/e2e/knowledge.mjs
+node /src/e2e/artifacts.mjs
 exec node /src/e2e/identity.mjs
