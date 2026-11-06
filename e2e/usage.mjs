@@ -94,6 +94,7 @@ try {
   if (!(await page.getByRole("table", { name: "Task breakdown" }).isVisible())) {
     throw new Error("task table hidden on a phone");
   }
+  await page.waitForTimeout(2000);
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );

@@ -77,7 +77,15 @@ async function identityFlow(page) {
     throw new Error("the chosen level was not granted");
   }
   await share.getByRole("button", { name: "Remove access for Noor Ali" }).waitFor();
-  await share.getByRole("radio", { name: "Everyone" }).check();
+  // The choice is saved first and the radio follows the saved value, so wait for it.
+  const everyone = share.getByRole("radio", { name: "Everyone" });
+  await everyone.click({ force: true });
+  for (let attempt = 0; attempt < 50 && !(await everyone.isChecked()); attempt += 1) {
+    await page.waitForTimeout(100);
+  }
+  if (!(await everyone.isChecked())) {
+    throw new Error("the visibility choice was not applied");
+  }
   await share.getByRole("button", { name: "Close" }).click();
   await share.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Share" }).click();
