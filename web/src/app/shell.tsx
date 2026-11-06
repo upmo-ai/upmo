@@ -80,7 +80,7 @@ function isCurrent(pathname: string, to: string) {
   if (to === "/providers") {
     return pathname === "/providers" || pathname.startsWith("/providers/");
   }
-  if (to === "/admin" || to === "/tasks") {
+  if (to === "/admin" || to === "/tasks" || to === "/knowledge") {
     return pathname === to || pathname.startsWith(`${to}/`);
   }
   return pathname === to;
@@ -125,6 +125,10 @@ function shellCrumbs(pathname: string): BreadcrumbItem[] {
 
   if (pathname.startsWith("/providers/") && pathname.endsWith("/edit")) {
     return [crumb("Workspace", "/providers"), crumb("Providers", "/providers"), { label: "Edit provider" }];
+  }
+
+  if (pathname.startsWith("/knowledge/")) {
+    return [crumb("Knowledge", "/knowledge"), { label: "Folder" }];
   }
 
   const adminSection = adminSections.find(

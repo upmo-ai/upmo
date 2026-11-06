@@ -21,6 +21,7 @@ import { EditConnectorPage, NewConnectorPage } from "../features/connectors/conn
 import { ProvidersPage } from "../features/providers/providers";
 import { EditProviderPage, NewProviderPage } from "../features/providers/provider-form";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
+import { KnowledgeFolderPage } from "../features/knowledge/folder";
 import { KnowledgePage } from "../features/knowledge/knowledge";
 import { PersonalisationPage } from "../features/memory/memory";
 import { UsagePage } from "../features/usage/usage";
@@ -130,7 +131,19 @@ const agentsRoute = createRoute({
 const knowledgeRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/knowledge",
+  component: () => <Outlet />,
+});
+
+const knowledgeIndexRoute = createRoute({
+  getParentRoute: () => knowledgeRoute,
+  path: "/",
   component: KnowledgePage,
+});
+
+const knowledgeFolderRoute = createRoute({
+  getParentRoute: () => knowledgeRoute,
+  path: "$folderId",
+  component: KnowledgeFolderPage,
 });
 
 const usageRoute = createRoute({
@@ -310,7 +323,7 @@ const routeTree = rootRoute.addChildren([
     tasksRoute.addChildren([tasksIndexRoute, taskRoute]),
     automationsRoute,
     agentsRoute,
-    knowledgeRoute,
+    knowledgeRoute.addChildren([knowledgeIndexRoute, knowledgeFolderRoute]),
     usageRoute,
     connectorsRoute.addChildren([
       connectorsIndexRoute,
