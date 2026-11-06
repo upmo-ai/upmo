@@ -268,6 +268,9 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       async gates() {
         return [];
       },
+      async list() {
+        return [];
+      },
     },
   };
 }

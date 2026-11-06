@@ -45,6 +45,14 @@ try {
   const tier = gates.getByRole("row").filter({ has: page.getByRole("cell", { name: "model-tier", exact: true }) });
   await tier.getByText("Below bar", { exact: true }).waitFor();
 
+  // UPM-51: each decision row carries its bound model and last eval.
+  await dispatch.getByText("claude-3-5-haiku", { exact: true }).waitFor();
+  await dispatch.getByText("Pass, 4 Nov 2026, 09:12 UTC", { exact: true }).waitFor();
+  await dispatch.getByText("Global", { exact: true }).waitFor();
+  const unbound = gates.getByRole("row").filter({ has: page.getByRole("cell", { name: "tool-approval", exact: true }) });
+  await unbound.getByText("No model bound", { exact: true }).waitFor();
+  await unbound.getByText("Never evaluated", { exact: true }).waitFor();
+
   // Narrow screens scroll the tables inside their own region, not the page.
   await page.setViewportSize({ width: 360, height: 800 });
   await page.getByRole("heading", { level: 1, name: "Models and routes" }).waitFor();

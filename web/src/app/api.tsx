@@ -36,9 +36,8 @@ import { createKnowledgeStub } from "../features/knowledge/stub";
 import type { KnowledgeApi } from "../features/knowledge/types";
 import { createChatsStub } from "../features/chat/stub";
 import type { Chat, ChatSummary } from "../features/chat/types";
-import { canManageSettings } from "../features/models/rules";
-import { sampleGates, sampleRoutes } from "../features/models/sample";
-import type { DecisionGate, GatewayRoute } from "../features/models/types";
+import { sampleDecisions, sampleGates, sampleRoutes } from "../features/models/sample";
+import type { DecisionBinding, DecisionGate, GatewayRoute } from "../features/models/types";
 import type { Approval, AppNotification } from "../features/notifications/types";
 import { goalProblem, messageProblem, repoProblem } from "../features/tasks/rules";
 import {
@@ -64,6 +63,8 @@ export type {
 } from "../features/knowledge/types";
 export type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 export type {
+  DecisionBinding,
+  DecisionEval,
   DecisionGate,
   GateKind,
   GateVerdict,
@@ -71,6 +72,7 @@ export type {
   RouteCapability,
   RouteDecision,
   RouteHop,
+  Scope,
 } from "../features/models/types";
 export type { Approval, AppNotification, NotificationKind } from "../features/notifications/types";
 export type { Phase, Task, TaskStatus } from "../features/tasks/types";
@@ -273,7 +275,8 @@ export interface ApiClient {
      */
     send(id: string, body: string): Promise<void>;
   };
-  // Models and routes. Both reads need settings:manage.
+  // Models and routes. Every signed-in person can read both. Each row carries
+  // scope: global rows are read-only for everyone, own rows belong to the person.
   gateway: {
     /** GET /api/gateway/routes */
     routes(): Promise<GatewayRoute[]>;
@@ -281,6 +284,11 @@ export interface ApiClient {
   decisions: {
     /** GET /api/decisions/gates */
     gates(): Promise<DecisionGate[]>;
+    /**
+     * GET /api/decisions. Every decision with the model and route it is bound
+     * to (null when unbound) and its last eval (null when never evaluated).
+     */
+    list(): Promise<DecisionBinding[]>;
   };
   usage(days: UsagePeriod): Promise<Usage>;
 }
@@ -329,6 +337,7 @@ export function providersQueryKey() {
 
 export const GATEWAY_ROUTES_KEY = ["gateway", "routes"] as const;
 export const DECISION_GATES_KEY = ["decisions", "gates"] as const;
+export const DECISIONS_KEY = ["decisions", "list"] as const;
 
 export function gatewayRoutesQueryKey() {
   return GATEWAY_ROUTES_KEY;
@@ -336,6 +345,10 @@ export function gatewayRoutesQueryKey() {
 
 export function decisionGatesQueryKey() {
   return DECISION_GATES_KEY;
+}
+
+export function decisionsQueryKey() {
+  return DECISIONS_KEY;
 }
 
 export function sessionQueryKey() {
@@ -855,13 +868,6 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     return members.filter((item) => item.role === "owner").length;
   }
 
-  /** A signed-in person without settings:manage is refused, not signed out. */
-  function requireSettingsAccess() {
-    if (!canManageSettings(actor().role)) {
-      throw new BrainError(403, "forbidden", "Needs settings access.");
-    }
-  }
-
   function mustShare(taskId: string) {
     const share = shares[taskId];
     if (!share) throw new Error("task missing");
@@ -1279,14 +1285,15 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     chats: createChatsStub(options.replyDelayMs),
     gateway: {
       async routes() {
-        requireSettingsAccess();
         return copy(sampleRoutes);
       },
     },
     decisions: {
       async gates() {
-        requireSettingsAccess();
         return copy(sampleGates);
+      },
+      async list() {
+        return copy(sampleDecisions);
       },
     },
     async usage(days) {
