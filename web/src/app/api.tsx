@@ -34,6 +34,8 @@ import type {
 } from "../features/identity/types";
 import { createKnowledgeStub } from "../features/knowledge/stub";
 import type { KnowledgeApi } from "../features/knowledge/types";
+import { createChatsStub } from "../features/chat/stub";
+import type { Chat, ChatSummary } from "../features/chat/types";
 import type { Approval, AppNotification } from "../features/notifications/types";
 import { goalProblem, messageProblem, repoProblem } from "../features/tasks/rules";
 import {
@@ -57,6 +59,7 @@ export type {
   SourceStatus,
   UrlInput,
 } from "../features/knowledge/types";
+export type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 export type { Approval, AppNotification, NotificationKind } from "../features/notifications/types";
 export type { Phase, Task, TaskStatus } from "../features/tasks/types";
 export type { NewTask, TaskEvent } from "../features/tasks/types";
@@ -213,6 +216,19 @@ export interface ApiClient {
       model?: string;
     }): Promise<TestResult>;
   };
+  chats: {
+    /** GET /api/chats, newest activity first. */
+    list(): Promise<ChatSummary[]>;
+    /** POST /api/chats. An empty chat titled "New chat". */
+    create(): Promise<ChatSummary>;
+    /** GET /api/chats/{id}. Lines are oldest first. */
+    get(id: string): Promise<Chat>;
+    /**
+     * POST /api/chats/{id} with {body}. Resolves once the line is stored (202).
+     * The assistant line is written later: read the chat again to see it.
+     */
+    send(id: string, body: string): Promise<void>;
+  };
 }
 
 export const TASKS_KEY = ["tasks"] as const;
@@ -225,6 +241,7 @@ export const TEAMS_KEY = ["teams"] as const;
 export const TOKENS_KEY = ["tokens"] as const;
 export const CONNECTORS_KEY = ["connectors"] as const;
 export const PROVIDERS_KEY = ["providers"] as const;
+export const CHATS_KEY = ["chats"] as const;
 
 export function tasksQueryKey() {
   return TASKS_KEY;
@@ -287,6 +304,14 @@ export function knowledgeSourcesQueryKey(folderId: string) {
 
 export function knowledgeSearchQueryKey(folderId: string, query: string) {
   return ["knowledge", "search", folderId, query] as const;
+}
+
+export function chatsQueryKey() {
+  return CHATS_KEY;
+}
+
+export function chatQueryKey(id: string) {
+  return ["chat", id] as const;
 }
 
 export function useWrite<TData, TVariables = void>(
@@ -621,7 +646,13 @@ function isVisibility(value: string): value is TaskVisibility {
   return value === "private" || value === "team" || value === "everyone";
 }
 
-export function createStubApi(options: { knowledgeIngestMs?: number } = {}): ApiClient {
+export interface StubOptions {
+  /** How long the stub takes to write an assistant reply, in milliseconds. */
+  replyDelayMs?: number;
+  knowledgeIngestMs?: number;
+}
+
+export function createStubApi(options: StubOptions = {}): ApiClient {
   const tasks = copy(taskFixtures);
   let notifications = copy(notificationFixtures);
   const approvals = copy(approvalFixtures);
@@ -1119,6 +1150,7 @@ export function createStubApi(options: { knowledgeIngestMs?: number } = {}): Api
         };
       },
     },
+    chats: createChatsStub(options.replyDelayMs),
   };
 }
 
