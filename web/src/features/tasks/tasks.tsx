@@ -1,7 +1,7 @@
 import { Group, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   ArtifactViewer,
   BudgetCard,
@@ -33,9 +33,12 @@ import {
 import { ShareDialog } from "../identity/share-dialog";
 import { CaretIcon, ShellIcon } from "../../ui/icons";
 import { ApprovalAnnouncer, ApprovalCard } from "./approval-card";
+import { NewTaskDialog } from "./new-task-dialog";
+import { messageMax, messageProblem } from "./rules";
 import { taskPhase, taskStatus } from "./status";
 import {
   isTaskFilter,
+  messageEventType,
   pendingResult,
   type Subtask,
   type Task,
@@ -73,6 +76,7 @@ function budgetPercent(task: Task) {
 export function TasksPage() {
   const api = useApi();
   const [filter, setFilter] = useState<TaskFilter>("All");
+  const [creating, setCreating] = useState(false);
   const tasks = useQuery({
     queryKey: tasksQueryKey(),
     queryFn: () => api.listTasks(),
@@ -87,7 +91,17 @@ export function TasksPage() {
 
   return (
     <Stack gap="md" className="task-screen">
-      <PageHeader title="Tasks" />
+      <PageHeader
+        title="Tasks"
+        actions={
+          all.length > 0 ? (
+            <Button type="button" onClick={() => setCreating(true)}>
+              New task
+            </Button>
+          ) : undefined
+        }
+      />
+      <NewTaskDialog opened={creating} onClose={() => setCreating(false)} />
       {tasks.isError ? (
         <Text role="alert" c="red">
           {tasks.error?.message ?? "Failed to load tasks."}
@@ -120,8 +134,8 @@ export function TasksPage() {
           description="Give Upmo a goal. It plans the work, does it and checks the result while you do something else."
           icon={<CaretIcon size={24} />}
           action={
-            <Button component={Link} to="/tasks">
-              Create task
+            <Button type="button" onClick={() => setCreating(true)}>
+              New task
             </Button>
           }
           firstRun
@@ -140,17 +154,7 @@ export function TasksPage() {
                     data-testid="task-status"
                   />
                 </div>
-                <div className="task-tile-meta">
-                  <span className="task-tile-cost">{task.cost ?? "€0.00"}</span>
-                  <span>·</span>
-                  <span>{task.tokens ? `${Math.round(task.tokens / 1000)}k tokens` : "0 tokens"}</span>
-                  {task.model ? (
-                    <>
-                      <span>·</span>
-                      <span>{task.model}</span>
-                    </>
-                  ) : null}
-                </div>
+                <TileMeta task={task} />
               </Link>
             </li>
           ))}
@@ -160,19 +164,43 @@ export function TasksPage() {
   );
 }
 
-const defaultTaskEvents: TaskEvent[] = [
-  { id: "de1", time: "08:00:00", phase: "Preparing", message: "Task initialized by user" },
-  { id: "de2", time: "08:00:04", phase: "Preparing", message: "Sources verified and context loaded" },
-  { id: "de3", time: "08:00:16", phase: "Planning", message: "Execution plan created" },
-  { id: "de4", time: "08:01:02", phase: "Working", message: "Started executing step 1" },
-];
+/** The figures a task has reported. A figure it has not reported is left out. */
+function TileMeta({ task }: { task: Task }) {
+  const facts: ReactNode[] = [];
+  if (task.cost) {
+    facts.push(
+      <span key="cost" className="task-tile-cost">
+        {task.cost}
+      </span>,
+    );
+  }
+  if (task.tokens) facts.push(<span key="tokens">{Math.round(task.tokens / 1000)}k tokens</span>);
+  if (task.model) facts.push(<span key="model">{task.model}</span>);
+  if (facts.length === 0) return null;
+  return (
+    <div className="task-tile-meta">
+      {facts.flatMap((fact, index) =>
+        index === 0 ? [fact] : [<span key={`dot-${index}`}>·</span>, fact],
+      )}
+    </div>
+  );
+}
+
+function isMessage(event: TaskEvent) {
+  return event.type === messageEventType;
+}
 
 function streamEvents(events: TaskEvent[], live: boolean): EventItem[] {
+  // Messages from people are not progress, so the live marker skips them.
+  let liveIndex = -1;
+  events.forEach((ev, index) => {
+    if (!isMessage(ev)) liveIndex = index;
+  });
   return events.map((ev, index) => ({
     id: ev.id,
     time: ev.time,
     status: ev.phase,
-    message: ev.message,
+    message: isMessage(ev) ? `You: ${ev.message}` : ev.message,
     detail:
       ev.detail || ev.tools
         ? [
@@ -190,7 +218,7 @@ function streamEvents(events: TaskEvent[], live: boolean): EventItem[] {
             )),
           ]
         : undefined,
-    live: live && index === events.length - 1,
+    live: live && index === liveIndex,
   }));
 }
 
@@ -214,6 +242,12 @@ export function TaskPage() {
     queryFn: () => api.approvals.list(),
   });
   const next = useWrite(() => api.nextPhase(taskId), [TASKS_KEY]);
+  // The draft is cleared when the message is sent, so anything typed while the post is in
+  // flight is a new draft. A failed post puts the unsent text back in front of it.
+  const post = useWrite((body: string) => api.postTaskMessage(taskId, body), [TASKS_KEY], {
+    shown: true,
+    onError: (_error, body) => setTaskMessage((draft) => (draft === "" ? body : `${body}\n${draft}`)),
+  });
 
   const task = tasks.data?.find((item) => item.id === taskId);
   const pending = pendingFor(approvals.data, taskId);
@@ -223,8 +257,19 @@ export function TaskPage() {
 
   const phase = taskPhase(task);
   const status = taskStatus(task, paused);
-  const advance = task.status === "Working" && pending.length === 0;
+  const working = task.status === "Working" && pending.length === 0;
+  // Checking is the last step. Upmo finishes the task when its checks pass.
+  const checking = working && task.phase === "Checking";
+  const advance = working && !checking;
   const live = task.status === "Working" && !paused;
+  const events = task.events ?? [];
+  const messages = events.filter(isMessage);
+  const messageTooLong = taskMessage.length > messageMax;
+  const send = () => {
+    if (post.isPending || messageProblem(taskMessage) !== null) return;
+    post.mutate(taskMessage.trim());
+    setTaskMessage("");
+  };
 
   const artifacts: TaskArtifact[] = task.artifacts ?? [];
   const currentArtifactId =
@@ -232,7 +277,18 @@ export function TaskPage() {
       ? selectedArtifactId
       : artifacts[0]?.id ?? "";
 
-  const budget = budgetPercent(task);
+  const budget =
+    task.cost !== undefined &&
+    task.spendLimit !== undefined &&
+    task.limitCents !== undefined &&
+    task.pausePercent !== undefined
+      ? {
+          percent: budgetPercent(task),
+          cost: task.cost,
+          limit: task.spendLimit,
+          pauseAt: task.pausePercent,
+        }
+      : null;
 
   return (
     <Stack gap="md" className="task-screen task-detail-page">
@@ -246,11 +302,11 @@ export function TaskPage() {
         title={task.title}
         status={status}
         meta={{
-          runNumber: task.runNumber ?? 14,
-          engine: task.engine ?? "Upmo",
-          model: task.model ?? "gpt-5.2",
-          startedAt: task.startedAt ?? "08:00",
-          cost: task.cost ?? "€2.10",
+          runNumber: task.runNumber,
+          engine: task.engine,
+          model: task.model,
+          startedAt: task.startedAt,
+          cost: task.cost,
         }}
         detail={task.detail}
         paused={paused}
@@ -259,6 +315,13 @@ export function TaskPage() {
         onNextPhase={() => next.mutate()}
         onShare={() => setShareOpen(true)}
       />
+
+      {checking ? (
+        <Text size="sm" c="dimmed" data-testid="next-phase-note">
+          Next phase is off because Checking is the last step. Upmo marks the task Done when its checks
+          pass, so there is nothing for you to advance.
+        </Text>
+      ) : null}
 
       <ShareDialog opened={shareOpen} task={task} onClose={() => setShareOpen(false)} />
 
@@ -306,17 +369,37 @@ export function TaskPage() {
                     </Stack>
                   ) : null}
 
+                  {messages.length > 0 ? (
+                    <Stack gap="xs" mt="md">
+                      <Title order={2}>Messages</Title>
+                      <ul className="task-messages" aria-label="Messages">
+                        {messages.map((message) => (
+                          <li key={message.id} className="task-message">
+                            <time className="task-message-time">{message.time}</time>
+                            <span className="task-message-body">{message.message}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </Stack>
+                  ) : null}
+
                   <div className="task-composer">
                     <Textarea
                       minRows={2}
                       placeholder="Message this task…"
                       aria-label="Message this task"
+                      aria-invalid={messageTooLong}
                       value={taskMessage}
-                      onChange={(e) => setTaskMessage(e.currentTarget.value)}
+                      onChange={(e) => {
+                        setTaskMessage(e.currentTarget.value);
+                        if (post.isError) post.reset();
+                      }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
+                        // Enter confirms an IME candidate; it must not send the message.
+                        // Enter confirms an IME candidate; it must not send the message.
+                        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                           e.preventDefault();
-                          if (taskMessage.trim()) setTaskMessage("");
+                          send();
                         }
                       }}
                     />
@@ -328,23 +411,37 @@ export function TaskPage() {
                         size="sm"
                         variant="filled"
                         aria-label="Send message"
-                        disabled={!taskMessage.trim()}
-                        onClick={() => {
-                          if (taskMessage.trim()) setTaskMessage("");
-                        }}
+                        disabled={messageProblem(taskMessage) !== null || post.isPending}
+                        onClick={send}
                       >
                         <ShellIcon concept="action.send" size={16} />
                       </IconButton>
                     </div>
+                    {messageTooLong ? (
+                      <Text size="xs" c="red" role="alert">
+                        {messageProblem(taskMessage)}
+                      </Text>
+                    ) : null}
+                    {post.isError ? (
+                      <Text size="xs" c="red" role="alert">
+                        {post.error.message}
+                      </Text>
+                    ) : null}
                   </div>
                 </div>
               ) : (
-                <EventStream
-                  className="task-events"
-                  events={streamEvents(task.events ?? defaultTaskEvents, live)}
-                  following={following}
-                  onFollowChange={setFollowing}
-                />
+                events.length > 0 ? (
+                  <EventStream
+                    className="task-events"
+                    events={streamEvents(events, live)}
+                    following={following}
+                    onFollowChange={setFollowing}
+                  />
+                ) : (
+                  <Text className="task-events" c="dimmed">
+                    No events yet.
+                  </Text>
+                )
               )}
             </Tabs.Panel>
 
@@ -379,33 +476,40 @@ export function TaskPage() {
         </div>
 
         <aside className="u-task-side">
-          <BudgetCard
-            percent={budget}
-            cost={task.cost ?? "€2.10"}
-            limit={task.spendLimit ?? "€5.00"}
-            tokens={task.tokens ?? 38000}
-            pauseAt={task.pausePercent ?? 90}
-            // A full page load is expected until the design system offers a router-aware link.
-            usageHref="/usage"
-          />
+          {budget ? (
+            <BudgetCard
+              percent={budget.percent}
+              cost={budget.cost}
+              limit={budget.limit}
+              tokens={task.tokens}
+              pauseAt={budget.pauseAt}
+              // A full page load is expected until the design system offers a router-aware link.
+              usageHref="/usage"
+            />
+          ) : (
+            <div className="u-card task-side-card">
+              <h4 className="task-side-card-title">Budget</h4>
+              <Text size="sm">Spent: {task.cost ?? "Unknown"}</Text>
+              <Text size="sm">Limit: {task.spendLimit ?? "Unknown"}</Text>
+            </div>
+          )}
 
-          <DeliveryCard
-            channel={task.deliveryChannel ?? "#finance on Slack"}
-            when={task.deliveryWhen ?? "After the task is done"}
-          />
+          {task.deliveryChannel ? (
+            <DeliveryCard channel={task.deliveryChannel} when={task.deliveryWhen ?? "Unknown"} />
+          ) : null}
 
-          <div className="u-card task-side-card">
-            <h4 className="task-side-card-title">Sources</h4>
-            <div className="task-sources-chips">
-              {(task.sources ?? ["Finance mailbox", "finance-policies", "vendor-contracts"]).map(
-                (src) => (
+          {task.sources && task.sources.length > 0 ? (
+            <div className="u-card task-side-card">
+              <h4 className="task-side-card-title">Sources</h4>
+              <div className="task-sources-chips">
+                {task.sources.map((src) => (
                   <span key={src} className="u-chip task-source-chip">
                     {src}
                   </span>
-                ),
-              )}
+                ))}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           {task.runHistory && task.runHistory.length > 0 ? (
             <div className="u-card task-side-card">

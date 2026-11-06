@@ -42,6 +42,16 @@ export interface TaskEvent {
   tools?: TaskToolCall[];
 }
 
+/** The event type of a message a person posted to the task. */
+export const messageEventType = "message";
+
+/** What the backend answers when a task is opened: 201 {id, status, goal}. */
+export interface NewTask {
+  id: string;
+  status: Phase;
+  goal: string;
+}
+
 export interface TaskRunHistory {
   run: number;
   status: TaskStatus;

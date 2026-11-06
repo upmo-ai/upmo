@@ -35,7 +35,15 @@ import type {
 import { createKnowledgeStub } from "../features/knowledge/stub";
 import type { KnowledgeApi } from "../features/knowledge/types";
 import type { Approval, AppNotification } from "../features/notifications/types";
-import { phases, type Phase, type Task } from "../features/tasks/types";
+import { goalProblem, messageProblem, repoProblem } from "../features/tasks/rules";
+import {
+  messageEventType,
+  phases,
+  type NewTask,
+  type Phase,
+  type Task,
+  type TaskEvent,
+} from "../features/tasks/types";
 
 export type {
   FileInput,
@@ -51,6 +59,7 @@ export type {
 } from "../features/knowledge/types";
 export type { Approval, AppNotification, NotificationKind } from "../features/notifications/types";
 export type { Phase, Task, TaskStatus } from "../features/tasks/types";
+export type { NewTask, TaskEvent } from "../features/tasks/types";
 export type {
   ApiToken,
   CreatedToken,
@@ -110,6 +119,16 @@ export interface ApiClient {
   listNotifications(): Promise<AppNotification[]>;
   approveNotification(id: string): Promise<void>;
   nextPhase(taskId: string): Promise<Task>;
+  /**
+   * POST /api/tasks {goal, repo?, tool_classes?} answers 201 {id, status, goal}.
+   * 503 when the task needs a sandbox and none is configured.
+   */
+  createTask(goal: string, repo?: string): Promise<NewTask>;
+  /**
+   * POST /api/tasks/{id} {kind: "chat", body}. The message shows up as a task
+   * event of type "message".
+   */
+  postTaskMessage(taskId: string, body: string): Promise<TaskEvent>;
   approvals: {
     list(): Promise<Approval[]>;
     approve(id: string): Promise<Approval>;
@@ -462,6 +481,14 @@ REC-002,Software,€49.00
 REC-003,Meals,€32.00`,
       },
     ],
+    events: [
+      { id: "ed1", time: "07:30:00", phase: "Preparing", message: "Task started by you" },
+      { id: "ed2", time: "07:30:04", phase: "Preparing", message: "Files ready: 1 source read", detail: ["Receipts folder"] },
+      { id: "ed3", time: "07:30:16", phase: "Planning", message: "Plan written: 2 steps", detail: ["1. Read each receipt", "2. File it under its category"] },
+      { id: "ed4", time: "07:31:02", phase: "Working", message: "Step 1 of 2 · Read each receipt" },
+      { id: "ed5", time: "07:32:10", phase: "Working", message: "Artifact saved: receipts-filed.csv" },
+      { id: "ed6", time: "07:32:40", phase: "Checking", message: "Checks passed: 3 of 3 receipts filed" },
+    ],
   },
   {
     id: "aster-failed",
@@ -484,6 +511,13 @@ REC-003,Meals,€32.00`,
     deliveryWhen: "On error",
     sources: ["Ledger database"],
     runHistory: [{ run: 4, status: "Done" }],
+    events: [
+      { id: "ef1", time: "06:00:00", phase: "Preparing", message: "Task started by an automation" },
+      { id: "ef2", time: "06:00:05", phase: "Preparing", message: "Files ready: 1 source read", detail: ["Ledger database"] },
+      { id: "ef3", time: "06:00:18", phase: "Planning", message: "Plan written: 3 steps", detail: ["1. Pull the week's entries", "2. Reconcile the accounts", "3. Close the period"] },
+      { id: "ef4", time: "06:01:30", phase: "Working", message: "Step 2 of 3 · Reconcile the accounts" },
+      { id: "ef5", time: "06:03:12", phase: "Checking", message: "Check failed: 2 accounts do not reconcile" },
+    ],
   },
 ];
 
@@ -562,21 +596,25 @@ function asterShare(): StoredShare {
   };
 }
 
+// Checking is the last step a person can ask for. The checks decide when a
+// task is Done, so advancing from Checking is refused, as the backend does.
 function blocked(task: Task, approvals: Approval[]) {
   if (task.status === "Needs approval" || task.status === "Done" || task.status === "Failed") {
     return true;
   }
+  if (task.phase === "Checking") return true;
   return approvals.some((item) => item.taskId === task.id && item.state === "pending");
 }
 
 function advance(task: Task) {
   const index = phases.indexOf(task.phase);
-  if (index >= 0 && index < phases.length - 1) {
-    task.phase = phases[index + 1] as Phase;
-    task.status = "Working";
-    return;
-  }
-  task.status = "Done";
+  if (index < 0 || index >= phases.length - 1) return;
+  task.phase = phases[index + 1] as Phase;
+  task.status = "Working";
+}
+
+function clock(date: Date) {
+  return date.toTimeString().slice(0, 8);
 }
 
 function isVisibility(value: string): value is TaskVisibility {
@@ -758,6 +796,45 @@ export function createStubApi(options: { knowledgeIngestMs?: number } = {}): Api
       if (!task) throw new Error("task missing");
       if (!blocked(task, approvals)) advance(task);
       return copy(task);
+    },
+    async createTask(goal, repo) {
+      const problem = goalProblem(goal.trim()) ?? (repo ? repoProblem(repo) : null);
+      if (problem) throw new Error(problem);
+      const title = goal.trim();
+      const source = repo?.trim();
+      const id = nextId("task");
+      const task: Task = {
+        id,
+        title,
+        status: "Working",
+        phase: "Preparing",
+        result: "",
+        detail: title,
+        events: [{ id: nextId("event"), time: clock(new Date()), phase: "Preparing", message: "Task started by you" }],
+        ...(source ? { sources: [source] } : {}),
+      };
+      tasks.unshift(task);
+      shares[id] = {
+        visibility: "private",
+        teamId: null,
+        people: [{ memberId: currentMemberId, level: "owner" }],
+      };
+      return { id, status: task.phase, goal: title };
+    },
+    async postTaskMessage(taskId, body) {
+      const problem = messageProblem(body);
+      if (problem) throw new Error(problem);
+      const task = tasks.find((item) => item.id === taskId);
+      if (!task) throw new Error("task missing");
+      const event: TaskEvent = {
+        id: nextId("event"),
+        time: clock(new Date()),
+        phase: task.phase,
+        type: messageEventType,
+        message: body.trim(),
+      };
+      task.events = [...(task.events ?? []), event];
+      return copy(event);
     },
     approvals: {
       async list() {
