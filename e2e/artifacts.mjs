@@ -102,7 +102,7 @@ try {
   // A kind with no viewer is a download.
   await list.getByRole("button", { name: "invoice-bundle.zip", exact: true }).click();
   const bundle = page.getByRole("region", { name: "invoice-bundle.zip" });
-  await bundle.getByText("There is no preview for this kind of file.", { exact: false }).waitFor();
+  await bundle.getByText("There is no preview for this kind of file", { exact: false }).waitFor();
   await bundle.getByRole("link", { name: "Download invoice-bundle.zip" }).waitFor();
 
   // The row action downloads the file.
