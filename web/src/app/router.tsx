@@ -23,6 +23,7 @@ import { EditProviderPage, NewProviderPage } from "../features/providers/provide
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
 import { KnowledgeFolderPage } from "../features/knowledge/folder";
 import { KnowledgePage } from "../features/knowledge/knowledge";
+import { ModelsPage } from "../features/models/models";
 import { PersonalisationPage } from "../features/memory/memory";
 import { UsagePage } from "../features/usage/usage";
 import { PrivacyPage, TermsPage } from "./legal";
@@ -280,6 +281,12 @@ const settingsProvidersRoute = createRoute({
   },
 });
 
+const settingsModelsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "models",
+  component: ModelsPage,
+});
+
 const adminRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/admin",
@@ -346,6 +353,7 @@ const routeTree = rootRoute.addChildren([
       settingsTokensRoute,
       settingsConnectorsRoute,
       settingsProvidersRoute,
+      settingsModelsRoute,
     ]),
     adminRoute.addChildren([
       adminIndexRoute,

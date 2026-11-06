@@ -92,7 +92,7 @@ const signedOut: CurrentUser = {
   offerDismissed: false,
 };
 
-function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers" | "knowledge" | "createTask" | "postTaskMessage"> {
+function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers" | "knowledge" | "createTask" | "postTaskMessage" | "gateway" | "decisions"> {
   const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
   const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
   const share = (taskId: string): TaskShare => ({
@@ -239,6 +239,16 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       },
     },
     knowledge: createStubApi().knowledge,
+    gateway: {
+      async routes() {
+        return [];
+      },
+    },
+    decisions: {
+      async gates() {
+        return [];
+      },
+    },
   };
 }
 
@@ -292,9 +302,10 @@ describe("app shell", () => {
       "Usage",
       "Providers",
       "Connectors",
+      "Models and routes",
     ]);
     const workspace = within(sidebar()).getByRole("group", { name: "Workspace" });
-    expect(linkLabels(workspace)).toEqual(["Providers", "Connectors"]);
+    expect(linkLabels(workspace)).toEqual(["Providers", "Connectors", "Models and routes"]);
     const management = within(sidebar()).getByRole("button", { name: "Management" });
     expect(management.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("link", { name: "Members" })).toBeNull();

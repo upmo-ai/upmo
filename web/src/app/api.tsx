@@ -36,6 +36,9 @@ import { createKnowledgeStub } from "../features/knowledge/stub";
 import type { KnowledgeApi } from "../features/knowledge/types";
 import { createChatsStub } from "../features/chat/stub";
 import type { Chat, ChatSummary } from "../features/chat/types";
+import { canManageSettings } from "../features/models/rules";
+import { sampleGates, sampleRoutes } from "../features/models/sample";
+import type { DecisionGate, GatewayRoute } from "../features/models/types";
 import type { Approval, AppNotification } from "../features/notifications/types";
 import { goalProblem, messageProblem, repoProblem } from "../features/tasks/rules";
 import {
@@ -60,6 +63,15 @@ export type {
   UrlInput,
 } from "../features/knowledge/types";
 export type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
+export type {
+  DecisionGate,
+  GateKind,
+  GateVerdict,
+  GatewayRoute,
+  RouteCapability,
+  RouteDecision,
+  RouteHop,
+} from "../features/models/types";
 export type { Approval, AppNotification, NotificationKind } from "../features/notifications/types";
 export type { Phase, Task, TaskStatus } from "../features/tasks/types";
 export type { NewTask, TaskEvent } from "../features/tasks/types";
@@ -229,6 +241,15 @@ export interface ApiClient {
      */
     send(id: string, body: string): Promise<void>;
   };
+  // Models and routes. Both reads need settings:manage.
+  gateway: {
+    /** GET /api/gateway/routes */
+    routes(): Promise<GatewayRoute[]>;
+  };
+  decisions: {
+    /** GET /api/decisions/gates */
+    gates(): Promise<DecisionGate[]>;
+  };
 }
 
 export const TASKS_KEY = ["tasks"] as const;
@@ -265,6 +286,17 @@ export function connectorsQueryKey() {
 
 export function providersQueryKey() {
   return PROVIDERS_KEY;
+}
+
+export const GATEWAY_ROUTES_KEY = ["gateway", "routes"] as const;
+export const DECISION_GATES_KEY = ["decisions", "gates"] as const;
+
+export function gatewayRoutesQueryKey() {
+  return GATEWAY_ROUTES_KEY;
+}
+
+export function decisionGatesQueryKey() {
+  return DECISION_GATES_KEY;
 }
 
 export function sessionQueryKey() {
@@ -738,6 +770,13 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     return members.filter((item) => item.role === "owner").length;
   }
 
+  /** A signed-in person without settings:manage is refused, not signed out. */
+  function requireSettingsAccess() {
+    if (!canManageSettings(actor().role)) {
+      throw new BrainError(403, "forbidden", "Needs settings access.");
+    }
+  }
+
   function mustShare(taskId: string) {
     const share = shares[taskId];
     if (!share) throw new Error("task missing");
@@ -1151,6 +1190,18 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       },
     },
     chats: createChatsStub(options.replyDelayMs),
+    gateway: {
+      async routes() {
+        requireSettingsAccess();
+        return copy(sampleRoutes);
+      },
+    },
+    decisions: {
+      async gates() {
+        requireSettingsAccess();
+        return copy(sampleGates);
+      },
+    },
   };
 }
 
