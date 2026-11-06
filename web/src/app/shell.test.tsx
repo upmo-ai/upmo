@@ -581,6 +581,7 @@ describe("app shell", () => {
       },
       ...identityStub(),
       chats: createStubApi().chats,
+      artifacts: createStubApi().artifacts,
       async usage() {
         return { days: [], tasks: [] };
       },
@@ -844,6 +845,7 @@ describe("app shell", () => {
       },
       ...identityStub(),
       chats: createStubApi().chats,
+      artifacts: createStubApi().artifacts,
       async usage() {
         return { days: [], tasks: [] };
       },

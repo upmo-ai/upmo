@@ -18,6 +18,7 @@ export const shellConcepts = [
   "action.copy",
   "action.more",
   "action.send",
+  "action.download",
   "object.folder",
   "object.source",
   "object.automation",

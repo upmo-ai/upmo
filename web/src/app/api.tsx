@@ -31,6 +31,8 @@ import type {
   ViewRole,
   WorkspaceRole,
 } from "../features/identity/types";
+import { createArtifactsStub } from "../features/artifacts/stub";
+import type { ArtifactsApi } from "../features/artifacts/types";
 import { createKnowledgeStub } from "../features/knowledge/stub";
 import type { KnowledgeApi } from "../features/knowledge/types";
 import { createChatsStub } from "../features/chat/stub";
@@ -60,6 +62,7 @@ export type {
   SourceStatus,
   UrlInput,
 } from "../features/knowledge/types";
+export type { ArtifactKind, ArtifactRecord, ArtifactsApi } from "../features/artifacts/types";
 export type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 export type {
   DecisionBinding,
@@ -324,6 +327,9 @@ export interface ApiClient {
     list(): Promise<DecisionBinding[]>;
   };
   usage(days: UsagePeriod): Promise<Usage>;
+
+  /** Files a task produced: GET /api/tasks/{id}/artifacts and GET /api/artifacts/{id}/download. */
+  artifacts: ArtifactsApi;
 }
 
 export const TASKS_KEY = ["tasks"] as const;
@@ -433,6 +439,16 @@ export function chatsQueryKey() {
 
 export function chatQueryKey(id: string) {
   return ["chat", id] as const;
+}
+
+export const ARTIFACTS_KEY = ["artifacts"] as const;
+
+export function taskArtifactsQueryKey(taskId: string) {
+  return [...ARTIFACTS_KEY, "task", taskId] as const;
+}
+
+export function artifactTextQueryKey(id: string) {
+  return [...ARTIFACTS_KEY, "text", id] as const;
 }
 
 export function useWrite<TData, TVariables = void>(
@@ -1404,6 +1420,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     async usage(days) {
       return usageFor(days);
     },
+    artifacts: createArtifactsStub(),
   };
 }
 
