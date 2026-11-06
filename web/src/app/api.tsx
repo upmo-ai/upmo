@@ -96,9 +96,29 @@ export type {
 
 export type ConnectorGrant = {
   connector: string;
+  /**
+   * Who owns the connector. A person manages only their own; a global
+   * (workspace) connector shows its rules read only.
+   */
+  scope: "global" | "own";
   resource_scope: "all" | "these";
   resource_ids: string[];
   changes: "allow" | "ask" | "block";
+};
+
+// Connector action rules: GET and PUT /api/connectors/{id}/rules.
+export type RulePolicy = "allow" | "ask" | "block";
+
+/** Delete is fixed at ask by the server, so it is read only here. */
+export type ConnectorRules = {
+  read: RulePolicy;
+  change: RulePolicy;
+  delete: "ask";
+};
+
+export type ConnectorRulesInput = {
+  read: RulePolicy;
+  change: RulePolicy;
 };
 
 export type ProviderAccount = {
@@ -232,6 +252,17 @@ export interface ApiClient {
     put(grant: ConnectorGrant): Promise<ConnectorGrant>;
     remove(connector: string): Promise<void>;
     test(config: { connector: string; token?: string; endpoint?: string }): Promise<TestResult>;
+    rules: {
+      /** GET /api/connectors/{id}/rules. 404 when the connector is not connected. */
+      get(connector: string): Promise<ConnectorRules>;
+      /**
+       * PUT /api/connectors/{id}/rules {read, change}. Delete is not sent: it
+       * stays at ask. 404 when the connector is not connected, 403 for a global
+       * connector, 400 for an unknown policy. A refusal is a BrainError and
+       * does not end the session.
+       */
+      put(connector: string, rules: ConnectorRulesInput): Promise<ConnectorRules>;
+    };
   };
   providers: {
     list(): Promise<ProviderAccount[]>;
@@ -329,6 +360,10 @@ export function meQueryKey() {
 
 export function connectorsQueryKey() {
   return CONNECTORS_KEY;
+}
+
+export function connectorRulesQueryKey(connector: string) {
+  return [...CONNECTORS_KEY, "rules", connector] as const;
 }
 
 export function providersQueryKey() {
@@ -806,17 +841,56 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
   const connectorGrants: ConnectorGrant[] = [
     {
       connector: "github",
+      scope: "own",
       resource_scope: "all",
       resource_ids: [],
       changes: "ask",
     },
     {
       connector: "slack",
+      scope: "own",
       resource_scope: "these",
       resource_ids: ["#general", "#engineering"],
       changes: "allow",
     },
+    {
+      connector: "google-drive",
+      scope: "global",
+      resource_scope: "all",
+      resource_ids: [],
+      changes: "ask",
+    },
   ];
+  // The stored read rule per connector. The change rule is the grant's own
+  // changes policy, so the card and the rules never disagree. A connector with
+  // no stored read rule reads as the server decides it: allowed.
+  const connectorReadRules = new Map<string, RulePolicy>([["github", "allow"]]);
+  const connectorSlug = /^[a-z][a-z0-9-]{0,63}$/;
+  const rulePolicies: readonly string[] = ["allow", "ask", "block"];
+
+  function connectorGrantFor(connector: string): ConnectorGrant {
+    if (!connectorSlug.test(connector)) throw new BrainError(400, "bad_request", "Unknown connector.");
+    const grant = connectorGrants.find((item) => item.connector === connector);
+    if (!grant) throw new BrainError(404, "not_found", "That connector is not connected.");
+    return grant;
+  }
+
+  function connectorRulesFor(connector: string): ConnectorRules {
+    const grant = connectorGrantFor(connector);
+    return {
+      read: connectorReadRules.get(connector) ?? "allow",
+      change: grant.changes,
+      delete: "ask",
+    };
+  }
+
+  function ownConnectorFor(connector: string): ConnectorGrant {
+    const grant = connectorGrantFor(connector);
+    if (grant.scope === "global") {
+      throw new BrainError(403, "forbidden", "Global connectors are managed by the workspace.");
+    }
+    return grant;
+  }
   const providerAccounts: ProviderAccount[] = [
     {
       id: "provider-anthropic",
@@ -1208,7 +1282,9 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       },
       async put(grant) {
         const index = connectorGrants.findIndex((item) => item.connector === grant.connector);
-        const saved = copy(grant);
+        if (index >= 0) ownConnectorFor(grant.connector);
+        // A person can only create or change their own connectors.
+        const saved: ConnectorGrant = { ...copy(grant), scope: "own" };
         if (index >= 0) {
           connectorGrants[index] = saved;
         } else {
@@ -1219,8 +1295,24 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async remove(connector) {
         const index = connectorGrants.findIndex((item) => item.connector === connector);
         if (index >= 0) {
+          ownConnectorFor(connector);
           connectorGrants.splice(index, 1);
         }
+        connectorReadRules.delete(connector);
+      },
+      rules: {
+        async get(connector) {
+          return connectorRulesFor(connector);
+        },
+        async put(connector, input) {
+          const grant = ownConnectorFor(connector);
+          if (!rulePolicies.includes(input.read) || !rulePolicies.includes(input.change)) {
+            throw new BrainError(400, "bad_request", "Choose allow, ask or block.");
+          }
+          connectorReadRules.set(connector, input.read);
+          grant.changes = input.change;
+          return connectorRulesFor(connector);
+        },
       },
       async test(config) {
         if (!config.connector) {
