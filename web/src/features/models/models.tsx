@@ -15,34 +15,30 @@ import {
 
 import {
   decisionGatesQueryKey,
+  decisionsQueryKey,
   gatewayRoutesQueryKey,
-  sessionQueryKey,
   useApi,
+  type DecisionBinding,
   type DecisionGate,
   type GatewayRoute,
+  type Scope,
 } from "../../app/api";
 import { ShellIcon } from "../../ui/icons";
-import {
-  canManageSettings,
-  formatUpdated,
-  gatePercent,
-  meetsBar,
-  needsSettingsAccessBody,
-  needsSettingsAccessTitle,
-  shortFingerprint,
-} from "./rules";
+import { decisionRows, formatUpdated, gatePercent, meetsBar, shortFingerprint, type DecisionRow } from "./rules";
 
 import "./models.css";
 
-/** The server refuses with 401 or 403 when the person lacks settings:manage. */
-function isAccessRefusal(error: unknown): boolean {
-  if (!error || typeof error !== "object" || !("status" in error)) return false;
-  const status = (error as { status: unknown }).status;
-  return status === 401 || status === 403;
-}
-
 function sentence(word: string): string {
   return word === "" ? word : word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/** Global rows are read-only for everyone. */
+function ScopeBadge({ scope }: { scope: Scope }) {
+  return (
+    <Badge variant="light" size="sm" radius="xl">
+      {scope === "global" ? "Global" : "Own"}
+    </Badge>
+  );
 }
 
 function HopsCell({
@@ -152,6 +148,7 @@ function RoutesTable({ routes }: { routes: GatewayRoute[] }) {
         <HopsCell route={route} open={opened.has(route.name)} onToggle={() => toggle(route.name)} />
       ),
     },
+    { key: "scope", header: "Scope", render: (route) => <ScopeBadge scope={route.scope} /> },
   ];
 
   return (
@@ -218,96 +215,158 @@ function Fingerprint({ gate }: { gate: DecisionGate }) {
   );
 }
 
-function GatesTable({ gates }: { gates: DecisionGate[] }) {
-  const columns: DataTableColumn<DecisionGate>[] = [
-    { key: "route", header: "Route", mono: true, render: (gate) => gate.route },
-    { key: "kind", header: "Kind", render: (gate) => gate.kind },
+function Missing({ children }: { children: string }) {
+  return (
+    <Text size="sm" c="dimmed">
+      {children}
+    </Text>
+  );
+}
+
+function BoundModel({ binding }: { binding: DecisionBinding | null }) {
+  if (binding === null) return <Missing>No model bound</Missing>;
+  // A route can carry the decision without a model of its own.
+  const route =
+    binding.route !== null && (binding.model === null || binding.route !== binding.decision) ? binding.route : null;
+  if (binding.model === null && route === null) return <Missing>No model bound</Missing>;
+  return (
+    <Stack gap={0}>
+      {binding.model === null ? (
+        <Missing>No model bound</Missing>
+      ) : (
+        <Text size="sm" ff="monospace">
+          {binding.model}
+        </Text>
+      )}
+      {route !== null ? (
+        <Text size="xs" c="dimmed">{`via route ${route}`}</Text>
+      ) : null}
+    </Stack>
+  );
+}
+
+function LastEval({ binding }: { binding: DecisionBinding | null }) {
+  // A gate with no decision bound to it has no eval to report, so say so
+  // rather than claim it was never evaluated.
+  if (binding === null) return <Missing>No decision bound</Missing>;
+  const last = binding.last_eval;
+  if (last === null) return <Missing>Never evaluated</Missing>;
+  const when = formatUpdated(last.at);
+  return (
+    <Text size="sm">
+      {sentence(last.verdict)}
+      {", "}
+      {when === "" ? "date unknown" : <time dateTime={last.at}>{when}</time>}
+    </Text>
+  );
+}
+
+function GatesTable({
+  rows,
+  gatesLoaded,
+  bindingsLoaded,
+}: {
+  rows: DecisionRow[];
+  gatesLoaded: boolean;
+  bindingsLoaded: boolean;
+}) {
+  // A gate that failed to load is not the same as a decision with no gate.
+  const noGate = (fallback: string) => <Missing>{gatesLoaded ? fallback : "Not loaded"}</Missing>;
+  const columns: DataTableColumn<DecisionRow>[] = [
+    { key: "decision", header: "Decision", mono: true, render: (row) => row.decision },
+    {
+      key: "kind",
+      header: "Kind",
+      render: (row) => (row.gate ? row.gate.kind : noGate("None")),
+    },
     {
       key: "fingerprint",
       header: "Fingerprint",
       mono: true,
-      render: (gate) => <Fingerprint gate={gate} />,
+      render: (row) => (row.gate ? <Fingerprint gate={row.gate} /> : noGate("None")),
     },
-    { key: "verdict", header: "Verdict", render: (gate) => sentence(gate.verdict) },
+    {
+      key: "verdict",
+      header: "Verdict",
+      render: (row) => (row.gate ? sentence(row.gate.verdict) : noGate("No gate yet")),
+    },
     {
       key: "score",
       header: "Score",
       numeric: true,
-      render: (gate) => `${gate.hit} / ${gate.total} (${gatePercent(gate)}%)`,
+      render: (row) =>
+        row.gate ? `${row.gate.hit} / ${row.gate.total} (${gatePercent(row.gate)}%)` : noGate("None"),
     },
-    { key: "bar", header: "Bar", numeric: true, render: (gate) => `${gate.bar}%` },
+    {
+      key: "bar",
+      header: "Bar",
+      numeric: true,
+      render: (row) => (row.gate ? `${row.gate.bar}%` : noGate("None")),
+    },
     {
       key: "updated",
       header: "Updated",
-      render: (gate) => <time dateTime={gate.updated_at}>{formatUpdated(gate.updated_at)}</time>,
+      render: (row) =>
+        row.gate ? (
+          <time dateTime={row.gate.updated_at}>{formatUpdated(row.gate.updated_at)}</time>
+        ) : (
+          noGate("None")
+        ),
     },
-    { key: "against", header: "Against the bar", render: (gate) => <BarBadge gate={gate} /> },
+    {
+      key: "against",
+      header: "Against the bar",
+      render: (row) => (row.gate ? <BarBadge gate={row.gate} /> : noGate("None")),
+    },
+    {
+      key: "model",
+      header: "Bound model",
+      render: (row) => (bindingsLoaded ? <BoundModel binding={row.binding} /> : <Missing>Not loaded</Missing>),
+    },
+    {
+      key: "last-eval",
+      header: "Last eval",
+      render: (row) => (bindingsLoaded ? <LastEval binding={row.binding} /> : <Missing>Not loaded</Missing>),
+    },
+    { key: "scope", header: "Scope", render: (row) => <ScopeBadge scope={row.scope} /> },
   ];
 
   return (
     <DataTable
       aria-label="Decision gates"
-      caption="A decide route changes model only when its gate reaches the bar."
-      minWidth={920}
+      caption="Each decision with the model it is bound to and its last eval. A decide route changes model only when its gate reaches the bar."
+      minWidth={1260}
       columns={columns}
-      rows={gates}
-      rowKey={(gate) => gate.route}
+      rows={rows}
+      rowKey={(row) => row.key}
     />
   );
 }
 
 export function ModelsPage() {
   const api = useApi();
-  const session = useQuery({ queryKey: sessionQueryKey(), queryFn: () => api.session.get() });
-  const allowed = session.data ? canManageSettings(session.data.view) : false;
 
   const routes = useQuery({
     queryKey: gatewayRoutesQueryKey(),
     queryFn: () => api.gateway.routes(),
-    enabled: allowed,
   });
   const gates = useQuery({
     queryKey: decisionGatesQueryKey(),
     queryFn: () => api.decisions.gates(),
-    enabled: allowed,
+  });
+  const decisions = useQuery({
+    queryKey: decisionsQueryKey(),
+    queryFn: () => api.decisions.list(),
   });
 
-  const header = (
-    <PageHeader
-      title="Models and routes"
-      description="How Upmo reaches models, and whether each decision gate holds its bar. Read only."
-    />
-  );
-
-  if (session.isPending) {
-    return (
-      <Stack gap="lg" className="models-page">
-        {header}
-        <Text c="dimmed" role="status">
-          Loading
-        </Text>
-      </Stack>
-    );
-  }
-
-  const refused = !allowed || isAccessRefusal(routes.error) || isAccessRefusal(gates.error);
-  if (refused) {
-    return (
-      <Stack gap="lg" className="models-page">
-        {header}
-        <EmptyState
-          title={needsSettingsAccessTitle}
-          description={needsSettingsAccessBody}
-          icon={<ShellIcon concept="nav.settings" size={24} />}
-          headingLevel={2}
-        />
-      </Stack>
-    );
-  }
+  const rows = decisionRows(decisions.data ?? [], gates.data ?? []);
 
   return (
     <Stack gap="lg" className="models-page">
-      {header}
+      <PageHeader
+        title="Models and routes"
+        description="How Upmo reaches models, and whether each decision gate holds its bar. Read only."
+      />
 
       <Stack gap="sm" component="section" aria-labelledby="models-routes-heading">
         <Title order={2} id="models-routes-heading">
@@ -334,20 +393,22 @@ export function ModelsPage() {
         <Title order={2} id="models-gates-heading">
           Decision gates
         </Title>
-        {gates.isError ? (
-          <StatusAlert tone="critical">Decision gates could not be loaded.</StatusAlert>
-        ) : gates.isPending ? (
+        {gates.isError ? <StatusAlert tone="critical">Decision gates could not be loaded.</StatusAlert> : null}
+        {decisions.isError ? (
+          <StatusAlert tone="critical">Decision bindings could not be loaded.</StatusAlert>
+        ) : null}
+        {gates.isPending || decisions.isPending ? (
           <Text c="dimmed" role="status">
             Loading decision gates
           </Text>
-        ) : gates.data.length === 0 ? (
+        ) : rows.length > 0 ? (
+          <GatesTable rows={rows} gatesLoaded={!gates.isError} bindingsLoaded={!decisions.isError} />
+        ) : gates.isError || decisions.isError ? null : (
           <EmptyState
             title="No decision gates yet"
             description="A gate shows up here once a decide route passes its labelled test."
             icon={<ShellIcon concept="nav.settings" size={24} />}
           />
-        ) : (
-          <GatesTable gates={gates.data} />
         )}
       </Stack>
     </Stack>
