@@ -8,6 +8,7 @@ import {
   IconLogout,
   IconMoon,
   IconPlug,
+  IconRoute,
   IconSelector,
   IconServer,
   IconShieldCheck,
@@ -33,6 +34,7 @@ import { sessionQueryKey, useApi } from "./api";
 import { PasskeyOffer } from "../features/identity/passkey-offer";
 import { NotificationsBell } from "../features/notifications/bell";
 import { TasksLiveness } from "../features/tasks/liveness";
+import { canManageSettings } from "../features/models/rules";
 import { adminSections, settingsSections } from "../features/settings/settings";
 import { WorkspaceName, workspaceName } from "../features/workspaces/workspace";
 import { ThemeSwitch, useThemeChoice } from "../theme";
@@ -115,6 +117,10 @@ function shellCrumbs(pathname: string): BreadcrumbItem[] {
     ];
   }
 
+  if (pathname === "/settings/models") {
+    return [crumb("Workspace", "/settings/models"), { label: "Models and routes" }];
+  }
+
   if (pathname === "/providers") {
     return [crumb("Workspace", "/providers"), { label: "Providers" }];
   }
@@ -159,6 +165,7 @@ type ShellUser = {
   initials: string;
   roleName: string;
   management: boolean;
+  settings: boolean;
 };
 
 function ShellHeader() {
@@ -173,7 +180,15 @@ function ShellHeader() {
   );
 }
 
-function ShellNavigation({ pathname, management }: { pathname: string; management: boolean }) {
+function ShellNavigation({
+  pathname,
+  management,
+  settings,
+}: {
+  pathname: string;
+  management: boolean;
+  settings: boolean;
+}) {
   const { rail } = useAppFrame();
   const inAdmin = underAdmin(pathname);
   const [managementOpened, setManagementOpened] = useState(inAdmin);
@@ -209,6 +224,15 @@ function ShellNavigation({ pathname, management }: { pathname: string; managemen
             active={isCurrent(pathname, item.to)}
           />
         ))}
+        {settings ? (
+          <NavItem
+            label="Models and routes"
+            icon={<IconRoute size={16} stroke={1.75} aria-hidden="true" />}
+            component={Link}
+            linkProps={{ to: "/settings/models" }}
+            active={isCurrent(pathname, "/settings/models")}
+          />
+        ) : null}
       </NavSection>
       {management ? (
         <NavSection>
@@ -430,6 +454,7 @@ export function Shell() {
         .toUpperCase() || "U",
     roleName: userRole.charAt(0).toUpperCase() + userRole.slice(1),
     management: userRole === "owner" || userRole === "admin",
+    settings: canManageSettings(userRole),
   };
 
   const failedMutations = useMutationState({
@@ -472,7 +497,7 @@ export function Shell() {
       fill={fillMain}
       mainClassName={fillMain ? "shell-main-fill" : undefined}
       header={<ShellHeader />}
-      navigation={<ShellNavigation pathname={pathname} management={user.management} />}
+      navigation={<ShellNavigation pathname={pathname} management={user.management} settings={user.settings} />}
       topBar={<ShellTopBar pathname={pathname} />}
       footer={<ShellFooter user={user} />}
     >

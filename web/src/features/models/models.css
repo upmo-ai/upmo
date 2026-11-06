@@ -1,0 +1,37 @@
+.models-page {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+.models-hops[hidden] {
+  display: none;
+}
+
+.models-hops {
+  min-width: 0;
+  width: 100%;
+}
+
+.models-bar-met {
+  background-color: var(--emerald-soft);
+  color: var(--emerald-deep);
+}
+
+.models-bar-missed {
+  background-color: var(--danger-soft);
+  color: var(--danger);
+}
+
+.models-fingerprint {
+  font: inherit;
+}
+
+.models-fingerprint-full {
+  max-width: min(32rem, calc(100vw - 2rem));
+}
+
+.models-fingerprint-text {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
