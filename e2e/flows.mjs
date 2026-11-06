@@ -162,7 +162,7 @@ async function taskFlow(page, { checkBadges, theme }) {
   await page.getByRole("link", { name: "Tasks", exact: true }).click();
   await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
   await page.getByRole("link", { name: "Daily finance digest" }).waitFor();
-  await settleText(page.getByTestId("task-count"), "4 tasks");
+  await settleText(page.getByTestId("task-count"), "5 tasks");
   if (checkBadges) await expectBadgesFullyVisible(page);
 
   await chooseFilter(page, "Needs approval");
@@ -246,6 +246,50 @@ async function newTaskFlow(page) {
   );
 }
 
+// The task page renders the preparing block from the payload: the ordered steps
+// while the task prepares, a failed probe with its message, then a summary.
+async function preparingFlow(page) {
+  await signIn(page);
+  await page.getByRole("link", { name: "Tasks", exact: true }).click();
+  await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
+
+  await page.getByRole("link", { name: "Fix the flaky login test" }).click();
+  await page.getByRole("heading", { level: 1, name: "Fix the flaky login test" }).waitFor();
+  const failed = page.getByRole("list", { name: "Preparation steps" });
+  await failed.waitFor();
+  const order = await failed.locator(".task-prepare-step-name").allInnerTexts();
+  if (order.join(",") !== "Clone,Toolchain,Probe") {
+    throw new Error(`steps out of order: ${order.join(",")}`);
+  }
+  const states = await failed.locator(".task-prepare-step-state").allInnerTexts();
+  if (states.join(",") !== "Done,Done,Failed") {
+    throw new Error(`unexpected step states: ${states.join(",")}`);
+  }
+  await failed.getByRole("alert").getByText("The work directory is not writable.").waitFor();
+  const settings = page.getByRole("region", { name: "Runtime settings" });
+  for (const shown of ["Kata", "upmo-ai/upmo", "node 24", "4 GB", "30 min"]) {
+    await settings.getByText(shown, { exact: true }).waitFor();
+  }
+
+  await page.getByRole("link", { name: "Tasks", exact: true }).click();
+  await page.getByRole("link", { name: "Mail triage" }).first().click();
+  await page.getByRole("heading", { level: 1, name: "Mail triage" }).waitFor();
+  const running = page.getByRole("list", { name: "Preparation steps" });
+  await running.waitFor();
+  const progress = await running.locator(".task-prepare-step-state").allInnerTexts();
+  if (progress.join(",") !== "Done,Running,Waiting") {
+    throw new Error(`unexpected step states: ${progress.join(",")}`);
+  }
+
+  await page.getByRole("button", { name: "Next phase" }).click();
+  await running.waitFor({ state: "hidden" });
+  await page.getByRole("heading", { level: 2, name: "Prepared" }).waitFor();
+  const summary = await page.getByTestId("preparing-summary").innerText();
+  if (summary !== "The workspace was ready in 5.4 s.") {
+    throw new Error(`unexpected preparing summary: ${summary}`);
+  }
+}
+
 const browser = await chromium.launch({
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
@@ -264,6 +308,7 @@ try {
   await page.locator("html[data-theme='dark']").waitFor();
   await taskFlow(page, { checkBadges: false, theme: "dark" });
   await newTaskFlow(page);
+  await preparingFlow(page);
 
   console.log("task flow passed");
 } finally {

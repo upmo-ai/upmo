@@ -57,6 +57,50 @@ export interface TaskRunHistory {
   status: TaskStatus;
 }
 
+export const prepareStepNames = ["clone", "toolchain", "probe"] as const;
+
+export type PrepareStepName = (typeof prepareStepNames)[number];
+
+export const prepareStepStates = ["pending", "running", "done", "failed"] as const;
+
+export type PrepareStepState = (typeof prepareStepStates)[number];
+
+/** One step of getting the sandbox ready. The backend owns the state, the page renders it. */
+export interface PrepareStep {
+  name: PrepareStepName;
+  state: PrepareStepState;
+  /** What the step reported, such as why it failed. Null when it reported nothing. */
+  message: string | null;
+  /** RFC 3339 timestamps. Null until the step has started or finished. */
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export const runtimeTiers = ["container", "gvisor", "kata"] as const;
+
+export type RuntimeTier = (typeof runtimeTiers)[number];
+
+export interface RuntimeLimits {
+  /** Whole CPUs the sandbox may use. */
+  cpu: number;
+  memory_mb: number;
+  timeout_s: number;
+}
+
+/** The settings the task's sandbox runs with. Null where the task has none. */
+export interface Runtime {
+  tier: RuntimeTier;
+  repo: string | null;
+  toolchain: string | null;
+  limits: RuntimeLimits | null;
+}
+
+/** GET /api/tasks/{id} carries this block for a task whose sandbox is being prepared or was. */
+export interface Preparing {
+  steps: PrepareStep[];
+  runtime: Runtime;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -82,6 +126,7 @@ export interface Task {
   runHistory?: TaskRunHistory[];
   artifacts?: TaskArtifact[];
   events?: TaskEvent[];
+  preparing?: Preparing;
 }
 
 export const pendingResult = "The final result shows up here when the task is done.";
