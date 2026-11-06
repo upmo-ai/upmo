@@ -49,10 +49,18 @@ try {
 
   // Leave the connector as it was found.
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.getByRole("button", { name: "Disconnect" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Disconnect connector" }).click();
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Disconnect", exact: true }).waitFor({ state: "detached" });
+  await page.waitForTimeout(1000);
+  // The stub keeps the connector in memory only. If the page was reloaded by now
+  // the list is empty and there is nothing left to disconnect.
+  const disconnect = page.getByRole("button", { name: "Disconnect" });
+  const emptyList = page.getByText("Connect your tools", { exact: true });
+  await disconnect.or(emptyList).first().waitFor({ timeout: 15_000 });
+  if (!(await emptyList.isVisible())) {
+    await disconnect.click();
+    await page.getByRole("dialog").getByRole("button", { name: "Disconnect connector" }).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Disconnect", exact: true }).waitFor({ state: "detached" });
+  }
 
   console.log("connectors check passed");
 } finally {

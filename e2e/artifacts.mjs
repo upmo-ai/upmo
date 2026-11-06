@@ -248,7 +248,9 @@ try {
   if ((await editorText(before)).includes("receipt")) {
     fail77("the original side of triage.py shows the new line");
   }
-  if ((await patch.locator(".line-insert, .char-insert").count()) === 0) {
+  try {
+    await patch.locator(".line-insert, .char-insert").first().waitFor({ timeout: 15_000 });
+  } catch {
     fail77("the diff marks no added lines");
   }
   await expectReadOnly(page, patch, after, "the diff");
