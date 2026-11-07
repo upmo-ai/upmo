@@ -10,13 +10,15 @@ interface AnalyticsPanelProps {
   action?: ReactNode;
   /** Shown under the chart, and under the empty text when there is no chart. */
   note?: ReactNode;
+  /** Spans the whole row of the panel grid instead of half of it. */
+  wide?: boolean;
   children: ReactNode;
 }
 
 /** A titled panel for one analytics chart, with a plain empty state for a range with no data. */
-export function AnalyticsPanel({ title, empty, action, note, children }: AnalyticsPanelProps) {
+export function AnalyticsPanel({ title, empty, action, note, wide = false, children }: AnalyticsPanelProps) {
   return (
-    <Panel p="md">
+    <Panel p="md" className={wide ? "usage-panel usage-wide" : "usage-panel"}>
       <Group justify="space-between" align="center" wrap="wrap" mb="sm">
         <Title order={2} size="h4">
           {title}

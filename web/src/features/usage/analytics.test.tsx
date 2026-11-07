@@ -1,13 +1,38 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type {
+  ComboChartProps,
+  DonutChartProps,
+  GroupedBarChartProps,
+  LineChartProps,
+} from "@upmo-ai/components";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../../App";
 import { createStubApi, type ApiClient, type Usage, type UsageBucket, type UsageRange } from "../../app/api";
 import { AppProviders } from "../../theme";
-import { formatBucket, formatLatency, formatRatePrecise, formatTokens, formatUsd } from "./format";
+import { chartProps, resetChartProps } from "./chart-spy";
+import {
+  formatBucket,
+  formatLatency,
+  formatPercentPoints,
+  formatRatePrecise,
+  formatTokensCompact,
+  formatUsd,
+} from "./format";
 
+vi.mock("@upmo-ai/components", async (importOriginal) => {
+  const { withChartSpy } = await import("./chart-spy");
+  return withChartSpy(await importOriginal<typeof import("@upmo-ai/components")>());
+});
+
+/** Every chart panel in reading order: two to a row on a wide page, the last two across the whole row. */
 const panelTitles = [
+  "Spend",
+  "Cache hit rate",
   "Spend by provider",
   "Spend by model",
   "Tokens per model",
@@ -15,9 +40,12 @@ const panelTitles = [
   "Latency per provider",
   "Spend share by provider",
   "Requests and error rate",
+  "Cost per task",
 ];
 
 const lineCharts = [
+  "Spend",
+  "Cache hit rate",
   "Spend by provider",
   "Spend by model",
   "Tokens per model",
@@ -77,11 +105,16 @@ function panelOf(title: string): HTMLElement {
   return panel;
 }
 
-/** The three rendered layers of "Token consumption" for one bucket label, as numbers. */
+/** The three layers "Token consumption" was given for one bucket label, as numbers. */
 function tokenLayers(label: string): number[] {
-  return ["Input excluding tool definitions", "Output", "Tool definitions (est.)"].map((column) =>
-    Number(cellOf("Token consumption", label, column).replaceAll(",", "")),
-  );
+  const { series } = chartProps<LineChartProps>("Token consumption");
+  return (series ?? []).map((layer) => {
+    const point = layer.points.find((item) => item.label === label);
+    if (!point || point.value === null) {
+      throw new Error(`no ${layer.name} value for ${label}`);
+    }
+    return point.value;
+  });
 }
 
 function bucket(extra: Partial<UsageBucket>): UsageBucket {
@@ -104,6 +137,7 @@ function bucket(extra: Partial<UsageBucket>): UsageBucket {
 describe("Usage analytics panels", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetChartProps();
   });
 
   afterEach(() => {
@@ -126,26 +160,46 @@ describe("Usage analytics panels", () => {
     },
   );
 
-  it("usage analytics: the new panels sit after Cache hit rate and before Tasks, in order", async () => {
+  it("usage polish 4113376c: the panels come in the new order, then Tasks", async () => {
     renderAt("/usage");
-    await screen.findByRole("group", { name: "Requests and error rate" });
+    await screen.findByRole("group", { name: "Cost per task" });
     expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
       ...panelTitles,
       "Tasks",
     ]);
-    const cache = screen.getByRole("group", { name: "Cache hit rate" });
-    const first = screen.getByRole("heading", { level: 2, name: "Spend by provider" });
-    expect(cache.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const tasks = screen.getByRole("heading", { level: 2, name: "Tasks" });
+    const last = screen.getByRole("group", { name: "Cost per task" });
+    expect(last.compareDocumentPosition(tasks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("usage analytics: latency and spend share sit in one row, apart from the other panels", async () => {
+  it("usage polish 4113376c: every chart panel is a child of one grid, and only the last two span the row", async () => {
     renderAt("/usage");
-    await screen.findByRole("group", { name: "Latency per provider" });
-    const row = screen.getByRole("heading", { name: "Latency per provider" }).closest(".usage-pair");
-    expect(row).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Spend share by provider" }).closest(".usage-pair")).toBe(row);
-    expect(screen.getByRole("heading", { name: "Spend by provider" }).closest(".usage-pair")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Requests and error rate" }).closest(".usage-pair")).toBeNull();
+    await screen.findByRole("group", { name: "Cost per task" });
+    const grid = panelOf("Spend").parentElement!;
+    expect(grid.classList.contains("usage-panels")).toBe(true);
+    expect(Array.from(grid.children)).toEqual(panelTitles.map((title) => panelOf(title)));
+    const wide = Array.from(grid.children)
+      .filter((panel) => panel.classList.contains("usage-wide"))
+      .map((panel) => panel.querySelector("h2")?.textContent);
+    expect(wide).toEqual(["Requests and error rate", "Cost per task"]);
+    // The tiles stay outside the panel grid, in a row of their own.
+    expect(grid.contains(document.querySelector(".usage-figures"))).toBe(false);
+  });
+
+  it("usage polish 4113376c: the layout reads the content width, six tiles and two panels across from 928px, three tiles from 640px", () => {
+    const css = readFileSync(join("src", "features", "usage", "usage.css"), "utf8");
+    expect(css).toMatch(/\.usage-page\s*\{[^}]*container:\s*usage\s*\/\s*inline-size/);
+    const blocks = css.split("@container usage ").slice(1);
+    const from = (min: string) => blocks.find((block) => block.startsWith(`(min-width: ${min})`)) ?? "";
+    // 58rem and 40rem are 928px and 640px. A 1280px screen leaves about 990px of content beside the sidebar.
+    expect(from("58rem")).toMatch(/\.usage-figures\s*\{[^}]*repeat\(6,/);
+    expect(from("58rem")).toMatch(/\.usage-panels\s*\{[^}]*repeat\(2,/);
+    expect(from("58rem")).toMatch(/\.usage-wide\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
+    expect(from("40rem")).toMatch(/\.usage-figures\s*\{[^}]*repeat\(3,/);
+    // Below 640px: two tiles across and one panel column.
+    const base = css.slice(0, css.indexOf("@container"));
+    expect(base).toMatch(/\.usage-figures\s*\{[^}]*repeat\(2,/);
+    expect(base).toMatch(/\.usage-panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/);
   });
 
   it("usage analytics: spend by provider has a line per priced provider, global ones marked, with the API's figures", async () => {
@@ -191,7 +245,7 @@ describe("Usage analytics panels", () => {
     expect(chartTable("Tokens per model").header).toContain("Llama 3.3 70B");
     const known = week.buckets.find((item) => item.by_model["claude-3-7-sonnet"] !== undefined)!;
     expect(cellOf("Tokens per model", formatBucket(known.at, "day"), "Claude 3.7 Sonnet")).toBe(
-      formatTokens(known.by_model["claude-3-7-sonnet"]!.tokens),
+      formatTokensCompact(known.by_model["claude-3-7-sonnet"]!.tokens),
     );
     const day = week.buckets.find((item) => item.by_model["llama3.3:70b"] === undefined)!;
     expect(cellOf("Tokens per model", formatBucket(day.at, "day"), "Llama 3.3 70B")).toBe("0");
@@ -216,8 +270,7 @@ describe("Usage analytics panels", () => {
       ]);
       expect(tokenLayers(label).reduce((sum, value) => sum + value, 0)).toBe(item.input + item.output);
     }
-    const chart = screen.getByRole("group", { name: "Token consumption" });
-    expect(chart.querySelectorAll(".upmo-linechart__area").length).toBeGreaterThan(0);
+    expect(chartProps<LineChartProps>("Token consumption").stacked).toBe(true);
     expect(screen.getByText("Tool definitions are an estimate and are counted out of input.")).toBeTruthy();
     expect(screen.queryByText(/already part of input/)).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Token consumption view" })).toBeNull();
@@ -245,8 +298,7 @@ describe("Usage analytics panels", () => {
   it("usage analytics: the Lines and Stacked toggle starts on Lines and changes only its own chart", async () => {
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by provider" });
-    const areas = (name: string) =>
-      screen.getByRole("group", { name }).querySelectorAll(".upmo-linechart__area").length;
+    const stacked = (name: string) => chartProps<LineChartProps>(name).stacked ?? false;
     const providerView = screen.getByRole("radiogroup", { name: "Spend by provider view" });
     const modelView = screen.getByRole("radiogroup", { name: "Spend by model view" });
     expect(within(providerView).getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual([
@@ -254,19 +306,21 @@ describe("Usage analytics panels", () => {
       "stacked",
     ]);
     expect(within(providerView).getByRole("radio", { name: "Lines" })).toHaveProperty("checked", true);
-    expect(areas("Spend by provider")).toBe(0);
+    expect(stacked("Spend by provider")).toBe(false);
 
     fireEvent.click(within(providerView).getByRole("radio", { name: "Stacked" }));
     expect(within(providerView).getByRole("radio", { name: "Stacked" })).toHaveProperty("checked", true);
-    expect(areas("Spend by provider")).toBeGreaterThan(0);
-    expect(areas("Spend by model")).toBe(0);
+    expect(stacked("Spend by provider")).toBe(true);
+    expect(stacked("Spend by model")).toBe(false);
     expect(within(modelView).getByRole("radio", { name: "Lines" })).toHaveProperty("checked", true);
 
     fireEvent.click(within(modelView).getByRole("radio", { name: "Stacked" }));
-    expect(areas("Spend by model")).toBeGreaterThan(0);
+    expect(stacked("Spend by model")).toBe(true);
     fireEvent.click(within(providerView).getByRole("radio", { name: "Lines" }));
-    expect(areas("Spend by provider")).toBe(0);
-    expect(areas("Spend by model")).toBeGreaterThan(0);
+    expect(stacked("Spend by provider")).toBe(false);
+    expect(stacked("Spend by model")).toBe(true);
+    // The token stack is stacked by design and has no toggle.
+    expect(stacked("Token consumption")).toBe(true);
   });
 
   it("usage analytics: a priced row that made no calls in a bucket with unknown spend is zero there, not a gap", async () => {
@@ -509,7 +563,7 @@ describe("Usage analytics panels", () => {
       expect(cellOf("Requests and error rate", label, "Error rate")).toBe(
         formatRatePrecise(item.requests === 0 ? 0 : item.errors / item.requests),
       );
-      expect(cellOf("Requests and error rate", label, "Requests")).toBe(formatTokens(item.requests));
+      expect(cellOf("Requests and error rate", label, "Requests")).toBe(formatTokensCompact(item.requests));
     }
   });
 
@@ -542,13 +596,70 @@ describe("Usage analytics panels", () => {
     ]);
   });
 
+  it("usage polish 4113376c: with calls but no tasks the cost chart says so and the rest still draw", async () => {
+    renderAt("/usage", withUsage((usage) => ({ ...usage, tasks: [] })));
+    await screen.findByRole("group", { name: "Requests and error rate" });
+    expect(screen.getByText("No task costs in this range.")).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Cost per task" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 2, name: "Cost per task" })).toBeTruthy();
+  });
+
   it("usage analytics: a range with tasks but no calls shows the empty states in the panels", async () => {
     const client = withUsage((usage) => ({ ...usage, buckets: [], providers: [], models: [] }));
     renderAt("/usage", client);
     await screen.findByRole("table", { name: "Task breakdown" });
-    for (const title of panelTitles) {
+    // The cost chart is about tasks, which this range has; every other chart is about calls, which it has not.
+    for (const title of panelTitles.filter((name) => name !== "Cost per task")) {
       expect(screen.queryByRole("group", { name: title })).toBeNull();
     }
+    expect(screen.getByRole("group", { name: "Cost per task" })).toBeTruthy();
     expect(screen.getByText("No latency to show in this range.")).toBeTruthy();
+    expect(screen.getByText("No spend to chart in this range.")).toBeTruthy();
+    expect(screen.getByText("No cache reads in this range.")).toBeTruthy();
+    expect(screen.queryByText("No task costs in this range.")).toBeNull();
+  });
+
+  it("usage polish 4113376c: every chart gets a formatter that keeps numbers short", async () => {
+    renderAt("/usage");
+    await screen.findByRole("group", { name: "Cost per task" });
+    const tokens = [
+      chartProps<LineChartProps>("Tokens per model").formatValue,
+      chartProps<LineChartProps>("Token consumption").formatValue,
+      chartProps<ComboChartProps>("Requests and error rate").formatBar,
+    ];
+    for (const format of tokens) {
+      expect(format?.(536_440.143)).toBe("536k");
+      expect(format?.(2_330_160)).toBe("2.3M");
+      expect(format?.(1_200_000_000)).toBe("1.2B");
+    }
+    const dollars = [
+      chartProps<GroupedBarChartProps>("Spend").formatValue,
+      chartProps<GroupedBarChartProps>("Cost per task").formatValue,
+      chartProps<LineChartProps>("Spend by provider").formatValue,
+      chartProps<LineChartProps>("Spend by model").formatValue,
+      chartProps<DonutChartProps>("Spend share by provider").formatValue,
+    ];
+    for (const format of dollars) {
+      expect(format?.(1.1666)).toBe("US$1.17");
+    }
+    expect(chartProps<GroupedBarChartProps>("Latency per provider").formatValue?.(850)).toBe(formatLatency(850));
+    expect(chartProps<LineChartProps>("Cache hit rate").formatValue?.(66.04)).toBe("66%");
+    expect(chartProps<LineChartProps>("Cache hit rate").formatValue?.(12.5)).toBe(formatPercentPoints(12.5));
+    expect(chartProps<ComboChartProps>("Requests and error rate").formatLine?.(3.64)).toBe("3.6%");
+  });
+
+  it("usage polish 4113376c: the charts keep the DS smooth curve and the hidden tables show no long decimals", async () => {
+    renderAt("/usage?range=30");
+    await screen.findByRole("group", { name: "Cost per task" });
+    for (const title of ["Cache hit rate", "Spend by provider", "Spend by model", "Tokens per model", "Token consumption"]) {
+      expect(chartProps<LineChartProps>(title).curve).toBeUndefined();
+    }
+    for (const title of lineCharts) {
+      for (const row of chartTable(title).rows) {
+        for (const cell of row.cells) {
+          expect(cell).not.toMatch(/\d\.\d{3,}/);
+        }
+      }
+    }
   });
 });
