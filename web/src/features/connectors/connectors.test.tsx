@@ -591,6 +591,76 @@ describe("connectors", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
+  it("UPM-207 fetches the grant list on mount instead of freezing on the probe snapshot", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/connector-grants" && !init?.method) {
+          calls += 1;
+          return Response.json(
+            calls === 1
+              ? []
+              : [{ connector: "github", resource_scope: "all", resource_ids: [], changes: "ask" }],
+          );
+        }
+        return new Response(null, { status: 404 });
+      }),
+    );
+    renderAt("/connectors");
+
+    // The first call is the live probe and sees an empty workspace. The list
+    // must then fetch for itself; seeding it with the probe snapshot would
+    // count as fresh forever and hide the connector the API now serves.
+    expect(await screen.findByTestId("connector-card-github")).toBeTruthy();
+    expect(calls).toBe(2);
+  });
+
+  it("UPM-207 opens the editor for a connector that was connected in the same session", async () => {
+    const grants: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/connectors/test" && init?.method === "POST") {
+          return Response.json({ ok: true });
+        }
+        if (url === "/api/connector-grants" && !init?.method) {
+          return Response.json(grants);
+        }
+        if (url === "/api/connector-grants/github" && init?.method === "PUT") {
+          grants.push({ connector: "github", resource_scope: "all", resource_ids: [], changes: "ask" });
+          return new Response(null, { status: 204 });
+        }
+        return new Response(null, { status: 404 });
+      }),
+    );
+    const history = renderAt("/connectors/new");
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Connect a tool" })).toBeTruthy();
+    for (let step = 0; step < 3; step += 1) {
+      act(() => {
+        screen.getByRole("button", { name: "Continue" }).click();
+      });
+    }
+    act(() => {
+      screen.getByRole("button", { name: "Test connection" }).click();
+    });
+    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "Connect tool" }).click();
+    });
+    expect(await screen.findByTestId("connector-card-github")).toBeTruthy();
+
+    // The editor reads the same grants. A probe cached before the connect
+    // would still say "no grants" and show "Connector not found".
+    act(() => {
+      history.push("/connectors/github/edit");
+    });
+    expect(await screen.findByText("Permissions & Scope")).toBeTruthy();
+    expect(screen.queryByText("Connector not found")).toBeNull();
+  });
+
   it("UPM-103 links each rule control to its description", async () => {
     renderAt("/connectors");
 

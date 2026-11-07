@@ -47,20 +47,13 @@ try {
     throw new Error(`connectors page scrolls sideways on a phone by ${overflow}px`);
   }
 
-  // Leave the connector as it was found.
+  // Leave the connector as it was found. Scope to the GitHub card: the wizard
+  // connects GitHub, and the Disconnect step must always run against it.
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.waitForTimeout(1000);
-  // The stub keeps the connector in memory only. If the page was reloaded by now
-  // the list is empty and there is nothing left to disconnect.
-  const disconnect = page.getByRole("button", { name: "Disconnect" });
-  const emptyList = page.getByText("Connect your tools", { exact: true });
-  await disconnect.or(emptyList).first().waitFor({ timeout: 15_000 });
-  if (!(await emptyList.isVisible())) {
-    await disconnect.click();
-    await page.getByRole("dialog").getByRole("button", { name: "Disconnect connector" }).click();
-    await page.getByRole("dialog").waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Disconnect", exact: true }).waitFor({ state: "detached" });
-  }
+  await page.getByTestId("connector-card-github").getByRole("button", { name: "Disconnect" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Disconnect connector" }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page.getByTestId("connector-card-github").waitFor({ state: "detached" });
 
   console.log("connectors check passed");
 } finally {
