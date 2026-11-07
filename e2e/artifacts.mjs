@@ -157,9 +157,13 @@ try {
   await code.locator(".monaco-editor").waitFor();
   const codeLines = code.locator(".view-lines");
   await expectShown(page, codeLines, "def over_threshold(invoices, limit=1000):", "the code file");
-  const colourClasses = await code
-    .locator(".view-line span span")
-    .evaluateAll((spans) => new Set(spans.map((span) => span.className)).size);
+  const tokenClasses = () =>
+    code.locator(".view-line span span").evaluateAll((spans) => new Set(spans.map((span) => span.className)).size);
+  let colourClasses = await tokenClasses();
+  for (let tries = 0; colourClasses < 3 && tries < 20; tries += 1) {
+    await page.waitForTimeout(500);
+    colourClasses = await tokenClasses();
+  }
   if (colourClasses < 3) {
     fail77(`the code file is not highlighted, it has ${colourClasses} token classes`);
   }
