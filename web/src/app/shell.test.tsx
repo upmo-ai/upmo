@@ -582,8 +582,8 @@ describe("app shell", () => {
       ...identityStub(),
       chats: createStubApi().chats,
       artifacts: createStubApi().artifacts,
-      async usage() {
-        return { days: [], tasks: [] };
+      async usage(range) {
+        return createStubApi({ emptyUsage: true }).usage(range);
       },
     };
     renderAt("/tasks", client);
@@ -846,8 +846,8 @@ describe("app shell", () => {
       ...identityStub(),
       chats: createStubApi().chats,
       artifacts: createStubApi().artifacts,
-      async usage() {
-        return { days: [], tasks: [] };
+      async usage(range) {
+        return createStubApi({ emptyUsage: true }).usage(range);
       },
     });
     const bell = await screen.findByRole("button", { name: /^Notifications$/ });
