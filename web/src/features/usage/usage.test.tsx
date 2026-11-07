@@ -266,7 +266,9 @@ describe("Usage page", () => {
     const tile = statTile("Spend");
     expect(within(tile).getByText("Unknown")).toBeTruthy();
     expect(within(tile).getByText("Cost is unknown for every day in this period")).toBeTruthy();
-    expect(screen.queryByText(formatUsd(0))).toBeNull();
+    // The analytics charts draw zero on their value axes, so look at the Spend tile and chart instead of the whole page.
+    expect(within(tile).queryByText(formatUsd(0))).toBeNull();
+    expect(within(screen.getByRole("table", { name: "Spend" })).queryByText(formatUsd(0))).toBeNull();
     expect(screen.queryByText(/Excludes/)).toBeNull();
     const chart = screen.getByRole("table", { name: "Cost per task" });
     expect(within(chart).queryByText(formatUsd(0))).toBeNull();

@@ -13,7 +13,7 @@ import {
   taskShare,
   taskTokens,
 } from "./figures";
-import { formatBucket, formatDay, formatHour, formatRate, formatRatePrecise, formatTokens, formatUsd } from "./format";
+import { formatBucket, formatDay, formatHour, formatLatency, formatRate, formatRatePrecise, formatTokens, formatUsd } from "./format";
 import { parseUsageRange, validateUsageSearch } from "./range";
 
 function bucket(spend: number | null, extra: Partial<UsageBucket> = {}): UsageBucket {
@@ -103,6 +103,28 @@ describe("usage figures", () => {
     expect(periodSpend([])).toBeNull();
     expect(periodSpend([bucket(null), bucket(1.5), bucket(2)])).toBe(3.5);
     expect(periodSpend([bucket(0), bucket(null)])).toBe(0);
+  });
+
+  it("usage analytics: formats a latency as milliseconds, seconds or minutes", () => {
+    expect(formatLatency(850)).toBe("850 ms");
+    expect(formatLatency(0)).toBe("0 ms");
+    expect(formatLatency(999.4)).toBe("999 ms");
+    expect(formatLatency(1000)).toBe("1 s");
+    expect(formatLatency(1234)).toBe("1.2 s");
+    expect(formatLatency(14_100)).toBe("14.1 s");
+    expect(formatLatency(59_940)).toBe("59.9 s");
+    expect(formatLatency(59_960)).toBe("1 min");
+    expect(formatLatency(65_000)).toBe("1 min 5 s");
+    expect(formatLatency(120_000)).toBe("2 min");
+  });
+
+  it("usage analytics: a latency that is not known reads No data, never 0 ms", () => {
+    expect(formatLatency(null)).toBe("No data");
+    expect(formatLatency(undefined)).toBe("No data");
+    expect(formatLatency(Number.NaN)).toBe("No data");
+    expect(formatLatency(Number.POSITIVE_INFINITY)).toBe("No data");
+    expect(formatLatency(Number.NEGATIVE_INFINITY)).toBe("No data");
+    expect(formatLatency(0)).toBe("0 ms");
   });
 
   it("usage analytics: error rate is errors over requests and zero without requests", () => {

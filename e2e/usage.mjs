@@ -26,7 +26,7 @@ try {
   await page.goto(new URL("/usage", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Usage" }).waitFor();
   for (const name of ["Spend", "Cost per task", "Cache hit rate"]) {
-    if (!(await page.getByRole("group", { name }).isVisible())) {
+    if (!(await page.getByRole("group", { name, exact: true }).isVisible())) {
       throw new Error(`usage chart ${name} was not visible`);
     }
   }
@@ -68,7 +68,7 @@ try {
       document.querySelectorAll('table[aria-label="Task breakdown"] tr').length > before,
     monthRows,
   );
-  if (!(await page.getByRole("group", { name: "Spend" }).isVisible())) {
+  if (!(await page.getByRole("group", { name: "Spend", exact: true }).isVisible())) {
     throw new Error("spend chart hidden on the 90 day period");
   }
 
@@ -96,17 +96,74 @@ try {
   }
   await page.getByText(/calls in range had no configured price and are excluded from spend\./).waitFor();
 
+  // The analytics panels: every heading, between Cache hit rate and Tasks, in order.
+  const analyticsPanels = [
+    "Spend by provider",
+    "Spend by model",
+    "Tokens per model",
+    "Token consumption",
+    "Latency per provider",
+    "Spend share by provider",
+    "Requests and error rate",
+  ];
+  for (const name of analyticsPanels) {
+    await page.getByRole("heading", { level: 2, name, exact: true }).waitFor();
+    if (!(await page.getByRole("group", { name, exact: true }).isVisible())) {
+      throw new Error(`usage chart ${name} was not visible`);
+    }
+  }
+  const headings = await page.getByRole("heading", { level: 2 }).allInnerTexts();
+  if (headings.join("|") !== [...analyticsPanels, "Tasks"].join("|")) {
+    throw new Error(`usage panels were ${JSON.stringify(headings)}`);
+  }
+  // The unpriced provider is named under the provider spend chart and under the donut.
+  const unpriced = page.getByText("No price for: Ollama", { exact: true });
+  await unpriced.first().waitFor();
+  if ((await unpriced.count()) < 2) {
+    throw new Error("usage should name the unpriced provider under the spend chart and the donut");
+  }
+
+  // Lines or stacked: the toggle starts on Lines and fills the areas when switched.
+  const providerView = page.getByRole("radiogroup", { name: "Spend by provider view", exact: true });
+  const providerAreas = page.getByRole("group", { name: "Spend by provider", exact: true }).locator(".upmo-linechart__area");
+  if (!(await providerView.getByRole("radio", { name: "Lines" }).isChecked())) {
+    throw new Error("spend by provider did not start on Lines");
+  }
+  if ((await providerAreas.count()) !== 0) {
+    throw new Error("spend by provider drew areas on Lines");
+  }
+  await providerView.getByText("Stacked", { exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('[role="group"][aria-label="Spend by provider"]')
+        ?.querySelectorAll(".upmo-linechart__area").length > 0,
+  );
+  await providerView.getByText("Lines", { exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('[role="group"][aria-label="Spend by provider"]')
+        ?.querySelectorAll(".upmo-linechart__area").length === 0,
+  );
+
   // Today: hourly labels, and the range is kept in the URL.
   await page.getByRole("radiogroup", { name: "Range" }).getByText("Today", { exact: true }).click();
   await page.getByText("Today. Figures come from the ledger.").waitFor();
   await page.waitForURL((current) => current.searchParams.get("range") === "today");
   await page.getByText("Excludes 1 hour with unknown cost").waitFor();
   const hourLabels = await page
-    .getByRole("table", { name: "Spend" })
+    .getByRole("table", { name: "Spend", exact: true })
     .getByRole("rowheader")
     .allInnerTexts();
   if (hourLabels.length === 0 || !hourLabels.every((label) => /^\d\d:00$/.test(label))) {
     throw new Error(`today did not show hourly labels: ${JSON.stringify(hourLabels)}`);
+  }
+  for (const name of ["Spend by provider", "Spend by model", "Tokens per model", "Token consumption", "Requests and error rate"]) {
+    const labels = await page.getByRole("table", { name, exact: true }).getByRole("rowheader").allInnerTexts();
+    if (labels.length !== hourLabels.length || !labels.every((label) => /^\d\d:00$/.test(label))) {
+      throw new Error(`today did not show hourly labels in ${name}: ${JSON.stringify(labels)}`);
+    }
   }
   await page.getByText("7 days", { exact: true }).click();
   await page.getByText("Last 7 days. Figures come from the ledger.").waitFor();
@@ -176,11 +233,16 @@ try {
 
   await page.setViewportSize({ width: 360, height: 800 });
   await page.getByRole("heading", { level: 1, name: "Usage" }).waitFor();
-  if (!(await page.getByRole("group", { name: "Spend" }).isVisible())) {
+  if (!(await page.getByRole("group", { name: "Spend", exact: true }).isVisible())) {
     throw new Error("spend chart hidden on a phone");
   }
   if (!(await page.getByRole("table", { name: "Task breakdown" }).isVisible())) {
     throw new Error("task table hidden on a phone");
+  }
+  for (const name of analyticsPanels) {
+    if (!(await page.getByRole("group", { name, exact: true }).isVisible())) {
+      throw new Error(`usage chart ${name} hidden on a phone`);
+    }
   }
   if (!(await page.getByRole("table", { name: "Cost split for Daily finance digest" }).isVisible())) {
     throw new Error("the open model split hidden on a phone");
