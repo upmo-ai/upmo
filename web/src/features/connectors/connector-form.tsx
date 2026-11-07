@@ -174,6 +174,7 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: CONNECTORS_KEY });
       if (live) {
+        await queryClient.invalidateQueries({ queryKey: ["connectors-live"] });
         await queryClient.invalidateQueries({ queryKey: ["connectors-live-data"] });
       }
       await navigate({ to: "/connectors" });

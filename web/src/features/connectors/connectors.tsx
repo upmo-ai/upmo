@@ -58,20 +58,21 @@ export function ConnectorsPage() {
   }
 
   if (Array.isArray(probe.data)) {
-    return <ConnectorsView live initialGrants={probe.data} />;
+    return <ConnectorsView live />;
   }
 
   return <ConnectorsView live={false} />;
 }
 
-function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?: ConnectorGrant[] }) {
+function ConnectorsView({ live }: { live: boolean }) {
   const api = useApi();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
+  // The list fetches on mount. Seeding it with the probe snapshot would
+  // freeze it there: initialData counts as fresh, and staleTime is infinite.
   const grantsQuery = useQuery({
     queryKey: live ? ["connectors-live-data"] : connectorsQueryKey(),
-    initialData: initialGrants,
     queryFn: async () => {
       if (live) {
         const res = await fetch("/api/connector-grants", { credentials: "include" });
@@ -112,6 +113,7 @@ function ConnectorsView({ live, initialGrants }: { live: boolean; initialGrants?
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: CONNECTORS_KEY });
       if (live) {
+        await queryClient.invalidateQueries({ queryKey: ["connectors-live"] });
         await queryClient.invalidateQueries({ queryKey: ["connectors-live-data"] });
       }
       setDisconnectTarget(null);
