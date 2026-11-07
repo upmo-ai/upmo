@@ -26,6 +26,7 @@ import { KnowledgePage } from "../features/knowledge/knowledge";
 import { ModelsPage } from "../features/models/models";
 import { PersonalisationPage } from "../features/memory/memory";
 import { UsagePage } from "../features/usage/usage";
+import { validateUsageSearch } from "../features/usage/range";
 import { PrivacyPage, TermsPage } from "./legal";
 import { LinkPage } from "./link";
 import { SignInPage } from "./sign-in";
@@ -150,6 +151,7 @@ const knowledgeFolderRoute = createRoute({
 const usageRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/usage",
+  validateSearch: validateUsageSearch,
   component: UsagePage,
 });
 

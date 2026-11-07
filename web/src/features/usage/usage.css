@@ -31,3 +31,46 @@
 .usage-dense .upmo-barchart__label {
   display: none;
 }
+
+/* A sort header is a button, so it works from the keyboard; it reads as the header text. */
+.usage-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.usage-sort:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.usage-scroll:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The model split sits under its task, inside the row, on the sunken ground. */
+.usage-split {
+  background: var(--surface-200);
+  padding-inline-start: var(--space-6);
+}
+
+.usage-task-link {
+  color: var(--mantine-color-anchor);
+  text-decoration: none;
+}
+
+.usage-task-link:hover {
+  text-decoration: underline;
+}
+
+.usage-task-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
