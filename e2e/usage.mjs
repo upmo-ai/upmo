@@ -96,8 +96,10 @@ try {
   }
   await page.getByText(/calls in range had no configured price and are excluded from spend\./).waitFor();
 
-  // The analytics panels: every heading, between Cache hit rate and Tasks, in order.
+  // Every chart panel is visible, and the heading ORDER is the reading order of the page: pairs first, then the two wide panels, then Tasks.
   const analyticsPanels = [
+    "Spend",
+    "Cache hit rate",
     "Spend by provider",
     "Spend by model",
     "Tokens per model",
@@ -105,6 +107,7 @@ try {
     "Latency per provider",
     "Spend share by provider",
     "Requests and error rate",
+    "Cost per task",
   ];
   for (const name of analyticsPanels) {
     await page.getByRole("heading", { level: 2, name, exact: true }).waitFor();
@@ -116,6 +119,65 @@ try {
   if (headings.join("|") !== [...analyticsPanels, "Tasks"].join("|")) {
     throw new Error(`usage panels were ${JSON.stringify(headings)}`);
   }
+
+  // Layout on a wide screen: six tiles in one row, panels two to a row with equal height, the last two across the whole row.
+  // The thresholds follow the width of the page content (the side navigation takes a share of the window), so a 1280px window, which leaves about 990px of content, must already get the wide layout.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(1000);
+  const contentWidth = (await page.locator(".usage-page").boundingBox())?.width ?? 0;
+  if (contentWidth < 928) {
+    throw new Error(`the wide layout check needs 928px of content, the page has ${contentWidth}px`);
+  }
+  const tops = await page
+    .locator(".usage-figures .upmo-stat-tile")
+    .evaluateAll((tiles) => tiles.map((tile) => Math.round(tile.getBoundingClientRect().top)));
+  if (tops.length !== 6 || new Set(tops).size !== 1) {
+    throw new Error(`the six tiles were not in one row: ${JSON.stringify(tops)}`);
+  }
+  const panelBox = async (name) => {
+    // Page coordinates, so the scroll position never changes a comparison.
+    const panel = page.locator(".usage-panel").filter({ has: page.getByRole("heading", { level: 2, name, exact: true }) });
+    return panel.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { x: box.left + window.scrollX, y: box.top + window.scrollY, width: box.width, height: box.height };
+    });
+  };
+  const rows = [
+    ["Spend", "Cache hit rate"],
+    ["Spend by provider", "Spend by model"],
+    ["Tokens per model", "Token consumption"],
+    ["Latency per provider", "Spend share by provider"],
+  ];
+  let previousBottom = 0;
+  for (const [left, right] of rows) {
+    const [l, r] = [await panelBox(left), await panelBox(right)];
+    if (Math.abs(l.y - r.y) > 1 || Math.abs(l.height - r.height) > 1 || r.x <= l.x) {
+      throw new Error(`${left} and ${right} are not two equal panels in one row: ${JSON.stringify([l, r])}`);
+    }
+    if (Math.abs(l.width - r.width) > 1) {
+      throw new Error(`${left} and ${right} do not share the row evenly`);
+    }
+    if (l.y < previousBottom) {
+      throw new Error(`${left} is not below the row above it`);
+    }
+    previousBottom = l.y + l.height;
+  }
+  const pairWidth = (await panelBox("Spend")).width;
+  for (const name of ["Requests and error rate", "Cost per task"]) {
+    const wide = await panelBox(name);
+    if (wide.width < pairWidth * 1.9) {
+      throw new Error(`${name} does not span the row: ${wide.width}px against ${pairWidth}px`);
+    }
+  }
+  // Each plot is drawn at the size of its panel, with no sideways scroll.
+  for (const name of analyticsPanels) {
+    const plot = await page.getByRole("group", { name, exact: true }).locator(".upmo-chart__plot").boundingBox();
+    if (!plot || plot.width < 150 || plot.height < 100) {
+      throw new Error(`usage chart ${name} was drawn too small: ${JSON.stringify(plot)}`);
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+
   // The unpriced provider is named under the provider spend chart and under the donut.
   const unpriced = page.getByText("No price for: Ollama", { exact: true });
   await unpriced.first().waitFor();
@@ -123,29 +185,96 @@ try {
     throw new Error("usage should name the unpriced provider under the spend chart and the donut");
   }
 
-  // Lines or stacked: the toggle starts on Lines and fills the areas when switched.
+  // Lines or stacked: the toggle starts on Lines, and stacking rescales the value axis to the total.
+  const chartOf = (name) => page.getByRole("group", { name, exact: true });
+  const plotOf = (name) => chartOf(name).locator('.upmo-chart__plot[data-chart-ready="true"]');
+  const axisTexts = async (name) => (await plotOf(name).locator("svg text").allTextContents()).join("|");
   const providerView = page.getByRole("radiogroup", { name: "Spend by provider view", exact: true });
-  const providerAreas = page.getByRole("group", { name: "Spend by provider", exact: true }).locator(".upmo-linechart__area");
   if (!(await providerView.getByRole("radio", { name: "Lines" }).isChecked())) {
     throw new Error("spend by provider did not start on Lines");
   }
-  if ((await providerAreas.count()) !== 0) {
-    throw new Error("spend by provider drew areas on Lines");
-  }
+  await plotOf("Spend by provider").waitFor();
+  const linesAxis = await axisTexts("Spend by provider");
   await providerView.getByText("Stacked", { exact: true }).click();
+  if (!(await providerView.getByRole("radio", { name: "Stacked" }).isChecked())) {
+    throw new Error("the Stacked view was not selected");
+  }
   await page.waitForFunction(
-    () =>
-      document
-        .querySelector('[role="group"][aria-label="Spend by provider"]')
-        ?.querySelectorAll(".upmo-linechart__area").length > 0,
+    ([before]) => {
+      const texts = Array.from(
+        document.querySelectorAll('[role="group"][aria-label="Spend by provider"] .upmo-chart__plot svg text'),
+        (node) => node.textContent,
+      ).join("|");
+      return texts !== "" && texts !== before;
+    },
+    [linesAxis],
   );
   await providerView.getByText("Lines", { exact: true }).click();
   await page.waitForFunction(
-    () =>
-      document
-        .querySelector('[role="group"][aria-label="Spend by provider"]')
-        ?.querySelectorAll(".upmo-linechart__area").length === 0,
+    ([before]) =>
+      Array.from(
+        document.querySelectorAll('[role="group"][aria-label="Spend by provider"] .upmo-chart__plot svg text'),
+        (node) => node.textContent,
+      ).join("|") === before,
+    [linesAxis],
   );
+
+  // Hover: a tooltip lists the series by name, and the legend hides and shows a series.
+  const hoverPlot = async (name, fraction) => {
+    const plot = plotOf(name);
+    await plot.scrollIntoViewIfNeeded();
+    const box = await plot.boundingBox();
+    if (!box) {
+      throw new Error(`${name} has no plot to hover`);
+    }
+    await page.mouse.move(box.x + box.width * fraction, box.y + box.height * 0.5, { steps: 4 });
+  };
+  const tipNames = async (name) => {
+    const tip = chartOf(name).locator(".upmo-chart__tip").first();
+    await tip.waitFor({ state: "visible", timeout: 5000 });
+    return tip.locator(".upmo-chart__tip-name").allTextContents();
+  };
+  await hoverPlot("Spend by provider", 0.3);
+  const shown = await tipNames("Spend by provider");
+  for (const series of ["Anthropic (global)", "OpenAI (global)", "Mistral"]) {
+    if (!shown.includes(series)) {
+      throw new Error(`the spend tooltip did not list ${series}: ${JSON.stringify(shown)}`);
+    }
+  }
+  const legendItem = chartOf("Spend by provider").locator(".upmo-chart__legend-button").filter({ hasText: "Anthropic" });
+  if ((await legendItem.getAttribute("aria-pressed")) !== "true") {
+    throw new Error("the Anthropic legend item did not start shown");
+  }
+  await legendItem.click();
+  if ((await legendItem.getAttribute("aria-pressed")) !== "false") {
+    throw new Error("clicking the legend item did not hide the series");
+  }
+  await hoverPlot("Spend by provider", 0.45);
+  await chartOf("Spend by provider")
+    .locator(".upmo-chart__tip")
+    .filter({ hasNotText: "Anthropic" })
+    .first()
+    .waitFor({ state: "visible", timeout: 5000 });
+  const afterHide = await tipNames("Spend by provider");
+  if (afterHide.includes("Anthropic (global)") || !afterHide.includes("Mistral")) {
+    throw new Error(`the tooltip after hiding Anthropic was ${JSON.stringify(afterHide)}`);
+  }
+  await legendItem.click();
+  if ((await legendItem.getAttribute("aria-pressed")) !== "true") {
+    throw new Error("clicking the legend item again did not show the series");
+  }
+  // The same hover works on the other charts: tokens, the cache hit rate and the bar chart.
+  for (const [name, expected] of [
+    ["Tokens per model", "Claude 3.7 Sonnet"],
+    ["Cache hit rate", "Cache hit rate"],
+    ["Spend", "Spend"],
+  ]) {
+    await hoverPlot(name, 0.3);
+    const names = await tipNames(name);
+    if (!names.includes(expected)) {
+      throw new Error(`the ${name} tooltip listed ${JSON.stringify(names)}, not ${expected}`);
+    }
+  }
 
   // Today: hourly labels, and the range is kept in the URL.
   await page.getByRole("radiogroup", { name: "Range" }).getByText("Today", { exact: true }).click();
@@ -159,12 +288,27 @@ try {
   if (hourLabels.length === 0 || !hourLabels.every((label) => /^\d\d:00$/.test(label))) {
     throw new Error(`today did not show hourly labels: ${JSON.stringify(hourLabels)}`);
   }
-  for (const name of ["Spend by provider", "Spend by model", "Tokens per model", "Token consumption", "Requests and error rate"]) {
+  for (const name of [
+    "Cache hit rate",
+    "Spend by provider",
+    "Spend by model",
+    "Tokens per model",
+    "Token consumption",
+    "Requests and error rate",
+  ]) {
     const labels = await page.getByRole("table", { name, exact: true }).getByRole("rowheader").allInnerTexts();
     if (labels.length !== hourLabels.length || !labels.every((label) => /^\d\d:00$/.test(label))) {
       throw new Error(`today did not show hourly labels in ${name}: ${JSON.stringify(labels)}`);
     }
   }
+  // The drawn axis carries hour labels too, not only the hidden table.
+  await plotOf("Spend").waitFor();
+  await page.waitForFunction(() =>
+    Array.from(
+      document.querySelectorAll('[role="group"][aria-label="Spend"] .upmo-chart__plot svg text'),
+      (node) => node.textContent ?? "",
+    ).some((text) => /^\d\d:00$/.test(text)),
+  );
   await page.getByText("7 days", { exact: true }).click();
   await page.getByText("Last 7 days. Figures come from the ledger.").waitFor();
   await page.waitForFunction(
@@ -233,6 +377,8 @@ try {
 
   await page.setViewportSize({ width: 360, height: 800 });
   await page.getByRole("heading", { level: 1, name: "Usage" }).waitFor();
+  // The shell and the charts re-measure after the resize; let them settle before looking.
+  await page.waitForTimeout(1500);
   if (!(await page.getByRole("group", { name: "Spend", exact: true }).isVisible())) {
     throw new Error("spend chart hidden on a phone");
   }
@@ -246,6 +392,18 @@ try {
   }
   if (!(await page.getByRole("table", { name: "Cost split for Daily finance digest" }).isVisible())) {
     throw new Error("the open model split hidden on a phone");
+  }
+  const phoneTiles = await page
+    .locator(".usage-figures .upmo-stat-tile")
+    .evaluateAll((tiles) => tiles.map((tile) => Math.round(tile.getBoundingClientRect().left)));
+  if (phoneTiles.length !== 6 || new Set(phoneTiles).size !== 2) {
+    throw new Error(`the phone did not show the tiles two across: ${JSON.stringify(phoneTiles)}`);
+  }
+  const phoneLeft = await page
+    .locator(".usage-panel")
+    .evaluateAll((panels) => panels.map((panel) => Math.round(panel.getBoundingClientRect().left)));
+  if (phoneLeft.length !== analyticsPanels.length || new Set(phoneLeft).size !== 1) {
+    throw new Error(`the phone did not show the panels in one column: ${JSON.stringify(phoneLeft)}`);
   }
   await page.waitForTimeout(2000);
   const overflow = await page.evaluate(

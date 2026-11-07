@@ -61,3 +61,6 @@ if (!("fonts" in document)) {
 
 // The Select dropdown scrolls the active option into view, which jsdom lacks.
 Element.prototype.scrollIntoView ??= function scrollIntoView() {};
+
+// ECharts (inside the design-system charts) measures text on a canvas. jsdom has none, logs "not implemented" for every call, and the charts then fall back to their own estimate, so answer quietly with no context.
+HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;

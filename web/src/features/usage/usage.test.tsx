@@ -1,6 +1,7 @@
 import { createMemoryHistory, type RouterHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { GroupedBarChartProps, LineChartProps } from "@upmo-ai/components";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../../App";
 import {
@@ -12,7 +13,13 @@ import {
   type UsageTask,
 } from "../../app/api";
 import { AppProviders } from "../../theme";
+import { chartProps, resetChartProps } from "./chart-spy";
 import { formatBucket, formatRate, formatRatePrecise, formatTokens, formatUsd } from "./format";
+
+vi.mock("@upmo-ai/components", async (importOriginal) => {
+  const { withChartSpy } = await import("./chart-spy");
+  return withChartSpy(await importOriginal<typeof import("@upmo-ai/components")>());
+});
 
 const noValue = "\u2014";
 
@@ -94,6 +101,7 @@ function plainTask(id: string, cost: number | null, tokens: number): UsageTask {
 describe("Usage page", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetChartProps();
   });
 
   afterEach(() => {
@@ -119,7 +127,54 @@ describe("Usage page", () => {
     const unknownRow = within(spendTable).getByRole("row", {
       name: new RegExp(formatBucket(unknown.at, "day")),
     });
-    expect(within(unknownRow).getByText("Unknown")).toBeTruthy();
+    // The chart keeps the day as a gap, which its table words as No data. It is never a bar of zero.
+    expect(within(unknownRow).getByText("No data")).toBeTruthy();
+    expect(within(unknownRow).queryByText(formatUsd(0))).toBeNull();
+  });
+
+  it("usage polish 4113376c: Spend is a vertical grouped bar chart of one bar named Spend, with unknown spend as a gap", async () => {
+    const week = await createStubApi().usage(7);
+    renderAt("/usage");
+    await screen.findByRole("table", { name: "Spend" });
+    const props = chartProps<GroupedBarChartProps>("Spend");
+    expect(props.orientation ?? "vertical").toBe("vertical");
+    expect(props.formatValue).toBe(formatUsd);
+    expect(props.groups.map((group) => group.label)).toEqual(week.buckets.map((item) => formatBucket(item.at, "day")));
+    expect(props.groups.every((group) => group.bars.length === 1 && group.bars[0]!.name === "Spend")).toBe(true);
+    expect(props.groups.map((group) => group.bars[0]!.value)).toEqual(week.buckets.map((item) => item.spend_usd));
+    expect(props.groups.some((group) => group.bars[0]!.value === null)).toBe(true);
+    expect(props.groups.some((group) => group.bars[0]!.display === formatUsd(null))).toBe(false);
+  });
+
+  it("usage polish 4113376c: Cache hit rate is a one-series line chart with an area, in percent from 0 to 100", async () => {
+    const week = await createStubApi().usage(7);
+    renderAt("/usage");
+    await screen.findByRole("table", { name: "Cache hit rate" });
+    const props = chartProps<LineChartProps>("Cache hit rate");
+    expect(props.series).toHaveLength(1);
+    expect(props.area).toBe(true);
+    expect(props.stacked ?? false).toBe(false);
+    const points = props.series![0]!.points;
+    expect(points).toHaveLength(week.buckets.length);
+    for (const point of points) {
+      expect(point.value === null || (point.value >= 0 && point.value <= 100)).toBe(true);
+    }
+    expect(props.formatValue?.(66.04)).toBe("66%");
+    expect(props.formatValue?.(100)).toBe("100%");
+    const table = within(screen.getByRole("table", { name: "Cache hit rate" }));
+    expect(table.getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Label", "Cache hit rate"]);
+    expect(table.getAllByRole("row")[1]!.textContent).toMatch(/%$/);
+  });
+
+  it("usage polish 4113376c: Cost per task is a horizontal grouped bar chart, one bar per task", async () => {
+    const week = await createStubApi().usage(7);
+    renderAt("/usage");
+    await screen.findByRole("table", { name: "Cost per task" });
+    const props = chartProps<GroupedBarChartProps>("Cost per task");
+    expect(props.orientation).toBe("horizontal");
+    expect(props.formatValue).toBe(formatUsd);
+    expect(props.groups).toHaveLength(Math.min(8, week.tasks.length));
+    expect(props.groups.every((group) => group.bars.length === 1)).toBe(true);
   });
 
   it("usage analytics: the range selector offers Today, 7, 30 and 90 days and starts on 7 days", async () => {
@@ -323,8 +378,12 @@ describe("Usage page", () => {
     const unknown = month.tasks.filter((task) => task.cost_usd === null).map((task) => task.goal);
     expect(rows.map((row) => within(row).getAllByRole("rowheader")[0]!.textContent)).toEqual([...known, ...unknown]);
     const last = rows[rows.length - 1]!;
-    expect(within(last).getByText("Unknown")).toBeTruthy();
+    expect(within(last).getByText("No data")).toBeTruthy();
     expect(within(last).queryByText(formatUsd(0))).toBeNull();
+    // The bar is a gap, and the task table below still says Unknown for the task.
+    const bars = chartProps<GroupedBarChartProps>("Cost per task").groups;
+    expect(bars[bars.length - 1]!.bars[0]!.value).toBeNull();
+    expect(within(taskRow(unknown[unknown.length - 1]!)).getByText("Unknown")).toBeTruthy();
   });
 
   it("usage analytics: the cost per task chart keeps the 8 costliest tasks, then unknown cost, and the table keeps them all", async () => {
@@ -347,7 +406,7 @@ describe("Usage page", () => {
       "known-1",
       "unknown-1",
     ]);
-    expect(within(rows[rows.length - 1]!).getByText("Unknown")).toBeTruthy();
+    expect(within(rows[rows.length - 1]!).getByText("No data")).toBeTruthy();
     expect(taskGoals()).toHaveLength(10);
   });
 

@@ -13,7 +13,18 @@ import {
   taskShare,
   taskTokens,
 } from "./figures";
-import { formatBucket, formatDay, formatHour, formatLatency, formatRate, formatRatePrecise, formatTokens, formatUsd } from "./format";
+import {
+  formatBucket,
+  formatDay,
+  formatHour,
+  formatLatency,
+  formatPercentPoints,
+  formatRate,
+  formatRatePrecise,
+  formatTokens,
+  formatTokensCompact,
+  formatUsd,
+} from "./format";
 import { parseUsageRange, validateUsageSearch } from "./range";
 
 function bucket(spend: number | null, extra: Partial<UsageBucket> = {}): UsageBucket {
@@ -183,5 +194,40 @@ describe("usage figures", () => {
     expect(parseUsageRange(undefined)).toBeUndefined();
     expect(validateUsageSearch({ range: 30 })).toEqual({ range: 30 });
     expect(validateUsageSearch({ range: "nope" })).toEqual({});
+  });
+
+  it("usage polish 4113376c: compact tokens read 536k, 2.3M and 1.2B and never print a long decimal", () => {
+    expect(formatTokensCompact(0)).toBe("0");
+    expect(formatTokensCompact(42)).toBe("42");
+    expect(formatTokensCompact(999)).toBe("999");
+    expect(formatTokensCompact(1000)).toBe("1k");
+    expect(formatTokensCompact(1500)).toBe("1.5k");
+    expect(formatTokensCompact(536_440.143)).toBe("536k");
+    expect(formatTokensCompact(2_330_160)).toBe("2.3M");
+    expect(formatTokensCompact(1_200_000_000)).toBe("1.2B");
+    expect(formatTokensCompact(251_181.429)).toBe("251k");
+    expect(formatTokensCompact(-2500)).toBe("-2.5k");
+  });
+
+  it("usage polish 4113376c: compact tokens carry a rounded-up unit and tidy fractions below a thousand", () => {
+    expect(formatTokensCompact(999_600)).toBe("1M");
+    expect(formatTokensCompact(999.6)).toBe("1k");
+    expect(formatTokensCompact(2.345)).toBe("2.35");
+    expect(formatTokensCompact(12.34)).toBe("12.3");
+    expect(formatTokensCompact(0.00123)).toBe("0.0012");
+    expect(formatTokensCompact(Number.NaN)).toBe("");
+    for (const value of [536_440.143, 65_706.429, 50_800.143, 2_100.5, 12.3456]) {
+      expect(formatTokensCompact(value)).not.toMatch(/\d\.\d{2,}[kMBT]?$|,/);
+    }
+  });
+
+  it("usage polish 4113376c: chart dollars read US$1.17 and percent points keep one decimal", () => {
+    expect(formatUsd(1.1666)).toBe("US$1.17");
+    expect(formatUsd(0.5)).toBe("US$0.50");
+    expect(formatPercentPoints(66)).toBe("66%");
+    expect(formatPercentPoints(12.5)).toBe("12.5%");
+    expect(formatPercentPoints(3.64)).toBe("3.6%");
+    expect(formatPercentPoints(0)).toBe("0%");
+    expect(formatPercentPoints(100)).toBe("100%");
   });
 });

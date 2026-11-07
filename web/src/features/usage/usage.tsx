@@ -4,10 +4,8 @@ import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { IconArrowDown, IconArrowUp, IconChevronDown, IconChevronRight, IconSelector } from "@tabler/icons-react";
 import { useId, useState } from "react";
 import {
-  BarChart,
   EmptyState,
   IconButton,
-  LineChart,
   PageHeader,
   Panel,
   SegmentedControl,
@@ -18,8 +16,6 @@ import {
 import { useApi, usageQueryKey, type Usage, type UsageRange, type UsageTask } from "../../app/api";
 import { UsageAnalytics } from "./analytics";
 import {
-  cacheHitRate,
-  costliestTasks,
   errorRate,
   isEmptyUsage,
   periodCacheHit,
@@ -35,18 +31,12 @@ import {
   type SortDirection,
   type TaskSortKey,
 } from "./figures";
-import { formatBucket, formatRate, formatRatePrecise, formatTokens, formatUsd } from "./format";
+import { formatRate, formatRatePrecise, formatTokens, formatUsd } from "./format";
 import { defaultUsageRange, parseUsageRange, rangeDescription, usageRanges } from "./range";
 
 import "./usage.css";
 
 const rangeOptions = usageRanges.map((option) => ({ label: option.label, value: String(option.value) }));
-
-/** Past this many buckets the bars are too narrow for their own value labels. */
-const denseFrom = 14;
-
-/** How many tasks the cost chart shows. */
-const chartTasks = 8;
 
 /** Shown where a figure does not exist, such as the share of a task whose cost is unknown. */
 const noValue = "\u2014";
@@ -129,14 +119,10 @@ function UsageFigures({ usage }: { usage: Usage }) {
 }
 
 function UsageOverview({ usage }: { usage: Usage }) {
-  const { buckets, tasks, bucket: unit, unpriced_calls: unpriced } = usage;
+  const { buckets, bucket: unit, unpriced_calls: unpriced } = usage;
   const spend = periodSpend(buckets);
   const unknown = buckets.filter((bucket) => bucket.spend_usd === null).length;
   const requests = totalRequests(buckets);
-  const dense = buckets.length > denseFrom;
-  const first = buckets[0];
-  const last = buckets[buckets.length - 1];
-  const topTasks = costliestTasks(tasks, chartTasks);
 
   return (
     <>
@@ -159,54 +145,6 @@ function UsageOverview({ usage }: { usage: Usage }) {
             : `${formatTokens(unpriced)} calls in range had no configured price and are excluded from spend.`}
         </Text>
       ) : null}
-      <div className="usage-charts">
-        <Panel p="md">
-          <Text fw={600} mb="sm" aria-hidden="true">
-            Spend
-          </Text>
-          <BarChart
-            title="Spend"
-            className={dense ? "usage-dense" : undefined}
-            data={buckets.map((bucket) => ({
-              label: formatBucket(bucket.at, unit),
-              value: bucket.spend_usd ?? 0,
-              display: formatUsd(bucket.spend_usd),
-            }))}
-          />
-          {first && last ? (
-            <Text size="xs" c="dimmed" mt="xs" aria-hidden="true">
-              {formatBucket(first.at, unit)} to {formatBucket(last.at, unit)}
-            </Text>
-          ) : null}
-        </Panel>
-        <Panel p="md">
-          <Text fw={600} mb="sm" aria-hidden="true">
-            Cost per task
-          </Text>
-          <BarChart
-            title="Cost per task"
-            colorIndex={2}
-            data={topTasks.map((task) => ({
-              label: task.goal,
-              value: task.cost_usd ?? 0,
-              display: formatUsd(task.cost_usd),
-            }))}
-          />
-        </Panel>
-        <Panel p="md">
-          <Text fw={600} mb="sm" aria-hidden="true">
-            Cache hit rate
-          </Text>
-          <LineChart
-            title="Cache hit rate"
-            colorIndex={3}
-            data={buckets.map((bucket) => {
-              const rate = cacheHitRate(bucket.input, bucket.cache_read);
-              return { label: formatBucket(bucket.at, unit), value: rate * 100, display: formatRate(rate) };
-            })}
-          />
-        </Panel>
-      </div>
     </>
   );
 }

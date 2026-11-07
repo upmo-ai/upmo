@@ -1,8 +1,11 @@
-import type { LineSeries } from "@upmo-ai/components";
+import type { BarGroup, LineSeries } from "@upmo-ai/components";
 
 import type { Usage, UsageBucket, UsageProvider } from "../../app/api";
-import { totalRequests } from "./figures";
+import { cacheHitRate, costliestTasks, totalRequests } from "./figures";
 import { formatBucket } from "./format";
+
+/** How many tasks the cost chart shows. */
+export const chartTasks = 8;
 
 type SeriesColor = LineSeries["colorIndex"];
 
@@ -139,4 +142,36 @@ export function spendShare(usage: Usage): SpendShare {
     )
     .sort((a, b) => b.value - a.value);
   return { slices, unpriced: unpricedProviders(usage) };
+}
+
+/** Spend per bucket as one bar each. A bucket with unknown spend is a gap, never a bar of zero. */
+export function spendGroups(usage: Usage): BarGroup[] {
+  return usage.buckets.map((bucket) => ({
+    label: formatBucket(bucket.at, usage.bucket),
+    bars: [{ name: "Spend", value: bucket.spend_usd }],
+  }));
+}
+
+/**
+ * The share of input served from cache in each bucket, in percent points. A
+ * bucket that read no input at all has no rate, so it is a gap rather than 0%.
+ */
+export function cacheHitSeries(usage: Usage): LineSeries[] {
+  return [
+    {
+      name: "Cache hit rate",
+      points: usage.buckets.map((bucket) => ({
+        label: formatBucket(bucket.at, usage.bucket),
+        value: bucket.input + bucket.cache_read === 0 ? null : cacheHitRate(bucket.input, bucket.cache_read) * 100,
+      })),
+    },
+  ];
+}
+
+/** The costliest tasks, one bar each, biggest first. A task with unknown cost goes last as a gap, never a bar of zero. */
+export function taskCostGroups(usage: Usage, limit = chartTasks): BarGroup[] {
+  return costliestTasks(usage.tasks, limit).map((task) => ({
+    label: task.goal,
+    bars: [{ name: "Cost", value: task.cost_usd }],
+  }));
 }

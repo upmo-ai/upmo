@@ -1,4 +1,11 @@
+/*
+ * The page lays out by the width of its own content, not the window: the side
+ * navigation takes a share of the window, so a window width says little about
+ * the room the tiles and charts have. The thresholds are in rem so they do not
+ * depend on the container's font size.
+ */
 .usage-page {
+  container: usage / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
@@ -6,30 +13,79 @@
   max-width: 100%;
 }
 
+/* Two tiles a row on a phone, three from 40rem, all six in one row from 58rem. */
 .usage-figures {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-4);
 }
 
-.usage-charts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
-  gap: var(--space-4);
-}
-
-.usage-charts > * {
+.usage-figures > * {
   min-width: 0;
 }
 
-/* Many narrow bars: the values and day labels stay in each bar's tooltip and the chart's data table. */
-.usage-dense .upmo-barchart__plot {
-  gap: 1px;
+/* The value shrinks with the room so a seven-digit count stays inside its tile. */
+.usage-figures .upmo-stat-tile__value {
+  font-size: clamp(1.125rem, 5.5cqi, 1.75rem);
+  overflow-wrap: anywhere;
 }
 
-.usage-dense .upmo-barchart__value,
-.usage-dense .upmo-barchart__label {
-  display: none;
+/* The chart panels: one column, two across on a wide page. */
+.usage-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.usage-panels > * {
+  min-width: 0;
+}
+
+/* Panels in a row are as tall as the tallest, and the chart takes the room that is left. */
+.usage-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.usage-panel > .upmo-chart {
+  flex: 1 1 auto;
+}
+
+.usage-panel > .upmo-chart > .upmo-chart__plot:not(.upmo-chart__plot--square) {
+  flex: 1 1 auto;
+}
+
+/* The ring has a fixed size, so any extra height goes around it rather than below it. */
+.usage-panel > .upmo-donut {
+  justify-content: center;
+}
+
+@container usage (min-width: 40rem) {
+  .usage-figures {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .usage-figures .upmo-stat-tile__value {
+    font-size: 1.75rem;
+  }
+}
+
+@container usage (min-width: 58rem) {
+  .usage-figures {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .usage-figures .upmo-stat-tile__value {
+    font-size: clamp(1.25rem, 2.1cqi, 1.75rem);
+  }
+
+  .usage-panels {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage-wide {
+    grid-column: 1 / -1;
+  }
 }
 
 /* A sort header is a button, so it works from the keyboard; it reads as the header text. */
@@ -73,26 +129,4 @@
 .usage-task-link:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-
-.usage-analytics {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
-}
-
-.usage-analytics > * {
-  min-width: 0;
-}
-
-/* Latency beside the spend share on wide screens, stacked on narrow ones. */
-.usage-pair {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
-  gap: var(--space-4);
-}
-
-.usage-pair > * {
-  min-width: 0;
 }
