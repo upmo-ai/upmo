@@ -62,3 +62,23 @@ export function formatRate(value: number): string {
 export function formatRatePrecise(value: number): string {
   return precisePercent.format(value);
 }
+
+const seconds = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 });
+
+/** A latency in milliseconds as "850 ms", "1.2 s" or "1 min 5 s", and "No data" when it is not known. */
+export function formatLatency(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) {
+    return "No data";
+  }
+  if (Math.round(ms) < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  const tenths = Math.round(ms / 100);
+  if (tenths < 600) {
+    return `${seconds.format(tenths / 10)} s`;
+  }
+  const whole = Math.round(ms / 1000);
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+}

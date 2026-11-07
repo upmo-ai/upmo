@@ -74,3 +74,25 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+.usage-analytics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.usage-analytics > * {
+  min-width: 0;
+}
+
+/* Latency beside the spend share on wide screens, stacked on narrow ones. */
+.usage-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: var(--space-4);
+}
+
+.usage-pair > * {
+  min-width: 0;
+}
