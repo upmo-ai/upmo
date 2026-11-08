@@ -58,3 +58,8 @@ func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (str
 	}
 	return strings.TrimSpace(req.Messages[len(req.Messages)-1].Text), domain.Usage{}, domain.ClassOK, nil
 }
+
+// Probe always works: the fake has no network.
+func (a Adapter) Probe(context.Context, app.Attempt) (domain.FailureClass, error) {
+	return domain.ClassOK, nil
+}

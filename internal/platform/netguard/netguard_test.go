@@ -337,3 +337,106 @@ func TestTransportRedirect(t *testing.T) {
 		})
 	}
 }
+
+func TestBlockedAddrMetadata(t *testing.T) {
+	for addr, want := range map[string]string{
+		"100.100.100.200": "metadata",
+		"100.100.100.201": "shared address space",
+		"fd00:ec2::254":   "metadata",
+		"fd00:ec3::254":   "unique local",
+	} {
+		if got := BlockedAddr(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("BlockedAddr(%s) = %q, want %q", addr, got, want)
+		}
+	}
+}
+
+func TestBlockedAddrLocal(t *testing.T) {
+	tests := []struct {
+		addr, want string
+	}{
+		{"127.0.0.1", ""},
+		{"::1", ""},
+		{"10.1.2.3", ""},
+		{"172.20.0.5", ""},
+		{"192.168.1.9", ""},
+		{"100.64.0.7", ""},
+		{"fd12:3456::1", ""},
+		{"::ffff:10.0.0.1", ""},
+		{"8.8.8.8", ""},
+		{"169.254.169.254", "link-local"},
+		{"169.254.170.2", "link-local"},
+		{"::ffff:169.254.169.254", "link-local"},
+		{"64:ff9b::a9fe:a9fe", "link-local"},
+		{"fe80::1", "link-local"},
+		{"100.100.100.200", "metadata"},
+		{"fd00:ec2::254", "metadata"},
+		{"0.0.0.0", "this network"},
+		{"::", "unspecified"},
+		{"224.0.0.1", "multicast"},
+		{"192.0.2.1", "documentation"},
+	}
+	for _, tt := range tests {
+		if got := BlockedAddrLocal(netip.MustParseAddr(tt.addr)); got != tt.want {
+			t.Errorf("BlockedAddrLocal(%s) = %q, want %q", tt.addr, got, tt.want)
+		}
+	}
+}
+
+func TestDialLocalNetworkAndLookup(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := map[string][]netip.Addr{
+		"home.test":     {netip.MustParseAddr("127.0.0.1")},
+		"rebind.test":   {netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("169.254.169.254")},
+		"metadata.test": {netip.MustParseAddr("169.254.169.254")},
+	}
+	lookup := func(_ context.Context, _, host string) ([]netip.Addr, error) {
+		if ips, ok := table[host]; ok {
+			return ips, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	tests := []struct {
+		name  string
+		local bool
+		host  string
+		block bool
+	}{
+		{"strict refuses a name that resolves to loopback", false, "home.test", true},
+		{"local dials a name that resolves to loopback", true, "home.test", false},
+		{"local refuses a name with one metadata answer", true, "rebind.test", true},
+		{"local refuses a name that resolves to metadata", true, "metadata.test", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &Guard{LocalNetwork: tt.local, Lookup: lookup}
+			conn, err := g.Dial(context.Background(), "tcp", net.JoinHostPort(tt.host, port))
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if got := errors.Is(err, ErrBlocked); got != tt.block {
+				t.Fatalf("Dial error = %v, want blocked %v", err, tt.block)
+			}
+			if !tt.block && err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

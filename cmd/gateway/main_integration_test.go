@@ -10,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,8 +139,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 || latest != 1 {
-		t.Fatalf("applied versions = %d latest = %d, want 1 and 1", n, latest)
+	if n != 2 || latest != 2 {
+		t.Fatalf("applied versions = %d latest = %d, want 2 and 2", n, latest)
 	}
 
 	var attempts, priced int
@@ -146,6 +149,71 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	if attempts != 4 || priced != 0 {
 		t.Fatalf("ledger attempts=%d priced=%d", attempts, priced)
+	}
+}
+
+func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes32('m')))
+	t.Setenv("UPMO_MASTER_KEY_ID", "k7")
+	keys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ref, key = "own_wiretest", "sk-own-wire-test-key"
+	sealed, err := keys.Seal(ref, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen atomic.Value
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"from the person's provider"}}]}`)
+	}))
+	t.Cleanup(provider.Close)
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house, base_url)
+			VALUES ('11111111-1111-4111-8111-111111111111', 'mine', 'openai_compat', $1, 'local', false, $2)`, []any{ref, provider.URL}},
+		{`INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES ($1, $2, $3, $4)`, []any{ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID}},
+		{`INSERT INTO gateway.routes (name, capability) VALUES ('draft', 'chat')`, nil},
+		{`INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
+			SELECT r.id, 1, a.id, 'm' FROM gateway.routes r, gateway.provider_accounts a`, nil},
+	} {
+		if _, err := owner.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	master := mustMaster(t)
+	handler, err := routes(owner, config.Config{ServiceKey: master})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpserver.Protect(handler))
+	t.Cleanup(srv.Close)
+	out := postJSON(t, srv, mustDerived(t, master), "/upmo.gateway.v1.Gateway/Chat", map[string]any{
+		"route": "draft", "prompt": "hello", "credential_ref": ref,
+	})
+	if out["text"] != "from the person's provider" {
+		t.Fatalf("chat = %v", out)
+	}
+	if seen.Load() != "Bearer "+key {
+		t.Fatalf("the provider was sent %q", seen.Load())
+	}
+}
+
+func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
+	owner := pgtest.New(t)
+	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
+	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)})
+	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
+		t.Fatalf("routes error = %v", err)
 	}
 }
 

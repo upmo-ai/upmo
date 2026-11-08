@@ -25,6 +25,7 @@ type blockedRange struct {
 var blocked4 = []blockedRange{
 	{netip.MustParsePrefix("0.0.0.0/8"), "this network"},
 	{netip.MustParsePrefix("10.0.0.0/8"), "private"},
+	{netip.MustParsePrefix("100.100.100.200/32"), "metadata"},
 	{netip.MustParsePrefix("100.64.0.0/10"), "shared address space"},
 	{netip.MustParsePrefix("127.0.0.0/8"), "loopback"},
 	{netip.MustParsePrefix("169.254.0.0/16"), "link-local"},
@@ -46,6 +47,7 @@ var blocked6 = []blockedRange{
 	{netip.MustParsePrefix("100::/64"), "discard-only"},
 	{netip.MustParsePrefix("2001::/32"), "teredo"},
 	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
+	{netip.MustParsePrefix("fd00:ec2::/32"), "metadata"},
 	{netip.MustParsePrefix("fc00::/7"), "unique local"},
 	{netip.MustParsePrefix("fe80::/10"), "link-local"},
 	{netip.MustParsePrefix("fec0::/10"), "site-local"},
@@ -85,6 +87,19 @@ func BlockedAddr(addr netip.Addr) string {
 	return lookup(blocked6, addr)
 }
 
+// BlockedAddrLocal is BlockedAddr for a target the owner chose to keep on
+// their own network: loopback, private, shared and unique-local addresses
+// may be dialed, and everything else BlockedAddr refuses stays refused. In
+// particular link-local and cloud metadata addresses are never allowed.
+func BlockedAddrLocal(addr netip.Addr) string {
+	switch reason := BlockedAddr(addr); reason {
+	case "private", "loopback", "shared address space", "unique local":
+		return ""
+	default:
+		return reason
+	}
+}
+
 func lookup(ranges []blockedRange, addr netip.Addr) string {
 	for _, r := range ranges {
 		if r.prefix.Contains(addr) {
@@ -98,6 +113,11 @@ func lookup(ranges []blockedRange, addr netip.Addr) string {
 // host.
 type Guard struct {
 	Allow func(host string) bool // nil means nothing is allowed through a blocked address; called on every dial
+	// LocalNetwork judges addresses with BlockedAddrLocal, so private and
+	// loopback targets may be dialed but link-local and metadata never are.
+	LocalNetwork bool
+	// Lookup resolves a host. Nil uses the system resolver. Tests set it.
+	Lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
 // Dial resolves the host in addr to every IP and refuses with ErrBlocked if
@@ -114,7 +134,11 @@ func (g *Guard) Dial(ctx context.Context, network, addr string) (net.Conn, error
 		return nil, err
 	}
 	allowed := g.Allow != nil && g.Allow(host)
-	ips, err := net.DefaultResolver.LookupNetIP(ctx, ipNetwork, host)
+	lookupIP := net.DefaultResolver.LookupNetIP
+	if g.Lookup != nil {
+		lookupIP = g.Lookup
+	}
+	ips, err := lookupIP(ctx, ipNetwork, host)
 	if err != nil {
 		return nil, err
 	}
@@ -122,8 +146,12 @@ func (g *Guard) Dial(ctx context.Context, network, addr string) (net.Conn, error
 		return nil, fmt.Errorf("netguard: no address for %q", host)
 	}
 	if !allowed {
+		judge := BlockedAddr
+		if g.LocalNetwork {
+			judge = BlockedAddrLocal
+		}
 		for _, ip := range ips {
-			if reason := BlockedAddr(ip); reason != "" {
+			if reason := judge(ip); reason != "" {
 				return nil, fmt.Errorf("netguard: %q resolves to %s (%s): %w", host, ip, reason, ErrBlocked)
 			}
 		}

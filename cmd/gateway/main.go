@@ -73,14 +73,23 @@ func routes(pool *pgxpool.Pool, cfg config.Config) (http.Handler, error) {
 		}
 		keys = append(keys, d)
 	}
+	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	gateway.Mount(mux, pool, secretBackends())
+	gateway.Mount(mux, pool, secretBackends(pool, masterKeys))
 	return svcsig.Handler(keys, svcsig.AudienceGateway, mux)
 }
 
-func secretBackends() gateway.Chain {
+// secretBackends is the order a key is looked for: the environment, then the
+// keys people sealed into the database (when a master key is set), then Vault.
+func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) gateway.Chain {
 	chain := gateway.Chain{gateway.EnvSecrets{}}
+	if keys.Ready() {
+		chain = append(chain, gateway.DBSecrets{Pool: pool, Keys: keys})
+	}
 	if addr, token := os.Getenv("UPMO_VAULT_ADDR"), os.Getenv("UPMO_VAULT_TOKEN"); addr != "" && token != "" {
 		chain = append(chain, gateway.VaultSecrets{
 			Addr:  addr,

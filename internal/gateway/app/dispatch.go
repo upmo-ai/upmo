@@ -14,6 +14,9 @@ type Attempt struct {
 	BaseURL string
 	Model   string
 	Secret  string
+	// PlanKind decides which network addresses the adapter may dial: only a
+	// local account may reach a private or loopback address.
+	PlanKind string
 }
 
 // Decider is the decide adapter for one account.adapter value.
@@ -73,6 +76,9 @@ type Dispatch struct {
 	Embed   map[string]Embedder
 	Gates   *Gates
 	Caps    Caps
+	// Status hears the outcome of every attempt, by credential ref. It must
+	// not block. Nil hears nothing.
+	Status Statuses
 }
 
 func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) error {
@@ -140,7 +146,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 			}
 			return domain.DecideResult{}, err
 		}
-		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
+		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
 			result, usage, class, err := decider.Decide(ctx, attempt, req)
@@ -251,7 +257,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 			last = err
 			continue
 		}
-		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
+		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
 			text, usage, class, err := chatter.Chat(ctx, attempt, built)
@@ -321,7 +327,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 			last = err
 			continue
 		}
-		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret}
+		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
 			vectors, usage, class, err := embedder.Embed(ctx, attempt, inputs)
@@ -380,5 +386,8 @@ func (d Dispatch) skip(link domain.Link) (bool, error) {
 func (d Dispatch) seen(ref string, class domain.FailureClass) {
 	if d.Gates != nil {
 		d.Gates.Observe(ref, class, 0)
+	}
+	if d.Status != nil {
+		d.Status.Note(ref, class)
 	}
 }
