@@ -357,11 +357,15 @@ export interface ApiClient {
   shares: {
     /** The teams a task can be shared with. Backend: GET /api/teams. */
     teams(): Promise<Team[]>;
-    /** GET /api/tasks/{id}/share */
+    /**
+     * GET /api/tasks/{id}/share. Owner first, with names. team_id appears only
+     * when the visibility names a team.
+     */
     get(taskId: string): Promise<TaskShare>;
     /**
      * PUT /api/tasks/{id}/share. Owner only: anyone else gets a BrainError 403,
-     * which is a refusal and not a sign-out.
+     * which is a refusal and not a sign-out. A refused update is a BrainError
+     * 422 whose message is written for the person.
      */
     put(taskId: string, update: ShareUpdate): Promise<TaskShare>;
   };
@@ -944,6 +948,11 @@ function isVisibility(value: string): value is TaskVisibility {
   return value === "private" || value === "team" || value === "everyone";
 }
 
+/** The session's person, named by the brain when it answers one. */
+function asPerson(user: CurrentUser, userId: string | undefined): CurrentUser {
+  return userId ? { ...user, memberId: userId } : user;
+}
+
 /** Where a member's dismissal of the passkey offer is kept between page loads. */
 export function passkeyOfferStorageKey(memberId: string): string {
   return `upmo-passkey-offer-dismissed:${memberId}`;
@@ -1221,6 +1230,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       }
       if (response.ok) {
         const body = (await response.json()) as {
+          user_id?: string;
           sign_in_method?: SignInMethod;
           has_password?: boolean;
           passkey_count?: number;
@@ -1237,9 +1247,12 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         if (body.has_password !== undefined) {
           passwordSet = Boolean(body.has_password);
         }
+        // The brain names the signed-in person; the sample persona stands in
+        // when it does not. The stub's own acting person stays the persona.
         if (typeof body.passkey_count === "number" && body.passkey_count >= 0) {
-          return copy(currentUser(body.passkey_count));
+          return copy(asPerson(currentUser(body.passkey_count), body.user_id));
         }
+        return copy(asPerson(currentUser(), body.user_id));
       }
     } catch (err) {
       if (err instanceof BrainError) {

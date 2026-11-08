@@ -16,6 +16,19 @@ import {
   type TaskEvent,
   type TaskStatus,
 } from "../features/tasks/types";
+import {
+  shareLevels,
+  taskVisibilities,
+  type Member,
+  type ShareLevel,
+  type ShareMember,
+  type ShareSubjectType,
+  type ShareUpdate,
+  type TaskShare,
+  type TaskVisibility,
+  type Team,
+  type WorkspaceRole,
+} from "../features/identity/types";
 
 type Json = Record<string, unknown>;
 
@@ -37,6 +50,14 @@ function isNoticeKind(value: unknown): value is NotificationKind {
 
 function isApprovalState(value: unknown): value is ApprovalState {
   return value === "pending" || value === "approved" || value === "denied";
+}
+
+function isShareVisibility(value: unknown): value is TaskVisibility {
+  return (taskVisibilities as readonly string[]).includes(value as string);
+}
+
+function isShareLevel(value: unknown): value is ShareLevel {
+  return (shareLevels as readonly string[]).includes(value as string);
 }
 
 function record(value: unknown, what: string): Json {
@@ -183,7 +204,68 @@ export function toNotification(value: unknown): AppNotification {
   return item;
 }
 
-async function call(path: string, init?: { method: "POST" | "DELETE"; body?: unknown }): Promise<unknown> {
+/** A team as GET /api/teams sends it. */
+export function toTeam(value: unknown): Team {
+  const source = record(value, "team");
+  return { id: text(source, "id"), name: text(source, "name") };
+}
+
+/** A workspace role as the brain writes it. A custom role reads as a member. */
+function workspaceRole(system: unknown): WorkspaceRole {
+  return system === "owner" || system === "admin" || system === "viewer" ? system : "member";
+}
+
+/** A member as GET /api/members sends it: teams by name, the role nested. */
+export function toMember(value: unknown): Member {
+  const source = record(value, "member");
+  const teams = list(source.teams, "teams");
+  if (teams.some((team) => typeof team !== "string")) throw new Error("The brain sent no teams.");
+  return {
+    id: text(source, "id"),
+    name: text(source, "name"),
+    email: text(source, "email"),
+    role: workspaceRole(record(source.role, "role").system),
+    teams: teams as string[],
+  };
+}
+
+function toShareMember(value: unknown): ShareMember {
+  const source = record(value, "share member");
+  const type = source.subject_type;
+  if (type !== "person" && type !== "team") throw new Error("The brain sent an unknown subject.");
+  const role = source.role;
+  if (!isShareLevel(role)) throw new Error("The brain sent an unknown share level.");
+  return {
+    subject_type: type as ShareSubjectType,
+    subject_id: text(source, "subject_id"),
+    name: text(source, "name"),
+    role,
+  };
+}
+
+/** A share as GET and PUT /api/tasks/{id}/share send it: the owner entry first. */
+export function toTaskShare(value: unknown): TaskShare {
+  const source = record(value, "share");
+  const visibility = source.visibility;
+  if (!isShareVisibility(visibility)) throw new Error("The brain sent an unknown visibility.");
+  const share: TaskShare = {
+    visibility,
+    members: list(source.members, "members").map(toShareMember),
+  };
+  if (typeof source.team_id === "string") share.team_id = source.team_id;
+  return share;
+}
+
+/** The PUT body of a share: team_id only when the owner names a team. */
+export function shareBody(update: ShareUpdate): Json {
+  return {
+    visibility: update.visibility,
+    ...(update.visibility === "team" && update.team_id ? { team_id: update.team_id } : {}),
+    members: update.members.map(({ subject_type, subject_id, role }) => ({ subject_type, subject_id, role })),
+  };
+}
+
+async function call(path: string, init?: { method: "POST" | "PUT" | "DELETE"; body?: unknown }): Promise<unknown> {
   const response = await fetch(path, {
     credentials: "include",
     ...(init
@@ -214,6 +296,10 @@ function taskPath(taskId: string) {
   return `/api/tasks/${encodeURIComponent(taskId)}`;
 }
 
+function sharePath(taskId: string) {
+  return `${taskPath(taskId)}/share`;
+}
+
 function decisionPath(id: string, decision: "approve" | "deny") {
   return `/api/approvals/${encodeURIComponent(id)}/${decision}`;
 }
@@ -226,8 +312,8 @@ type Source = "brain" | "stub";
 
 /**
  * The stub client with its task methods (list, get, advance, create, message),
- * its approvals and its notifications answered by the brain instead.
- * Everything else stays on the stub.
+ * its approvals, its notifications, its member list and its task shares
+ * answered by the brain instead. Everything else stays on the stub.
  *
  * The first task call asks GET /api/tasks. When that fails the way a missing
  * brain does (no network, or 404), every task method uses the stub for the rest
@@ -300,6 +386,27 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async deny(id) {
         if ((await chosen()) === "stub") return stub.approvals.deny(id);
         return toApproval(await call(decisionPath(id, "deny"), { method: "POST" }));
+      },
+    },
+    members: {
+      ...stub.members,
+      async list() {
+        if ((await chosen()) === "stub") return stub.members.list();
+        return list(await call("/api/members"), "members").map(toMember);
+      },
+    },
+    shares: {
+      async teams() {
+        if ((await chosen()) === "stub") return stub.shares.teams();
+        return list(await call("/api/teams"), "teams").map(toTeam);
+      },
+      async get(taskId) {
+        if ((await chosen()) === "stub") return stub.shares.get(taskId);
+        return toTaskShare(await call(sharePath(taskId)));
+      },
+      async put(taskId, update) {
+        if ((await chosen()) === "stub") return stub.shares.put(taskId, update);
+        return toTaskShare(await call(sharePath(taskId), { method: "PUT", body: shareBody(update) }));
       },
     },
   };

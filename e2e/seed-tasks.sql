@@ -40,6 +40,11 @@ DELETE FROM tasks.checks WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.chat_events WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.task_events WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.approvals WHERE task_id IN (SELECT id FROM mine);
+-- The shares of the seeded tasks live in identity, not under the task rows,
+-- so they go too: the e2e flow shares one of these tasks and puts it back.
+DELETE FROM identity.shares
+WHERE object_type = 'task'
+  AND (object_id IN (SELECT id FROM mine) OR object_id::text LIKE 'e2e00000-0000-7000-8000-%');
 DELETE FROM tasks.tasks WHERE id IN (SELECT id FROM mine);
 COMMIT;
 
