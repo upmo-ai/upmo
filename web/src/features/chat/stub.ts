@@ -211,6 +211,9 @@ export function createChatsStub(
   }
 
   return {
+    // The stub writes an assistant line on its own, so a send is worth waiting for.
+    repliesLater: true,
+
     async list() {
       return chats
         .map(summarise)

@@ -14,6 +14,11 @@ if (!url) {
 const email = "ada@example.com";
 const password = "correct horse battery";
 
+// The chats e2e/seed-tasks.sql gives the person, newest first. The brain
+// derives each title from the chat's first user line.
+const closeTitle = "What should the October close check first?";
+const pricesTitle = "Summarise the supplier prices";
+
 const viewport = { width: 1280, height: 900 };
 
 async function until(label, read, timeout = 5000) {
@@ -94,19 +99,20 @@ function messageLog(page) {
   return page.getByRole("log", { name: "Messages" });
 }
 
-function replies(page) {
-  return messageLog(page).getByRole("button", { name: "Copy reply" });
-}
-
-// Sends a line and waits for the reply, which the stub writes a moment later.
-// Send is blocked until then, so the next line cannot go early.
+// Sends a line and waits for the stored line itself. The brain answers 202 and
+// writes no assistant line yet, so the wait ends there: no thinking line stays
+// behind and the log is never busy for good.
 async function send(page, text) {
-  const before = await replies(page).count();
   const draft = page.getByRole("textbox", { name: "Message" });
   await draft.fill(text);
   await draft.press("Enter");
   await messageLog(page).getByText(text, { exact: true }).waitFor();
-  await until(`reply to ${text}`, async () => ({ ok: (await replies(page).count()) === before + 1 }), 10_000);
+  await until(`no pending after ${text}`, () =>
+    messageLog(page).evaluate((log) => ({
+      ok: log.getAttribute("aria-busy") === "false" && !log.textContent.includes("Thinking"),
+      busy: log.getAttribute("aria-busy"),
+    })),
+  );
 }
 
 // The thread, not the page, holds the history: it overflows, it sits at the
@@ -218,10 +224,10 @@ async function openChat(page, name) {
   await page.getByRole("heading", { level: 2, name }).waitFor();
 }
 
-async function openFreshChatPage(page) {
+async function openFreshChatPage(page, firstTitle) {
   await page.goto(new URL("/chat", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Chat" }).waitFor();
-  await page.getByRole("heading", { level: 2, name: "Roadmap priorities" }).waitFor();
+  await page.getByRole("heading", { level: 2, name: firstTitle }).waitFor();
 }
 
 const browser = await chromium.launch({
@@ -267,6 +273,19 @@ try {
   await page.getByRole("heading", { level: 1, name: "Chat" }).waitFor();
   await offer.waitFor();
   await expectComposerOnScreen(page, "with the passkey offer");
+
+  // The seeded chat opens first: its lines carry their roles, and the
+  // assistant line its model, tokens and cost.
+  await messageLog(page).getByText(closeTitle, { exact: true }).waitFor();
+  await messageLog(page).getByText("Start with the supplier statements, then reconcile the ledger.").waitFor();
+  await messageLog(page).getByText("claude-opus-5-5 · 412 tokens · US$0.0031").waitFor();
+  const roles = await messageLog(page).evaluate((log) => ({
+    user: log.querySelectorAll(".upmo-chat-msg--user").length,
+    assistant: log.querySelectorAll(".upmo-chat-msg--assistant").length,
+  }));
+  if (roles.user !== 1 || roles.assistant !== 1) {
+    throw new Error(`UPM-201: the seeded chat shows the wrong roles, ${JSON.stringify(roles)}`);
+  }
 
   // A long history stays in the thread: the composer keeps its place, the
   // thread follows the newest message, and the page and main do not scroll.
@@ -315,48 +334,62 @@ try {
   await expectChatInsetMatchesTasks(page, "600x900 inset");
   await page.setViewportSize(viewport);
 
-  // Chats come from the API. A fresh load gives a fresh stub.
-  await openFreshChatPage(page);
+  // Chats come from the brain. The list shows the seeded set, newest first,
+  // each with the preview of its newest line, and the empty one with none.
+  await openFreshChatPage(page, closeTitle);
   const list = page.getByRole("navigation", { name: "Chat list" });
-  await list.getByRole("button", { name: /Research summary/ }).waitFor();
-  await list.getByRole("button", { name: /Supplier review/ }).waitFor();
-
-  // Another chat shows its own lines, and keeps the layout guarantees.
-  await openChat(page, "Research summary");
-  await messageLog(page).getByText(/What did the interviews tell us/).waitFor();
-  await expectComposerOnScreen(page, "UPM-201 after opening another chat");
-
-  // An unknown cost reads Unknown, and nothing is shown as $0.00.
-  await openChat(page, "Supplier review");
-  await messageLog(page).getByText("llama3.3:70b · 61 tokens · Unknown").waitFor();
-  const supplierText = await messageLog(page).innerText();
-  if (/\$0\.00(?!\d)/.test(supplierText)) {
-    throw new Error(`UPM-201: a cost shows as zero, ${JSON.stringify(supplierText)}`);
+  const items = list.locator(".chat-list-scroll ul li button");
+  // The list renders as it loads; read it once all three chats are in.
+  await items.nth(2).waitFor();
+  const titles = await items.allInnerTexts();
+  if (titles.length !== 3 || !titles[0].includes(closeTitle) || !titles[1].includes(pricesTitle) || !titles[2].includes("New chat")) {
+    throw new Error(`UPM-201: the seeded chats are not listed newest first, ${JSON.stringify(titles)}`);
+  }
+  const tips = await items.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("title")));
+  // The first chat is the one this script sent lines to above, so its preview is
+  // the last of them. The second keeps what was seeded.
+  if (tips[0] !== "Back at the newest") {
+    throw new Error(`UPM-201: the first chat shows the wrong preview, ${JSON.stringify(tips[0])}`);
+  }
+  if (tips[1] !== "Prices are stable to the year end; lead times are the open question.") {
+    throw new Error(`UPM-201: the second chat shows the wrong preview, ${JSON.stringify(tips[1])}`);
+  }
+  if (tips[2] !== null) {
+    throw new Error(`UPM-201: an empty chat shows a preview, ${JSON.stringify(tips[2])}`);
   }
 
-  // A new chat is named from its first line, shows that the reply is awaited,
-  // then shows the reply, and moves to the top of the list.
-  await list.getByRole("button", { name: "New chat" }).click();
+  // Another chat shows its own lines, and keeps the layout guarantees. Its
+  // assistant line has no cost, which reads Unknown and never zero.
+  await openChat(page, pricesTitle);
+  await messageLog(page).getByText("Prices are stable to the year end; lead times are the open question.").waitFor();
+  await messageLog(page).getByText("llama3.3:70b · 58 tokens · Unknown").waitFor();
+  const pricesText = await messageLog(page).innerText();
+  if (/\$0\.00(?!\d)/.test(pricesText)) {
+    throw new Error(`UPM-201: a cost shows as zero, ${JSON.stringify(pricesText)}`);
+  }
+  await expectComposerOnScreen(page, "UPM-201 after opening another chat");
+
+  // A new chat is created with a POST, takes the line, names itself from it
+  // and moves to the top of the list, and the stored line survives a reload.
+  await list.getByRole("button", { name: "New chat", exact: true }).click();
   await page.getByRole("heading", { level: 2, name: "New chat" }).waitFor();
-  await draft.fill("Plan the offsite");
-  await draft.press("Enter");
-  await messageLog(page).getByText("Plan the offsite", { exact: true }).waitFor();
-  await messageLog(page).getByText("Thinking", { exact: true }).waitFor({ timeout: 5000 });
-  await page.getByRole("button", { name: "Send" }).waitFor();
-  await messageLog(page).getByText(/A stubbed reply to: "Plan the offsite"/).waitFor({ timeout: 10_000 });
-  await messageLog(page).getByText("Thinking", { exact: true }).waitFor({ state: "hidden" });
+  await page.getByText("Write a message to start this chat.").waitFor();
+  await send(page, "Plan the offsite");
   await page.getByRole("heading", { level: 2, name: "Plan the offsite" }).waitFor();
   const first = list.getByRole("button").filter({ hasText: /\d\d:\d\d$/ }).first();
   const firstText = await first.innerText();
   if (!firstText.includes("Plan the offsite") || (await first.getAttribute("aria-current")) !== "page") {
     throw new Error(`UPM-201: the new chat is not first in the list, ${JSON.stringify(firstText)}`);
   }
-  await expectComposerOnScreen(page, "UPM-201 after a new chat's reply");
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("heading", { level: 2, name: "Plan the offsite" }).waitFor();
+  await messageLog(page).getByText("Plan the offsite", { exact: true }).waitFor();
+  await expectComposerOnScreen(page, "UPM-201 after a new chat's line");
 
   // Phone width: the list is a drawer that starts shut, opens from the thread
   // header, and shuts again once a chat is picked.
   await page.setViewportSize({ width: 390, height: 800 });
-  await openFreshChatPage(page);
+  await openFreshChatPage(page, "Plan the offsite");
   await until("UPM-201 drawer starts shut", async () => {
     const d = await drawer(page);
     return { ok: drawerShut(d), ...d };
@@ -368,15 +401,15 @@ try {
     const d = await drawer(page);
     return { ok: drawerOpen(d), ...d };
   });
-  await openChat(page, "Supplier review");
+  await openChat(page, pricesTitle);
   await until("UPM-201 drawer shuts after a pick", async () => {
     const d = await drawer(page);
     return { ok: drawerShut(d), ...d };
   });
-  await messageLog(page).getByText("llama3.3:70b · 61 tokens · Unknown").waitFor();
+  await messageLog(page).getByText("llama3.3:70b · 58 tokens · Unknown").waitFor();
   await send(page, "Asked on a phone");
-  await expectComposerOnScreen(page, "UPM-201 at 390x800 after a reply");
-  await expectNoSideScroll(page, "UPM-201 at 390x800 after a reply");
+  await expectComposerOnScreen(page, "UPM-201 at 390x800 after a line");
+  await expectNoSideScroll(page, "UPM-201 at 390x800 after a line");
   await page.setViewportSize(viewport);
 
   console.log("chat check passed");

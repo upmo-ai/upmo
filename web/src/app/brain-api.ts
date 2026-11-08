@@ -29,6 +29,7 @@ import {
   type Team,
   type WorkspaceRole,
 } from "../features/identity/types";
+import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 
 type Json = Record<string, unknown>;
 
@@ -58,6 +59,10 @@ function isShareVisibility(value: unknown): value is TaskVisibility {
 
 function isShareLevel(value: unknown): value is ShareLevel {
   return (shareLevels as readonly string[]).includes(value as string);
+}
+
+function isRole(value: unknown): value is LineRole {
+  return value === "user" || value === "assistant";
 }
 
 function record(value: unknown, what: string): Json {
@@ -265,6 +270,46 @@ export function shareBody(update: ShareUpdate): Json {
   };
 }
 
+/** A chat as GET /api/chats lists it: named by its first user line, with its newest line as the preview. */
+export function toChatSummary(value: unknown): ChatSummary {
+  const source = record(value, "chat");
+  return {
+    id: text(source, "id"),
+    title: text(source, "title"),
+    preview: text(source, "preview"),
+    last_activity: text(source, "last_activity"),
+  };
+}
+
+/**
+ * A line as GET /api/chats/{id} sends it. A user line carries no model; a cost
+ * the brain does not know stays null, so it never reads as free.
+ */
+export function toChatLine(value: unknown): ChatLine {
+  const source = record(value, "line");
+  const role = source.role;
+  if (!isRole(role)) throw new Error("The brain sent an unknown role.");
+  const model = source.model;
+  if (model !== null && typeof model !== "string") throw new Error("The brain sent no model.");
+  const cost = source.cost_usd;
+  if (cost !== null && typeof cost !== "number") throw new Error("The brain sent no cost_usd.");
+  return {
+    id: text(source, "id"),
+    role,
+    body: text(source, "body"),
+    model,
+    tokens: whole(source, "tokens"),
+    cost_usd: cost,
+    at: text(source, "at"),
+  };
+}
+
+/** A chat in full, as GET /api/chats/{id} sends it: lines oldest first. */
+export function toChat(value: unknown): Chat {
+  const source = record(value, "chat");
+  return { id: text(source, "id"), lines: list(source.lines, "lines").map(toChatLine) };
+}
+
 async function call(path: string, init?: { method: "POST" | "PUT" | "DELETE"; body?: unknown }): Promise<unknown> {
   const response = await fetch(path, {
     credentials: "include",
@@ -277,8 +322,9 @@ async function call(path: string, init?: { method: "POST" | "PUT" | "DELETE"; bo
         }
       : {}),
   });
-  // 204 No Content: a dismissed notification answers with nothing to read.
-  if (response.status === 204) return null;
+  // 202 Accepted and 204 No Content: a stored chat line (202) and a dismissed
+  // notification (204) both answer with no body to read.
+  if (response.status === 202 || response.status === 204) return null;
   let body: unknown = null;
   try {
     body = await response.json();
@@ -308,12 +354,16 @@ function notificationPath(id: string) {
   return `/api/notifications/${encodeURIComponent(id)}`;
 }
 
+function chatPath(id: string) {
+  return `/api/chats/${encodeURIComponent(id)}`;
+}
+
 type Source = "brain" | "stub";
 
 /**
  * The stub client with its task methods (list, get, advance, create, message),
- * its approvals, its notifications, its member list and its task shares
- * answered by the brain instead. Everything else stays on the stub.
+ * its approvals, its notifications, its member list, its task shares and its
+ * chats answered by the brain instead. Everything else stays on the stub.
  *
  * The first task call asks GET /api/tasks. When that fails the way a missing
  * brain does (no network, or 404), every task method uses the stub for the rest
@@ -323,6 +373,9 @@ type Source = "brain" | "stub";
  */
 export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
   let source: Promise<Source> | undefined;
+  // The source the session settled on, once the probe has answered. Until then
+  // no chat has been read, so nothing is awaited yet.
+  let settled: Source | undefined;
 
   async function probe(): Promise<Source> {
     try {
@@ -335,10 +388,16 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
   }
 
   function chosen(): Promise<Source> {
-    source ??= probe().catch((cause: unknown) => {
-      source = undefined;
-      throw cause;
-    });
+    source ??= probe().then(
+      (value) => {
+        settled = value;
+        return value;
+      },
+      (cause: unknown) => {
+        source = undefined;
+        throw cause;
+      },
+    );
     return source;
   }
 
@@ -407,6 +466,29 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async put(taskId, update) {
         if ((await chosen()) === "stub") return stub.shares.put(taskId, update);
         return toTaskShare(await call(sharePath(taskId), { method: "PUT", body: shareBody(update) }));
+      },
+    },
+    chats: {
+      // The stub plays the assistant a moment later; the brain only stores the
+      // line, so a reply is worth waiting for only while the stub owes one.
+      get repliesLater() {
+        return settled === "stub";
+      },
+      async list() {
+        if ((await chosen()) === "stub") return stub.chats.list();
+        return list(await call("/api/chats"), "chats").map(toChatSummary);
+      },
+      async create() {
+        if ((await chosen()) === "stub") return stub.chats.create();
+        return toChatSummary(await call("/api/chats", { method: "POST" }));
+      },
+      async get(id) {
+        if ((await chosen()) === "stub") return stub.chats.get(id);
+        return toChat(await call(chatPath(id)));
+      },
+      async send(id, body) {
+        if ((await chosen()) === "stub") return stub.chats.send(id, body);
+        await call(chatPath(id), { method: "POST", body: { body } });
       },
     },
   };

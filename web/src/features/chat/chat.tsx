@@ -8,7 +8,7 @@ import type { ComposerOption } from "@upmo-ai/components";
 
 import { chatQueryKey, chatsQueryKey, useApi, useWrite, type ChatLine, type ChatSummary } from "../../app/api";
 import { ShellIcon } from "../../ui/icons";
-import { awaitingReply, formatCost, groupByDay } from "./format";
+import { awaitingReply, formatCost, groupByDay, sendRefusal } from "./format";
 
 import "./chat.css";
 
@@ -156,21 +156,24 @@ export function ChatPage() {
     queryKey: chatQueryKey(activeId ?? ""),
     queryFn: () => api.chats.get(activeId ?? ""),
     enabled: activeId !== undefined,
-    refetchInterval: (current) => (awaitingReply(current.state.data?.lines) ? REPLY_POLL_MS : false),
+    refetchInterval: (current) =>
+      awaitingReply(current.state.data?.lines, api.chats.repliesLater) ? REPLY_POLL_MS : false,
   });
   const lines = thread.data?.lines ?? noLines;
-  const thinking = awaitingReply(lines);
+  const thinking = awaitingReply(lines, api.chats.repliesLater);
 
   const send = useWrite(
     (input: { id: string; body: string }) => api.chats.send(input.id, input.body),
     [chatsQueryKey(), chatQueryKey(activeId ?? "")],
     {
       onSuccess: (_, input) => {
+        // The chat the line went to may no longer be the open one.
+        void queryClient.invalidateQueries({ queryKey: chatQueryKey(input.id) });
         setSentCounts((counts) => ({ ...counts, [input.id]: (counts[input.id] ?? 0) + 1 }));
       },
       onError: (error, input) => {
         awaited.current.delete(input.id);
-        setSendError(error.message);
+        setSendError(sendRefusal(error));
         // Give the words back unless something new is already being typed.
         setDraft((current) => (current === "" ? input.body : current));
       },
