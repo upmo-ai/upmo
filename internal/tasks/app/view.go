@@ -7,15 +7,15 @@ import (
 )
 
 // ViewTask returns one task the person can see under row security.
-func ViewTask(ctx context.Context, view Viewer, access Access, taskID string) (Task, error) {
+func ViewTask(ctx context.Context, view Viewer, access Access, taskID string) (TaskView, error) {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
-		return Task{}, ErrAccess
+		return TaskView{}, ErrAccess
 	}
 	if _, err := uuid.Parse(taskID); err != nil {
-		return Task{}, ErrTask
+		return TaskView{}, ErrTask
 	}
 	if view == nil {
-		return Task{}, ErrGone
+		return TaskView{}, ErrGone
 	}
 	return view.View(ctx, access, taskID)
 }

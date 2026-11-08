@@ -191,6 +191,7 @@ func sandboxHandler(book *fakeBook, boxes app.Sandboxes) http.Handler {
 	Handler{
 		Book:      book,
 		List:      book,
+		View:      book,
 		Sandboxes: boxes,
 		Access: func(*http.Request) (app.Access, bool) {
 			return app.Access{UserID: taskID, Allow: "task:create,task:edit"}, true

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -76,16 +77,23 @@ func TestUnknownKindIsRefused(t *testing.T) {
 }
 
 func TestListReturnsTasks(t *testing.T) {
-	book := &fakeBook{listed: []app.Task{{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}}
+	book := &fakeBook{listed: []app.TaskSummary{{
+		ID: taskID, Title: "File the receipts", State: domain.Checking, Status: domain.ShownWorking, Phase: domain.Checking,
+		SpentCents: 120, LimitCents: 500, UpdatedAt: time.Date(2026, 11, 7, 9, 30, 0, 0, time.UTC),
+	}}}
 	rec := call(t, book, http.MethodGet, "/api/tasks", "", true)
 	if rec.Code != http.StatusOK || book.lists != 1 {
 		t.Fatalf("status %d lists %d body %s", rec.Code, book.lists, rec.Body.String())
 	}
-	var got []map[string]string
+	var got []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0]["id"] != taskID || got[0]["status"] != string(domain.Working) {
+	want := map[string]any{
+		"id": taskID, "title": "File the receipts", "status": "Working", "phase": "Checking",
+		"spent_cents": float64(120), "limit_cents": float64(500), "updated_at": "2026-11-07T09:30:00Z",
+	}
+	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("tasks = %#v", got)
 	}
 }
@@ -112,16 +120,35 @@ func TestListEmptyAllowDoesNotCallTheLister(t *testing.T) {
 const taskID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
 func TestGetReturnsATask(t *testing.T) {
-	book := &fakeBook{viewed: app.Task{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}
+	at := time.Date(2026, 11, 7, 9, 30, 0, 0, time.UTC)
+	book := &fakeBook{viewed: app.TaskView{
+		TaskSummary: app.TaskSummary{
+			ID: taskID, Title: "File the receipts", State: domain.NeedsApproval, Status: domain.ShownNeedsApproval, Phase: domain.Working,
+			SpentCents: 120, LimitCents: 500, UpdatedAt: at,
+		},
+		Result:   "All filed",
+		Detail:   "parent_cancelled",
+		Subtasks: []app.SubtaskView{{ID: "sub-1", Title: "Sort the mail", Status: domain.ShownDone}},
+		Events:   []app.Event{{ID: "ev-1", Time: at, Phase: domain.Working, Type: "pause", Message: "Waiting for approval"}},
+	}}
 	rec := call(t, book, http.MethodGet, "/api/tasks/"+taskID, "", true)
 	if rec.Code != http.StatusOK || book.views != 1 {
 		t.Fatalf("status %d views %d body %s", rec.Code, book.views, rec.Body.String())
 	}
-	var got map[string]string
+	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["id"] != taskID || got["status"] != string(domain.Working) || got["goal"] != "File the receipts" {
+	want := map[string]any{
+		"id": taskID, "title": "File the receipts", "status": "Needs approval", "phase": "Working",
+		"spent_cents": float64(120), "limit_cents": float64(500), "updated_at": "2026-11-07T09:30:00Z",
+		"result": "All filed", "detail": "parent_cancelled",
+		"subtasks": []any{map[string]any{"id": "sub-1", "title": "Sort the mail", "status": "Done"}},
+		"events": []any{map[string]any{
+			"id": "ev-1", "time": "2026-11-07T09:30:00Z", "phase": "Working", "type": "pause", "message": "Waiting for approval",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("task = %#v", got)
 	}
 }
@@ -146,8 +173,8 @@ func TestProgressReturnsPhase(t *testing.T) {
 	book := &fakeBook{}
 	progress := fakeProgress{taskID: {Phase: "toolchain", Events: 3}}
 	rec := callProgress(t, book, progress, "/api/tasks/"+taskID+"/progress", true)
-	if rec.Code != http.StatusOK || book.views != 1 {
-		t.Fatalf("status %d views %d body %s", rec.Code, book.views, rec.Body.String())
+	if rec.Code != http.StatusOK || book.finds != 1 || book.views != 0 {
+		t.Fatalf("status %d finds %d body %s", rec.Code, book.finds, rec.Body.String())
 	}
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -161,18 +188,18 @@ func TestProgressReturnsPhase(t *testing.T) {
 func TestProgressMissingIsNotFound(t *testing.T) {
 	book := &fakeBook{}
 	rec := callProgress(t, book, fakeProgress{}, "/api/tasks/"+taskID+"/progress", true)
-	if rec.Code != http.StatusNotFound || book.views != 1 {
-		t.Fatalf("status %d views %d", rec.Code, book.views)
+	if rec.Code != http.StatusNotFound || book.finds != 1 || book.views != 0 {
+		t.Fatalf("status %d finds %d", rec.Code, book.finds)
 	}
 }
 
 func TestEditorReturnsURLTokenAndExpiry(t *testing.T) {
-	book := &fakeBook{viewed: app.Task{ID: taskID, Status: domain.Working, Goal: "File the receipts"}}
+	book := &fakeBook{viewed: app.TaskView{TaskSummary: app.TaskSummary{ID: taskID, Title: "File the receipts", State: domain.Working}}}
 	editor := &fakeEditorSandboxes{url: "http://127.0.0.1:30001"}
 	now := time.Unix(1_700_000_000, 0)
 	rec := callEditor(t, book, editor, fakeEditorSigner{token: "signed"}, now)
-	if rec.Code != http.StatusOK || book.views != 1 || editor.calls != 1 {
-		t.Fatalf("status %d views %d calls %d body %s", rec.Code, book.views, editor.calls, rec.Body.String())
+	if rec.Code != http.StatusOK || book.finds != 1 || book.views != 0 || editor.calls != 1 {
+		t.Fatalf("status %d finds %d calls %d body %s", rec.Code, book.finds, editor.calls, rec.Body.String())
 	}
 	var got map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -188,16 +215,16 @@ func TestEditorNoSandboxIsConflict(t *testing.T) {
 	book := &fakeBook{}
 	editor := &fakeEditorSandboxes{err: app.ErrNoTaskSandbox}
 	rec := callEditor(t, book, editor, fakeEditorSigner{token: "x"}, time.Now())
-	if rec.Code != http.StatusConflict || book.views != 1 {
-		t.Fatalf("status %d views %d", rec.Code, book.views)
+	if rec.Code != http.StatusConflict || book.finds != 1 || book.views != 0 {
+		t.Fatalf("status %d finds %d", rec.Code, book.finds)
 	}
 }
 
 func TestProgressGoneTaskIsNotFound(t *testing.T) {
 	book := &fakeBook{err: app.ErrGone}
 	rec := callProgress(t, book, fakeProgress{taskID: {Phase: "clone", Events: 1}}, "/api/tasks/"+taskID+"/progress", true)
-	if rec.Code != http.StatusNotFound || book.views != 1 {
-		t.Fatalf("status %d views %d", rec.Code, book.views)
+	if rec.Code != http.StatusNotFound || book.finds != 1 || book.views != 0 {
+		t.Fatalf("status %d finds %d", rec.Code, book.finds)
 	}
 }
 
@@ -285,12 +312,13 @@ type fakeBook struct {
 	calls  int
 	lists  int
 	views  int
-	viewed app.Task
+	finds  int
+	viewed app.TaskView
 	taskID string
 	input  domain.Input
 	inputs []domain.Input
 	err    error
-	listed []app.Task
+	listed []app.TaskSummary
 	// openID is the id Open returns; empty means task-1.
 	openID string
 }
@@ -328,23 +356,34 @@ func (f *fakeBook) Transition(_ context.Context, _ app.Access, taskID string, in
 	return app.Task{ID: id, Status: status, Goal: goal}, nil
 }
 
-func (f *fakeBook) List(context.Context, app.Access) ([]app.Task, error) {
+func (f *fakeBook) List(context.Context, app.Access) ([]app.TaskSummary, error) {
 	f.lists++
 	if f.err != nil {
 		return nil, f.err
 	}
-	return append([]app.Task(nil), f.listed...), nil
+	return append([]app.TaskSummary(nil), f.listed...), nil
 }
 
-func (f *fakeBook) View(_ context.Context, _ app.Access, taskID string) (app.Task, error) {
+func (f *fakeBook) View(_ context.Context, _ app.Access, taskID string) (app.TaskView, error) {
 	f.views++
 	if f.err != nil {
-		return app.Task{}, f.err
+		return app.TaskView{}, f.err
 	}
 	if f.viewed.ID != "" {
 		return f.viewed, nil
 	}
-	return app.Task{ID: taskID, Status: domain.Preparing, Goal: "File the receipts"}, nil
+	return app.TaskView{TaskSummary: app.TaskSummary{ID: taskID, Title: "File the receipts", State: domain.Preparing, Status: domain.ShownWorking, Phase: domain.Preparing}}, nil
+}
+
+func (f *fakeBook) Find(_ context.Context, _ app.Access, taskID string) (app.Task, error) {
+	f.finds++
+	if f.err != nil {
+		return app.Task{}, f.err
+	}
+	if f.viewed.ID != "" {
+		return app.Task{ID: f.viewed.ID, Goal: f.viewed.Title, Status: f.viewed.State}, nil
+	}
+	return app.Task{ID: taskID, Goal: "File the receipts", Status: domain.Preparing}, nil
 }
 
 func (f *fakeBook) Record(context.Context, app.Access, string, []domain.Check) (bool, error) {

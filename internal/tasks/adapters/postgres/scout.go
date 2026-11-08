@@ -22,10 +22,10 @@ func (s Store) ListOpenGoals(ctx context.Context, userID uuid.UUID) ([]app.OpenG
 	}
 	out := make([]app.OpenGoal, 0, len(tasks))
 	for _, task := range tasks {
-		if task.Status == domain.Done || task.Status == domain.Failed {
+		if task.State == domain.Done || task.State == domain.Failed {
 			continue
 		}
-		out = append(out, app.OpenGoal{ID: task.ID, Goal: task.Goal})
+		out = append(out, app.OpenGoal{ID: task.ID, Goal: task.Title})
 	}
 	return out, nil
 }

@@ -14,7 +14,7 @@ func TestViewTaskReturnsTheTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != preparingTask || got.Status != domain.Preparing || view.calls != 1 {
+	if got.ID != preparingTask || got.State != domain.Preparing || got.Status != domain.ShownWorking || view.calls != 1 {
 		t.Fatalf("task = %#v calls = %d", got, view.calls)
 	}
 }

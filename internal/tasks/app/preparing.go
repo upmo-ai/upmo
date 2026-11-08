@@ -14,7 +14,34 @@ var ErrPreparing = errors.New("tasks: no preparing progress")
 
 // Viewer returns one task the person can see under row security.
 type Viewer interface {
-	View(ctx context.Context, access Access, taskID string) (Task, error)
+	View(ctx context.Context, access Access, taskID string) (TaskView, error)
+}
+
+// Finder returns the stored id, goal and status of one task the person can see
+// under row security, in one query. It is the access check for callers that do
+// not need the events, subtasks or result that Viewer reads.
+type Finder interface {
+	Find(ctx context.Context, access Access, taskID string) (Task, error)
+}
+
+// Reader reads a task in full or only checks that the person can see it.
+type Reader interface {
+	Viewer
+	Finder
+}
+
+// FindTask validates the caller and returns the stored head of one task.
+func FindTask(ctx context.Context, find Finder, access Access, taskID string) (Task, error) {
+	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
+		return Task{}, ErrAccess
+	}
+	if _, err := uuid.Parse(taskID); err != nil {
+		return Task{}, ErrTask
+	}
+	if find == nil {
+		return Task{}, ErrGone
+	}
+	return find.Find(ctx, access, taskID)
 }
 
 // Progresses returns the in-process provisioning record for a task.
@@ -25,17 +52,8 @@ type Progresses interface {
 
 // PreparingProgress returns the provisioning phase for a task the person can
 // see. The record lives only in this brain process until Release.
-func PreparingProgress(ctx context.Context, view Viewer, progress Progresses, access Access, taskID string) (runtime.Record, error) {
-	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
-		return runtime.Record{}, ErrAccess
-	}
-	if _, err := uuid.Parse(taskID); err != nil {
-		return runtime.Record{}, ErrTask
-	}
-	if view == nil {
-		return runtime.Record{}, ErrGone
-	}
-	if _, err := view.View(ctx, access, taskID); err != nil {
+func PreparingProgress(ctx context.Context, find Finder, progress Progresses, access Access, taskID string) (runtime.Record, error) {
+	if _, err := FindTask(ctx, find, access, taskID); err != nil {
 		return runtime.Record{}, err
 	}
 	if progress == nil {

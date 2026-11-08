@@ -18,7 +18,7 @@ import (
 type Handler struct {
 	Book   app.Book
 	List   app.Lister
-	View   app.Viewer
+	View   app.Reader
 	Access func(r *http.Request) (app.Access, bool)
 	// Sandboxes starts a task's sandbox on Open and releases it when the
 	// task ends. Open answers once the sandbox is created; provisioning runs
@@ -81,9 +81,9 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	if refuse(w, err) {
 		return
 	}
-	body := make([]map[string]string, 0, len(tasks))
+	body := make([]summaryJSON, 0, len(tasks))
 	for _, task := range tasks {
-		body = append(body, taskJSON(task))
+		body = append(body, summaryBody(task))
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -117,7 +117,7 @@ func (h Handler) get(w http.ResponseWriter, r *http.Request) {
 	if refuse(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, taskJSON(task))
+	writeJSON(w, http.StatusOK, taskBody(task))
 }
 
 func (h Handler) open(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +175,7 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a task needs a kind")
 		return
 	}
-	task, err := app.StepTask(r.Context(), h.Book, h.Sandboxes, access, r.PathValue("id"), domain.Input{
+	stepped, err := app.StepView(r.Context(), h.Book, h.View, h.Sandboxes, access, r.PathValue("id"), domain.Input{
 		Kind: kind,
 		Body: input.Body,
 		Turn: input.Turn,
@@ -183,7 +183,11 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 	if refuse(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, taskJSON(task))
+	if stepped.Posted != nil {
+		writeJSON(w, http.StatusCreated, eventBody(*stepped.Posted))
+		return
+	}
+	writeJSON(w, http.StatusOK, taskBody(stepped.Task))
 }
 
 func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, bool) {
