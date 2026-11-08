@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,6 +20,8 @@ var (
 	ErrChat = errors.New("chat: chat")
 	// ErrGone is a chat this person cannot see.
 	ErrGone = errors.New("chat: no such chat")
+	// ErrSay is a chat this person can see but not write to.
+	ErrSay = errors.New("chat: say")
 )
 
 // Access is the signed-in person and the allow list on this call.
@@ -30,26 +34,67 @@ type Access struct {
 	SharedEdit string
 }
 
-// Chat is one owned chat and the lines said in it.
+// Line is one stored line of a chat. A user line carries no model and no cost.
+type Line struct {
+	ID           string
+	Role         string
+	Body         string
+	Model        *string
+	Tokens       int
+	CostMicroUSD *int64
+	At           time.Time
+}
+
+// ChatSummary is one chat in a list: its derived title and preview, and when
+// it was last active.
+type ChatSummary struct {
+	ID           string
+	Title        string
+	Preview      string
+	LastActivity time.Time
+}
+
+// Chat is one owned chat and its lines, oldest first.
 type Chat struct {
 	ID    string
-	Lines []string
+	Lines []Line
 }
 
 // Book stores chats and their lines.
 type Book interface {
-	Open(ctx context.Context, access Access) (string, error)
+	Open(ctx context.Context, access Access) (ChatSummary, error)
+	List(ctx context.Context, access Access) ([]ChatSummary, error)
 	Say(ctx context.Context, access Access, chatID, body string) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
 }
 
 // Open starts a chat for this person. The profile stays in memory and is read when a turn is built.
 // It does not open a login session.
-func Open(ctx context.Context, book Book, access Access) (string, error) {
+func Open(ctx context.Context, book Book, access Access) (ChatSummary, error) {
 	if err := caller(access); err != nil {
-		return "", err
+		return ChatSummary{}, err
+	}
+	// The database would refuse the insert for a person without chat:create
+	// and the handler would answer 500; refuse here so it is a 403.
+	if !slices.Contains(strings.Split(access.Allow, ","), "chat:create") {
+		return ChatSummary{}, ErrAccess
 	}
 	return book.Open(ctx, access)
+}
+
+// List returns the chats this person can view, newest activity first.
+func List(ctx context.Context, book Book, access Access) ([]ChatSummary, error) {
+	if err := caller(access); err != nil {
+		return nil, err
+	}
+	got, err := book.List(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	if got == nil {
+		got = []ChatSummary{}
+	}
+	return got, nil
 }
 
 // Say appends one line.
@@ -80,7 +125,7 @@ func Read(ctx context.Context, book Book, access Access, chatID string) (Chat, e
 		return Chat{}, err
 	}
 	if got.Lines == nil {
-		got.Lines = []string{}
+		got.Lines = []Line{}
 	}
 	return got, nil
 }

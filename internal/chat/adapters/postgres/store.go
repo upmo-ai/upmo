@@ -24,25 +24,26 @@ type Store struct {
 }
 
 // Open inserts one private chat. It does not touch a login session or the profile.
-func (s Store) Open(ctx context.Context, access app.Access) (string, error) {
+func (s Store) Open(ctx context.Context, access app.Access) (app.ChatSummary, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
-		return "", err
+		return app.ChatSummary{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var id string
+	var createdAt time.Time
 	err = tx.QueryRow(ctx, `
 		INSERT INTO chat.chats (owner_user_id, visibility)
 		VALUES ($1::uuid, 'private')
-		RETURNING id::text`, access.UserID).Scan(&id)
+		RETURNING id::text, created_at`, access.UserID).Scan(&id, &createdAt)
 	if err != nil {
-		return "", fmt.Errorf("chat: open: %w", err)
+		return app.ChatSummary{}, fmt.Errorf("chat: open: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", err
+		return app.ChatSummary{}, err
 	}
-	return id, nil
+	return app.ChatSummary{ID: id, Title: domain.NewChatTitle, LastActivity: createdAt.UTC()}, nil
 }
 
 // Say appends one line.
@@ -56,7 +57,7 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 	var one int
 	err = tx.QueryRow(ctx, `SELECT 1 FROM chat.chats WHERE id = $1::uuid FOR UPDATE`, chatID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return app.ErrGone
+		return goneOrSay(ctx, tx, chatID)
 	}
 	if err != nil {
 		return fmt.Errorf("chat: lock: %w", err)
@@ -93,6 +94,80 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 	return tx.Commit(ctx)
 }
 
+// goneOrSay splits a locked miss in Say. The lock asks for edit rights too, so
+// a chat this person can only view hides inside it: one unlocked look tells a
+// read-only chat from one that is gone.
+func goneOrSay(ctx context.Context, tx pgx.Tx, chatID string) error {
+	var one int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&one)
+	switch {
+	case err == nil:
+		return app.ErrSay
+	case errors.Is(err, pgx.ErrNoRows):
+		return app.ErrGone
+	default:
+		return fmt.Errorf("chat: view: %w", err)
+	}
+}
+
+// List returns the chats this person can view under row security, newest
+// activity first, at most 100.
+func (s Store) List(ctx context.Context, access app.Access) ([]app.ChatSummary, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT chat.id::text,
+		       COALESCE((
+		         SELECT body FROM chat.lines AS line
+		         WHERE line.chat_id = chat.id AND line.role = 'user'
+		         ORDER BY line.seq
+		         LIMIT 1
+		       ), '') AS first_user_line,
+		       COALESCE((
+		         SELECT body FROM chat.lines AS line
+		         WHERE line.chat_id = chat.id
+		         ORDER BY line.seq DESC
+		         LIMIT 1
+		       ), '') AS newest_line,
+		       COALESCE((
+		         SELECT line.at FROM chat.lines AS line
+		         WHERE line.chat_id = chat.id
+		         ORDER BY line.seq DESC
+		         LIMIT 1
+		       ), chat.created_at) AS last_activity
+		FROM chat.chats AS chat
+		ORDER BY last_activity DESC, chat.id DESC
+		LIMIT 100`)
+	if err != nil {
+		return nil, fmt.Errorf("chat: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := []app.ChatSummary{}
+	for rows.Next() {
+		var summary app.ChatSummary
+		var firstUser, newest string
+		if err := rows.Scan(&summary.ID, &firstUser, &newest, &summary.LastActivity); err != nil {
+			return nil, fmt.Errorf("chat: list: %w", err)
+		}
+		summary.Title = domain.Title(firstUser)
+		summary.Preview = domain.Preview(newest)
+		summary.LastActivity = summary.LastActivity.UTC()
+		out = append(out, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chat: list: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Read returns the lines in order.
 func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.Chat, error) {
 	tx, err := s.begin(ctx, access)
@@ -110,7 +185,7 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 		return app.Chat{}, fmt.Errorf("chat: read: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT body
+		SELECT id::text, role, body, model, tokens, cost_micro_usd, at
 		FROM chat.lines
 		WHERE chat_id = $1::uuid
 		ORDER BY seq`, chatID)
@@ -118,13 +193,13 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 		return app.Chat{}, fmt.Errorf("chat: lines: %w", err)
 	}
 	defer rows.Close()
-	lines := make([]string, 0)
+	lines := make([]app.Line, 0)
 	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
+		var line app.Line
+		if err := rows.Scan(&line.ID, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At); err != nil {
 			return app.Chat{}, fmt.Errorf("chat: line: %w", err)
 		}
-		lines = append(lines, body)
+		lines = append(lines, line)
 	}
 	if err := rows.Err(); err != nil {
 		return app.Chat{}, fmt.Errorf("chat: lines: %w", err)
