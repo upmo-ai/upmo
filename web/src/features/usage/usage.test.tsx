@@ -108,7 +108,7 @@ describe("Usage page", () => {
     cleanup();
   });
 
-  it("UPM-204 usage analytics: shows the figures, charts and task table from the API", async () => {
+  it("UPM-204 usage panels: shows the figures, charts and task table from the API", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     expect(await screen.findByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
@@ -177,7 +177,7 @@ describe("Usage page", () => {
     expect(props.groups.every((group) => group.bars.length === 1)).toBe(true);
   });
 
-  it("usage analytics: the range selector offers Today, 7, 30 and 90 days and starts on 7 days", async () => {
+  it("usage panels: the range selector offers Today, 7, 30 and 90 days and starts on 7 days", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     const group = screen.getByRole("radiogroup", { name: "Range" });
@@ -193,7 +193,7 @@ describe("Usage page", () => {
     expect(within(group).getByRole("radio", { name: "7 days" })).toHaveProperty("checked", true);
   });
 
-  it("usage analytics: a range switch changes the data, the description and the URL", async () => {
+  it("usage panels: a range switch changes the data, the description and the URL", async () => {
     const asked: UsageRange[] = [];
     const stub = createStubApi();
     const week = await stub.usage(7);
@@ -231,7 +231,7 @@ describe("Usage page", () => {
     expect(asked).toEqual([7, 30, 90]);
   });
 
-  it("usage analytics: opens on the range in the URL and falls back to 7 days for a range it does not know", async () => {
+  it("usage panels: opens on the range in the URL and falls back to 7 days for a range it does not know", async () => {
     const asked: UsageRange[] = [];
     renderAt("/usage?range=90", withUsage((usage) => usage, asked));
     expect(await screen.findByText("Last 90 days. Figures come from the ledger.")).toBeTruthy();
@@ -249,7 +249,7 @@ describe("Usage page", () => {
     expect(screen.getByRole("radio", { name: "7 days" })).toHaveProperty("checked", true);
   });
 
-  it("usage analytics: Today shows hourly labels and a description for the day", async () => {
+  it("usage panels: Today shows hourly labels and a description for the day", async () => {
     const today = await createStubApi().usage("today");
     const history = renderAt("/usage");
     await screen.findByRole("table", { name: "Spend" });
@@ -275,7 +275,7 @@ describe("Usage page", () => {
     expect(within(statTile("Spend")).getByText("Excludes 1 hour with unknown cost")).toBeTruthy();
   });
 
-  it("usage analytics: the stat tiles show the figures of the range", async () => {
+  it("usage panels: the stat tiles show the figures of the range", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
@@ -306,7 +306,7 @@ describe("Usage page", () => {
     expect(within(statTile("Spend")).getByText("Excludes 1 day with unknown cost")).toBeTruthy();
   });
 
-  it("usage analytics: says Unknown, never zero, when every bucket in the range has unknown spend", async () => {
+  it("usage panels: says Unknown, never zero, when every bucket in the range has unknown spend", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       buckets: usage.buckets.map((bucket) => ({ ...bucket, spend_usd: null })),
@@ -321,7 +321,7 @@ describe("Usage page", () => {
     const tile = statTile("Spend");
     expect(within(tile).getByText("Unknown")).toBeTruthy();
     expect(within(tile).getByText("Cost is unknown for every day in this period")).toBeTruthy();
-    // The analytics charts draw zero on their value axes, so look at the Spend tile and chart instead of the whole page.
+    // The charts draw zero on their value axes, so look at the Spend tile and chart instead of the whole page.
     expect(within(tile).queryByText(formatUsd(0))).toBeNull();
     expect(within(screen.getByRole("table", { name: "Spend" })).queryByText(formatUsd(0))).toBeNull();
     expect(screen.queryByText(/Excludes/)).toBeNull();
@@ -330,7 +330,7 @@ describe("Usage page", () => {
     expect(within(taskTable()).queryByText(formatUsd(0))).toBeNull();
   });
 
-  it("usage analytics: shows a zero total when known spend really is zero", async () => {
+  it("usage panels: shows a zero total when known spend really is zero", async () => {
     renderAt(
       "/usage",
       withUsage((usage) => ({ ...usage, buckets: usage.buckets.map((bucket) => ({ ...bucket, spend_usd: 0 })) })),
@@ -340,7 +340,7 @@ describe("Usage page", () => {
     expect(screen.queryByText(/Excludes/)).toBeNull();
   });
 
-  it("usage analytics: notes the calls with no configured price and pluralises the note", async () => {
+  it("usage panels: notes the calls with no configured price and pluralises the note", async () => {
     const stub = createStubApi();
     const week = await stub.usage(7);
     expect(week.unpriced_calls).toBeGreaterThan(1);
@@ -364,7 +364,7 @@ describe("Usage page", () => {
     expect(screen.queryByText(/no configured price/)).toBeNull();
   });
 
-  it("usage analytics: the cost per task chart lists the tasks by cost and puts unknown cost last as Unknown", async () => {
+  it("usage panels: the cost per task chart lists the tasks by cost and puts unknown cost last as Unknown", async () => {
     const month = await createStubApi().usage(30);
     expect(month.tasks.some((task) => task.cost_usd === null)).toBe(true);
     renderAt("/usage?range=30");
@@ -386,7 +386,7 @@ describe("Usage page", () => {
     expect(within(taskRow(unknown[unknown.length - 1]!)).getByText("Unknown")).toBeTruthy();
   });
 
-  it("usage analytics: the cost per task chart keeps the 8 costliest tasks, then unknown cost, and the table keeps them all", async () => {
+  it("usage panels: the cost per task chart keeps the 8 costliest tasks, then unknown cost, and the table keeps them all", async () => {
     const tasks = [
       ...Array.from({ length: 7 }, (_, index) => plainTask(`known-${index + 1}`, index + 1, 10)),
       plainTask("unknown-1", null, 10),
@@ -410,7 +410,7 @@ describe("Usage page", () => {
     expect(taskGoals()).toHaveLength(10);
   });
 
-  it("usage analytics: lists each task with tokens, cost and share, and keeps unknown cost as Unknown", async () => {
+  it("usage panels: lists each task with tokens, cost and share, and keeps unknown cost as Unknown", async () => {
     const week = await createStubApi().usage(7);
     const spend = sum(week.buckets.map((bucket) => bucket.spend_usd ?? 0));
     renderAt("/usage");
@@ -446,7 +446,7 @@ describe("Usage page", () => {
     expect(within(unknownRow).queryByText(formatUsd(0))).toBeNull();
   });
 
-  it("usage analytics: the share is a dash when the cost of the task is unknown", async () => {
+  it("usage panels: the share is a dash when the cost of the task is unknown", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
@@ -461,14 +461,14 @@ describe("Usage page", () => {
     }
   });
 
-  it("usage analytics: the task name links to the task page", async () => {
+  it("usage panels: the task name links to the task page", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     const link = within(taskTable()).getByRole("link", { name: "Daily finance digest" });
     expect(link.getAttribute("href")).toBe("/tasks/aster-digest");
   });
 
-  it("usage analytics: sorts the task table by cost, tokens and share, with aria-sort, unknown last and ties kept in order", async () => {
+  it("usage panels: sorts the task table by cost, tokens and share, with aria-sort, unknown last and ties kept in order", async () => {
     const tasks = [
       plainTask("alpha", 5, 100),
       plainTask("bravo", 9, 50),
@@ -509,7 +509,7 @@ describe("Usage page", () => {
     expect(sorts()).toEqual(["none", "descending", "none"]);
   });
 
-  it("usage analytics: tasks with equal tokens keep the order the API sent them in, ascending and descending", async () => {
+  it("usage panels: tasks with equal tokens keep the order the API sent them in, ascending and descending", async () => {
     const tasks = [
       plainTask("alpha", 1, 100),
       plainTask("bravo", 1, 400),
@@ -530,7 +530,7 @@ describe("Usage page", () => {
     expect(taskGoals()).toEqual(["alpha", "charlie", "bravo", "delta"]);
   });
 
-  it("usage analytics: the model split button points at the split only while it is in the page", async () => {
+  it("usage panels: the model split button points at the split only while it is in the page", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     const label = "the model split for Daily finance digest";
@@ -548,13 +548,13 @@ describe("Usage page", () => {
     expect(again.hasAttribute("aria-controls")).toBe(false);
   });
 
-  it("usage analytics: the task table is named once, not by its scroll container too", async () => {
+  it("usage panels: the task table is named once, not by its scroll container too", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     expect(screen.getAllByLabelText("Task breakdown")).toHaveLength(1);
   });
 
-  it("usage analytics: the sort headers are buttons, so the keyboard reaches and operates them", async () => {
+  it("usage panels: the sort headers are buttons, so the keyboard reaches and operates them", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     for (const label of ["Tokens", "Cost", "Share"]) {
@@ -569,7 +569,7 @@ describe("Usage page", () => {
     }
   });
 
-  it("usage analytics: orders the task table by cost, biggest first, from the API data", async () => {
+  it("usage panels: orders the task table by cost, biggest first, from the API data", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
@@ -581,7 +581,7 @@ describe("Usage page", () => {
     expect(taskGoals()).toEqual(expected);
   });
 
-  it("usage analytics: expanding a task splits its cost by model and token kind, and the parts add up to the task", async () => {
+  it("usage panels: expanding a task splits its cost by model and token kind, and the parts add up to the task", async () => {
     const week = await createStubApi().usage(7);
     const task = week.tasks.find((item) => item.goal === "Daily finance digest")!;
     expect(task.by_model.length).toBeGreaterThan(1);
@@ -642,7 +642,7 @@ describe("Usage page", () => {
     ).toBe("false");
   });
 
-  it("usage analytics: a task with unknown cost expands to models with Unknown cost, not zero", async () => {
+  it("usage panels: a task with unknown cost expands to models with Unknown cost, not zero", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     fireEvent.click(
@@ -655,7 +655,7 @@ describe("Usage page", () => {
     expect(within(part).queryByText(formatUsd(0))).toBeNull();
   });
 
-  it("usage analytics: keeps a task open while the table is sorted", async () => {
+  it("usage panels: keeps a task open while the table is sorted", async () => {
     renderAt("/usage");
     await screen.findByRole("table", { name: "Task breakdown" });
     fireEvent.click(
@@ -667,7 +667,7 @@ describe("Usage page", () => {
     expect(taskGoals()[taskGoals().length - 1]).toBe("Fix the flaky login test");
   });
 
-  it("usage analytics: shows the empty states when nothing was recorded in the range", async () => {
+  it("usage panels: shows the empty states when nothing was recorded in the range", async () => {
     const client = createStubApi({ emptyUsage: true });
     const history = renderAt("/usage", client);
     expect(await screen.findByRole("heading", { level: 2, name: "No usage in this range" })).toBeTruthy();
@@ -687,7 +687,7 @@ describe("Usage page", () => {
     expect(screen.getByText("No task usage in this range.")).toBeTruthy();
   });
 
-  it("usage analytics: says so when the ledger cannot be read", async () => {
+  it("usage panels: says so when the ledger cannot be read", async () => {
     const stub = createStubApi();
     const client: ApiClient = {
       ...stub,

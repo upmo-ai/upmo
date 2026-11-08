@@ -2,7 +2,7 @@ import { Text } from "@mantine/core";
 import { GroupedBarChart } from "@upmo-ai/components";
 
 import type { Usage } from "../../app/api";
-import { AnalyticsPanel } from "./analytics-panel";
+import { UsagePanel } from "./panel";
 import { formatBucket, formatUsd } from "./format";
 import { hasCalls, spendGroups } from "./series";
 
@@ -12,7 +12,7 @@ export function SpendChart({ usage }: { usage: Usage }) {
   const last = buckets[buckets.length - 1];
   const empty = !hasCalls(usage) || buckets.length === 0;
   return (
-    <AnalyticsPanel
+    <UsagePanel
       title="Spend"
       empty={empty ? "No spend to chart in this range." : undefined}
       note={
@@ -24,6 +24,6 @@ export function SpendChart({ usage }: { usage: Usage }) {
       }
     >
       <GroupedBarChart title="Spend" groups={spendGroups(usage)} formatValue={formatUsd} />
-    </AnalyticsPanel>
+    </UsagePanel>
   );
 }
