@@ -96,6 +96,13 @@ func (f *allowFake) SharedObjects(_ context.Context, objectType domain.ObjectTyp
 	f.asked, f.askedTeams = objectType, teams
 	return f.shares, nil
 }
+func (f allowFake) TaskGrants(context.Context, string) ([]TaskGrant, error) { return nil, nil }
+func (f allowFake) ReplaceTaskGrants(context.Context, string, []GrantWrite, domain.UserID) error {
+	return nil
+}
+func (f allowFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
+	return nil, nil, nil
+}
 func (f allowFake) RoleSystem(context.Context, domain.RoleID) (string, error) {
 	return "", nil
 }

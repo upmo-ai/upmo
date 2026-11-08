@@ -14,6 +14,7 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/tasks/adapters/http"
 	"github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
+	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
 // Schema is the Postgres schema this context owns.
@@ -40,6 +41,14 @@ type (
 	Store        = postgres.Store
 	EditorSigner = app.EditorSigner
 	EditorTokens = app.EditorTokens
+)
+
+// The task share port and what it carries. Another context's data sits behind
+// ShareGrants, so cmd wires an adapter to it.
+type (
+	ShareGrants = app.ShareGrants
+	ShareMember = app.ShareMember
+	ShareGrant  = domain.ShareGrant
 )
 
 // The proposal scout and what it reads.
