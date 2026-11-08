@@ -464,6 +464,16 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 	if tag.RowsAffected() != 1 {
 		return app.Task{}, app.ErrGone
 	}
+	if next == domain.Done || next == domain.Failed {
+		// The task ended, so an approval it waits for can never be decided.
+		// Close it here, in the same transaction as the step that ended it.
+		if _, err := tx.Exec(ctx, `
+			UPDATE tasks.approvals
+			SET state = 'closed', decided_at = now()
+			WHERE task_id = $1::uuid AND state = 'pending'`, taskID); err != nil {
+			return app.Task{}, fmt.Errorf("tasks: close approval: %w", err)
+		}
+	}
 	return app.Task{ID: taskID, Status: next, Goal: goal}, nil
 }
 

@@ -16,10 +16,13 @@ import (
 
 // Handler applies one task transition through the existing writer.
 type Handler struct {
-	Book   app.Book
-	List   app.Lister
-	View   app.Reader
-	Access func(r *http.Request) (app.Access, bool)
+	Book app.Book
+	List app.Lister
+	View app.Reader
+	// Approvals lists and decides the person's approvals. Nil answers an error
+	// for the approval routes.
+	Approvals app.ApprovalBook
+	Access    func(r *http.Request) (app.Access, bool)
 	// Sandboxes starts a task's sandbox on Open and releases it when the
 	// task ends. Open answers once the sandbox is created; provisioning runs
 	// on after the response. Nil refuses any task that needs one.
@@ -51,6 +54,9 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
 	mux.Handle("POST /api/tasks/{id}/editor", wrap(http.HandlerFunc(h.editor)))
+	mux.Handle("GET /api/approvals", wrap(http.HandlerFunc(h.approvals)))
+	mux.Handle("POST /api/approvals/{id}/approve", wrap(http.HandlerFunc(h.approve)))
+	mux.Handle("POST /api/approvals/{id}/deny", wrap(http.HandlerFunc(h.deny)))
 }
 
 func (h Handler) progress(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +245,16 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusNotFound, "no such task")
 	case errors.Is(err, app.ErrPreparing):
 		writeError(w, http.StatusNotFound, "no progress")
+	case errors.Is(err, app.ErrNoApproval):
+		writeError(w, http.StatusNotFound, "no such approval")
+	case errors.Is(err, domain.ErrDecided):
+		writeError(w, http.StatusConflict, "the approval was already decided")
+	case errors.Is(err, domain.ErrClosed):
+		writeError(w, http.StatusConflict, "the task is no longer waiting")
+	case errors.Is(err, domain.ErrPending):
+		writeError(w, http.StatusConflict, "the task already waits for an approval")
+	case errors.Is(err, domain.ErrApproval):
+		writeError(w, http.StatusBadRequest, "the approval input was refused")
 	case errors.Is(err, app.ErrTask), errors.Is(err, domain.ErrInput), errors.Is(err, domain.ErrGoal), errors.Is(err, domain.ErrChat):
 		writeError(w, http.StatusBadRequest, "the task input was refused")
 	case errors.Is(err, domain.ErrTerminal), errors.Is(err, domain.ErrEvidence), errors.Is(err, domain.ErrTurn), errors.Is(err, domain.ErrExhausted), errors.Is(err, domain.ErrStatus):

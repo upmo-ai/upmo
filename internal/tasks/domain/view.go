@@ -66,8 +66,10 @@ func EventMessage(kind Kind, to Status) (string, bool) {
 		return "Planning", true
 	case Pause:
 		return "Waiting for approval", true
-	case Resume:
+	case Resume, Approve:
 		return "Approval given", true
+	case Deny:
+		return "Approval denied", true
 	case Pass:
 		return "Checks passed", true
 	case Fail:
@@ -75,6 +77,18 @@ func EventMessage(kind Kind, to Status) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// ApprovalType is the Type of a task event that records a person's decision.
+const ApprovalType = "approval"
+
+// EventType is the type a person sees for a stored transition: the kind
+// itself, except that an approval and a denial are both "approval".
+func EventType(kind Kind) string {
+	if kind == Approve || kind == Deny {
+		return ApprovalType
+	}
+	return string(kind)
 }
 
 // ResultText renders a stored result as text: a JSON string as itself, any

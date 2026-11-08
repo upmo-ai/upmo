@@ -223,7 +223,7 @@ func readEvents(ctx context.Context, tx pgx.Tx, taskID string) ([]app.Event, dom
 				return nil, "", fmt.Errorf("tasks: event %s: %w", e.id, domain.ErrInput)
 			}
 			phase = domain.PhaseOf(domain.Status(e.to), phase)
-			event.Type = e.input
+			event.Type = domain.EventType(domain.Kind(e.input))
 			event.Message = message
 			event.Phase = phase
 		}

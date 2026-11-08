@@ -247,6 +247,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		Book:         taskBook,
 		List:         taskBook,
 		View:         taskBook,
+		Approvals:    taskBook,
 		Sandboxes:    boxes,
 		Progress:     boxes,
 		PublicURL:    cfg.PublicURL,
@@ -427,7 +428,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		return identity.RequireSession(sessions, next)
 	})
 	notices.Handler{
-		List: noticeStore,
+		List:    noticeStore,
+		Dismiss: noticeStore,
 		User: func(r *http.Request) (uuid.UUID, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
