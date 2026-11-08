@@ -241,6 +241,9 @@ describe("sharing", () => {
     const { dialog } = await openShare("/tasks/aster-digest", "Daily finance digest", client);
     await within(dialog).findByRole("list", { name: "Who has access" });
 
+    await waitFor(() => {
+      expect(within(dialog).getByRole("radio", { name: "Team" })).toHaveProperty("disabled", false);
+    });
     act(() => {
       within(dialog).getByRole("radio", { name: "Team" }).click();
     });
@@ -256,6 +259,9 @@ describe("sharing", () => {
     });
     const { dialog } = await openShare("/tasks/aster-digest", "Daily finance digest", client);
     await within(dialog).findByRole("list", { name: "Who has access" });
+    await waitFor(() => {
+      expect(within(dialog).getByRole("radio", { name: "Team" })).toHaveProperty("disabled", false);
+    });
     act(() => {
       within(dialog).getByRole("radio", { name: "Team" }).click();
     });

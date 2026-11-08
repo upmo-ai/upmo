@@ -64,6 +64,8 @@ export interface ShareMember {
 
 export interface TaskShare {
   visibility: TaskVisibility;
+  /** The team a team visibility names. Absent for private and everyone. */
+  team_id?: string;
   members: ShareMember[];
 }
 
@@ -81,6 +83,8 @@ export interface ShareGrant {
  */
 export interface ShareUpdate {
   visibility: TaskVisibility;
+  /** Sent only for team visibility, when the owner must name one of their teams. */
+  team_id?: string;
   members: ShareGrant[];
 }
 

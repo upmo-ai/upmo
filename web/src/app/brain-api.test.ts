@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { toApproval, toNotification, toTask, causeSentence } from "./brain-api";
+import {
+  causeSentence,
+  shareBody,
+  toApproval,
+  toMember,
+  toNotification,
+  toTask,
+  toTaskShare,
+  toTeam,
+} from "./brain-api";
+import type { ShareGrant } from "../features/identity/types";
 
 const head = {
   id: "01990000-0000-7000-8000-000000000001",
@@ -125,5 +135,104 @@ describe("causeSentence", () => {
     expect(causeSentence("disk_full")).toBe("disk_full");
     expect(causeSentence("constructor")).toBe("constructor");
     expect(causeSentence("")).toBe("");
+  });
+});
+
+describe("toTeam", () => {
+  it("maps a team to its id and name", () => {
+    expect(toTeam({ id: "01990000-0000-7000-8000-0000000000d1", name: "Finance" })).toEqual({
+      id: "01990000-0000-7000-8000-0000000000d1",
+      name: "Finance",
+    });
+    expect(() => toTeam({ id: "01990000-0000-7000-8000-0000000000d1" })).toThrow("no name");
+    expect(() => toTeam([])).toThrow("no team");
+  });
+});
+
+describe("toMember", () => {
+  const sent = {
+    id: "01990000-0000-7000-8000-0000000000a1",
+    name: "Ada Lovelace",
+    email: "ada@example.com",
+    invited: false,
+    teams: ["Finance"],
+    role: { id: "01990000-0000-7000-8000-0000000000r1", name: "Owner", system: "owner" },
+  };
+
+  it("flattens the role to its system key and keeps the team names", () => {
+    expect(toMember(sent)).toEqual({
+      id: sent.id,
+      name: "Ada Lovelace",
+      email: "ada@example.com",
+      role: "owner",
+      teams: ["Finance"],
+    });
+    expect(toMember({ ...sent, teams: [] }).teams).toEqual([]);
+  });
+
+  it("reads a role the web does not know as a member", () => {
+    expect(toMember({ ...sent, role: { ...sent.role, system: "" } }).role).toBe("member");
+    expect(toMember({ ...sent, role: { ...sent.role, system: "billing" } }).role).toBe("member");
+  });
+
+  it("refuses a member with no team list", () => {
+    expect(() => toMember({ ...sent, teams: "Finance" })).toThrow("no teams");
+    expect(() => toMember({ ...sent, teams: [7] })).toThrow("no teams");
+    expect(() => toMember({ ...sent, role: "owner" })).toThrow("no role");
+  });
+});
+
+describe("toTaskShare", () => {
+  const members = [
+    { subject_type: "person", subject_id: "01990000-0000-7000-8000-0000000000a1", name: "Ada Lovelace", role: "owner" },
+    { subject_type: "team", subject_id: "01990000-0000-7000-8000-0000000000d1", name: "Finance", role: "viewer" },
+  ];
+
+  it("carries the team only when the visibility names one", () => {
+    expect(toTaskShare({ visibility: "team", team_id: "01990000-0000-7000-8000-0000000000d1", members })).toEqual({
+      visibility: "team",
+      team_id: "01990000-0000-7000-8000-0000000000d1",
+      members,
+    });
+    expect(toTaskShare({ visibility: "private", members: [members[0]!] })).toEqual({
+      visibility: "private",
+      members: [members[0]!],
+    });
+    expect(toTaskShare({ visibility: "everyone", team_id: null, members: [members[0]!] })).not.toHaveProperty(
+      "team_id",
+    );
+  });
+
+  it("refuses a visibility, subject or level the web does not know", () => {
+    expect(() => toTaskShare({ visibility: "public", members })).toThrow("unknown visibility");
+    expect(() => toTaskShare({ visibility: "private", members: [{ ...members[0]!, subject_type: "bot" }] })).toThrow(
+      "unknown subject",
+    );
+    expect(() => toTaskShare({ visibility: "private", members: [{ ...members[1]!, role: "guest" }] })).toThrow(
+      "unknown share level",
+    );
+    expect(() => toTaskShare({ visibility: "private", members: "ada" })).toThrow("no members");
+    expect(() => toTaskShare("private")).toThrow("no share");
+  });
+});
+
+describe("shareBody", () => {
+  const grants: ShareGrant[] = [
+    { subject_type: "person", subject_id: "01990000-0000-7000-8000-0000000000a1", role: "owner" },
+    { subject_type: "person", subject_id: "01990000-0000-7000-8000-0000000000a2", role: "viewer" },
+  ];
+
+  it("sends team_id only for a team visibility that names one", () => {
+    expect(shareBody({ visibility: "team", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants })).toEqual(
+      { visibility: "team", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants },
+    );
+    // A stale team never rides along on a visibility that has no team.
+    expect(
+      shareBody({ visibility: "everyone", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants }),
+    ).not.toHaveProperty("team_id");
+    expect(
+      shareBody({ visibility: "private", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants }),
+    ).not.toHaveProperty("team_id");
+    expect(shareBody({ visibility: "team", members: grants })).not.toHaveProperty("team_id");
   });
 });

@@ -5,12 +5,14 @@ import {
   scopeObjects,
   type GrantableShareLevel,
   type InviteRole,
+  type Member,
   type ScopeAction,
   type ScopeObject,
   type ShareLevel,
   type ShareUpdate,
   type SignInMethod,
   type TaskShare,
+  type Team,
   type ViewRole,
   type WorkspaceRole,
 } from "./types";
@@ -104,12 +106,33 @@ export function shareRole(share: TaskShare | undefined, memberId: string | undef
 export function toShareUpdate(share: TaskShare): ShareUpdate {
   return {
     visibility: share.visibility,
+    ...(share.team_id ? { team_id: share.team_id } : {}),
     members: share.members.map(({ subject_type, subject_id, role }) => ({
       subject_type,
       subject_id,
       role,
     })),
   };
+}
+
+/**
+ * The teams a person is on, of every team: the roster entry carries team
+ * names, and a share names a team by its id.
+ */
+export function teamsOfPerson(person: Member | undefined, teams: Team[]): Team[] {
+  if (!person) return [];
+  return teams.filter((team) => person.teams.includes(team.name));
+}
+
+/**
+ * The team a team visibility names: the saved team while the owner still
+ * holds it, else the first of theirs. Undefined when there is no choice to
+ * make, so the backend resolves the only team or refuses with its message.
+ */
+export function sharedTeamOf(share: TaskShare, ownerTeams: Team[]): string | undefined {
+  if (ownerTeams.length < 2) return undefined;
+  if (share.team_id && ownerTeams.some((team) => team.id === share.team_id)) return share.team_id;
+  return ownerTeams[0]?.id;
 }
 
 export function canRemoveShare(level: ShareLevel): boolean {

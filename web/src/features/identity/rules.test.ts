@@ -15,8 +15,12 @@ import {
   isAllowedScope,
   ownerLockReason,
   scopeObjects,
+  sharedTeamOf,
   showPasskeyOffer,
+  teamsOfPerson,
+  toShareUpdate,
 } from "./rules";
+import type { Member, TaskShare, Team } from "./types";
 
 const forbidden = [
   "task:delete",
@@ -108,6 +112,46 @@ describe("who may edit sharing", () => {
     expect(canRemoveShare("owner")).toBe(false);
     expect(canRemoveShare("editor")).toBe(true);
     expect(grantableShareLevels).toEqual(["editor", "viewer"]);
+  });
+});
+
+describe("the team a team visibility names", () => {
+  const finance: Team = { id: "team-finance", name: "Finance" };
+  const ops: Team = { id: "team-ops", name: "Ops" };
+  const everyTeam = [finance, ops];
+  const ada: Member = { id: "ada", name: "Ada", email: "ada@example.com", role: "owner", teams: ["Finance"] };
+
+  it("picks the owner's teams out of every team by name", () => {
+    expect(teamsOfPerson({ ...ada, teams: ["Finance", "Ops"] }, everyTeam)).toEqual(everyTeam);
+    expect(teamsOfPerson(ada, everyTeam)).toEqual([finance]);
+    expect(teamsOfPerson({ ...ada, teams: [] }, everyTeam)).toEqual([]);
+    expect(teamsOfPerson(undefined, everyTeam)).toEqual([]);
+  });
+
+  it("sends no team while the owner has no choice to make", () => {
+    const share: TaskShare = { visibility: "team", team_id: "team-finance", members: [] };
+    expect(sharedTeamOf(share, [finance])).toBeUndefined();
+    expect(sharedTeamOf(share, [])).toBeUndefined();
+  });
+
+  it("keeps the saved team, and offers the first of the owner's when none is saved", () => {
+    expect(sharedTeamOf({ visibility: "team", team_id: "team-ops", members: [] }, everyTeam)).toBe("team-ops");
+    expect(sharedTeamOf({ visibility: "team", team_id: "team-gone", members: [] }, everyTeam)).toBe("team-finance");
+    expect(sharedTeamOf({ visibility: "private", members: [] }, everyTeam)).toBe("team-finance");
+  });
+
+  it("carries the saved team into the update", () => {
+    const share: TaskShare = {
+      visibility: "team",
+      team_id: "team-finance",
+      members: [{ subject_type: "person", subject_id: "ada", name: "Ada", role: "owner" }],
+    };
+    expect(toShareUpdate(share)).toEqual({
+      visibility: "team",
+      team_id: "team-finance",
+      members: [{ subject_type: "person", subject_id: "ada", role: "owner" }],
+    });
+    expect(toShareUpdate({ ...share, visibility: "private", team_id: undefined })).not.toHaveProperty("team_id");
   });
 });
 

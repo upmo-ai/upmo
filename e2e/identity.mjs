@@ -11,6 +11,12 @@ if (!url) {
   throw new Error("WEB_URL is not set");
 }
 
+// The share flow runs against a seeded task, on the live brain.
+const shareTaskId = "e2e00000-0000-7000-8000-000000000001";
+const teamName = "Sharing";
+const partnerEmail = "rowan.share@example.com";
+const partnerName = "Rowan Hale";
+
 function pageUrl(path) {
   return new URL(path, url).href;
 }
@@ -38,6 +44,48 @@ async function expectFits(page, path, ready) {
   }
 }
 
+// Sharing needs a team the owner belongs to and a second person to share with.
+// Both are made through the live API with the signed-in session, and both are
+// idempotent: a rerun finds them where the last run left them.
+async function shareSetup(page) {
+  const read = async (path) => (await page.request.get(pageUrl(path))).json();
+
+  const members = await read("/api/members");
+  const ada = members.find((person) => person.email === "ada@example.com");
+  if (!ada) throw new Error("ada is not in the member list");
+
+  const teams = await read("/api/teams");
+  let team = teams.find((item) => item.name === teamName);
+  if (!team) {
+    const made = await page.request.post(pageUrl("/api/teams"), { data: { name: teamName } });
+    if (!made.ok()) throw new Error(`team create answered ${made.status()}`);
+    team = { id: (await made.json()).id, name: teamName };
+  }
+  // A team is not its members: put ada on it, again if she already is.
+  const added = await page.request.post(pageUrl(`/api/teams/${team.id}/members`), {
+    data: { user_id: ada.id },
+  });
+  if (!added.ok()) throw new Error(`adding ada to the team answered ${added.status()}`);
+
+  let partner = members.find((person) => person.email === partnerEmail);
+  if (!partner) {
+    const roles = await read("/api/roles");
+    const role = roles.find((item) => item.system === "member");
+    if (!role) throw new Error("no member role to invite with");
+    const invited = await page.request.post(pageUrl("/api/members"), {
+      data: { email: partnerEmail, name: partnerName, role_id: role.id },
+    });
+    if (invited.ok()) {
+      partner = await invited.json();
+    } else if (invited.status() === 409) {
+      // A rerun's partner is already a member, so the invite is refused.
+      partner = (await read("/api/members")).find((person) => person.email === partnerEmail);
+    }
+  }
+  if (!partner) throw new Error("the partner could not be found or invited");
+  return { ada };
+}
+
 async function identityFlow(page) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(pageUrl("/login"), { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -57,44 +105,94 @@ async function identityFlow(page) {
   await page.getByRole("heading", { level: 1, name: "Members" }).waitFor();
   await page.getByText("ada@example.com").waitFor();
 
+  const { ada } = await shareSetup(page);
+  // The members list was read before the setup added people and a team, and the
+  // app keeps what it read. Start from fresh data.
+  await page.reload({ waitUntil: "domcontentloaded" });
+
   await page.getByRole("link", { name: "Tasks", exact: true }).click();
-  await page.getByRole("link", { name: "Daily finance digest" }).click();
-  await page.getByRole("heading", { level: 1, name: "Daily finance digest" }).waitFor();
+  await page.getByRole("link", { name: "Sort the morning mail" }).click();
+  await page.getByRole("heading", { level: 1, name: "Sort the morning mail" }).waitFor();
   await page.getByRole("button", { name: "Share" }).click();
-  const share = page.getByRole("dialog");
+  // Named dialogs: the share dialog and a removal confirm can be open together.
+  const share = page.getByRole("dialog", { name: "Share", exact: true });
+  await share.getByText("Ada", { exact: true }).waitFor();
+  // The owner comes first and cannot be removed.
+  if ((await share.getByRole("button", { name: "Remove access for Ada" }).count()) !== 0) {
+    throw new Error("the owner row can be removed");
+  }
   // The design-system Select opens a listbox in a portal outside the dialog.
   await share.getByLabel("Person", { exact: true }).click();
-  await page.getByRole("option", { name: "Noor Ali (noor@aster.example)" }).click();
+  await page
+    .getByRole("option", { name: `${partnerName} (${partnerEmail})`, exact: true })
+    .click();
   await share.getByLabel("Level", { exact: true }).click();
-  await page.getByRole("option", { name: "Editor" }).click();
+  await page.getByRole("option", { name: "Viewer", exact: true }).click();
   await share.getByRole("button", { name: "Add person" }).click();
-  await share.getByText("Noor Ali", { exact: true }).waitFor();
-  // The owner sees the role next to each person, can widen who may open
-  // the task, and the choice is kept when the dialog is opened again.
-  const noorRole = share.getByRole("combobox", { name: "Access for Noor Ali" });
-  await noorRole.waitFor();
-  if ((await noorRole.inputValue()) !== "Editor") {
+  const partnerRole = share.getByRole("combobox", { name: `Access for ${partnerName}` });
+  await partnerRole.waitFor();
+  if ((await partnerRole.inputValue()) !== "Viewer") {
     throw new Error("the chosen level was not granted");
   }
-  await share.getByRole("button", { name: "Remove access for Noor Ali" }).waitFor();
   // The choice is saved first and the radio follows the saved value, so wait for it.
-  const everyone = share.getByRole("radio", { name: "Everyone" });
-  await everyone.click({ force: true });
-  for (let attempt = 0; attempt < 50 && !(await everyone.isChecked()); attempt += 1) {
+  const team = share.getByRole("radio", { name: "Team" });
+  // The Team radio waits for the roster and the teams, and for any save in flight.
+  for (let attempt = 0; attempt < 100 && (await team.isDisabled()); attempt += 1) {
     await page.waitForTimeout(100);
   }
-  if (!(await everyone.isChecked())) {
+  await team.click();
+  for (let attempt = 0; attempt < 50 && !(await team.isChecked()); attempt += 1) {
+    await page.waitForTimeout(100);
+  }
+  if (!(await team.isChecked())) {
     throw new Error("the visibility choice was not applied");
   }
-  await share.getByRole("button", { name: "Close" }).click();
-  await share.waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Share" }).click();
-  await share.getByRole("radio", { name: "Everyone" }).waitFor();
-  if (!(await share.getByRole("radio", { name: "Everyone" }).isChecked())) {
-    throw new Error("the visibility was not kept");
+  // With one team there is nothing to pick and the brain names it. With more
+  // than one the picker shows; choose the team this run made.
+  const picked = share.getByRole("combobox", { name: "Shared team" });
+  if ((await picked.count()) !== 0) {
+    await picked.click();
+    await page.getByRole("option", { name: teamName, exact: true }).click();
   }
   await share.getByRole("button", { name: "Close" }).click();
   await share.waitFor({ state: "hidden" });
+
+  // A reload reads the saved share back: the visibility, the person and the level.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { level: 1, name: "Sort the morning mail" }).waitFor();
+  await page.getByRole("button", { name: "Share" }).click();
+  await share.getByText(partnerName, { exact: true }).waitFor();
+  if (!(await share.getByRole("radio", { name: "Team" }).isChecked())) {
+    throw new Error("the visibility was not kept");
+  }
+  if ((await partnerRole.inputValue()) !== "Viewer") {
+    throw new Error("the granted level was not kept");
+  }
+
+  // The level widens to Editor, then the access is removed again.
+  await partnerRole.click();
+  await page.getByRole("option", { name: "Editor", exact: true }).click();
+  for (let attempt = 0; attempt < 50 && (await partnerRole.inputValue()) !== "Editor"; attempt += 1) {
+    await page.waitForTimeout(100);
+  }
+  if ((await partnerRole.inputValue()) !== "Editor") {
+    throw new Error("the level was not changed");
+  }
+  await share.getByRole("button", { name: `Remove access for ${partnerName}` }).click();
+  const confirm = page.getByRole("dialog", { name: `Remove ${partnerName}'s access?` });
+  await confirm.getByRole("button", { name: "Remove access", exact: true }).click();
+  await share.getByText(partnerName, { exact: true }).waitFor({ state: "hidden" });
+  await share.getByRole("button", { name: "Close" }).click();
+  await share.waitFor({ state: "hidden" });
+
+  // Back to private with only the owner, so the next run starts clean.
+  const put = await page.request.put(pageUrl(`/api/tasks/${shareTaskId}/share`), {
+    data: {
+      visibility: "private",
+      members: [{ subject_type: "person", subject_id: ada.id, role: "owner" }],
+    },
+  });
+  if (!put.ok()) throw new Error(`putting the share back answered ${put.status()}`);
 
   await openAccountItem(page, "API tokens");
   await page.getByRole("heading", { level: 1, name: "API tokens" }).waitFor();
@@ -153,19 +251,12 @@ try {
     colorScheme: "light",
     reducedMotion: "reduce",
   });
-  // Artifacts and task sharing are still sample data kept under the sample task ids until
-  // the artifacts and shares backend packages land, so this script reads the sample tasks
-  // too: the tasks list is answered 404, which is how the web knows to use them.
-  // Everything else is the real brain.
-  await context.route(/\/api\/tasks$/, (route) =>
-    route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
-  );
   const page = await context.newPage();
   await expectFits(page, "/", (current) => current.getByRole("heading", { level: 1, name: "Home" }).waitFor());
   await expectFits(page, "/tasks", (current) =>
-    current.getByRole("link", { name: "Daily finance digest" }).waitFor(),
+    current.getByRole("link", { name: "Sort the morning mail" }).waitFor(),
   );
-  await expectFits(page, "/tasks/aster-digest", (current) =>
+  await expectFits(page, `/tasks/${shareTaskId}`, (current) =>
     current.getByRole("button", { name: "Share" }).waitFor(),
   );
   await expectFits(page, "/settings", (current) =>

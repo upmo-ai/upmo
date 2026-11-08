@@ -20,7 +20,15 @@ import {
   type Team,
 } from "../../app/api";
 import { RowAction } from "../../ui/icons";
-import { canEditSharing, canRemoveShare, isGrantableShareLevel, shareRole, toShareUpdate } from "./rules";
+import {
+  canEditSharing,
+  canRemoveShare,
+  isGrantableShareLevel,
+  shareRole,
+  sharedTeamOf,
+  teamsOfPerson,
+  toShareUpdate,
+} from "./rules";
 
 import "./identity.css";
 
@@ -46,6 +54,10 @@ function problemText(cause: unknown, action: "load" | "save"): string {
     return action === "save"
       ? "Only the owner can change sharing."
       : "You do not have access to this task's sharing.";
+  }
+  // A refused share update is a 422 whose message is written for the person.
+  if (cause instanceof BrainError && cause.status === 422 && cause.message !== "") {
+    return cause.message;
   }
   const bare = cause instanceof BrainError && cause.message === cause.error;
   if (cause instanceof Error && cause.message !== "" && !bare) {
@@ -119,6 +131,14 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
   const personId =
     pickedPerson && personChoices.some((person) => person.id === pickedPerson) ? pickedPerson : "";
   const teamId = pickedTeam && teamChoices.some((team) => team.id === pickedTeam) ? pickedTeam : "";
+  // A team visibility names one of the owner's teams. With more than one the
+  // owner picks it; the saved team opens picked.
+  const ownerTeams = teamsOfPerson(
+    roster.find((person) => person.id === me.data?.memberId),
+    teams.data ?? [],
+  );
+  const pickTeam = editable && ownerTeams.length > 1;
+  const teamChoice = current ? sharedTeamOf(current, ownerTeams) : undefined;
 
   const change = (next: ShareUpdate, after?: () => void) => {
     setProblem("");
@@ -127,7 +147,17 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
 
   const setVisibility = (visibility: TaskVisibility) => {
     if (!current) return;
-    change({ ...toShareUpdate(current), visibility });
+    const update = toShareUpdate(current);
+    change(
+      visibility === "team"
+        ? { ...update, visibility, ...(teamChoice !== undefined ? { team_id: teamChoice } : {}) }
+        : { visibility, members: update.members },
+    );
+  };
+
+  const setTeam = (chosen: string) => {
+    if (!current) return;
+    change({ ...toShareUpdate(current), visibility: "team", team_id: chosen });
   };
 
   const setRole = (member: ShareMember, role: GrantableShareLevel) => {
@@ -189,8 +219,23 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
                 visibility={current.visibility}
                 editable={editable}
                 busy={save.isPending}
+                // Team visibility names one of the owner's teams, which is only
+                // known once the roster and the teams have loaded.
+                teamWaiting={choicesLoading || choicesProblem !== ""}
                 onChange={setVisibility}
               />
+              {pickTeam && current.visibility === "team" ? (
+                <Select
+                  label="Shared team"
+                  value={teamChoice ?? null}
+                  allowDeselect={false}
+                  disabled={save.isPending}
+                  data={ownerTeams.map((team) => ({ value: team.id, label: team.name }))}
+                  onChange={(next) => {
+                    if (next) setTeam(next);
+                  }}
+                />
+              ) : null}
               <Stack gap="xs">
                 <Text fw={600}>Who has access</Text>
                 <ul className="record-list" aria-label="Who has access">
@@ -288,11 +333,13 @@ function Visibility({
   visibility,
   editable,
   busy,
+  teamWaiting,
   onChange,
 }: {
   visibility: TaskVisibility;
   editable: boolean;
   busy: boolean;
+  teamWaiting: boolean;
   onChange: (visibility: TaskVisibility) => void;
 }) {
   const shown = visibilityOptions.find((option) => option.value === visibility);
@@ -324,7 +371,7 @@ function Visibility({
             value={option.value}
             label={option.label}
             description={option.description}
-            disabled={busy}
+            disabled={busy || (option.value === "team" && teamWaiting)}
           />
         ))}
       </Stack>
