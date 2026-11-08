@@ -16,7 +16,7 @@ import { TokenConsumption } from "./token-consumption";
  * to themselves. They are left out when the whole range has no usage. A range
  * with tasks but no calls still shows each panel's own empty state.
  */
-export function UsageAnalytics({ usage }: { usage: Usage }) {
+export function UsagePanels({ usage }: { usage: Usage }) {
   return (
     <div className="usage-panels">
       <SpendChart usage={usage} />

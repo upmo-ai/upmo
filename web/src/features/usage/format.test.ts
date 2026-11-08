@@ -74,7 +74,7 @@ describe("usage figures", () => {
     expect(formatBucket("2026-11-05T00:00:00Z", "day")).toBe("5 Nov");
   });
 
-  it("usage analytics: formats an hour as a 24 hour clock in UTC and labels buckets by their unit", () => {
+  it("usage panels: formats an hour as a 24 hour clock in UTC and labels buckets by their unit", () => {
     expect(formatHour("2026-11-05T09:00:00Z")).toBe("09:00");
     expect(formatHour("2026-11-05T00:00:00Z")).toBe("00:00");
     expect(formatHour("2026-11-05T23:00:00Z")).toBe("23:00");
@@ -116,7 +116,7 @@ describe("usage figures", () => {
     expect(periodSpend([bucket(0), bucket(null)])).toBe(0);
   });
 
-  it("usage analytics: formats a latency as milliseconds, seconds or minutes", () => {
+  it("usage panels: formats a latency as milliseconds, seconds or minutes", () => {
     expect(formatLatency(850)).toBe("850 ms");
     expect(formatLatency(0)).toBe("0 ms");
     expect(formatLatency(999.4)).toBe("999 ms");
@@ -129,7 +129,7 @@ describe("usage figures", () => {
     expect(formatLatency(120_000)).toBe("2 min");
   });
 
-  it("usage analytics: a latency that is not known reads No data, never 0 ms", () => {
+  it("usage panels: a latency that is not known reads No data, never 0 ms", () => {
     expect(formatLatency(null)).toBe("No data");
     expect(formatLatency(undefined)).toBe("No data");
     expect(formatLatency(Number.NaN)).toBe("No data");
@@ -138,19 +138,19 @@ describe("usage figures", () => {
     expect(formatLatency(0)).toBe("0 ms");
   });
 
-  it("usage analytics: error rate is errors over requests and zero without requests", () => {
+  it("usage panels: error rate is errors over requests and zero without requests", () => {
     expect(errorRate(200, 5)).toBe(0.025);
     expect(errorRate(0, 0)).toBe(0);
   });
 
-  it("usage analytics: a range is empty only without calls and without tasks", () => {
+  it("usage panels: a range is empty only without calls and without tasks", () => {
     expect(isEmptyUsage([], [])).toBe(true);
     expect(isEmptyUsage([bucket(null)], [])).toBe(true);
     expect(isEmptyUsage([bucket(1, { requests: 1 })], [])).toBe(false);
     expect(isEmptyUsage([], [task("a", 1)])).toBe(false);
   });
 
-  it("usage analytics: a task share is its cost over the spend, and none when either is unknown", () => {
+  it("usage panels: a task share is its cost over the spend, and none when either is unknown", () => {
     expect(taskShare(task("a", 2.5), 10)).toBe(0.25);
     expect(taskShare(task("a", null), 10)).toBeNull();
     expect(taskShare(task("a", 2.5), null)).toBeNull();
@@ -158,7 +158,7 @@ describe("usage figures", () => {
     expect(taskShare(task("a", 1), 0)).toBeNull();
   });
 
-  it("usage analytics: sorts tasks by cost, tokens or share, unknown last, ties in the order given", () => {
+  it("usage panels: sorts tasks by cost, tokens or share, unknown last, ties in the order given", () => {
     const tasks = [task("a", 5, 100), task("b", 9, 50), task("c", null, 900), task("d", 5, 70), task("e", 1, 300)];
     const ids = (key: "cost" | "tokens" | "share", direction: "asc" | "desc") =>
       sortTasks(tasks, key, direction, 20).map((item) => item.task_id);
@@ -171,20 +171,20 @@ describe("usage figures", () => {
     expect(tasks.map((item) => item.task_id)).toEqual(["a", "b", "c", "d", "e"]);
   });
 
-  it("usage analytics: tasks with equal tokens keep the order given, ascending and descending", () => {
+  it("usage panels: tasks with equal tokens keep the order given, ascending and descending", () => {
     const tasks = [task("a", 1, 100), task("b", 1, 400), task("c", 1, 100), task("d", 1, 400)];
     const ids = (direction: "asc" | "desc") => sortTasks(tasks, "tokens", direction, 4).map((item) => item.task_id);
     expect(ids("desc")).toEqual(["b", "d", "a", "c"]);
     expect(ids("asc")).toEqual(["a", "c", "b", "d"]);
   });
 
-  it("usage analytics: the costliest tasks come first, then the ones with unknown cost, up to the limit", () => {
+  it("usage panels: the costliest tasks come first, then the ones with unknown cost, up to the limit", () => {
     const tasks = [task("a", null), task("b", 1), task("c", 3), task("d", null), task("e", 2)];
     expect(costliestTasks(tasks, 8).map((item) => item.task_id)).toEqual(["c", "e", "b", "a", "d"]);
     expect(costliestTasks(tasks, 3).map((item) => item.task_id)).toEqual(["c", "e", "b"]);
   });
 
-  it("usage analytics: reads the range from the URL and drops anything else", () => {
+  it("usage panels: reads the range from the URL and drops anything else", () => {
     expect(parseUsageRange("today")).toBe("today");
     expect(parseUsageRange(7)).toBe(7);
     expect(parseUsageRange("30")).toBe(30);

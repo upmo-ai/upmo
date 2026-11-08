@@ -13,8 +13,8 @@ function sum(values: (number | null)[]): number {
   return values.reduce<number>((total, value) => total + (value ?? 0), 0);
 }
 
-describe("usage analytics stub", () => {
-  it("usage analytics: hourly buckets for today and daily buckets for the longer ranges", async () => {
+describe("usage stub", () => {
+  it("usage panels: hourly buckets for today and daily buckets for the longer ranges", async () => {
     const api = createStubApi();
     const today = await api.usage("today");
     expect(today.range).toBe("today");
@@ -30,7 +30,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: has four providers, two global and two own, and six models", async () => {
+  it("usage panels: has four providers, two global and two own, and six models", async () => {
     const usage = await createStubApi().usage(30);
     expect(usage.providers).toHaveLength(4);
     expect(usage.providers.filter((provider) => provider.scope === "global")).toHaveLength(2);
@@ -44,7 +44,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: provider, model and bucket totals add up in every range", async () => {
+  it("usage panels: provider, model and bucket totals add up in every range", async () => {
     const api = createStubApi();
     // Spend is null exactly when no part of it is known, otherwise the sum of the known parts.
     const total = (values: (number | null)[]): number | null => {
@@ -86,7 +86,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: has a bucket with unknown cost, a provider with no errors and a few unpriced calls", async () => {
+  it("usage panels: has a bucket with unknown cost, a provider with no errors and a few unpriced calls", async () => {
     const api = createStubApi();
     const exactUnknown: Record<string, number> = { today: 1, "7": 1 };
     for (const range of ranges) {
@@ -101,7 +101,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: a provider or model without a price never has a spend of zero", async () => {
+  it("usage panels: a provider or model without a price never has a spend of zero", async () => {
     const api = createStubApi();
     for (const range of ranges) {
       const usage = await api.usage(range);
@@ -113,7 +113,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: every task links to a task the stub knows, with the same goal", async () => {
+  it("usage panels: every task links to a task the stub knows, with the same goal", async () => {
     const api = createStubApi();
     const known = await api.listTasks();
     const usage = await api.usage(90);
@@ -124,7 +124,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: task costs add up to at most the spend and their model splits add up to the task", async () => {
+  it("usage panels: task costs add up to at most the spend and their model splits add up to the task", async () => {
     const api = createStubApi();
     for (const range of ranges) {
       const usage = await api.usage(range);
@@ -147,7 +147,7 @@ describe("usage analytics stub", () => {
     }
   });
 
-  it("usage analytics: has a task with unknown cost in the week and gives longer ranges more tasks", async () => {
+  it("usage panels: has a task with unknown cost in the week and gives longer ranges more tasks", async () => {
     const api = createStubApi();
     const [today, week, month, quarter] = await Promise.all(ranges.map((range) => api.usage(range)));
     expect(week!.tasks.some((task) => task.cost_usd === null)).toBe(true);
@@ -156,7 +156,7 @@ describe("usage analytics stub", () => {
     expect(month!.tasks.length).toBeLessThan(quarter!.tasks.length);
   });
 
-  it("usage analytics: the hours of today add up to the last day and each range contains the shorter ones", async () => {
+  it("usage panels: the hours of today add up to the last day and each range contains the shorter ones", async () => {
     const api = createStubApi();
     const today = await api.usage("today");
     const week = await api.usage(7);
@@ -168,7 +168,7 @@ describe("usage analytics stub", () => {
     expect(quarter.buckets.slice(-7)).toEqual(week.buckets);
   });
 
-  it("usage analytics: answers with nothing recorded when the stub starts empty", async () => {
+  it("usage panels: answers with nothing recorded when the stub starts empty", async () => {
     const api = createStubApi({ emptyUsage: true });
     for (const range of ranges) {
       const usage = await api.usage(range);

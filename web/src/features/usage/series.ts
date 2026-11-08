@@ -19,7 +19,7 @@ export function providerLabel(provider: Pick<UsageProvider, "name" | "scope">): 
   return provider.scope === "global" ? `${provider.name} (global)` : provider.name;
 }
 
-/** Whether any call was recorded in the range. Without one, every analytics panel shows its empty state. */
+/** Whether any call was recorded in the range. Without one, every usage panel shows its empty state. */
 export function hasCalls(usage: Usage): boolean {
   return totalRequests(usage.buckets) > 0;
 }
