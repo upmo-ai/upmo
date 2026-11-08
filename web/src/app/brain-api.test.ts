@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { causeSentence, toTask } from "./brain-api";
+import { toApproval, toNotification, toTask, causeSentence } from "./brain-api";
 
 const head = {
   id: "01990000-0000-7000-8000-000000000001",
@@ -59,6 +59,60 @@ describe("toTask", () => {
       "The parent task was cancelled.",
     );
     expect(toTask({ ...head, status: "Done", detail: "parent_cancelled" }).detail).toBe("parent_cancelled");
+  });
+});
+
+describe("toApproval", () => {
+  const sent = {
+    id: "01990000-0000-7000-8000-0000000000a1",
+    task_id: "01990000-0000-7000-8000-000000000001",
+    title: "Email the weekly summary",
+    action: "Send the weekly summary to the finance list",
+    state: "pending",
+  };
+
+  it("maps task_id to taskId and lets the state through", () => {
+    expect(toApproval(sent)).toEqual({
+      id: sent.id,
+      taskId: sent.task_id,
+      title: sent.title,
+      action: sent.action,
+      state: "pending",
+    });
+    expect(toApproval({ ...sent, state: "denied" }).state).toBe("denied");
+  });
+
+  it("refuses a state the web does not know, and an approval that is not one", () => {
+    expect(() => toApproval({ ...sent, state: "closed" })).toThrow("unknown approval state");
+    expect(() => toApproval({ ...sent, state: 7 })).toThrow("unknown approval state");
+    expect(() => toApproval({ ...sent, action: 7 })).toThrow("no action");
+    expect(() => toApproval([])).toThrow("no approval");
+  });
+});
+
+describe("toNotification", () => {
+  const sent = {
+    id: "01990000-0000-7000-8000-0000000000c4",
+    kind: "question",
+    title: "Where should the invoices go?",
+  };
+
+  it("carries the task the notification is about, and nothing when there is none", () => {
+    expect(toNotification(sent)).toEqual({ id: sent.id, kind: "question", title: sent.title });
+    expect(toNotification({ ...sent, kind: "finished", task_id: "01990000-0000-7000-8000-000000000003" })).toEqual({
+      id: sent.id,
+      kind: "finished",
+      title: sent.title,
+      taskId: "01990000-0000-7000-8000-000000000003",
+    });
+    // The brain leaves task_id out when there is no task, but a null reads the same.
+    expect(toNotification({ ...sent, task_id: null })).not.toHaveProperty("taskId");
+  });
+
+  it("refuses a kind the brain does not send, and a notification that is not one", () => {
+    expect(() => toNotification({ ...sent, kind: "approval" })).toThrow("unknown kind");
+    expect(() => toNotification({ ...sent, kind: "reminder" })).toThrow("unknown kind");
+    expect(() => toNotification("x")).toThrow("no notification");
   });
 });
 

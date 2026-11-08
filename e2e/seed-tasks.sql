@@ -12,11 +12,18 @@
 --
 --   ...0001  Sort the morning mail            Working (Working), one chat line
 --   ...0002  Plan the launch email            Working (Planning)
---   ...0003  Email the supplier statements    Needs approval
+--   ...0003  Email the supplier statements    Needs approval, one pending approval
 --   ...0004  Close the week for Kodeeo        Failed, with a cause
 --   ...0005  Close the books for October      Working, parent of 0006 and 0007
 --   ...0006  Reconcile the accounts           Done, with a {summary, detail} result
 --   ...0007  Draft the October summary        Working
+--   ...0008  Draft the renewal notice         Needs approval, one pending approval
+--
+-- Each waiting task also gets its pending approval and the person their
+-- notifications, so the approval card and the bell have live rows to show. Both
+-- go in the way the brain writes them: an approval is pending and owned by the
+-- one who decides, and a notification is one of proposal, question, finished or
+-- failed, about a task or about nothing.
 
 SELECT id::text AS ada FROM identity.users WHERE lower(email) = 'ada@example.com' \gset
 
@@ -32,8 +39,12 @@ DELETE FROM tasks.runs WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.checks WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.chat_events WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.task_events WHERE task_id IN (SELECT id FROM mine);
+DELETE FROM tasks.approvals WHERE task_id IN (SELECT id FROM mine);
 DELETE FROM tasks.tasks WHERE id IN (SELECT id FROM mine);
 COMMIT;
+
+-- The bell's rows are seeded below, so the old ones go first, dismissed or not.
+DELETE FROM notices.notifications WHERE user_id = :'ada'::uuid;
 
 -- Insert with every trigger on.
 BEGIN;
@@ -124,6 +135,34 @@ WHERE id = 'e2e00000-0000-7000-8000-000000000006';
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000007', :'ada'::uuid, 'e2e00000-0000-7000-8000-000000000005',
   'Draft the October summary', 200, 20, now() - interval '32 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000007', 'advance', 'Preparing', 'Working', now() - interval '31 minutes');
+
+-- 0008: Needs approval, paused from Working, so a denial also has a task to resume.
+SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000008', :'ada'::uuid, NULL,
+  'Draft the renewal notice', 300, 30, now() - interval '30 minutes');
+SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000008', 'plan', 'Preparing', 'Planning', now() - interval '29 minutes');
+SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000008', 'advance', 'Planning', 'Working', now() - interval '28 minutes');
+SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000008', 'pause', 'Working', 'Needs approval', now() - interval '27 minutes');
+
+-- One pending approval for each waiting task, the way the brain's run asks:
+-- owned by the one who decides, with the action the card shows. The decide_once
+-- trigger only guards updates, so a pending insert needs no tricks.
+INSERT INTO tasks.approvals (id, task_id, user_id, tool, reason, action, created_at) VALUES
+  ('e2e00000-0000-7000-8000-00000000a003', 'e2e00000-0000-7000-8000-000000000003', :'ada'::uuid,
+    'smtp', 'ask', 'Email the October supplier statements to ap@supplier.example', now() - interval '46 minutes'),
+  ('e2e00000-0000-7000-8000-00000000a008', 'e2e00000-0000-7000-8000-000000000008', :'ada'::uuid,
+    'smtp', 'ask', 'Send the renewal notice to billing@registrar.example', now() - interval '26 minutes');
+
+-- The bell's notifications: finished and failed are about seeded tasks, a
+-- proposal is about no task (the table's CHECK says so), and none is dismissed.
+INSERT INTO notices.notifications (id, user_id, kind, title, task_id, created_at) VALUES
+  ('e2e00000-0000-7000-8000-00000000b001', :'ada'::uuid, 'failed', 'The weekly close failed',
+    'e2e00000-0000-7000-8000-000000000004', now() - interval '43 minutes'),
+  ('e2e00000-0000-7000-8000-00000000b002', :'ada'::uuid, 'finished', 'The accounts are reconciled',
+    'e2e00000-0000-7000-8000-000000000006', now() - interval '33 minutes'),
+  ('e2e00000-0000-7000-8000-00000000b003', :'ada'::uuid, 'proposal', 'Archive the October statements',
+    NULL, now() - interval '21 minutes'),
+  ('e2e00000-0000-7000-8000-00000000b004', :'ada'::uuid, 'question', 'Renew the domain before Friday?',
+    NULL, now() - interval '20 minutes');
 
 \o
 COMMIT;

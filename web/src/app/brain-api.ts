@@ -1,5 +1,12 @@
 import { BrainError, createStubApi, type ApiClient } from "./api";
 import {
+  noticeKinds,
+  type Approval,
+  type ApprovalState,
+  type AppNotification,
+  type NotificationKind,
+} from "../features/notifications/types";
+import {
   phases,
   taskStatuses,
   type NewTask,
@@ -22,6 +29,14 @@ function isPhase(value: unknown): value is Phase {
 
 function isStatus(value: unknown): value is TaskStatus {
   return taskStatuses.some((status) => status === value);
+}
+
+function isNoticeKind(value: unknown): value is NotificationKind {
+  return noticeKinds.some((kind) => kind === value);
+}
+
+function isApprovalState(value: unknown): value is ApprovalState {
+  return value === "pending" || value === "approved" || value === "denied";
 }
 
 function record(value: unknown, what: string): Json {
@@ -55,6 +70,18 @@ function phaseOf(source: Json): Phase {
 function statusOf(source: Json): TaskStatus {
   const value = source.status;
   if (!isStatus(value)) throw new Error("The brain sent an unknown status.");
+  return value;
+}
+
+function kindOf(source: Json): NotificationKind {
+  const value = source.kind;
+  if (!isNoticeKind(value)) throw new Error("The brain sent an unknown kind.");
+  return value;
+}
+
+function stateOf(source: Json): ApprovalState {
+  const value = source.state;
+  if (!isApprovalState(value)) throw new Error("The brain sent an unknown approval state.");
   return value;
 }
 
@@ -136,13 +163,40 @@ function toNewTask(value: unknown): NewTask {
   return { id: text(source, "id"), status: source.status, goal: text(source, "goal") };
 }
 
-async function call(path: string, init?: { method: "POST"; body: unknown }): Promise<unknown> {
+/** An approval as GET /api/approvals and the decide routes send it. */
+export function toApproval(value: unknown): Approval {
+  const source = record(value, "approval");
+  return {
+    id: text(source, "id"),
+    taskId: text(source, "task_id"),
+    title: text(source, "title"),
+    action: text(source, "action"),
+    state: stateOf(source),
+  };
+}
+
+/** A notification as GET /api/notifications sends it: task_id only when there is a task. */
+export function toNotification(value: unknown): AppNotification {
+  const source = record(value, "notification");
+  const item: AppNotification = { id: text(source, "id"), kind: kindOf(source), title: text(source, "title") };
+  if (typeof source.task_id === "string") item.taskId = source.task_id;
+  return item;
+}
+
+async function call(path: string, init?: { method: "POST" | "DELETE"; body?: unknown }): Promise<unknown> {
   const response = await fetch(path, {
     credentials: "include",
     ...(init
-      ? { method: init.method, headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) }
+      ? {
+          method: init.method,
+          ...(init.body !== undefined
+            ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) }
+            : {}),
+        }
       : {}),
   });
+  // 204 No Content: a dismissed notification answers with nothing to read.
+  if (response.status === 204) return null;
   let body: unknown = null;
   try {
     body = await response.json();
@@ -160,11 +214,20 @@ function taskPath(taskId: string) {
   return `/api/tasks/${encodeURIComponent(taskId)}`;
 }
 
+function decisionPath(id: string, decision: "approve" | "deny") {
+  return `/api/approvals/${encodeURIComponent(id)}/${decision}`;
+}
+
+function notificationPath(id: string) {
+  return `/api/notifications/${encodeURIComponent(id)}`;
+}
+
 type Source = "brain" | "stub";
 
 /**
- * The stub client with its task methods (list, get, advance, create, message)
- * answered by the brain instead. Everything else stays on the stub.
+ * The stub client with its task methods (list, get, advance, create, message),
+ * its approvals and its notifications answered by the brain instead.
+ * Everything else stays on the stub.
  *
  * The first task call asks GET /api/tasks. When that fails the way a missing
  * brain does (no network, or 404), every task method uses the stub for the rest
@@ -214,6 +277,30 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
     async postTaskMessage(taskId, body) {
       if ((await chosen()) === "stub") return stub.postTaskMessage(taskId, body);
       return toEvent(await call(taskPath(taskId), { method: "POST", body: { kind: "chat", body } }));
+    },
+    async listNotifications(query) {
+      if ((await chosen()) === "stub") return stub.listNotifications(query);
+      const limit = query?.limit;
+      const path = limit === undefined ? "/api/notifications" : `/api/notifications?limit=${limit}`;
+      return list(await call(path), "notifications").map(toNotification);
+    },
+    async dismissNotification(id) {
+      if ((await chosen()) === "stub") return stub.dismissNotification(id);
+      await call(notificationPath(id), { method: "DELETE" });
+    },
+    approvals: {
+      async list() {
+        if ((await chosen()) === "stub") return stub.approvals.list();
+        return list(await call("/api/approvals"), "approvals").map(toApproval);
+      },
+      async approve(id) {
+        if ((await chosen()) === "stub") return stub.approvals.approve(id);
+        return toApproval(await call(decisionPath(id, "approve"), { method: "POST" }));
+      },
+      async deny(id) {
+        if ((await chosen()) === "stub") return stub.approvals.deny(id);
+        return toApproval(await call(decisionPath(id, "deny"), { method: "POST" }));
+      },
     },
   };
 }

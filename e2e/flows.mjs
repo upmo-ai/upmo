@@ -18,12 +18,19 @@ const titles = {
   mail: "Sort the morning mail",
   plan: "Plan the launch email",
   approval: "Email the supplier statements",
+  deny: "Draft the renewal notice",
   failed: "Close the week for Kodeeo Limited",
   parent: "Close the books for October",
   done: "Reconcile the accounts",
   draft: "Draft the October summary",
 };
 const seeded = Object.keys(titles).length;
+
+// The actions of the two seeded approvals; the card is named by its action.
+const actions = {
+  email: "Email the October supplier statements to ap@supplier.example",
+  renewal: "Send the renewal notice to billing@registrar.example",
+};
 
 function pageUrl(path) {
   return new URL(path, url).href;
@@ -161,11 +168,10 @@ async function expectNoPlaceholderText(page, what) {
 }
 
 // Read only: the list, its filters and what each seeded task shows. It runs in
-// both themes, so it must leave the tasks as it found them.
-//
-// Approvals (the approval card and Approve) belong to the WP2 approvals
-// ticket and the preparing panel to the runtime ticket; both stay on sample
-// data until then, so this flow does not cover them.
+// both themes, so it must leave the tasks as it found them. The approval card
+// is read here; deciding the two approvals waits for approvalFlow, which runs
+// after it. The preparing panel belongs to the runtime ticket and stays on
+// sample data until then, so this flow does not cover it.
 async function taskFlow(page, { checkBadges, theme }) {
   await signIn(page);
   if (theme) {
@@ -184,12 +190,16 @@ async function taskFlow(page, { checkBadges, theme }) {
   for (const title of [titles.mail, titles.plan, titles.parent, titles.draft]) {
     await page.getByRole("link", { name: title }).waitFor();
   }
-  if ((await page.getByRole("link", { name: titles.approval }).count()) !== 0) {
-    throw new Error("the Underway filter kept a task that needs approval");
+  for (const waiting of [titles.approval, titles.deny]) {
+    if ((await page.getByRole("link", { name: waiting }).count()) !== 0) {
+      throw new Error("the Underway filter kept a task that needs approval");
+    }
   }
   await chooseFilter(page, "Needs approval");
-  await settleText(page.getByTestId("task-count"), "1 task");
-  await page.getByRole("link", { name: titles.approval }).waitFor();
+  await settleText(page.getByTestId("task-count"), "2 tasks");
+  for (const waiting of [titles.approval, titles.deny]) {
+    await page.getByRole("link", { name: waiting }).waitFor();
+  }
   await chooseFilter(page, "Done");
   await settleText(page.getByTestId("task-count"), "1 task");
   await page.getByRole("link", { name: titles.done }).waitFor();
@@ -219,9 +229,10 @@ async function taskFlow(page, { checkBadges, theme }) {
   await settleText(page.getByTestId("task-result"), pendingResult);
   await expectNoPlaceholderText(page, "the Working task");
 
-  // Waiting for approval: nothing to advance.
+  // Waiting for approval: the card says what it wants, and nothing advances.
   await openTask(page, titles.approval);
   await settleText(headerStatus(page), "Needs approval");
+  await page.getByRole("group", { name: actions.email }).waitFor();
   if (await page.getByRole("button", { name: "Next phase" }).isEnabled()) {
     throw new Error("next phase was enabled while waiting");
   }
@@ -302,6 +313,52 @@ async function changeFlow(page) {
   await settleText(page.getByTestId("task-count"), "4 tasks");
 }
 
+// Decides the two seeded approvals. An approval resumes its task, a denial
+// resumes the other and leaves a chat line for the agent; both must survive a
+// reload, which is the brain keeping them. It runs after the read only flows,
+// because nothing waits on these tasks afterwards.
+async function approvalFlow(page) {
+  await signIn(page);
+
+  await openTask(page, titles.approval);
+  await settleText(headerStatus(page), "Needs approval");
+  const email = page.getByRole("group", { name: actions.email });
+  await email.waitFor();
+  await email.getByRole("button", { name: "Approve" }).click();
+  await settleText(headerStatus(page), "Working");
+  await email.waitFor({ state: "detached" });
+
+  await page.reload();
+  await page.getByRole("heading", { level: 1, name: titles.approval }).waitFor();
+  await settleText(headerStatus(page), "Working");
+  await page.getByRole("group", { name: actions.email }).waitFor({ state: "detached" });
+  await page.getByText("All events", { exact: true }).click();
+  const approved = page.getByRole("region", { name: "Activity" }).locator(".upmo-eventstream__msg");
+  await approved.last().waitFor();
+  const lastApproved = (await approved.last().innerText()).trim();
+  if (lastApproved !== "Approval given") {
+    throw new Error(`last event is ${JSON.stringify(lastApproved)}, expected "Approval given"`);
+  }
+
+  await openTask(page, titles.deny);
+  await settleText(headerStatus(page), "Needs approval");
+  const renewal = page.getByRole("group", { name: actions.renewal });
+  await renewal.waitFor();
+  await renewal.getByRole("button", { name: "Deny" }).click();
+  await settleText(headerStatus(page), "Working");
+  await renewal.waitFor({ state: "detached" });
+
+  await page.reload();
+  await page.getByRole("heading", { level: 1, name: titles.deny }).waitFor();
+  await settleText(headerStatus(page), "Working");
+  await page.getByRole("group", { name: actions.renewal }).waitFor({ state: "detached" });
+  // The refusal leaves a chat line, so the agent reads why it must find another way.
+  await page
+    .getByRole("list", { name: "Messages" })
+    .getByText("The action was refused. Find another way.")
+    .waitFor();
+}
+
 // A task that names a repository needs the brain's sandbox service, and the
 // e2e brain cannot reach one: it answers 503, so the dialog must show the
 // refusal and stay open. Everything before that is the dialog's own checking.
@@ -361,6 +418,7 @@ try {
   await page.locator("html[data-theme='dark']").waitFor();
   await taskFlow(page, { checkBadges: false, theme: "dark" });
   await changeFlow(page);
+  await approvalFlow(page);
   await newTaskFlow(page);
 
   console.log("task flow passed");

@@ -294,8 +294,13 @@ export interface ApiClient {
    * result. A task the person cannot see is a BrainError 404.
    */
   getTask(taskId: string): Promise<Task>;
-  /** Newest first. At most `limit` notifications come back when it is given. */
+  /**
+   * GET /api/notifications?limit=N: newest first, at most `limit` (default 50,
+   * max 100) and never one that was dismissed. task_id is left out when the
+   * notification is about no task.
+   */
   listNotifications(options?: { limit?: number }): Promise<AppNotification[]>;
+  /** DELETE /api/notifications/{id}: 204, again when it was dismissed already. */
   dismissNotification(id: string): Promise<void>;
   nextPhase(taskId: string): Promise<Task>;
   /**
@@ -309,8 +314,18 @@ export interface ApiClient {
    */
   postTaskMessage(taskId: string, body: string): Promise<TaskEvent>;
   approvals: {
+    /**
+     * GET /api/approvals: pending first, newest first, at most 50. A closed row
+     * (its task ended while it waited) is never listed.
+     */
     list(): Promise<Approval[]>;
+    /**
+     * POST /api/approvals/{id}/approve. Resumes the task and answers the
+     * approval with its new state. 409 when it was decided already or the task
+     * no longer waits.
+     */
     approve(id: string): Promise<Approval>;
+    /** POST /api/approvals/{id}/deny, with the same refusals as approve. */
     deny(id: string): Promise<Approval>;
   };
   session: {
