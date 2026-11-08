@@ -2,7 +2,8 @@ import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-qu
 import { RouterProvider } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { ApiProvider, BrainError, createStubApi, type ApiClient } from "./app/api";
+import { ApiProvider, BrainError, type ApiClient } from "./app/api";
+import { createBrainApi } from "./app/brain-api";
 import { createAppRouter, type RouterHistory } from "./app/router";
 
 function isUnauthorised(error: unknown): boolean {
@@ -23,7 +24,7 @@ export function App({
   history?: RouterHistory;
   client?: ApiClient;
 } = {}) {
-  const [api] = useState(() => client ?? createStubApi());
+  const [api] = useState(() => client ?? createBrainApi());
   const [router] = useState(() => createAppRouter(history));
   const [queryClient] = useState(
     () =>

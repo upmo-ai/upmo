@@ -131,6 +131,9 @@ export interface Task {
 
 export const pendingResult = "The final result shows up here when the task is done.";
 
+/** Shown for a finished task that recorded no result. */
+export const noResult = "This task finished without a written result.";
+
 export type TaskFilter = "All" | TaskStatus;
 
 export function isTaskFilter(value: string): value is TaskFilter {

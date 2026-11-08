@@ -70,6 +70,11 @@ function clientServing(change: (tasks: Task[]) => Task[]): ApiClient {
   return {
     ...stub,
     listTasks: async () => change(await stub.listTasks()),
+    getTask: async (taskId) => {
+      const task = change(await stub.listTasks()).find((item) => item.id === taskId);
+      if (!task) throw new Error("task missing");
+      return task;
+    },
   };
 }
 

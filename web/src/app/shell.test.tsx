@@ -554,6 +554,16 @@ describe("app shell", () => {
           },
         ];
       },
+      async getTask() {
+        return {
+          id: "custom-task",
+          title: "Custom task",
+          status: "Working",
+          phase: "Preparing",
+          result: "Custom task is finished.",
+          detail: "A custom task.",
+        };
+      },
       async listNotifications() {
         return [];
       },
@@ -824,6 +834,9 @@ describe("app shell", () => {
     renderAt("/", {
       async listTasks() {
         return [];
+      },
+      async getTask() {
+        throw new Error("task missing");
       },
       async listNotifications() {
         return [];

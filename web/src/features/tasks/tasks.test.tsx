@@ -739,6 +739,9 @@ describe("tasks", () => {
       async listTasks() {
         return [bare];
       },
+      async getTask() {
+        return bare;
+      },
     });
     expect(await screen.findByRole("heading", { level: 1, name: "Bare task" })).toBeTruthy();
     const header = document.querySelector(".task-header") as HTMLElement;
@@ -780,6 +783,9 @@ describe("tasks", () => {
       ...stub,
       async listTasks() {
         return [partial];
+      },
+      async getTask() {
+        return partial;
       },
     });
     expect(await screen.findByRole("heading", { level: 1, name: "Partial task" })).toBeTruthy();

@@ -153,6 +153,13 @@ try {
     colorScheme: "light",
     reducedMotion: "reduce",
   });
+  // Artifacts and task sharing are still sample data kept under the sample task ids until
+  // the artifacts and shares backend packages land, so this script reads the sample tasks
+  // too: the tasks list is answered 404, which is how the web knows to use them.
+  // Everything else is the real brain.
+  await context.route(/\/api\/tasks$/, (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
+  );
   const page = await context.newPage();
   await expectFits(page, "/", (current) => current.getByRole("heading", { level: 1, name: "Home" }).waitFor());
   await expectFits(page, "/tasks", (current) =>
