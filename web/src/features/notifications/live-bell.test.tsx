@@ -162,6 +162,25 @@ describe("approvals and notifications from the brain", () => {
     expect(calls).toContainEqual({ method: "POST", path: `/api/approvals/${approvalId}/approve`, body: undefined });
   });
 
+  it("approves from the bell, and the approval leaves the list with the task working again", async () => {
+    const { fetcher, calls } = brain();
+    vi.stubGlobal("fetch", fetcher);
+    renderAt(`/tasks/${waitingId}`);
+    await screen.findByRole("group", { name: approvalAction });
+
+    const dialog = await openBell();
+    act(() => {
+      within(dialog).getByRole("button", { name: "Approve", hidden: true }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("group", { name: approvalAction })).toBeNull();
+      expect(headerStatus()).toBe("Working");
+    });
+    expect(calls).toContainEqual({ method: "POST", path: `/api/approvals/${approvalId}/approve`, body: undefined });
+    expect(screen.getByRole("button", { name: "Notifications, 4 unread" })).toBeTruthy();
+  });
+
   it("denies from the task page and the task works again all the same", async () => {
     const { fetcher, calls } = brain();
     vi.stubGlobal("fetch", fetcher);

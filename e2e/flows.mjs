@@ -335,10 +335,7 @@ async function approvalFlow(page) {
   await page.getByText("All events", { exact: true }).click();
   const approved = page.getByRole("region", { name: "Activity" }).locator(".upmo-eventstream__msg");
   await approved.last().waitFor();
-  const lastApproved = (await approved.last().innerText()).trim();
-  if (lastApproved !== "Approval given") {
-    throw new Error(`last event is ${JSON.stringify(lastApproved)}, expected "Approval given"`);
-  }
+  await settleText(approved.last(), "Approval given");
 
   await openTask(page, titles.deny);
   await settleText(headerStatus(page), "Needs approval");
