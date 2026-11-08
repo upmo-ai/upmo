@@ -14,7 +14,7 @@ import {
 } from "@upmo-ai/components";
 
 import { useApi, usageQueryKey, type Usage, type UsageRange, type UsageTask } from "../../app/api";
-import { UsageAnalytics } from "./analytics";
+import { UsagePanels } from "./panels";
 import {
   errorRate,
   isEmptyUsage,
@@ -110,7 +110,7 @@ function UsageFigures({ usage }: { usage: Usage }) {
       ) : (
         <>
           <UsageOverview usage={usage} />
-          <UsageAnalytics usage={usage} />
+          <UsagePanels usage={usage} />
         </>
       )}
       <TaskCost usage={usage} />

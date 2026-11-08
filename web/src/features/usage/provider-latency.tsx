@@ -1,7 +1,7 @@
 import { GroupedBarChart } from "@upmo-ai/components";
 
 import type { Usage } from "../../app/api";
-import { AnalyticsPanel } from "./analytics-panel";
+import { UsagePanel } from "./panel";
 import { formatLatency } from "./format";
 import { hasCalls, latencyProviders, providerLabel } from "./series";
 
@@ -9,7 +9,7 @@ export function ProviderLatency({ usage }: { usage: Usage }) {
   const providers = latencyProviders(usage);
   const empty = !hasCalls(usage) || providers.length === 0;
   return (
-    <AnalyticsPanel title="Latency per provider" empty={empty ? "No latency to show in this range." : undefined}>
+    <UsagePanel title="Latency per provider" empty={empty ? "No latency to show in this range." : undefined}>
       <GroupedBarChart
         title="Latency per provider"
         orientation="horizontal"
@@ -23,6 +23,6 @@ export function ProviderLatency({ usage }: { usage: Usage }) {
           ],
         }))}
       />
-    </AnalyticsPanel>
+    </UsagePanel>
   );
 }

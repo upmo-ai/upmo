@@ -2,7 +2,7 @@ import { Group, Text, Title } from "@mantine/core";
 import type { ReactNode } from "react";
 import { Panel, SegmentedControl } from "@upmo-ai/components";
 
-interface AnalyticsPanelProps {
+interface UsagePanelProps {
   title: string;
   /** When set, the panel shows this text instead of its chart. */
   empty?: string;
@@ -15,8 +15,8 @@ interface AnalyticsPanelProps {
   children: ReactNode;
 }
 
-/** A titled panel for one analytics chart, with a plain empty state for a range with no data. */
-export function AnalyticsPanel({ title, empty, action, note, wide = false, children }: AnalyticsPanelProps) {
+/** A titled panel for one usage chart, with a plain empty state for a range with no data. */
+export function UsagePanel({ title, empty, action, note, wide = false, children }: UsagePanelProps) {
   return (
     <Panel p="md" className={wide ? "usage-panel usage-wide" : "usage-panel"}>
       <Group justify="space-between" align="center" wrap="wrap" mb="sm">

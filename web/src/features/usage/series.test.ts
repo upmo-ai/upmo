@@ -46,7 +46,7 @@ function values(series: { points: { value: number | null }[] }): (number | null)
 }
 
 describe("usage series", () => {
-  it("usage analytics: a token stack adds up to input plus output, also when tool definitions exceed input", () => {
+  it("usage panels: a token stack adds up to input plus output, also when tool definitions exceed input", () => {
     const usage = usageOf([
       bucket({ at: "2026-11-01", input: 100, output: 40, tool_defs_est: 30 }),
       bucket({ at: "2026-11-02", input: 100, output: 40, tool_defs_est: 100 }),
@@ -62,7 +62,7 @@ describe("usage series", () => {
     });
   });
 
-  it("usage analytics: a row absent from a bucket spent nothing there even when the bucket's spend is unknown", () => {
+  it("usage panels: a row absent from a bucket spent nothing there even when the bucket's spend is unknown", () => {
     const usage = usageOf([
       bucket({ at: "2026-11-01", requests: 0, spend_usd: null }),
       bucket({

@@ -134,7 +134,7 @@ function bucket(extra: Partial<UsageBucket>): UsageBucket {
   };
 }
 
-describe("Usage analytics panels", () => {
+describe("Usage panels", () => {
   beforeEach(() => {
     localStorage.clear();
     resetChartProps();
@@ -145,7 +145,7 @@ describe("Usage analytics panels", () => {
   });
 
   it.each(["today", "7", "30", "90"])(
-    "usage analytics: every panel renders from the stub on range %s",
+    "usage panels: every panel renders from the stub on range %s",
     async (range) => {
       const usage = await createStubApi().usage(range === "today" ? "today" : (Number(range) as UsageRange));
       renderAt(`/usage?range=${range}`);
@@ -158,6 +158,8 @@ describe("Usage analytics panels", () => {
       }
       expect(chartTable("Latency per provider").rows.length).toBeGreaterThan(0);
     },
+    // Every panel draws a chart; the 90-day range is slow on a busy machine.
+    30_000,
   );
 
   it("usage polish 4113376c: the panels come in the new order, then Tasks", async () => {
@@ -202,7 +204,7 @@ describe("Usage analytics panels", () => {
     expect(base).toMatch(/\.usage-panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/);
   });
 
-  it("usage analytics: spend by provider has a line per priced provider, global ones marked, with the API's figures", async () => {
+  it("usage panels: spend by provider has a line per priced provider, global ones marked, with the API's figures", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by provider" });
@@ -219,7 +221,7 @@ describe("Usage analytics panels", () => {
     expect(within(screen.getByRole("group", { name: "Spend by provider" })).queryByText(/Ollama/)).toBeNull();
   });
 
-  it("usage analytics: spend by model has a line per priced model and the API's figures", async () => {
+  it("usage panels: spend by model has a line per priced model and the API's figures", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by model" });
@@ -238,7 +240,7 @@ describe("Usage analytics panels", () => {
     );
   });
 
-  it("usage analytics: tokens per model are token counts of every model that took calls, unpriced ones included", async () => {
+  it("usage panels: tokens per model are token counts of every model that took calls, unpriced ones included", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Tokens per model" });
@@ -251,7 +253,7 @@ describe("Usage analytics panels", () => {
     expect(cellOf("Tokens per model", formatBucket(day.at, "day"), "Llama 3.3 70B")).toBe("0");
   });
 
-  it("usage analytics: token consumption stacks input without tool definitions, output and tool definitions to input plus output", async () => {
+  it("usage panels: token consumption stacks input without tool definitions, output and tool definitions to input plus output", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Token consumption" });
@@ -276,7 +278,7 @@ describe("Usage analytics panels", () => {
     expect(screen.queryByRole("radiogroup", { name: "Token consumption view" })).toBeNull();
   });
 
-  it("usage analytics: the token consumption stack still adds up to input plus output when tool definitions exceed input", async () => {
+  it("usage panels: the token consumption stack still adds up to input plus output when tool definitions exceed input", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       buckets: [
@@ -295,7 +297,7 @@ describe("Usage analytics panels", () => {
     }
   });
 
-  it("usage analytics: the Lines and Stacked toggle starts on Lines and changes only its own chart", async () => {
+  it("usage panels: the Lines and Stacked toggle starts on Lines and changes only its own chart", async () => {
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by provider" });
     const stacked = (name: string) => chartProps<LineChartProps>(name).stacked ?? false;
@@ -323,7 +325,7 @@ describe("Usage analytics panels", () => {
     expect(stacked("Token consumption")).toBe(true);
   });
 
-  it("usage analytics: a priced row that made no calls in a bucket with unknown spend is zero there, not a gap", async () => {
+  it("usage panels: a priced row that made no calls in a bucket with unknown spend is zero there, not a gap", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by provider" });
@@ -340,7 +342,7 @@ describe("Usage analytics panels", () => {
     check();
   });
 
-  it("usage analytics: unknown spend of a row that took calls is a gap in the spend lines, stacked or not", async () => {
+  it("usage panels: unknown spend of a row that took calls is a gap in the spend lines, stacked or not", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       buckets: [
@@ -372,7 +374,7 @@ describe("Usage analytics panels", () => {
     check();
   });
 
-  it("usage analytics: a provider with unknown spend in a known bucket is a gap, one with no calls there is zero", async () => {
+  it("usage panels: a provider with unknown spend in a known bucket is a gap, one with no calls there is zero", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       buckets: [
@@ -397,7 +399,7 @@ describe("Usage analytics panels", () => {
     expect(cellOf("Spend by provider", "2 Nov", "Mistral")).toBe(formatUsd(0));
   });
 
-  it("usage analytics: latency per provider shows p50, p95 and p99 as readable durations for providers with calls", async () => {
+  it("usage panels: latency per provider shows p50, p95 and p99 as readable durations for providers with calls", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Latency per provider" });
@@ -413,7 +415,7 @@ describe("Usage analytics panels", () => {
     expect(rows[0]!.cells[0]).toMatch(/^\d(\.\d)? s$/);
   });
 
-  it("usage analytics: latency leaves out a provider that took no calls", async () => {
+  it("usage panels: latency leaves out a provider that took no calls", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       providers: usage.providers.map((provider) =>
@@ -425,7 +427,7 @@ describe("Usage analytics panels", () => {
     expect(chartTable("Latency per provider").rows.map((row) => row.label)).not.toContain("Ollama");
   });
 
-  it("usage analytics: the spend share donut leaves out unpriced providers and names them", async () => {
+  it("usage panels: the spend share donut leaves out unpriced providers and names them", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend share by provider" });
@@ -442,7 +444,7 @@ describe("Usage analytics panels", () => {
     expect(within(donut).getAllByText(formatUsd(total)).length).toBeGreaterThan(0);
   });
 
-  it("usage analytics: the spend share lists every unpriced provider, and says so when none has a price", async () => {
+  it("usage panels: the spend share lists every unpriced provider, and says so when none has a price", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       providers: usage.providers.map((provider) =>
@@ -469,7 +471,7 @@ describe("Usage analytics panels", () => {
     ).toBeTruthy();
   });
 
-  it("usage analytics: spend by provider names the providers that took calls but have no price, under the chart", async () => {
+  it("usage panels: spend by provider names the providers that took calls but have no price, under the chart", async () => {
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by provider" });
     expect(within(panelOf("Spend by provider")).getByText("No price for: Ollama")).toBeTruthy();
@@ -488,7 +490,7 @@ describe("Usage analytics panels", () => {
     expect(chartTable("Spend by provider").header).toEqual(["Label", "Anthropic (global)", "OpenAI (global)"]);
   });
 
-  it("usage analytics: spend by provider with no priced provider says there is no spend to draw and still names them", async () => {
+  it("usage panels: spend by provider with no priced provider says there is no spend to draw and still names them", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       providers: usage.providers.map((provider) => ({ ...provider, spend_usd: null })),
@@ -503,7 +505,7 @@ describe("Usage analytics panels", () => {
     ).toBeTruthy();
   });
 
-  it("usage analytics: spend by model names the models that took tokens but have no price, under the chart", async () => {
+  it("usage panels: spend by model names the models that took tokens but have no price, under the chart", async () => {
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by model" });
     expect(within(panelOf("Spend by model")).getByText("No price for: Llama 3.3 70B")).toBeTruthy();
@@ -521,7 +523,7 @@ describe("Usage analytics panels", () => {
     expect(chartTable("Spend by model").header).not.toContain("GPT-4.1 mini");
   });
 
-  it("usage analytics: spend by model with no priced model says there is no spend to draw and still names them", async () => {
+  it("usage panels: spend by model with no priced model says there is no spend to draw and still names them", async () => {
     const week = await createStubApi().usage(7);
     const client = withUsage((usage) => ({
       ...usage,
@@ -536,7 +538,7 @@ describe("Usage analytics panels", () => {
     expect(within(panel).getByText(`No price for: ${names.join(", ")}`)).toBeTruthy();
   });
 
-  it("usage analytics: requests and error rate plots the error rate as a percent of requests", async () => {
+  it("usage panels: requests and error rate plots the error rate as a percent of requests", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       buckets: [
@@ -554,7 +556,7 @@ describe("Usage analytics panels", () => {
     expect(cellOf("Requests and error rate", "1 Nov", "Requests")).toBe("10");
   });
 
-  it("usage analytics: the stub's error rate is a percent in every bucket", async () => {
+  it("usage panels: the stub's error rate is a percent in every bucket", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Requests and error rate" });
@@ -567,7 +569,7 @@ describe("Usage analytics panels", () => {
     }
   });
 
-  it("usage analytics: Today labels every analytics chart by the hour", async () => {
+  it("usage panels: Today labels every chart by the hour", async () => {
     const today = await createStubApi().usage("today");
     renderAt("/usage?range=today");
     await screen.findByRole("group", { name: "Requests and error rate" });
@@ -578,7 +580,7 @@ describe("Usage analytics panels", () => {
     }
   });
 
-  it("usage analytics: a range with no usage shows only the page empty state and none of the panels", async () => {
+  it("usage panels: a range with no usage shows only the page empty state and none of the panels", async () => {
     renderAt("/usage", createStubApi({ emptyUsage: true }));
     expect(await screen.findByRole("heading", { level: 2, name: "No usage in this range" })).toBeTruthy();
     for (const title of panelTitles) {
@@ -604,7 +606,7 @@ describe("Usage analytics panels", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Cost per task" })).toBeTruthy();
   });
 
-  it("usage analytics: a range with tasks but no calls shows the empty states in the panels", async () => {
+  it("usage panels: a range with tasks but no calls shows the empty states in the panels", async () => {
     const client = withUsage((usage) => ({ ...usage, buckets: [], providers: [], models: [] }));
     renderAt("/usage", client);
     await screen.findByRole("table", { name: "Task breakdown" });

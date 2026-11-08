@@ -1,7 +1,7 @@
 import { ComboChart } from "@upmo-ai/components";
 
 import type { Usage } from "../../app/api";
-import { AnalyticsPanel } from "./analytics-panel";
+import { UsagePanel } from "./panel";
 import { errorRate } from "./figures";
 import { formatBucket, formatPercentPoints, formatTokensCompact } from "./format";
 import { hasCalls } from "./series";
@@ -10,7 +10,7 @@ export function RequestsErrors({ usage }: { usage: Usage }) {
   const { buckets, bucket: unit } = usage;
   const empty = !hasCalls(usage);
   return (
-    <AnalyticsPanel wide title="Requests and error rate" empty={empty ? "No requests in this range." : undefined}>
+    <UsagePanel wide title="Requests and error rate" empty={empty ? "No requests in this range." : undefined}>
       <ComboChart
         title="Requests and error rate"
         formatBar={formatTokensCompact}
@@ -27,6 +27,6 @@ export function RequestsErrors({ usage }: { usage: Usage }) {
           })),
         }}
       />
-    </AnalyticsPanel>
+    </UsagePanel>
   );
 }
