@@ -4,7 +4,9 @@ import (
 	"context"
 	"embed"
 	"io/fs"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -31,11 +33,33 @@ func Migrations() fs.FS {
 	return files
 }
 
+// adapter is everything one adapter key can do.
+type adapter interface {
+	app.Decider
+	app.Chatter
+	app.Embedder
+	app.Prober
+}
+
+// adapters is the one table of adapters the gateway knows. Dispatch and the
+// provider settings both read it, so a key that can be saved is a key that
+// can be called.
+func adapters() map[string]adapter {
+	return map[string]adapter{
+		domain.AdapterFake:   fake.Adapter{YesNo: true, Reply: "ok"},
+		domain.AdapterOpenAI: openai.Adapter{},
+	}
+}
+
 // Mount registers the JSON debug routes. cmd/gateway wraps them with HMAC.
 func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 	store := postgres.Store{Pool: pool}
-	f := fake.Adapter{YesNo: true, Reply: "ok"}
-	o := openai.Adapter{}
+	decide := map[string]app.Decider{}
+	chat := map[string]app.Chatter{}
+	embed := map[string]app.Embedder{}
+	for name, a := range adapters() {
+		decide[name], chat[name], embed[name] = a, a, a
+	}
 	httpapi.Handler{
 		Dispatch: app.Dispatch{
 			Routes:  store,
@@ -43,10 +67,11 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 			Prices:  store,
 			Ledger:  store,
 			Bundles: store,
-			Decide:  map[string]app.Decider{"fake": f, "openai_compat": o},
-			Chat:    map[string]app.Chatter{"fake": f, "openai_compat": o},
-			Embed:   map[string]app.Embedder{"fake": f, "openai_compat": o},
+			Decide:  decide,
+			Chat:    chat,
+			Embed:   embed,
 			Gates:   app.NewGates(),
+			Status:  app.NewStatusRecorder(store.RecordStatus),
 			Caps: func(model string) ([]string, bool) {
 				have, ok, err := store.Capabilities(context.Background(), model)
 				if err != nil || !ok {
@@ -61,6 +86,27 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 	}.Mount(mux)
 }
 
+// NewProviders is the use case behind the provider settings. It seals the
+// keys a person adds with keys; a zero Keyring leaves it unable to save one.
+func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Providers {
+	table := adapters()
+	probes := make(map[string]app.Prober, len(table))
+	for name, a := range table {
+		probes[name] = a
+	}
+	return app.Providers{
+		Accounts: postgres.Providers{Pool: pool},
+		Keys:     keys,
+		Known: func(name string) bool {
+			_, ok := table[name]
+			return ok
+		},
+		Probes:  probes,
+		Limiter: app.NewTestLimiter(10, time.Minute),
+		Log:     log,
+	}
+}
+
 // NewRouteBook reads routing rows for settings screens. It never resolves secrets.
 func NewRouteBook(pool *pgxpool.Pool) app.RouteBook {
 	return postgres.Store{Pool: pool}
@@ -68,6 +114,9 @@ func NewRouteBook(pool *pgxpool.Pool) app.RouteBook {
 
 // RoutesHandler serves the routing rows to a signed-in settings manager.
 type RoutesHandler = httpapi.RoutesHandler
+
+// ProvidersHandler serves a signed-in person's provider accounts.
+type ProvidersHandler = httpapi.ProvidersHandler
 
 // A model request and the input it is built from.
 type (

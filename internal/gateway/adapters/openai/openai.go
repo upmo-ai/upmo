@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
@@ -14,17 +15,71 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/netguard"
 )
 
-// Adapter talks OpenAI-compatible /v1/chat/completions. Production uses
-// netguard; tests inject Client.
+// Adapter talks OpenAI-compatible /v1/chat/completions. Production dials
+// through netguard; tests inject Client.
 type Adapter struct {
 	Client *http.Client
+	// Lookup resolves host names for the guarded clients. Nil uses the system
+	// resolver. Tests set it to re-point a name.
+	Lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-func (a Adapter) client() *http.Client {
+// The guarded clients. Every connection resolves the host and refuses the
+// dial when any address is one the account's plan forbids, then dials the
+// vetted address, so a name cannot be re-pointed after a URL was saved. Only
+// a local account may reach a private or loopback address; none may reach a
+// link-local or metadata address. A redirect is never followed: the answer
+// is the redirect itself, so a key is not sent on to another place.
+var (
+	strictClient = guardedClient(false, nil)
+	localClient  = guardedClient(true, nil)
+)
+
+func guardedClient(local bool, lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)) *http.Client {
+	g := &netguard.Guard{LocalNetwork: local, Lookup: lookup}
+	return &http.Client{
+		Transport: g.Transport(),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func (a Adapter) client(attempt app.Attempt) *http.Client {
 	if a.Client != nil {
 		return a.Client
 	}
-	return &http.Client{Transport: (&netguard.Guard{}).Transport()}
+	local := attempt.PlanKind == domain.PlanLocal
+	if a.Lookup != nil {
+		return guardedClient(local, a.Lookup)
+	}
+	if local {
+		return localClient
+	}
+	return strictClient
+}
+
+// Probe asks for the model list, the cheapest call that needs the key. It
+// returns the failure class of the answer.
+func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) (domain.FailureClass, error) {
+	base := strings.TrimRight(attempt.BaseURL, "/")
+	if base == "" {
+		return domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		return domain.ClassCaller, err
+	}
+	if attempt.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
+	}
+	res, err := a.client(attempt).Do(req)
+	if err != nil {
+		return classForErr(err), err
+	}
+	defer func() { _ = res.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+	return statusClass(res.StatusCode)
 }
 
 func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
@@ -162,7 +217,7 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 	if attempt.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
 	}
-	res, err := a.client().Do(req)
+	res, err := a.client(attempt).Do(req)
 	if err != nil {
 		return "", domain.Usage{}, classForErr(err), err
 	}
@@ -226,7 +281,7 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 	if attempt.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
 	}
-	res, err := a.client().Do(req)
+	res, err := a.client(attempt).Do(req)
 	if err != nil {
 		return nil, domain.Usage{}, classForErr(err), err
 	}

@@ -88,6 +88,11 @@ func run() error {
 		err = migrate.Up(ctx, owner, runtime.Schema, runtime.Migrations())
 	}
 	if err == nil {
+		// brain serves the provider settings from the gateway tables, so it
+		// brings that schema up to date too. gateway does the same at its start.
+		err = migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations())
+	}
+	if err == nil {
 		err = jobs.Up(ctx, owner)
 	}
 	if err == nil {
@@ -427,6 +432,23 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 			return person.UserID.String(), allow, true
 		},
 	}.MountRoutes(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		return nil, err
+	}
+	gateway.ProvidersHandler{
+		Service: gateway.NewProviders(pool, masterKeys, log),
+		Log:     log,
+		Access: func(r *http.Request) (string, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return "", false
+			}
+			return person.UserID.String(), true
+		},
+	}.MountProviders(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
 	notices.Handler{
