@@ -24,6 +24,14 @@
 -- go in the way the brain writes them: an approval is pending and owned by the
 -- one who decides, and a notification is one of proposal, question, finished or
 -- failed, about a task or about nothing.
+--
+-- The person's chats are seeded below too, so the chat page reads live rows:
+--   ...c101  What should the October close check first?  user line, assistant line at $0.0031
+--   ...c102  Summarise the supplier prices              assistant line, cost unknown
+--   ...c103  New chat                                   empty
+--
+-- A user line carries no model and no cost, an assistant line names its model,
+-- and each line keeps its own time so the order stays stable.
 
 SELECT id::text AS ada FROM identity.users WHERE lower(email) = 'ada@example.com' \gset
 
@@ -43,9 +51,15 @@ DELETE FROM tasks.approvals WHERE task_id IN (SELECT id FROM mine);
 -- The shares of the seeded tasks live in identity, not under the task rows,
 -- so they go too: the e2e flow shares one of these tasks and puts it back.
 DELETE FROM identity.shares
+WHERE object_type = 'chat' AND object_id::text LIKE 'e2e00000-0000-7000-8000-%';
+DELETE FROM identity.shares
 WHERE object_type = 'task'
   AND (object_id IN (SELECT id FROM mine) OR object_id::text LIKE 'e2e00000-0000-7000-8000-%');
 DELETE FROM tasks.tasks WHERE id IN (SELECT id FROM mine);
+-- The chats seeded below are append-only through chat.keep_line, so their lines
+-- go in the same replica-mode transaction.
+DELETE FROM chat.lines WHERE chat_id IN (SELECT id FROM chat.chats WHERE owner_user_id = :'ada'::uuid);
+DELETE FROM chat.chats WHERE owner_user_id = :'ada'::uuid;
 COMMIT;
 
 -- The bell's rows are seeded below, so the old ones go first, dismissed or not.
@@ -170,4 +184,23 @@ INSERT INTO notices.notifications (id, user_id, kind, title, task_id, created_at
     NULL, now() - interval '20 minutes');
 
 \o
+COMMIT;
+
+-- Ada's chats. A chat opens private and empty; the titles the list shows are
+-- what its first user line says, so the ids alone are fixed here.
+BEGIN;
+INSERT INTO chat.chats (id, owner_user_id, visibility, created_at) VALUES
+  ('e2e00000-0000-7000-8000-00000000c101', :'ada'::uuid, 'private', now() - interval '12 minutes'),
+  ('e2e00000-0000-7000-8000-00000000c102', :'ada'::uuid, 'private', now() - interval '18 minutes'),
+  ('e2e00000-0000-7000-8000-00000000c103', :'ada'::uuid, 'private', now() - interval '2 hours');
+
+INSERT INTO chat.lines (chat_id, seq, body, role, at, model, tokens, cost_micro_usd) VALUES
+  ('e2e00000-0000-7000-8000-00000000c101', 1, 'What should the October close check first?', 'user',
+    now() - interval '12 minutes', NULL, 0, NULL),
+  ('e2e00000-0000-7000-8000-00000000c101', 2, 'Start with the supplier statements, then reconcile the ledger.', 'assistant',
+    now() - interval '11 minutes', 'claude-opus-5-5', 412, 3100),
+  ('e2e00000-0000-7000-8000-00000000c102', 1, 'Summarise the supplier prices', 'user',
+    now() - interval '18 minutes', NULL, 0, NULL),
+  ('e2e00000-0000-7000-8000-00000000c102', 2, 'Prices are stable to the year end; lead times are the open question.', 'assistant',
+    now() - interval '17 minutes', 'llama3.3:70b', 58, NULL);
 COMMIT;

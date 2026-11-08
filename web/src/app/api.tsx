@@ -430,9 +430,15 @@ export interface ApiClient {
     get(id: string): Promise<Chat>;
     /**
      * POST /api/chats/{id} with {body}. Resolves once the line is stored (202).
-     * The assistant line is written later: read the chat again to see it.
+     * On the stub an assistant line follows a moment later; the brain stores
+     * the line and answers nothing yet, so nothing is awaited there.
      */
     send(id: string, body: string): Promise<void>;
+    /**
+     * True while an assistant line is written on its own after a send, so a
+     * reply is worth waiting for: the stub's is, the brain's is not yet.
+     */
+    readonly repliesLater: boolean;
   };
   // Models and routes. Every signed-in person can read both. Each row carries
   // scope: global rows are read-only for everyone, own rows belong to the person.

@@ -4,6 +4,9 @@ import {
   causeSentence,
   shareBody,
   toApproval,
+  toChat,
+  toChatLine,
+  toChatSummary,
   toMember,
   toNotification,
   toTask,
@@ -234,5 +237,65 @@ describe("shareBody", () => {
       shareBody({ visibility: "private", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants }),
     ).not.toHaveProperty("team_id");
     expect(shareBody({ visibility: "team", members: grants })).not.toHaveProperty("team_id");
+  });
+});
+
+describe("toChatSummary", () => {
+  const sent = {
+    id: "01990000-0000-7000-8000-0000000000c1",
+    title: "What should the October close check first?",
+    preview: "Start with the supplier statements.",
+    last_activity: "2026-11-08T09:10:00Z",
+  };
+
+  it("carries the list fields as the wire names them", () => {
+    expect(toChatSummary(sent)).toEqual(sent);
+  });
+
+  it("refuses a chat with no title, and one that is not a chat", () => {
+    expect(() => toChatSummary({ ...sent, title: 7 })).toThrow("no title");
+    expect(() => toChatSummary("chat")).toThrow("no chat");
+  });
+});
+
+describe("toChat and toChatLine", () => {
+  const userLine = {
+    id: "01990000-0000-7000-8000-00000000l101",
+    role: "user",
+    body: "What should the October close check first?",
+    model: null,
+    tokens: 0,
+    cost_usd: null,
+    at: "2026-11-08T09:11:00Z",
+  };
+  const assistantLine = {
+    id: "01990000-0000-7000-8000-00000000l102",
+    role: "assistant",
+    body: "Start with the supplier statements.",
+    model: "claude-opus-5-5",
+    tokens: 412,
+    cost_usd: 0.0031,
+    at: "2026-11-08T09:12:00Z",
+  };
+
+  it("keeps a user line bare and an assistant line's model, tokens and cost", () => {
+    expect(toChatLine(userLine)).toEqual(userLine);
+    expect(toChatLine(assistantLine)).toEqual(assistantLine);
+    expect(toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: [userLine, assistantLine] })).toEqual({
+      id: "01990000-0000-7000-8000-0000000000c1",
+      lines: [userLine, assistantLine],
+    });
+  });
+
+  it("keeps an unknown assistant cost null, never zero", () => {
+    expect(toChatLine({ ...assistantLine, cost_usd: null }).cost_usd).toBeNull();
+    expect(toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: [] }).lines).toEqual([]);
+  });
+
+  it("refuses a role the web does not know, and a model or cost that is neither a value nor null", () => {
+    expect(() => toChatLine({ ...assistantLine, role: "system" })).toThrow("unknown role");
+    expect(() => toChatLine({ ...assistantLine, model: undefined })).toThrow("no model");
+    expect(() => toChatLine({ ...assistantLine, cost_usd: "0.0031" })).toThrow("no cost_usd");
+    expect(() => toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: "none" })).toThrow("no lines");
   });
 });

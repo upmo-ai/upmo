@@ -1,3 +1,4 @@
+import { BrainError } from "../../app/api";
 import { formatUsd } from "../usage/format";
 import type { ChatLine, ChatSummary } from "./types";
 
@@ -65,7 +66,17 @@ export function formatCost(value: number | null): string {
   return cost.format(value);
 }
 
-/** The newest line is the user's: a reply has been asked for and has not come. */
-export function awaitingReply(lines: readonly ChatLine[] | undefined): boolean {
-  return lines?.at(-1)?.role === "user";
+/**
+ * The newest line is the user's and a reply comes on its own: the stub writes
+ * an assistant line a moment later, the brain stores the line and stops, so a
+ * send there is never shown as a wait.
+ */
+export function awaitingReply(lines: readonly ChatLine[] | undefined, replyFollows: boolean): boolean {
+  return replyFollows && lines?.at(-1)?.role === "user";
+}
+
+/** A 403 means the chat can be read but not written in; any other problem is shown as it comes. */
+export function sendRefusal(error: unknown): string {
+  if (error instanceof BrainError && error.status === 403) return "You can read this chat but not write in it.";
+  return error instanceof Error ? error.message : String(error);
 }

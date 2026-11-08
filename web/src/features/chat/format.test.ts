@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { awaitingReply, chatDay, formatActivity, formatCost, groupByDay } from "./format";
+import { BrainError } from "../../app/api";
+import { awaitingReply, chatDay, formatActivity, formatCost, groupByDay, sendRefusal } from "./format";
 import type { ChatLine, ChatSummary } from "./types";
 
 // 5 November 2026, 10:30 local time.
@@ -61,10 +62,26 @@ describe("UPM-201 chat cost", () => {
 });
 
 describe("UPM-201 awaiting a reply", () => {
-  it("UPM-201 waits only when the newest line is the user's", () => {
-    expect(awaitingReply(undefined)).toBe(false);
-    expect(awaitingReply([])).toBe(false);
-    expect(awaitingReply([line("user")])).toBe(true);
-    expect(awaitingReply([line("user"), line("assistant")])).toBe(false);
+  it("UPM-201 waits only when the newest line is the user's and a reply comes on its own", () => {
+    expect(awaitingReply(undefined, true)).toBe(false);
+    expect(awaitingReply([], true)).toBe(false);
+    expect(awaitingReply([line("user")], true)).toBe(true);
+    expect(awaitingReply([line("user"), line("assistant")], true)).toBe(false);
+    // The brain stores the line and stops: a user line there is not a wait.
+    expect(awaitingReply([line("user")], false)).toBe(false);
+  });
+});
+
+describe("UPM-201 send refusals", () => {
+  it("UPM-201 puts a 403 on send as a sentence about reading but not writing", () => {
+    expect(sendRefusal(new BrainError(403, "needs a chat you can edit"))).toBe(
+      "You can read this chat but not write in it.",
+    );
+  });
+
+  it("UPM-201 shows any other problem as it comes", () => {
+    expect(sendRefusal(new BrainError(400, "a chat needs a line"))).toBe("a chat needs a line");
+    expect(sendRefusal(new Error("The brain is offline."))).toBe("The brain is offline.");
+    expect(sendRefusal("offline")).toBe("offline");
   });
 });
