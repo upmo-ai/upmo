@@ -1,4 +1,5 @@
 import { Group, Stack, Text } from "@mantine/core";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Dialog, Input, Textarea } from "@upmo-ai/components";
@@ -26,6 +27,7 @@ export function NewTaskDialog({ opened, onClose }: { opened: boolean; onClose: (
 function NewTaskForm({ onClose }: { onClose: () => void }) {
   const api = useApi();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [goal, setGoal] = useState("");
   const [repo, setRepo] = useState("");
   const [touched, setTouched] = useState(false);
@@ -48,7 +50,11 @@ function NewTaskForm({ onClose }: { onClose: () => void }) {
         onClose();
         await navigate({ to: "/tasks/$taskId", params: { taskId: created.id } });
       },
-      onError: (cause: Error) => setFailure(createProblem(cause)),
+      onError: async (cause: Error) => {
+        setFailure(createProblem(cause));
+        // The brain may have made the task before it refused (a 503 leaves it Failed), so the list is stale.
+        await queryClient.invalidateQueries({ queryKey: TASKS_KEY });
+      },
     },
   );
 

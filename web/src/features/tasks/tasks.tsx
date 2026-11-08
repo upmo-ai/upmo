@@ -23,8 +23,10 @@ import {
 } from "@upmo-ai/components";
 
 import {
+  BrainError,
   TASKS_KEY,
   approvalsQueryKey,
+  taskQueryKey,
   tasksQueryKey,
   useApi,
   useWrite,
@@ -42,6 +44,7 @@ import { taskPhase, taskStatus } from "./status";
 import {
   isTaskFilter,
   messageEventType,
+  noResult,
   pendingResult,
   type Subtask,
   type Task,
@@ -237,15 +240,16 @@ export function TaskPage() {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>("");
   const [tab, setTab] = useState<string | null>("activity");
 
-  const tasks = useQuery({
-    queryKey: tasksQueryKey(),
-    queryFn: () => api.listTasks(),
-    refetchInterval: (query) => preparingPollMs(query.state.data, taskId),
+  const detail = useQuery({
+    queryKey: taskQueryKey(taskId),
+    queryFn: () => api.getTask(taskId),
+    refetchInterval: (query) => preparingPollMs(query.state.data ? [query.state.data] : undefined, taskId),
   });
   const approvals = useQuery({
     queryKey: approvalsQueryKey(),
     queryFn: () => api.approvals.list(),
   });
+  // TASKS_KEY is the front of the task's own key, so a write refreshes the list and this task.
   const next = useWrite(() => api.nextPhase(taskId), [TASKS_KEY]);
   // The draft is cleared when the message is sent, so anything typed while the post is in
   // flight is a new draft. A failed post puts the unsent text back in front of it.
@@ -254,11 +258,19 @@ export function TaskPage() {
     onError: (_error, body) => setTaskMessage((draft) => (draft === "" ? body : `${body}\n${draft}`)),
   });
 
-  const task = tasks.data?.find((item) => item.id === taskId);
+  const task = detail.data;
   const pending = pendingFor(approvals.data, taskId);
 
-  if (!tasks.data || !approvals.data) return null;
-  if (!task) return <Text>This task is not in the workspace.</Text>;
+  if (!task && detail.isError) {
+    return detail.error instanceof BrainError && detail.error.status === 404 ? (
+      <Text>This task is not in the workspace.</Text>
+    ) : (
+      <Text role="alert" c="red">
+        {detail.error.message || "Failed to load the task."}
+      </Text>
+    );
+  }
+  if (!task || !approvals.data) return null;
 
   const phase = taskPhase(task);
   const status = taskStatus(task, paused);
@@ -460,7 +472,7 @@ export function TaskPage() {
                   </Title>
                   <div className="u-card task-result-card">
                     <Text data-testid="task-result">
-                      {task.status === "Done" ? task.result : pendingResult}
+                      {task.status !== "Done" ? pendingResult : task.result || noResult}
                     </Text>
                   </div>
                 </section>

@@ -13,6 +13,18 @@ if (!url) {
 
 const pendingResult = "The final result shows up here when the task is done.";
 
+// The tasks e2e/seed-tasks.sql puts in the e2e person's list.
+const titles = {
+  mail: "Sort the morning mail",
+  plan: "Plan the launch email",
+  approval: "Email the supplier statements",
+  failed: "Close the week for Kodeeo Limited",
+  parent: "Close the books for October",
+  done: "Reconcile the accounts",
+  draft: "Draft the October summary",
+};
+const seeded = Object.keys(titles).length;
+
 function pageUrl(path) {
   return new URL(path, url).href;
 }
@@ -130,79 +142,172 @@ async function awaitPhase(page, from) {
   return seen.jsonValue();
 }
 
-// Checking is the last step a person can ask for. Upmo marks the task Done
-// itself, so Next phase turns off there and says why.
-async function walkToChecking(page) {
-  let seen = await awaitPhase(page, null);
-  for (let step = 0; step < 4; step += 1) {
-    if (seen.phase === "Checking") break;
-    await page.getByRole("button", { name: "Next phase" }).click();
-    try {
-      seen = await awaitPhase(page, seen.phase);
-    } catch {
-      throw new Error(`phase stayed ${seen.phase}`);
-    }
-  }
-  if (seen.phase !== "Checking") throw new Error(`walk ended on ${seen.phase}, expected Checking`);
-  await settleText(headerStatus(page), "Checking");
-  if (await page.getByRole("button", { name: "Next phase" }).isEnabled()) {
-    throw new Error("next phase was enabled at Checking");
-  }
-  const note = (await page.getByTestId("next-phase-note").innerText()).trim();
-  if (!note.includes("Checking is the last step")) {
-    throw new Error(`no explanation for the disabled next phase: ${JSON.stringify(note)}`);
+async function openTasks(page) {
+  await page.getByRole("link", { name: "Tasks", exact: true }).click();
+  await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
+}
+
+async function openTask(page, title) {
+  await openTasks(page);
+  await page.getByRole("link", { name: title }).click();
+  await page.getByRole("heading", { level: 1, name: title }).waitFor();
+}
+
+async function expectNoPlaceholderText(page, what) {
+  const body = await page.locator("body").innerText();
+  if (/\bundefined\b|\bnull\b|NaN/.test(body)) {
+    throw new Error(`${what} shows a missing value: ${body}`);
   }
 }
 
+// Read only: the list, its filters and what each seeded task shows. It runs in
+// both themes, so it must leave the tasks as it found them.
+//
+// Approvals (the approval card and Approve) belong to the WP2 approvals
+// ticket and the preparing panel to the runtime ticket; both stay on sample
+// data until then, so this flow does not cover them.
 async function taskFlow(page, { checkBadges, theme }) {
   await signIn(page);
   if (theme) {
     await page.locator(`html[data-theme="${theme}"]`).waitFor();
   }
-  await page.getByRole("link", { name: "Tasks", exact: true }).click();
-  await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
-  await page.getByRole("link", { name: "Daily finance digest" }).waitFor();
-  await settleText(page.getByTestId("task-count"), "5 tasks");
+  await openTasks(page);
+  await page.getByRole("link", { name: titles.mail }).waitFor();
+  await settleText(page.getByTestId("task-count"), `${seeded} tasks`);
+  if ((await page.getByRole("link", { name: "Daily finance digest", exact: true }).count()) !== 0) {
+    throw new Error("the list shows a sample task");
+  }
   if (checkBadges) await expectBadgesFullyVisible(page);
 
+  await chooseFilter(page, "Underway");
+  await settleText(page.getByTestId("task-count"), "4 tasks");
+  for (const title of [titles.mail, titles.plan, titles.parent, titles.draft]) {
+    await page.getByRole("link", { name: title }).waitFor();
+  }
+  if ((await page.getByRole("link", { name: titles.approval }).count()) !== 0) {
+    throw new Error("the Underway filter kept a task that needs approval");
+  }
   await chooseFilter(page, "Needs approval");
   await settleText(page.getByTestId("task-count"), "1 task");
-  await page.getByRole("link", { name: "Daily finance digest" }).waitFor();
-  if ((await page.getByRole("link", { name: "Mail triage" }).count()) !== 0) {
-    throw new Error("filter kept a working task");
-  }
+  await page.getByRole("link", { name: titles.approval }).waitFor();
+  await chooseFilter(page, "Done");
+  await settleText(page.getByTestId("task-count"), "1 task");
+  await page.getByRole("link", { name: titles.done }).waitFor();
+  await chooseFilter(page, "Failed");
+  await settleText(page.getByTestId("task-count"), "1 task");
+  await page.getByRole("link", { name: titles.failed }).waitFor();
+  await chooseFilter(page, "All");
+  await settleText(page.getByTestId("task-count"), `${seeded} tasks`);
 
-  await page.getByRole("link", { name: "Daily finance digest" }).click();
-  await page.getByRole("heading", { level: 1, name: "Daily finance digest" }).waitFor();
-  const card = page.getByRole("group", { name: "Send the daily finance digest" });
-  const cardText = await card.innerText();
-  if (!cardText.includes("Approve to continue, deny to let the agent find another way.")) {
-    throw new Error(`approval card copy missing: ${cardText}`);
+  // A task read by its own id: events, with the chat line among them.
+  await page.getByRole("link", { name: titles.mail }).click();
+  await page.getByRole("heading", { level: 1, name: titles.mail }).waitFor();
+  await settleText(headerStatus(page), "Working");
+  await page
+    .getByRole("list", { name: "Messages" })
+    .getByText("Read the support mailbox first.")
+    .waitFor();
+  await page.getByText("All events", { exact: true }).click();
+  const activity = page.getByRole("region", { name: "Activity" });
+  await activity.getByText("4 events").waitFor();
+  const lines = (await activity.locator(".upmo-eventstream__msg").allInnerTexts()).map((line) => line.trim());
+  const expected = ["Task opened", "Planning", "Moved on to Working", "You: Read the support mailbox first."];
+  if (lines.join("|") !== expected.join("|")) {
+    throw new Error(`events ${JSON.stringify(lines)}, expected ${JSON.stringify(expected)}`);
   }
-  if (!cardText.includes("Send the daily finance digest")) {
-    throw new Error(`approval card does not name the action: ${cardText}`);
-  }
-
   await page.getByRole("tab", { name: "Result" }).click();
   await settleText(page.getByTestId("task-result"), pendingResult);
-  await page.getByRole("tab", { name: "Activity" }).click();
+  await expectNoPlaceholderText(page, "the Working task");
 
-  const next = page.getByRole("button", { name: "Next phase" });
-  if (await next.isEnabled()) throw new Error("next phase was enabled while waiting");
-  await card.getByRole("button", { name: "Approve" }).click();
-  await card.waitFor({ state: "hidden" });
-  await settleText(headerStatus(page), "Planning");
-  if (await next.isDisabled()) throw new Error("next phase stayed disabled after approve");
+  // Waiting for approval: nothing to advance.
+  await openTask(page, titles.approval);
+  await settleText(headerStatus(page), "Needs approval");
+  if (await page.getByRole("button", { name: "Next phase" }).isEnabled()) {
+    throw new Error("next phase was enabled while waiting");
+  }
+  await expectNoPlaceholderText(page, "the Needs approval task");
 
-  await walkToChecking(page);
+  // Failed, with its cause.
+  await openTask(page, titles.failed);
+  await settleText(headerStatus(page), "Failed");
+  if (await page.getByRole("button", { name: "Next phase" }).isEnabled()) {
+    throw new Error("next phase was enabled on a failed task");
+  }
+  await expectNoPlaceholderText(page, "the Failed task");
+
+  // A parent lists its two children with their own status.
+  await openTask(page, titles.parent);
+  const subtasks = page.getByRole("list", { name: "Subtasks" });
+  await subtasks.waitFor();
+  const rows = (await subtasks.locator("li").allInnerTexts()).map((row) => row.replace(/\s+/g, " ").trim());
+  if (
+    rows.length !== 2 ||
+    !rows.some((row) => row.includes(titles.done) && row.includes("Done")) ||
+    !rows.some((row) => row.includes(titles.draft) && row.includes("Working"))
+  ) {
+    throw new Error(`unexpected subtasks: ${JSON.stringify(rows)}`);
+  }
+  await expectNoPlaceholderText(page, "the parent task");
+
+  // A finished subtask shows the result it stored.
+  await openTask(page, titles.done);
+  await settleText(headerStatus(page), "Done");
   await page.getByRole("tab", { name: "Result" }).click();
-  await settleText(page.getByTestId("task-result"), pendingResult);
+  const result = await page.getByTestId("task-result").innerText();
+  for (const stored of ["The accounts reconcile.", "All 31 ledger entries matched the bank statement."]) {
+    if (!result.includes(stored)) throw new Error(`result ${JSON.stringify(result)} misses ${stored}`);
+  }
+  await expectNoPlaceholderText(page, "the Done task");
 }
 
+// Changes the seeded tasks, so it runs once, after the read only flows. What it
+// writes must survive a reload: that is the brain keeping it.
+async function changeFlow(page) {
+  await signIn(page);
+
+  await openTask(page, titles.mail);
+  await page.getByLabel("Message this task").fill("Skip the drafts folder");
+  await page.getByRole("button", { name: "Send message" }).click();
+  const messages = page.getByRole("list", { name: "Messages" });
+  await messages.getByText("Skip the drafts folder").waitFor();
+  await page.waitForFunction(
+    () => document.querySelector("textarea[aria-label='Message this task']")?.value === "",
+  );
+  await page.reload();
+  await page.getByRole("heading", { level: 1, name: titles.mail }).waitFor();
+  await messages.getByText("Read the support mailbox first.").waitFor();
+  await messages.getByText("Skip the drafts folder").waitFor();
+
+  // Next phase on a Planning task moves it to Working, and the brain keeps it.
+  await openTask(page, titles.plan);
+  await settleText(headerStatus(page), "Planning");
+  await page.getByRole("button", { name: "Next phase" }).click();
+  const seen = await awaitPhase(page, "Planning");
+  if (seen.phase !== "Working" || seen.status !== "Working") {
+    throw new Error(`advance showed ${JSON.stringify(seen)}, expected Working`);
+  }
+  await page.reload();
+  await page.getByRole("heading", { level: 1, name: titles.plan }).waitFor();
+  await settleText(headerStatus(page), "Working");
+  await page.getByText("All events", { exact: true }).click();
+  const advanced = page.getByRole("region", { name: "Activity" }).locator(".upmo-eventstream__msg");
+  await advanced.last().waitFor();
+  const last = (await advanced.last().innerText()).trim();
+  if (last !== "Moved on to Working") throw new Error(`last event is ${JSON.stringify(last)}`);
+
+  // The list and its filters follow what the brain now holds.
+  await openTasks(page);
+  await settleText(page.getByTestId("task-count"), `${seeded} tasks`);
+  await chooseFilter(page, "Underway");
+  await settleText(page.getByTestId("task-count"), "4 tasks");
+}
+
+// A task that names a repository needs the brain's sandbox service, and the
+// e2e brain cannot reach one: it answers 503, so the dialog must show the
+// refusal and stay open. Everything before that is the dialog's own checking.
 async function newTaskFlow(page) {
   await signIn(page);
-  await page.getByRole("link", { name: "Tasks", exact: true }).click();
-  await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
+  await openTasks(page);
   await page.getByRole("button", { name: "New task" }).click();
   const dialog = page.getByRole("dialog", { name: "New task" });
   await dialog.waitFor();
@@ -228,66 +333,14 @@ async function newTaskFlow(page) {
   await dialog.getByLabel("Repository").fill("upmo-ai/upmo");
   await dialog.getByRole("button", { name: "Create task" }).click();
 
-  await page.getByRole("heading", { level: 1, name: "Tidy the shared drive" }).waitFor();
-  await settleText(headerStatus(page), "Preparing");
-  const header = await page.locator(".task-header").innerText();
-  for (const invented of ["gpt-5.2", "Run 14", "€2.10"]) {
-    if (header.includes(invented)) throw new Error(`new task header shows ${invented}: ${header}`);
-  }
-
-  await page.getByLabel("Message this task").fill("Skip the drafts folder");
-  await page.getByRole("button", { name: "Send message" }).click();
-  await page
-    .getByRole("list", { name: "Messages" })
-    .getByText("Skip the drafts folder")
+  await dialog
+    .getByRole("alert")
+    .getByText("This task needs a sandbox and none is set up yet.", { exact: false })
     .waitFor();
-  await page.waitForFunction(
-    () => document.querySelector("textarea[aria-label='Message this task']")?.value === "",
-  );
-}
-
-// The task page renders the preparing block from the payload: the ordered steps
-// while the task prepares, a failed probe with its message, then a summary.
-async function preparingFlow(page) {
-  await signIn(page);
-  await page.getByRole("link", { name: "Tasks", exact: true }).click();
+  if (!(await dialog.isVisible())) throw new Error("the dialog closed on a refused task");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "hidden" });
   await page.getByRole("heading", { level: 1, name: "Tasks" }).waitFor();
-
-  await page.getByRole("link", { name: "Fix the flaky login test" }).click();
-  await page.getByRole("heading", { level: 1, name: "Fix the flaky login test" }).waitFor();
-  const failed = page.getByRole("list", { name: "Preparation steps" });
-  await failed.waitFor();
-  const order = await failed.locator(".task-prepare-step-name").allInnerTexts();
-  if (order.join(",") !== "Clone,Toolchain,Probe") {
-    throw new Error(`steps out of order: ${order.join(",")}`);
-  }
-  const states = await failed.locator(".task-prepare-step-state").allInnerTexts();
-  if (states.join(",") !== "Done,Done,Failed") {
-    throw new Error(`unexpected step states: ${states.join(",")}`);
-  }
-  await failed.getByRole("alert").getByText("The work directory is not writable.").waitFor();
-  const settings = page.getByRole("region", { name: "Runtime settings" });
-  for (const shown of ["Kata", "upmo-ai/upmo", "node 24", "4 GB", "30 min"]) {
-    await settings.getByText(shown, { exact: true }).waitFor();
-  }
-
-  await page.getByRole("link", { name: "Tasks", exact: true }).click();
-  await page.getByRole("link", { name: "Mail triage" }).first().click();
-  await page.getByRole("heading", { level: 1, name: "Mail triage" }).waitFor();
-  const running = page.getByRole("list", { name: "Preparation steps" });
-  await running.waitFor();
-  const progress = await running.locator(".task-prepare-step-state").allInnerTexts();
-  if (progress.join(",") !== "Done,Running,Waiting") {
-    throw new Error(`unexpected step states: ${progress.join(",")}`);
-  }
-
-  await page.getByRole("button", { name: "Next phase" }).click();
-  await running.waitFor({ state: "hidden" });
-  await page.getByRole("heading", { level: 2, name: "Prepared" }).waitFor();
-  const summary = await page.getByTestId("preparing-summary").innerText();
-  if (summary !== "The workspace was ready in 5.4 s.") {
-    throw new Error(`unexpected preparing summary: ${summary}`);
-  }
 }
 
 const browser = await chromium.launch({
@@ -307,8 +360,8 @@ try {
   await page.getByTestId("theme-switch").getByText("Dark", { exact: true }).click();
   await page.locator("html[data-theme='dark']").waitFor();
   await taskFlow(page, { checkBadges: false, theme: "dark" });
+  await changeFlow(page);
   await newTaskFlow(page);
-  await preparingFlow(page);
 
   console.log("task flow passed");
 } finally {

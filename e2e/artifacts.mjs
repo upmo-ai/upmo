@@ -11,7 +11,7 @@ if (!url) {
   throw new Error("WEB_URL is not set");
 }
 
-// The task screens read the in-memory API, so the state lives in the page.
+// The artifact screens read the in-memory API, so the state lives in the page.
 const browser = await chromium.launch({
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
@@ -99,6 +99,13 @@ try {
     colorScheme: "light",
     reducedMotion: "reduce",
   });
+  // Artifacts are still sample data kept under the sample task ids until the
+  // artifacts backend package lands, so this script reads the sample tasks too:
+  // the tasks list is answered 404, which is how the web knows to use them.
+  // Everything else is the real brain.
+  await context.route(/\/api\/tasks$/, (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
+  );
   const page = await context.newPage();
   await signInWithPassword(page, url);
 

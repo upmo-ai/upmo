@@ -2,8 +2,9 @@
 # Start Postgres and brain for this checkout's e2e project, and print one
 # sign-in link. A second run recovers instead of bootstrapping again. In an
 # e2e project (upmo-e2e-*) every run also resets the e2e person and empties the
-# identity throttle with e2e/reset.sql, so it starts from the same state. The
-# default project is a dev database and is never reset.
+# identity throttle with e2e/reset.sql, and replaces their tasks with the fixed
+# set in e2e/seed-tasks.sql, so it starts from the same state. The default
+# project is a dev database and is never reset or seeded.
 set -eu
 
 cd "$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -67,6 +68,8 @@ case $project in
   upmo-e2e-*)
     say "resetting the e2e person and the throttle"
     dc exec -T postgres psql -U upmo -d upmo -q -v ON_ERROR_STOP=1 -f - <e2e/reset.sql >&2
+    say "seeding the e2e tasks"
+    dc exec -T postgres psql -U upmo -d upmo -q -v ON_ERROR_STOP=1 -f - <e2e/seed-tasks.sql >&2
     ;;
 esac
 printf '%s\n' "$link"

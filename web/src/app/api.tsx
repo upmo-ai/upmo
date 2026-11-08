@@ -289,6 +289,11 @@ export interface ApiClient {
    * without one has no block.
    */
   listTasks(): Promise<Task[]>;
+  /**
+   * GET /api/tasks/{id}: the task in full, with its events, subtasks and
+   * result. A task the person cannot see is a BrainError 404.
+   */
+  getTask(taskId: string): Promise<Task>;
   /** Newest first. At most `limit` notifications come back when it is given. */
   listNotifications(options?: { limit?: number }): Promise<AppNotification[]>;
   dismissNotification(id: string): Promise<void>;
@@ -452,6 +457,14 @@ export function usageQueryKey(range: UsageRange) {
 
 export function tasksQueryKey() {
   return TASKS_KEY;
+}
+
+/**
+ * One task in full. It sits under TASKS_KEY, so invalidating the task list
+ * invalidates every open task with it.
+ */
+export function taskQueryKey(taskId: string) {
+  return [...TASKS_KEY, taskId] as const;
 }
 
 export function approvalsQueryKey() {
@@ -1224,6 +1237,11 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
   return {
     async listTasks() {
       return tasks.map((task) => copy(task));
+    },
+    async getTask(taskId) {
+      const task = tasks.find((item) => item.id === taskId);
+      if (!task) throw new BrainError(404, "not_found", "This task is not in the workspace.");
+      return copy(task);
     },
     async listNotifications(query) {
       const limit = query?.limit ?? notifications.length;
