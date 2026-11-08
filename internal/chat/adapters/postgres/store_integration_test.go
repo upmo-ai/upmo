@@ -33,10 +33,11 @@ func TestOpenLeavesTheSession(t *testing.T) {
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 
-	id, err := app.Open(ctx, store, ownerAccess)
+	opened, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
+	id := opened.ID
 	if err := app.Say(ctx, store, ownerAccess, id, " hello "); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +49,16 @@ func TestOpenLeavesTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Lines) != 2 || got.Lines[0] != "hello" || got.Lines[1] != "again" {
+	if len(got.Lines) != 2 || got.Lines[0].Body != "hello" || got.Lines[1].Body != "again" {
 		t.Fatalf("lines = %#v", got.Lines)
+	}
+	if got.Lines[0].ID == "" || got.Lines[0].ID == got.Lines[1].ID {
+		t.Fatalf("line ids = %q %q", got.Lines[0].ID, got.Lines[1].ID)
+	}
+	for _, line := range got.Lines {
+		if line.Role != "user" || line.Model != nil || line.Tokens != 0 || line.CostMicroUSD != nil {
+			t.Fatalf("a said line = %+v", line)
+		}
 	}
 
 	var sessions int
