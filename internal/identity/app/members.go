@@ -12,13 +12,16 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 )
 
-// MemberStore is the members tables.
+// MemberStore is the members tables and the task share rows.
 type MemberStore interface {
 	ListRoles(ctx context.Context) ([]domain.MemberRole, error)
 	ListMembers(ctx context.Context) ([]domain.Member, error)
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 	MemberTeams(ctx context.Context, id domain.UserID) ([]string, error)
 	SharedObjects(ctx context.Context, objectType domain.ObjectType, user domain.UserID, teams []string, role domain.RoleID) ([]ObjectShare, error)
+	TaskGrants(ctx context.Context, taskID string) ([]TaskGrant, error)
+	ReplaceTaskGrants(ctx context.Context, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
+	NamesOf(ctx context.Context, persons, teams []string) (personNames, teamNames map[string]string, err error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
 	InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)

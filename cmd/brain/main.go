@@ -248,6 +248,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		List:         taskBook,
 		View:         taskBook,
 		Approvals:    taskBook,
+		Shares:       taskBook,
+		Grants:       taskGrants{members: members},
 		Sandboxes:    boxes,
 		Progress:     boxes,
 		PublicURL:    cfg.PublicURL,

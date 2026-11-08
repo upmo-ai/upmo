@@ -15,6 +15,14 @@ import (
 // MemberService is the members use case. Commands use this name so they do not import the app package.
 type MemberService = app.Members
 
+// TaskGrant is one person or team grant on a task, with the subject's name.
+// GrantWrite is one grant to store: a person or a team with a share level.
+// Other contexts' share ports sit behind these.
+type (
+	TaskGrant  = app.TaskGrant
+	GrantWrite = app.GrantWrite
+)
+
 // Members builds the members use case. Invite and recover links are emailed
 // through sender, which may be nil; publicURL is the origin they open.
 func Members(pool *pgxpool.Pool, publicURL string, sender mail.Sender, log *slog.Logger) app.Members {

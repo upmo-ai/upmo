@@ -22,7 +22,15 @@ type Handler struct {
 	// Approvals lists and decides the person's approvals. Nil answers an error
 	// for the approval routes.
 	Approvals app.ApprovalBook
-	Access    func(r *http.Request) (app.Access, bool)
+	// Shares reads and stores one task's share: the task row under row
+	// security and the visibility transaction. Nil answers an error for the
+	// share routes.
+	Shares app.ShareBook
+	// Grants is the identity side of a share: a task's person and team grants
+	// with names, replacing them, and the teams a person is on. Nil answers an
+	// error for the share routes.
+	Grants app.ShareGrants
+	Access func(r *http.Request) (app.Access, bool)
 	// Sandboxes starts a task's sandbox on Open and releases it when the
 	// task ends. Open answers once the sandbox is created; provisioning runs
 	// on after the response. Nil refuses any task that needs one.
@@ -50,6 +58,8 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	}
 	mux.Handle("GET /api/tasks", wrap(http.HandlerFunc(h.list)))
 	mux.Handle("GET /api/tasks/{id}/progress", wrap(http.HandlerFunc(h.progress)))
+	mux.Handle("GET /api/tasks/{id}/share", wrap(http.HandlerFunc(h.share)))
+	mux.Handle("PUT /api/tasks/{id}/share", wrap(http.HandlerFunc(h.putShare)))
 	mux.Handle("GET /api/tasks/{id}", wrap(http.HandlerFunc(h.get)))
 	mux.Handle("POST /api/tasks", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/tasks/{id}", wrap(http.HandlerFunc(h.step)))
@@ -225,6 +235,11 @@ func taskJSON(task app.Task) map[string]string {
 func refuse(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false
+	}
+	var refusal domain.ShareRefusal
+	if errors.As(err, &refusal) {
+		writeError(w, http.StatusUnprocessableEntity, refusal.Text)
+		return true
 	}
 	switch {
 	case errors.Is(err, app.ErrSandboxUnset):

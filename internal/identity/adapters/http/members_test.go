@@ -167,6 +167,15 @@ func (f *memberFake) MemberTeams(context.Context, domain.UserID) ([]string, erro
 func (f *memberFake) SharedObjects(context.Context, domain.ObjectType, domain.UserID, []string, domain.RoleID) ([]app.ObjectShare, error) {
 	return nil, nil
 }
+func (f *memberFake) TaskGrants(context.Context, string) ([]app.TaskGrant, error) {
+	return nil, nil
+}
+func (f *memberFake) ReplaceTaskGrants(context.Context, string, []app.GrantWrite, domain.UserID) error {
+	return nil
+}
+func (f *memberFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
+	return nil, nil, nil
+}
 func (f *memberFake) RoleSystem(_ context.Context, id domain.RoleID) (string, error) {
 	if id == f.ownerRole {
 		return "owner", nil
