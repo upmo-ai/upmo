@@ -10,16 +10,16 @@ import (
 
 type fakeLister struct {
 	calls int
-	tasks []Task
+	tasks []TaskSummary
 }
 
-func (f *fakeLister) List(context.Context, Access) ([]Task, error) {
+func (f *fakeLister) List(context.Context, Access) ([]TaskSummary, error) {
 	f.calls++
-	return append([]Task(nil), f.tasks...), nil
+	return append([]TaskSummary(nil), f.tasks...), nil
 }
 
 func TestListTasks(t *testing.T) {
-	lister := &fakeLister{tasks: []Task{{ID: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", Status: domain.Working, Goal: "File the receipts"}}}
+	lister := &fakeLister{tasks: []TaskSummary{{ID: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", Title: "File the receipts", State: domain.Working, Status: domain.ShownWorking, Phase: domain.Working}}}
 	got, err := ListTasks(context.Background(), lister, Access{UserID: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", Allow: "task:view"})
 	if err != nil || len(got) != 1 || lister.calls != 1 {
 		t.Fatalf("got %#v err %v calls %d", got, err, lister.calls)

@@ -440,13 +440,14 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 		return app.Task{}, err
 	}
 	if effect.Kind == domain.Chat {
-		if err := insertChatEvent(ctx, tx, taskID, effect.Body); err != nil {
+		chatID, err := insertChatEvent(ctx, tx, taskID, effect.Body)
+		if err != nil {
 			return app.Task{}, err
 		}
-		return app.Task{ID: taskID, Status: next, Goal: goal}, nil
+		return app.Task{ID: taskID, Status: next, Goal: goal, ChatID: chatID}, nil
 	}
 	if turnBody != "" {
-		if err := insertChatEvent(ctx, tx, taskID, turnBody); err != nil {
+		if _, err := insertChatEvent(ctx, tx, taskID, turnBody); err != nil {
 			return app.Task{}, err
 		}
 	}
@@ -479,17 +480,19 @@ func insertTaskEvent(ctx context.Context, tx pgx.Tx, taskID string, effect domai
 	return nil
 }
 
-func insertChatEvent(ctx context.Context, tx pgx.Tx, taskID, body string) error {
-	_, err := tx.Exec(ctx, `
+func insertChatEvent(ctx context.Context, tx pgx.Tx, taskID, body string) (string, error) {
+	var id string
+	err := tx.QueryRow(ctx, `
 		INSERT INTO tasks.chat_events (task_id, seq, body)
 		SELECT $1::uuid,
 		       COALESCE((SELECT MAX(seq) FROM tasks.chat_events WHERE task_id = $1::uuid), 0) + 1,
-		       $2`,
-		taskID, body)
+		       $2
+		RETURNING id::text`,
+		taskID, body).Scan(&id)
 	if err != nil {
-		return fmt.Errorf("tasks: chat: %w", err)
+		return "", fmt.Errorf("tasks: chat: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 // SaveTemplate creates or updates a template under row security.

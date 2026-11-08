@@ -30,11 +30,13 @@ type Access struct {
 	SharedEdit string
 }
 
-// Task is the status after a transition.
+// Task is the status after a transition. ChatID is the id of the chat line a
+// Chat transition stored, and empty for any other transition.
 type Task struct {
 	ID     string
 	Status domain.Status
 	Goal   string
+	ChatID string
 }
 
 // Book applies transitions and records checks under a row lock.
