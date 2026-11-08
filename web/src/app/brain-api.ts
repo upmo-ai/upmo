@@ -1,4 +1,15 @@
-import { BrainError, createStubApi, type ApiClient } from "./api";
+import {
+  BrainError,
+  createStubApi,
+  type ApiClient,
+  type ProviderAccount,
+  type ProviderAdd,
+  type ProviderChange,
+  type ProviderPlanKind,
+  type ProviderProbe,
+  type ProviderStatus,
+  type TestResult,
+} from "./api";
 import {
   noticeKinds,
   type Approval,
@@ -30,6 +41,7 @@ import {
   type WorkspaceRole,
 } from "../features/identity/types";
 import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
+import { adapterKey } from "../features/providers/rules";
 
 type Json = Record<string, unknown>;
 
@@ -310,6 +322,98 @@ export function toChat(value: unknown): Chat {
   return { id: text(source, "id"), lines: list(source.lines, "lines").map(toChatLine) };
 }
 
+const planKinds: readonly ProviderPlanKind[] = ["metered", "subscription", "local"];
+const providerStatuses: readonly ProviderStatus[] = [
+  "Connected",
+  "Not connected",
+  "Rate limited",
+  "Key rejected",
+  "Offline",
+];
+
+/**
+ * A provider account as GET /api/providers and the write routes send it.
+ * base_url is left out when the account has none. The brain never sends a key,
+ * so none is read.
+ */
+export function toProvider(value: unknown): ProviderAccount {
+  const source = record(value, "provider");
+  const plan = source.plan_kind;
+  if (!planKinds.some((kind) => kind === plan)) throw new Error("The brain sent an unknown plan kind.");
+  const status = source.status;
+  if (!providerStatuses.some((known) => known === status)) throw new Error("The brain sent an unknown status.");
+  const scope = source.scope;
+  if (scope !== "own" && scope !== "global") throw new Error("The brain sent an unknown scope.");
+  const models = list(source.models, "models");
+  if (models.some((model) => typeof model !== "string")) throw new Error("The brain sent no models.");
+  const account: ProviderAccount = {
+    id: text(source, "id"),
+    provider: text(source, "provider"),
+    name: text(source, "name"),
+    adapter: text(source, "adapter"),
+    plan_kind: plan as ProviderPlanKind,
+    status: status as ProviderStatus,
+    models: models as string[],
+    scope,
+  };
+  if (typeof source.base_url === "string" && source.base_url !== "") account.base_url = source.base_url;
+  return account;
+}
+
+/** The answer of POST /api/providers/test: ok, and a plain sentence when it is not. */
+export function toTestResult(value: unknown): TestResult {
+  const source = record(value, "test result");
+  if (typeof source.ok !== "boolean") throw new Error("The brain sent no ok.");
+  const result: TestResult = { ok: source.ok };
+  if (typeof source.error === "string" && source.error !== "") result.error = source.error;
+  return result;
+}
+
+/** A field with a value, or nothing: an empty base URL or key is never sent. */
+function given(key: string, value: string | undefined): Json {
+  return value === undefined || value === "" ? {} : { [key]: value };
+}
+
+/** The POST body of a new account: the picker's adapter becomes the brain's adapter key. */
+export function providerAddBody(input: ProviderAdd): Json {
+  return {
+    provider: input.provider,
+    name: input.name,
+    adapter: adapterKey(input.adapter),
+    plan_kind: input.plan_kind,
+    ...given("base_url", input.base_url),
+    ...given("api_key", input.api_key),
+    models: input.models,
+  };
+}
+
+/** The PUT body of a change. Without an api_key the saved key stays. */
+export function providerChangeBody(input: ProviderChange): Json {
+  return {
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.plan_kind !== undefined ? { plan_kind: input.plan_kind } : {}),
+    ...given("base_url", input.base_url),
+    ...given("api_key", input.api_key),
+    ...(input.models !== undefined ? { models: input.models } : {}),
+  };
+}
+
+/**
+ * The body of a test. plan_kind is sent whenever it is known, because the base
+ * URL rules depend on it. An id with no api_key tests the saved key.
+ */
+export function providerTestBody(config: ProviderProbe): Json {
+  return {
+    provider: config.provider,
+    ...(config.adapter !== undefined ? { adapter: adapterKey(config.adapter) } : {}),
+    ...(config.plan_kind !== undefined ? { plan_kind: config.plan_kind } : {}),
+    ...given("base_url", config.base_url),
+    ...given("api_key", config.api_key),
+    ...given("model", config.model),
+    ...given("id", config.id),
+  };
+}
+
 async function call(path: string, init?: { method: "POST" | "PUT" | "DELETE"; body?: unknown }): Promise<unknown> {
   const response = await fetch(path, {
     credentials: "include",
@@ -358,12 +462,17 @@ function chatPath(id: string) {
   return `/api/chats/${encodeURIComponent(id)}`;
 }
 
+function providerPath(id: string) {
+  return `/api/providers/${encodeURIComponent(id)}`;
+}
+
 type Source = "brain" | "stub";
 
 /**
  * The stub client with its task methods (list, get, advance, create, message),
- * its approvals, its notifications, its member list, its task shares and its
- * chats answered by the brain instead. Everything else stays on the stub.
+ * its approvals, its notifications, its member list, its task shares, its
+ * chats and its provider accounts answered by the brain instead. Everything
+ * else stays on the stub.
  *
  * The first task call asks GET /api/tasks. When that fails the way a missing
  * brain does (no network, or 404), every task method uses the stub for the rest
@@ -466,6 +575,28 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async put(taskId, update) {
         if ((await chosen()) === "stub") return stub.shares.put(taskId, update);
         return toTaskShare(await call(sharePath(taskId), { method: "PUT", body: shareBody(update) }));
+      },
+    },
+    providers: {
+      async list() {
+        if ((await chosen()) === "stub") return stub.providers.list();
+        return list(await call("/api/providers"), "providers").map(toProvider);
+      },
+      async add(input) {
+        if ((await chosen()) === "stub") return stub.providers.add(input);
+        return toProvider(await call("/api/providers", { method: "POST", body: providerAddBody(input) }));
+      },
+      async update(id, input) {
+        if ((await chosen()) === "stub") return stub.providers.update(id, input);
+        return toProvider(await call(providerPath(id), { method: "PUT", body: providerChangeBody(input) }));
+      },
+      async remove(id) {
+        if ((await chosen()) === "stub") return stub.providers.remove(id);
+        await call(providerPath(id), { method: "DELETE" });
+      },
+      async test(config) {
+        if ((await chosen()) === "stub") return stub.providers.test(config);
+        return toTestResult(await call("/api/providers/test", { method: "POST", body: providerTestBody(config) }));
       },
     },
     chats: {

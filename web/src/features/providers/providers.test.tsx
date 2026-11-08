@@ -23,8 +23,8 @@ interface RecordedRequest {
   body: Record<string, unknown> | null;
 }
 
-// Puts the page in live mode: GET /api/providers answers with an array, so the
-// form talks to fetch instead of the in-memory stub. Every request is recorded
+// Puts the page in live mode: GET /api/tasks answers, so the shared client talks
+// to fetch instead of the in-memory stub. Every request is recorded
 // so tests can assert on the payloads the form sends.
 function stubProviderApi(options: { accounts?: ProviderAccount[]; testResponse?: object }) {
   const testResponse = options.testResponse ?? { ok: true, latency_ms: 128 };
@@ -37,6 +37,10 @@ function stubProviderApi(options: { accounts?: ProviderAccount[]; testResponse?:
       const body =
         typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
       requests.push({ url, method, body });
+      // The shared client asks GET /api/tasks first to decide whether a brain is there.
+      if (url === "/api/tasks" && method === "GET") {
+        return Response.json([]);
+      }
       if (url === "/api/providers/test" && method === "POST") {
         return Response.json(testResponse);
       }
@@ -59,8 +63,10 @@ const anthropicAccount: ProviderAccount = {
   name: "Claude Team",
   adapter: "anthropic",
   plan_kind: "metered",
+  base_url: "https://api.anthropic.com",
   status: "Connected",
   models: ["claude-3-7-sonnet"],
+  scope: "own",
 };
 
 function click(element: HTMLElement) {
@@ -186,6 +192,7 @@ describe("providers", () => {
         plan_kind: "metered",
         status,
         models: ["gpt-4o"],
+        scope: "own",
       })),
     });
     renderAt("/providers");

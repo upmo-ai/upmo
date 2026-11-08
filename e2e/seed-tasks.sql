@@ -19,6 +19,9 @@
 --   ...0007  Draft the October summary        Working
 --   ...0008  Draft the renewal notice         Needs approval, one pending approval
 --
+-- The e2e person's own provider accounts are cleared as well (not seeded), so
+-- the providers check always starts from an empty list.
+--
 -- Each waiting task also gets its pending approval and the person their
 -- notifications, so the approval card and the bell have live rows to show. Both
 -- go in the way the brain writes them: an approval is pending and owned by the
@@ -60,6 +63,18 @@ DELETE FROM tasks.tasks WHERE id IN (SELECT id FROM mine);
 -- go in the same replica-mode transaction.
 DELETE FROM chat.lines WHERE chat_id IN (SELECT id FROM chat.chats WHERE owner_user_id = :'ada'::uuid);
 DELETE FROM chat.chats WHERE owner_user_id = :'ada'::uuid;
+COMMIT;
+
+-- The e2e person's own provider accounts go too, with their models and sealed
+-- keys, so e2e/providers.mjs starts from an empty list on every run. The
+-- gateway tables are under forced row security, which a superuser bypasses.
+-- The keys go first: they are found through the accounts' credential refs.
+BEGIN;
+DELETE FROM gateway.credentials
+WHERE ref IN (SELECT credential_ref FROM gateway.provider_accounts WHERE owner_user_id = :'ada'::uuid);
+DELETE FROM gateway.provider_models
+WHERE account_id IN (SELECT id FROM gateway.provider_accounts WHERE owner_user_id = :'ada'::uuid);
+DELETE FROM gateway.provider_accounts WHERE owner_user_id = :'ada'::uuid;
 COMMIT;
 
 -- The bell's rows are seeded below, so the old ones go first, dismissed or not.

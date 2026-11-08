@@ -234,6 +234,7 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
           plan_kind: input.plan_kind,
           status: "Connected",
           models: input.models,
+          scope: "own",
         };
       },
       async update(id, input) {
@@ -245,6 +246,7 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
           plan_kind: input.plan_kind ?? "metered",
           status: "Connected",
           models: input.models ?? [],
+          scope: "own",
         };
       },
       async remove() {},
