@@ -54,19 +54,16 @@ function rows(page) {
 
 async function expectRows(page, titles) {
   const list = rows(page);
-  const deadline = Date.now() + 10_000;
-  while ((await list.count()) !== titles.length) {
-    if (Date.now() > deadline) {
-      throw new Error(`expected ${titles.length} rows, found ${await list.count()}`);
-    }
-    await page.waitForTimeout(100);
-  }
-  const texts = (await list.allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
   // Every listed notification is counted as unread, so each row says so.
   const want = titles.map(([title, meta, action]) => `Unread: ${title} ${meta} ${action}`);
-  if (JSON.stringify(texts) !== JSON.stringify(want)) {
-    throw new Error(`rows ${JSON.stringify(texts)}, expected ${JSON.stringify(want)}`);
+  const deadline = Date.now() + 10_000;
+  let texts = [];
+  while (Date.now() < deadline) {
+    texts = (await list.allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
+    if (JSON.stringify(texts) === JSON.stringify(want)) return;
+    await page.waitForTimeout(100);
   }
+  throw new Error(`rows ${JSON.stringify(texts)}, expected ${JSON.stringify(want)}`);
 }
 
 async function press(page, title, action) {
