@@ -3,9 +3,10 @@ import { IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Button, ConfirmDialog, Input, ProviderCard } from "@upmo-ai/components";
+import { Badge, Button, ConfirmDialog, Input, ProviderCard, StatusAlert } from "@upmo-ai/components";
 
 import { PROVIDERS_KEY, providersQueryKey, useApi, type ProviderAccount } from "../../app/api";
+import { adapterLabel, providerProblem } from "./rules";
 
 export interface KnownProvider {
   id: string;
@@ -27,6 +28,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["claude-3-7-sonnet", "claude-3-5-haiku"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.anthropic.com",
   },
   {
     id: "openai",
@@ -36,6 +38,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["gpt-4o", "o3-mini"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.openai.com",
   },
   {
     id: "gemini",
@@ -58,7 +61,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
       "Qwen/Qwen2.5-Coder-32B-Instruct",
     ],
     requiresKey: true,
-    defaultBaseUrl: "https://api.studio.nebius.ai/v1",
+    defaultBaseUrl: "https://api.studio.nebius.ai",
   },
   {
     id: "ollama",
@@ -171,88 +174,63 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "local",
     defaultModels: ["local-model"],
     requiresKey: false,
-    defaultBaseUrl: "http://localhost:1234/v1",
+    defaultBaseUrl: "http://localhost:1234",
   },
 ];
 
+/**
+ * A provider with no network behind it, for trying the screens and the e2e
+ * checks. It is offered in a dev build only, but an account that uses it is
+ * always recognised.
+ */
+export const TEST_PROVIDER: KnownProvider = {
+  id: "fake",
+  name: "Test provider",
+  adapter: "fake",
+  description: "Built in, no network. For trying Upmo out.",
+  defaultPlan: "local",
+  defaultModels: [],
+  requiresKey: true,
+};
+
+/** Every provider an account can name. */
+export const ALL_PROVIDERS: KnownProvider[] = [...KNOWN_PROVIDERS, TEST_PROVIDER];
+
+/** The providers the picker offers. */
+export const PICKABLE_PROVIDERS: KnownProvider[] = import.meta.env.DEV ? ALL_PROVIDERS : KNOWN_PROVIDERS;
+
 export function ProvidersPage() {
-  const probe = useQuery({
-    queryKey: ["providers-live"],
-    retry: false,
-    queryFn: async () => {
-      try {
-        const response = await fetch("/api/providers", { credentials: "include" });
-        if (!response.ok) return null;
-        const body: unknown = await response.json();
-        return Array.isArray(body) ? (body as ProviderAccount[]) : null;
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  if (probe.isPending) {
-    return (
-      <Stack gap="lg" className="identity-page">
-        <Title order={1}>Providers</Title>
-      </Stack>
-    );
-  }
-
-  if (Array.isArray(probe.data)) {
-    return <ProvidersView live initialProviders={probe.data} />;
-  }
-
-  return <ProvidersView live={false} />;
-}
-
-function ProvidersView({
-  live,
-  initialProviders,
-}: {
-  live: boolean;
-  initialProviders?: ProviderAccount[];
-}) {
   const api = useApi();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
+  // The list is read from the shared client on every mount. It is never seeded
+  // with a snapshot: seeded data counts as fresh and would freeze the list.
   const providersQuery = useQuery({
-    queryKey: live ? ["providers-live-data"] : providersQueryKey(),
-    initialData: initialProviders,
-    queryFn: async () => {
-      if (live) {
-        const res = await fetch("/api/providers", { credentials: "include" });
-        if (!res.ok) throw new Error("Failed to fetch providers");
-        return (await res.json()) as ProviderAccount[];
-      }
-      return api.providers.list();
-    },
+    queryKey: providersQueryKey(),
+    queryFn: () => api.providers.list(),
   });
 
   const providers = providersQuery.data ?? [];
   const [disconnectTarget, setDisconnectTarget] = useState<ProviderAccount | null>(null);
+  const [disconnectError, setDisconnectError] = useState("");
 
+  // meta.shown: the dialog words a failure itself, so the shell banner does not
+  // also print the brain's text.
   const removeMutation = useMutation({
-    mutationFn: async (id: string) => {
-      if (live) {
-        const res = await fetch(`/api/providers/${id}`, {
-          method: "DELETE",
-          credentials: "include",
-        });
-        if (!res.ok) throw new Error("Failed to disconnect provider");
-        return;
-      }
-      return api.providers.remove(id);
-    },
+    meta: { shown: true },
+    mutationFn: (id: string) => api.providers.remove(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
-      if (live) {
-        await queryClient.invalidateQueries({ queryKey: ["providers-live-data"] });
-      }
       setDisconnectTarget(null);
     },
+    onError: (error: unknown) => setDisconnectError(providerProblem(error)),
   });
+
+  const askDisconnect = (account: ProviderAccount | null) => {
+    setDisconnectError("");
+    setDisconnectTarget(account);
+  };
 
   const [search, setSearch] = useState("");
 
@@ -297,7 +275,15 @@ function ProvidersView({
         </Group>
       </Group>
 
-      {providers.length === 0 ? (
+      {providersQuery.isPending ? (
+        <Text c="dimmed" size="sm" role="status">
+          Loading providers
+        </Text>
+      ) : providersQuery.isError ? (
+        <StatusAlert tone="critical" title="Providers could not be loaded">
+          {providerProblem(providersQuery.error)}
+        </StatusAlert>
+      ) : providers.length === 0 ? (
         <Card withBorder radius="lg" padding="xl" style={{ borderStyle: "dashed" }}>
           <Stack align="center" gap="sm" py={48}>
             <ThemeIcon variant="light" size={48} radius="lg" color="teal">
@@ -325,27 +311,44 @@ function ProvidersView({
         </Card>
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-          {filteredProviders.map((prov) => (
-            <ProviderCard
-              key={prov.id}
-              data-testid={`provider-card-${prov.id}`}
-              id={prov.id}
-              brand={prov.provider}
-              name={prov.name}
-              adapter={prov.adapter}
-              status={prov.status}
-              planKind={prov.plan_kind}
-              baseUrl={prov.base_url}
-              models={prov.models}
-              onEdit={() =>
-                void navigate({
-                  to: "/providers/$providerId/edit",
-                  params: { providerId: prov.id },
-                })
-              }
-              onDisconnect={() => setDisconnectTarget(prov)}
-            />
-          ))}
+          {filteredProviders.map((prov) => {
+            const shared = prov.scope === "global";
+            return (
+              <Stack key={prov.id} gap="xs">
+                <ProviderCard
+                  data-testid={`provider-card-${prov.id}`}
+                  id={prov.id}
+                  brand={prov.provider}
+                  name={prov.name}
+                  adapter={adapterLabel(prov.adapter)}
+                  status={prov.status}
+                  planKind={prov.plan_kind}
+                  baseUrl={prov.base_url}
+                  models={prov.models}
+                  onEdit={
+                    shared
+                      ? undefined
+                      : () =>
+                          void navigate({
+                            to: "/providers/$providerId/edit",
+                            params: { providerId: prov.id },
+                          })
+                  }
+                  onDisconnect={shared ? undefined : () => askDisconnect(prov)}
+                />
+                {shared ? (
+                  <Group gap="xs">
+                    <Badge variant="light" size="sm">
+                      Shared
+                    </Badge>
+                    <Text size="xs" c="dimmed">
+                      Managed by your workspace. Read only.
+                    </Text>
+                  </Group>
+                ) : null}
+              </Stack>
+            );
+          })}
         </SimpleGrid>
       )}
 
@@ -357,13 +360,19 @@ function ProvidersView({
         action="Disconnect provider"
         destructive
         busy={removeMutation.isPending}
-        onClose={() => setDisconnectTarget(null)}
+        onClose={() => askDisconnect(null)}
         onConfirm={() => {
           if (disconnectTarget) {
             removeMutation.mutate(disconnectTarget.id);
           }
         }}
-      />
+      >
+        {disconnectError ? (
+          <StatusAlert tone="critical" title="Could not disconnect">
+            {disconnectError}
+          </StatusAlert>
+        ) : null}
+      </ConfirmDialog>
     </Stack>
   );
 }

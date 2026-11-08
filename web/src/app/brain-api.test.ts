@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   causeSentence,
+  providerAddBody,
+  providerChangeBody,
+  providerTestBody,
   shareBody,
   toApproval,
   toChat,
@@ -9,9 +12,11 @@ import {
   toChatSummary,
   toMember,
   toNotification,
+  toProvider,
   toTask,
   toTaskShare,
   toTeam,
+  toTestResult,
 } from "./brain-api";
 import type { ShareGrant } from "../features/identity/types";
 
@@ -297,5 +302,128 @@ describe("toChat and toChatLine", () => {
     expect(() => toChatLine({ ...assistantLine, model: undefined })).toThrow("no model");
     expect(() => toChatLine({ ...assistantLine, cost_usd: "0.0031" })).toThrow("no cost_usd");
     expect(() => toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: "none" })).toThrow("no lines");
+  });
+});
+
+describe("toProvider", () => {
+  const sent = {
+    id: "01990000-0000-7000-8000-0000000000e1",
+    provider: "openai",
+    name: "OpenAI Work",
+    adapter: "openai_compat",
+    plan_kind: "metered",
+    base_url: "https://api.openai.com",
+    status: "Not connected",
+    models: ["gpt-4o", "o3-mini"],
+    scope: "own",
+  };
+
+  it("keeps the account as the brain sends it, status and scope included", () => {
+    expect(toProvider(sent)).toEqual(sent);
+    expect(toProvider({ ...sent, scope: "global", status: "Key rejected" })).toMatchObject({
+      scope: "global",
+      status: "Key rejected",
+    });
+  });
+
+  it("leaves base_url out when the account has none", () => {
+    const { base_url: _gone, ...bare } = sent;
+    expect(toProvider(bare)).not.toHaveProperty("base_url");
+    expect(toProvider({ ...bare, base_url: "" })).not.toHaveProperty("base_url");
+  });
+
+  it("refuses an unknown plan, status or scope, and models that are not text", () => {
+    expect(() => toProvider({ ...sent, plan_kind: "free" })).toThrow("unknown plan kind");
+    expect(() => toProvider({ ...sent, status: "Broken" })).toThrow("unknown status");
+    expect(() => toProvider({ ...sent, scope: "team" })).toThrow("unknown scope");
+    expect(() => toProvider({ ...sent, scope: undefined })).toThrow("unknown scope");
+    expect(() => toProvider({ ...sent, models: ["gpt-4o", 4] })).toThrow("no models");
+    expect(() => toProvider({ ...sent, models: null })).toThrow("no models");
+  });
+
+  it("reads no key, even if one were sent", () => {
+    expect(toProvider({ ...sent, api_key: "sk-secret" })).not.toHaveProperty("api_key");
+  });
+});
+
+describe("toTestResult", () => {
+  it("keeps ok and the sentence of a failed test", () => {
+    expect(toTestResult({ ok: true })).toEqual({ ok: true });
+    expect(toTestResult({ ok: true, error: "" })).toEqual({ ok: true });
+    expect(toTestResult({ ok: false, error: "The key was rejected." })).toEqual({
+      ok: false,
+      error: "The key was rejected.",
+    });
+  });
+
+  it("refuses an answer with no ok", () => {
+    expect(() => toTestResult({ error: "x" })).toThrow("no ok");
+    expect(() => toTestResult({ ok: "yes" })).toThrow("no ok");
+  });
+});
+
+describe("provider request bodies", () => {
+  const add = {
+    provider: "anthropic",
+    name: "Claude Team",
+    adapter: "anthropic",
+    plan_kind: "metered" as const,
+    base_url: "https://api.anthropic.com",
+    api_key: "sk-ant-1",
+    models: ["claude-3-7-sonnet"],
+  };
+
+  it("sends the brain's adapter key for a new account and the key only in the body", () => {
+    expect(providerAddBody(add)).toEqual({
+      provider: "anthropic",
+      name: "Claude Team",
+      adapter: "openai_compat",
+      plan_kind: "metered",
+      base_url: "https://api.anthropic.com",
+      api_key: "sk-ant-1",
+      models: ["claude-3-7-sonnet"],
+    });
+    expect(providerAddBody({ ...add, adapter: "fake", plan_kind: "local" })).toMatchObject({ adapter: "fake" });
+  });
+
+  it("leaves out an empty base URL and an empty key", () => {
+    const body = providerAddBody({ ...add, base_url: "", api_key: "" });
+    expect(body).not.toHaveProperty("base_url");
+    expect(body).not.toHaveProperty("api_key");
+    expect(providerAddBody({ ...add, base_url: undefined, api_key: undefined })).not.toHaveProperty("api_key");
+  });
+
+  it("sends a change with only what was given, and no api_key keeps the saved key", () => {
+    expect(providerChangeBody({ name: "Renamed", models: ["a"] })).toEqual({ name: "Renamed", models: ["a"] });
+    expect(providerChangeBody({ plan_kind: "local", api_key: "" })).toEqual({ plan_kind: "local" });
+    expect(providerChangeBody({ api_key: "sk-new" })).toEqual({ api_key: "sk-new" });
+    expect(providerChangeBody({})).toEqual({});
+    // An empty model list is a change to nothing, not an omission.
+    expect(providerChangeBody({ models: [] })).toEqual({ models: [] });
+  });
+
+  it("always sends plan_kind in a test when it is known, with the brain's adapter key", () => {
+    expect(
+      providerTestBody({ provider: "ollama", adapter: "ollama", plan_kind: "local", base_url: "http://ollama:11434", model: "llama3.3:70b" }),
+    ).toEqual({
+      provider: "ollama",
+      adapter: "openai_compat",
+      plan_kind: "local",
+      base_url: "http://ollama:11434",
+      model: "llama3.3:70b",
+    });
+  });
+
+  it("tests a saved account by id with no key, and a typed key by value", () => {
+    expect(providerTestBody({ provider: "openai", plan_kind: "metered", id: "p1" })).toEqual({
+      provider: "openai",
+      plan_kind: "metered",
+      id: "p1",
+    });
+    expect(providerTestBody({ provider: "openai", plan_kind: "metered", api_key: "sk-typed" })).toEqual({
+      provider: "openai",
+      plan_kind: "metered",
+      api_key: "sk-typed",
+    });
   });
 });

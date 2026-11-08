@@ -26,7 +26,8 @@ import {
   type TestResult,
 } from "../../app/api";
 import { formatPricing, getProviderModels, type ModelInfo } from "./models";
-import { KNOWN_PROVIDERS, type KnownProvider } from "./providers";
+import { ALL_PROVIDERS, KNOWN_PROVIDERS, PICKABLE_PROVIDERS, type KnownProvider } from "./providers";
+import { baseUrlRequired, keyRequired, providerProblem, showsKeyField } from "./rules";
 
 interface ProviderFormPageProps {
   mode: "create" | "edit";
@@ -35,10 +36,16 @@ interface ProviderFormPageProps {
 interface ProviderFormProps {
   mode: "create" | "edit";
   existing?: ProviderAccount;
-  live: boolean;
 }
 
-function ProviderForm({ mode, existing, live }: ProviderFormProps) {
+function baseUrlHelp(meta: KnownProvider): string {
+  if (meta.id === "lmstudio") return "Required. Address of your local LM Studio service.";
+  if (meta.id === "ollama") return "Required. Address of your local or private Ollama service.";
+  if (!baseUrlRequired(meta.adapter)) return "Optional for the built in test provider.";
+  return "Required. Address of the provider's API, for example https://api.example.com, without a /v1 path.";
+}
+
+function ProviderForm({ mode, existing }: ProviderFormProps) {
   const api = useApi();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -52,7 +59,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
   const [name, setName] = useState<string>(existing?.name ?? KNOWN_PROVIDERS[0].name);
   const [apiKey, setApiKey] = useState<string>("");
   const [baseUrl, setBaseUrl] = useState<string>(
-    existing?.base_url ?? KNOWN_PROVIDERS[0].defaultBaseUrl ?? "",
+    existing ? (existing.base_url ?? "") : (KNOWN_PROVIDERS[0].defaultBaseUrl ?? ""),
   );
   const [planKind, setPlanKind] = useState<"metered" | "subscription" | "local">(
     existing?.plan_kind ?? KNOWN_PROVIDERS[0].defaultPlan,
@@ -70,12 +77,20 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
   const [submitError, setSubmitError] = useState<string>("");
 
   const selectedMeta: KnownProvider =
-    KNOWN_PROVIDERS.find((p) => p.id === selectedProviderId) ?? KNOWN_PROVIDERS[0];
+    ALL_PROVIDERS.find((p) => p.id === selectedProviderId) ?? KNOWN_PROVIDERS[0];
+  // The brain keeps a key for every account that is not local, so only a
+  // saved local account may have none.
+  const hasSavedKey = existing !== undefined && existing.plan_kind !== "local";
+  const showKey = showsKeyField(selectedMeta.requiresKey, planKind);
+  const needsKey = keyRequired(planKind, hasSavedKey);
+  const needsBaseUrl = baseUrlRequired(selectedMeta.adapter);
+  // A key typed while the field was shown is not sent once it is hidden.
+  const typedKey = showKey ? apiKey.trim() : "";
 
   const handleSelectProvider = (provId: string) => {
     if (mode === "edit") return;
     setSelectedProviderId(provId);
-    const meta = KNOWN_PROVIDERS.find((p) => p.id === provId);
+    const meta = ALL_PROVIDERS.find((p) => p.id === provId);
     if (meta) {
       setName(meta.name);
       setPlanKind(meta.defaultPlan);
@@ -106,107 +121,66 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
   const runTestConnection = async () => {
     setIsTesting(true);
     setSubmitError("");
+    // Without a newly typed key, an account that exists is tested with its saved key.
+    const savedId = existing && !typedKey ? existing.id : undefined;
     try {
-      if (live) {
-        try {
-          const res = await fetch("/api/providers/test", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              provider: selectedProviderId,
-              api_key: apiKey.trim() || undefined,
-              base_url: baseUrl.trim() || selectedMeta.defaultBaseUrl || undefined,
-              model: selectedModels[0],
-            }),
-          });
-          if (res.ok) {
-            const data = (await res.json()) as TestResult;
-            setTestResult(data);
-            return;
-          }
-        } catch {
-          // Fall through to stub api
-        }
-      }
-
       const result = await api.providers.test({
         provider: selectedProviderId,
-        api_key: apiKey.trim() || undefined,
-        base_url: baseUrl.trim() || selectedMeta.defaultBaseUrl || undefined,
+        adapter: selectedMeta.adapter,
+        plan_kind: planKind,
+        api_key: typedKey || undefined,
+        base_url: baseUrl.trim() || undefined,
         model: selectedModels[0],
+        id: savedId,
       });
       setTestResult(result);
+      // The brain stores the status a saved account's test found.
+      if (savedId) await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
     } catch (err: unknown) {
-      setTestResult({
-        ok: false,
-        error: err instanceof Error ? err.message : "Connection probe failed",
-      });
+      setTestResult({ ok: false, error: providerProblem(err) });
     } finally {
       setIsTesting(false);
     }
   };
 
+  // The key is read from the form when the request is made and is not a
+  // variable of the mutation, so it is not kept in the mutation cache.
+  // meta.shown: the form words a failure itself, so the shell banner does not
+  // also print the brain's text.
   const saveMutation = useMutation({
+    meta: { shown: true },
     mutationFn: async () => {
       setSubmitError("");
-      const resolvedBaseUrl = baseUrl.trim() || selectedMeta.defaultBaseUrl || undefined;
+      const resolvedBaseUrl = baseUrl.trim() || undefined;
 
       if (mode === "create") {
-        const payload = {
+        return api.providers.add({
           provider: selectedProviderId,
           name: name.trim() || selectedMeta.name,
           adapter: selectedMeta.adapter,
           plan_kind: planKind,
           base_url: resolvedBaseUrl,
-          api_key: selectedMeta.requiresKey ? apiKey.trim() : undefined,
+          api_key: typedKey || undefined,
           models: selectedModels,
-        };
-
-        if (live) {
-          const res = await fetch("/api/providers", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          if (!res.ok) throw new Error("Failed to connect provider");
-          return (await res.json()) as ProviderAccount;
-        }
-        return api.providers.add(payload);
+        });
       }
 
-      // Edit mode
+      // An empty key field keeps the saved key.
       if (!existing?.id) throw new Error("Missing provider ID");
-      const editPayload = {
+      return api.providers.update(existing.id, {
         name: name.trim() || existing.name,
         plan_kind: planKind,
         base_url: resolvedBaseUrl,
-        api_key: apiKey.trim() || undefined,
+        api_key: typedKey || undefined,
         models: selectedModels,
-      };
-
-      if (live) {
-        const res = await fetch(`/api/providers/${existing.id}`, {
-          method: "PUT",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(editPayload),
-        });
-        if (!res.ok) throw new Error("Failed to update provider");
-        return (await res.json()) as ProviderAccount;
-      }
-      return api.providers.update(existing.id, editPayload);
+      });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
-      if (live) {
-        await queryClient.invalidateQueries({ queryKey: ["providers-live-data"] });
-      }
       await navigate({ to: "/providers" });
     },
     onError: (err: Error) => {
-      setSubmitError(err.message || "Failed to save provider");
+      setSubmitError(providerProblem(err));
     },
   });
 
@@ -214,7 +188,7 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
   const catalogIds = new Set(availableCatalog.map((m) => m.id));
   const customOnlyModels = selectedModels.filter((m) => !catalogIds.has(m));
 
-  const filteredProviders = KNOWN_PROVIDERS.filter((p) => {
+  const filteredProviders = PICKABLE_PROVIDERS.filter((p) => {
     if (!providerSearch.trim()) return true;
     const q = providerSearch.toLowerCase();
     return (
@@ -228,8 +202,8 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
   const canProceedStep1 = mode === "edit" || Boolean(selectedProviderId);
   const canProceedStep2 =
     name.trim().length > 0 &&
-    (!selectedMeta.requiresKey || mode === "edit" || apiKey.trim().length > 0) &&
-    (selectedMeta.requiresKey || baseUrl.trim().length > 0);
+    (!needsKey || typedKey.length > 0) &&
+    (!needsBaseUrl || baseUrl.trim().length > 0);
   const canProceedStep3 = selectedModels.length > 0;
   const canSubmit = testResult?.ok === true && !saveMutation.isPending;
 
@@ -319,54 +293,40 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
           placeholder="e.g. Anthropic Production, Nebius AI, Local Ollama"
         />
 
-        {selectedMeta.requiresKey ? (
-          <>
-            <PasswordInput
-              label="API Key"
-              required={mode === "create"}
-              size="md"
-              description={
-                mode === "create"
-                  ? "Keys are encrypted at rest and stay on this server."
-                  : "Leave blank to keep the currently stored key."
-              }
-              placeholder={mode === "create" ? "sk-..." : "••••••••••••••••"}
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                setTestResult(null);
-              }}
-            />
-            <Input
-              label="Endpoint URL"
-              size="md"
-              description="API gateway endpoint URL (optional for standard cloud providers)."
-              value={baseUrl}
-              onChange={(e) => {
-                setBaseUrl(e.target.value);
-                setTestResult(null);
-              }}
-              placeholder={selectedMeta.defaultBaseUrl ?? "https://api.example.com/v1"}
-            />
-          </>
-        ) : (
-          <Input
-            label="Base URL"
-            required
+        {showKey ? (
+          <PasswordInput
+            label="API Key"
+            required={needsKey}
             size="md"
+            autoComplete="off"
             description={
-              selectedMeta.id === "lmstudio"
-                ? "Address of your local LM Studio service."
-                : "Address of your local or private Ollama service."
+              hasSavedKey
+                ? "Leave blank to keep the currently stored key."
+                : needsKey
+                  ? "Keys are encrypted at rest and stay on this server."
+                  : "Optional on the local plan. Keys are encrypted at rest and stay on this server."
             }
-            value={baseUrl}
+            placeholder={hasSavedKey ? "••••••••••••••••" : "sk-..."}
+            value={apiKey}
             onChange={(e) => {
-              setBaseUrl(e.target.value);
+              setApiKey(e.target.value);
               setTestResult(null);
             }}
-            placeholder={selectedMeta.defaultBaseUrl ?? "http://localhost:11434"}
           />
-        )}
+        ) : null}
+
+        <Input
+          label="Base URL"
+          required={needsBaseUrl}
+          size="md"
+          description={baseUrlHelp(selectedMeta)}
+          value={baseUrl}
+          onChange={(e) => {
+            setBaseUrl(e.target.value);
+            setTestResult(null);
+          }}
+          placeholder={selectedMeta.defaultBaseUrl ?? "https://api.example.com"}
+        />
 
         <Select
           label="Plan kind"
@@ -630,6 +590,12 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
         </Stack>
       </Card>
 
+      {submitError ? (
+        <StatusAlert tone="critical" title="Could not save the provider">
+          {submitError}
+        </StatusAlert>
+      ) : null}
+
       <Group justify="space-between" mt="md">
         <Button
           variant="subtle"
@@ -678,12 +644,6 @@ function ProviderForm({ mode, existing, live }: ProviderFormProps) {
         </Stack>
       </Group>
 
-      {submitError ? (
-        <StatusAlert tone="critical" title="Error">
-          {submitError}
-        </StatusAlert>
-      ) : null}
-
       <ConnectWizard
         active={activeStep}
         onStepChange={setActiveStep}
@@ -702,33 +662,31 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
   const api = useApi();
   const { providerId } = useParams({ strict: false }) as { providerId?: string };
 
-  const probe = useQuery({
-    queryKey: ["providers-live"],
-    retry: false,
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/providers", { credentials: "include" });
-        if (!res.ok) return null;
-        const data: unknown = await res.json();
-        return Array.isArray(data) ? (data as ProviderAccount[]) : null;
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  const live = Array.isArray(probe.data);
-
-  const stubProviders = useQuery({
+  // Only an edit needs the account. It is read from the shared client, the
+  // same source as the list.
+  const accounts = useQuery({
     queryKey: providersQueryKey(),
     queryFn: () => api.providers.list(),
-    enabled: !live,
+    enabled: mode === "edit",
   });
 
-  const providers = (live ? probe.data : stubProviders.data) ?? [];
-  const existing = mode === "edit" ? providers.find((p) => p.id === providerId) : undefined;
+  const existing = mode === "edit" ? accounts.data?.find((p) => p.id === providerId) : undefined;
 
-  if (mode === "edit" && !existing && !stubProviders.isPending && !probe.isPending) {
+  if (mode === "edit" && !existing && accounts.isError) {
+    return (
+      <Stack gap="md" className="identity-page">
+        <Title order={1}>Provider could not be loaded</Title>
+        <Text c="dimmed">{providerProblem(accounts.error)}</Text>
+        <div>
+          <Button component={Link} to="/providers" variant="default">
+            Back to Providers
+          </Button>
+        </div>
+      </Stack>
+    );
+  }
+
+  if (mode === "edit" && !existing && !accounts.isPending) {
     return (
       <Stack gap="md" className="identity-page">
         <Title order={1}>Provider not found</Title>
@@ -750,14 +708,21 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
     );
   }
 
-  return (
-    <ProviderForm
-      key={existing?.id ?? "create"}
-      mode={mode}
-      existing={existing}
-      live={live}
-    />
-  );
+  if (existing?.scope === "global") {
+    return (
+      <Stack gap="md" className="identity-page">
+        <Title order={1}>{existing.name}</Title>
+        <Text c="dimmed">This provider is shared by the workspace. It is read only here.</Text>
+        <div>
+          <Button component={Link} to="/providers" variant="default">
+            Back to Providers
+          </Button>
+        </div>
+      </Stack>
+    );
+  }
+
+  return <ProviderForm key={existing?.id ?? "create"} mode={mode} existing={existing} />;
 }
 
 export function NewProviderPage() {

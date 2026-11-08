@@ -152,15 +152,55 @@ export type ConnectorRulesInput = {
   change: RulePolicy;
 };
 
+export type ProviderPlanKind = "metered" | "subscription" | "local";
+
+export type ProviderStatus = "Connected" | "Not connected" | "Rate limited" | "Key rejected" | "Offline";
+
 export type ProviderAccount = {
   id: string;
   provider: string;
   name: string;
   adapter: string;
-  plan_kind: "metered" | "subscription" | "local";
+  plan_kind: ProviderPlanKind;
   base_url?: string;
-  status: "Connected" | "Not connected" | "Rate limited" | "Key rejected" | "Offline";
+  status: ProviderStatus;
   models: string[];
+  /** "global" accounts belong to the workspace and are read only; "own" ones the person manages. */
+  scope: "own" | "global";
+};
+
+/** POST /api/providers. The api_key is write only: the brain never sends it back. */
+export type ProviderAdd = {
+  provider: string;
+  name: string;
+  adapter: string;
+  plan_kind: ProviderPlanKind;
+  base_url?: string;
+  api_key?: string;
+  models: string[];
+};
+
+/** PUT /api/providers/{id}. A field left out stays as it is; no api_key keeps the saved key. */
+export type ProviderChange = {
+  name?: string;
+  plan_kind?: ProviderPlanKind;
+  base_url?: string;
+  api_key?: string;
+  models?: string[];
+};
+
+/**
+ * POST /api/providers/test. With an id and no api_key the brain tests the
+ * saved key and stores the status it finds on that account.
+ */
+export type ProviderProbe = {
+  provider: string;
+  adapter?: string;
+  plan_kind?: ProviderPlanKind;
+  api_key?: string;
+  base_url?: string;
+  model?: string;
+  id?: string;
 };
 
 // Usage: GET /api/usage?range=today|7|30|90
@@ -393,33 +433,22 @@ export interface ApiClient {
     };
   };
   providers: {
+    /** GET /api/providers: own accounts first, then the workspace's, each by name. */
     list(): Promise<ProviderAccount[]>;
-    add(input: {
-      provider: string;
-      name: string;
-      adapter: string;
-      plan_kind: "metered" | "subscription" | "local";
-      base_url?: string;
-      api_key?: string;
-      models: string[];
-    }): Promise<ProviderAccount>;
-    update(
-      id: string,
-      input: {
-        name?: string;
-        plan_kind?: "metered" | "subscription" | "local";
-        base_url?: string;
-        api_key?: string;
-        models?: string[];
-      },
-    ): Promise<ProviderAccount>;
+    /**
+     * POST /api/providers. 422 and 409 carry a plain sentence in BrainError.error;
+     * 503 means the server holds no master key, so keys cannot be saved.
+     */
+    add(input: ProviderAdd): Promise<ProviderAccount>;
+    /** PUT /api/providers/{id}. 403 for a workspace account. */
+    update(id: string, input: ProviderChange): Promise<ProviderAccount>;
+    /** DELETE /api/providers/{id}. 409 "Used by route ..." while a route links to it. */
     remove(id: string): Promise<void>;
-    test(config: {
-      provider: string;
-      api_key?: string;
-      base_url?: string;
-      model?: string;
-    }): Promise<TestResult>;
+    /**
+     * POST /api/providers/test. A problem the person can fix is an answer
+     * ({ok: false, error}); 429 after 10 tests a minute is a BrainError.
+     */
+    test(config: ProviderProbe): Promise<TestResult>;
   };
   chats: {
     /** GET /api/chats, newest activity first. */
@@ -1060,8 +1089,10 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       name: "Anthropic Claude",
       adapter: "anthropic",
       plan_kind: "metered",
+      base_url: "https://api.anthropic.com",
       status: "Connected",
       models: ["claude-3-7-sonnet", "claude-3-5-haiku"],
+      scope: "own",
     },
     {
       id: "provider-ollama",
@@ -1072,6 +1103,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       base_url: "http://localhost:11434",
       status: "Connected",
       models: ["llama3.3:70b", "deepseek-r1:14b"],
+      scope: "own",
     },
   ];
   let serial = 0;
@@ -1565,6 +1597,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           base_url: input.base_url,
           status: "Connected",
           models: copy(input.models),
+          scope: "own",
         };
         providerAccounts.push(account);
         return copy(account);
