@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Text } from "@mantine/core";
 import { LineChart, type LineSeries } from "@upmo-ai/components";
 
-import { AnalyticsPanel, StackToggle } from "./analytics-panel";
+import { UsagePanel, StackToggle } from "./panel";
 import { formatUsd } from "./format";
 
 /** Spend over time with one line per row, switchable between lines and stacked areas. */
@@ -21,7 +21,7 @@ export function SpendLines({
 }) {
   const [stacked, setStacked] = useState(false);
   return (
-    <AnalyticsPanel
+    <UsagePanel
       title={title}
       empty={empty}
       action={<StackToggle label={`${title} view`} stacked={stacked} onChange={setStacked} />}
@@ -34,6 +34,6 @@ export function SpendLines({
       }
     >
       <LineChart title={title} series={series} stacked={stacked} formatValue={formatUsd} />
-    </AnalyticsPanel>
+    </UsagePanel>
   );
 }

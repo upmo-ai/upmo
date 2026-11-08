@@ -97,7 +97,7 @@ try {
   await page.getByText(/calls in range had no configured price and are excluded from spend\./).waitFor();
 
   // Every chart panel is visible, and the heading ORDER is the reading order of the page: pairs first, then the two wide panels, then Tasks.
-  const analyticsPanels = [
+  const usagePanels = [
     "Spend",
     "Cache hit rate",
     "Spend by provider",
@@ -109,14 +109,14 @@ try {
     "Requests and error rate",
     "Cost per task",
   ];
-  for (const name of analyticsPanels) {
+  for (const name of usagePanels) {
     await page.getByRole("heading", { level: 2, name, exact: true }).waitFor();
     if (!(await page.getByRole("group", { name, exact: true }).isVisible())) {
       throw new Error(`usage chart ${name} was not visible`);
     }
   }
   const headings = await page.getByRole("heading", { level: 2 }).allInnerTexts();
-  if (headings.join("|") !== [...analyticsPanels, "Tasks"].join("|")) {
+  if (headings.join("|") !== [...usagePanels, "Tasks"].join("|")) {
     throw new Error(`usage panels were ${JSON.stringify(headings)}`);
   }
 
@@ -170,7 +170,7 @@ try {
     }
   }
   // Each plot is drawn at the size of its panel, with no sideways scroll.
-  for (const name of analyticsPanels) {
+  for (const name of usagePanels) {
     const plot = await page.getByRole("group", { name, exact: true }).locator(".upmo-chart__plot").boundingBox();
     if (!plot || plot.width < 150 || plot.height < 100) {
       throw new Error(`usage chart ${name} was drawn too small: ${JSON.stringify(plot)}`);
@@ -385,7 +385,7 @@ try {
   if (!(await page.getByRole("table", { name: "Task breakdown" }).isVisible())) {
     throw new Error("task table hidden on a phone");
   }
-  for (const name of analyticsPanels) {
+  for (const name of usagePanels) {
     if (!(await page.getByRole("group", { name, exact: true }).isVisible())) {
       throw new Error(`usage chart ${name} hidden on a phone`);
     }
@@ -402,7 +402,7 @@ try {
   const phoneLeft = await page
     .locator(".usage-panel")
     .evaluateAll((panels) => panels.map((panel) => Math.round(panel.getBoundingClientRect().left)));
-  if (phoneLeft.length !== analyticsPanels.length || new Set(phoneLeft).size !== 1) {
+  if (phoneLeft.length !== usagePanels.length || new Set(phoneLeft).size !== 1) {
     throw new Error(`the phone did not show the panels in one column: ${JSON.stringify(phoneLeft)}`);
   }
   await page.waitForTimeout(2000);
