@@ -36,6 +36,10 @@ const (
 	Pause Kind = "pause"
 	// Resume returns to Working once that same stored pause is taken.
 	Resume Kind = "resume"
+	// Approve and Deny are Resume once a person has decided a stored approval.
+	// They take the same edge and differ only in the event they leave.
+	Approve Kind = "approve"
+	Deny    Kind = "deny"
 )
 
 const (
@@ -104,6 +108,10 @@ func Step(status Status, input Input) (Status, Effect, error) {
 		return edge(status, Pause, Working, NeedsApproval)
 	case Resume:
 		return edge(status, Resume, NeedsApproval, Working)
+	case Approve:
+		return edge(status, Approve, NeedsApproval, Working)
+	case Deny:
+		return edge(status, Deny, NeedsApproval, Working)
 	default:
 		return status, Effect{}, ErrInput
 	}

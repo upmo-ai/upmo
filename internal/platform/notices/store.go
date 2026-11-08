@@ -92,8 +92,9 @@ func (s Store) Insert(ctx context.Context, userID uuid.UUID, kind, title string,
 	return id, nil
 }
 
-// List returns every notice for userID, newest first.
-func (s Store) List(ctx context.Context, userID uuid.UUID) ([]Notice, error) {
+// List returns the notices for userID that are not dismissed, newest first,
+// at most limit of them.
+func (s Store) List(ctx context.Context, userID uuid.UUID, limit int) ([]Notice, error) {
 	if s.Pool == nil {
 		return nil, fmt.Errorf("notices: no database")
 	}
@@ -108,7 +109,9 @@ func (s Store) List(ctx context.Context, userID uuid.UUID) ([]Notice, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id, user_id, kind, title, task_id, created_at
 		FROM notices.notifications
-		ORDER BY created_at DESC`)
+		WHERE dismissed_at IS NULL
+		ORDER BY created_at DESC, id DESC
+		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("notices: list: %w", err)
 	}
@@ -128,6 +131,34 @@ func (s Store) List(ctx context.Context, userID uuid.UUID) ([]Notice, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// Dismiss hides one of userID's notices from the list. It reports false for
+// an id that is not theirs or does not exist. Dismissing a notice again keeps
+// the first time and reports true.
+func (s Store) Dismiss(ctx context.Context, userID, id uuid.UUID) (bool, error) {
+	if s.Pool == nil {
+		return false, fmt.Errorf("notices: no database")
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := setUser(ctx, tx, userID); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE notices.notifications
+		SET dismissed_at = COALESCE(dismissed_at, now())
+		WHERE id = $1`, id)
+	if err != nil {
+		return false, fmt.Errorf("notices: dismiss: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func setUser(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
