@@ -94,6 +94,10 @@ function brain(options: { list?: () => Response; refuseCreate?: boolean } = {}) 
     calls.push({ method, path, body });
     expect(init?.credentials).toBe("include");
 
+    // The page and the bell read these too; the brain has no approvals or notices here.
+    if (method === "GET" && (path === "/api/approvals" || path.startsWith("/api/notifications"))) {
+      return Response.json([]);
+    }
     if (path === "/api/tasks" && method === "GET") return options.list?.() ?? Response.json(tasks.map(head));
     if (path === "/api/tasks" && method === "POST" && options.refuseCreate) {
       // Like the real brain with no sandbox: the task is made and marked Failed, then the answer is 503.
@@ -268,7 +272,9 @@ describe("tasks from the brain", () => {
     vi.stubGlobal("fetch", brain({ list: () => Response.json({ error: "task" }, { status: 500 }) }).fetcher);
     renderAt("/tasks");
 
-    expect((await screen.findByRole("alert")).textContent).toBe("task");
+    // The list and the approvals both ask the brain, so both show the same error.
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent)).toContain("task");
     expect(screen.queryByText("Daily finance digest")).toBeNull();
   });
 

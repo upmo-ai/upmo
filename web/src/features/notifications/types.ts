@@ -1,5 +1,8 @@
 export type NotificationKind = "approval" | "proposal" | "question" | "finished" | "failed";
 
+/** The kinds the brain sends as notifications. An approval is never one: it waits on its own list. */
+export const noticeKinds = ["proposal", "question", "finished", "failed"] as const;
+
 export interface AppNotification {
   id: string;
   kind: NotificationKind;
