@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -31,6 +32,14 @@ type Handler struct {
 	// error for the share routes.
 	Grants app.ShareGrants
 	Access func(r *http.Request) (app.Access, bool)
+	// Stream holds the open task event streams. Nil answers an error for the
+	// stream route.
+	Stream *app.StreamHub
+	// Renew resolves the access of the person behind r again for an open
+	// stream: the session looked up again, then the person's allow list and
+	// shares. It reports false for a person who has lost access and an error
+	// when that could not be found out. Nil keeps the access Access gave.
+	Renew func(ctx context.Context, r *http.Request) (app.Access, bool, error)
 	// Sandboxes starts a task's sandbox on Open and releases it when the
 	// task ends. Open answers once the sandbox is created; provisioning runs
 	// on after the response. Nil refuses any task that needs one.
@@ -58,6 +67,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	}
 	mux.Handle("GET /api/tasks", wrap(http.HandlerFunc(h.list)))
 	mux.Handle("GET /api/tasks/{id}/progress", wrap(http.HandlerFunc(h.progress)))
+	mux.Handle("GET /api/tasks/{id}/stream", wrap(http.HandlerFunc(h.stream)))
 	mux.Handle("GET /api/tasks/{id}/share", wrap(http.HandlerFunc(h.share)))
 	mux.Handle("PUT /api/tasks/{id}/share", wrap(http.HandlerFunc(h.putShare)))
 	mux.Handle("GET /api/tasks/{id}", wrap(http.HandlerFunc(h.get)))

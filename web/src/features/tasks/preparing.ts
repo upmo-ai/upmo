@@ -10,6 +10,9 @@ import type {
 /** How often the task is read again while it is still Preparing. */
 export const PREPARING_POLL_MS = 1000;
 
+/** How often the task is read again while it is working but not preparing. */
+export const WORKING_POLL_MS = 5_000;
+
 /**
  * The refetch interval for the open task. The payload decides: the task is read
  * again while it says it is working and still preparing, and left alone after.
@@ -17,6 +20,16 @@ export const PREPARING_POLL_MS = 1000;
 export function preparingPollMs(tasks: Task[] | undefined, taskId: string): number | false {
   const task = tasks?.find((item) => item.id === taskId);
   return task && task.status === "Working" && task.phase === "Preparing" ? PREPARING_POLL_MS : false;
+}
+
+/**
+ * The other polling case: while the page polls a task that says it is working
+ * and no longer preparing, it is read again every five seconds, so a task the
+ * stream has gone quiet on still moves.
+ */
+export function workingPollMs(tasks: Task[] | undefined, taskId: string): number | false {
+  const task = tasks?.find((item) => item.id === taskId);
+  return task && task.status === "Working" && task.phase !== "Preparing" ? WORKING_POLL_MS : false;
 }
 
 export const stepLabel: Record<PrepareStepName, string> = {

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -88,6 +89,32 @@ func RequireSession(sessions app.Service, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 	})
+}
+
+// Recheck looks up the session cookie of r again, as RequireSession did when
+// the request began, for a request that stays open. It reports false when r
+// carries no cookie or the session is unknown or has ended; any other error
+// means the lookup could not be made. Like any lookup it counts as use of the
+// session.
+func Recheck(ctx context.Context, sessions app.Service, r *http.Request) (Principal, bool, error) {
+	cookie, err := r.Cookie(httpapi.CookieName)
+	if err != nil {
+		return Principal{}, false, nil
+	}
+	session, err := sessions.Lookup(ctx, cookie.Value)
+	if errors.Is(err, app.ErrNotFound) || errors.Is(err, app.ErrEnded) || errors.Is(err, app.ErrMalformed) {
+		return Principal{}, false, nil
+	}
+	if err != nil {
+		return Principal{}, false, err
+	}
+	return Principal{
+		ID:        session.ID,
+		UserID:    session.UserID,
+		SessionID: session.ID,
+		Method:    session.Method,
+		SignedIn:  session.SignedIn,
+	}, true, nil
 }
 
 func refuseUnauthorised(w http.ResponseWriter) {

@@ -155,11 +155,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler, err := routes(pool, cfg, log, boxes, work, noticeStore)
+	// The stream hub listens on one connection of its own, made from the
+	// same URL as the pool, and closes every open stream when the server
+	// shuts down so a 30 minute stream does not hold the shutdown.
+	listenConn, err := pgx.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	err = httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
+	streams := tasks.NewStreamHub(pool, listenConn, log, tasks.StreamConfig{})
+	streams.Start(ctx)
+	defer streams.Close()
+	handler, err := routes(pool, cfg, log, boxes, work, noticeStore, streams)
+	if err != nil {
+		return err
+	}
+	srv := httpserver.New(cfg.ListenAddr, handler)
+	srv.RegisterOnShutdown(streams.Close)
+	err = httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
 	// Provisioning still running in the background gets the shutdown
 	// timeout to settle its task before the pool closes. Any left after
 	// that is abandoned: its task stays in Preparing and sandboxd reclaims
@@ -223,7 +235,7 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -248,6 +260,25 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		}
 		editorSigner = editorTokens
 	}
+	// taskAccess is what a person may do with tasks. It reports false for a
+	// person with no task permission and an error when it could not be read.
+	taskAccess := func(ctx context.Context, user identity.UserID) (tasks.Access, bool, error) {
+		allow, err := members.TaskAllow(ctx, user)
+		if err != nil || allow == "" {
+			return tasks.Access{}, false, err
+		}
+		shares, err := members.ShareAccess(ctx, user, identity.TypeTask)
+		if err != nil {
+			return tasks.Access{}, false, err
+		}
+		return tasks.Access{
+			UserID:     user.String(),
+			Allow:      allow,
+			Teams:      shares.Teams,
+			SharedView: shares.SharedView,
+			SharedEdit: shares.SharedEdit,
+		}, true, nil
+	}
 	tasks.Handler{
 		Book:         taskBook,
 		List:         taskBook,
@@ -260,26 +291,23 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		PublicURL:    cfg.PublicURL,
 		Editor:       boxes,
 		EditorSigner: editorSigner,
+		Stream:       streams,
 		Access: func(r *http.Request) (tasks.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
 				return tasks.Access{}, false
 			}
-			allow, err := members.TaskAllow(r.Context(), person.UserID)
-			if err != nil || allow == "" {
-				return tasks.Access{}, false
+			access, ok, err := taskAccess(r.Context(), person.UserID)
+			return access, ok && err == nil
+		},
+		// An open stream looks the session up again, then the person's allow
+		// list and shares, so a sign-out or a revoked share ends it.
+		Renew: func(ctx context.Context, r *http.Request) (tasks.Access, bool, error) {
+			person, ok, err := identity.Recheck(ctx, sessions, r)
+			if err != nil || !ok {
+				return tasks.Access{}, false, err
 			}
-			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeTask)
-			if err != nil {
-				return tasks.Access{}, false
-			}
-			return tasks.Access{
-				UserID:     person.UserID.String(),
-				Allow:      allow,
-				Teams:      shares.Teams,
-				SharedView: shares.SharedView,
-				SharedEdit: shares.SharedEdit,
-			}, true
+			return taskAccess(ctx, person.UserID)
 		},
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
