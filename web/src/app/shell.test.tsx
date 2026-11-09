@@ -580,6 +580,7 @@ describe("app shell", () => {
           detail: "A custom task.",
         };
       },
+      taskEventsStream: false,
       approvals: {
         async list() {
           return [];
@@ -847,6 +848,7 @@ describe("app shell", () => {
       async nextPhase() {
         throw new Error("task missing");
       },
+      taskEventsStream: false,
       approvals: {
         async list() {
           return [];
