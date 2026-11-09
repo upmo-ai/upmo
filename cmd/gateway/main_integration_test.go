@@ -56,7 +56,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master})
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		}
 	}
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master})
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
 	owner := pgtest.New(t)
 	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
-	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)})
+	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil)
 	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
 		t.Fatalf("routes error = %v", err)
 	}

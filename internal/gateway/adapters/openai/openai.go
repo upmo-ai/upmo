@@ -1,9 +1,11 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -117,6 +119,36 @@ func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Reque
 	return a.complete(ctx, attempt, req)
 }
 
+// ChatStream streams a chat reply, handing each text delta to emit in order.
+// When emit fails the caller is gone; the read stops and the call returns.
+func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, req domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	base := strings.TrimRight(attempt.BaseURL, "/")
+	if base == "" {
+		return domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+	}
+	body, err := encodeStream(attempt.Model, req)
+	if err != nil {
+		return domain.Usage{}, domain.ClassCaller, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return domain.Usage{}, domain.ClassCaller, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if attempt.Secret != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+attempt.Secret)
+	}
+	res, err := a.client(attempt).Do(httpReq)
+	if err != nil {
+		return domain.Usage{}, classForErr(err), err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if class, err := statusClass(res.StatusCode); err != nil {
+		return domain.Usage{}, class, err
+	}
+	return readStream(ctx, res.Body, emit)
+}
+
 type cacheCtl struct {
 	Type string `json:"type"`
 }
@@ -154,6 +186,10 @@ type chatBody struct {
 }
 
 func encodeChat(model string, req domain.Request) ([]byte, error) {
+	return json.Marshal(buildChat(model, req))
+}
+
+func buildChat(model string, req domain.Request) chatBody {
 	breakTools := false
 	breakSystem := false
 	for _, mark := range req.Cache {
@@ -197,7 +233,122 @@ func encodeChat(model string, req domain.Request) ([]byte, error) {
 			ToolCallID: msg.ToolID,
 		})
 	}
-	return json.Marshal(body)
+	return body
+}
+
+// streamBody is the streaming payload: chatBody plus the stream flags and the
+// output cap, which sit after the cache prefix.
+type streamBody struct {
+	chatBody
+	Stream        bool          `json:"stream"`
+	StreamOptions streamOptions `json:"stream_options"`
+	MaxTokens     int           `json:"max_tokens,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+func encodeStream(model string, req domain.Request) ([]byte, error) {
+	return json.Marshal(streamBody{
+		chatBody:      buildChat(model, req),
+		Stream:        true,
+		StreamOptions: streamOptions{IncludeUsage: true},
+		MaxTokens:     req.MaxOutputTokens,
+	})
+}
+
+// streamChunk is one SSE data payload of a streamed completion.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Usage *struct {
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+	} `json:"usage"`
+}
+
+// readStream decodes the SSE events of a streamed completion. The data:
+// lines of one event are one JSON chunk, dispatched at the blank line that
+// ends the event (a pending event at the end of the body dispatches too);
+// comment lines and other fields are ignored. Text deltas go through emit
+// in order, then the [DONE] sentinel ends the stream. A stream that ends
+// any other way was cut short.
+func readStream(ctx context.Context, body io.Reader, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	in := bufio.NewReader(body)
+	usage := domain.Usage{}
+	var data []string
+	// event runs the collected data lines as one chunk. done reports whether
+	// the stream ended there.
+	event := func() (class domain.FailureClass, err error, done bool) {
+		payload := strings.Join(data, "\n")
+		data = nil
+		if payload == "[DONE]" {
+			return domain.ClassOK, nil, true
+		}
+		if class, err = oneChunk(payload, &usage, emit); class != domain.ClassOK || err != nil {
+			return class, err, true
+		}
+		return domain.ClassOK, nil, false
+	}
+	for {
+		line, rerr := in.ReadString('\n')
+		if text := strings.TrimSpace(line); text != "" {
+			if payload, ok := strings.CutPrefix(text, "data:"); ok {
+				data = append(data, strings.TrimSpace(payload))
+			}
+		} else if len(data) > 0 {
+			if class, err, done := event(); done {
+				return usage, class, err
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				if len(data) > 0 {
+					if class, err, done := event(); done {
+						return usage, class, err
+					}
+				}
+				if ctx.Err() != nil {
+					return usage, domain.ClassCancelled, ctx.Err()
+				}
+				return usage, domain.ClassTransient, errors.New("gateway: stream ended without [DONE]")
+			}
+			if ctx.Err() != nil {
+				return usage, domain.ClassCancelled, rerr
+			}
+			return usage, classForErr(rerr), rerr
+		}
+	}
+}
+
+func oneChunk(payload string, usage *domain.Usage, emit func(string) error) (domain.FailureClass, error) {
+	var chunk streamChunk
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return domain.ClassCaller, fmt.Errorf("gateway: provider body")
+	}
+	if chunk.Usage != nil {
+		usage.Arrived = true
+		usage.Input = chunk.Usage.PromptTokens
+		usage.Output = chunk.Usage.CompletionTokens
+		if chunk.Usage.PromptTokensDetails != nil {
+			usage.CacheRead = chunk.Usage.PromptTokensDetails.CachedTokens
+		}
+	}
+	for _, choice := range chunk.Choices {
+		if choice.Delta.Content != "" {
+			if err := emit(choice.Delta.Content); err != nil {
+				return domain.ClassCancelled, err
+			}
+		}
+	}
+	return domain.ClassOK, nil
 }
 
 func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (string, domain.Usage, domain.FailureClass, error) {
@@ -347,6 +498,9 @@ func statusClass(code int) (domain.FailureClass, error) {
 func classForErr(err error) domain.FailureClass {
 	if err == nil {
 		return domain.ClassOK
+	}
+	if errors.Is(err, context.Canceled) {
+		return domain.ClassCancelled
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
 		return domain.ClassTimeout
