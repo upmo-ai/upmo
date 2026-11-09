@@ -143,7 +143,8 @@ export function causeSentence(code: string): string {
   return Object.hasOwn(causeSentences, code) ? (causeSentences[code] ?? code) : code;
 }
 
-function toEvent(value: unknown): TaskEvent {
+/** An event as the brain sends it: in the detail response and on the task stream. */
+export function toEvent(value: unknown): TaskEvent {
   const source = record(value, "event");
   return {
     id: text(source, "id"),
@@ -512,6 +513,11 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
 
   return {
     ...stub,
+    // The brain streams task events (GET /api/tasks/{id}/stream); the stub has
+    // no stream and keeps polling. Says so only once the probe settled.
+    get taskEventsStream() {
+      return settled === "brain";
+    },
     async listTasks() {
       if ((await chosen()) === "stub") return stub.listTasks();
       return list(await call("/api/tasks"), "tasks").map(toTask);

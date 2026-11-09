@@ -39,6 +39,7 @@ node /src/e2e/connectors.mjs
 node /src/e2e/providers.mjs
 node /src/e2e/models.mjs
 node /src/e2e/flows.mjs
+node /src/e2e/stream.mjs
 node /src/e2e/memory.mjs
 node /src/e2e/knowledge.mjs
 node /src/e2e/artifacts.mjs
