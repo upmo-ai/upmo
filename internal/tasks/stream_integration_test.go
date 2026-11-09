@@ -549,6 +549,49 @@ func TestStreamResumesAfterAnIdAndLastEventIDWins(t *testing.T) {
 	s.expectQuiet(300 * time.Millisecond)
 }
 
+func TestStreamStoreTailExcludesTheCursorEvent(t *testing.T) {
+	r := newRig(t, quiet())
+	task := r.task("Cursor", domain.Planning)
+	r.chat(task.ID, "first line")
+	r.step(task.ID, domain.Input{Kind: domain.Advance})
+	r.chat(task.ID, "second line")
+	ids := r.ids(task.ID)
+	if len(ids) != 5 {
+		t.Fatalf("events = %d, want 5", len(ids))
+	}
+	ctx := context.Background()
+
+	// Tail from a task event cursor returns what is strictly newer, on the
+	// store's own: the hub re-filters in deliver, so a cursor event handed
+	// back here would replay a line the client already has.
+	tail, err := r.store.Tail(ctx, ownerAccess, task.ID, ids[1], len(ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tailIDs(tail); !reflect.DeepEqual(got, ids[2:]) {
+		t.Fatalf("tail after %s = %v, want %v", ids[1], got, ids[2:])
+	}
+
+	// The chat query takes the cursor too, so a chat event is excluded the
+	// same way.
+	tail, err = r.store.Tail(ctx, ownerAccess, task.ID, ids[2], len(ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tailIDs(tail); !reflect.DeepEqual(got, ids[3:]) {
+		t.Fatalf("tail after %s = %v, want %v", ids[2], got, ids[3:])
+	}
+}
+
+// tailIDs lists the ids of a tail's events.
+func tailIDs(tail app.Tail) []string {
+	ids := make([]string, 0, len(tail.Events))
+	for _, event := range tail.Events {
+		ids = append(ids, event.ID)
+	}
+	return ids
+}
+
 func TestStreamReplayMergesTaskAndChatEventsWithTheirPhase(t *testing.T) {
 	r := newRig(t, quiet())
 	task := r.task("Merge", domain.Planning)

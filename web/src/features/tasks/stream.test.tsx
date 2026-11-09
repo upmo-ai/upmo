@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../App";
 import { createBrainApi } from "../../app/brain-api";
 import { AppProviders } from "../../theme";
+import { WORKING_POLL_MS } from "./preparing";
 import {
   STREAM_ERROR_LIMIT,
+  STREAM_RETRY_MS,
   STREAM_SILENCE_MS,
   newestEventId,
   parseLine,
@@ -391,6 +393,205 @@ describe("task stream", () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
     expect(reads().length).toBeGreaterThan(streaming);
+  });
+
+  it("polls a silent working task every five seconds and shows the polled status", async () => {
+    vi.useFakeTimers();
+    const { fetcher, calls, tasks } = brain();
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    renderAt(`/tasks/${workId}`);
+    // Fake timers also freeze the test's own polling, so the queries settle
+    // here before anything is asserted.
+    for (let round = 0; round < 5; round += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+    expect(screen.getByRole("heading", { level: 1, name: "Stream the October close" })).toBeTruthy();
+
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === `/api/tasks/${workId}`);
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeTruthy();
+    act(() => {
+      source.emit("open", "");
+    });
+
+    // While the stream is open the page does not read the task.
+    const streaming = reads().length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(reads().length).toBe(streaming);
+
+    // The brain moves on while the agent has gone quiet: nothing arrives for
+    // the whole silence window and polling takes over.
+    tasks[1].phase = "Planning";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_SILENCE_MS + 1_000);
+    });
+    expect(source.closed).toBe(1);
+
+    // A working task the stream has dropped is read again every five seconds.
+    const polling = reads().length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(WORKING_POLL_MS);
+    });
+    expect(reads().length).toBe(polling + 1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(WORKING_POLL_MS);
+    });
+    expect(reads().length).toBe(polling + 2);
+    expect(screen.getByRole("listitem", { current: "step" }).textContent).toBe("Planning");
+  });
+
+  it("opens the stream again after a minute of polling and stops polling once it does", async () => {
+    vi.useFakeTimers();
+    const { fetcher, calls } = brain();
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    renderAt(`/tasks/${workId}`);
+    // Fake timers also freeze the test's own polling, so the queries settle
+    // here before anything is asserted.
+    for (let round = 0; round < 5; round += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === `/api/tasks/${workId}`);
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeTruthy();
+    act(() => {
+      source.emit("open", "");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_SILENCE_MS + 1_000);
+    });
+    expect(source.closed).toBe(1);
+    expect(FakeEventSource.instances.length).toBe(1);
+
+    // A minute of polling is enough: the page tries the stream again.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_RETRY_MS);
+    });
+    expect(FakeEventSource.instances.length).toBe(2);
+    const retry = FakeEventSource.instances[1];
+    expect(retry.url).toBe(`/api/tasks/${workId}/stream?after=ev-2`);
+
+    // The stream is alive again, so the page reads nothing more.
+    const polling = reads().length;
+    act(() => {
+      retry.emit("open", "");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
+    });
+    expect(reads().length).toBe(polling);
+  });
+
+  it("does not poll a finished task after the stream falls back", async () => {
+    vi.useFakeTimers();
+    const { fetcher, calls } = brain();
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    renderAt(`/tasks/${workId}`);
+    // Fake timers also freeze the test's own polling, so the queries settle
+    // here before anything is asserted.
+    for (let round = 0; round < 5; round += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === `/api/tasks/${workId}`);
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeTruthy();
+    act(() => {
+      source.emit("open", "");
+    });
+
+    // The task finishes through the stream; then the agent goes quiet.
+    await act(async () => {
+      source.emit("status", '{"status":"Done","phase":"Checking"}');
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_SILENCE_MS + 1_000);
+    });
+    expect(source.closed).toBe(1);
+
+    // A task that is no longer working is read again never, polled or not.
+    const polling = reads().length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(WORKING_POLL_MS * 2);
+    });
+    expect(reads().length).toBe(polling);
+  });
+
+  it("keeps a streamed line that lands while a task read is in flight", async () => {
+    vi.useFakeTimers();
+    const base = brain();
+    // The next task read is held in flight so a line can land before it settles.
+    let held: ((response: Response) => void) | undefined;
+    let holdNext = false;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      if (holdNext && path === `/api/tasks/${workId}` && method === "GET") {
+        holdNext = false;
+        base.calls.push({ method, path });
+        return new Promise<Response>((resolve) => {
+          held = resolve;
+        });
+      }
+      return base.fetcher(input, init);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    renderAt(`/tasks/${workId}`);
+    // Fake timers also freeze the test's own polling, so the queries settle
+    // here before anything is asserted.
+    for (let round = 0; round < 5; round += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeTruthy();
+    act(() => {
+      source.emit("open", "");
+    });
+
+    // The silence fallback polls, and the next read is held in flight.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_SILENCE_MS + WORKING_POLL_MS);
+    });
+    holdNext = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(WORKING_POLL_MS);
+    });
+
+    // The line lands while the read is still out; then the read settles with
+    // the snapshot the brain had before the line, which must not drop it.
+    const streamLine = {
+      id: "ev-101",
+      time: "2026-11-08T09:00:07Z",
+      phase: "Working",
+      type: "message",
+      message: "Stream line one",
+    };
+    await act(async () => {
+      source.emit("line", lineJson(streamLine));
+    });
+    expect(held).toBeTruthy();
+    await act(async () => {
+      held?.(Response.json(base.tasks[1]));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("Stream line one")).toBeTruthy();
   });
 
   it("keeps polling when there is no EventSource", async () => {

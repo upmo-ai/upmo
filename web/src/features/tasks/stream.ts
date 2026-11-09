@@ -11,6 +11,9 @@ export const STREAM_SILENCE_MS = 30_000;
 /** Errors in a row with no event between them before polling takes over. */
 export const STREAM_ERROR_LIMIT = 3;
 
+/** How long the page polls after a fallback before it tries the stream again. */
+export const STREAM_RETRY_MS = 60_000;
+
 export type StreamState = "streaming" | "polling";
 
 /** The data of a `line` event: the detail response's event JSON, or null when bad. */
@@ -68,7 +71,8 @@ export function streamUrl(taskId: string, after: string | undefined): string {
 /**
  * The open task's event stream, GET /api/tasks/{id}/stream. "streaming" means
  * the page can stop polling the task; "polling" means it polls as before,
- * which is also the answer before the stream has opened.
+ * which is also the answer before the stream has opened. After a fallback the
+ * stream is tried again once a minute of polling has passed.
  *
  * The hook is called before the page's detail query and reads the cache itself:
  * the stream opens only once the task has loaded (it resumes after the newest
@@ -79,6 +83,8 @@ export function useTaskStream(taskId: string): StreamState {
   const api = useApi();
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>("polling");
+  // Bumped when a fallback's retry falls due, so the effect opens a new stream.
+  const [attempt, setAttempt] = useState(0);
   // The task page owns the detail query; this is only whether it has data.
   const loaded = useSyncExternalStore(
     useCallback(
@@ -95,6 +101,7 @@ export function useTaskStream(taskId: string): StreamState {
     const source = new EventSource(streamUrl(taskId, after), { withCredentials: true });
     let errors = 0;
     let silence: ReturnType<typeof setTimeout> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
 
     const stop = () => {
@@ -106,6 +113,9 @@ export function useTaskStream(taskId: string): StreamState {
       if (stopped) return;
       stop();
       setState("polling");
+      // Polling keeps the page live while the stream waits for another try.
+      // The retry bumps the attempt this run opened, so the effect reopens.
+      retry = setTimeout(() => setAttempt(attempt + 1), STREAM_RETRY_MS);
     };
     // Any event proves the stream is alive and clears the error count. EventSource
     // shows no comment heartbeats, so a quiet stream falls back after 30 s.
@@ -120,17 +130,21 @@ export function useTaskStream(taskId: string): StreamState {
       heard();
     });
     source.addEventListener("message", heard);
-    source.addEventListener("line", (event) => {
+    source.addEventListener("line", async (event) => {
       heard();
       const line = parseLine(event.data);
       if (line === null) return;
+      // A task read still in flight would land later and drop the line.
+      await queryClient.cancelQueries({ queryKey: taskQueryKey(taskId) });
       queryClient.setQueryData<Task>(taskQueryKey(taskId), (cached) => withEvent(cached, line));
       void queryClient.invalidateQueries({ queryKey: tasksQueryKey(), exact: true });
     });
-    source.addEventListener("status", (event) => {
+    source.addEventListener("status", async (event) => {
       heard();
       const next = parseStatus(event.data);
       if (next === null) return;
+      // A task read still in flight would land later and drop the status.
+      await queryClient.cancelQueries({ queryKey: taskQueryKey(taskId) });
       queryClient.setQueryData<Task>(taskQueryKey(taskId), (cached) => withStatus(cached, next));
       void queryClient.invalidateQueries({ queryKey: tasksQueryKey(), exact: true });
     });
@@ -148,8 +162,11 @@ export function useTaskStream(taskId: string): StreamState {
       if (source.readyState === EventSource.CLOSED || errors >= STREAM_ERROR_LIMIT) fallback();
     });
 
-    return stop;
-  }, [api, loaded, queryClient, taskId]);
+    return () => {
+      stop();
+      if (retry !== undefined) clearTimeout(retry);
+    };
+  }, [api, loaded, queryClient, taskId, attempt]);
 
   return state;
 }

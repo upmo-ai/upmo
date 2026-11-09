@@ -37,7 +37,7 @@ import { ShareDialog } from "../identity/share-dialog";
 import { CaretIcon, ShellIcon } from "../../ui/icons";
 import { ApprovalAnnouncer, ApprovalCard } from "./approval-card";
 import { NewTaskDialog } from "./new-task-dialog";
-import { preparingPollMs } from "./preparing";
+import { preparingPollMs, workingPollMs } from "./preparing";
 import { PreparingBlock } from "./preparing-block";
 import { messageMax, messageProblem } from "./rules";
 import { taskPhase, taskStatus } from "./status";
@@ -241,17 +241,18 @@ export function TaskPage() {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>("");
   const [tab, setTab] = useState<string | null>("activity");
 
-  // While the stream is open the task arrives through it, so the preparing poll
-  // runs only while it is not. The hook sits before the query because the
+  // While the stream is open the task arrives through it, so the task is polled
+  // only while it is not. The hook sits before the query because the
   // refetchInterval callback already runs during the first render.
   const stream = useTaskStream(taskId);
   const detail = useQuery({
     queryKey: taskQueryKey(taskId),
     queryFn: () => api.getTask(taskId),
-    refetchInterval: (query) =>
-      stream === "polling"
-        ? preparingPollMs(query.state.data ? [query.state.data] : undefined, taskId)
-        : false,
+    refetchInterval: (query) => {
+      if (stream !== "polling") return false;
+      const data = query.state.data ? [query.state.data] : undefined;
+      return preparingPollMs(data, taskId) || workingPollMs(data, taskId);
+    },
   });
   const approvals = useQuery({
     queryKey: approvalsQueryKey(),
