@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -21,6 +23,13 @@ import (
 type Store struct {
 	Pool     *pgxpool.Pool
 	Enqueuer jobs.Enqueuer
+	// ReplyRoute is the gateway route that answers a line when the person
+	// names none. Empty turns replies off: a line is stored and nothing
+	// answers it.
+	ReplyRoute string
+	// BetweenReads, when set, runs inside Tail between its two reads. It is a
+	// seam for tests of a read that races a write.
+	BetweenReads func()
 }
 
 // Open inserts one private chat. It does not touch a login session or the profile.
@@ -46,8 +55,8 @@ func (s Store) Open(ctx context.Context, access app.Access) (app.ChatSummary, er
 	return app.ChatSummary{ID: id, Title: domain.NewChatTitle, LastActivity: createdAt.UTC()}, nil
 }
 
-// Say appends one line.
-func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) error {
+// Say appends one line and, in the same transaction, asks for its reply.
+func (s Store) Say(ctx context.Context, access app.Access, chatID, body, route string) error {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return err
@@ -63,12 +72,13 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 		return fmt.Errorf("chat: lock: %w", err)
 	}
 	var seq int
+	var lineID string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO chat.lines (chat_id, seq, body)
 		SELECT $1::uuid,
 		       COALESCE((SELECT MAX(seq) FROM chat.lines WHERE chat_id = $1::uuid), 0) + 1,
 		       $2
-		RETURNING seq`, chatID, body).Scan(&seq)
+		RETURNING seq, id::text`, chatID, body).Scan(&seq, &lineID)
 	if err != nil {
 		return writeErr(err)
 	}
@@ -91,7 +101,56 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string) 
 			return fmt.Errorf("chat: extract enqueue: %w", err)
 		}
 	}
+	if s.replying() {
+		if _, err := s.enqueueReply(ctx, tx, access, chatID, lineID, route); err != nil {
+			return err
+		}
+	} else if err := noReply(ctx, tx, chatID, lineID); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// replying reports whether a line is answered by a model: replies are on and
+// there is a queue to ask.
+func (s Store) replying() bool { return s.ReplyRoute != "" && s.Enqueuer != nil }
+
+// noReply stores the failed reply to a line nothing will answer, so that no
+// line is left without one.
+func noReply(ctx context.Context, tx pgx.Tx, chatID, lineID string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO chat.lines (chat_id, seq, role, body, model, status, reply_to, attempts)
+		SELECT $1::uuid, COALESCE(MAX(seq), 0) + 1, 'assistant', '', '', 'failed', $2::uuid,
+		       '[{"model": "", "class": "no_replies"}]'::jsonb
+		FROM chat.lines WHERE chat_id = $1::uuid`, chatID, lineID)
+	if err != nil {
+		return writeErr(err)
+	}
+	return nil
+}
+
+// enqueueReply asks for the reply to the user line lineID, in the caller's
+// transaction. It reports false when a reply to that line is already on its
+// way, or when replies are off.
+func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID, route string) (bool, error) {
+	if route == "" {
+		route = s.ReplyRoute
+	}
+	replyID, err := uuid.NewV7()
+	if err != nil {
+		return false, err
+	}
+	res, err := s.Enqueuer.InsertTx(ctx, tx, app.ReplyJobArgs{
+		ChatID:  chatID,
+		LineID:  lineID,
+		ReplyID: replyID.String(),
+		UserID:  access.UserID,
+		Route:   route,
+	}, nil)
+	if err != nil {
+		return false, fmt.Errorf("chat: reply enqueue: %w", err)
+	}
+	return !res.UniqueSkippedAsDuplicate, nil
 }
 
 // goneOrSay splits a locked miss in Say. The lock asks for edit rights too, so
@@ -185,9 +244,10 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 		return app.Chat{}, fmt.Errorf("chat: read: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, role, body, model, tokens, cost_micro_usd, at
-		FROM chat.lines
+		SELECT `+lineColumns+`
+		FROM chat.lines AS line
 		WHERE chat_id = $1::uuid
+		  AND NOT (`+superseded+`)
 		ORDER BY seq`, chatID)
 	if err != nil {
 		return app.Chat{}, fmt.Errorf("chat: lines: %w", err)
@@ -195,9 +255,9 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	defer rows.Close()
 	lines := make([]app.Line, 0)
 	for rows.Next() {
-		var line app.Line
-		if err := rows.Scan(&line.ID, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At); err != nil {
-			return app.Chat{}, fmt.Errorf("chat: line: %w", err)
+		line, err := scanLine(rows)
+		if err != nil {
+			return app.Chat{}, err
 		}
 		lines = append(lines, line)
 	}
@@ -211,10 +271,14 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
+	return s.beginWith(ctx, access, pgx.TxOptions{})
+}
+
+func (s Store) beginWith(ctx context.Context, access app.Access, opts pgx.TxOptions) (pgx.Tx, error) {
 	if s.Pool == nil {
 		return nil, fmt.Errorf("chat: no database")
 	}
-	tx, err := s.Pool.Begin(ctx)
+	tx, err := s.Pool.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -249,4 +313,33 @@ func writeErr(err error) error {
 		return domain.ErrWriter
 	}
 	return fmt.Errorf("chat: line: %w", err)
+}
+
+// lineColumns are the columns scanLine reads, from a chat.lines row named line.
+const lineColumns = `line.id::text, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
+	line.status, line.reply_to::text, line.attempts`
+
+// superseded holds for a failed reply that a later reply to the same user
+// line has answered, on a chat.lines row named line. Such a line stays
+// stored but is hidden from the thread and from the history.
+const superseded = `line.status = 'failed' AND EXISTS (
+	SELECT 1 FROM chat.lines AS later
+	WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq
+)`
+
+// scanLine reads the lineColumns of a row, after any lead columns.
+func scanLine(rows pgx.Rows, lead ...any) (app.Line, error) {
+	var line app.Line
+	var attempts []byte
+	dest := append(lead, &line.ID, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
+		&line.Status, &line.ReplyTo, &attempts)
+	if err := rows.Scan(dest...); err != nil {
+		return app.Line{}, fmt.Errorf("chat: line: %w", err)
+	}
+	if attempts != nil {
+		if err := json.Unmarshal(attempts, &line.Attempts); err != nil {
+			return app.Line{}, fmt.Errorf("chat: line attempts: %w", err)
+		}
+	}
+	return line, nil
 }

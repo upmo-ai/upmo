@@ -79,6 +79,33 @@ func TestLoadEmbedRoute(t *testing.T) {
 	}
 }
 
+func TestLoadChatRouteAndWorkers(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChatRoute != "chat" || cfg.ChatWorkers != 8 {
+		t.Fatalf("defaults = %q %d", cfg.ChatRoute, cfg.ChatWorkers)
+	}
+	base["UPMO_CHAT_ROUTE"] = " draft "
+	base["UPMO_CHAT_WORKERS"] = "3"
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChatRoute != "draft" || cfg.ChatWorkers != 3 {
+		t.Fatalf("set = %q %d", cfg.ChatRoute, cfg.ChatWorkers)
+	}
+	base["UPMO_CHAT_WORKERS"] = "0"
+	if _, err := load(lookupFrom(base)); err == nil {
+		t.Fatal("zero workers")
+	}
+}
+
 func TestLoadKnowledgeDir(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
 		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",

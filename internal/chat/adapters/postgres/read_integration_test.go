@@ -31,7 +31,7 @@ import (
 
 func TestListKeepsTheNewestHundredInActivityOrder(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := quietStore(t, owner)
 	ctx := context.Background()
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO chat.chats (id, owner_user_id, visibility)
@@ -76,7 +76,7 @@ func TestListKeepsTheNewestHundredInActivityOrder(t *testing.T) {
 
 func TestListDerivesTitleAndPreview(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := quietStore(t, owner)
 	ctx := context.Background()
 
 	blank, err := app.Open(ctx, store, ownerAccess)
@@ -87,31 +87,31 @@ func TestListDerivesTitleAndPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, flat.ID, "  Plan   the\n\tweek  "); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, flat.ID, "  Plan   the\n\tweek  ", ""); err != nil {
 		t.Fatal(err)
 	}
 	cut, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, cut.ID, strings.Repeat("a", domain.TitleRunes+1)); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, cut.ID, strings.Repeat("a", domain.TitleRunes+1), ""); err != nil {
 		t.Fatal(err)
 	}
 	long, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, long.ID, strings.Repeat("b", domain.PreviewRunes+5)); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, long.ID, strings.Repeat("b", domain.PreviewRunes+5), ""); err != nil {
 		t.Fatal(err)
 	}
 	answered, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, answered.ID, "first words"); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, answered.ID, "first words", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, answered.ID, "later words"); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, answered.ID, "later words", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
@@ -161,13 +161,13 @@ func TestListDerivesTitleAndPreview(t *testing.T) {
 
 func TestListFallsBackToTheChatCreationTime(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := quietStore(t, owner)
 	ctx := context.Background()
 	said, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, said.ID, "hello"); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, said.ID, "hello", ""); err != nil {
 		t.Fatal(err)
 	}
 	var empty string
@@ -200,13 +200,13 @@ func TestListFallsBackToTheChatCreationTime(t *testing.T) {
 
 func TestSharingLetsAViewerReadAndAnEditorWrite(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := quietStore(t, owner)
 	ctx := context.Background()
 	opened, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello"); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", ""); err != nil {
 		t.Fatal(err)
 	}
 	viewer := app.Access{UserID: otherUser, Allow: "chat:view", SharedView: "{" + opened.ID + "}"}
@@ -220,11 +220,11 @@ func TestSharingLetsAViewerReadAndAnEditorWrite(t *testing.T) {
 	if err != nil || len(got.Lines) != 1 {
 		t.Fatalf("viewer read = %+v %v", got, err)
 	}
-	if err := app.Say(ctx, store, viewer, opened.ID, "hi"); !errors.Is(err, app.ErrSay) {
+	if err := app.Say(ctx, store, viewer, opened.ID, "hi", ""); !errors.Is(err, app.ErrSay) {
 		t.Fatalf("viewer say = %v", err)
 	}
 
-	if err := app.Say(ctx, store, editor, opened.ID, "hi there"); err != nil {
+	if err := app.Say(ctx, store, editor, opened.ID, "hi there", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err = app.Read(ctx, store, viewer, opened.ID)
@@ -239,20 +239,20 @@ func TestSharingLetsAViewerReadAndAnEditorWrite(t *testing.T) {
 	if _, err := app.Read(ctx, store, otherAccess, opened.ID); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("stranger read = %v", err)
 	}
-	if err := app.Say(ctx, store, otherAccess, opened.ID, "no"); !errors.Is(err, app.ErrGone) {
+	if err := app.Say(ctx, store, otherAccess, opened.ID, "no", ""); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("stranger say = %v", err)
 	}
 }
 
 func TestReadTypesTheLines(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := quietStore(t, owner)
 	ctx := context.Background()
 	opened, err := app.Open(ctx, store, ownerAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello"); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
@@ -302,7 +302,7 @@ func TestReadTypesTheLines(t *testing.T) {
 
 func TestHTTPServesTheChats(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := quietStore(t, owner)
 	serve := func(access app.Access, ok bool) http.Handler {
 		mux := http.NewServeMux()
 		chat.Handler{
@@ -468,7 +468,7 @@ func TestSayStillEnqueuesTheScoutAndTheExtract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello"); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", ""); err != nil {
 		t.Fatal(err)
 	}
 

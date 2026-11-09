@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/chat/domain"
 )
 
 // summaryJSON is one chat in a list, and the answer to opening one.
@@ -29,6 +30,17 @@ type lineJSON struct {
 	Tokens  int      `json:"tokens"`
 	CostUSD *float64 `json:"cost_usd"`
 	At      string   `json:"at"`
+	// Status is done or failed. ReplyTo is the user line a reply answers.
+	// Attempts, on a failed line, are the models tried and why each failed.
+	Status   string        `json:"status"`
+	ReplyTo  *string       `json:"reply_to"`
+	Attempts []attemptJSON `json:"attempts"`
+}
+
+// attemptJSON is one model a reply tried and the phrase for why it failed.
+type attemptJSON struct {
+	Model  string `json:"model"`
+	Reason string `json:"reason"`
 }
 
 func summaryBody(summary app.ChatSummary) summaryJSON {
@@ -56,13 +68,20 @@ func lineBody(line app.Line) lineJSON {
 		usd := float64(*line.CostMicroUSD) / 1e6
 		cost = &usd
 	}
+	attempts := make([]attemptJSON, 0, len(line.Attempts))
+	for _, attempt := range line.Attempts {
+		attempts = append(attempts, attemptJSON{Model: attempt.Model, Reason: domain.Reason(attempt.Class)})
+	}
 	return lineJSON{
-		ID:      line.ID,
-		Role:    line.Role,
-		Body:    line.Body,
-		Model:   line.Model,
-		Tokens:  line.Tokens,
-		CostUSD: cost,
-		At:      line.At.UTC().Format(time.RFC3339Nano),
+		ID:       line.ID,
+		Role:     line.Role,
+		Body:     line.Body,
+		Model:    line.Model,
+		Tokens:   line.Tokens,
+		CostUSD:  cost,
+		At:       line.At.UTC().Format(time.RFC3339Nano),
+		Status:   line.Status,
+		ReplyTo:  line.ReplyTo,
+		Attempts: attempts,
 	}
 }

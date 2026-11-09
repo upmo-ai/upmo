@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,6 +12,12 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 )
+
+// RescueStuckAfter is how long a job may sit in the running state before River
+// takes it back and runs it again, which is what rescues a job whose process
+// died. It is above the longest job timeout of any worker: the chat reply
+// worker's five minutes; every other worker keeps River's one minute.
+const RescueStuckAfter = 10 * time.Minute
 
 // Client wraps River for transactional enqueue and in-process workers.
 type Client struct {
@@ -21,7 +28,9 @@ type Client struct {
 type Option func(*openConfig)
 
 type openConfig struct {
-	workers *river.Workers
+	workers  *river.Workers
+	queues   map[string]river.QueueConfig
+	periodic []*river.PeriodicJob
 }
 
 // WithWorkers uses w for job handlers. Open always registers the test-only ping
@@ -32,10 +41,29 @@ func WithWorkers(w *river.Workers) Option {
 	}
 }
 
+// WithQueue runs queue with its own pool of maxWorkers workers, so its jobs
+// never wait behind those of another queue.
+func WithQueue(queue string, maxWorkers int) Option {
+	return func(c *openConfig) {
+		c.queues[queue] = river.QueueConfig{MaxWorkers: maxWorkers}
+	}
+}
+
+// WithPeriodic adds jobs that River inserts on a schedule, next to the outbox
+// drain.
+func WithPeriodic(jobs ...*river.PeriodicJob) Option {
+	return func(c *openConfig) {
+		c.periodic = append(c.periodic, jobs...)
+	}
+}
+
 // Open builds a River client on pool. It registers the test-only ping worker
 // and the outbox drain worker; product kinds are registered in cmd/brain.
 func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
-	cfg := &openConfig{workers: river.NewWorkers()}
+	cfg := &openConfig{
+		workers: river.NewWorkers(),
+		queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 2}},
+	}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -44,12 +72,11 @@ func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 	river.AddWorker(workers, &outboxDrainWorker{pool: pool})
 	driver := riverpgxv5.New(pool)
 	inner, err := river.NewClient(driver, &river.Config{
-		Schema:  Schema,
-		Workers: workers,
-		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: 2},
-		},
-		PeriodicJobs: []*river.PeriodicJob{outboxDrainPeriodic()},
+		Schema:               Schema,
+		Workers:              workers,
+		RescueStuckJobsAfter: RescueStuckAfter,
+		Queues:               cfg.queues,
+		PeriodicJobs:         append([]*river.PeriodicJob{outboxDrainPeriodic()}, cfg.periodic...),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("jobs: client: %w", err)

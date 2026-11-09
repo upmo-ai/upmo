@@ -2,8 +2,10 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -12,9 +14,13 @@ import (
 )
 
 // Handler opens, lists, appends and reads chats through the existing book.
+// Stream, when set, serves the chat stream; Renew then looks a person's access
+// up again for the streams that stay open.
 type Handler struct {
 	Book   app.Book
+	Stream *app.StreamHub
 	Access func(r *http.Request) (app.Access, bool)
+	Renew  func(ctx context.Context, r *http.Request) (app.Access, bool, error)
 }
 
 // Mount registers the chat routes. guard runs first.
@@ -29,6 +35,8 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/chats", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/chats/{id}", wrap(http.HandlerFunc(h.say)))
 	mux.Handle("GET /api/chats/{id}", wrap(http.HandlerFunc(h.read)))
+	mux.Handle("POST /api/chats/{id}/lines/{line}/retry", wrap(http.HandlerFunc(h.retry)))
+	mux.Handle("GET /api/chats/{id}/stream", wrap(http.HandlerFunc(h.stream)))
 }
 
 func (h Handler) open(w http.ResponseWriter, r *http.Request) {
@@ -65,13 +73,32 @@ func (h Handler) say(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Body *string `json:"body"`
+		Body  *string `json:"body"`
+		Route string  `json:"route"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Body == nil {
 		writeError(w, http.StatusBadRequest, "a chat needs a line")
 		return
 	}
-	if err := app.Say(r.Context(), h.Book, access, r.PathValue("id"), *input.Body); refuse(w, err) {
+	if err := app.Say(r.Context(), h.Book, access, r.PathValue("id"), *input.Body, input.Route); refuse(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h Handler) retry(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Route string `json:"route"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "the retry needs a route or nothing")
+		return
+	}
+	if err := app.Retry(r.Context(), h.Book, access, r.PathValue("id"), r.PathValue("line"), input.Route); refuse(w, err) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -118,7 +145,15 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusNotFound, "no such chat")
 	case errors.Is(err, app.ErrSay):
 		writeError(w, http.StatusForbidden, "needs a chat you can edit")
-	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrLine):
+	case errors.Is(err, app.ErrNoLine):
+		writeError(w, http.StatusNotFound, "no such line")
+	case errors.Is(err, app.ErrRetry):
+		writeError(w, http.StatusConflict, "that line cannot be retried")
+	case errors.Is(err, app.ErrBusy):
+		writeError(w, http.StatusConflict, "a reply is already on its way")
+	case errors.Is(err, app.ErrReplies):
+		writeError(w, http.StatusServiceUnavailable, "replies are off")
+	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrLine), errors.Is(err, domain.ErrRoute):
 		writeError(w, http.StatusBadRequest, "the chat input was refused")
 	case errors.Is(err, domain.ErrWriter):
 		writeError(w, http.StatusConflict, "the chat cannot take that change")

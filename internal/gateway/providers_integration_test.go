@@ -1410,6 +1410,11 @@ func TestGatewayProcessReadsEveryAccountUnderForcedRowSecurity(t *testing.T) {
 	if err != nil || len(route.Links) != 1 || route.Links[0].Account.CredentialRef != refOf(t, r, made.ID) {
 		t.Fatalf("route read: %+v, %v", route, err)
 	}
+	// A route link says whose account it is, which is how a streamed reply
+	// finds a person's own links.
+	if route.Links[0].Account.OwnerUserID != ada || route.Links[0].Account.House {
+		t.Fatalf("link owner = %q house %v, want %q", route.Links[0].Account.OwnerUserID, route.Links[0].Account.House, ada)
+	}
 
 	// The request role (upmo_app) with no person sees none of it.
 	var credentials int

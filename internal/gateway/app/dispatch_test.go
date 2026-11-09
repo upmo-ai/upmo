@@ -836,3 +836,59 @@ func TestDispatchChatStreamStopsWhenTheNoticeWriteFails(t *testing.T) {
 		t.Fatalf("second calls = %d done = %+v fail = %+v", solid.calls, sink.done, sink.fail)
 	}
 }
+
+// ownedRoute is a chat route with a link of one person's own, then a house
+// link: model mine on adapter own, model m2 on adapter solid.
+func ownedRoute(owner string) domain.Route {
+	mine := domain.Account{ID: "1", Adapter: "own", CredentialRef: "personal", OwnerUserID: owner}
+	house := domain.Account{ID: "2", Adapter: "solid", CredentialRef: "house", House: true}
+	return domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{
+			{Position: 1, Account: mine, Model: "mine"},
+			{Position: 2, Account: house, Model: "m2"},
+		},
+	}
+}
+
+func ownedDispatch(own, solid *scriptStream) Dispatch {
+	return Dispatch{
+		Routes:  memRoutes{ownedRoute("u1")},
+		Secrets: memSecrets{map[string]string{"house": "secret", "personal": "mine"}},
+		Ledger:  &memLedger{},
+		Stream:  map[string]StreamChatter{"own": own, "solid": solid},
+	}
+}
+
+func TestDispatchChatStreamUsesTheAuthorsOwnLinkAndTheHouseForOthers(t *testing.T) {
+	own, solid := &scriptStream{reply: "mine"}, &scriptStream{reply: "house"}
+	disp := ownedDispatch(own, solid)
+
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.done == nil || sink.done.Model != "mine" || own.calls != 1 || solid.calls != 0 {
+		t.Fatalf("author: done %+v own %d house %d", sink.done, own.calls, solid.calls)
+	}
+
+	sink = &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u2"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.done == nil || sink.done.Model != "m2" || own.calls != 1 || solid.calls != 1 {
+		t.Fatalf("other person: done %+v own %d house %d", sink.done, own.calls, solid.calls)
+	}
+}
+
+func TestDispatchChatStreamNeverFallsBackToTheHouseKeyFromAnOwnLink(t *testing.T) {
+	own, solid := &scriptStream{reply: "no", failClass: domain.ClassCredential}, &scriptStream{reply: "house"}
+	disp := ownedDispatch(own, solid)
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if solid.calls != 0 || sink.fail == nil || sink.fail.Model != "mine" || sink.done != nil {
+		t.Fatalf("house calls %d fail %+v done %+v", solid.calls, sink.fail, sink.done)
+	}
+}
