@@ -41,6 +41,12 @@ type Config struct {
 	// EmbedRoute is the gateway embed route name (UPMO_EMBED_ROUTE). Empty skips
 	// knowledge dense embed wiring in brain.
 	EmbedRoute string
+	// ChatRoute is the gateway chat route that answers a chat line when the
+	// person picks none (UPMO_CHAT_ROUTE). "chat" by default.
+	ChatRoute string
+	// ChatWorkers is how many chat replies stream at once in one process
+	// (UPMO_CHAT_WORKERS). 8 by default.
+	ChatWorkers int
 	// SandboxdURL is the sandbox process (UPMO_SANDBOXD_URL). Empty until brain calls it.
 	SandboxdURL string
 	// KnowledgeDir is the Compose volume root for original knowledge file bytes
@@ -80,6 +86,8 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		ListenAddr:      ":8080",
 		ShutdownTimeout: 10 * time.Second,
 		LogLevel:        "info",
+		ChatRoute:       "chat",
+		ChatWorkers:     8,
 		SessionIdle:     24 * time.Hour,
 		SessionMaxAge:   14 * 24 * time.Hour,
 	}
@@ -166,6 +174,16 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if v, ok := lookup("UPMO_EMBED_ROUTE"); ok && strings.TrimSpace(v) != "" {
 		cfg.EmbedRoute = strings.TrimSpace(v)
+	}
+	if v, ok := lookup("UPMO_CHAT_ROUTE"); ok && strings.TrimSpace(v) != "" {
+		cfg.ChatRoute = strings.TrimSpace(v)
+	}
+	if v, ok := lookup("UPMO_CHAT_WORKERS"); ok && v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return Config{}, fmt.Errorf("config: UPMO_CHAT_WORKERS must be a positive number")
+		}
+		cfg.ChatWorkers = n
 	}
 	if v, ok := lookup("UPMO_SANDBOXD_URL"); ok && v != "" {
 		parsed, err := url.Parse(v)

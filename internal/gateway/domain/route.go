@@ -17,6 +17,9 @@ type Account struct {
 	PlanKind      string
 	House         bool
 	BaseURL       string
+	// OwnerUserID is the person a personal account belongs to. It is empty
+	// for a house account.
+	OwnerUserID string
 }
 
 // Link is one hop on a route, in position order.
@@ -88,4 +91,34 @@ func (r Route) LinksFor(credentialRef string) ([]Link, error) {
 		return nil, fmt.Errorf("gateway: route %q has no link for this key", r.Name)
 	}
 	return out, nil
+}
+
+// LinksForUser returns the chain for a call that names a person and no
+// credential ref: who pays is settled by the route's own links, in this
+// order. The links whose account belongs to the person; else a team's
+// links, once team-owned providers exist; else the house links. A person
+// with links of their own never falls back to the house key, so their
+// failures are theirs.
+func (r Route) LinksForUser(userID string) ([]Link, error) {
+	if err := r.Check(); err != nil {
+		return nil, err
+	}
+	var own, house []Link
+	for _, link := range r.Links {
+		switch {
+		case link.Account.House:
+			house = append(house, link)
+		case userID != "" && link.Account.OwnerUserID == userID:
+			own = append(own, link)
+		}
+	}
+	// The team tier slots in here: links of a provider owned by a team the
+	// person belongs to, tried when the person has none of their own.
+	switch {
+	case len(own) > 0:
+		return own, nil
+	case len(house) > 0:
+		return house, nil
+	}
+	return nil, fmt.Errorf("gateway: route %q has no link for this person", r.Name)
 }

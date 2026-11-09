@@ -376,7 +376,14 @@ func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef s
 	if route.Capability != domain.CapChat {
 		return fmt.Errorf("gateway: route %q is %s", routeName, route.Capability)
 	}
-	links, err := route.LinksFor(credentialRef)
+	var links []domain.Link
+	if credentialRef == "" && who.User != "" {
+		// A streamed reply is paid by the person it is for when the route has
+		// links of theirs, and by the house otherwise.
+		links, err = route.LinksForUser(who.User)
+	} else {
+		links, err = route.LinksFor(credentialRef)
+	}
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/chat/domain"
 )
 
 // RecentLines returns the bodies of the last limit chat lines for one person,
@@ -21,6 +22,9 @@ func (s Store) RecentLines(ctx context.Context, userID uuid.UUID, chatID string,
 	}
 	bodies := make([]string, 0, len(chat.Lines))
 	for _, line := range chat.Lines {
+		if line.Status == domain.StatusFailed {
+			continue
+		}
 		bodies = append(bodies, line.Body)
 	}
 	if len(bodies) > limit {
