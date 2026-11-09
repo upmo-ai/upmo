@@ -353,6 +353,12 @@ export interface ApiClient {
    * event of type "message".
    */
   postTaskMessage(taskId: string, body: string): Promise<TaskEvent>;
+  /**
+   * True while the open task's events can be read from the stream
+   * (GET /api/tasks/{id}/stream) instead of polling. The stub brain has no
+   * stream, so its task pages keep polling.
+   */
+  readonly taskEventsStream: boolean;
   approvals: {
     /**
      * GET /api/approvals: pending first, newest first, at most 50. A closed row
@@ -1361,6 +1367,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       task.events = [...(task.events ?? []), event];
       return copy(event);
     },
+    taskEventsStream: false,
     approvals: {
       async list() {
         return approvals.map((item) => copy(item));

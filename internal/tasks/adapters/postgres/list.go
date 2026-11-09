@@ -208,9 +208,14 @@ func readEvents(ctx context.Context, tx pgx.Tx, taskID string) ([]app.Event, dom
 		}
 		return entries[i].id < entries[j].id
 	})
+	return shape(entries, "")
+}
 
+// shape maps entries, already in order, to events. phase is the last phase
+// the task's transitions reached before the first entry, and "" for none. It
+// returns the events and the phase after the last entry.
+func shape(entries []entry, phase domain.Status) ([]app.Event, domain.Status, error) {
 	events := make([]app.Event, 0, len(entries))
-	var phase domain.Status
 	for _, e := range entries {
 		event := app.Event{ID: e.id, Time: e.at.UTC()}
 		if e.isChat {

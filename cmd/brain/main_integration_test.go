@@ -48,7 +48,7 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool})
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool})
+		handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -258,7 +258,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}); err == nil {
+	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil); err == nil {
 		t.Fatal("brain started with a malformed master key")
 	}
 }

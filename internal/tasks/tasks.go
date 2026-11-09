@@ -6,7 +6,9 @@ package tasks
 import (
 	"embed"
 	"io/fs"
+	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -61,6 +63,22 @@ type (
 
 // ErrRetry asks River to run a scout job again.
 var ErrRetry = app.ErrRetry
+
+// The task event streams of one process.
+type (
+	StreamHub    = app.StreamHub
+	StreamConfig = app.StreamConfig
+	Stream       = app.Stream
+	StreamSpec   = app.StreamSpec
+)
+
+// NewStreamHub returns the stream hub of this process. It reads through pool
+// and listens for new events on one connection of its own made from conn,
+// which is the same database the pool uses. A zero cfg takes the defaults.
+// The caller starts it with Start and stops it with Close.
+func NewStreamHub(pool *pgxpool.Pool, conn *pgx.ConnConfig, log *slog.Logger, cfg StreamConfig) *StreamHub {
+	return app.NewStreamHub(postgres.Store{Pool: pool}, postgres.Listener{Config: conn, Log: log}, log, cfg)
+}
 
 // NewStore returns the tasks Store on pool. A nil enqueuer enqueues no jobs.
 func NewStore(pool *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
