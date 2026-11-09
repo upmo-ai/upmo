@@ -45,14 +45,14 @@ func run() error {
 		return err
 	}
 
-	handler, err := routes(pool, cfg)
+	handler, err := routes(pool, cfg, log)
 	if err != nil {
 		return err
 	}
 	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handler, error) {
 	master, err := svcsig.ParseKey(cfg.ServiceKey)
 	if err != nil {
 		return nil, err
@@ -79,7 +79,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	gateway.Mount(mux, pool, secretBackends(pool, masterKeys))
+	gateway.Mount(mux, pool, secretBackends(pool, masterKeys), log)
 	return svcsig.Handler(keys, svcsig.AudienceGateway, mux)
 }
 
