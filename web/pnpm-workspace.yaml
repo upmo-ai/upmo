@@ -3,12 +3,12 @@ packages:
 
 # First-party Upmo Design System packages, exempt from the release-age wait.
 minimumReleaseAgeExclude:
-  - '@upmo-ai/brand@1.6.0 || 1.6.1 || 1.7.0'
-  - '@upmo-ai/brands@1.6.0 || 1.6.1 || 1.7.0'
-  - '@upmo-ai/components@1.6.0 || 1.6.1 || 1.7.0'
-  - '@upmo-ai/icons@1.6.0 || 1.6.1 || 1.7.0'
-  - '@upmo-ai/theme@1.6.0 || 1.6.1 || 1.7.0'
-  - '@upmo-ai/tokens@1.6.0 || 1.6.1 || 1.7.0'
+  - '@upmo-ai/brand@1.6.0 || 1.6.1 || 1.7.0 || 1.8.0'
+  - '@upmo-ai/brands@1.6.0 || 1.6.1 || 1.7.0 || 1.8.0'
+  - '@upmo-ai/components@1.6.0 || 1.6.1 || 1.7.0 || 1.8.0'
+  - '@upmo-ai/icons@1.6.0 || 1.6.1 || 1.7.0 || 1.8.0'
+  - '@upmo-ai/theme@1.6.0 || 1.6.1 || 1.7.0 || 1.8.0'
+  - '@upmo-ai/tokens@1.6.0 || 1.6.1 || 1.7.0 || 1.8.0'
 
 updateNotifier: false
 
