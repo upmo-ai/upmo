@@ -23,6 +23,8 @@ export interface ChatLine {
   at: string;
   /** Absent means done. "pending" is a reply still being written; it lives only in the page. */
   status?: LineStatus;
+  /** Set on a user line the brain has stored no reply for yet, so a reload still shows the wait. */
+  pending?: boolean;
   /** The user line a reply answers. */
   reply_to?: string | null;
   /** The models a failed reply tried, and the plain reason each failed. */
