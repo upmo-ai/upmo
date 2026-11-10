@@ -1318,6 +1318,59 @@ describe("app shell", () => {
     expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
   });
 
+  it("a 403 query error does not redirect a signed-in person", async () => {
+    const stub = createStubApi();
+    let sessionFetches = 0;
+    const client: ApiClient = {
+      ...stub,
+      session: {
+        async get() {
+          sessionFetches += 1;
+          return { ...signedOut, memberId: "ada" };
+        },
+      },
+      members: {
+        ...stub.members,
+        async list() {
+          throw new BrainError(403, "unauthorised");
+        },
+      },
+    };
+    renderAt("/", client);
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Log in$/ })).toBeNull();
+    expect(sessionFetches).toBe(1);
+  });
+
+  it("a 401 unauthorised query error redirects a signed-in person", async () => {
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      session: { async get() { return { ...signedOut, memberId: "ada" }; } },
+      members: {
+        ...stub.members,
+        async list() { throw new BrainError(401, "unauthorised"); },
+      },
+    };
+    renderAt("/", client);
+    expect(await screen.findByRole("button", { name: /^Log in$/ })).toBeTruthy();
+  });
+
+  it("a 401 with a different error body does not redirect a signed-in person", async () => {
+    const stub = createStubApi();
+    const client: ApiClient = {
+      ...stub,
+      session: { async get() { return { ...signedOut, memberId: "ada" }; } },
+      members: {
+        ...stub.members,
+        async list() { throw new BrainError(401, "temporarily_unavailable"); },
+      },
+    };
+    renderAt("/", client);
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Log in$/ })).toBeNull();
+  });
+
   it("sign-out clears the query cache", async () => {
     let sessionCalls = 0;
     const stub = createStubApi();
