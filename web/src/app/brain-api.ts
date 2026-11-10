@@ -725,13 +725,13 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
         if ((await chosen()) === "stub") return stub.chats.get(id);
         return toChat(await call(chatPath(id)));
       },
-      async send(id, body, route = "") {
-        if ((await chosen()) === "stub") return stub.chats.send(id, body, route);
-        await call(chatPath(id), { method: "POST", body: route ? { body, route } : { body } });
+      async send(id, body, picks = {}) {
+        if ((await chosen()) === "stub") return stub.chats.send(id, body, picks);
+        await call(chatPath(id), { method: "POST", body: { body, ...picks } });
       },
-      async retry(id, lineId, route) {
-        if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, route);
-        await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: route ? { route } : {} });
+      async retry(id, lineId, picks) {
+        if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, picks);
+        await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: { ...picks } });
       },
     },
   };

@@ -495,16 +495,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	})
 	gateway.RoutesHandler{
 		Book: gateway.NewRouteBook(pool),
-		Access: func(r *http.Request) (string, string, bool) {
+		Access: func(r *http.Request) (string, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
-				return "", "", false
+				return "", false
 			}
-			allow, err := members.SettingsAllow(r.Context(), person.UserID)
-			if err != nil || allow == "" {
-				return "", "", false
-			}
-			return person.UserID.String(), allow, true
+			return person.UserID.String(), true
 		},
 	}.MountRoutes(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
