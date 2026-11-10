@@ -5,3 +5,5 @@ services:
     ports: !override []
   brain:
     ports: !override []
+  gateway:
+    ports: !override []
