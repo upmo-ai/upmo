@@ -10,6 +10,7 @@ import {
   toChat,
   toChatLine,
   toChatSummary,
+  toGatewayRoute,
   toMember,
   toNotification,
   toProvider,
@@ -292,6 +293,23 @@ describe("toChat and toChatLine", () => {
     });
   });
 
+  it("keeps a reply's status, the line it answers and the models it tried", () => {
+    const failed = {
+      ...assistantLine,
+      model: null,
+      status: "failed",
+      reply_to: userLine.id,
+      attempts: [{ model: "gpt-x", reason: "rate limited" }],
+    };
+    expect(toChatLine(failed)).toEqual(failed);
+    // An empty attempts list and a null reply_to are as good as none.
+    expect(toChatLine({ ...assistantLine, status: "done", reply_to: null, attempts: [] })).toEqual({
+      ...assistantLine,
+      status: "done",
+    });
+    expect(() => toChatLine({ ...failed, attempts: [{ model: "gpt-x" }] })).toThrow("no reason");
+  });
+
   it("keeps an unknown assistant cost null, never zero", () => {
     expect(toChatLine({ ...assistantLine, cost_usd: null }).cost_usd).toBeNull();
     expect(toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: [] }).lines).toEqual([]);
@@ -425,5 +443,30 @@ describe("provider request bodies", () => {
       plan_kind: "metered",
       api_key: "sk-typed",
     });
+  });
+});
+
+describe("toGatewayRoute", () => {
+  const sent = {
+    name: "chat",
+    capability: "chat",
+    decision: "",
+    hops: [{ position: 1, adapter: "anthropic", model: "claude-opus-5-5", weight: 3, retry: 1 }],
+  };
+
+  it("reads a route and its hops, as a workspace route since the brain sends no scope", () => {
+    expect(toGatewayRoute(sent)).toEqual({ ...sent, scope: "global" });
+    expect(toGatewayRoute({ ...sent, scope: "own", capability: "decide", decision: "yesno" })).toMatchObject({
+      scope: "own",
+      capability: "decide",
+      decision: "yesno",
+    });
+  });
+
+  it("refuses a capability or decision the web does not know, and a hop with no model", () => {
+    expect(() => toGatewayRoute({ ...sent, capability: "image" })).toThrow("capability");
+    expect(() => toGatewayRoute({ ...sent, decision: "maybe" })).toThrow("decision");
+    expect(() => toGatewayRoute({ ...sent, hops: [{ ...sent.hops[0], model: 4 }] })).toThrow("no model");
+    expect(() => toGatewayRoute("chat")).toThrow("no route");
   });
 });
