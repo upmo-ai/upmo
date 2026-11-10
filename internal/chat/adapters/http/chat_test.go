@@ -28,7 +28,9 @@ type fakeBook struct {
 	reads     int
 	body      string
 	route     string
+	picks     app.Picks
 	retried   string
+	given     *app.Picks
 	lines     []app.Line
 	summaries []app.ChatSummary
 	err       error
@@ -50,17 +52,24 @@ func (f *fakeBook) List(context.Context, app.Access) ([]app.ChatSummary, error) 
 	return f.summaries, nil
 }
 
-func (f *fakeBook) Say(_ context.Context, _ app.Access, _, body, route string) error {
+func (f *fakeBook) Say(_ context.Context, _ app.Access, _, body string, picks app.Picks) error {
 	f.says++
 	f.body = body
-	f.route = route
+	f.route = picks.Route
+	f.picks = picks
 	return f.err
 }
 
-func (f *fakeBook) Retry(_ context.Context, _ app.Access, _, line, route string) error {
+func (f *fakeBook) Retry(_ context.Context, _ app.Access, _, line string, picks *app.Picks) error {
 	f.retries++
 	f.retried = line
-	f.route = route
+	f.given = picks
+	f.route = ""
+	f.picks = app.Picks{}
+	if picks != nil {
+		f.route = picks.Route
+		f.picks = *picks
+	}
 	return f.err
 }
 
@@ -131,6 +140,87 @@ func TestSayPassesTheRoute(t *testing.T) {
 	rec = call(t, book, http.MethodPost, "/api/chats/"+chatID, `{"body":"hello","route":"two words"}`, true)
 	if rec.Code != http.StatusBadRequest || book.says != 1 {
 		t.Fatalf("bad route: status %d says %d", rec.Code, book.says)
+	}
+}
+
+const pickAccount = "018f3b2c-7a10-7c4a-8e11-eeeeeeeeeeee"
+
+func TestSayPassesThePinAndTheAgent(t *testing.T) {
+	book := &fakeBook{}
+	body := `{"body":"hello","route":"draft","pin":{"account_id":"` + pickAccount + `","model":"gpt-x"},"agent_id":"` + userID + `"}`
+	rec := call(t, book, http.MethodPost, "/api/chats/"+chatID, body, true)
+	want := app.Picks{Route: "draft", PinAccount: pickAccount, PinModel: "gpt-x", AgentID: userID}
+	if rec.Code != http.StatusAccepted || book.picks != want {
+		t.Fatalf("status %d picks %+v, want %+v", rec.Code, book.picks, want)
+	}
+	for name, bad := range map[string]string{
+		"half pin":         `"pin":{"account_id":"` + pickAccount + `"}`,
+		"pin not a uuid":   `"pin":{"account_id":"mine","model":"gpt-x"}`,
+		"agent not a uuid": `"agent_id":"research"`,
+	} {
+		rec := call(t, book, http.MethodPost, "/api/chats/"+chatID, `{"body":"hello",`+bad+`}`, true)
+		if rec.Code != http.StatusBadRequest || book.says != 1 {
+			t.Errorf("%s: status %d says %d", name, rec.Code, book.says)
+		}
+	}
+}
+
+func TestRetryPassesThePicksOrNothing(t *testing.T) {
+	path := "/api/chats/" + chatID + "/lines/" + pickAccount + "/retry"
+	book := &fakeBook{}
+	body := `{"route":"draft","pin":{"account_id":"` + pickAccount + `","model":"gpt-x"},"agent_id":"` + userID + `"}`
+	rec := call(t, book, http.MethodPost, path, body, true)
+	want := app.Picks{Route: "draft", PinAccount: pickAccount, PinModel: "gpt-x", AgentID: userID}
+	if rec.Code != http.StatusAccepted || book.picks != want {
+		t.Fatalf("status %d picks %+v, want %+v", rec.Code, book.picks, want)
+	}
+	rec = call(t, book, http.MethodPost, path, "", true)
+	if rec.Code != http.StatusAccepted || book.given != nil {
+		t.Fatalf("no body: status %d given %+v, want nil so the stored picks are reused", rec.Code, book.given)
+	}
+	for _, empty := range []string{`{}`, `{"route":"","pin":null,"agent_id":""}`} {
+		rec = call(t, book, http.MethodPost, path, empty, true)
+		if rec.Code != http.StatusAccepted || book.given == nil || !book.given.None() {
+			t.Fatalf("body %s: status %d given %+v, want an explicit empty override", empty, rec.Code, book.given)
+		}
+	}
+	rec = call(t, book, http.MethodPost, path, `{"pin":{"model":"gpt-x"}}`, true)
+	if rec.Code != http.StatusBadRequest || book.retries != 4 {
+		t.Fatalf("half pin: status %d retries %d", rec.Code, book.retries)
+	}
+}
+
+func TestReadShowsThePicksOfAUserLine(t *testing.T) {
+	route, account, model, agent := "draft", pickAccount, "gpt-x", userID
+	book := &fakeBook{lines: []app.Line{
+		{ID: "l1", Role: "user", Body: "hello", Route: &route, PinAccount: &account, PinModel: &model, AgentID: &agent},
+		{ID: "l2", Role: "user", Body: "again"},
+	}}
+	rec := call(t, book, http.MethodGet, "/api/chats/"+chatID, "", true)
+	var got struct {
+		Lines []struct {
+			Route *string `json:"route"`
+			Pin   *struct {
+				AccountID string `json:"account_id"`
+				Model     string `json:"model"`
+			} `json:"pin"`
+			AgentID *string `json:"agent_id"`
+		}
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	first, second := got.Lines[0], got.Lines[1]
+	if first.Route == nil || *first.Route != route || first.Pin == nil || first.Pin.AccountID != account || first.Pin.Model != model ||
+		first.AgentID == nil || *first.AgentID != agent {
+		t.Fatalf("first line = %+v", first)
+	}
+	other := app.Line{ID: "l3", Role: "user", Body: "x", PinModel: &model}
+	if raw, err := json.Marshal(lineBody(other)); err != nil || strings.Contains(string(raw), "account_id") {
+		t.Fatalf("a line read by someone else shows %s %v", raw, err)
+	}
+	if second.Route != nil || second.Pin != nil || second.AgentID != nil {
+		t.Fatalf("a line without picks shows %+v", second)
 	}
 }
 

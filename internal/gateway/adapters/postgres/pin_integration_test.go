@@ -1,0 +1,523 @@
+//go:build integration
+
+package postgres_test
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/upmo-ai/upmo/internal/gateway"
+	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/gateway/app"
+	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+)
+
+const (
+	pinAuthor = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
+	pinOther  = "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
+
+	pinMine   = "018f3b2c-7a10-7c4a-8e11-000000000001" // the author's account on the route
+	pinMine2  = "018f3b2c-7a10-7c4a-8e11-000000000002" // the author's account, on no route
+	pinTheirs = "018f3b2c-7a10-7c4a-8e11-000000000003" // the other person's account
+	pinHouse  = "018f3b2c-7a10-7c4a-8e11-000000000004" // a house account
+	pinGone   = "018f3b2c-7a10-7c4a-8e11-0000000000ff" // an account that does not exist
+)
+
+// pinKeys maps each credential ref to the key it resolves to, so a call shows
+// whose key it spent.
+var pinKeys = map[string]string{
+	"pin_mine":   "key-mine",
+	"pin_mine2":  "key-mine2",
+	"pin_theirs": "key-theirs",
+	"pin_house":  "key-house",
+}
+
+type pinSecrets map[string]string
+
+func (s pinSecrets) Get(ref string) (string, error) {
+	if key, ok := s[ref]; ok {
+		return key, nil
+	}
+	return "", errors.New("missing")
+}
+
+// pinCall is one provider call: the model asked for and the key spent.
+type pinCall struct{ Model, Key string }
+
+// pinAdapter answers every model except the ones in fail, which fail with the
+// class given. It records each call.
+type pinAdapter struct {
+	calls []pinCall
+	fail  map[string]domain.FailureClass
+}
+
+func (a *pinAdapter) ChatStream(_ context.Context, attempt app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	a.calls = append(a.calls, pinCall{Model: attempt.Model, Key: attempt.Secret})
+	if class, bad := a.fail[attempt.Model]; bad {
+		return domain.Usage{}, class, fmt.Errorf("pin test: %s", class)
+	}
+	if err := emit("from " + attempt.Model); err != nil {
+		return domain.Usage{}, domain.ClassCancelled, err
+	}
+	return domain.Usage{Arrived: true, Input: 1, Output: 1}, domain.ClassOK, nil
+}
+
+func (a *pinAdapter) models() string {
+	var out []string
+	for _, c := range a.calls {
+		out = append(out, c.Model)
+	}
+	return strings.Join(out, ",")
+}
+
+func (a *pinAdapter) keysSpent() string {
+	var out []string
+	for _, c := range a.calls {
+		out = append(out, c.Key)
+	}
+	return strings.Join(out, ",")
+}
+
+type pinSink struct {
+	text    strings.Builder
+	notices []app.StreamNotice
+	done    *app.StreamDone
+	fail    *app.StreamFail
+}
+
+func (s *pinSink) Delta(text string) error { s.text.WriteString(text); return nil }
+func (s *pinSink) Notice(n app.StreamNotice) error {
+	s.notices = append(s.notices, n)
+	return nil
+}
+func (s *pinSink) Done(d app.StreamDone) { s.done = &d }
+func (s *pinSink) Fail(f app.StreamFail) { s.fail = &f }
+
+// pinWorld is a real gateway database with two people, their accounts, a
+// house account and three routes, and a dispatch over it whose only adapter
+// is the recording one.
+type pinWorld struct {
+	pool    *pgxpool.Pool
+	disp    app.Dispatch
+	adapter *pinAdapter
+}
+
+func seedPins(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, a := range []struct{ id, owner, name, ref string }{
+		{pinMine, pinAuthor, "pin-mine", "pin_mine"},
+		{pinMine2, pinAuthor, "pin-mine2", "pin_mine2"},
+		{pinTheirs, pinOther, "pin-theirs", "pin_theirs"},
+		{pinHouse, "", "pin-house", "pin_house"},
+	} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO gateway.provider_accounts
+				(id, owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url)
+			VALUES ($1::uuid, NULLIF($2, '')::uuid, 'fake', $3, 'fake', $4, 'metered', $2 = '', '')`,
+			a.id, a.owner, a.name, a.ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// pin-mixed is the author's own link first, then a house link: the author
+	// is served by their own link alone, anyone else by the house one.
+	// pin-house is two house links. Every link has no retry budget.
+	for _, r := range []struct {
+		name  string
+		links [][3]string // account, model, position
+	}{
+		{"pin-mixed", [][3]string{{pinMine, "m-mine", "1"}, {pinHouse, "m-house", "2"}}},
+		{"pin-house", [][3]string{{pinHouse, "m1", "1"}, {pinHouse, "m2", "2"}}},
+		{"pin-vision", [][3]string{{pinHouse, "m-vis", "1"}, {pinHouse, "m1", "2"}}},
+		{"pin-others", [][3]string{{pinTheirs, "m-theirs", "1"}}},
+	} {
+		var id string
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO gateway.routes (name, capability) VALUES ($1, 'chat') RETURNING id::text`, r.name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range r.links {
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO gateway.route_links (route_id, position, provider_account_id, model, retry_budget, required_capabilities)
+				VALUES ($1::uuid, $4::int, $2::uuid, $3, 0, CASE WHEN $3 = 'm-vis' THEN '{vision}'::text[] ELSE '{}'::text[] END)`, id, l[0], l[1], l[2]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func newPinWorld(t *testing.T, fail map[string]domain.FailureClass) pinWorld {
+	t.Helper()
+	pool := pgtest.New(t)
+	if err := migrate.Up(context.Background(), pool, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	seedPins(t, pool)
+	store := postgres.Store{Pool: pool}
+	adapter := &pinAdapter{fail: fail}
+	return pinWorld{
+		pool:    pool,
+		adapter: adapter,
+		disp: app.Dispatch{
+			Routes:  store,
+			Pins:    store,
+			Ledger:  store,
+			Secrets: pinSecrets(pinKeys),
+			Caps:    func(string) ([]string, bool) { return []string{"tools"}, true },
+			Stream:  map[string]app.StreamChatter{domain.AdapterFake: adapter},
+		},
+	}
+}
+
+func (w pinWorld) stream(t *testing.T, route, user string, pin domain.Pin) (*pinSink, error) {
+	t.Helper()
+	sink := &pinSink{}
+	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+	err := w.disp.ChatStreamPinned(context.Background(), route, "", domain.Principal{User: user}, in, pin, 0, sink)
+	return sink, err
+}
+
+func TestPinIsTriedFirstAndTheRouteChainIsTheFallback(t *testing.T) {
+	// The house account's m2 is on the route; it fails before text, so the
+	// chain answers. The notice names the pinned model and the next one.
+	w := newPinWorld(t, map[string]domain.FailureClass{"m2": domain.ClassRateLimit})
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.adapter.models(); got != "m2,m1" {
+		t.Fatalf("models called = %s, want the pin first then the chain", got)
+	}
+	want := []app.StreamNotice{{FailedModel: "m2", Class: domain.ClassRateLimit, NextModel: "m1"}}
+	if len(sink.notices) != 1 || sink.notices[0] != want[0] {
+		t.Fatalf("notices = %+v, want %+v", sink.notices, want)
+	}
+	if sink.done == nil || sink.done.Model != "m1" || sink.text.String() != "from m1" {
+		t.Fatalf("done = %+v text = %q", sink.done, sink.text.String())
+	}
+}
+
+func TestPinThatAnswersLeavesTheChainUntouched(t *testing.T) {
+	w := newPinWorld(t, nil)
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.adapter.models() != "m2" || len(sink.notices) != 0 || sink.done == nil || sink.done.Model != "m2" {
+		t.Fatalf("models = %s notices = %+v done = %+v", w.adapter.models(), sink.notices, sink.done)
+	}
+}
+
+func TestNoPinLeavesTheRouteAsItWas(t *testing.T) {
+	w := newPinWorld(t, nil)
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.adapter.models() != "m1" || len(sink.notices) != 0 || sink.done == nil || sink.done.Model != "m1" {
+		t.Fatalf("models = %s notices = %+v done = %+v", w.adapter.models(), sink.notices, sink.done)
+	}
+}
+
+func TestPinOnTheRouteIsNotTriedTwice(t *testing.T) {
+	// The author's own m-mine is on the route with no retry budget. Pinned,
+	// it is tried once, and the chain, which is only their own links, has
+	// nothing left: the walk ends with the pin's failure.
+	w := newPinWorld(t, map[string]domain.FailureClass{"m-mine": domain.ClassTransient})
+	sink, err := w.stream(t, "pin-mixed", pinAuthor, domain.Pin{AccountID: pinMine, Model: "m-mine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.adapter.models(); got != "m-mine" {
+		t.Fatalf("models called = %s, want m-mine once", got)
+	}
+	want := app.StreamNotice{FailedModel: "m-mine", Class: domain.ClassTransient, NextModel: ""}
+	if len(sink.notices) != 1 || sink.notices[0] != want || sink.fail == nil || sink.fail.Model != "m-mine" {
+		t.Fatalf("notices = %+v fail = %+v", sink.notices, sink.fail)
+	}
+}
+
+func TestPinOffTheRouteGetsTheDefaultRetryBudget(t *testing.T) {
+	w := newPinWorld(t, map[string]domain.FailureClass{"x": domain.ClassTransient})
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.adapter.models(); got != "x,x,m1" {
+		t.Fatalf("models called = %s, want the pin retried once then the chain", got)
+	}
+	want := []app.StreamNotice{
+		{FailedModel: "x", Class: domain.ClassTransient, NextModel: "x"},
+		{FailedModel: "x", Class: domain.ClassTransient, NextModel: "m1"},
+	}
+	if len(sink.notices) != 2 || sink.notices[0] != want[0] || sink.notices[1] != want[1] {
+		t.Fatalf("notices = %+v, want %+v", sink.notices, want)
+	}
+	if sink.done == nil || sink.done.Model != "m1" {
+		t.Fatalf("done = %+v", sink.done)
+	}
+}
+
+func TestOwnPinOnAHouseOnlyRouteHasNoFallbackAndNeverSpendsTheHouseKey(t *testing.T) {
+	// The author has no link on pin-house, which holds house links only. Their
+	// own pin is tried and retried and its failure ends the reply, naming the
+	// pinned model; the house key is not spent.
+	w := newPinWorld(t, map[string]domain.FailureClass{"x": domain.ClassTransient})
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinMine2, Model: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.adapter.keysSpent(); got != "key-mine2,key-mine2" || w.adapter.models() != "x,x" {
+		t.Fatalf("models = %s keys = %s, want only the pin twice on the author's key", w.adapter.models(), got)
+	}
+	if sink.done != nil || sink.fail == nil || sink.fail.Model != "x" {
+		t.Fatalf("done = %+v fail = %+v", sink.done, sink.fail)
+	}
+	want := []app.StreamNotice{
+		{FailedModel: "x", Class: domain.ClassTransient, NextModel: "x"},
+		{FailedModel: "x", Class: domain.ClassTransient, NextModel: ""},
+	}
+	if len(sink.notices) != 2 || sink.notices[0] != want[0] || sink.notices[1] != want[1] {
+		t.Fatalf("notices = %+v, want %+v", sink.notices, want)
+	}
+}
+
+func TestPinWorksOnARouteWithNoLinkUsableByThePerson(t *testing.T) {
+	// pin-others holds only the other person's link. Both a house pin and an
+	// own pin are tried on their own key; the other person's key never is.
+	for name, pin := range map[string]domain.Pin{
+		"house": {AccountID: pinHouse, Model: "h-pinned"},
+		"own":   {AccountID: pinMine2, Model: "x"},
+	} {
+		w := newPinWorld(t, nil)
+		sink, err := w.stream(t, "pin-others", pinAuthor, pin)
+		if err != nil {
+			t.Fatalf("%s pin: %v", name, err)
+		}
+		if sink.done == nil || sink.done.Model != pin.Model || w.adapter.models() != pin.Model || strings.Contains(w.adapter.keysSpent(), "key-theirs") {
+			t.Fatalf("%s pin: models = %s keys = %s done = %+v", name, w.adapter.models(), w.adapter.keysSpent(), sink.done)
+		}
+	}
+	// Without a pin the same route still has nothing for this person.
+	w := newPinWorld(t, nil)
+	if _, err := w.stream(t, "pin-others", pinAuthor, domain.Pin{}); err == nil {
+		t.Fatal("a route with no link for the person answered without a pin")
+	}
+}
+
+func TestForeignPinIsRefusedBeforeTheRouteIsLoaded(t *testing.T) {
+	// A route that does not exist and a route that is not a chat route would
+	// each fail the call; the pin refusal comes first and their key is unused.
+	w := newPinWorld(t, nil)
+	if _, err := w.pool.Exec(context.Background(), `INSERT INTO gateway.routes (name, capability) VALUES ('pin-embed', 'embed')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"no-such-route", "pin-embed"} {
+		_, err := w.stream(t, route, pinAuthor, domain.Pin{AccountID: pinTheirs, Model: "m1"})
+		if !errors.Is(err, domain.ErrPinAccount) {
+			t.Fatalf("route %q: err = %v, want the pin refusal", route, err)
+		}
+	}
+	if len(w.adapter.calls) != 0 {
+		t.Fatalf("calls = %+v", w.adapter.calls)
+	}
+}
+
+func TestPinToAnotherPersonsAccountIsRefusedAndTheirKeyIsNeverUsed(t *testing.T) {
+	w := newPinWorld(t, nil)
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinTheirs, Model: "m1"})
+	if !errors.Is(err, domain.ErrPinAccount) {
+		t.Fatalf("err = %v, want the refusal", err)
+	}
+	if len(w.adapter.calls) != 0 || sink.done != nil || sink.fail != nil || len(sink.notices) != 0 || sink.text.Len() != 0 {
+		t.Fatalf("calls = %+v sink = %+v", w.adapter.calls, sink)
+	}
+	for _, id := range []string{pinTheirs, pinOther, "key-theirs", "pin_theirs"} {
+		if strings.Contains(err.Error(), id) {
+			t.Fatalf("the refusal leaks %q: %v", id, err)
+		}
+	}
+}
+
+func TestOwnPinSpendsOwnKeyAndNeverFallsToTheHouseKey(t *testing.T) {
+	// The author pins their second account; it fails, retries once, and
+	// fails. They have their own link on the route, so the chain is that
+	// link alone, which fails too: the house key is never spent.
+	w := newPinWorld(t, map[string]domain.FailureClass{"x": domain.ClassTransient, "m-mine": domain.ClassRateLimit})
+	sink, err := w.stream(t, "pin-mixed", pinAuthor, domain.Pin{AccountID: pinMine2, Model: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.adapter.models(); got != "x,x,m-mine" {
+		t.Fatalf("models called = %s", got)
+	}
+	if got := w.adapter.keysSpent(); got != "key-mine2,key-mine2,key-mine" {
+		t.Fatalf("keys spent = %s, want only the author's own", got)
+	}
+	if sink.done != nil || sink.fail == nil || sink.fail.Model != "m-mine" {
+		t.Fatalf("done = %+v fail = %+v", sink.done, sink.fail)
+	}
+}
+
+func TestHousePinWorksForAnyone(t *testing.T) {
+	for _, user := range []string{pinAuthor, pinOther} {
+		w := newPinWorld(t, nil)
+		sink, err := w.stream(t, "pin-mixed", user, domain.Pin{AccountID: pinHouse, Model: "h-pinned"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w.adapter.models() != "h-pinned" || w.adapter.keysSpent() != "key-house" || sink.done == nil {
+			t.Fatalf("user %s: models = %s keys = %s done = %+v", user, w.adapter.models(), w.adapter.keysSpent(), sink.done)
+		}
+	}
+}
+
+func TestPinThatCannotBeUsedIsSkippedWithANoticeAndTheChainAnswers(t *testing.T) {
+	w := newPinWorld(t, nil)
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinGone, Model: "ghost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.StreamNotice{FailedModel: "ghost", Class: domain.ClassModelAccess, NextModel: "m1"}
+	if len(sink.notices) != 1 || sink.notices[0] != want {
+		t.Fatalf("notices = %+v, want %+v", sink.notices, want)
+	}
+	if w.adapter.models() != "m1" || sink.done == nil || sink.done.Model != "m1" {
+		t.Fatalf("models = %s done = %+v", w.adapter.models(), sink.done)
+	}
+}
+
+func TestPinOnARouteLinkThatNeedsACapabilityIsSkippedLikeAnyLink(t *testing.T) {
+	// m-vis needs vision on this route and the catalog says it has none, so
+	// the pin takes the link's need along and is skipped; the chain answers.
+	w := newPinWorld(t, nil)
+	sink, err := w.stream(t, "pin-vision", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m-vis"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.adapter.models() != "m1" || sink.done == nil || sink.done.Model != "m1" {
+		t.Fatalf("models = %s done = %+v", w.adapter.models(), sink.done)
+	}
+	want := app.StreamNotice{FailedModel: "m-vis", Class: domain.ClassModelAccess, NextModel: "m1"}
+	if len(sink.notices) != 1 || sink.notices[0] != want {
+		t.Fatalf("notices = %+v, want %+v", sink.notices, want)
+	}
+}
+
+func TestPinOnCoolingAccountIsSkippedWithANotice(t *testing.T) {
+	w := newPinWorld(t, nil)
+	gates := app.NewGates()
+	gates.Observe("pin_house", domain.ClassRateLimit, time.Hour)
+	w.disp.Gates = gates
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.StreamNotice{FailedModel: "m2", Class: domain.ClassModelAccess, NextModel: "m1"}
+	if len(sink.notices) < 1 || sink.notices[0] != want || w.adapter.models() != "" {
+		t.Fatalf("notices = %+v, want the pinned model first: %+v", sink.notices, want)
+	}
+}
+
+func TestPinnedAttemptIsLedgerPositionZeroAndRouteLinksKeepTheirs(t *testing.T) {
+	w := newPinWorld(t, map[string]domain.FailureClass{"m2": domain.ClassRateLimit})
+	if _, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m2"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := w.pool.Query(context.Background(), `SELECT model, link_position FROM gateway.ledger`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]int{}
+	for rows.Next() {
+		var model string
+		var pos int
+		if err := rows.Scan(&model, &pos); err != nil {
+			t.Fatal(err)
+		}
+		got[model] = pos
+	}
+	// m2 is route position 2 and was pinned; m1 is route position 1.
+	if len(got) != 2 || got["m2"] != 0 || got["m1"] != 1 {
+		t.Fatalf("ledger positions = %v, want the pinned m2 at 0 and m1 at 1", got)
+	}
+}
+
+func TestPinWithoutAPersonOrWithABringYourOwnKeyIsRefused(t *testing.T) {
+	w := newPinWorld(t, nil)
+	pin := domain.Pin{AccountID: pinHouse, Model: "m1"}
+	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+	if err := w.disp.ChatStreamPinned(context.Background(), "pin-house", "", domain.Principal{}, in, pin, 0, &pinSink{}); !errors.Is(err, domain.ErrPinCaller) {
+		t.Fatalf("no person: err = %v", err)
+	}
+	if err := w.disp.ChatStreamPinned(context.Background(), "pin-house", "pin_mine", domain.Principal{User: pinAuthor}, in, pin, 0, &pinSink{}); !errors.Is(err, domain.ErrPinCaller) {
+		t.Fatalf("bring-your-own key: err = %v", err)
+	}
+	if len(w.adapter.calls) != 0 {
+		t.Fatalf("calls = %+v", w.adapter.calls)
+	}
+}
+
+func TestMalformedPinIsRefusedBeforeAnyCall(t *testing.T) {
+	w := newPinWorld(t, nil)
+	for _, pin := range []domain.Pin{{AccountID: pinHouse}, {Model: "m1"}, {AccountID: "not-a-uuid", Model: "m1"}} {
+		if _, err := w.stream(t, "pin-house", pinAuthor, pin); err == nil {
+			t.Fatalf("pin %+v was accepted", pin)
+		}
+	}
+	if len(w.adapter.calls) != 0 {
+		t.Fatalf("calls = %+v", w.adapter.calls)
+	}
+}
+
+// post sends one ChatStream body through the gateway's HTTP handler and
+// returns the status and the NDJSON lines.
+func (w pinWorld) post(t *testing.T, body string) (int, []string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	res, err := http.Post(srv.URL+httpapi.PathChatStream, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var lines []string
+	scan := bufio.NewScanner(res.Body)
+	for scan.Scan() {
+		lines = append(lines, scan.Text())
+	}
+	return res.StatusCode, lines
+}
+
+func TestChatStreamOverHTTPCarriesThePin(t *testing.T) {
+	w := newPinWorld(t, map[string]domain.FailureClass{"m2": domain.ClassRateLimit})
+	status, lines := w.post(t, fmt.Sprintf(
+		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"model":"m2"}}`, pinAuthor, pinHouse))
+	if status != http.StatusOK || w.adapter.models() != "m2,m1" {
+		t.Fatalf("status = %d models = %s lines = %v", status, w.adapter.models(), lines)
+	}
+	if len(lines) < 2 || !strings.Contains(lines[0], `"failed_model":"m2"`) || !strings.Contains(lines[0], `"next_model":"m1"`) {
+		t.Fatalf("lines = %v", lines)
+	}
+
+	status, lines = w.post(t, fmt.Sprintf(
+		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"model":"m1"}}`, pinAuthor, pinTheirs))
+	if status != http.StatusBadRequest || len(lines) != 1 || strings.Contains(lines[0], pinTheirs) {
+		t.Fatalf("foreign pin: status = %d lines = %v", status, lines)
+	}
+}

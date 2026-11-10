@@ -1450,7 +1450,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 2 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 3 {
 		t.Fatalf("version %d, %v", version, err)
 	}
 	var n int

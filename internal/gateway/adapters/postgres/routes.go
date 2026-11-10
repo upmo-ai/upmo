@@ -62,6 +62,24 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	return r, r.Check()
 }
 
+// PinAccount loads the provider account a pin names. It reads as the table
+// owner like ByName, so the caller decides whether the person may use the
+// account. ok is false when there is no such account.
+func (s Store) PinAccount(ctx context.Context, id string) (domain.Account, bool, error) {
+	var a domain.Account
+	err := s.Pool.QueryRow(ctx, `
+		SELECT id::text, adapter, credential_ref, plan_kind, house, base_url, COALESCE(owner_user_id::text, '')
+		FROM gateway.provider_accounts
+		WHERE id = $1::uuid`, id).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Account{}, false, nil
+	}
+	if err != nil {
+		return domain.Account{}, false, err
+	}
+	return a, true, nil
+}
+
 // Names lists route names for the Models endpoint.
 func (s Store) Names(ctx context.Context) ([]string, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT name FROM gateway.routes ORDER BY name`)

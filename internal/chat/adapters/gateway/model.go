@@ -25,6 +25,9 @@ func (m Model) Stream(ctx context.Context, req app.ModelRequest, onDelta func(st
 		UserID:          req.UserID,
 		Messages:        messages,
 		MaxOutputTokens: req.MaxOutputTokens,
+		PinAccount:      req.PinAccount,
+		PinModel:        req.PinModel,
+		AgentID:         req.AgentID,
 	}, onDelta, func(a Attempt) {
 		if onAttempt != nil {
 			onAttempt(app.ModelAttempt{FailedModel: a.FailedModel, Class: a.FailureClass, NextModel: a.NextModel})

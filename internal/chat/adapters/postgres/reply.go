@@ -103,7 +103,7 @@ func (s Store) Begin(ctx context.Context, access app.Access, job app.ReplyJobArg
 	// the line before it. Failed and replaced replies are left out, and so is
 	// whatever answers a line after this one.
 	rows, err := tx.Query(ctx, `
-		SELECT `+lineColumns+`
+		SELECT `+lineColumnsFor("NULL::uuid")+`
 		FROM chat.lines AS line
 		LEFT JOIN chat.lines AS asked ON asked.id = line.reply_to
 		WHERE line.chat_id = $1::uuid
@@ -267,8 +267,10 @@ func (s Store) CanWrite(ctx context.Context, access app.Access, chatID string) e
 
 // Retry asks again for the reply to the user line that a failed assistant line
 // left unanswered. The failed line stays; it is hidden once a later reply to
-// the same user line succeeds.
-func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID, route string) error {
+// the same user line succeeds. With no picks given (nil) the picks stored on
+// the user line are used again; picks given, even all empty, replace them as
+// a whole.
+func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID string, given *app.Picks) error {
 	if s.Enqueuer == nil || s.ReplyRoute == "" {
 		return app.ErrReplies
 	}
@@ -302,7 +304,23 @@ func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID, rou
 	if answered {
 		return app.ErrRetry
 	}
-	queued, err := s.enqueueReply(ctx, tx, access, chatID, *userLine, route)
+	var picks app.Picks
+	if given != nil {
+		picks = *given
+	} else {
+		// Nothing given: the stored picks again. The pin and the agent are the
+		// author's own, so anyone else retrying the line gets the route only.
+		err := tx.QueryRow(ctx, `
+			SELECT COALESCE(route, ''),
+			       CASE WHEN author_id = $2::uuid THEN COALESCE(pin_account_id::text, '') ELSE '' END,
+			       CASE WHEN author_id = $2::uuid THEN COALESCE(pin_model, '') ELSE '' END,
+			       CASE WHEN author_id = $2::uuid THEN COALESCE(agent_id::text, '') ELSE '' END
+			FROM chat.lines WHERE id = $1::uuid`, *userLine, access.UserID).Scan(&picks.Route, &picks.PinAccount, &picks.PinModel, &picks.AgentID)
+		if err != nil {
+			return fmt.Errorf("chat: retry picks: %w", err)
+		}
+	}
+	queued, err := s.enqueueReply(ctx, tx, access, chatID, *userLine, picks)
 	if err != nil {
 		return err
 	}
