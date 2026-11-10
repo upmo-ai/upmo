@@ -125,7 +125,7 @@ func run() error {
 		members := identity.Members(pool, cfg.PublicURL, linkMail(cfg.SMTP), log)
 		tasks.AddScoutWorker(workers, tasks.ScoutDeps{
 			Goals:  tasks.NewStore(pool, nil),
-			Chat:   chat.NewStore(pool, nil),
+			Chat:   scoutChat{store: chat.NewStore(pool, nil), members: members},
 			Memory: scoutMemory{editor: memoryFacts},
 			Knowledge: scoutKnowledge{
 				folders: knowledgeBook,
@@ -590,6 +590,28 @@ func (p scoutProposer) Propose(ctx context.Context, prompt string) (string, erro
 		return "", fmt.Errorf("%w: %v", tasks.ErrRetry, err)
 	}
 	return text, err
+}
+
+// scoutChat reads recent lines with the person's own chat access, so a chat
+// shared with them is visible to the job the way it is to their request.
+type scoutChat struct {
+	store   chat.Store
+	members identity.MemberService
+}
+
+func (s scoutChat) RecentLines(ctx context.Context, userID uuid.UUID, chatID string, limit int) ([]string, error) {
+	person, err := identity.ParseUserID(userID.String())
+	if err != nil {
+		return nil, err
+	}
+	access, ok, err := chatAccess(ctx, s.members, person)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return s.store.RecentLines(ctx, access, chatID, limit)
 }
 
 type scoutMemory struct {
