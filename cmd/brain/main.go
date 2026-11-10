@@ -325,7 +325,11 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 				return tasks.Access{}, false
 			}
 			access, ok, err := taskAccess(r.Context(), person.UserID)
-			return access, ok && err == nil
+			if err != nil || !ok {
+				// A failed lookup refuses the request but keeps the session.
+				return tasks.Access{UserID: person.UserID.String()}, true
+			}
+			return access, true
 		},
 		// An open stream looks the session up again, then the person's allow
 		// list and shares, so a sign-out or a revoked share ends it.
@@ -361,12 +365,17 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 				return artifacts.Access{}, false
 			}
 			allow, err := members.ArtifactAllow(r.Context(), person.UserID)
-			if err != nil || allow == "" {
-				return artifacts.Access{}, false
+			if err != nil {
+				// A failed lookup refuses the request but keeps the session.
+				return artifacts.Access{UserID: person.UserID.String()}, true
+			}
+			if allow == "" {
+				return artifacts.Access{UserID: person.UserID.String()}, true
 			}
 			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeArtifact)
 			if err != nil {
-				return artifacts.Access{}, false
+				// A failed lookup refuses the request but keeps the session.
+				return artifacts.Access{UserID: person.UserID.String()}, true
 			}
 			return artifacts.Access{
 				UserID:     person.UserID.String(),
@@ -392,7 +401,11 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 				return chat.Access{}, false
 			}
 			access, ok, err := chatAccess(r.Context(), members, person.UserID)
-			return access, ok && err == nil
+			if err != nil || !ok {
+				// A failed lookup refuses the request but keeps the session.
+				return chat.Access{UserID: person.UserID.String()}, true
+			}
+			return access, true
 		},
 		// An open stream looks the session up again, then the person's allow
 		// list and shares, so a sign-out or a revoked share ends it.
@@ -455,12 +468,17 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 				return knowledge.Access{}, false
 			}
 			allow, err := members.FolderAllow(r.Context(), person.UserID)
-			if err != nil || allow == "" {
-				return knowledge.Access{}, false
+			if err != nil {
+				// A failed lookup refuses the request but keeps the session.
+				return knowledge.Access{UserID: person.UserID.String()}, true
+			}
+			if allow == "" {
+				return knowledge.Access{UserID: person.UserID.String()}, true
 			}
 			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeFolder)
 			if err != nil {
-				return knowledge.Access{}, false
+				// A failed lookup refuses the request but keeps the session.
+				return knowledge.Access{UserID: person.UserID.String()}, true
 			}
 			return knowledge.Access{
 				UserID:     person.UserID.String(),
@@ -485,8 +503,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 				return decisions.Access{}, false
 			}
 			allow, err := members.SettingsAllow(r.Context(), person.UserID)
-			if err != nil || allow == "" {
-				return decisions.Access{}, false
+			if err != nil {
+				// A failed lookup refuses the request but keeps the session.
+				return decisions.Access{UserID: person.UserID.String()}, true
 			}
 			return decisions.Access{UserID: person.UserID.String(), Allow: allow}, true
 		},
