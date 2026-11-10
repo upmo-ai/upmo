@@ -1,9 +1,10 @@
 #!/bin/sh
-# Print two lines on fd 3: the compose project (- for the default project)
-# and the URL Playwright should open. Logs go to stderr.
-# A web container whose /src is this checkout is reused. A container from
-# another checkout is left running; this checkout gets its own project so
-# `docker compose up` does not recreate that container.
+# Print two lines on fd 3: the compose project and the URL Playwright should
+# open. Logs go to stderr.
+# e2e always runs in its own project, upmo-e2e-<hash of this checkout path>,
+# never in the default (dev) project, so a running dev stack and its database
+# are not touched. A web container of that project whose /src is this checkout
+# is reused.
 set -eu
 
 cd "$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -117,20 +118,4 @@ start_isolated() {
   finish "$project"
 }
 
-web_id=$(docker compose ps -q web || true)
-if [ -n "$web_id" ] && [ "$(norm "$(src_of "$web_id")")" = "$root" ]; then
-  say "web dev server already up"
-  wait_ready
-  finish "-"
-fi
-
-if [ -n "$web_id" ] || curl -fsS --max-time 2 http://127.0.0.1:5173/ >/dev/null 2>&1; then
-  say "port 5173 is serving another checkout; starting this one beside it"
-  start_isolated
-fi
-
-say "starting web dev server"
-dc run --rm --no-deps web pnpm install --frozen-lockfile
-dc up -d web
-wait_ready
-finish "-"
+start_isolated
