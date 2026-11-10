@@ -76,7 +76,7 @@ describe("Chat page", () => {
 
     const composer = screen.getByRole("form", { name: "Chat composer" });
     expect(within(composer).getByRole("textbox", { name: "Message" })).toBeTruthy();
-    expect(within(composer).getByRole("button", { name: /Agent, route and model: Auto · Default · Gpt-5\.6-Luna/ })).toBeTruthy();
+    expect(within(composer).getByRole("button", { name: /Agent, route and model: Auto · Auto · Auto/ })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Attach file" })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Dictate" })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: /Tools mode: Auto/ })).toBeTruthy();
@@ -137,16 +137,16 @@ describe("Chat page", () => {
       fireEvent.click(await screen.findByRole("menuitemradio", { name: option, hidden: true }));
     }
 
-    await choose("Agent", "Code Specialist");
+    await choose("Agent", "Research");
     await choose("Route", "chat-stream");
-    await choose("Model", "Claude 3.7 Sonnet");
+    await choose("Model", "anthropic/claude-3-7-sonnet");
 
     const pill = screen.getByRole("button", { name: /Agent, route and model:/ });
     expect(pill.getAttribute("aria-label")).toBe(
-      "Agent, route and model: Code Specialist · chat-stream · Claude 3.7 Sonnet",
+      "Agent, route and model: Research · chat-stream · anthropic/claude-3-7-sonnet",
     );
-    expect(pill.textContent).toContain("Code Specialist · chat-stream · Claude 3.7 Sonnet");
-    expect(pill.textContent).not.toContain("claude-3.7-sonnet");
+    expect(pill.textContent).toContain("Research · chat-stream · anthropic/claude-3-7-sonnet");
+    expect(pill.textContent).not.toContain("provider-anthropic");
   });
 
   it("keeps the draft on Shift+Enter", async () => {

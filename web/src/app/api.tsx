@@ -170,6 +170,17 @@ export type ProviderAccount = {
 };
 
 /**
+ * What the composer sends with a line or a retry, as the chat API takes it. A
+ * field left out is Auto: the agent's choice, else the install's. The pin is
+ * one provider account and a model id, and is tried before the route's chain.
+ */
+export type ChatPicks = {
+  agent_id?: string;
+  route?: string;
+  pin?: { account_id: string; model: string };
+};
+
+/**
  * A saved profile a person picks in the chat composer: instructions added to
  * the system text, and optionally a route and a model (provider name and model
  * id) it defaults to. Empty strings mean none.
@@ -514,17 +525,18 @@ export interface ApiClient {
     /** GET /api/chats/{id}. Lines are oldest first. */
     get(id: string): Promise<Chat>;
     /**
-     * POST /api/chats/{id} with {body, route}. Resolves once the line is stored
-     * (202); route is the picker's choice, empty for the install's default.
+     * POST /api/chats/{id} with {body, agent_id, route, pin}. Resolves once the
+     * line is stored (202); the picks are the composer's, each left out for Auto.
      * On the stub an assistant line follows a moment later; the brain's reply
      * arrives on the chat stream.
      */
-    send(id: string, body: string, route?: string): Promise<void>;
+    send(id: string, body: string, picks?: ChatPicks): Promise<void>;
     /**
-     * POST /api/chats/{id}/lines/{line}/retry with {route}: asks again for the
-     * reply a failed line left unanswered, on the route picked now (202).
+     * POST /api/chats/{id}/lines/{line}/retry with the picks as one JSON
+     * object: asks again for the reply a failed line left unanswered, on the
+     * picks made now (202).
      */
-    retry(id: string, lineId: string, route: string): Promise<void>;
+    retry(id: string, lineId: string, picks: ChatPicks): Promise<void>;
     /**
      * True while an assistant line is written on its own after a send, so a
      * reply is worth waiting for: the stub's is, the brain's is not yet.

@@ -8,10 +8,11 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 )
 
-// RoutesHandler lists gateway routes for a signed-in settings manager.
+// RoutesHandler lists gateway routes for any signed-in person. The rows hold
+// route names and model chains, never a credential.
 type RoutesHandler struct {
 	Book   app.RouteBook
-	Access func(r *http.Request) (userID, allow string, ok bool)
+	Access func(r *http.Request) (userID string, ok bool)
 }
 
 // MountRoutes registers GET /api/gateway/routes. guard runs first.
@@ -35,8 +36,8 @@ func (h RoutesHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
 		return
 	}
-	userID, allow, ok := h.Access(r)
-	if !ok || userID == "" || allow == "" || !allows(allow, "settings:manage") {
+	userID, ok := h.Access(r)
+	if !ok || userID == "" {
 		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
 		return
 	}
@@ -46,15 +47,6 @@ func (h RoutesHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeRouteJSON(w, http.StatusOK, rows)
-}
-
-func allows(list, name string) bool {
-	for _, part := range strings.Split(list, ",") {
-		if strings.TrimSpace(part) == name {
-			return true
-		}
-	}
-	return false
 }
 
 func writeRouteJSON(w http.ResponseWriter, status int, body any) {
