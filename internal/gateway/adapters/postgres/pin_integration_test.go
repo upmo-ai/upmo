@@ -521,3 +521,92 @@ func TestChatStreamOverHTTPCarriesThePin(t *testing.T) {
 		t.Fatalf("foreign pin: status = %d lines = %v", status, lines)
 	}
 }
+
+// listModels gives accounts the models they list, as a person adds them in
+// the provider settings.
+func (w pinWorld) listModels(t *testing.T, account string, models ...string) {
+	t.Helper()
+	for i, model := range models {
+		if _, err := w.pool.Exec(context.Background(), `
+			INSERT INTO gateway.provider_models (account_id, model, position)
+			VALUES ($1::uuid, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM gateway.provider_models WHERE account_id = $1::uuid))`,
+			account, model); err != nil {
+			t.Fatalf("model %d: %v", i, err)
+		}
+	}
+}
+
+func TestProviderPinResolvesToTheCallersOwnAccountBeforeTheHouseOne(t *testing.T) {
+	// The author's second account and the house account both list m2. The
+	// author's own is used, on their key; the other person's account, which
+	// lists it too, never is. With an own pin there is no house fallback.
+	w := newPinWorld(t, map[string]domain.FailureClass{"m2": domain.ClassTransient})
+	w.listModels(t, pinMine2, "m2")
+	w.listModels(t, pinHouse, "m2")
+	w.listModels(t, pinTheirs, "m2")
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{Provider: "FAKE", Model: "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.adapter.keysSpent(); got != "key-mine2,key-mine2" || w.adapter.models() != "m2,m2" {
+		t.Fatalf("models = %s keys = %s, want the author's own key twice and nothing else", w.adapter.models(), got)
+	}
+	if sink.done != nil || sink.fail == nil || sink.fail.Model != "m2" {
+		t.Fatalf("done = %+v fail = %+v", sink.done, sink.fail)
+	}
+}
+
+func TestProviderPinFallsToTheHouseAccountWhenTheCallerHasNoneThatListsTheModel(t *testing.T) {
+	w := newPinWorld(t, nil)
+	w.listModels(t, pinMine, "other-model") // theirs, but not this model
+	w.listModels(t, pinHouse, "h-pinned")
+	for _, user := range []string{pinAuthor, pinOther} {
+		w.adapter.calls = nil
+		sink, err := w.stream(t, "pin-house", user, domain.Pin{Provider: "fake", Model: "h-pinned"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w.adapter.models() != "h-pinned" || w.adapter.keysSpent() != "key-house" || sink.done == nil || len(sink.notices) != 0 {
+			t.Fatalf("user %s: models = %s keys = %s done = %+v notices = %+v", user, w.adapter.models(), w.adapter.keysSpent(), sink.done, sink.notices)
+		}
+	}
+}
+
+func TestProviderPinWithNoUsableAccountIsSkippedWithANoticeNamingTheModel(t *testing.T) {
+	w := newPinWorld(t, nil)
+	w.listModels(t, pinTheirs, "only-theirs")
+	for name, pin := range map[string]domain.Pin{
+		"nobody lists the model":     {Provider: "fake", Model: "unlisted"},
+		"only another person does":   {Provider: "fake", Model: "only-theirs"},
+		"no account of the provider": {Provider: "nope", Model: "m1"},
+	} {
+		w.adapter.calls = nil
+		sink, err := w.stream(t, "pin-house", pinAuthor, pin)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		want := app.StreamNotice{FailedModel: pin.Model, Class: domain.ClassModelAccess, NextModel: "m1"}
+		if len(sink.notices) != 1 || sink.notices[0] != want {
+			t.Fatalf("%s: notices = %+v, want %+v", name, sink.notices, want)
+		}
+		if w.adapter.models() != "m1" || w.adapter.keysSpent() != "key-house" || sink.done == nil || sink.done.Model != "m1" {
+			t.Fatalf("%s: models = %s keys = %s done = %+v, want the chain to answer", name, w.adapter.models(), w.adapter.keysSpent(), sink.done)
+		}
+	}
+}
+
+func TestChatStreamOverHTTPCarriesAProviderPinAndRefusesAnAmbiguousOne(t *testing.T) {
+	w := newPinWorld(t, nil)
+	w.listModels(t, pinHouse, "h-pinned")
+	status, lines := w.post(t, fmt.Sprintf(
+		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"provider":"fake","model":"h-pinned"}}`, pinAuthor))
+	if status != http.StatusOK || w.adapter.models() != "h-pinned" || len(lines) < 2 {
+		t.Fatalf("status = %d models = %s lines = %v", status, w.adapter.models(), lines)
+	}
+	w.adapter.calls = nil
+	status, lines = w.post(t, fmt.Sprintf(
+		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"provider":"fake","model":"h-pinned"}}`, pinAuthor, pinHouse))
+	if status != http.StatusBadRequest || len(w.adapter.calls) != 0 {
+		t.Fatalf("both account and provider: status = %d calls = %+v lines = %v", status, w.adapter.calls, lines)
+	}
+}

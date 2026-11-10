@@ -72,9 +72,11 @@ type chatBody struct {
 	actorBody
 }
 
-// pinBody is the optional pin of a chat stream.
+// pinBody is the optional pin of a chat stream: a model on an account, or on
+// a provider the gateway resolves for the person.
 type pinBody struct {
 	AccountID string `json:"account_id"`
+	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 }
 
@@ -82,7 +84,7 @@ func (b chatBody) pin() domain.Pin {
 	if b.Pin == nil {
 		return domain.Pin{}
 	}
-	return domain.Pin{AccountID: b.Pin.AccountID, Model: b.Pin.Model}
+	return domain.Pin{AccountID: b.Pin.AccountID, Provider: b.Pin.Provider, Model: b.Pin.Model}
 }
 
 func (h Handler) Mount(mux *http.ServeMux) {

@@ -66,6 +66,10 @@ type Routes interface {
 // there is no such account.
 type PinAccounts interface {
 	PinAccount(ctx context.Context, id string) (account domain.Account, ok bool, err error)
+	// PinProvider resolves a provider name and a model for one person: their
+	// own account of that provider that lists the model, else a global
+	// account of it that does. ok is false when there is none.
+	PinProvider(ctx context.Context, user, provider, model string) (account domain.Account, ok bool, err error)
 }
 
 // Secrets resolves a credential_ref. Implementations must not log the value.
@@ -370,7 +374,9 @@ func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef s
 // ChatStreamPinned is ChatStreamCall with an optional pin. A pin is tried
 // before the route's chain, on the credential of the account it names, and
 // the chain follows as the fallback with the pinned account and model taken
-// out of it. A pin to another person's account is refused before any frame.
+// out of it. A pin names an account, or a provider that is resolved to the
+// person's own account of it that lists the model, else a global one. A pin
+// to another person's account is refused before any frame.
 // A pin that cannot be used (no such account, or no stream adapter for it)
 // is skipped, and the sink hears a notice that names the pinned model before
 // the chain starts. The zero pin leaves the call as ChatStreamCall made it.
@@ -661,7 +667,11 @@ func (d Dispatch) pinAccount(ctx context.Context, who domain.Principal, pin doma
 	if pin.IsZero() || d.Pins == nil {
 		return domain.Account{}, false, false, nil
 	}
-	account, found, err = d.Pins.PinAccount(ctx, pin.AccountID)
+	if pin.Provider != "" {
+		account, found, err = d.Pins.PinProvider(ctx, who.User, pin.Provider, pin.Model)
+	} else {
+		account, found, err = d.Pins.PinAccount(ctx, pin.AccountID)
+	}
 	if err != nil || !found {
 		return domain.Account{}, false, false, err
 	}

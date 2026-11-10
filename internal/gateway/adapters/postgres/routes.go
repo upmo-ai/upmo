@@ -80,6 +80,31 @@ func (s Store) PinAccount(ctx context.Context, id string) (domain.Account, bool,
 	return a, true, nil
 }
 
+// PinProvider resolves a provider name and a model for one person, as the
+// table owner like PinAccount: their own account of that provider that lists
+// the model comes first, then a global one (the house account before the
+// others), each by name. The provider matches without regard to case, and an
+// account with no provider label counts as its adapter. ok is false when no
+// account of the person's lists the model.
+func (s Store) PinProvider(ctx context.Context, user, provider, model string) (domain.Account, bool, error) {
+	var a domain.Account
+	err := s.Pool.QueryRow(ctx, `
+		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, COALESCE(a.owner_user_id::text, '')
+		FROM gateway.provider_accounts AS a
+		WHERE lower(COALESCE(NULLIF(a.provider, ''), a.adapter)) = lower($2)
+		  AND (a.owner_user_id = $1::uuid OR a.owner_user_id IS NULL)
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $3)
+		ORDER BY (a.owner_user_id IS NULL), a.house DESC, a.name
+		LIMIT 1`, user, provider, model).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Account{}, false, nil
+	}
+	if err != nil {
+		return domain.Account{}, false, err
+	}
+	return a, true, nil
+}
+
 // Names lists route names for the Models endpoint.
 func (s Store) Names(ctx context.Context) ([]string, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT name FROM gateway.routes ORDER BY name`)

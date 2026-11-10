@@ -23,9 +23,11 @@ func (m Model) Stream(ctx context.Context, req app.ModelRequest, onDelta func(st
 		Route:           req.Route,
 		CredentialRef:   req.CredentialRef,
 		UserID:          req.UserID,
+		System:          req.System,
 		Messages:        messages,
 		MaxOutputTokens: req.MaxOutputTokens,
 		PinAccount:      req.PinAccount,
+		PinProvider:     req.PinProvider,
 		PinModel:        req.PinModel,
 		AgentID:         req.AgentID,
 	}, onDelta, func(a Attempt) {

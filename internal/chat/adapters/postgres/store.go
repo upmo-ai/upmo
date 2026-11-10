@@ -144,14 +144,15 @@ func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, c
 		return false, err
 	}
 	res, err := s.Enqueuer.InsertTx(ctx, tx, app.ReplyJobArgs{
-		ChatID:     chatID,
-		LineID:     lineID,
-		ReplyID:    replyID.String(),
-		UserID:     access.UserID,
-		Route:      route,
-		PinAccount: picks.PinAccount,
-		PinModel:   picks.PinModel,
-		AgentID:    picks.AgentID,
+		ChatID:      chatID,
+		LineID:      lineID,
+		ReplyID:     replyID.String(),
+		UserID:      access.UserID,
+		Route:       route,
+		RoutePicked: picks.Route != "",
+		PinAccount:  picks.PinAccount,
+		PinModel:    picks.PinModel,
+		AgentID:     picks.AgentID,
 	}, nil)
 	if err != nil {
 		return false, fmt.Errorf("chat: reply enqueue: %w", err)
