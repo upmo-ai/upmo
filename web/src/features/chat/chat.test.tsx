@@ -139,13 +139,13 @@ describe("Chat page", () => {
 
     await choose("Agent", "Research");
     await choose("Route", "chat-stream");
-    await choose("Model", "anthropic/claude-3-7-sonnet");
+    await choose("Model", "claude-3-7-sonnet");
 
     const pill = screen.getByRole("button", { name: /Agent, route and model:/ });
     expect(pill.getAttribute("aria-label")).toBe(
-      "Agent, route and model: Research · chat-stream · anthropic/claude-3-7-sonnet",
+      "Agent, route and model: Research · chat-stream · claude-3-7-sonnet",
     );
-    expect(pill.textContent).toContain("Research · chat-stream · anthropic/claude-3-7-sonnet");
+    expect(pill.textContent).toContain("Research · chat-stream · claude-3-7-sonnet");
     expect(pill.textContent).not.toContain("provider-anthropic");
   });
 
