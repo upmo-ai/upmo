@@ -297,8 +297,7 @@
 }
 
 .chat-attempts,
-.chat-notice,
-.chat-picker-note {
+.chat-notice {
   color: var(--ink-muted);
   font-size: 13px;
 }
@@ -310,12 +309,6 @@
   width: 100%;
   max-width: var(--chat-container-width);
   margin: 0 auto;
-}
-
-.chat-picker-note {
-  width: 100%;
-  max-width: var(--chat-container-width);
-  margin-bottom: var(--space-1);
 }
 
 .chat-send-error {

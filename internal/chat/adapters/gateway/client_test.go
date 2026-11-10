@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,43 @@ func TestChatStreamParsesAttemptDeltaAndDoneFrames(t *testing.T) {
 	}
 	if done.Model != "m2" || done.InputTokens != 1 || done.OutputTokens != 2 || done.CostUSD == nil || *done.CostUSD != 0.01 {
 		t.Fatalf("done = %+v", done)
+	}
+}
+
+func TestChatStreamSendsTheSystemTextAndAPinByAccountOrByProvider(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	var bodies []map[string]any
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		_, _ = fmt.Fprintf(w, "%s\n", `{"done":{"model":"m","input_tokens":1,"output_tokens":1}}`)
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const account = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01"
+	for _, req := range []Request{
+		{Route: "r", UserID: "u", Prompt: "hi", System: "# Agent: A\n\nBe brief.", PinProvider: "OpenAI", PinModel: "gpt-x"},
+		{Route: "r", UserID: "u", Prompt: "hi", PinAccount: account, PinModel: "gpt-y"},
+		{Route: "r", UserID: "u", Prompt: "hi"},
+	} {
+		if _, err := client.ChatStream(t.Context(), req, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if bodies[0]["system"] != "# Agent: A\n\nBe brief." || !reflect.DeepEqual(bodies[0]["pin"], map[string]any{"provider": "OpenAI", "model": "gpt-x"}) {
+		t.Fatalf("provider pin body = %+v", bodies[0])
+	}
+	if _, has := bodies[1]["system"]; has || !reflect.DeepEqual(bodies[1]["pin"], map[string]any{"account_id": account, "model": "gpt-y"}) {
+		t.Fatalf("account pin body = %+v", bodies[1])
+	}
+	if _, has := bodies[2]["pin"]; has {
+		t.Fatalf("no pin body = %+v", bodies[2])
 	}
 }
 

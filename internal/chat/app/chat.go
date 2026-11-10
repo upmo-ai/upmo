@@ -43,9 +43,24 @@ type Access struct {
 	SharedEdit string
 }
 
-// Line is one stored line of a chat. A user line carries no model and no cost.
-// An assistant line is done or failed, says which user line it answers, and
-// when failed lists the models tried and why each failed.
+// Picks are what a person chose for one line in the composer: the gateway
+// route, the model pinned (a provider account and a model id, both or
+// neither) and the agent. Empty means no pick. They are stored on the user
+// line, so a retry and the history can show them.
+type Picks struct {
+	Route      string
+	PinAccount string
+	PinModel   string
+	AgentID    string
+}
+
+// None reports that nothing was picked.
+func (p Picks) None() bool { return p == Picks{} }
+
+// Line is one stored line of a chat. A user line carries no model and no cost,
+// and the picks it was sent with. An assistant line is done or failed, says
+// which user line it answers, and when failed lists the models tried and why
+// each failed.
 type Line struct {
 	ID           string
 	Role         string
@@ -57,6 +72,11 @@ type Line struct {
 	Status       string
 	ReplyTo      *string
 	Attempts     []domain.Attempt
+	// Picks are set on a user line, each only when the person made it.
+	Route      *string
+	PinAccount *string
+	PinModel   *string
+	AgentID    *string
 }
 
 // ChatSummary is one chat in a list: its derived title and preview, and when
@@ -78,8 +98,8 @@ type Chat struct {
 type Book interface {
 	Open(ctx context.Context, access Access) (ChatSummary, error)
 	List(ctx context.Context, access Access) ([]ChatSummary, error)
-	Say(ctx context.Context, access Access, chatID, body, route string) error
-	Retry(ctx context.Context, access Access, chatID, lineID, route string) error
+	Say(ctx context.Context, access Access, chatID, body string, picks Picks) error
+	Retry(ctx context.Context, access Access, chatID, lineID string, picks *Picks) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
 }
 
@@ -112,9 +132,9 @@ func List(ctx context.Context, book Book, access Access) ([]ChatSummary, error) 
 	return got, nil
 }
 
-// Say appends one line. route names the gateway route that answers it; empty
-// takes the install's chat route.
-func Say(ctx context.Context, book Book, access Access, chatID, body, route string) error {
+// Say appends one line. picks say how it is answered: the route, the pinned
+// model and the agent. An empty route takes the install's chat route.
+func Say(ctx context.Context, book Book, access Access, chatID, body string, picks Picks) error {
 	if err := caller(access); err != nil {
 		return err
 	}
@@ -125,17 +145,18 @@ func Say(ctx context.Context, book Book, access Access, chatID, body, route stri
 	if err != nil {
 		return err
 	}
-	route, err = domain.Route(route)
+	picks, err = cleanPicks(picks)
 	if err != nil {
 		return err
 	}
-	return book.Say(ctx, access, chatID, body, route)
+	return book.Say(ctx, access, chatID, body, picks)
 }
 
 // Retry asks again for the reply to the user line that a failed assistant
-// line left unanswered. route is the one picked now; empty takes the
-// install's chat route.
-func Retry(ctx context.Context, book Book, access Access, chatID, lineID, route string) error {
+// line left unanswered. picks are the ones made now; with none given the
+// picks stored on the user line are used again, and an empty route then
+// takes the install's chat route.
+func Retry(ctx context.Context, book Book, access Access, chatID, lineID string, picks *Picks) error {
 	if err := caller(access); err != nil {
 		return err
 	}
@@ -145,11 +166,31 @@ func Retry(ctx context.Context, book Book, access Access, chatID, lineID, route 
 	if _, err := uuid.Parse(lineID); err != nil {
 		return ErrNoLine
 	}
-	route, err := domain.Route(route)
+	if picks == nil {
+		return book.Retry(ctx, access, chatID, lineID, nil)
+	}
+	cleaned, err := cleanPicks(*picks)
 	if err != nil {
 		return err
 	}
-	return book.Retry(ctx, access, chatID, lineID, route)
+	return book.Retry(ctx, access, chatID, lineID, &cleaned)
+}
+
+// cleanPicks checks each pick of a line.
+func cleanPicks(picks Picks) (Picks, error) {
+	route, err := domain.Route(picks.Route)
+	if err != nil {
+		return Picks{}, err
+	}
+	account, model, err := domain.Pin(picks.PinAccount, picks.PinModel)
+	if err != nil {
+		return Picks{}, err
+	}
+	agent, err := domain.Agent(picks.AgentID)
+	if err != nil {
+		return Picks{}, err
+	}
+	return Picks{Route: route, PinAccount: account, PinModel: model, AgentID: agent}, nil
 }
 
 // Read returns the chat and its lines in order.

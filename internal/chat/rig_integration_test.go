@@ -146,7 +146,7 @@ func (r *rig) open() string {
 
 func (r *rig) say(chatID, body, route string) {
 	r.t.Helper()
-	if err := app.Say(context.Background(), r.store, ownerAccess, chatID, body, route); err != nil {
+	if err := app.Say(context.Background(), r.store, ownerAccess, chatID, body, app.Picks{Route: route}); err != nil {
 		r.t.Fatal(err)
 	}
 }
@@ -326,7 +326,13 @@ type stubCall struct {
 	CredentialRef   string `json:"credential_ref"`
 	UserID          string `json:"user_id"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
-	Messages        []struct {
+	System          string `json:"system"`
+	Pin             *struct {
+		AccountID string `json:"account_id"`
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+	} `json:"pin"`
+	Messages []struct {
 		Role string `json:"role"`
 		Text string `json:"text"`
 	} `json:"messages"`

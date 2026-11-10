@@ -63,7 +63,7 @@ func TestSayQueuesNoReplyWhenRepliesAreOff(t *testing.T) {
 	if got := r.jobs(); len(got) != 0 {
 		t.Fatalf("jobs = %+v", got)
 	}
-	if err := app.Retry(context.Background(), r.store, ownerAccess, chatID, chatID, ""); !errors.Is(err, app.ErrReplies) {
+	if err := app.Retry(context.Background(), r.store, ownerAccess, chatID, chatID, nil); !errors.Is(err, app.ErrReplies) {
 		t.Fatalf("retry error = %v", err)
 	}
 }
@@ -502,7 +502,7 @@ func TestHistoryLeavesOutFailedAndReplacedLines(t *testing.T) {
 
 	// 2: a retry succeeds.
 	r.stub.reply(func(_ int, s *frames) { s.delta("a1"); s.done("m1", 1, 1, nil) })
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, "other"); err != nil {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, &app.Picks{Route: "other"}); err != nil {
 		t.Fatal(err)
 	}
 	retry := r.lastJob()
@@ -610,21 +610,21 @@ func TestRetryHidesTheFailedLineOnceItSucceeds(t *testing.T) {
 	failed := shown[1]
 
 	// A line that is not a failed reply, an unknown line and a stranger are refused.
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, shown[0].ID, ""); !errors.Is(err, app.ErrRetry) {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, shown[0].ID, nil); !errors.Is(err, app.ErrRetry) {
 		t.Fatalf("retry of a user line = %v", err)
 	}
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, "018f3b2c-7a10-7c4a-8e11-999999999999", ""); !errors.Is(err, app.ErrNoLine) {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, "018f3b2c-7a10-7c4a-8e11-999999999999", nil); !errors.Is(err, app.ErrNoLine) {
 		t.Fatalf("retry of no line = %v", err)
 	}
-	if err := app.Retry(ctx, r.store, otherAccess, chatID, failed.ID, ""); !errors.Is(err, app.ErrGone) {
+	if err := app.Retry(ctx, r.store, otherAccess, chatID, failed.ID, nil); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("retry by a stranger = %v", err)
 	}
 
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, ""); err != nil {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	// One reply at a time per line: a second click is refused while the first waits.
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, ""); !errors.Is(err, app.ErrBusy) {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, nil); !errors.Is(err, app.ErrBusy) {
 		t.Fatalf("second retry = %v", err)
 	}
 	if got := read(); len(got) != 2 {
@@ -645,7 +645,7 @@ func TestRetryHidesTheFailedLineOnceItSucceeds(t *testing.T) {
 		t.Fatalf("stored lines = %+v", stored)
 	}
 	// Answered now, the failed line cannot be retried again.
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, ""); !errors.Is(err, app.ErrRetry) {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, nil); !errors.Is(err, app.ErrRetry) {
 		t.Fatalf("retry after success = %v", err)
 	}
 }
@@ -943,7 +943,7 @@ func TestFailReplyIsNarrow(t *testing.T) {
 	}
 	r.completed(queued)
 	r.stub.reply(func(_ int, s *frames) { s.delta("ok"); s.done("m1", 1, 1, nil) })
-	if err := app.Retry(ctx, r.store, ownerAccess, chatID, reply.ID, ""); err != nil {
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, reply.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.owner.Exec(ctx, `DELETE FROM chat.deltas`); err != nil {
@@ -1203,5 +1203,104 @@ func TestFailReplyRefusesAReplyIdNoJobHolds(t *testing.T) {
 	}
 	if got := r.lines(chatID); len(got) != 1 {
 		t.Fatalf("lines = %+v", got)
+	}
+}
+
+func TestThePinGoesFromTheLineToTheGatewayAndARetryReusesItUnlessOverridden(t *testing.T) {
+	const (
+		accountA = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01"
+	)
+	r := newRig(t, app.ReplyConfig{})
+	chatID := r.open()
+	ctx := context.Background()
+	made, err := r.store.CreateAgent(ctx, ownerAccess, app.AgentFields{Name: "Research", Enabled: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := made.ID
+	pin := func(call stubCall) string {
+		if call.Pin == nil {
+			return ""
+		}
+		return call.Pin.AccountID + "/" + call.Pin.Model
+	}
+
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.fail("transient", "m1")
+			return
+		}
+		s.delta("ok")
+		s.done("m1", 1, 1, nil)
+	})
+	if err := app.Say(ctx, r.store, ownerAccess, chatID, "q", app.Picks{Route: "fast", PinAccount: accountA, PinModel: "gpt-x", AgentID: agent}); err != nil {
+		t.Fatal(err)
+	}
+	first := r.lastJob()
+	if first.Args.PinAccount != accountA || first.Args.PinModel != "gpt-x" || first.Args.AgentID != agent {
+		t.Fatalf("job args = %+v", first.Args)
+	}
+	if err := r.run(first, 1); err != nil {
+		t.Fatal(err)
+	}
+	r.completed(first)
+	if got := r.stub.seen(); len(got) != 1 || pin(got[0]) != accountA+"/gpt-x" || got[0].Route != "fast" {
+		t.Fatalf("first call = %+v", got)
+	}
+	failed := r.lines(chatID)[1]
+
+	// A retry with nothing given asks again with the stored picks.
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	again := r.lastJob()
+	if again.Args.PinAccount != accountA || again.Args.PinModel != "gpt-x" || again.Args.AgentID != agent || again.Args.Route != "fast" {
+		t.Fatalf("reused args = %+v", again.Args)
+	}
+	if err := r.run(again, 1); err != nil {
+		t.Fatal(err)
+	}
+	r.completed(again)
+	if got := r.stub.seen(); len(got) != 2 || pin(got[1]) != accountA+"/gpt-x" || got[1].Route != "fast" {
+		t.Fatalf("reused call = %+v", got)
+	}
+}
+
+func TestARetryWithPicksOverridesTheStoredOnesAsAWhole(t *testing.T) {
+	const (
+		accountA = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01"
+		accountB = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa02"
+	)
+	r := newRig(t, app.ReplyConfig{})
+	chatID := r.open()
+	ctx := context.Background()
+	r.stub.reply(func(_ int, s *frames) { s.fail("transient", "m1") })
+	if err := app.Say(ctx, r.store, ownerAccess, chatID, "q", app.Picks{Route: "fast", PinAccount: accountA, PinModel: "gpt-x"}); err != nil {
+		t.Fatal(err)
+	}
+	first := r.lastJob()
+	if err := r.run(first, 1); err != nil {
+		t.Fatal(err)
+	}
+	r.completed(first)
+	failed := r.lines(chatID)[1]
+
+	if err := app.Retry(ctx, r.store, ownerAccess, chatID, failed.ID, &app.Picks{PinAccount: accountB, PinModel: "other-m"}); err != nil {
+		t.Fatal(err)
+	}
+	retry := r.lastJob()
+	if retry.Args.PinAccount != accountB || retry.Args.PinModel != "other-m" || retry.Args.Route != "chat" {
+		t.Fatalf("override args = %+v", retry.Args)
+	}
+	if err := r.run(retry, 1); err != nil {
+		t.Fatal(err)
+	}
+	got := r.stub.seen()
+	if last := got[len(got)-1]; last.Pin == nil || last.Pin.AccountID != accountB || last.Pin.Model != "other-m" || last.Route != "chat" {
+		t.Fatalf("override call = %+v", last)
+	}
+	var stored string
+	if err := r.owner.QueryRow(ctx, `SELECT pin_account_id::text || '/' || pin_model FROM chat.lines WHERE chat_id = $1::uuid AND seq = 1`, chatID).Scan(&stored); err != nil || stored != accountA+"/gpt-x" {
+		t.Fatalf("the user line's stored pin = %q %v", stored, err)
 	}
 }

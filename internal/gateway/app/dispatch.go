@@ -62,6 +62,16 @@ type Routes interface {
 	ByName(ctx context.Context, name string) (domain.Route, error)
 }
 
+// PinAccounts looks up the provider account a pin names. ok is false when
+// there is no such account.
+type PinAccounts interface {
+	PinAccount(ctx context.Context, id string) (account domain.Account, ok bool, err error)
+	// PinProvider resolves a provider name and a model for one person: their
+	// own account of that provider that lists the model, else a global
+	// account of it that does. ok is false when there is none.
+	PinProvider(ctx context.Context, user, provider, model string) (account domain.Account, ok bool, err error)
+}
+
 // Secrets resolves a credential_ref. Implementations must not log the value.
 type Secrets interface {
 	Get(ref string) (string, error)
@@ -74,6 +84,7 @@ type Caps func(model string) (have []string, ok bool)
 // Dispatch walks a route's links using the failover table.
 type Dispatch struct {
 	Routes  Routes
+	Pins    PinAccounts
 	Secrets Secrets
 	Prices  Prices
 	Ledger  Ledger
@@ -357,7 +368,32 @@ type StreamSink interface {
 // cannot be resolved fails its link like any pre-text fault. One ledger row
 // is written per attempt, as in ChatCall.
 func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input, maxOutputTokens int, sink StreamSink) error {
-	in, err := d.applyBundle(ctx, who, in)
+	return d.ChatStreamPinned(ctx, routeName, credentialRef, who, in, domain.Pin{}, maxOutputTokens, sink)
+}
+
+// ChatStreamPinned is ChatStreamCall with an optional pin. A pin is tried
+// before the route's chain, on the credential of the account it names, and
+// the chain follows as the fallback with the pinned account and model taken
+// out of it. A pin names an account, or a provider that is resolved to the
+// person's own account of it that lists the model, else a global one. A pin
+// to another person's account is refused before any frame.
+// A pin that cannot be used (no such account, or no stream adapter for it)
+// is skipped, and the sink hears a notice that names the pinned model before
+// the chain starts. The zero pin leaves the call as ChatStreamCall made it.
+func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input, pin domain.Pin, maxOutputTokens int, sink StreamSink) error {
+	if err := pin.Check(); err != nil {
+		return err
+	}
+	if !pin.IsZero() && (who.User == "" || credentialRef != "") {
+		return domain.ErrPinCaller
+	}
+	// Whose account the pin names is settled first, so another person's
+	// account is refused whatever else is wrong with the call.
+	account, found, own, err := d.pinAccount(ctx, who, pin)
+	if err != nil {
+		return err
+	}
+	in, err = d.applyBundle(ctx, who, in)
 	if err != nil {
 		return err
 	}
@@ -369,6 +405,8 @@ func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef s
 		return fmt.Errorf("gateway: chat prompt is empty")
 	}
 	built.MaxOutputTokens = maxOutputTokens
+	// ByName checks the route, and a route with no hops is a config error that
+	// a pin does not bypass.
 	route, err := d.Routes.ByName(ctx, routeName)
 	if err != nil {
 		return err
@@ -384,22 +422,67 @@ func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef s
 	} else {
 		links, err = route.LinksFor(credentialRef)
 	}
-	if err != nil {
-		return err
-	}
 	var (
 		last      error
 		lastModel string
 		lastClass domain.FailureClass
+		pinFirst  bool
 	)
+	if !pin.IsZero() {
+		pinned := d.pinLink(route, account, found, pin)
+		if own {
+			// A pin to the person's own account is paid by them alone: the
+			// fallback is their own links of the route, which may be none.
+			links, err = route.OwnLinks(who.User), nil
+		}
+		if pinned != nil {
+			// The pin does not need the route to have a link for the person.
+			err = nil
+			links = domain.Pinned(*pinned, links)
+			pinFirst = true
+		} else {
+			if err != nil {
+				return err
+			}
+			next := ""
+			if len(links) > 0 {
+				next = links[0].Model
+			}
+			if nerr := sink.Notice(StreamNotice{FailedModel: pin.Model, Class: domain.ClassModelAccess, NextModel: next}); nerr != nil {
+				return nerr
+			}
+			last, lastModel, lastClass = fmt.Errorf("gateway: the pinned model cannot be used"), pin.Model, domain.ClassModelAccess
+		}
+	}
+	if err != nil {
+		return err
+	}
+	// skipped hears of a pinned link that is passed over before any call: the
+	// person is told, like for a pin that cannot be used at all.
+	skipped := func(i int, link domain.Link, cause error) error {
+		last = cause
+		if !pinFirst || i != 0 {
+			return nil
+		}
+		lastModel, lastClass = link.Model, domain.ClassModelAccess
+		next := ""
+		if len(links) > 1 {
+			next = links[1].Model
+		}
+		return sink.Notice(StreamNotice{FailedModel: link.Model, Class: domain.ClassModelAccess, NextModel: next})
+	}
 	for i, link := range links {
 		streamer := d.Stream[link.Account.Adapter]
 		if streamer == nil {
-			last = fmt.Errorf("gateway: no stream adapter %q", link.Account.Adapter)
+			if nerr := skipped(i, link, fmt.Errorf("gateway: no stream adapter %q", link.Account.Adapter)); nerr != nil {
+				return nerr
+			}
 			continue
 		}
 		if skip, err := d.skip(link); skip {
-			last = err
+			if nerr := skipped(i, link, err); nerr != nil {
+				return nerr
+			}
 			continue
 		}
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
@@ -574,6 +657,39 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 		last = fmt.Errorf("gateway: route %q exhausted", routeName)
 	}
 	return "", nil, last
+}
+
+// pinAccount looks up the account a pin names and settles whose it is. It
+// returns an error for an account that belongs to another person, which is
+// refused. found is false when there is no such account, or no lookup; own
+// says the account is the person's own.
+func (d Dispatch) pinAccount(ctx context.Context, who domain.Principal, pin domain.Pin) (account domain.Account, found, own bool, err error) {
+	if pin.IsZero() || d.Pins == nil {
+		return domain.Account{}, false, false, nil
+	}
+	if pin.Provider != "" {
+		account, found, err = d.Pins.PinProvider(ctx, who.User, pin.Provider, pin.Model)
+	} else {
+		account, found, err = d.Pins.PinAccount(ctx, pin.AccountID)
+	}
+	if err != nil || !found {
+		return domain.Account{}, false, false, err
+	}
+	if !domain.PinUsable(account, who.User) {
+		return domain.Account{}, false, false, domain.ErrPinAccount
+	}
+	return account, true, account.OwnerUserID != "", nil
+}
+
+// pinLink makes the link that goes first from a found account, with the
+// credential ref of that account. It is nil for a pin that cannot be used: no
+// such account, or no stream adapter for it.
+func (d Dispatch) pinLink(route domain.Route, account domain.Account, found bool, pin domain.Pin) *domain.Link {
+	if !found || d.Stream[account.Adapter] == nil {
+		return nil
+	}
+	link := route.PinLink(account, pin.Model)
+	return &link
 }
 
 func (d Dispatch) skip(link domain.Link) (bool, error) {

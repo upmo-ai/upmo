@@ -18,6 +18,7 @@ import { TokensPage } from "../features/identity/tokens";
 import { AdminSettingsLayout } from "../features/settings/settings";
 import { ConnectorsPage } from "../features/connectors/connectors";
 import { EditConnectorPage, NewConnectorPage } from "../features/connectors/connector-form";
+import { AgentsPage } from "../features/agents/agents";
 import { ProvidersPage } from "../features/providers/providers";
 import { EditProviderPage, NewProviderPage } from "../features/providers/provider-form";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
@@ -31,7 +32,7 @@ import { PrivacyPage, TermsPage } from "./legal";
 import { LinkPage } from "./link";
 import { SignInPage } from "./sign-in";
 import { Shell } from "./shell";
-import { AgentsPage, AutomationsPage, ChatPage, HomePage } from "./pages";
+import { AutomationsPage, ChatPage, HomePage } from "./pages";
 
 export interface RouterContext {
   queryClient: QueryClient;

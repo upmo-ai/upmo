@@ -169,6 +169,52 @@ export type ProviderAccount = {
   scope: "own" | "global";
 };
 
+/**
+ * What the composer sends with a line or a retry, as the chat API takes it. A
+ * field left out is Auto: the agent's choice, else the install's. The pin is
+ * one provider account and a model id, and is tried before the route's chain.
+ */
+export type ChatPicks = {
+  agent_id?: string;
+  route?: string;
+  pin?: { account_id: string; model: string };
+};
+
+/**
+ * A saved profile a person picks in the chat composer: instructions added to
+ * the system text, and optionally a route and a model (provider name and model
+ * id) it defaults to. Empty strings mean none.
+ */
+export type AgentProfile = {
+  id: string;
+  name: string;
+  description: string;
+  prompt_overlay: string;
+  route: string;
+  model_provider: string;
+  model_id: string;
+  /** A switched off agent cannot be picked, and a reply that names it fails. */
+  enabled: boolean;
+  /** "global" agents belong to the workspace; a member sees them read only. */
+  scope: "own" | "global";
+  /** Whether this person may change or delete it: their own, or a global one for a settings manager. */
+  editable: boolean;
+};
+
+/** POST /api/agents. The scope is the person's own. */
+export type AgentInput = {
+  name: string;
+  description: string;
+  prompt_overlay: string;
+  route: string;
+  model_provider: string;
+  model_id: string;
+  enabled: boolean;
+};
+
+/** PATCH /api/agents/{id}. A field left out stays as it is; an empty route or model clears it. */
+export type AgentChange = Partial<AgentInput>;
+
 /** POST /api/providers. The api_key is write only: the brain never sends it back. */
 export type ProviderAdd = {
   provider: string;
@@ -461,6 +507,16 @@ export interface ApiClient {
      */
     test(config: ProviderProbe): Promise<TestResult>;
   };
+  agents: {
+    /** GET /api/agents: the person's own agents first, then the workspace's, each by name. */
+    list(): Promise<AgentProfile[]>;
+    /** POST /api/agents. 422 and 409 carry a plain sentence in BrainError.error. */
+    create(input: AgentInput): Promise<AgentProfile>;
+    /** PATCH /api/agents/{id}. 403 for a workspace agent a member may not change. */
+    update(id: string, input: AgentChange): Promise<AgentProfile>;
+    /** DELETE /api/agents/{id}. */
+    remove(id: string): Promise<void>;
+  };
   chats: {
     /** GET /api/chats, newest activity first. */
     list(): Promise<ChatSummary[]>;
@@ -469,17 +525,18 @@ export interface ApiClient {
     /** GET /api/chats/{id}. Lines are oldest first. */
     get(id: string): Promise<Chat>;
     /**
-     * POST /api/chats/{id} with {body, route}. Resolves once the line is stored
-     * (202); route is the picker's choice, empty for the install's default.
+     * POST /api/chats/{id} with {body, agent_id, route, pin}. Resolves once the
+     * line is stored (202); the picks are the composer's, each left out for Auto.
      * On the stub an assistant line follows a moment later; the brain's reply
      * arrives on the chat stream.
      */
-    send(id: string, body: string, route?: string): Promise<void>;
+    send(id: string, body: string, picks?: ChatPicks): Promise<void>;
     /**
-     * POST /api/chats/{id}/lines/{line}/retry with {route}: asks again for the
-     * reply a failed line left unanswered, on the route picked now (202).
+     * POST /api/chats/{id}/lines/{line}/retry with the picks as one JSON
+     * object: asks again for the reply a failed line left unanswered, on the
+     * picks made now (202).
      */
-    retry(id: string, lineId: string, route: string): Promise<void>;
+    retry(id: string, lineId: string, picks: ChatPicks): Promise<void>;
     /**
      * True while an assistant line is written on its own after a send, so a
      * reply is worth waiting for: the stub's is, the brain's is not yet.
@@ -518,6 +575,7 @@ export const TEAMS_KEY = ["teams"] as const;
 export const TOKENS_KEY = ["tokens"] as const;
 export const CONNECTORS_KEY = ["connectors"] as const;
 export const PROVIDERS_KEY = ["providers"] as const;
+export const AGENTS_KEY = ["agents"] as const;
 export const CHATS_KEY = ["chats"] as const;
 
 export const USAGE_KEY = ["usage"] as const;
@@ -560,6 +618,10 @@ export function connectorRulesQueryKey(connector: string) {
 
 export function providersQueryKey() {
   return PROVIDERS_KEY;
+}
+
+export function agentsQueryKey() {
+  return AGENTS_KEY;
 }
 
 export const GATEWAY_ROUTES_KEY = ["gateway", "routes"] as const;
@@ -1123,6 +1185,20 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       scope: "own",
     },
   ];
+  const agentProfiles: AgentProfile[] = [
+    {
+      id: "agent-research",
+      name: "Research",
+      description: "Reads widely and cites what it finds.",
+      prompt_overlay: "Answer as a careful researcher. Cite sources.",
+      route: "",
+      model_provider: "",
+      model_id: "",
+      enabled: true,
+      scope: "global",
+      editable: false,
+    },
+  ];
   let serial = 0;
   let passwordSet = false;
   let signIn: CurrentUser["signIn"] = null;
@@ -1648,6 +1724,36 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           latency_ms: 124,
           model: config.model || "default",
         };
+      },
+    },
+    agents: {
+      async list() {
+        const named = (a: AgentProfile, b: AgentProfile) => a.name.localeCompare(b.name);
+        const own = agentProfiles.filter((item) => item.scope === "own").sort(named);
+        const global = agentProfiles.filter((item) => item.scope === "global").sort(named);
+        return [...own, ...global].map((item) => copy(item));
+      },
+      async create(input) {
+        const taken = agentProfiles.some(
+          (item) => item.scope === "own" && item.name.toLowerCase() === input.name.toLowerCase(),
+        );
+        if (taken) throw new BrainError(409, "An agent with that name already exists.");
+        const agent: AgentProfile = { ...input, id: nextId("agent"), scope: "own", editable: true };
+        agentProfiles.push(agent);
+        return copy(agent);
+      },
+      async update(id, input) {
+        const agent = agentProfiles.find((item) => item.id === id);
+        if (!agent) throw new BrainError(404, "Not found.");
+        if (!agent.editable) throw new BrainError(403, "This agent is managed by your workspace.");
+        Object.assign(agent, input);
+        return copy(agent);
+      },
+      async remove(id) {
+        const index = agentProfiles.findIndex((item) => item.id === id);
+        if (index < 0) throw new BrainError(404, "Not found.");
+        if (!agentProfiles[index]?.editable) throw new BrainError(403, "This agent is managed by your workspace.");
+        agentProfiles.splice(index, 1);
       },
     },
     chats: createChatsStub(options.replyDelayMs),

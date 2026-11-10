@@ -39,10 +39,10 @@ func TestOpenLeavesTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := opened.ID
-	if err := app.Say(ctx, store, ownerAccess, id, " hello ", ""); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, id, " hello ", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, id, "again", ""); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, id, "again", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +94,7 @@ func TestSayWithRepliesOffStoresAFailedReplyInTheSameTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", ""); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := app.Read(ctx, store, ownerAccess, opened.ID)
@@ -112,7 +112,7 @@ func TestSayWithRepliesOffStoresAFailedReplyInTheSameTransaction(t *testing.T) {
 	}
 
 	// A line that is refused leaves no reply behind: both go together.
-	if err := app.Say(ctx, store, otherAccess, opened.ID, "no", ""); !errors.Is(err, app.ErrGone) {
+	if err := app.Say(ctx, store, otherAccess, opened.ID, "no", app.Picks{}); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("other person error = %v", err)
 	}
 	if again, _ := app.Read(ctx, store, ownerAccess, opened.ID); len(again.Lines) != 2 {
@@ -141,7 +141,7 @@ func TestTailReadsOneSnapshotSoARepliesDeltasAndLineNeverComeTogether(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", ""); err != nil {
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
 	chatBefore, err := app.Read(ctx, store, ownerAccess, opened.ID)

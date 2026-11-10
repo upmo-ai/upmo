@@ -62,6 +62,49 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	return r, r.Check()
 }
 
+// PinAccount loads the provider account a pin names. It reads as the table
+// owner like ByName, so the caller decides whether the person may use the
+// account. ok is false when there is no such account.
+func (s Store) PinAccount(ctx context.Context, id string) (domain.Account, bool, error) {
+	var a domain.Account
+	err := s.Pool.QueryRow(ctx, `
+		SELECT id::text, adapter, credential_ref, plan_kind, house, base_url, COALESCE(owner_user_id::text, '')
+		FROM gateway.provider_accounts
+		WHERE id = $1::uuid`, id).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Account{}, false, nil
+	}
+	if err != nil {
+		return domain.Account{}, false, err
+	}
+	return a, true, nil
+}
+
+// PinProvider resolves a provider name and a model for one person, as the
+// table owner like PinAccount: their own account of that provider that lists
+// the model comes first, then a global one (the house account before the
+// others), each by name. The provider matches without regard to case, and an
+// account with no provider label counts as its adapter. ok is false when no
+// account of the person's lists the model.
+func (s Store) PinProvider(ctx context.Context, user, provider, model string) (domain.Account, bool, error) {
+	var a domain.Account
+	err := s.Pool.QueryRow(ctx, `
+		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, COALESCE(a.owner_user_id::text, '')
+		FROM gateway.provider_accounts AS a
+		WHERE lower(COALESCE(NULLIF(a.provider, ''), a.adapter)) = lower($2)
+		  AND (a.owner_user_id = $1::uuid OR a.owner_user_id IS NULL)
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $3)
+		ORDER BY (a.owner_user_id IS NULL), a.house DESC, a.name
+		LIMIT 1`, user, provider, model).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Account{}, false, nil
+	}
+	if err != nil {
+		return domain.Account{}, false, err
+	}
+	return a, true, nil
+}
+
 // Names lists route names for the Models endpoint.
 func (s Store) Names(ctx context.Context) ([]string, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT name FROM gateway.routes ORDER BY name`)

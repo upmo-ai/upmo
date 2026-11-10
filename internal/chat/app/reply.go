@@ -56,13 +56,21 @@ const finishTimeout = 15 * time.Second
 // that user line. ReplyID is the id the assistant line will get; it is chosen
 // when the job is enqueued, so a rerun finds the deltas of the run before it.
 // A job is unique by LineID while one is waiting or running, so a line has one
-// reply on its way at a time.
+// reply on its way at a time. PinAccount and PinModel, both or neither, are
+// the model pinned for this reply; AgentID is the agent picked. The agent is
+// loaded when the reply is written: the agent adds its instructions and, where
+// the composer picked none, its route and its model. Route is the composer's
+// pick when RoutePicked, and the install's default route otherwise.
 type ReplyJobArgs struct {
-	ChatID  string `json:"chat_id"`
-	LineID  string `json:"line_id" river:"unique"`
-	ReplyID string `json:"reply_id"`
-	UserID  string `json:"user_id"`
-	Route   string `json:"route"`
+	ChatID      string `json:"chat_id"`
+	LineID      string `json:"line_id" river:"unique"`
+	ReplyID     string `json:"reply_id"`
+	UserID      string `json:"user_id"`
+	Route       string `json:"route"`
+	RoutePicked bool   `json:"route_picked,omitempty"`
+	PinAccount  string `json:"pin_account,omitempty"`
+	PinModel    string `json:"pin_model,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
 }
 
 // Kind is the River job kind.
@@ -158,6 +166,10 @@ type ReplyRows interface {
 	// CanWrite reports ErrGone or ErrSay when the person can no longer write
 	// to the chat.
 	CanWrite(ctx context.Context, access Access, chatID string) error
+	// Agent returns the agent a reply is for, as the person who wrote the
+	// line: one they can see that is switched on. Anything else is
+	// ErrAgentNotFound.
+	Agent(ctx context.Context, access Access, id string) (Agent, error)
 }
 
 // ModelMessage is one turn sent to the model.
@@ -166,13 +178,20 @@ type ModelMessage struct {
 	Text string
 }
 
-// ModelRequest is one reply's call to the gateway.
+// ModelRequest is one reply's call to the gateway. The pin is a provider
+// account and a model, or a provider name and a model that the gateway
+// resolves for the person (PinProvider), never both.
 type ModelRequest struct {
 	Route           string
 	CredentialRef   string
 	UserID          string
+	System          string
 	Messages        []ModelMessage
 	MaxOutputTokens int
+	PinAccount      string
+	PinProvider     string
+	PinModel        string
+	AgentID         string
 }
 
 // ModelAttempt is a model that failed before any text, and the next one.
@@ -403,6 +422,22 @@ func (w *replyWorker) refresh(ctx context.Context, live *liveAccess, args ReplyJ
 // access is looked up again every AccessEvery and before the line is stored;
 // when edit access is gone the call is stopped and the reply fails.
 func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobArgs, lines []Line) error {
+	var agent *Agent
+	if args.AgentID != "" {
+		got, err := w.deps.Rows.Agent(ctx, access, args.AgentID)
+		switch {
+		case errors.Is(err, ErrAgentNotFound):
+			// An agent that is gone, switched off or not theirs is never
+			// skipped: the reply fails and says so.
+			return w.store(ctx, access, args, Reply{
+				Status:   domain.StatusFailed,
+				Attempts: []domain.Attempt{{Class: domain.ClassAgent}},
+			})
+		case err != nil:
+			return err
+		}
+		agent = &got
+	}
 	live := &liveAccess{access: access}
 	sink := &deltaSink{
 		put: func(seq int, kind, body string) error {
@@ -440,12 +475,9 @@ func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobAr
 	}()
 
 	var attempts []domain.Attempt
-	done, err := w.deps.Model.Stream(callCtx, ModelRequest{
-		Route:           args.Route,
-		UserID:          args.UserID,
-		Messages:        history(lines, w.cfg.HistoryChars),
-		MaxOutputTokens: w.cfg.MaxOutputTokens,
-	}, sink.add, func(a ModelAttempt) {
+	req := w.request(args, agent)
+	req.Messages = history(lines, w.cfg.HistoryChars)
+	done, err := w.deps.Model.Stream(callCtx, req, sink.add, func(a ModelAttempt) {
 		attempts = append(attempts, domain.Attempt{Model: a.FailedModel, Class: a.Class})
 		sink.notice(Notice(a))
 	})
@@ -498,6 +530,37 @@ func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobAr
 		w.log.Info("chat reply failed", "chat", args.ChatID, "line", args.ReplyID, "class", failure.Class, "model", failure.Model)
 	}
 	return w.store(ctx, current, args, reply)
+}
+
+// request is the call a reply makes, without its messages: the route and the
+// pin settled between the composer's picks and the agent's defaults, and the
+// agent's instructions as the system text.
+func (w *replyWorker) request(args ReplyJobArgs, agent *Agent) ModelRequest {
+	picked := domain.Picked{PinAccount: args.PinAccount, PinModel: args.PinModel}
+	install := ""
+	if args.RoutePicked {
+		picked.Route = args.Route
+	} else {
+		install = args.Route
+	}
+	var defaults *domain.Defaults
+	system := ""
+	if agent != nil {
+		d := agent.Defaults()
+		defaults = &d
+		system = domain.AgentSystem(agent.Name, agent.PromptOverlay)
+	}
+	resolved := domain.Resolve(picked, defaults, install)
+	return ModelRequest{
+		Route:           resolved.Route,
+		UserID:          args.UserID,
+		System:          system,
+		MaxOutputTokens: w.cfg.MaxOutputTokens,
+		PinAccount:      resolved.PinAccount,
+		PinProvider:     resolved.PinProvider,
+		PinModel:        resolved.PinModel,
+		AgentID:         args.AgentID,
+	}
 }
 
 // store writes the assistant line, on a context that outlives a timeout or a

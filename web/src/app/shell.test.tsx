@@ -112,7 +112,7 @@ const signedOut: CurrentUser = {
   offerDismissed: false,
 };
 
-function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers" | "knowledge" | "createTask" | "postTaskMessage" | "gateway" | "decisions"> {
+function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "password" | "members" | "shares" | "tokens" | "connectors" | "providers" | "agents" | "knowledge" | "createTask" | "postTaskMessage" | "gateway" | "decisions"> {
   const passkey: Passkey = { id: "pk", name: "Passkey", added: "", lastUsed: "" };
   const member: Member = { id: "m", name: "Member", email: "member@aster.example", role: "member", teams: [] };
   const share: TaskShare = { visibility: "private", members: [] };
@@ -255,6 +255,7 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       },
     },
     knowledge: createStubApi().knowledge,
+    agents: createStubApi().agents,
     gateway: {
       async routes() {
         return [];

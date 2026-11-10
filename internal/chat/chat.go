@@ -42,6 +42,13 @@ type (
 	Store   = postgres.Store
 )
 
+// AgentsHandler serves the agents a person can pick in the composer, and
+// AgentBook keeps them.
+type (
+	AgentsHandler = httpapi.AgentsHandler
+	AgentBook     = app.AgentBook
+)
+
 // The reply to a chat line streams from a model while it is written.
 type (
 	ReplyJobArgs = app.ReplyJobArgs
