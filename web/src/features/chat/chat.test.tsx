@@ -79,7 +79,6 @@ describe("Chat page", () => {
     expect(within(composer).getByRole("button", { name: /Agent, route and model: Auto · Auto · Auto/ })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Attach file" })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Dictate" })).toBeTruthy();
-    expect(within(composer).getByRole("button", { name: /Tools mode: Auto/ })).toBeTruthy();
     expect(within(composer).getByRole("button", { name: "Send" })).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Copy reply" })).toBeTruthy();
     expect(screen.getByText(/to send/)).toBeTruthy();
@@ -703,19 +702,17 @@ describe("UPM-201 chat list at phone width", () => {
   });
 });
 
-describe("UPM-247 locked tools picker", () => {
-  it("UPM-247 locks the tools mode and says why, and leaves the agent, route and model pickers open", async () => {
+
+describe("UPM-261 composer toolbar", () => {
+  it("UPM-261 shows no tools pill and keeps the agent, route and model pickers and the keyboard hint", async () => {
     renderChat();
     const composer = await screen.findByRole("form", { name: "Chat composer" });
 
-    const tools = within(composer).getByRole("button", { name: /Tools mode: Auto/ });
-    expect(tools.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(tools);
-    expect(screen.queryByText("Tools and context")).toBeNull();
-    expect(screen.getByText(/Tools are not used in chat yet/)).toBeTruthy();
+    expect(within(composer).queryByRole("button", { name: /Tools mode/ })).toBeNull();
+    expect(screen.queryByText(/Tools are not used/)).toBeNull();
+    expect(screen.getByText(/to send/)).toBeTruthy();
 
-    const pill = within(composer).getByRole("button", { name: /Agent, route and model:/ });
-    fireEvent.click(pill);
+    fireEvent.click(within(composer).getByRole("button", { name: /Agent, route and model:/ }));
     const model = await screen.findByRole("menuitem", { name: "Model", hidden: true });
     expect(model.hasAttribute("disabled")).toBe(false);
   });
