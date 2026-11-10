@@ -159,15 +159,14 @@ func TestTailReadsOneSnapshotSoARepliesDeltasAndLineNeverComeTogether(t *testing
 	// The reply finishes between the two reads of a tail. Under one snapshot
 	// the tail still shows the deltas and not the line; read again, it shows
 	// the line and not the deltas.
-	reader := store
-	reader.BetweenReads = func() {
+	reader := postgres.WithBetweenReads(store, func() {
 		err := store.Finish(ctx, ownerAccess, app.Reply{
 			ChatID: opened.ID, LineID: reply, ReplyTo: user, Status: "done", Body: "partial", Model: "m1",
 		})
 		if err != nil {
 			t.Error(err)
 		}
-	}
+	})
 	tail, err := reader.Tail(ctx, ownerAccess, opened.ID, "", 100)
 	if err != nil {
 		t.Fatal(err)

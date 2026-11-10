@@ -27,9 +27,9 @@ type Store struct {
 	// names none. Empty turns replies off: a line is stored and nothing
 	// answers it.
 	ReplyRoute string
-	// BetweenReads, when set, runs inside Tail between its two reads. It is a
-	// seam for tests of a read that races a write.
-	BetweenReads func()
+	// betweenReads, when set, runs inside Tail between its two reads. It is a
+	// seam for tests of a read that races a write, set through export_test.go.
+	betweenReads func()
 }
 
 // Open inserts one private chat. It does not touch a login session or the profile.
