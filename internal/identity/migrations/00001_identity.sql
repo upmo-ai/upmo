@@ -284,7 +284,9 @@ DO $$
 BEGIN
   CREATE ROLE upmo_app NOLOGIN;
 EXCEPTION
-  WHEN duplicate_object THEN NULL;
+  -- Concurrent creators collide on pg_authid_rolname_index before the
+  -- duplicate_object check runs, which surfaces as unique_violation.
+  WHEN duplicate_object OR unique_violation THEN NULL;
 END
 $$;
 -- +goose StatementEnd
