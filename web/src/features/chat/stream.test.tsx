@@ -161,7 +161,9 @@ type Call = { method: string; path: string; body: unknown };
  * A brain that keeps two chats in memory. The first has only the person's line,
  * its reply is written on the stream. The second ends in a failed reply.
  */
-function brain(options: { routesRefused?: boolean } = {}) {
+function brain(
+  options: { routesRefused?: boolean; listsRefused?: boolean; listsFail?: number; agents?: unknown[]; accounts?: unknown[] } = {},
+) {
   const failedAt = Date.now() - 60_000;
   const chats = [
     { id: askedId, at: Date.now() - 10 * 60_000, lines: [stored("u1", "user", "Plan the offsite")] },
@@ -192,9 +194,16 @@ function brain(options: { routesRefused?: boolean } = {}) {
       return Response.json([]);
     }
     if (path === "/api/tasks" && method === "GET") return Response.json([]);
+    if (options.listsFail && method === "GET" && ["/api/gateway/routes", "/api/agents", "/api/providers"].includes(path)) {
+      return Response.json({ error: "down" }, { status: options.listsFail });
+    }
     if (path === "/api/gateway/routes" && method === "GET") {
       if (options.routesRefused) return Response.json({ error: "unauthorised" }, { status: 401 });
       return Response.json(sampleRoutes.map(({ scope: _scope, ...route }) => route));
+    }
+    if ((path === "/api/agents" || path === "/api/providers") && method === "GET") {
+      if (options.listsRefused) return Response.json({ error: "unauthorised" }, { status: 401 });
+      return Response.json(path === "/api/agents" ? (options.agents ?? []) : (options.accounts ?? []));
     }
     if (path === "/api/chats" && method === "GET") {
       return Response.json(
@@ -389,7 +398,7 @@ describe("chat stream page", () => {
     expect(screen.getByRole("button", { name: /Agent, route and model/ }).getAttribute("aria-label")).toContain("chat-stream");
   });
 
-  it("offers Default and the gateway's chat routes, and sends the chosen one", async () => {
+  it("offers Auto and the gateway's chat routes, and sends the chosen one", async () => {
     vi.stubGlobal("fetch", brain().fetcher);
     renderChat();
     await openStream();
@@ -397,21 +406,21 @@ describe("chat stream page", () => {
     fireEvent.click(pill);
     fireEvent.mouseEnter(await screen.findByRole("menuitem", { name: "Route", hidden: true }));
     const names = (await screen.findAllByRole("menuitemradio", { hidden: true })).map((item) => item.getAttribute("aria-label"));
-    const routeNames = names.filter((name) => ["Default", ...sampleRoutes.map((item) => item.name)].includes(name ?? ""));
+    const routeNames = names.filter((name) => ["Auto", ...sampleRoutes.map((item) => item.name)].includes(name ?? ""));
     // Chat and stream routes only: the sample's embed and decide routes cannot answer.
-    expect(routeNames).toEqual(["Default", "chat", "chat-stream"]);
+    expect(routeNames).toEqual(["Auto", "chat", "chat-stream"]);
     expect(names).not.toContain("Fastest");
     expect(names).not.toContain("embed");
   });
 
-  it("offers only Default when the brain refuses the route list", async () => {
-    vi.stubGlobal("fetch", brain({ routesRefused: true }).fetcher);
+  it("offers only Auto when the brain refuses the lists, and stays signed in", async () => {
+    vi.stubGlobal("fetch", brain({ routesRefused: true, listsRefused: true }).fetcher);
     renderChat();
     await openStream();
     fireEvent.click(screen.getByRole("button", { name: /Agent, route and model:/ }));
     fireEvent.mouseEnter(await screen.findByRole("menuitem", { name: "Route", hidden: true }));
     const names = (await screen.findAllByRole("menuitemradio", { hidden: true })).map((item) => item.getAttribute("aria-label"));
-    expect(names).toContain("Default");
+    expect(names).toContain("Auto");
     expect(names).not.toContain("chat");
     expect(names).not.toContain("chat-stream");
   });
@@ -549,3 +558,246 @@ async function choose(group: string, option: string) {
   fireEvent.mouseEnter(groupItem);
   fireEvent.click(await screen.findByRole("menuitemradio", { name: option, hidden: true }));
 }
+
+const account = (id: string, provider: string, models: string[], scope = "own") => ({
+  id,
+  provider,
+  name: `${provider} account`,
+  adapter: "openai_compat",
+  plan_kind: "metered",
+  status: "Connected",
+  models,
+  scope,
+});
+
+const agentRow = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  name,
+  description: `${name} agent`,
+  prompt_overlay: "",
+  route: "",
+  model_provider: "",
+  model_id: "",
+  enabled: true,
+  scope: "own",
+  editable: true,
+  ...extra,
+});
+
+const pickLists = {
+  agents: [
+    agentRow("a1", "Research"),
+    agentRow("a2", "Writer", { route: "chat", model_provider: "anthropic", model_id: "claude-y" }),
+    agentRow("a3", "Retired", { enabled: false }),
+  ],
+  accounts: [account("acc-own", "openai", ["gpt-x"]), account("acc-house", "anthropic", ["claude-y"], "global")],
+};
+
+const pillLabel = () => screen.getByRole("button", { name: /Agent, route and model:/ }).getAttribute("aria-label");
+
+async function groupNames(group: string) {
+  const pill = screen.getByRole("button", { name: /Agent, route and model:/ });
+  if (pill.getAttribute("aria-expanded") !== "true") fireEvent.click(pill);
+  fireEvent.mouseEnter(await screen.findByRole("menuitem", { name: group, hidden: true }));
+  return (await screen.findAllByRole("menuitemradio", { hidden: true })).map((item) => item.getAttribute("aria-label"));
+}
+
+async function sendLine(text: string) {
+  const box = (await screen.findByRole("textbox", { name: "Message" })) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: text } });
+  fireEvent.keyDown(box, { key: "Enter" });
+}
+
+const sentTo = (calls: Call[], path: string) => calls.filter((call) => call.method === "POST" && call.path === path).map((call) => call.body);
+
+describe("chat composer picks", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    FakeEventSource.instances.length = 0;
+    vi.stubGlobal("EventSource", FakeEventSource);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the picked agent, route and model pin with a line", async () => {
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await choose("Agent", "Research");
+    await choose("Route", "chat-stream");
+    await choose("Model", "openai/gpt-x");
+
+    await sendLine("And the venue?");
+
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([
+        { body: "And the venue?", agent_id: "a1", route: "chat-stream", pin: { account_id: "acc-own", model: "gpt-x" } },
+      ]);
+    });
+  });
+
+  it("sends nothing for Auto", async () => {
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await choose("Model", "openai/gpt-x");
+    await choose("Model", "Auto");
+
+    await sendLine("Just ask");
+
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([{ body: "Just ask" }]);
+    });
+  });
+
+  it("offers enabled agents only, and models with the provider and own accounts first", async () => {
+    vi.stubGlobal("fetch", brain(pickLists).fetcher);
+    renderChat();
+    await openStream();
+
+    await waitFor(async () => {
+      expect(await groupNames("Agent")).toEqual(["Auto", "Research", "Writer"]);
+    });
+    expect(await groupNames("Model")).toEqual(["Auto", "openai/gpt-x", "anthropic/claude-y"]);
+  });
+
+  it("shows an agent's route and model as the defaults on the Route and Model rows", async () => {
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await choose("Agent", "Writer");
+
+    expect(pillLabel()).toBe("Agent, route and model: Writer · Auto (chat) · Auto (anthropic/claude-y)");
+
+    await sendLine("Draft it");
+    // The agent's defaults are the brain's to apply: only the agent is named.
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([{ body: "Draft it", agent_id: "a2" }]);
+    });
+  });
+
+  it("lets an explicit model and route beat the agent's", async () => {
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await choose("Agent", "Writer");
+    await choose("Model", "openai/gpt-x");
+    await choose("Route", "chat-stream");
+
+    expect(pillLabel()).toBe("Agent, route and model: Writer · chat-stream · openai/gpt-x");
+
+    await sendLine("Draft it");
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([
+        { body: "Draft it", agent_id: "a2", route: "chat-stream", pin: { account_id: "acc-own", model: "gpt-x" } },
+      ]);
+    });
+  });
+
+  it("retries on the picks made now, as one object", async () => {
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    const list = await screen.findByRole("navigation", { name: "Chat list" });
+    fireEvent.click(await within(list).findByRole("button", { name: /Summarise the prices/ }));
+    await within(log()).findByText("No model could answer.");
+    await choose("Route", "chat");
+    await choose("Model", "openai/gpt-x");
+    await choose("Route", "chat-stream");
+    await choose("Model", "Auto");
+
+    fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${failedChatId}/lines/f1/retry`)).toEqual([{ route: "chat-stream" }]);
+    });
+  });
+
+  it("retries with an empty object when everything is Auto", async () => {
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    const list = await screen.findByRole("navigation", { name: "Chat list" });
+    fireEvent.click(await within(list).findByRole("button", { name: /Summarise the prices/ }));
+    await within(log()).findByText("No model could answer.");
+
+    fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${failedChatId}/lines/f1/retry`)).toEqual([{}]);
+    });
+  });
+
+  it("remembers the picks in this browser", async () => {
+    vi.stubGlobal("fetch", brain(pickLists).fetcher);
+    renderChat();
+    await openStream();
+    await choose("Agent", "Research");
+    await choose("Model", "openai/gpt-x");
+    cleanup();
+    FakeEventSource.instances.length = 0;
+
+    renderChat();
+    await openStream();
+
+    await waitFor(() => {
+      expect(pillLabel()).toBe("Agent, route and model: Research · Auto · openai/gpt-x");
+    });
+  });
+
+  it("falls back to Auto for a remembered pick that no longer exists", async () => {
+    localStorage.setItem(
+      "upmo.chat.picks",
+      JSON.stringify({ agent: "gone", route: "gone", model: "acc-gone/gpt-x" }),
+    );
+    const { fetcher, calls } = brain(pickLists);
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await groupNames("Agent");
+
+    expect(pillLabel()).toBe("Agent, route and model: Auto · Auto · Auto");
+    await sendLine("Hello");
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([{ body: "Hello" }]);
+    });
+    expect(JSON.parse(localStorage.getItem("upmo.chat.picks") ?? "null")).toEqual({ agent: "auto", route: "auto", model: "auto" });
+  });
+
+  it.each([500, 401])("keeps the remembered picks in storage when the lists fail with %i", async (status) => {
+    const kept = JSON.stringify({ agent: "a1", route: "chat", model: "acc-own/gpt-x" });
+    localStorage.setItem("upmo.chat.picks", kept);
+    const { fetcher, calls } = brain({ ...pickLists, listsFail: status });
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await waitFor(() => {
+      expect(calls.filter((call) => ["/api/gateway/routes", "/api/agents", "/api/providers"].includes(call.path))).toHaveLength(3);
+    });
+    await pause(300);
+
+    expect(localStorage.getItem("upmo.chat.picks")).toBe(kept);
+    // Nothing can be checked, so nothing is sent for them.
+    await sendLine("Hello");
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([{ body: "Hello" }]);
+    });
+  });
+
+  it("renders only Auto when there are no agents, routes or models", async () => {
+    vi.stubGlobal("fetch", brain({ routesRefused: true }).fetcher);
+    renderChat();
+    await openStream();
+
+    expect(await groupNames("Agent")).toEqual(["Auto"]);
+    expect(await groupNames("Route")).toEqual(["Auto"]);
+    expect(await groupNames("Model")).toEqual(["Auto"]);
+  });
+});

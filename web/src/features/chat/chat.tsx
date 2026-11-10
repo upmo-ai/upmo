@@ -6,10 +6,36 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
 
-import { chatQueryKey, chatsQueryKey, gatewayRoutesQueryKey, useApi, useWrite, type Chat, type ChatLine, type ChatSummary } from "../../app/api";
+import {
+  agentsQueryKey,
+  chatQueryKey,
+  chatsQueryKey,
+  gatewayRoutesQueryKey,
+  providersQueryKey,
+  useApi,
+  useWrite,
+  type AgentProfile,
+  type Chat,
+  type ChatLine,
+  type ChatPicks,
+  type ChatSummary,
+  type ProviderAccount,
+} from "../../app/api";
 import type { GatewayRoute } from "../models/types";
 import { ShellIcon } from "../../ui/icons";
 import { awaitingReply, formatCost, groupByDay, sendRefusal } from "./format";
+import {
+  AUTO,
+  chatPicks,
+  chatRoutes,
+  loadPicks,
+  modelChoices,
+  modelLabel,
+  pickableAgents,
+  savePicks,
+  validPicks,
+  type Picks,
+} from "./picks";
 import { attemptsText, keepPending, noticeText, useChatStream } from "./stream";
 
 import "./chat.css";
@@ -19,27 +45,6 @@ const REPLY_POLL_MS = 300;
 
 const noLines: ChatLine[] = [];
 const noChats: ChatSummary[] = [];
-
-// Only the route is sent with a line. The agent, model and tools pickers stay
-// as the page's own choices until the chat API honours them.
-const AGENTS: ComposerOption[] = [
-  { value: "auto", label: "Auto", description: "Intelligently select the best agent" },
-  { value: "general", label: "General Assistant", description: "General tasks and questions" },
-  { value: "coder", label: "Code Specialist", description: "Code generation and refactoring" },
-  { value: "research", label: "Research Agent", description: "Web search and summarization" },
-  { value: "planner", label: "Planning Agent", description: "Multi-step plan decomposition" },
-];
-
-const DEFAULT_ROUTE: ComposerOption = { value: "default", label: "Default", description: "The install's own chat route" };
-
-const MODELS: ComposerOption[] = [
-  { value: "gpt-5.6-luna", label: "Gpt-5.6-Luna", description: "OpenAI" },
-  { value: "claude-3.7-sonnet", label: "Claude 3.7 Sonnet", description: "Anthropic" },
-  { value: "claude-3.5-haiku", label: "Claude 3.5 Haiku", description: "Anthropic" },
-  { value: "gpt-4o", label: "GPT-4o", description: "OpenAI" },
-  { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "Google" },
-  { value: "deepseek-r1", label: "DeepSeek R1", description: "DeepSeek" },
-];
 
 const TOOLS_OPTIONS: ComposerOption[] = [
   { value: "auto", label: "Auto", description: "Allow model to call connected tools" },
@@ -72,9 +77,8 @@ export function ChatPage() {
   const [selectedId, setSelectedId] = useState<string>();
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
-  const [selectedAgent, setSelectedAgent] = useState("auto");
-  const [selectedRoute, setSelectedRoute] = useState("default");
-  const [selectedModel, setSelectedModel] = useState("gpt-5.6-luna");
+  // What this browser remembered; a pick that names something gone is Auto again once the lists are read.
+  const [remembered, setRemembered] = useState<Picks>(loadPicks);
   const [selectedTools, setSelectedTools] = useState("auto");
   const [sendError, setSendError] = useState<string>();
   // Chats a reply was asked for in this session (a send or a retry went through).
@@ -186,25 +190,68 @@ export function ChatPage() {
   const notices = (thread.data?.notices ?? []).filter(
     (notice) => !lines.some((line) => line.id === notice.line_id && line.status !== "pending"),
   );
-  // The routes the gateway really has. Without them only Default is offered, which sends nothing.
-  const gatewayRoutes = useQuery({ queryKey: gatewayRoutesQueryKey(), queryFn: () =>
-      // The list is for settings managers; a refusal, even a 401, must not read as a lost session here.
-      api.gateway.routes().catch((): GatewayRoute[] => []),
+  // A refusal, even a 401, must not read as a lost session here: a list that fails is null, which
+  // offers only Auto and sends nothing, but leaves the remembered pick alone.
+  const gatewayRoutes = useQuery({
+    queryKey: gatewayRoutesQueryKey(),
+    queryFn: () => api.gateway.routes().catch((): GatewayRoute[] | null => null),
   });
-  const routeOptions: ComposerOption[] = [
-    DEFAULT_ROUTE,
-    ...(gatewayRoutes.data ?? [])
-      // An embed or decide route cannot write a reply.
-      .filter((item) => item.capability === "chat" || item.capability === "stream")
-      .map((item) => ({ value: item.name, label: item.name, description: item.capability })),
+  const agentList = useQuery({
+    queryKey: agentsQueryKey(),
+    queryFn: () => api.agents.list().catch((): AgentProfile[] | null => null),
+  });
+  const accountList = useQuery({
+    queryKey: providersQueryKey(),
+    queryFn: () => api.providers.list().catch((): ProviderAccount[] | null => null),
+  });
+  const agents = pickableAgents(agentList.data ?? []);
+  const routes = chatRoutes(gatewayRoutes.data ?? []);
+  const models = modelChoices(accountList.data ?? []);
+  const picks = validPicks(remembered, agents, routes, models);
+  // Only a list that loaded can say a pick is gone; for one that did not, the remembered pick stays in storage.
+  const agentsKnown = agentList.data != null;
+  const routesKnown = gatewayRoutes.data != null;
+  const modelsKnown = accountList.data != null;
+  useEffect(() => {
+    savePicks({
+      agent: agentsKnown ? picks.agent : remembered.agent,
+      route: routesKnown ? picks.route : remembered.route,
+      model: modelsKnown ? picks.model : remembered.model,
+    });
+  }, [agentsKnown, routesKnown, modelsKnown, picks.agent, picks.route, picks.model, remembered.agent, remembered.route, remembered.model]);
+  const agent = agents.find((item) => item.id === picks.agent);
+  const pick = (axis: keyof Picks) => (value: string) => setRemembered({ ...remembered, [axis]: value });
+  const agentOptions: ComposerOption[] = [
+    { value: AUTO, label: "Auto", description: "No agent" },
+    ...agents.map((item) => ({ value: item.id, label: item.name, description: item.description })),
   ];
-  // The route the picker names now; Default, or one the gateway no longer lists, is sent as nothing.
-  const route = routeOptions.some((option) => option.value === selectedRoute && option.value !== "default")
-    ? selectedRoute
-    : "";
+  // The agent's own route and model are the defaults Auto stands for; a pick on the row overrides them.
+  const routeOptions: ComposerOption[] = [
+    {
+      value: AUTO,
+      label: agent?.route ? `Auto (${agent.route})` : "Auto",
+      description: agent?.route ? "The agent's route" : "The agent's route, else the install's",
+    },
+    ...routes.map((item) => ({ value: item.name, label: item.name, description: item.capability })),
+  ];
+  const agentModel = agent?.model_id ? modelLabel(agent.model_provider, agent.model_id) : "";
+  const modelOptions: ComposerOption[] = [
+    {
+      value: AUTO,
+      label: agentModel ? `Auto (${agentModel})` : "Auto",
+      description: agentModel ? "The agent's model" : "The agent's model, else the route's chain",
+    },
+    ...models.map((item) => ({
+      value: item.value,
+      label: modelLabel(item.provider, item.model),
+      description: item.scope === "global" ? `${item.account} (workspace)` : item.account,
+    })),
+  ];
+  // Taken when the button is pressed, so a retry asks on the picks made now.
+  const currentPicks = (): ChatPicks => chatPicks(picks, models);
 
   const send = useWrite(
-    (input: { id: string; body: string; route: string }) => api.chats.send(input.id, input.body, input.route),
+    (input: { id: string; body: string; picks: ChatPicks }) => api.chats.send(input.id, input.body, input.picks),
     [chatsQueryKey(), chatQueryKey(activeId ?? "")],
     {
       onSuccess: (_, input) => {
@@ -222,9 +269,9 @@ export function ChatPage() {
     },
   );
 
-  // Asks again with the route picked now, not the one the failed reply used.
+  // Asks again with the picks made now, not the ones the failed reply used.
   const retry = useWrite(
-    (input: { id: string; lineId: string; route: string }) => api.chats.retry(input.id, input.lineId, input.route),
+    (input: { id: string; lineId: string; picks: ChatPicks }) => api.chats.retry(input.id, input.lineId, input.picks),
     [chatQueryKey(activeId ?? "")],
     {
       onSuccess: (_, input) => {
@@ -269,14 +316,14 @@ export function ChatPage() {
     setSendError(undefined);
     setDraft("");
     awaited.current.set(activeId, lines.at(-1)?.id);
-    send.mutate({ id: activeId, body: text, route });
+    send.mutate({ id: activeId, body: text, picks: currentPicks() });
   };
 
   const handleRetry = (lineId: string) => {
     if (!activeId || thinking || retry.isPending) return;
     setSendError(undefined);
     setRetrying((ids) => new Set(ids).add(lineId));
-    retry.mutate({ id: activeId, lineId, route });
+    retry.mutate({ id: activeId, lineId, picks: currentPicks() });
   };
 
   const handleDraftChange = (value: string) => {
@@ -458,9 +505,6 @@ export function ChatPage() {
                 <StatusAlert tone="critical">{sendError}</StatusAlert>
               </div>
             ) : null}
-            <Text className="chat-picker-note">
-              Only the route is used for now. Agent, model and tools do not change the reply yet.
-            </Text>
             <Composer
               value={draft}
               onChange={handleDraftChange}
@@ -470,9 +514,9 @@ export function ChatPage() {
               config={{
                 label: "Agent, route and model",
                 groups: [
-                  { label: "Agent", value: selectedAgent, options: AGENTS, onChange: setSelectedAgent },
-                  { label: "Route", value: selectedRoute, options: routeOptions, onChange: setSelectedRoute },
-                  { label: "Model", value: selectedModel, options: MODELS, onChange: setSelectedModel },
+                  { label: "Agent", value: picks.agent, options: agentOptions, onChange: pick("agent") },
+                  { label: "Route", value: picks.route, options: routeOptions, onChange: pick("route") },
+                  { label: "Model", value: picks.model, options: modelOptions, onChange: pick("model") },
                 ],
               }}
               toolsMode={{ value: selectedTools, options: TOOLS_OPTIONS, onChange: setSelectedTools }}

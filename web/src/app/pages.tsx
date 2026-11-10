@@ -23,14 +23,3 @@ export function AutomationsPage() {
     />
   );
 }
-
-export function AgentsPage() {
-  return (
-    <Section
-      title="Agents"
-      emptyTitle="Add an agent"
-      emptyBody="Agents run tasks with the tools you give them."
-      emptyAction={{ label: "Add agent", to: "/agents" }}
-    />
-  );
-}

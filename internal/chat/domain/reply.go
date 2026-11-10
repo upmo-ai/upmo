@@ -63,6 +63,8 @@ func Reason(class string) string {
 		return "the reply could not be written"
 	case "no_replies":
 		return "replies are not set up"
+	case ClassAgent:
+		return "that agent is not available"
 	default:
 		return "stopped"
 	}

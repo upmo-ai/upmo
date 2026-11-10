@@ -26,7 +26,7 @@ func TestListGatewayRoutes(t *testing.T) {
 		Name: "memory-check", Capability: "decide", Decision: "yesno",
 		Hops: []app.ListedHop{{Position: 1, Adapter: "openai_compat", Model: "gpt-4.1-mini", Weight: 1, Retry: 1}},
 	}}}
-	rec := callRoutes(t, book, "settings:manage")
+	rec := callRoutes(t, book, true)
 	if rec.Code != http.StatusOK || book.calls != 1 {
 		t.Fatalf("status %d calls %d body %s", rec.Code, book.calls, rec.Body.String())
 	}
@@ -39,18 +39,20 @@ func TestListGatewayRoutes(t *testing.T) {
 	}
 }
 
-func TestListGatewayRoutesRefusesEmptyAllow(t *testing.T) {
+func TestListGatewayRoutesNeedsASession(t *testing.T) {
 	book := &fakeRoutes{}
-	rec := callRoutes(t, book, "")
+	rec := callRoutes(t, book, false)
 	if rec.Code != http.StatusUnauthorized || book.calls != 0 {
 		t.Fatalf("status %d calls %d", rec.Code, book.calls)
 	}
 }
 
-func TestListGatewayRoutesRefusesViewer(t *testing.T) {
-	book := &fakeRoutes{}
-	rec := callRoutes(t, book, "task:view")
-	if rec.Code != http.StatusUnauthorized || book.calls != 0 {
+// A signed-in person with no permission at all still reads the routes: the
+// composer needs the names to offer them.
+func TestListGatewayRoutesOpenToAnySignedInPerson(t *testing.T) {
+	book := &fakeRoutes{rows: []app.ListedRoute{{Name: "chat", Capability: "chat"}}}
+	rec := callRoutes(t, book, true)
+	if rec.Code != http.StatusOK || book.calls != 1 {
 		t.Fatalf("status %d calls %d", rec.Code, book.calls)
 	}
 }
@@ -60,29 +62,29 @@ func TestListGatewayRoutesRefusesBearer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/gateway/routes", nil)
 	req.Header.Set("Authorization", "Bearer upmo_pat_secret")
 	rec := httptest.NewRecorder()
-	routesHandler(book, "settings:manage").ServeHTTP(rec, req)
+	routesHandler(book, true).ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden || book.calls != 0 {
 		t.Fatalf("status %d calls %d", rec.Code, book.calls)
 	}
 }
 
-func callRoutes(t *testing.T, book *fakeRoutes, allow string) *httptest.ResponseRecorder {
+func callRoutes(t *testing.T, book *fakeRoutes, signedIn bool) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/gateway/routes", nil)
 	rec := httptest.NewRecorder()
-	routesHandler(book, allow).ServeHTTP(rec, req)
+	routesHandler(book, signedIn).ServeHTTP(rec, req)
 	return rec
 }
 
-func routesHandler(book *fakeRoutes, allow string) http.Handler {
+func routesHandler(book *fakeRoutes, signedIn bool) http.Handler {
 	mux := http.NewServeMux()
 	RoutesHandler{
 		Book: book,
-		Access: func(*http.Request) (string, string, bool) {
-			if allow == "" {
-				return "", "", false
+		Access: func(*http.Request) (string, bool) {
+			if !signedIn {
+				return "", false
 			}
-			return "018f3b2c-7a10-7c4a-8e11-111111111111", allow, true
+			return "018f3b2c-7a10-7c4a-8e11-111111111111", true
 		},
 	}.MountRoutes(mux, nil)
 	return mux

@@ -6,6 +6,7 @@ import {
   providerChangeBody,
   providerTestBody,
   shareBody,
+  toAgent,
   toApproval,
   toChat,
   toChatLine,
@@ -468,5 +469,37 @@ describe("toGatewayRoute", () => {
     expect(() => toGatewayRoute({ ...sent, decision: "maybe" })).toThrow("decision");
     expect(() => toGatewayRoute({ ...sent, hops: [{ ...sent.hops[0], model: 4 }] })).toThrow("no model");
     expect(() => toGatewayRoute("chat")).toThrow("no route");
+  });
+});
+
+describe("toAgent", () => {
+  const sent = {
+    id: "01990000-0000-7000-8000-0000000000a1",
+    name: "Research",
+    description: "Reads widely",
+    prompt_overlay: "Cite sources.",
+    route: "deep",
+    model_provider: "OpenAI",
+    model_id: "gpt-x",
+    enabled: true,
+    scope: "own",
+    editable: true,
+  };
+
+  it("reads an agent as the brain sends it", () => {
+    expect(toAgent(sent)).toEqual(sent);
+    expect(toAgent({ ...sent, scope: "global", editable: false, route: "", model_provider: "", model_id: "" })).toMatchObject({
+      scope: "global",
+      editable: false,
+      route: "",
+    });
+  });
+
+  it("refuses what is not an agent", () => {
+    expect(() => toAgent(null)).toThrow("The brain sent no agent.");
+    expect(() => toAgent({ ...sent, scope: "team" })).toThrow("The brain sent an unknown scope.");
+    expect(() => toAgent({ ...sent, enabled: "yes" })).toThrow("The brain sent no enabled.");
+    expect(() => toAgent({ ...sent, editable: undefined })).toThrow("The brain sent no editable.");
+    expect(() => toAgent({ ...sent, name: 5 })).toThrow("The brain sent no name.");
   });
 });
