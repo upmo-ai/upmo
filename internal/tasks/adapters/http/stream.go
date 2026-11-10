@@ -2,26 +2,16 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/upmo-ai/upmo/internal/platform/stream"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
-
-// writeDeadline is how long each write to a stream may take. The server's
-// WriteTimeout counts from the request header and would cut a long stream off,
-// so every write sets a new deadline.
-const writeDeadline = 30 * time.Second
-
-// retryMillis is the reconnect delay the browser is told to use.
-const retryMillis = 3000
 
 type statusJSON struct {
 	Status string `json:"status"`
@@ -103,10 +93,10 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 	header.Set("Cache-Control", "no-cache, no-store")
 	header.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	out := sseWriter{w: w, rc: http.NewResponseController(w)}
+	out := stream.NewSSEWriter(w)
 
-	if out.write(": ok\n\nretry: "+strconv.Itoa(retryMillis)+"\n\n") != nil ||
-		out.status(view.Status, view.Phase) != nil {
+	if out.Hello() != nil ||
+		writeStatus(out, view.Status, view.Phase) != nil {
 		reason = "write failed"
 		return
 	}
@@ -124,15 +114,15 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 			reason = "lifetime"
 			return
 		case <-beat.C:
-			err = out.write(": hb\n\n")
+			err = out.Heartbeat()
 		case <-sub.Closed():
 			reason = sub.Reason()
 			if reason == app.EndAccess {
-				_ = out.end(app.EndAccess)
+				_ = out.End(app.EndAccess)
 			}
 			return
 		case m := <-sub.Out():
-			err = out.message(m)
+			err = writeMessage(out, m)
 			sub.Taken()
 			if err == nil && m.Kind == app.StreamEnd {
 				reason = app.EndFinished
@@ -146,51 +136,18 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sseWriter writes event stream frames. Each write sets a new write deadline
-// and is flushed.
-type sseWriter struct {
-	w  io.Writer
-	rc *http.ResponseController
+func writeStatus(s stream.SSEWriter, status domain.Shown, phase domain.Status) error {
+	return s.Event("status", "", statusJSON{Status: string(status), Phase: string(phase)})
 }
 
-func (s sseWriter) write(frame string) error {
-	if err := s.rc.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return err
-	}
-	if _, err := io.WriteString(s.w, frame); err != nil {
-		return err
-	}
-	return s.rc.Flush()
-}
-
-func (s sseWriter) status(status domain.Shown, phase domain.Status) error {
-	data, err := json.Marshal(statusJSON{Status: string(status), Phase: string(phase)})
-	if err != nil {
-		return err
-	}
-	return s.write("event: status\ndata: " + string(data) + "\n\n")
-}
-
-func (s sseWriter) end(reason string) error {
-	data, err := json.Marshal(map[string]string{"reason": reason})
-	if err != nil {
-		return err
-	}
-	return s.write("event: end\ndata: " + string(data) + "\n\n")
-}
-
-func (s sseWriter) message(m app.StreamMessage) error {
+func writeMessage(s stream.SSEWriter, m app.StreamMessage) error {
 	switch m.Kind {
 	case app.StreamLine:
-		data, err := json.Marshal(eventBody(m.Event))
-		if err != nil {
-			return err
-		}
-		return s.write("event: line\nid: " + m.Event.ID + "\ndata: " + string(data) + "\n\n")
+		return s.Event("line", m.Event.ID, eventBody(m.Event))
 	case app.StreamStatus:
-		return s.status(m.Summary.Status, m.Summary.Phase)
+		return writeStatus(s, m.Summary.Status, m.Summary.Phase)
 	case app.StreamEnd:
-		return s.end(app.EndFinished)
+		return s.End(app.EndFinished)
 	default:
 		return nil
 	}
