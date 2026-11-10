@@ -599,19 +599,20 @@ type scoutChat struct {
 	members identity.MemberService
 }
 
-func (s scoutChat) RecentLines(ctx context.Context, userID uuid.UUID, chatID string, limit int) ([]string, error) {
+func (s scoutChat) RecentLines(ctx context.Context, userID uuid.UUID, chatID string, limit int) ([]string, bool, error) {
 	person, err := identity.ParseUserID(userID.String())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	access, ok, err := chatAccess(ctx, s.members, person)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
-	return s.store.RecentLines(ctx, access, chatID, limit)
+	lines, err := s.store.RecentLines(ctx, access, chatID, limit)
+	return lines, err == nil, err
 }
 
 type scoutMemory struct {

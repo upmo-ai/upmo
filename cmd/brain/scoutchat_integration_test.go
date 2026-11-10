@@ -80,13 +80,13 @@ func TestScoutChatReadsASharedChatForItsSharedPeopleOnly(t *testing.T) {
 	scout := scoutChat{store: store, members: members}
 	want := []string{"hello", "hi there"}
 	for name, user := range map[string]uuid.UUID{"editor": bob, "viewer": dee, "owner": ada} {
-		got, err := scout.RecentLines(ctx, user, opened.ID, 10)
-		if err != nil || !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s lines = %v %v", name, got, err)
+		got, read, err := scout.RecentLines(ctx, user, opened.ID, 10)
+		if err != nil || !read || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s lines = %v %v %v", name, got, read, err)
 		}
 	}
-	got, err := scout.RecentLines(ctx, cy, opened.ID, 10)
-	if err == nil || len(got) != 0 {
-		t.Fatalf("stranger lines = %v %v", got, err)
+	got, read, err := scout.RecentLines(ctx, cy, opened.ID, 10)
+	if err == nil || read || len(got) != 0 {
+		t.Fatalf("stranger lines = %v %v %v", got, read, err)
 	}
 }

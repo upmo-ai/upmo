@@ -42,9 +42,10 @@ type GoalsLister interface {
 	ListOpenGoals(ctx context.Context, userID uuid.UUID) ([]OpenGoal, error)
 }
 
-// ChatReader returns recent chat lines when the trigger is chat.
+// ChatReader returns recent chat lines when the trigger is chat. The bool is
+// false when the person may not read the chat, so nothing was read.
 type ChatReader interface {
-	RecentLines(ctx context.Context, userID uuid.UUID, chatID string, limit int) ([]string, error)
+	RecentLines(ctx context.Context, userID uuid.UUID, chatID string, limit int) ([]string, bool, error)
 }
 
 // MemoryFact is one active personal fact for the scout prompt.
@@ -122,11 +123,14 @@ func RunScout(ctx context.Context, deps ScoutDeps, args ScoutArgs) (int, []Sourc
 
 	var chatLines []string
 	if args.Trigger == scoutTriggerChat && deps.Chat != nil && args.SourceID != "" {
-		chatLines, err = deps.Chat.RecentLines(ctx, args.UserID, args.SourceID, scoutChatLines)
+		var read bool
+		chatLines, read, err = deps.Chat.RecentLines(ctx, args.UserID, args.SourceID, scoutChatLines)
 		if err != nil {
 			return 0, audit, err
 		}
-		audit = append(audit, SourceRef{Kind: scoutTriggerChat, ID: args.SourceID})
+		if read {
+			audit = append(audit, SourceRef{Kind: scoutTriggerChat, ID: args.SourceID})
+		}
 	}
 	if args.Trigger == scoutTriggerKnowledge && args.SourceID != "" {
 		audit = append(audit, SourceRef{Kind: scoutTriggerKnowledge, ID: args.SourceID})
