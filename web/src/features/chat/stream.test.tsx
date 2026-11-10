@@ -551,12 +551,14 @@ describe("chat stream page", () => {
   });
 });
 
-async function choose(group: string, option: string) {
+// A model is picked inside its provider's section, so one name under two providers is not ambiguous.
+async function choose(group: string, option: string, provider?: string) {
   const pill = screen.getByRole("button", { name: /Agent, route and model:/ });
   if (pill.getAttribute("aria-expanded") !== "true") fireEvent.click(pill);
   const groupItem = await screen.findByRole("menuitem", { name: group, hidden: true });
   fireEvent.mouseEnter(groupItem);
-  fireEvent.click(await screen.findByRole("menuitemradio", { name: option, hidden: true }));
+  const scope = provider ? within(await screen.findByRole("group", { name: provider, hidden: true })) : screen;
+  fireEvent.click(await scope.findByRole("menuitemradio", { name: option, hidden: true }));
 }
 
 const account = (id: string, provider: string, models: string[], scope = "own") => ({
@@ -602,6 +604,22 @@ async function groupNames(group: string) {
   return (await screen.findAllByRole("menuitemradio", { hidden: true })).map((item) => item.getAttribute("aria-label"));
 }
 
+// The section headings of the open menu and the options under each, "" for options with no heading.
+async function sections(group: string) {
+  await groupNames(group);
+  const menu = screen.getByLabelText(`Filter ${group}`).closest("[role=menu], [data-menu-dropdown]") ?? document.body;
+  const out: Record<string, string[]> = { "": [] };
+  for (const el of menu.querySelectorAll("[role=group], [role=menuitemradio]")) {
+    if (el.getAttribute("role") === "group") {
+      const name = el.getAttribute("aria-labelledby") ? document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent ?? "" : "";
+      out[name] = [...el.querySelectorAll("[role=menuitemradio]")].map((item) => item.getAttribute("aria-label") ?? "");
+    } else if (!el.closest("[role=group]")) {
+      out[""].push(el.getAttribute("aria-label") ?? "");
+    }
+  }
+  return out;
+}
+
 async function sendLine(text: string) {
   const box = (await screen.findByRole("textbox", { name: "Message" })) as HTMLTextAreaElement;
   fireEvent.change(box, { target: { value: text } });
@@ -629,7 +647,7 @@ describe("chat composer picks", () => {
     await openStream();
     await choose("Agent", "Research");
     await choose("Route", "chat-stream");
-    await choose("Model", "openai/gpt-x");
+    await choose("Model", "gpt-x");
 
     await sendLine("And the venue?");
 
@@ -645,7 +663,7 @@ describe("chat composer picks", () => {
     vi.stubGlobal("fetch", fetcher);
     renderChat();
     await openStream();
-    await choose("Model", "openai/gpt-x");
+    await choose("Model", "gpt-x");
     await choose("Model", "Auto");
 
     await sendLine("Just ask");
@@ -663,7 +681,68 @@ describe("chat composer picks", () => {
     await waitFor(async () => {
       expect(await groupNames("Agent")).toEqual(["Auto", "Research", "Writer"]);
     });
-    expect(await groupNames("Model")).toEqual(["Auto", "openai/gpt-x", "anthropic/claude-y"]);
+    expect(await groupNames("Model")).toEqual(["Auto", "gpt-x", "claude-y"]);
+  });
+
+  it("lists models under their provider, with Auto on top and outside any section", async () => {
+    vi.stubGlobal("fetch", brain(pickLists).fetcher);
+    renderChat();
+    await openStream();
+
+    await waitFor(async () => {
+      expect(await sections("Model")).toEqual({ "": ["Auto"], openai: ["gpt-x"], anthropic: ["claude-y"] });
+    });
+  });
+
+  it("keeps a provider's models in one section when its accounts are not listed together", async () => {
+    const accounts = [
+      account("acc-1", "openai", ["gpt-x"]),
+      account("acc-2", "anthropic", ["claude-y"]),
+      account("acc-3", "openai", ["gpt-z"], "global"),
+    ];
+    vi.stubGlobal("fetch", brain({ ...pickLists, accounts }).fetcher);
+    renderChat();
+    await openStream();
+
+    await waitFor(async () => {
+      expect(await sections("Model")).toEqual({ "": ["Auto"], openai: ["gpt-x", "gpt-z"], anthropic: ["claude-y"] });
+    });
+    expect(screen.getAllByRole("group", { name: "openai", hidden: true })).toHaveLength(1);
+  });
+
+  it("pins the model of the provider whose section it is picked in when two providers share a name", async () => {
+    const accounts = [account("acc-a", "openai", ["shared"]), account("acc-b", "anthropic", ["shared"])];
+    const { fetcher, calls } = brain({ ...pickLists, accounts });
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    await choose("Model", "shared", "anthropic");
+
+    await sendLine("Which one?");
+
+    await waitFor(() => {
+      expect(sentTo(calls, `/api/chats/${askedId}`)).toEqual([{ body: "Which one?", pin: { account_id: "acc-b", model: "shared" } }]);
+    });
+  });
+
+  it.each([
+    ["Agent", "Research"],
+    ["Route", "chat-stream"],
+    ["Model", "gpt-x"],
+  ])("filters %s by what is typed and keeps Auto", async (group, option) => {
+    vi.stubGlobal("fetch", brain(pickLists).fetcher);
+    renderChat();
+    await openStream();
+    await waitFor(async () => {
+      expect(await groupNames(group)).toContain(option);
+    });
+
+    const filter = screen.getByLabelText(`Filter ${group}`);
+    fireEvent.change(filter, { target: { value: option } });
+
+    await waitFor(() => {
+      expect(screen.queryAllByRole("menuitemradio", { hidden: true }).map((item) => item.getAttribute("aria-label"))).toEqual(["Auto", option]);
+    });
   });
 
   it("shows an agent's route and model as the defaults on the Route and Model rows", async () => {
@@ -688,10 +767,10 @@ describe("chat composer picks", () => {
     renderChat();
     await openStream();
     await choose("Agent", "Writer");
-    await choose("Model", "openai/gpt-x");
+    await choose("Model", "gpt-x");
     await choose("Route", "chat-stream");
 
-    expect(pillLabel()).toBe("Agent, route and model: Writer · chat-stream · openai/gpt-x");
+    expect(pillLabel()).toBe("Agent, route and model: Writer · chat-stream · gpt-x");
 
     await sendLine("Draft it");
     await waitFor(() => {
@@ -709,7 +788,7 @@ describe("chat composer picks", () => {
     fireEvent.click(await within(list).findByRole("button", { name: /Summarise the prices/ }));
     await within(log()).findByText("No model could answer.");
     await choose("Route", "chat");
-    await choose("Model", "openai/gpt-x");
+    await choose("Model", "gpt-x");
     await choose("Route", "chat-stream");
     await choose("Model", "Auto");
 
@@ -740,7 +819,7 @@ describe("chat composer picks", () => {
     renderChat();
     await openStream();
     await choose("Agent", "Research");
-    await choose("Model", "openai/gpt-x");
+    await choose("Model", "gpt-x");
     cleanup();
     FakeEventSource.instances.length = 0;
 
@@ -748,7 +827,7 @@ describe("chat composer picks", () => {
     await openStream();
 
     await waitFor(() => {
-      expect(pillLabel()).toBe("Agent, route and model: Research · Auto · openai/gpt-x");
+      expect(pillLabel()).toBe("Agent, route and model: Research · Auto · gpt-x");
     });
   });
 

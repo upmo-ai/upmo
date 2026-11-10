@@ -53,6 +53,12 @@ const TOOLS_OPTIONS: ComposerOption[] = [
   { value: "disabled", label: "Disabled", description: "Pure model generation" },
 ];
 
+// The composer labels only consecutive options of one group, so a provider's models sit together, in the order its first account was listed.
+function byProvider<T extends { provider: string }>(items: readonly T[]): T[] {
+  const order = [...new Set(items.map((item) => item.provider))];
+  return [...items].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+}
+
 export function ChatPage() {
   const api = useApi();
   const queryClient = useQueryClient();
@@ -222,13 +228,14 @@ export function ChatPage() {
   const agent = agents.find((item) => item.id === picks.agent);
   const pick = (axis: keyof Picks) => (value: string) => setRemembered({ ...remembered, [axis]: value });
   const agentOptions: ComposerOption[] = [
-    { value: AUTO, label: "Auto", description: "No agent" },
+    { value: AUTO, label: "Auto", description: "No agent", pinned: true },
     ...agents.map((item) => ({ value: item.id, label: item.name, description: item.description })),
   ];
   // The agent's own route and model are the defaults Auto stands for; a pick on the row overrides them.
   const routeOptions: ComposerOption[] = [
     {
       value: AUTO,
+      pinned: true,
       label: agent?.route ? `Auto (${agent.route})` : "Auto",
       description: agent?.route ? "The agent's route" : "The agent's route, else the install's",
     },
@@ -238,12 +245,14 @@ export function ChatPage() {
   const modelOptions: ComposerOption[] = [
     {
       value: AUTO,
+      pinned: true,
       label: agentModel ? `Auto (${agentModel})` : "Auto",
       description: agentModel ? "The agent's model" : "The agent's model, else the route's chain",
     },
-    ...models.map((item) => ({
+    ...byProvider(models).map((item) => ({
       value: item.value,
-      label: modelLabel(item.provider, item.model),
+      label: item.model,
+      group: item.provider,
       description: item.scope === "global" ? `${item.account} (workspace)` : item.account,
     })),
   ];
@@ -514,9 +523,9 @@ export function ChatPage() {
               config={{
                 label: "Agent, route and model",
                 groups: [
-                  { label: "Agent", value: picks.agent, options: agentOptions, onChange: pick("agent") },
-                  { label: "Route", value: picks.route, options: routeOptions, onChange: pick("route") },
-                  { label: "Model", value: picks.model, options: modelOptions, onChange: pick("model") },
+                  { label: "Agent", value: picks.agent, options: agentOptions, onChange: pick("agent"), searchable: true },
+                  { label: "Route", value: picks.route, options: routeOptions, onChange: pick("route"), searchable: true },
+                  { label: "Model", value: picks.model, options: modelOptions, onChange: pick("model"), searchable: true },
                 ],
               }}
               toolsMode={{ value: selectedTools, options: TOOLS_OPTIONS, onChange: setSelectedTools }}
