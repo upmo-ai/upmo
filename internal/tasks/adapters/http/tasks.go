@@ -227,8 +227,12 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, boo
 		return app.Access{}, false
 	}
 	access, ok := h.Access(r)
-	if !ok || access.UserID == "" || access.Allow == "" {
+	if !ok || access.UserID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorised")
+		return app.Access{}, false
+	}
+	if access.Allow == "" {
+		writeError(w, http.StatusForbidden, "unauthorised")
 		return app.Access{}, false
 	}
 	return access, true
