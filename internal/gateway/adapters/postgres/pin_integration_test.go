@@ -158,6 +158,15 @@ func seedPins(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
+// pinListed is what each seeded account lists: the models the pin tests ask
+// of it.
+var pinListed = map[string][]string{
+	pinMine:   {"m-mine"},
+	pinMine2:  {"x"},
+	pinTheirs: {"m1"},
+	pinHouse:  {"m1", "m2", "m-vis", "h-pinned", "x"},
+}
+
 func newPinWorld(t *testing.T, fail map[string]domain.FailureClass) pinWorld {
 	t.Helper()
 	pool := pgtest.New(t)
@@ -165,6 +174,15 @@ func newPinWorld(t *testing.T, fail map[string]domain.FailureClass) pinWorld {
 		t.Fatal(err)
 	}
 	seedPins(t, pool)
+	for account, models := range pinListed {
+		for i, model := range models {
+			if _, err := pool.Exec(context.Background(), `
+				INSERT INTO gateway.provider_models (account_id, model, position) VALUES ($1::uuid, $2, $3)`,
+				account, model, i+1); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	store := postgres.Store{Pool: pool}
 	adapter := &pinAdapter{fail: fail}
 	return pinWorld{
@@ -529,7 +547,8 @@ func (w pinWorld) listModels(t *testing.T, account string, models ...string) {
 	for i, model := range models {
 		if _, err := w.pool.Exec(context.Background(), `
 			INSERT INTO gateway.provider_models (account_id, model, position)
-			VALUES ($1::uuid, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM gateway.provider_models WHERE account_id = $1::uuid))`,
+			VALUES ($1::uuid, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM gateway.provider_models WHERE account_id = $1::uuid))
+			ON CONFLICT DO NOTHING`,
 			account, model); err != nil {
 			t.Fatalf("model %d: %v", i, err)
 		}
@@ -608,5 +627,31 @@ func TestChatStreamOverHTTPCarriesAProviderPinAndRefusesAnAmbiguousOne(t *testin
 		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"provider":"fake","model":"h-pinned"}}`, pinAuthor, pinHouse))
 	if status != http.StatusBadRequest || len(w.adapter.calls) != 0 {
 		t.Fatalf("both account and provider: status = %d calls = %+v lines = %v", status, w.adapter.calls, lines)
+	}
+}
+
+func TestAccountPinNeedsTheAccountToListTheModel(t *testing.T) {
+	// pinHouse lists m2 but not m-unlisted: the first pin answers, the second
+	// is skipped with a notice naming it and the route chain answers.
+	w := newPinWorld(t, nil)
+	sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.adapter.models() != "m2" || sink.done == nil || sink.done.Model != "m2" || len(sink.notices) != 0 {
+		t.Fatalf("listed: models = %s done = %+v notices = %+v", w.adapter.models(), sink.done, sink.notices)
+	}
+
+	w = newPinWorld(t, nil)
+	sink, err = w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: pinHouse, Model: "m-unlisted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.StreamNotice{FailedModel: "m-unlisted", Class: domain.ClassModelAccess, NextModel: "m1"}
+	if len(sink.notices) != 1 || sink.notices[0] != want {
+		t.Fatalf("notices = %+v, want %+v", sink.notices, want)
+	}
+	if w.adapter.models() != "m1" || sink.done == nil || sink.done.Model != "m1" {
+		t.Fatalf("unlisted: models = %s done = %+v", w.adapter.models(), sink.done)
 	}
 }
