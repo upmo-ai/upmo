@@ -57,10 +57,12 @@ type Tail struct {
 	More bool
 }
 
-// StreamRows is what the hub reads. Newest is the access check and the id of
-// the newest line; Tail is the one read per chat and notification. Both
-// answer ErrGone for a chat the access cannot see.
+// StreamRows is what the hub reads. Visible is the access check of a stream;
+// Newest is the same check and the id of the newest line, for a stream that
+// opens; Tail is the one read per chat and notification. All answer ErrGone
+// for a chat the access cannot see.
 type StreamRows interface {
+	Visible(ctx context.Context, access Access, chatID string) error
 	Newest(ctx context.Context, access Access, chatID string) (string, error)
 	Tail(ctx context.Context, access Access, chatID, after string, limit int) (Tail, error)
 }
@@ -118,8 +120,7 @@ func eventID(event StreamEvent) string { return event.ID }
 type chatRows struct{ rows StreamRows }
 
 func (c chatRows) Check(ctx context.Context, access Access, key string) error {
-	_, err := c.rows.Newest(ctx, access, key)
-	return denied(err)
+	return denied(c.rows.Visible(ctx, access, key))
 }
 
 func (c chatRows) Tail(ctx context.Context, access Access, key, after string, limit int) (stream.Tail[StreamEvent, struct{}], error) {

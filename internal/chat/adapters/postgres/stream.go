@@ -18,6 +18,20 @@ import (
 // Channel is the NOTIFY channel the delta and line triggers send on.
 const Channel = "chat_stream"
 
+// Visible is the access check of a stream already open: a chat this person
+// cannot see is ErrGone. It reads nothing but the chat row.
+func (s Store) Visible(ctx context.Context, access app.Access, chatID string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := visible(ctx, tx, chatID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Newest returns the stream id of the newest line of a chat, "" for a chat
 // with none. It is also the access check of a stream: a chat this person
 // cannot see is ErrGone.
@@ -117,8 +131,8 @@ func (s Store) Tail(ctx context.Context, access app.Access, chatID, after string
 		return app.Tail{}, fmt.Errorf("chat: tail deltas: %w", err)
 	}
 
-	if s.BetweenReads != nil {
-		s.BetweenReads()
+	if s.betweenReads != nil {
+		s.betweenReads()
 	}
 	rows, err = tx.Query(ctx, `
 		SELECT line.feed_id::text, `+lineColumnsFor("$4::uuid")+`
