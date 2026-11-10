@@ -11,3 +11,7 @@ minimumReleaseAgeExclude:
   - '@upmo-ai/tokens@1.6.0 || 1.6.1 || 1.7.0'
 
 updateNotifier: false
+
+# monaco-editor pins dompurify 3.4.15 (GHSA-cg2g-xh64-v4q7 and four more).
+overrides:
+  dompurify: 3.4.17
