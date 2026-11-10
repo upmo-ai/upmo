@@ -1304,3 +1304,52 @@ func TestARetryWithPicksOverridesTheStoredOnesAsAWhole(t *testing.T) {
 		t.Fatalf("the user line's stored pin = %q %v", stored, err)
 	}
 }
+
+func TestFailReply_UPM252_WorksForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	ctx := context.Background()
+	chatID := r.open()
+	r.say(chatID, "hi", "")
+	queued := r.lastJob()
+	user := r.lines(chatID)[0]
+	if err := r.store.PutDelta(ctx, ownerAccess, chatID, queued.Args.ReplyID, 1, "text", "partial"); err != nil {
+		t.Fatal(err)
+	}
+	const role = "chat_fail_owner"
+	if _, err := r.owner.Exec(ctx, `DROP ROLE IF EXISTS `+role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `CREATE ROLE `+role+` NOSUPERUSER NOBYPASSRLS NOLOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, stmt := range []string{`REASSIGN OWNED BY ` + role + ` TO CURRENT_USER`, `DROP OWNED BY ` + role, `DROP ROLE ` + role} {
+			_, _ = r.owner.Exec(context.Background(), stmt)
+		}
+	})
+	// The tables and the function belong to a role with no privilege of its own.
+	for _, stmt := range []string{
+		`ALTER TABLE chat.chats OWNER TO ` + role,
+		`ALTER TABLE chat.lines OWNER TO ` + role,
+		`ALTER TABLE chat.deltas OWNER TO ` + role,
+		`ALTER FUNCTION chat.fail_reply(uuid, uuid, text) OWNER TO ` + role,
+		`GRANT USAGE ON SCHEMA chat, identity, platform TO ` + role,
+		`GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO ` + role,
+		`GRANT SELECT ON platform.river_job TO ` + role,
+	} {
+		if _, err := r.owner.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+
+	// The request role has no access to the chat's rows itself.
+	if stored, err := r.store.FailReply(ctx, user.ID, queued.Args.ReplyID, "access"); err != nil || !stored {
+		t.Fatalf("stored %v %v", stored, err)
+	}
+	if reply := failedReply(t, r, chatID); reply.Body != "partial" {
+		t.Fatalf("reply = %+v", reply)
+	}
+	if left := r.deltas(chatID); len(left) != 0 {
+		t.Fatalf("deltas = %+v", left)
+	}
+}

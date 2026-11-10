@@ -273,3 +273,48 @@ func taskStatus(t *testing.T, owner *pgxpool.Pool, id string) string {
 func containsTask(err error, text string) bool {
 	return err != nil && strings.Contains(err.Error(), text)
 }
+
+func TestOpenChildCount_UPM252_CountsEveryOpenChildForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *testing.T) {
+	owner := up(t)
+	pool := pgtest.App(t, owner)
+	store := postgres.Store{Pool: pool}
+	ctx := context.Background()
+	parent := openRoot(t, store, "File the receipts")
+	for _, goal := range []string{"Read the folder", "File them"} {
+		if _, err := app.Spawn(ctx, store, ownerAccess, parent.ID, goal, 1, "task:view"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var want int
+	if err := owner.QueryRow(ctx, `SELECT tasks.open_child_count()`).Scan(&want); err != nil || want != 2 {
+		t.Fatalf("open children = %d: %v", want, err)
+	}
+	const role = "tasks_count_owner"
+	if _, err := owner.Exec(ctx, `DROP ROLE IF EXISTS `+role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `CREATE ROLE `+role+` NOSUPERUSER NOBYPASSRLS NOLOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, stmt := range []string{`REASSIGN OWNED BY ` + role + ` TO CURRENT_USER`, `DROP OWNED BY ` + role, `DROP ROLE ` + role} {
+			_, _ = owner.Exec(context.Background(), stmt)
+		}
+	})
+	for _, stmt := range []string{
+		`ALTER TABLE tasks.tasks OWNER TO ` + role,
+		`ALTER FUNCTION tasks.open_child_count() OWNER TO ` + role,
+		`GRANT USAGE ON SCHEMA tasks, identity TO ` + role,
+		`GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO ` + role,
+	} {
+		if _, err := owner.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+
+	// The request role sees no task of anyone else's, yet the ceiling counts them all.
+	var got int
+	if err := pool.QueryRow(ctx, `SELECT tasks.open_child_count()`).Scan(&got); err != nil || got != want {
+		t.Fatalf("open children = %d, want %d: %v", got, want, err)
+	}
+}

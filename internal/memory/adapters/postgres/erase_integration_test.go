@@ -189,3 +189,54 @@ const insertEraseEmbedded = `
 	  $1, 'tool', $3, $2, now(), now(),
 	  $4::halfvec(1024), $5, 'task', $6, 0, now()
 	)`
+
+func TestErase_UPM252_WorksForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO memory.profiles (user_id, body, updated_at) VALUES ($1, 'Ada profile', now())`, person); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, insertEraseEmbedded,
+		person, bytes32(1), "Ada prefers tea", axis(0), "model-a", eraseSourceOne); err != nil {
+		t.Fatal(err)
+	}
+	const role = "memory_erase_owner"
+	if _, err := owner.Exec(ctx, `DROP ROLE IF EXISTS `+role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `CREATE ROLE `+role+` NOSUPERUSER NOBYPASSRLS NOLOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, stmt := range []string{`REASSIGN OWNED BY ` + role + ` TO CURRENT_USER`, `DROP OWNED BY ` + role, `DROP ROLE ` + role} {
+			_, _ = owner.Exec(context.Background(), stmt)
+		}
+	})
+	for _, stmt := range []string{
+		`ALTER TABLE memory.profiles OWNER TO ` + role,
+		`ALTER TABLE memory.facts OWNER TO ` + role,
+		`ALTER TABLE memory.embed_models OWNER TO ` + role,
+		`ALTER TABLE memory.extracts OWNER TO ` + role,
+		`ALTER FUNCTION memory.erase(uuid, uuid) OWNER TO ` + role,
+		`GRANT USAGE ON SCHEMA memory TO ` + role,
+	} {
+		if _, err := owner.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+
+	if err := app.Erase(ctx, postgres.Facts{Pool: pgtest.App(t, owner)}, person, ""); err != nil {
+		t.Fatal(err)
+	}
+	var profiles, facts, pins int
+	if err := owner.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM memory.profiles WHERE user_id = $1),
+		       (SELECT count(*) FROM memory.facts WHERE user_id = $1),
+		       (SELECT count(*) FROM memory.embed_models WHERE user_id = $1)`, person).Scan(&profiles, &facts, &pins); err != nil {
+		t.Fatal(err)
+	}
+	if profiles != 0 || facts != 0 || pins != 0 {
+		t.Fatalf("left: profiles=%d facts=%d pins=%d", profiles, facts, pins)
+	}
+}
