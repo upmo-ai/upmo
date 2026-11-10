@@ -3,12 +3,14 @@ import { useMediaQuery } from "@mantine/hooks";
 import { IconLayoutSidebar, IconSearch } from "@tabler/icons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert } from "@upmo-ai/components";
+import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
 
-import { chatQueryKey, chatsQueryKey, useApi, useWrite, type ChatLine, type ChatSummary } from "../../app/api";
+import { chatQueryKey, chatsQueryKey, gatewayRoutesQueryKey, useApi, useWrite, type Chat, type ChatLine, type ChatSummary } from "../../app/api";
+import type { GatewayRoute } from "../models/types";
 import { ShellIcon } from "../../ui/icons";
 import { awaitingReply, formatCost, groupByDay, sendRefusal } from "./format";
+import { attemptsText, keepPending, noticeText, useChatStream } from "./stream";
 
 import "./chat.css";
 
@@ -18,8 +20,8 @@ const REPLY_POLL_MS = 300;
 const noLines: ChatLine[] = [];
 const noChats: ChatSummary[] = [];
 
-// The pickers below are not sent to the server yet: the chat API takes only
-// the line. They stay as the page's own choices until it takes more.
+// Only the route is sent with a line. The agent, model and tools pickers stay
+// as the page's own choices until the chat API honours them.
 const AGENTS: ComposerOption[] = [
   { value: "auto", label: "Auto", description: "Intelligently select the best agent" },
   { value: "general", label: "General Assistant", description: "General tasks and questions" },
@@ -28,12 +30,7 @@ const AGENTS: ComposerOption[] = [
   { value: "planner", label: "Planning Agent", description: "Multi-step plan decomposition" },
 ];
 
-const ROUTES: ComposerOption[] = [
-  { value: "default", label: "Default", description: "Optimized speed and quality" },
-  { value: "fastest", label: "Fastest", description: "Lowest latency routing" },
-  { value: "cost", label: "Cost Optimized", description: "Most economical model routing" },
-  { value: "direct", label: "Direct Provider", description: "Direct upstream connection" },
-];
+const DEFAULT_ROUTE: ComposerOption = { value: "default", label: "Default", description: "The install's own chat route" };
 
 const MODELS: ComposerOption[] = [
   { value: "gpt-5.6-luna", label: "Gpt-5.6-Luna", description: "OpenAI" },
@@ -80,6 +77,12 @@ export function ChatPage() {
   const [selectedModel, setSelectedModel] = useState("gpt-5.6-luna");
   const [selectedTools, setSelectedTools] = useState("auto");
   const [sendError, setSendError] = useState<string>();
+  // Chats a reply was asked for in this session (a send or a retry went through).
+  // The brain does not mark a user line as awaiting a reply, so this is what
+  // tells the wait from a chat whose last line is simply the person's.
+  const [asked, setAsked] = useState<Record<string, boolean>>({});
+  // Failed replies being asked for again: hidden until the new reply or failure lands.
+  const [retrying, setRetrying] = useState<ReadonlySet<string>>(new Set());
   // Lines sent in each chat, so that chat's thread returns to its newest
   // message and no other thread is moved.
   const [sentCounts, setSentCounts] = useState<Record<string, number>>({});
@@ -152,30 +155,84 @@ export function ChatPage() {
   const activeId = activeChat?.id;
   if (!pinned && activeChat) setSelectedId(activeChat.id);
 
+  // The stub brain has no stream and jsdom has no EventSource: the page polls as before.
+  const streams = api.chatStream && typeof EventSource !== "undefined";
+  const streamState = useChatStream(activeId);
+  const repliesExpected = api.chats.repliesLater || (streams && asked[activeId ?? ""] === true);
+  const waiting = (data: Chat | undefined, retried: ReadonlySet<string>) => {
+    const last = data?.lines.at(-1);
+    return (
+      last?.status === "pending" ||
+      (last?.status === "failed" && retried.has(last.id)) ||
+      awaitingReply(data?.lines, repliesExpected)
+    );
+  };
+
   const thread = useQuery({
     queryKey: chatQueryKey(activeId ?? ""),
-    queryFn: () => api.chats.get(activeId ?? ""),
+    queryFn: async () =>
+      keepPending(
+        await api.chats.get(activeId ?? ""),
+        queryClient.getQueryData<Chat>(chatQueryKey(activeId ?? "")),
+      ),
     enabled: activeId !== undefined,
+    // A reply that streams in needs no polling; one that cannot stream is polled for.
     refetchInterval: (current) =>
-      awaitingReply(current.state.data?.lines, api.chats.repliesLater) ? REPLY_POLL_MS : false,
+      waiting(current.state.data, retrying) && !(streams && streamState === "streaming") ? REPLY_POLL_MS : false,
   });
   const lines = thread.data?.lines ?? noLines;
-  const thinking = awaitingReply(lines, api.chats.repliesLater);
+  const thinking = waiting(thread.data, retrying);
+  const pending = lines.at(-1)?.status === "pending";
+  const notices = (thread.data?.notices ?? []).filter(
+    (notice) => !lines.some((line) => line.id === notice.line_id && line.status !== "pending"),
+  );
+  // The routes the gateway really has. Without them only Default is offered, which sends nothing.
+  const gatewayRoutes = useQuery({ queryKey: gatewayRoutesQueryKey(), queryFn: () =>
+      // The list is for settings managers; a refusal, even a 401, must not read as a lost session here.
+      api.gateway.routes().catch((): GatewayRoute[] => []),
+  });
+  const routeOptions: ComposerOption[] = [
+    DEFAULT_ROUTE,
+    ...(gatewayRoutes.data ?? [])
+      // An embed or decide route cannot write a reply.
+      .filter((item) => item.capability === "chat" || item.capability === "stream")
+      .map((item) => ({ value: item.name, label: item.name, description: item.capability })),
+  ];
+  // The route the picker names now; Default, or one the gateway no longer lists, is sent as nothing.
+  const route = routeOptions.some((option) => option.value === selectedRoute && option.value !== "default")
+    ? selectedRoute
+    : "";
 
   const send = useWrite(
-    (input: { id: string; body: string }) => api.chats.send(input.id, input.body),
+    (input: { id: string; body: string; route: string }) => api.chats.send(input.id, input.body, input.route),
     [chatsQueryKey(), chatQueryKey(activeId ?? "")],
     {
       onSuccess: (_, input) => {
         // The chat the line went to may no longer be the open one.
         void queryClient.invalidateQueries({ queryKey: chatQueryKey(input.id) });
         setSentCounts((counts) => ({ ...counts, [input.id]: (counts[input.id] ?? 0) + 1 }));
+        setAsked((before) => ({ ...before, [input.id]: true }));
       },
       onError: (error, input) => {
         awaited.current.delete(input.id);
         setSendError(sendRefusal(error));
         // Give the words back unless something new is already being typed.
         setDraft((current) => (current === "" ? input.body : current));
+      },
+    },
+  );
+
+  // Asks again with the route picked now, not the one the failed reply used.
+  const retry = useWrite(
+    (input: { id: string; lineId: string; route: string }) => api.chats.retry(input.id, input.lineId, input.route),
+    [chatQueryKey(activeId ?? "")],
+    {
+      onSuccess: (_, input) => {
+        setAsked((before) => ({ ...before, [input.id]: true }));
+      },
+      onError: (error, input) => {
+        setRetrying((ids) => new Set([...ids].filter((id) => id !== input.lineId)));
+        setSendError(sendRefusal(error));
       },
     },
   );
@@ -192,7 +249,7 @@ export function ChatPage() {
   useEffect(() => {
     const last = lines.at(-1);
     if (activeId === undefined || !awaited.current.has(activeId)) return;
-    if (last?.role !== "assistant" || last.id === awaited.current.get(activeId)) return;
+    if (last?.role !== "assistant" || last.status === "pending" || last.id === awaited.current.get(activeId)) return;
     awaited.current.delete(activeId);
     setAnnouncement(last.body);
     void queryClient.invalidateQueries({ queryKey: chatsQueryKey() });
@@ -212,7 +269,14 @@ export function ChatPage() {
     setSendError(undefined);
     setDraft("");
     awaited.current.set(activeId, lines.at(-1)?.id);
-    send.mutate({ id: activeId, body: text });
+    send.mutate({ id: activeId, body: text, route });
+  };
+
+  const handleRetry = (lineId: string) => {
+    if (!activeId || thinking || retry.isPending) return;
+    setSendError(undefined);
+    setRetrying((ids) => new Set(ids).add(lineId));
+    retry.mutate({ id: activeId, lineId, route });
   };
 
   const handleDraftChange = (value: string) => {
@@ -343,20 +407,48 @@ export function ChatPage() {
             busy={thinking}
             empty={<Text className="chat-thread-empty">Write a message to start this chat.</Text>}
           >
-            {lines.map((line) => (
-              <ChatMessage
-                key={line.id}
-                role={line.role}
-                content={line.body}
-                model={line.model ?? undefined}
-                tokens={line.tokens}
-                cost={formatCost(line.cost_usd)}
-              />
-            ))}
-            {thinking ? (
+            {lines.map((line) => {
+              if (line.status === "failed" && retrying.has(line.id)) return null;
+              if (line.status === "pending") {
+                return <ChatMessage key={line.id} role="assistant" content={line.body} streaming copyable={false} />;
+              }
+              if (line.status === "failed") {
+                return (
+                  <ChatMessage key={line.id} role="assistant" copyable={false}>
+                    <div className="chat-failed">
+                      <StatusAlert tone="critical">{line.body}</StatusAlert>
+                      {line.attempts?.length ? <Text className="chat-attempts">{attemptsText(line.attempts)}</Text> : null}
+                      <Button size="xs" variant="default" onClick={() => handleRetry(line.id)} disabled={thinking}>
+                        Retry
+                      </Button>
+                    </div>
+                  </ChatMessage>
+                );
+              }
+              return (
+                <ChatMessage
+                  key={line.id}
+                  role={line.role}
+                  content={line.body}
+                  model={line.model ?? undefined}
+                  tokens={line.tokens}
+                  cost={formatCost(line.cost_usd)}
+                />
+              );
+            })}
+            {thinking && !pending ? (
               <ChatMessage key="thinking" role="assistant" streaming copyable={false}>
                 <span className="chat-thinking">Thinking</span>
               </ChatMessage>
+            ) : null}
+            {notices.length > 0 ? (
+              <div className="chat-notices" role="status">
+                {notices.map((notice) => (
+                  <Text key={`${notice.line_id}:${notice.failed_model}:${notice.next_model}`} className="chat-notice">
+                    {noticeText(notice)}
+                  </Text>
+                ))}
+              </div>
             ) : null}
           </ChatThread>
 
@@ -366,6 +458,9 @@ export function ChatPage() {
                 <StatusAlert tone="critical">{sendError}</StatusAlert>
               </div>
             ) : null}
+            <Text className="chat-picker-note">
+              Only the route is used for now. Agent, model and tools do not change the reply yet.
+            </Text>
             <Composer
               value={draft}
               onChange={handleDraftChange}
@@ -376,7 +471,7 @@ export function ChatPage() {
                 label: "Agent, route and model",
                 groups: [
                   { label: "Agent", value: selectedAgent, options: AGENTS, onChange: setSelectedAgent },
-                  { label: "Route", value: selectedRoute, options: ROUTES, onChange: setSelectedRoute },
+                  { label: "Route", value: selectedRoute, options: routeOptions, onChange: setSelectedRoute },
                   { label: "Model", value: selectedModel, options: MODELS, onChange: setSelectedModel },
                 ],
               }}

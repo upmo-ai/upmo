@@ -359,6 +359,11 @@ export interface ApiClient {
    * stream, so its task pages keep polling.
    */
   readonly taskEventsStream: boolean;
+  /**
+   * True when the open chat's replies arrive on its event stream
+   * (GET /api/chats/{id}/stream). The stub brain has none: its chat page polls.
+   */
+  readonly chatStream: boolean;
   approvals: {
     /**
      * GET /api/approvals: pending first, newest first, at most 50. A closed row
@@ -464,11 +469,17 @@ export interface ApiClient {
     /** GET /api/chats/{id}. Lines are oldest first. */
     get(id: string): Promise<Chat>;
     /**
-     * POST /api/chats/{id} with {body}. Resolves once the line is stored (202).
-     * On the stub an assistant line follows a moment later; the brain stores
-     * the line and answers nothing yet, so nothing is awaited there.
+     * POST /api/chats/{id} with {body, route}. Resolves once the line is stored
+     * (202); route is the picker's choice, empty for the install's default.
+     * On the stub an assistant line follows a moment later; the brain's reply
+     * arrives on the chat stream.
      */
-    send(id: string, body: string): Promise<void>;
+    send(id: string, body: string, route?: string): Promise<void>;
+    /**
+     * POST /api/chats/{id}/lines/{line}/retry with {route}: asks again for the
+     * reply a failed line left unanswered, on the route picked now (202).
+     */
+    retry(id: string, lineId: string, route: string): Promise<void>;
     /**
      * True while an assistant line is written on its own after a send, so a
      * reply is worth waiting for: the stub's is, the brain's is not yet.
@@ -1368,6 +1379,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       return copy(event);
     },
     taskEventsStream: false,
+    chatStream: false,
     approvals: {
       async list() {
         return approvals.map((item) => copy(item));
