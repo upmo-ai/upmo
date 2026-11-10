@@ -88,8 +88,8 @@ export function ChatPage() {
   const [selectedTools, setSelectedTools] = useState("auto");
   const [sendError, setSendError] = useState<string>();
   // Chats a reply was asked for in this session (a send or a retry went through).
-  // The brain does not mark a user line as awaiting a reply, so this is what
-  // tells the wait from a chat whose last line is simply the person's.
+  // A reply the page asked for in this session is a wait even before the brain marks the
+  // line pending, which tells it from a chat whose last line is simply the person's.
   const [asked, setAsked] = useState<Record<string, boolean>>({});
   // Failed replies being asked for again: hidden until the new reply or failure lands.
   const [retrying, setRetrying] = useState<ReadonlySet<string>>(new Set());

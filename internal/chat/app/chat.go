@@ -77,6 +77,8 @@ type Line struct {
 	PinAccount *string
 	PinModel   *string
 	AgentID    *string
+	// Pending is set on a user line that has no stored reply yet, done or failed.
+	Pending bool
 }
 
 // ChatSummary is one chat in a list: its derived title and preview, and when

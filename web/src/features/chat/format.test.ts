@@ -62,13 +62,15 @@ describe("UPM-201 chat cost", () => {
 });
 
 describe("UPM-201 awaiting a reply", () => {
-  it("UPM-201 waits only when the newest line is the user's and a reply comes on its own", () => {
+  it("UPM-201 UPM-251 waits only when the newest line is the user's and a reply is owed, by the page or by a pending marker", () => {
     expect(awaitingReply(undefined, true)).toBe(false);
     expect(awaitingReply([], true)).toBe(false);
     expect(awaitingReply([line("user")], true)).toBe(true);
     expect(awaitingReply([line("user"), line("assistant")], true)).toBe(false);
-    // The brain stores the line and stops: a user line there is not a wait.
+    // Without a pending marker the brain has nothing owed, so a user line there is not a wait.
     expect(awaitingReply([line("user")], false)).toBe(false);
+    expect(awaitingReply([{ ...line("user"), pending: true }], false)).toBe(true);
+    expect(awaitingReply([{ ...line("user"), pending: true }, line("assistant")], false)).toBe(false);
   });
 });
 
