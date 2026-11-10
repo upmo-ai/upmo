@@ -41,3 +41,10 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^internal/memory/app/extract_test\.go$''']
 regexes = ['''^abcDEF123456$''']
+
+[[allowlists]]
+description = "fake API key the providers test types into the form to prove it is never stored or echoed"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^web/src/features/providers/live-providers\.test\.tsx$''']
+regexes = ['''^sk-live-secret-9d41f7$''']
