@@ -162,7 +162,7 @@ try {
 
   // 1. The three picks go out with the line, and the line survives a reload.
   await newChat();
-  await pick({ agent: agentName, route: "e2e-main", model: "e2e/fake-ok" });
+  await pick({ agent: agentName, route: "e2e-main", model: "fake-ok" });
   const first = "Composer check: the picks go with the line";
   const body = await sendLine(first);
   if (body.body !== first || body.agent_id !== agentId || body.route !== "e2e-main") {
@@ -177,7 +177,7 @@ try {
 
   // 2. A pinned model goes first, ahead of the route's own first hop.
   await newChat();
-  await pick({ route: "e2e-main", model: "e2e/fake-ok" });
+  await pick({ route: "e2e-main", model: "fake-ok" });
   const start = await dbNow();
   await sendLine("Composer check: pin goes first");
   await log.getByText(/^fake-ok says: /).waitFor();
@@ -192,7 +192,7 @@ try {
 
   // 3. A slow reply keeps streaming while the person is elsewhere.
   await newChat();
-  await pick({ route: "e2e-slow", model: "e2e/fake-slow" });
+  await pick({ route: "e2e-slow", model: "fake-slow" });
   await sendLine("Composer check: slow reply");
   await log.getByText(/fake-slow says:/).waitFor();
   if ((await log.innerText()).includes("whole.")) {
@@ -207,7 +207,7 @@ try {
   // 4. A model that does not answer is named with the one tried next, in
   // words, with nothing from the provider.
   await newChat();
-  await pick({ route: "e2e-slow", model: "e2e/fake-fail-ratelimit" });
+  await pick({ route: "e2e-slow", model: "fake-fail-ratelimit" });
   // A notice stays only until the next model's first word, a fraction of a
   // second, so the page records each one as it is drawn.
   await page.evaluate(() => {
@@ -237,7 +237,7 @@ try {
 
   // 5. Retry asks again on the picks as they are now.
   await newChat();
-  await pick({ agent: agentName, route: "e2e-main", model: "e2e/fake-fail-after-2" });
+  await pick({ agent: agentName, route: "e2e-main", model: "fake-fail-after-2" });
   const failing = "Composer check: retry on new picks";
   const sent = await sendLine(failing);
   expectPins(sent, "fake-fail-after-2", "flow 5");
@@ -249,7 +249,7 @@ try {
   if (/fake stream/i.test(await log.innerText())) {
     throw new Error("flow 5: the failed reply shows provider text");
   }
-  await pick({ agent: otherAgentName, route: "e2e-spare", model: "e2e/fake-ok" });
+  await pick({ agent: otherAgentName, route: "e2e-spare", model: "fake-ok" });
   const retried = page.waitForRequest(isRetry);
   await retry.click();
   const again = (await retried).postDataJSON();
@@ -258,6 +258,36 @@ try {
   }
   expectPins(again, "fake-ok", "flow 5 retry");
   await log.getByText(/^fake-ok says: /).waitFor({ timeout: 10_000 });
+
+  // 6. The Model menu groups models under their provider, filters them, and
+  // takes a pick from the keyboard. Auto stays whatever is typed.
+  await newChat();
+  await pick({});
+  await pill.click();
+  await page.getByRole("menuitem", { name: "Model", exact: true }).hover();
+  const providerGroup = page.getByRole("group", { name: "e2e", exact: true });
+  await providerGroup.getByRole("menuitemradio", { name: "fake-ok", exact: true }).waitFor();
+  const filter = page.getByLabel("Filter Model", { exact: true });
+  await filter.fill("fake-slow");
+  await providerGroup.getByRole("menuitemradio", { name: "fake-slow", exact: true }).waitFor();
+  await page.getByRole("menuitemradio", { name: "Auto", exact: true }).waitFor();
+  if ((await page.getByRole("menuitemradio", { name: "fake-ok", exact: true }).count()) !== 0) {
+    throw new Error("flow 6: the filter left fake-ok in the list");
+  }
+  // Auto is pinned on top, so fake-slow is the second option.
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  const activeName = await filter.evaluate(
+    (input) => document.getElementById(input.getAttribute("aria-activedescendant") ?? "")?.getAttribute("aria-label") ?? null,
+  );
+  if (activeName !== "fake-slow") {
+    throw new Error(`flow 6: the filter's active option is ${JSON.stringify(activeName)}, expected fake-slow`);
+  }
+  await page.keyboard.press("Enter");
+  if ((await pill.getAttribute("aria-expanded")) === "true") {
+    await page.keyboard.press("Escape");
+  }
+  await page.getByRole("button", { name: /Agent, route and model: .*fake-slow$/ }).waitFor();
 
   console.log("composer flow passed");
 } finally {
