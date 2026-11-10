@@ -3,19 +3,16 @@ package postgres
 import (
 	"context"
 
-	"github.com/google/uuid"
-
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 )
 
-// RecentLines returns the bodies of the last limit chat lines for one person,
-// oldest of them first.
-func (s Store) RecentLines(ctx context.Context, userID uuid.UUID, chatID string, limit int) ([]string, error) {
+// RecentLines returns the bodies of the last limit chat lines the access may
+// read, oldest of them first.
+func (s Store) RecentLines(ctx context.Context, access app.Access, chatID string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 1
 	}
-	access := app.Access{UserID: userID.String(), Allow: "chat:view"}
 	chat, err := s.Read(ctx, access, chatID)
 	if err != nil {
 		return nil, err
