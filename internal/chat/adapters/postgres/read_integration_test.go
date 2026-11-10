@@ -581,3 +581,26 @@ func TestMigrationTypesRowsThatExistedBefore(t *testing.T) {
 		t.Fatal("a migrated line was rewritten")
 	}
 }
+
+func TestVisible_UPM252_AnswersForTheOwnerAndASharedViewerAndNoOneElse(t *testing.T) {
+	owner := up(t)
+	store := quietStore(t, owner)
+	ctx := context.Background()
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := app.Access{UserID: otherUser, Allow: "chat:view", SharedView: "{" + opened.ID + "}"}
+
+	for name, access := range map[string]app.Access{"owner": ownerAccess, "shared viewer": viewer} {
+		if err := store.Visible(ctx, access, opened.ID); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if err := store.Visible(ctx, otherAccess, opened.ID); !errors.Is(err, app.ErrGone) {
+		t.Fatalf("stranger = %v", err)
+	}
+	if err := store.Visible(ctx, ownerAccess, "018f3b2c-7a10-7c4a-8e11-00000000dead"); !errors.Is(err, app.ErrGone) {
+		t.Fatalf("no such chat = %v", err)
+	}
+}
