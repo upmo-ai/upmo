@@ -19,6 +19,9 @@ const (
 	AdapterOpenAI = "openai_compat"
 )
 
+// ScriptedPrefix starts the model ids that only the fake adapter acts on.
+const ScriptedPrefix = "fake-"
+
 // Limits on what a person may save.
 const (
 	MaxProviderName  = 60
@@ -117,6 +120,20 @@ func CleanModels(models []string) ([]string, error) {
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// CheckScripted refuses a scripted model id (fake-...) on an account whose
+// adapter is not the fake one, so no real provider is ever sent one.
+func CheckScripted(adapter string, models []string) error {
+	if adapter == AdapterFake {
+		return nil
+	}
+	for _, m := range models {
+		if strings.HasPrefix(m, ScriptedPrefix) {
+			return Invalid("Model ids starting with fake- belong to the test adapter.")
+		}
+	}
+	return nil
 }
 
 // CleanKey trims an API key and checks it. An empty key is returned as empty;

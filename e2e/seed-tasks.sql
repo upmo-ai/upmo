@@ -77,6 +77,60 @@ WHERE account_id IN (SELECT id FROM gateway.provider_accounts WHERE owner_user_i
 DELETE FROM gateway.provider_accounts WHERE owner_user_id = :'ada'::uuid;
 COMMIT;
 
+-- The routes and the workspace account the chat composer flow (e2e/composer.mjs)
+-- sends its replies through. The account is global and a house one, the only
+-- kind a route's links fall back on for a person: a pin to a person's own
+-- account is paid by them alone, so with no links of theirs it could not fail
+-- over. Nothing the person owns is linked, so the wipe above never meets a link.
+-- The models are the ids the fake adapter scripts, and plain-1 and plain-2,
+-- which answer with the adapter's default. They are replaced on every run.
+--
+--   e2e-main   plain-1, then fake-ok
+--   e2e-slow   fake-slow
+--   e2e-spare  plain-2
+--
+-- The models page (e2e/models.mjs) reads its routes from here too: chat, with
+-- three hops, and agent-dispatch. Their links sit on a global account for an
+-- adapter the gateway does not have, so a reply on the default route "chat"
+-- still fails at once, as it does with no such route, and e2e/chat.mjs does
+-- not see a reply text.
+BEGIN;
+DELETE FROM gateway.route_links
+WHERE route_id IN (SELECT id FROM gateway.routes WHERE name LIKE 'e2e-%' OR name IN ('chat', 'agent-dispatch'));
+DELETE FROM gateway.routes WHERE name LIKE 'e2e-%' OR name IN ('chat', 'agent-dispatch');
+DELETE FROM gateway.provider_models
+WHERE account_id IN (SELECT id FROM gateway.provider_accounts WHERE owner_user_id IS NULL AND name IN ('e2e-house', 'e2e-sample'));
+DELETE FROM gateway.provider_accounts WHERE owner_user_id IS NULL AND name IN ('e2e-house', 'e2e-sample');
+
+INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, provider, status) VALUES
+  ('e2e00000-0000-7000-8000-00000000f001', 'e2e-house', 'fake', 'house', 'local', true, 'e2e', 'Connected');
+INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, provider, status) VALUES
+  ('e2e00000-0000-7000-8000-00000000f002', 'e2e-sample', 'anthropic', 'sample', 'metered', false, 'anthropic', 'Not connected');
+INSERT INTO gateway.provider_models (account_id, model, position) VALUES
+  ('e2e00000-0000-7000-8000-00000000f001', 'fake-ok', 1),
+  ('e2e00000-0000-7000-8000-00000000f001', 'fake-slow', 2),
+  ('e2e00000-0000-7000-8000-00000000f001', 'fake-fail-ratelimit', 3),
+  ('e2e00000-0000-7000-8000-00000000f001', 'fake-fail-after-2', 4),
+  ('e2e00000-0000-7000-8000-00000000f001', 'plain-1', 5),
+  ('e2e00000-0000-7000-8000-00000000f001', 'plain-2', 6);
+INSERT INTO gateway.routes (id, name, capability, decision) VALUES
+  ('e2e00000-0000-7000-8000-00000000f101', 'e2e-main', 'chat', ''),
+  ('e2e00000-0000-7000-8000-00000000f102', 'e2e-spare', 'chat', ''),
+  ('e2e00000-0000-7000-8000-00000000f103', 'e2e-slow', 'chat', ''),
+  ('e2e00000-0000-7000-8000-00000000f104', 'chat', 'chat', ''),
+  ('e2e00000-0000-7000-8000-00000000f105', 'agent-dispatch', 'decide', 'choice');
+INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES
+  ('e2e00000-0000-7000-8000-00000000f101', 1, 'e2e00000-0000-7000-8000-00000000f001', 'plain-1'),
+  ('e2e00000-0000-7000-8000-00000000f101', 2, 'e2e00000-0000-7000-8000-00000000f001', 'fake-ok'),
+  ('e2e00000-0000-7000-8000-00000000f102', 1, 'e2e00000-0000-7000-8000-00000000f001', 'plain-2'),
+  ('e2e00000-0000-7000-8000-00000000f103', 1, 'e2e00000-0000-7000-8000-00000000f001', 'fake-slow'),
+  ('e2e00000-0000-7000-8000-00000000f104', 1, 'e2e00000-0000-7000-8000-00000000f002', 'claude-3-7-sonnet'),
+  ('e2e00000-0000-7000-8000-00000000f104', 2, 'e2e00000-0000-7000-8000-00000000f002', 'gpt-4.1'),
+  ('e2e00000-0000-7000-8000-00000000f104', 3, 'e2e00000-0000-7000-8000-00000000f002', 'llama3.3:70b'),
+  ('e2e00000-0000-7000-8000-00000000f105', 1, 'e2e00000-0000-7000-8000-00000000f002', 'claude-3-5-haiku'),
+  ('e2e00000-0000-7000-8000-00000000f105', 2, 'e2e00000-0000-7000-8000-00000000f002', 'gpt-4.1-mini');
+COMMIT;
+
 -- The bell's rows are seeded below, so the old ones go first, dismissed or not.
 DELETE FROM notices.notifications WHERE user_id = :'ada'::uuid;
 

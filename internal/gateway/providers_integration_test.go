@@ -723,6 +723,30 @@ func TestValidation(t *testing.T) {
 	r.assertNoSecrets(adaKey)
 }
 
+func TestScriptedModelIdsStayOnTheFakeAdapter(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	real := body("real", "http://127.0.0.1:11434", "")
+	real["models"] = []string{"m1", "fake-ok"}
+	if code, raw := r.add(ada, real); code != http.StatusUnprocessableEntity {
+		t.Fatalf("a scripted id on a real adapter = %d %s", code, raw)
+	}
+	made := r.mustAdd(ada, body("real", "http://127.0.0.1:11434", ""))
+	code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"models": []string{"fake-slow"}})
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("a scripted id added to a real account = %d %s", code, raw)
+	}
+	if got := r.list(ada)[0].Models; len(got) != 2 || got[0] != "m1" {
+		t.Fatalf("a refused change left models %v", got)
+	}
+	scripted := map[string]any{
+		"provider": "fake", "name": "scripted", "adapter": "fake", "plan_kind": "local",
+		"models": []string{"fake-ok", "fake-slow"},
+	}
+	if code, raw := r.add(ada, scripted); code != http.StatusCreated {
+		t.Fatalf("scripted ids on the fake adapter = %d %s", code, raw)
+	}
+}
+
 func TestDuplicateNamesPerOwner(t *testing.T) {
 	r := newRig(t, masterKeys(t, 'a'))
 	prov := newFakeProvider(t)

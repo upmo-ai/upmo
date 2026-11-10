@@ -166,6 +166,9 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 	if err != nil {
 		return domain.Provider{}, err
 	}
+	if err := domain.CheckScripted(in.Adapter, models); err != nil {
+		return domain.Provider{}, err
+	}
 	ref, err := newRef()
 	if err != nil {
 		return domain.Provider{}, err
@@ -239,6 +242,9 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	}
 	if in.Models != nil {
 		if next.Models, err = domain.CleanModels(*in.Models); err != nil {
+			return domain.Provider{}, err
+		}
+		if err := domain.CheckScripted(next.Adapter, next.Models); err != nil {
 			return domain.Provider{}, err
 		}
 	}

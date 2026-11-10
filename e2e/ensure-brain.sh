@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start Postgres and brain for this checkout's e2e project, and print one
+# Start Postgres, gateway and brain for this checkout's e2e project, and print one
 # sign-in link. A second run recovers instead of bootstrapping again. In an
 # e2e project (upmo-e2e-*) every run also resets the e2e person and empties the
 # identity throttle with e2e/reset.sql, and replaces their tasks with the fixed
@@ -60,8 +60,9 @@ case $link in
     ;;
 esac
 
-say "starting brain"
-dc up -d --wait brain
+# The gateway answers the chat replies of e2e/composer.mjs.
+say "starting gateway and brain"
+dc up -d --wait gateway brain
 
 # Last, so the throttle is empty when the browser starts.
 case $project in

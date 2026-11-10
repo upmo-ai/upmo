@@ -271,3 +271,26 @@ func TestCleanPlanAndLabel(t *testing.T) {
 		t.Errorf("CleanLabel = %q, %v", got, err)
 	}
 }
+
+func TestCheckScripted(t *testing.T) {
+	tests := []struct {
+		name    string
+		adapter string
+		models  []string
+		wantErr bool
+	}{
+		{"fake adapter may list one", AdapterFake, []string{"fake-ok", "plain"}, false},
+		{"real adapter without one", AdapterOpenAI, []string{"gpt-x", "faker"}, false},
+		{"real adapter with one", AdapterOpenAI, []string{"gpt-x", "fake-ok"}, true},
+		{"real adapter with an unlisted fake id", AdapterOpenAI, []string{"fake-anything"}, true},
+		{"an unknown adapter counts as real", "other", []string{"fake-slow"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckScripted(tt.adapter, tt.models)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("CheckScripted(%q, %v) = %v", tt.adapter, tt.models, err)
+			}
+		})
+	}
+}

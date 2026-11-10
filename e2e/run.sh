@@ -13,7 +13,8 @@ if [ -f "$pkg" ]; then
   installed=$(node -p "require('$pkg').version")
 fi
 
-if [ "$installed" != "$version" ]; then
+# pg reads the ledger for e2e/composer.mjs, the one fact no API shows.
+if [ "$installed" != "$version" ] || [ ! -d "$prefix/node_modules/pg" ]; then
   mkdir -p "$prefix"
   if [ ! -f "$prefix/package.json" ]; then
     printf '%s\n' '{"name":"upmo-e2e","private":true}' > "$prefix/package.json"
@@ -23,7 +24,8 @@ if [ "$installed" != "$version" ]; then
     --save-exact \
     --no-fund \
     --no-audit \
-    "playwright@$version"
+    "playwright@$version" \
+    pg@8.16.3
 fi
 
 # Passkeys first: it consumes the bootstrap link and sets the password the
@@ -40,6 +42,7 @@ node /src/e2e/providers.mjs
 node /src/e2e/models.mjs
 node /src/e2e/flows.mjs
 node /src/e2e/stream.mjs
+node /src/e2e/composer.mjs
 node /src/e2e/memory.mjs
 node /src/e2e/knowledge.mjs
 node /src/e2e/artifacts.mjs

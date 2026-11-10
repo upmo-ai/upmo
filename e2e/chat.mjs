@@ -345,12 +345,14 @@ try {
   if (titles.length !== 3 || !titles[0].includes(closeTitle) || !titles[1].includes(pricesTitle) || !titles[2].includes("New chat")) {
     throw new Error(`UPM-201: the seeded chats are not listed newest first, ${JSON.stringify(titles)}`);
   }
-  const tips = await items.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("title")));
-  // The first chat is the one this script sent lines to above, so its preview is
-  // the last of them. The second keeps what was seeded.
-  if (tips[0] !== "Back at the newest") {
-    throw new Error(`UPM-201: the first chat shows the wrong preview, ${JSON.stringify(tips[0])}`);
-  }
+  // The first chat is the one this script sent lines to above. The gateway runs
+  // in this stack, so each line got a failed reply (no route "chat", no text),
+  // and the preview is the newest line's text: none. The reply lands after its
+  // line, so wait for it. The second chat keeps what was seeded.
+  const { tips } = await until("UPM-201 first chat preview", async () => {
+    const found = await items.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("title")));
+    return { ok: found[0] === null, tips: found };
+  });
   if (tips[1] !== "Prices are stable to the year end; lead times are the open question.") {
     throw new Error(`UPM-201: the second chat shows the wrong preview, ${JSON.stringify(tips[1])}`);
   }

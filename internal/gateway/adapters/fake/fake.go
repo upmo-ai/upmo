@@ -10,6 +10,22 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
 
+// The model ids the fake adapter scripts. A browser check picks one to choose
+// how the stream behaves; any other id keeps the fields below. Only this
+// adapter reads them: a real provider's model list never holds one.
+const (
+	ModelOK            = domain.ScriptedPrefix + "ok"
+	ModelSlow          = domain.ScriptedPrefix + "slow"
+	ModelFailRateLimit = domain.ScriptedPrefix + "fail-ratelimit"
+	ModelFailAfterTwo  = domain.ScriptedPrefix + "fail-after-2"
+)
+
+// scriptedText follows the "<model> says:" opening of every scripted reply.
+const scriptedText = "this reply is scripted so the browser checks can read it whole."
+
+// slowDelay is the pause between the words of the slow model.
+const slowDelay = 300 * time.Millisecond
+
 // Adapter is the in-process provider used in tests and local compose.
 type Adapter struct {
 	YesNo  bool
@@ -21,6 +37,25 @@ type Adapter struct {
 	StreamDelay     time.Duration
 	StreamFailWords int
 	StreamFailClass domain.FailureClass
+}
+
+// script returns the adapter as the model's script asks it to behave, and the
+// adapter itself for an id that has none.
+func (a Adapter) script(model string) Adapter {
+	switch model {
+	case ModelOK:
+		a.Reply = model + " says: " + scriptedText
+	case ModelSlow:
+		a.Reply = model + " says: " + scriptedText
+		a.StreamDelay = slowDelay
+	case ModelFailRateLimit:
+		a.Reply = model + " says: " + scriptedText
+		a.StreamFailClass, a.StreamFailWords = domain.ClassRateLimit, 0
+	case ModelFailAfterTwo:
+		a.Reply = model + " says: " + scriptedText
+		a.StreamFailClass, a.StreamFailWords = domain.ClassTransient, 2
+	}
+	return a
 }
 
 func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
@@ -68,8 +103,9 @@ func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (str
 
 // ChatStream streams the words of Reply one at a time, pausing StreamDelay
 // between words. Usage counts the words that were sent, so a failed stream
-// carries its partial usage.
-func (a Adapter) ChatStream(ctx context.Context, _ app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+// carries its partial usage. A scripted model id sets all of that itself.
+func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	a = a.script(attempt.Model)
 	words := strings.Fields(a.Reply)
 	part := func(sent int) domain.Usage { return domain.Usage{Arrived: true, Input: 1, Output: sent} }
 	sent := 0
