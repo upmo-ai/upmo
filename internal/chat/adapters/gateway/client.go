@@ -30,8 +30,9 @@ type Message struct {
 // Request is one chat turn: a prompt, or a message history when the turn
 // builds on earlier lines. Route names the gateway chat route for this turn;
 // CredentialRef, when set, spends a bring-your-own key instead of the house
-// one. PinAccount and PinModel, both or neither, name the provider account and
-// model the gateway tries before the route. AgentID is carried with the turn
+// one. PinModel with PinAccount, or with PinProvider, names the model the
+// gateway tries before the route: on that provider account, or on the
+// person's own account of that provider and else a global one. AgentID is carried with the turn
 // and not sent: the gateway reads an agent id as a tool bundle to look up.
 type Request struct {
 	Route           string
@@ -42,6 +43,7 @@ type Request struct {
 	Messages        []Message
 	MaxOutputTokens int
 	PinAccount      string
+	PinProvider     string
 	PinModel        string
 	AgentID         string
 }
@@ -174,15 +176,16 @@ type chatTurn struct {
 
 // pinTurn is the pin as the gateway reads it.
 type pinTurn struct {
-	AccountID string `json:"account_id"`
+	AccountID string `json:"account_id,omitempty"`
+	Provider  string `json:"provider,omitempty"`
 	Model     string `json:"model"`
 }
 
 func pinOf(req Request) *pinTurn {
-	if req.PinAccount == "" && req.PinModel == "" {
+	if req.PinAccount == "" && req.PinProvider == "" && req.PinModel == "" {
 		return nil
 	}
-	return &pinTurn{AccountID: req.PinAccount, Model: req.PinModel}
+	return &pinTurn{AccountID: req.PinAccount, Provider: req.PinProvider, Model: req.PinModel}
 }
 
 // frame is one line of a chat stream. Exactly one field is set.

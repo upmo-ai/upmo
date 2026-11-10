@@ -22,6 +22,13 @@ func TestPinCheck(t *testing.T) {
 		{"padded model", Pin{AccountID: pinTestAccount, Model: " gpt-x"}, false},
 		{"control character", Pin{AccountID: pinTestAccount, Model: "gpt\tx"}, false},
 		{"model too long", Pin{AccountID: pinTestAccount, Model: strings.Repeat("m", MaxModelName+1)}, false},
+		{"provider and model", Pin{Provider: "OpenAI", Model: "gpt-x"}, true},
+		{"provider only", Pin{Provider: "OpenAI"}, false},
+		{"account and provider", Pin{AccountID: pinTestAccount, Provider: "OpenAI", Model: "gpt-x"}, false},
+		{"padded provider", Pin{Provider: " OpenAI", Model: "gpt-x"}, false},
+		{"provider with a control character", Pin{Provider: "Open\nAI", Model: "gpt-x"}, false},
+		{"provider too long", Pin{Provider: strings.Repeat("p", MaxProviderLabel+1), Model: "gpt-x"}, false},
+		{"provider with a padded model", Pin{Provider: "OpenAI", Model: "gpt-x "}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.pin.Check()

@@ -21,28 +21,41 @@ var ErrPinCaller = errors.New("gateway: a pin needs a person and no credential r
 
 var accountID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// Pin names one provider account and one model, tried before the route's
-// chain. The zero Pin is no pin.
+// Pin names one model, tried before the route's chain, either on one provider
+// account (AccountID) or on a provider by name (Provider), which the gateway
+// resolves to an account the person can use. The zero Pin is no pin.
 type Pin struct {
 	AccountID string
+	Provider  string
 	Model     string
 }
 
 // IsZero reports that nothing is pinned.
-func (p Pin) IsZero() bool { return p.AccountID == "" && p.Model == "" }
+func (p Pin) IsZero() bool { return p.AccountID == "" && p.Provider == "" && p.Model == "" }
 
-// Check refuses a half pin, an account that is not a UUID, and a model that
-// is empty, too long or holds a control character.
+// Check refuses a half pin, a pin that names both an account and a provider,
+// an account that is not a UUID, a provider that is empty, too long or holds
+// a control character, and a model that is empty, too long or holds a
+// control character.
 func (p Pin) Check() error {
 	if p.IsZero() {
 		return nil
 	}
 	model := strings.TrimSpace(p.Model)
 	switch {
+	case p.AccountID != "" && p.Provider != "":
+		return Invalid("The pin names an account or a provider, not both.")
+	case p.Provider != "":
+		provider := strings.TrimSpace(p.Provider)
+		if provider != p.Provider || utf8.RuneCountInString(provider) > MaxProviderLabel ||
+			hasControl(provider) || !utf8.ValidString(provider) {
+			return Invalid("The pinned provider is not valid.")
+		}
 	case !accountID.MatchString(p.AccountID):
 		return Invalid("The pinned account is not valid.")
-	case model == "" || model != p.Model || utf8.RuneCountInString(model) > MaxModelName ||
-		hasControl(model) || !utf8.ValidString(model):
+	}
+	if model == "" || model != p.Model || utf8.RuneCountInString(model) > MaxModelName ||
+		hasControl(model) || !utf8.ValidString(model) {
 		return Invalid("The pinned model is not valid.")
 	}
 	return nil

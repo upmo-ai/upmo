@@ -1,6 +1,9 @@
 import {
   BrainError,
   createStubApi,
+  type AgentChange,
+  type AgentInput,
+  type AgentProfile,
   type ApiClient,
   type ProviderAccount,
   type ProviderAdd,
@@ -407,6 +410,27 @@ export function toProvider(value: unknown): ProviderAccount {
   return account;
 }
 
+/** An agent as GET /api/agents and the write routes send it. */
+export function toAgent(value: unknown): AgentProfile {
+  const source = record(value, "agent");
+  const scope = source.scope;
+  if (scope !== "own" && scope !== "global") throw new Error("The brain sent an unknown scope.");
+  if (typeof source.enabled !== "boolean") throw new Error("The brain sent no enabled.");
+  if (typeof source.editable !== "boolean") throw new Error("The brain sent no editable.");
+  return {
+    id: text(source, "id"),
+    name: text(source, "name"),
+    description: text(source, "description"),
+    prompt_overlay: text(source, "prompt_overlay"),
+    route: text(source, "route"),
+    model_provider: text(source, "model_provider"),
+    model_id: text(source, "model_id"),
+    enabled: source.enabled,
+    scope,
+    editable: source.editable,
+  };
+}
+
 /** The answer of POST /api/providers/test: ok, and a plain sentence when it is not. */
 export function toTestResult(value: unknown): TestResult {
   const source = record(value, "test result");
@@ -461,7 +485,7 @@ export function providerTestBody(config: ProviderProbe): Json {
   };
 }
 
-async function call(path: string, init?: { method: "POST" | "PUT" | "DELETE"; body?: unknown }): Promise<unknown> {
+async function call(path: string, init?: { method: "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<unknown> {
   const response = await fetch(path, {
     credentials: "include",
     ...(init
@@ -513,12 +537,16 @@ function providerPath(id: string) {
   return `/api/providers/${encodeURIComponent(id)}`;
 }
 
+function agentPath(id: string) {
+  return `/api/agents/${encodeURIComponent(id)}`;
+}
+
 type Source = "brain" | "stub";
 
 /**
  * The stub client with its task methods (list, get, advance, create, message),
  * its approvals, its notifications, its member list, its task shares, its
- * chats and its provider accounts answered by the brain instead. Everything
+ * chats, its provider accounts and its agents answered by the brain instead. Everything
  * else stays on the stub.
  *
  * The first task call asks GET /api/tasks. When that fails the way a missing
@@ -653,6 +681,24 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async test(config) {
         if ((await chosen()) === "stub") return stub.providers.test(config);
         return toTestResult(await call("/api/providers/test", { method: "POST", body: providerTestBody(config) }));
+      },
+    },
+    agents: {
+      async list() {
+        if ((await chosen()) === "stub") return stub.agents.list();
+        return list(await call("/api/agents"), "agents").map(toAgent);
+      },
+      async create(input: AgentInput) {
+        if ((await chosen()) === "stub") return stub.agents.create(input);
+        return toAgent(await call("/api/agents", { method: "POST", body: { ...input } }));
+      },
+      async update(id: string, input: AgentChange) {
+        if ((await chosen()) === "stub") return stub.agents.update(id, input);
+        return toAgent(await call(agentPath(id), { method: "PATCH", body: { ...input } }));
+      },
+      async remove(id: string) {
+        if ((await chosen()) === "stub") return stub.agents.remove(id);
+        await call(agentPath(id), { method: "DELETE" });
       },
     },
     gateway: {

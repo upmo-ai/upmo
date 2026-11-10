@@ -1209,11 +1209,15 @@ func TestFailReplyRefusesAReplyIdNoJobHolds(t *testing.T) {
 func TestThePinGoesFromTheLineToTheGatewayAndARetryReusesItUnlessOverridden(t *testing.T) {
 	const (
 		accountA = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01"
-		agent    = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa03"
 	)
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
 	ctx := context.Background()
+	made, err := r.store.CreateAgent(ctx, ownerAccess, app.AgentFields{Name: "Research", Enabled: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := made.ID
 	pin := func(call stubCall) string {
 		if call.Pin == nil {
 			return ""
