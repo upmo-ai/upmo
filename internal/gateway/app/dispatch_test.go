@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -408,5 +410,485 @@ func TestDispatchRefusesAMissingCapability(t *testing.T) {
 	})
 	if !errors.Is(err, domain.ErrCapability) || c.calls != 0 {
 		t.Fatalf("err=%v calls=%d", err, c.calls)
+	}
+}
+
+// recordingSink collects what one streamed call sent.
+type recordingSink struct {
+	text    strings.Builder
+	deltas  int
+	notices []StreamNotice
+	done    *StreamDone
+	fail    *StreamFail
+}
+
+func (s *recordingSink) Delta(text string) error {
+	s.text.WriteString(text)
+	s.deltas++
+	return nil
+}
+
+func (s *recordingSink) Notice(n StreamNotice) error {
+	s.notices = append(s.notices, n)
+	return nil
+}
+func (s *recordingSink) Done(d StreamDone) { s.done = &d }
+func (s *recordingSink) Fail(f StreamFail) { s.fail = &f }
+
+// cancelSink records like recordingSink and cancels the call on the first
+// delta.
+type cancelSink struct {
+	recordingSink
+	cancel context.CancelFunc
+}
+
+func (s *cancelSink) Delta(text string) error {
+	if err := s.recordingSink.Delta(text); err != nil {
+		return err
+	}
+	if s.deltas == 1 {
+		s.cancel()
+	}
+	return nil
+}
+
+// scriptStream streams reply word by word, pausing delay between words. A
+// scripted failure strikes after failAfter words, zero failing before the
+// first word. Usage counts the words that were sent.
+type scriptStream struct {
+	reply     string
+	delay     time.Duration
+	failAfter int
+	failClass domain.FailureClass
+	calls     int
+}
+
+func (s *scriptStream) ChatStream(ctx context.Context, _ Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	s.calls++
+	part := func(sent int) domain.Usage { return domain.Usage{Arrived: true, Input: 1, Output: sent} }
+	sent := 0
+	for _, word := range strings.Fields(s.reply) {
+		if s.failClass != "" && sent == s.failAfter {
+			return part(sent), s.failClass, fmt.Errorf("gateway: scripted %s", s.failClass)
+		}
+		if s.delay > 0 {
+			select {
+			case <-time.After(s.delay):
+			case <-ctx.Done():
+				return part(sent), domain.ClassCancelled, ctx.Err()
+			}
+		}
+		if err := emit(word + " "); err != nil {
+			return part(sent), domain.ClassCancelled, err
+		}
+		sent++
+	}
+	if s.failClass != "" && sent == s.failAfter {
+		return part(sent), s.failClass, fmt.Errorf("gateway: scripted %s", s.failClass)
+	}
+	return part(sent), domain.ClassOK, nil
+}
+
+// streamRoute is a two-link chat route: model m1 on adapter flaky, model m2
+// on adapter solid.
+func streamRoute() domain.Route {
+	first := domain.Account{ID: "1", Adapter: "flaky", CredentialRef: "house", House: true}
+	second := domain.Account{ID: "2", Adapter: "solid", CredentialRef: "house", House: true}
+	return domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{
+			{Position: 1, Account: first, Model: "m1", RetryBudget: 0},
+			{Position: 2, Account: second, Model: "m2", RetryBudget: 0},
+		},
+	}
+}
+
+func streamInput() domain.Input {
+	return domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+}
+
+func TestDispatchChatStreamFailsOverBeforeText(t *testing.T) {
+	led := &memLedger{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "no", failClass: domain.ClassRateLimit},
+			"solid": &scriptStream{reply: "hello world"},
+		},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.notices) != 1 || sink.notices[0] != (StreamNotice{FailedModel: "m1", Class: domain.ClassRateLimit, NextModel: "m2"}) {
+		t.Fatalf("notices = %+v", sink.notices)
+	}
+	if sink.text.String() != "hello world " || sink.fail != nil {
+		t.Fatalf("text = %q fail = %+v", sink.text.String(), sink.fail)
+	}
+	if sink.done == nil || sink.done.Model != "m2" || !sink.done.Usage.Arrived || sink.done.Usage.Output != 2 {
+		t.Fatalf("done = %+v", sink.done)
+	}
+	if len(led.rows) != 2 || led.rows[0].Class != domain.ClassRateLimit || led.rows[1].Class != domain.ClassOK {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+}
+
+func TestDispatchChatStreamFailsAfterTextEndsTheCall(t *testing.T) {
+	solid := &scriptStream{reply: "never"}
+	led := &memLedger{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "one two three", failAfter: 2, failClass: domain.ClassTransient},
+			"solid": solid,
+		},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.text.String() != "one two " || sink.done != nil || solid.calls != 0 {
+		t.Fatalf("text = %q done = %+v second calls = %d", sink.text.String(), sink.done, solid.calls)
+	}
+	if sink.fail == nil || sink.fail.Model != "m1" || sink.fail.Class != domain.ClassTransient {
+		t.Fatalf("fail = %+v", sink.fail)
+	}
+	if len(led.rows) != 1 || led.rows[0].Class != domain.ClassTransient || led.rows[0].Usage.Output != 2 {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+}
+
+func TestDispatchChatStreamAllLinksFailBeforeText(t *testing.T) {
+	led := &memLedger{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "no", failClass: domain.ClassRateLimit},
+			"solid": &scriptStream{reply: "neither", failClass: domain.ClassRateLimit},
+		},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	want := []StreamNotice{
+		{FailedModel: "m1", Class: domain.ClassRateLimit, NextModel: "m2"},
+		{FailedModel: "m2", Class: domain.ClassRateLimit, NextModel: ""},
+	}
+	if len(sink.notices) != 2 || sink.notices[0] != want[0] || sink.notices[1] != want[1] {
+		t.Fatalf("notices = %+v", sink.notices)
+	}
+	if sink.deltas != 0 || sink.done != nil || sink.fail == nil || sink.fail.Class != domain.ClassRateLimit || sink.fail.Model != "m2" {
+		t.Fatalf("deltas = %d done = %+v fail = %+v", sink.deltas, sink.done, sink.fail)
+	}
+	if len(led.rows) != 2 {
+		t.Fatalf("ledger rows = %d", len(led.rows))
+	}
+}
+
+// panicStream emits one word and then panics, like a broken adapter.
+type panicStream struct{}
+
+func (panicStream) ChatStream(_ context.Context, _ Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	_ = emit("one ")
+	panic("adapter exploded")
+}
+
+func TestDispatchChatStreamPanicIsAnInternalFailureWithOneLedgerRow(t *testing.T) {
+	led := &memLedger{}
+	sink := &recordingSink{}
+	solid := &scriptStream{reply: "hello"}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream:  map[string]StreamChatter{"flaky": panicStream{}, "solid": solid},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.fail == nil || sink.fail.Class != domain.ClassInternal || sink.fail.Model != "m1" {
+		t.Fatalf("fail = %+v", sink.fail)
+	}
+	if len(led.rows) != 1 || led.rows[0].Class != domain.ClassInternal || led.rows[0].Usage.Arrived {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+	if solid.calls != 0 || sink.done != nil {
+		t.Fatalf("second link calls = %d done = %+v", solid.calls, sink.done)
+	}
+}
+
+// panicSink records like recordingSink and panics on the first delta.
+type panicSink struct{ recordingSink }
+
+func (s *panicSink) Delta(string) error { panic("sink bug") }
+
+func TestDispatchChatStreamSinkPanicIsNotBookedAgainstTheProvider(t *testing.T) {
+	led := &memLedger{}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream:  map[string]StreamChatter{"flaky": &scriptStream{reply: "hello"}},
+	}
+	defer func() {
+		if rec := recover(); rec != "sink bug" {
+			t.Fatalf("recovered %v, want the sink's panic", rec)
+		}
+		if len(led.rows) != 0 {
+			t.Fatalf("ledger = %+v, want no provider row", led.rows)
+		}
+	}()
+	_ = disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, &panicSink{})
+	t.Fatal("ChatStreamCall returned, want the sink's panic raised again")
+}
+
+func TestDispatchChatStreamCancelStopsTheAdapter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sink := &cancelSink{cancel: cancel}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "one two three", delay: 20 * time.Millisecond},
+		},
+	}
+	if err := disp.ChatStreamCall(ctx, "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.deltas != 1 || sink.text.String() != "one " {
+		t.Fatalf("deltas = %d text = %q", sink.deltas, sink.text.String())
+	}
+	if sink.fail == nil || sink.fail.Class != domain.ClassCancelled || sink.fail.Model != "m1" {
+		t.Fatalf("fail = %+v", sink.fail)
+	}
+}
+
+func TestDispatchChatStreamSkipsLinkWithoutStreamAdapter(t *testing.T) {
+	led := &memLedger{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream:  map[string]StreamChatter{"solid": &scriptStream{reply: "hello world"}},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.text.String() != "hello world " || len(sink.notices) != 0 || sink.done == nil || sink.done.Model != "m2" {
+		t.Fatalf("text = %q notices = %+v done = %+v", sink.text.String(), sink.notices, sink.done)
+	}
+	if len(led.rows) != 1 {
+		t.Fatalf("ledger rows = %d", len(led.rows))
+	}
+}
+
+// shiftingPrices answers a different rate on every call, so a second lookup
+// for the done frame would disagree with the ledger row.
+type shiftingPrices struct{ calls int }
+
+func (p *shiftingPrices) Price(context.Context, string) (domain.Price, bool, error) {
+	p.calls++
+	rate := float64(p.calls)
+	return domain.Price{Version: fmt.Sprintf("v%d", p.calls), InputPerMTok: &rate, OutputPerMTok: &rate}, true, nil
+}
+
+func TestDispatchChatStreamDoneCostMatchesTheLedgerRow(t *testing.T) {
+	house := domain.Account{ID: "1", Adapter: "flaky", CredentialRef: "house", House: true, PlanKind: domain.PlanMetered}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "m1", RetryBudget: 0}},
+	}
+	led := &memLedger{}
+	prices := &shiftingPrices{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Prices:  prices,
+		Stream:  map[string]StreamChatter{"flaky": &scriptStream{reply: "one two"}},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.done == nil || sink.done.CostUSD == nil || len(led.rows) != 1 || led.rows[0].CostUSD == nil {
+		t.Fatalf("done = %+v rows = %+v", sink.done, led.rows)
+	}
+	if *sink.done.CostUSD != *led.rows[0].CostUSD {
+		t.Fatalf("done cost = %v, ledger cost = %v", *sink.done.CostUSD, *led.rows[0].CostUSD)
+	}
+	if prices.calls != 1 {
+		t.Fatalf("price calls = %d", prices.calls)
+	}
+}
+
+func TestDispatchChatStreamNoticesAMissingCredential(t *testing.T) {
+	first := domain.Account{ID: "1", Adapter: "flaky", CredentialRef: "gone", House: true}
+	second := domain.Account{ID: "2", Adapter: "solid", CredentialRef: "house", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{
+			{Position: 1, Account: first, Model: "m1", RetryBudget: 0},
+			{Position: 2, Account: second, Model: "m2", RetryBudget: 0},
+		},
+	}
+	led := &memLedger{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Ledger:  led,
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "never"},
+			"solid": &scriptStream{reply: "hello"},
+		},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.notices) != 1 || sink.notices[0] != (StreamNotice{FailedModel: "m1", Class: domain.ClassCredential, NextModel: "m2"}) {
+		t.Fatalf("notices = %+v", sink.notices)
+	}
+	if sink.text.String() != "hello " || sink.done == nil || sink.done.Model != "m2" {
+		t.Fatalf("text = %q done = %+v", sink.text.String(), sink.done)
+	}
+	if len(led.rows) != 2 || led.rows[0].Class != domain.ClassCredential || led.rows[0].Model != "m1" ||
+		led.rows[1].Class != domain.ClassOK || led.rows[1].Model != "m2" {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+}
+
+func TestDispatchChatStreamMissingCredentialsCarryModelAndClass(t *testing.T) {
+	first := domain.Account{ID: "1", Adapter: "flaky", CredentialRef: "gone", House: true}
+	second := domain.Account{ID: "2", Adapter: "solid", CredentialRef: "lost", House: true}
+	r := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{
+			{Position: 1, Account: first, Model: "m1", RetryBudget: 0},
+			{Position: 2, Account: second, Model: "m2", RetryBudget: 0},
+		},
+	}
+	led := &memLedger{}
+	sink := &recordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{r},
+		Secrets: memSecrets{},
+		Ledger:  led,
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "never"},
+			"solid": &scriptStream{reply: "neither"},
+		},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	want := []StreamNotice{
+		{FailedModel: "m1", Class: domain.ClassCredential, NextModel: "m2"},
+		{FailedModel: "m2", Class: domain.ClassCredential, NextModel: ""},
+	}
+	if len(sink.notices) != 2 || sink.notices[0] != want[0] || sink.notices[1] != want[1] {
+		t.Fatalf("notices = %+v", sink.notices)
+	}
+	if sink.fail == nil || sink.fail.Model != "m2" || sink.fail.Class != domain.ClassCredential {
+		t.Fatalf("fail = %+v", sink.fail)
+	}
+	if len(led.rows) != 2 || led.rows[0].Class != domain.ClassCredential || led.rows[1].Class != domain.ClassCredential {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+}
+
+// goneSink records like recordingSink, but its caller is gone: every notice
+// write fails.
+type goneSink struct {
+	recordingSink
+	noticeErr error
+}
+
+func (s *goneSink) Notice(StreamNotice) error { return s.noticeErr }
+
+func TestDispatchChatStreamStopsWhenTheNoticeWriteFails(t *testing.T) {
+	gone := errors.New("caller gone")
+	sink := &goneSink{noticeErr: gone}
+	solid := &scriptStream{reply: "hello"}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Stream: map[string]StreamChatter{
+			"flaky": &scriptStream{reply: "no", failClass: domain.ClassRateLimit},
+			"solid": solid,
+		},
+	}
+	err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink)
+	if !errors.Is(err, gone) {
+		t.Fatalf("err = %v", err)
+	}
+	if solid.calls != 0 || sink.done != nil || sink.fail != nil {
+		t.Fatalf("second calls = %d done = %+v fail = %+v", solid.calls, sink.done, sink.fail)
+	}
+}
+
+// ownedRoute is a chat route with a link of one person's own, then a house
+// link: model mine on adapter own, model m2 on adapter solid.
+func ownedRoute(owner string) domain.Route {
+	mine := domain.Account{ID: "1", Adapter: "own", CredentialRef: "personal", OwnerUserID: owner}
+	house := domain.Account{ID: "2", Adapter: "solid", CredentialRef: "house", House: true}
+	return domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{
+			{Position: 1, Account: mine, Model: "mine"},
+			{Position: 2, Account: house, Model: "m2"},
+		},
+	}
+}
+
+func ownedDispatch(own, solid *scriptStream) Dispatch {
+	return Dispatch{
+		Routes:  memRoutes{ownedRoute("u1")},
+		Secrets: memSecrets{map[string]string{"house": "secret", "personal": "mine"}},
+		Ledger:  &memLedger{},
+		Stream:  map[string]StreamChatter{"own": own, "solid": solid},
+	}
+}
+
+func TestDispatchChatStreamUsesTheAuthorsOwnLinkAndTheHouseForOthers(t *testing.T) {
+	own, solid := &scriptStream{reply: "mine"}, &scriptStream{reply: "house"}
+	disp := ownedDispatch(own, solid)
+
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.done == nil || sink.done.Model != "mine" || own.calls != 1 || solid.calls != 0 {
+		t.Fatalf("author: done %+v own %d house %d", sink.done, own.calls, solid.calls)
+	}
+
+	sink = &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u2"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.done == nil || sink.done.Model != "m2" || own.calls != 1 || solid.calls != 1 {
+		t.Fatalf("other person: done %+v own %d house %d", sink.done, own.calls, solid.calls)
+	}
+}
+
+func TestDispatchChatStreamNeverFallsBackToTheHouseKeyFromAnOwnLink(t *testing.T) {
+	own, solid := &scriptStream{reply: "no", failClass: domain.ClassCredential}, &scriptStream{reply: "house"}
+	disp := ownedDispatch(own, solid)
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if solid.calls != 0 || sink.fail == nil || sink.fail.Model != "mine" || sink.done != nil {
+		t.Fatalf("house calls %d fail %+v done %+v", solid.calls, sink.fail, sink.done)
 	}
 }

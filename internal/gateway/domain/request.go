@@ -56,6 +56,9 @@ type Request struct {
 	System   string       `json:"system,omitempty"`
 	Messages []Message    `json:"messages"`
 	Cache    []Breakpoint `json:"cache,omitempty"`
+	// MaxOutputTokens caps the reply; 0 means the adapter default. It is not
+	// part of the cache prefix, so it sits after the wire fields.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 // Input is what a caller hands the builder.

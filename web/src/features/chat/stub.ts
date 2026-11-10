@@ -244,5 +244,8 @@ export function createChatsStub(
       if (chat.title === newChatTitle) chat.title = clip(text, titleLength);
       setTimeout(() => reply(chat, text), replyDelayMs);
     },
+    async retry() {
+      throw new Error("The sample chats have no failed replies.");
+    },
   };
 }

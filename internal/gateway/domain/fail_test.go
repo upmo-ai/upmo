@@ -18,6 +18,7 @@ func TestNextActionTable(t *testing.T) {
 		{ClassModelAccess, 0, ActionNext},
 		{ClassCaller, 9, ActionFail},
 		{ClassCancelled, 9, ActionFail},
+		{ClassInternal, 9, ActionFail},
 		{FailureClass("unknown"), 1, ActionFail},
 	}
 	for _, tc := range cases {

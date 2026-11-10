@@ -29,6 +29,13 @@ type Chatter interface {
 	Chat(ctx context.Context, attempt Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error)
 }
 
+// StreamChatter is the streaming chat adapter for one account.adapter value,
+// beside Chatter. emit receives each text delta in order; when it returns an
+// error the caller is gone and the adapter stops reading.
+type StreamChatter interface {
+	ChatStream(ctx context.Context, attempt Attempt, req domain.Request, emit func(text string) error) (domain.Usage, domain.FailureClass, error)
+}
+
 // Embedder is the embed adapter for one account.adapter value.
 type Embedder interface {
 	Embed(ctx context.Context, attempt Attempt, inputs []string) ([][]float32, domain.Usage, domain.FailureClass, error)
@@ -73,6 +80,7 @@ type Dispatch struct {
 	Bundles Bundles
 	Decide  map[string]Decider
 	Chat    map[string]Chatter
+	Stream  map[string]StreamChatter
 	Embed   map[string]Embedder
 	Gates   *Gates
 	Caps    Caps
@@ -85,16 +93,21 @@ func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who
 	if d.Ledger == nil {
 		return nil
 	}
-	var price domain.Price
-	found := false
-	if d.Prices != nil {
-		p, ok, err := d.Prices.Price(ctx, link.Model)
-		if err != nil {
-			return err
-		}
-		price, found = p, ok
+	_, err := d.writeCost(ctx, route, link, who, class, usage)
+	return err
+}
+
+// writeCost prices one attempt, records its ledger row and returns the cost
+// it priced, so a caller can report the same number the row holds.
+func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) (*float64, error) {
+	cost, version, err := d.priceCost(ctx, link, usage)
+	if err != nil {
+		return nil, err
 	}
-	return d.Ledger.Record(ctx, domain.Entry{
+	if d.Ledger == nil {
+		return cost, nil
+	}
+	return cost, d.Ledger.Record(ctx, domain.Entry{
 		Route:        route,
 		LinkPosition: link.Position,
 		AccountID:    link.Account.ID,
@@ -103,9 +116,24 @@ func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who
 		Class:        class,
 		Principal:    who,
 		Usage:        usage,
-		CostUSD:      domain.CostUSD(link.Account.PlanKind, usage, price, found),
-		PriceVersion: price.Version,
+		CostUSD:      cost,
+		PriceVersion: version,
 	})
+}
+
+// priceCost prices one attempt exactly as its ledger row does: the cost and
+// the catalog version it came from.
+func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage) (*float64, string, error) {
+	var price domain.Price
+	found := false
+	if d.Prices != nil {
+		p, ok, err := d.Prices.Price(ctx, link.Model)
+		if err != nil {
+			return nil, "", err
+		}
+		price, found = p, ok
+	}
+	return domain.CostUSD(link.Account.PlanKind, usage, price, found), price.Version, nil
 }
 
 func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, req domain.DecideRequest) (domain.DecideResult, error) {
@@ -287,6 +315,188 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		last = fmt.Errorf("gateway: route %q exhausted", routeName)
 	}
 	return "", last
+}
+
+// StreamNotice names the link that failed before its first text and the link
+// the walk tries next, which is empty when the walk is over.
+type StreamNotice struct {
+	FailedModel string
+	Class       domain.FailureClass
+	NextModel   string
+}
+
+// StreamDone is the successful end of a streamed reply.
+type StreamDone struct {
+	Model   string
+	Usage   domain.Usage
+	CostUSD *float64
+}
+
+// StreamFail is the failed end of a streamed reply. Model is the model that
+// was writing when the call failed.
+type StreamFail struct {
+	Model string
+	Class domain.FailureClass
+	Err   error
+}
+
+// StreamSink hears one streamed chat call: text deltas in order, a notice
+// each time a link fails before its first text and the walk moves on, and
+// exactly one Done or Fail. Delta and Notice return an error when the
+// caller is gone; the walk then stops at once.
+type StreamSink interface {
+	Delta(text string) error
+	Notice(notice StreamNotice) error
+	Done(done StreamDone)
+	Fail(fail StreamFail)
+}
+
+// ChatStreamCall walks a chat route streaming the reply to sink. Failover
+// and retries happen only while no text has been emitted; once text has
+// arrived a failure ends the call with no further link. A credential that
+// cannot be resolved fails its link like any pre-text fault. One ledger row
+// is written per attempt, as in ChatCall.
+func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input, maxOutputTokens int, sink StreamSink) error {
+	in, err := d.applyBundle(ctx, who, in)
+	if err != nil {
+		return err
+	}
+	built, err := domain.Build(in)
+	if err != nil {
+		return err
+	}
+	if len(built.Messages) == 0 {
+		return fmt.Errorf("gateway: chat prompt is empty")
+	}
+	built.MaxOutputTokens = maxOutputTokens
+	route, err := d.Routes.ByName(ctx, routeName)
+	if err != nil {
+		return err
+	}
+	if route.Capability != domain.CapChat {
+		return fmt.Errorf("gateway: route %q is %s", routeName, route.Capability)
+	}
+	var links []domain.Link
+	if credentialRef == "" && who.User != "" {
+		// A streamed reply is paid by the person it is for when the route has
+		// links of theirs, and by the house otherwise.
+		links, err = route.LinksForUser(who.User)
+	} else {
+		links, err = route.LinksFor(credentialRef)
+	}
+	if err != nil {
+		return err
+	}
+	var (
+		last      error
+		lastModel string
+		lastClass domain.FailureClass
+	)
+	for i, link := range links {
+		streamer := d.Stream[link.Account.Adapter]
+		if streamer == nil {
+			last = fmt.Errorf("gateway: no stream adapter %q", link.Account.Adapter)
+			continue
+		}
+		if skip, err := d.skip(link); skip {
+			last = err
+			continue
+		}
+		secret, err := d.Secrets.Get(link.Account.CredentialRef)
+		if err != nil {
+			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+				return werr
+			}
+			d.seen(link.Account.CredentialRef, domain.ClassCredential)
+			last, lastModel, lastClass = err, link.Model, domain.ClassCredential
+			next := ""
+			if i+1 < len(links) {
+				next = links[i+1].Model
+			}
+			if nerr := sink.Notice(StreamNotice{FailedModel: link.Model, Class: domain.ClassCredential, NextModel: next}); nerr != nil {
+				return nerr
+			}
+			continue
+		}
+		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
+		retries := link.RetryBudget
+		for {
+			text := false
+			usage, class, err := chatStream(ctx, streamer, attempt, built, func(delta string) error {
+				if err := sink.Delta(delta); err != nil {
+					return err
+				}
+				text = true
+				return nil
+			})
+			cost, werr := d.writeCost(ctx, routeName, link, who, class, usage)
+			if werr != nil {
+				return werr
+			}
+			d.seen(link.Account.CredentialRef, class)
+			if class == domain.ClassOK && err == nil {
+				sink.Done(StreamDone{Model: link.Model, Usage: usage, CostUSD: cost})
+				return nil
+			}
+			if err == nil {
+				err = fmt.Errorf("gateway: %s", class)
+			}
+			last, lastModel, lastClass = err, link.Model, class
+			if text {
+				// The caller has text; a failure now ends the call.
+				sink.Fail(StreamFail{Model: link.Model, Class: class, Err: err})
+				return nil
+			}
+			switch domain.NextAction(class, retries) {
+			case domain.ActionRetry:
+				if nerr := sink.Notice(StreamNotice{FailedModel: link.Model, Class: class, NextModel: link.Model}); nerr != nil {
+					return nerr
+				}
+				retries--
+				continue
+			case domain.ActionNext:
+				next := ""
+				if i+1 < len(links) {
+					next = links[i+1].Model
+				}
+				if nerr := sink.Notice(StreamNotice{FailedModel: link.Model, Class: class, NextModel: next}); nerr != nil {
+					return nerr
+				}
+			default:
+				sink.Fail(StreamFail{Model: link.Model, Class: class, Err: err})
+				return nil
+			}
+			break
+		}
+	}
+	if last == nil {
+		last = fmt.Errorf("gateway: route %q exhausted", routeName)
+	}
+	sink.Fail(StreamFail{Model: lastModel, Class: lastClass, Err: last})
+	return nil
+}
+
+// chatStream runs one streaming attempt. A panic in the adapter fails that
+// attempt as internal so the ledger row, the status note and the end of the
+// walk still happen. The panic value stays in the returned error; the wire
+// carries a fixed phrase instead. A panic in emit is the gateway's own and
+// is raised again, not booked against the provider.
+func chatStream(ctx context.Context, streamer StreamChatter, attempt Attempt, req domain.Request, emit func(string) error) (usage domain.Usage, class domain.FailureClass, err error) {
+	inEmit := false
+	defer func() {
+		if rec := recover(); rec != nil {
+			if inEmit {
+				panic(rec)
+			}
+			usage, class, err = domain.Usage{}, domain.ClassInternal, fmt.Errorf("gateway: stream adapter panic: %v", rec)
+		}
+	}()
+	return streamer.ChatStream(ctx, attempt, req, func(text string) error {
+		inEmit = true
+		err := emit(text)
+		inEmit = false
+		return err
+	})
 }
 
 // EmbedCall walks an embed route and returns the link model with one vector

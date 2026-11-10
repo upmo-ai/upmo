@@ -111,6 +111,7 @@ func run() error {
 	workers := river.NewWorkers()
 	noticeStore := notices.Store{Pool: pool}
 	memoryFacts := memory.NewFacts(pool)
+	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
 		embedRoute := cfg.EmbedRoute
 		if embedRoute == "" {
@@ -140,10 +141,32 @@ func run() error {
 			func(userID string) memory.Proposer { return gw.For(userID) },
 			func(userID string) memory.Embedder { return gw.For(userID) },
 		)
+		chatModel, err := chat.OpenModel(cfg.GatewayURL, cfg.ServiceKey)
+		if err != nil {
+			return fmt.Errorf("brain: chat gateway: %w", err)
+		}
+		// A reply runs as the person who wrote the line, with the access a
+		// request of theirs would have, so row security applies to it.
+		chat.AddReplyWorker(workers, chat.ReplyDeps{
+			Rows:  chat.NewStore(pool, nil),
+			Model: chatModel,
+			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
+				person, err := identity.ParseUserID(userID)
+				if err != nil {
+					return chat.Access{}, false, err
+				}
+				return chatAccess(ctx, members, person)
+			},
+			Log: log,
+		})
 	}
 	// Outbox drain runs with Open. Product topic handlers
 	// register here when they exist; this slice leaves the registry empty.
-	work, err := jobs.Open(pool, jobs.WithWorkers(workers))
+	work, err := jobs.Open(pool,
+		jobs.WithWorkers(workers),
+		jobs.WithQueue(chat.ReplyQueue, cfg.ChatWorkers),
+		jobs.WithPeriodic(chat.SweepPeriodic()),
+	)
 	if err != nil {
 		return err
 	}
@@ -165,12 +188,16 @@ func run() error {
 	streams := tasks.NewStreamHub(pool, listenConn, log, tasks.StreamConfig{})
 	streams.Start(ctx)
 	defer streams.Close()
-	handler, err := routes(pool, cfg, log, boxes, work, noticeStore, streams)
+	chatStreams := chat.NewStreamHub(pool, listenConn, log, chat.StreamConfig{})
+	chatStreams.Start(ctx)
+	defer chatStreams.Close()
+	handler, err := routes(pool, cfg, log, boxes, work, noticeStore, streams, chatStreams)
 	if err != nil {
 		return err
 	}
 	srv := httpserver.New(cfg.ListenAddr, handler)
 	srv.RegisterOnShutdown(streams.Close)
+	srv.RegisterOnShutdown(chatStreams.Close)
 	err = httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
 	// Provisioning still running in the background gets the shutdown
 	// timeout to settle its task before the pool closes. Any left after
@@ -235,7 +262,7 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -352,28 +379,29 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
+	chatBook := chat.NewStore(pool, work)
+	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
+		chatBook.ReplyRoute = cfg.ChatRoute
+	}
 	chat.Handler{
-		Book: chat.NewStore(pool, work),
+		Book:   chatBook,
+		Stream: chatStreams,
 		Access: func(r *http.Request) (chat.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
 				return chat.Access{}, false
 			}
-			allow, err := members.ChatAllow(r.Context(), person.UserID)
-			if err != nil || allow == "" {
-				return chat.Access{}, false
+			access, ok, err := chatAccess(r.Context(), members, person.UserID)
+			return access, ok && err == nil
+		},
+		// An open stream looks the session up again, then the person's allow
+		// list and shares, so a sign-out or a revoked share ends it.
+		Renew: func(ctx context.Context, r *http.Request) (chat.Access, bool, error) {
+			person, ok, err := identity.Recheck(ctx, sessions, r)
+			if err != nil || !ok {
+				return chat.Access{}, false, err
 			}
-			shares, err := members.ShareAccess(r.Context(), person.UserID, identity.TypeChat)
-			if err != nil {
-				return chat.Access{}, false
-			}
-			return chat.Access{
-				UserID:     person.UserID.String(),
-				Allow:      allow,
-				Teams:      shares.Teams,
-				SharedView: shares.SharedView,
-				SharedEdit: shares.SharedEdit,
-			}, true
+			return chatAccess(ctx, members, person.UserID)
 		},
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
@@ -493,6 +521,26 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		return identity.RequireSession(sessions, next)
 	})
 	return mux, nil
+}
+
+// chatAccess is what a person may do with chats. It reports false for a
+// person with no chat permission and an error when it could not be read.
+func chatAccess(ctx context.Context, members identity.MemberService, user identity.UserID) (chat.Access, bool, error) {
+	allow, err := members.ChatAllow(ctx, user)
+	if err != nil || allow == "" {
+		return chat.Access{}, false, err
+	}
+	shares, err := members.ShareAccess(ctx, user, identity.TypeChat)
+	if err != nil {
+		return chat.Access{}, false, err
+	}
+	return chat.Access{
+		UserID:     user.String(),
+		Allow:      allow,
+		Teams:      shares.Teams,
+		SharedView: shares.SharedView,
+		SharedEdit: shares.SharedEdit,
+	}, true, nil
 }
 
 // scoutProposer maps memory gateway retries onto the tasks scout retry sentinel.

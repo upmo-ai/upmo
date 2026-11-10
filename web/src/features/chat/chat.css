@@ -289,6 +289,35 @@
   color: var(--ink-muted);
 }
 
+.chat-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.chat-attempts,
+.chat-notice,
+.chat-picker-note {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.chat-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  max-width: var(--chat-container-width);
+  margin: 0 auto;
+}
+
+.chat-picker-note {
+  width: 100%;
+  max-width: var(--chat-container-width);
+  margin-bottom: var(--space-1);
+}
+
 .chat-send-error {
   width: 100%;
   max-width: var(--chat-container-width);

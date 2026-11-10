@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
@@ -14,6 +15,12 @@ type Adapter struct {
 	YesNo  bool
 	Choice string
 	Reply  string
+	// Stream scripting: the words of Reply stream one per StreamDelay tick,
+	// and when StreamFailClass is set the stream fails with it after
+	// StreamFailWords words, zero failing before the first word.
+	StreamDelay     time.Duration
+	StreamFailWords int
+	StreamFailClass domain.FailureClass
 }
 
 func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
@@ -57,6 +64,35 @@ func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (str
 		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: chat prompt is empty")
 	}
 	return strings.TrimSpace(req.Messages[len(req.Messages)-1].Text), domain.Usage{}, domain.ClassOK, nil
+}
+
+// ChatStream streams the words of Reply one at a time, pausing StreamDelay
+// between words. Usage counts the words that were sent, so a failed stream
+// carries its partial usage.
+func (a Adapter) ChatStream(ctx context.Context, _ app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	words := strings.Fields(a.Reply)
+	part := func(sent int) domain.Usage { return domain.Usage{Arrived: true, Input: 1, Output: sent} }
+	sent := 0
+	for _, word := range words {
+		if a.StreamFailClass != "" && sent == a.StreamFailWords {
+			return part(sent), a.StreamFailClass, fmt.Errorf("gateway: fake stream %s", a.StreamFailClass)
+		}
+		if a.StreamDelay > 0 {
+			select {
+			case <-time.After(a.StreamDelay):
+			case <-ctx.Done():
+				return part(sent), domain.ClassCancelled, ctx.Err()
+			}
+		}
+		if err := emit(word + " "); err != nil {
+			return part(sent), domain.ClassCancelled, err
+		}
+		sent++
+	}
+	if a.StreamFailClass != "" && sent == a.StreamFailWords {
+		return part(sent), a.StreamFailClass, fmt.Errorf("gateway: fake stream %s", a.StreamFailClass)
+	}
+	return part(sent), domain.ClassOK, nil
 }
 
 // Probe always works: the fake has no network.

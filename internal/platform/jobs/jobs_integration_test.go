@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -90,6 +91,79 @@ func TestCommitRunsPing(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("ping worker did not run")
+	}
+}
+
+func TestWithQueueRunsJobsOnAQueueOfItsOwn(t *testing.T) {
+	// Not parallel: ping recording is package-global.
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	client, err := jobs.Open(pool, jobs.WithQueue("extra", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs.ResetPing()
+	t.Cleanup(jobs.ResetPing)
+	done := make(chan string, 1)
+	jobs.SetPingHook(func(label string) { done <- label })
+	t.Cleanup(startClient(t, client))
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := client.InsertTx(ctx, tx, jobs.PingArgs{Label: "extra"}, &river.InsertOpts{Queue: "extra"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case label := <-done:
+		if label != "extra" {
+			t.Fatalf("label = %q, want extra", label)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job on the extra queue did not run")
+	}
+}
+
+func TestWithPeriodicRunsItsJobNextToTheOutboxDrain(t *testing.T) {
+	// Not parallel: ping recording is package-global.
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	periodic := river.NewPeriodicJob(
+		river.PeriodicInterval(time.Hour),
+		func() (river.JobArgs, *river.InsertOpts) { return jobs.PingArgs{Label: "periodic"}, nil },
+		&river.PeriodicJobOpts{RunOnStart: true},
+	)
+	client, err := jobs.Open(pool, jobs.WithPeriodic(periodic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs.ResetPing()
+	t.Cleanup(jobs.ResetPing)
+	done := make(chan string, 1)
+	jobs.SetPingHook(func(label string) { done <- label })
+	t.Cleanup(startClient(t, client))
+	select {
+	case label := <-done:
+		if label != "periodic" {
+			t.Fatalf("label = %q, want periodic", label)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the periodic job did not run")
 	}
 }
 
@@ -298,5 +372,49 @@ func migrateIdentity(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	if err := migrate.Up(context.Background(), pool, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStuckJobsAreRescuedAfterTenMinutesAndNotBefore(t *testing.T) {
+	// Not parallel: ping recording is package-global.
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	client, err := jobs.Open(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two jobs that a process that died left running: one for fifteen
+	// minutes, one for five, which a reply may still be streaming.
+	for label, age := range map[string]string{"old": "15 minutes", "recent": "5 minutes"} {
+		if _, err := owner.Exec(ctx, `
+			INSERT INTO platform.river_job (state, attempt, max_attempts, attempted_at, args, kind, queue, priority)
+			VALUES ('running', 1, 2, now() - $1::interval, jsonb_build_object('label', $2::text), 'platform_ping', 'default', 1)`,
+			age, label); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs.ResetPing()
+	t.Cleanup(jobs.ResetPing)
+	seen := make(chan string, 4)
+	jobs.SetPingHook(func(label string) { seen <- label })
+	t.Cleanup(startClient(t, client))
+
+	select {
+	case label := <-seen:
+		if label != "old" {
+			t.Fatalf("rescued %q first", label)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the job stuck for fifteen minutes was not rescued")
+	}
+	select {
+	case label := <-seen:
+		t.Fatalf("rescued %q, which had run for five minutes only", label)
+	case <-time.After(time.Second):
 	}
 }

@@ -21,9 +21,34 @@ export interface ChatLine {
   cost_usd: number | null;
   /** ISO 8601 instant. */
   at: string;
+  /** Absent means done. "pending" is a reply still being written; it lives only in the page. */
+  status?: LineStatus;
+  /** The user line a reply answers. */
+  reply_to?: string | null;
+  /** The models a failed reply tried, and the plain reason each failed. */
+  attempts?: ChatAttempt[];
+  /** The last delta applied to a pending reply, so a replayed one is not added twice. */
+  seq?: number;
+}
+
+export type LineStatus = "done" | "failed" | "pending";
+
+export interface ChatAttempt {
+  model: string;
+  reason: string;
+}
+
+/** A model that failed before the reply began, and the one tried next. */
+export interface ChatNotice {
+  line_id: string;
+  failed_model: string;
+  reason: string;
+  next_model: string;
 }
 
 export interface Chat {
   id: string;
   lines: ChatLine[];
+  /** Switch notices for replies still pending. Never read from the server. */
+  notices?: ChatNotice[];
 }

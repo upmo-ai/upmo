@@ -1216,7 +1216,7 @@ func TestDispatcherUsesAnOwnAccountsKeyFromTheDatabase(t *testing.T) {
 	ref := refOf(t, r, made.ID)
 
 	mux := http.NewServeMux()
-	Mount(mux, r.owner, Chain{EnvSecrets{}, DBSecrets{Pool: r.owner, Keys: r.keys}})
+	Mount(mux, r.owner, Chain{EnvSecrets{}, DBSecrets{Pool: r.owner, Keys: r.keys}}, nil)
 	code, out := chatVia(t, mux, "draft", ref)
 	if code != 200 || !strings.Contains(out, "hello from provider") {
 		t.Fatalf("chat = %d %s", code, out)
@@ -1258,14 +1258,14 @@ func TestDispatcherUsesAnOwnAccountsKeyFromTheDatabase(t *testing.T) {
 	prov.status.Store(200)
 	hits = prov.hits.Load()
 	wrong := http.NewServeMux()
-	Mount(wrong, r.owner, Chain{EnvSecrets{}, DBSecrets{Pool: r.owner, Keys: masterKeys(t, 'z')}})
+	Mount(wrong, r.owner, Chain{EnvSecrets{}, DBSecrets{Pool: r.owner, Keys: masterKeys(t, 'z')}}, nil)
 	code, out = chatVia(t, wrong, "draft", ref)
 	if code == 200 || prov.hits.Load() != hits || strings.Contains(out, adaKey) {
 		t.Fatalf("wrong master key: %d %s (hits %d -> %d)", code, out, hits, prov.hits.Load())
 	}
 	// With no database reader in the chain, the same.
 	bare := http.NewServeMux()
-	Mount(bare, r.owner, Chain{EnvSecrets{}})
+	Mount(bare, r.owner, Chain{EnvSecrets{}}, nil)
 	if code, _ = chatVia(t, bare, "draft", ref); code == 200 || prov.hits.Load() != hits {
 		t.Fatalf("no reader: %d", code)
 	}
@@ -1409,6 +1409,11 @@ func TestGatewayProcessReadsEveryAccountUnderForcedRowSecurity(t *testing.T) {
 	route, err := (postgres.Store{Pool: svc}).ByName(ctx, "draft")
 	if err != nil || len(route.Links) != 1 || route.Links[0].Account.CredentialRef != refOf(t, r, made.ID) {
 		t.Fatalf("route read: %+v, %v", route, err)
+	}
+	// A route link says whose account it is, which is how a streamed reply
+	// finds a person's own links.
+	if route.Links[0].Account.OwnerUserID != ada || route.Links[0].Account.House {
+		t.Fatalf("link owner = %q house %v, want %q", route.Links[0].Account.OwnerUserID, route.Links[0].Account.House, ada)
 	}
 
 	// The request role (upmo_app) with no person sees none of it.
