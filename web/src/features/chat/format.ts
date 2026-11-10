@@ -68,11 +68,12 @@ export function formatCost(value: number | null): string {
 
 /**
  * The newest line is the user's and a reply comes on its own: the stub writes
- * an assistant line a moment later, the brain stores the line and stops, so a
- * send there is never shown as a wait.
+ * an assistant line a moment later, and the brain marks a line it has no reply
+ * for as pending, so a reload still shows the wait.
  */
 export function awaitingReply(lines: readonly ChatLine[] | undefined, replyFollows: boolean): boolean {
-  return replyFollows && lines?.at(-1)?.role === "user";
+  const last = lines?.at(-1);
+  return last?.role === "user" && (replyFollows || last.pending === true);
 }
 
 /** A 403 means the chat can be read but not written in; any other problem is shown as it comes. */

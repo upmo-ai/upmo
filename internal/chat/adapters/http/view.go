@@ -40,6 +40,8 @@ type lineJSON struct {
 	Route   *string  `json:"route"`
 	Pin     *pinJSON `json:"pin"`
 	AgentID *string  `json:"agent_id"`
+	// Pending, on a user line, says no reply has been stored for it yet.
+	Pending bool `json:"pending"`
 }
 
 // pinJSON is the model a user line was pinned to. The account is left out
@@ -105,5 +107,6 @@ func lineBody(line app.Line) lineJSON {
 		Route:    line.Route,
 		Pin:      pin,
 		AgentID:  line.AgentID,
+		Pending:  line.Pending,
 	}
 }

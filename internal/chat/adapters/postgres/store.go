@@ -340,7 +340,8 @@ func lineColumnsFor(viewer string) string {
 	line.route,
 	CASE WHEN line.author_id = ` + viewer + ` THEN line.pin_account_id::text END,
 	line.pin_model,
-	CASE WHEN line.author_id = ` + viewer + ` THEN line.agent_id::text END`
+	CASE WHEN line.author_id = ` + viewer + ` THEN line.agent_id::text END,
+	(line.role = 'user' AND NOT EXISTS (SELECT 1 FROM chat.lines AS reply WHERE reply.reply_to = line.id))`
 }
 
 // superseded holds for a failed reply that a later reply to the same user
@@ -356,7 +357,7 @@ func scanLine(rows pgx.Rows, lead ...any) (app.Line, error) {
 	var line app.Line
 	var attempts []byte
 	dest := append(lead, &line.ID, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
-		&line.Status, &line.ReplyTo, &attempts, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID)
+		&line.Status, &line.ReplyTo, &attempts, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID, &line.Pending)
 	if err := rows.Scan(dest...); err != nil {
 		return app.Line{}, fmt.Errorf("chat: line: %w", err)
 	}
