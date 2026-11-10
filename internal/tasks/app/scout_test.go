@@ -20,6 +20,15 @@ func (f *fakeGoals) ListOpenGoals(context.Context, uuid.UUID) ([]OpenGoal, error
 	return f.goals, f.err
 }
 
+type fakeChat struct {
+	lines []string
+	read  bool
+}
+
+func (f *fakeChat) RecentLines(context.Context, uuid.UUID, string, int) ([]string, bool, error) {
+	return f.lines, f.read, nil
+}
+
 type scriptProposer struct {
 	script []string
 	calls  int
@@ -231,5 +240,39 @@ func TestRunSkipsKnowledgeWithoutQuery(t *testing.T) {
 	}
 	if know.query != "" {
 		t.Fatalf("query = %q", know.query)
+	}
+}
+
+func TestRunAuditsChatOnlyWhenRead(t *testing.T) {
+	for name, tc := range map[string]struct {
+		chat *fakeChat
+		want bool
+	}{
+		"read":   {&fakeChat{lines: []string{"hello"}, read: true}, true},
+		"denied": {&fakeChat{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			batch, _ := json.Marshal([]string{"Chase the invoice"})
+			prop := &scriptProposer{script: []string{string(batch)}}
+			deps := scoutDeps(&fakeGoals{}, prop, &fakeNotices{})
+			deps.Chat = tc.chat
+			kept, audit, err := RunScout(context.Background(), deps, ScoutArgs{
+				UserID:   uuid.New(),
+				Trigger:  scoutTriggerChat,
+				SourceID: "chat-1",
+			})
+			if err != nil || kept != 1 {
+				t.Fatalf("kept=%d err=%v", kept, err)
+			}
+			var got bool
+			for _, ref := range audit {
+				if ref.Kind == scoutTriggerChat && ref.ID == "chat-1" {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("chat in audit = %v, want %v (%#v)", got, tc.want, audit)
+			}
+		})
 	}
 }
