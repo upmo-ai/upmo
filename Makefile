@@ -102,16 +102,13 @@ ci: build lint test test-regression canary arch vuln secrets commits docs ## Run
 web: ## Install, lint, test and build the web app
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build"
 
-# Separate from `web` and `ci`. Reuses this checkout's dev server when it is
-# already up. e2e/ensure-web.sh prints the compose project and the page URL.
+# Separate from `web` and `ci`. Runs in an isolated upmo-e2e-<checkout hash>
+# compose project, never the default dev stack; it reuses that project's dev
+# server when it is already up. e2e/ensure-web.sh prints the project and URL.
 e2e: ## Browser-check theme, shell, task flows and identity screens
 	@set -eu; \
 	out=$$(sh e2e/ensure-web.sh 3>&1 1>&2) || exit 1; \
 	project=$$(printf '%s\n' "$$out" | awk 'NR==1'); \
 	url=$$(printf '%s\n' "$$out" | awk 'NR==2'); \
 	link=$$(sh e2e/ensure-brain.sh "$$project"); \
-	if [ "$$project" = "-" ]; then \
-		$(COMPOSE) --profile e2e run --rm -e WEB_URL="$$url" -e UPMO_LINK="$$link" playwright; \
-	else \
-		$(COMPOSE) -p "$$project" -f compose.yml -f e2e/web.override.yml --profile e2e run --rm -e WEB_URL="$$url" -e UPMO_LINK="$$link" playwright; \
-	fi
+	$(COMPOSE) -p "$$project" -f compose.yml -f e2e/web.override.yml --profile e2e run --rm -e WEB_URL="$$url" -e UPMO_LINK="$$link" playwright
