@@ -46,6 +46,10 @@ const REPLY_POLL_MS = 300;
 const noLines: ChatLine[] = [];
 const noChats: ChatSummary[] = [];
 
+// The tools mode is not sent with a line yet, so its pill is locked and this says so. It repeats the
+// composer's own keyboard hint, which a hint replaces.
+const COMPOSER_HINT = "Enter to send · Shift+Enter for a new line · Tools are not used in chat yet";
+
 const TOOLS_OPTIONS: ComposerOption[] = [
   { value: "auto", label: "Auto", description: "Allow model to call connected tools" },
   { value: "all", label: "All Tools", description: "Connectors and MCPs enabled" },
@@ -528,7 +532,8 @@ export function ChatPage() {
                   { label: "Model", value: picks.model, options: modelOptions, onChange: pick("model"), searchable: true },
                 ],
               }}
-              toolsMode={{ value: selectedTools, options: TOOLS_OPTIONS, onChange: setSelectedTools }}
+              toolsMode={{ value: selectedTools, options: TOOLS_OPTIONS, onChange: setSelectedTools, disabled: true }}
+              hint={COMPOSER_HINT}
               onAttach={() => {}}
               onDictate={() => {}}
             />

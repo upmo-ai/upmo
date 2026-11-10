@@ -39,23 +39,23 @@ importers:
         specifier: 1.170.18
         version: 1.170.18(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@upmo-ai/brand':
-        specifier: ^1.7.0
-        version: 1.7.0
+        specifier: ^1.8.0
+        version: 1.8.0
       '@upmo-ai/brands':
-        specifier: ^1.7.0
-        version: 1.7.0
+        specifier: ^1.8.0
+        version: 1.8.0
       '@upmo-ai/components':
-        specifier: ^1.7.0
-        version: 1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/dates@9.7.4(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@tabler/icons-react@3.50.0(react@19.3.1))(@upmo-ai/brands@1.7.0)(@upmo-ai/icons@1.7.0)(@upmo-ai/theme@1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: ^1.8.0
+        version: 1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/dates@9.7.4(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@tabler/icons-react@3.50.0(react@19.3.1))(@upmo-ai/brands@1.8.0)(@upmo-ai/icons@1.8.0)(@upmo-ai/theme@1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@upmo-ai/icons':
-        specifier: ^1.7.0
-        version: 1.7.0
+        specifier: ^1.8.0
+        version: 1.8.0
       '@upmo-ai/theme':
-        specifier: ^1.7.0
-        version: 1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
+        specifier: ^1.8.0
+        version: 1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
       '@upmo-ai/tokens':
-        specifier: ^1.7.0
-        version: 1.7.0
+        specifier: ^1.8.0
+        version: 1.8.0
       monaco-editor:
         specifier: 0.57.0
         version: 0.57.0
@@ -658,22 +658,22 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@upmo-ai/brand@1.7.0':
-    resolution: {integrity: sha512-O268xZBcMAXa8Yv4rqRcM3EZJwzgNxBL8NFM310gqsngmC8zxQTkdt9t9MaqI0FxfYvF3SbI7gOcWD+ZydBxug==}
+  '@upmo-ai/brand@1.8.0':
+    resolution: {integrity: sha512-Im9K+fPNDnxcAPq/qz9n/6/Ku9J8z1AQ5hGHU7hkb6Krb1YYEJ7sKC/8Jg9fk1aWibr1hWcH+0557eq2VEU7sw==}
 
-  '@upmo-ai/brands@1.7.0':
-    resolution: {integrity: sha512-ixTuJCS4wLoOabz85eLt0ncNc6qY5tptv+6cSeQw7FxrDxFRE+2AiVHoLa04WobCqWJCoUr1YNHQEm97He3OYQ==}
+  '@upmo-ai/brands@1.8.0':
+    resolution: {integrity: sha512-ZF13YBElYLhdzPysBHMWR2vd6zFPGqAswjv4QPJ7aYoiUY0WBAYBMwSwgK2VI/OER5GenBXeQ99/Qwhe0nRHCQ==}
 
-  '@upmo-ai/components@1.7.0':
-    resolution: {integrity: sha512-s4D0i4YFLPOoUaU9zioYbMAeaafjtei1gXj5HSRLvKLG8h9FAOAVz6FDglJz6eyi6j7QYyd+HQmluzQ3ekwLtQ==}
+  '@upmo-ai/components@1.8.0':
+    resolution: {integrity: sha512-2ltvmi7Do3QgRj0173x1zi5pzqyinhQuV0zeUxjkb7pa9ggcO5QRrGFEk0jTfIUwAHQNct+lYeAdBfRYT8Yipg==}
     peerDependencies:
       '@mantine/core': ^9.7.4
       '@mantine/dates': ^9.7.4
       '@mantine/hooks': ^9.7.4
       '@tabler/icons-react': ^3.0.0
-      '@upmo-ai/brands': 1.7.0
-      '@upmo-ai/icons': 1.7.0
-      '@upmo-ai/theme': 1.7.0
+      '@upmo-ai/brands': 1.8.0
+      '@upmo-ai/icons': 1.8.0
+      '@upmo-ai/theme': 1.8.0
       dayjs: '>=1.11.0'
       react: ^19.0.0
       react-dom: ^19.0.0
@@ -683,16 +683,16 @@ packages:
       dayjs:
         optional: true
 
-  '@upmo-ai/icons@1.7.0':
-    resolution: {integrity: sha512-JFm56RduBt71ySmiUmHqd6tg2VwcLfPs+DSJlAAQCX6SFCBnxmz/vRCnkCBV3caDP0tD6BF07QU3vKPfGZyeIQ==}
+  '@upmo-ai/icons@1.8.0':
+    resolution: {integrity: sha512-OyRwb7oPn9wdAOeiznq3EbuGNmwW/VDlOnWcycLpCPm1r4vXULN9uFgvKqwxc88O0hd+bMMYgm2aAmEQR+fzpA==}
 
-  '@upmo-ai/theme@1.7.0':
-    resolution: {integrity: sha512-EeN8h8uAH5qG2rFU/VwQhqbIX2ORiK+YIx7ALecXB/88DUOmnefBHD56VkIOtgwlJTDoIUinGVlJjOKzkHMS0w==}
+  '@upmo-ai/theme@1.8.0':
+    resolution: {integrity: sha512-6lrbmPoHSW/VX9uDmdyhJcbk3zKmyaTutc9MaGhEI26K8S54FehUx4ZvqSXjLGtNoZ7cX6brat+SeMn5xIZa0A==}
     peerDependencies:
       '@mantine/core': ^9.7.4
 
-  '@upmo-ai/tokens@1.7.0':
-    resolution: {integrity: sha512-SpyVtuMysRmGLN/bjBsm4wpNvxoPdh/OEpBN/eOWaqTl0zd9DIOvljgxgvzy7frxbUp4gukpcmuhSHPZWSGz8w==}
+  '@upmo-ai/tokens@1.8.0':
+    resolution: {integrity: sha512-fKAznblgpi4nRBSo/x/G6d0ubj85p6iLranKQSV21iLA/gc6lW9Dmw80UbKS+L9BNkLHHdu2E23gOeeB6mCong==}
 
   '@vitejs/plugin-react@6.1.2':
     resolution: {integrity: sha512-fhJNGUdscQa4HkI0xFxwonWyhnVReCPDbXI7FH7jmzpnVCrFQI7PRrhWecO263610vOrs9tr2Y4xcf8uAdFxbw==}
@@ -1639,18 +1639,18 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  '@upmo-ai/brand@1.7.0': {}
+  '@upmo-ai/brand@1.8.0': {}
 
-  '@upmo-ai/brands@1.7.0': {}
+  '@upmo-ai/brands@1.8.0': {}
 
-  '@upmo-ai/components@1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/dates@9.7.4(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@tabler/icons-react@3.50.0(react@19.3.1))(@upmo-ai/brands@1.7.0)(@upmo-ai/icons@1.7.0)(@upmo-ai/theme@1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@upmo-ai/components@1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/dates@9.7.4(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(@tabler/icons-react@3.50.0(react@19.3.1))(@upmo-ai/brands@1.8.0)(@upmo-ai/icons@1.8.0)(@upmo-ai/theme@1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@mantine/core': 9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@mantine/hooks': 9.7.4(react@19.3.1)
       '@tabler/icons-react': 3.50.0(react@19.3.1)
-      '@upmo-ai/brands': 1.7.0
-      '@upmo-ai/icons': 1.7.0
-      '@upmo-ai/theme': 1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
+      '@upmo-ai/brands': 1.8.0
+      '@upmo-ai/icons': 1.8.0
+      '@upmo-ai/theme': 1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
       clsx: 2.1.1
       echarts: 6.1.0
       prism-react-renderer: 2.4.1(react@19.3.1)
@@ -1660,14 +1660,14 @@ snapshots:
       '@mantine/dates': 9.7.4(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@mantine/hooks@9.7.4(react@19.3.1))(dayjs@1.11.23)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       dayjs: 1.11.23
 
-  '@upmo-ai/icons@1.7.0': {}
+  '@upmo-ai/icons@1.8.0': {}
 
-  '@upmo-ai/theme@1.7.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))':
+  '@upmo-ai/theme@1.8.0(@mantine/core@9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))':
     dependencies:
       '@mantine/core': 9.7.4(@mantine/hooks@9.7.4(react@19.3.1))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      '@upmo-ai/tokens': 1.7.0
+      '@upmo-ai/tokens': 1.8.0
 
-  '@upmo-ai/tokens@1.7.0': {}
+  '@upmo-ai/tokens@1.8.0': {}
 
   '@vitejs/plugin-react@6.1.2(vite@8.3.5)':
     dependencies:

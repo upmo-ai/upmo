@@ -702,3 +702,21 @@ describe("UPM-201 chat list at phone width", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Show chats" }));
   });
 });
+
+describe("UPM-247 locked tools picker", () => {
+  it("UPM-247 locks the tools mode and says why, and leaves the agent, route and model pickers open", async () => {
+    renderChat();
+    const composer = await screen.findByRole("form", { name: "Chat composer" });
+
+    const tools = within(composer).getByRole("button", { name: /Tools mode: Auto/ });
+    expect(tools.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(tools);
+    expect(screen.queryByText("Tools and context")).toBeNull();
+    expect(screen.getByText(/Tools are not used in chat yet/)).toBeTruthy();
+
+    const pill = within(composer).getByRole("button", { name: /Agent, route and model:/ });
+    fireEvent.click(pill);
+    const model = await screen.findByRole("menuitem", { name: "Model", hidden: true });
+    expect(model.hasAttribute("disabled")).toBe(false);
+  });
+});
