@@ -216,7 +216,8 @@ func TestAgentsMigrationDownRestoresThePicksShapeExactly(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := shape(t, pool)
-	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
+	upTo5 := migrationsUpTo(t, "00001_chat.sql", "00002_chat_lines.sql", "00003_chat_stream.sql", "00004_chat_picks.sql", "00005_chat_agents.sql")
+	if err := migrate.Up(ctx, pool, chat.Schema, upTo5); err != nil {
 		t.Fatal(err)
 	}
 	if reflect.DeepEqual(before, shape(t, pool)) {
