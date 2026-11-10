@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/upmo-ai/upmo/internal/platform/stream"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -177,83 +177,15 @@ type Listener struct {
 // ApplicationName names the listener connection in pg_stat_activity.
 const ApplicationName = "upmo-task-stream"
 
-// keepalive is how long the listener waits for a notification before it
-// checks that the connection still answers.
-const keepalive = 30 * time.Second
-
 // Listen implements app.StreamFeed.
-func (l Listener) Listen(ctx context.Context, notify func(taskID string), resync func()) {
-	minPause, maxPause := l.MinBackoff, l.MaxBackoff
-	if minPause <= 0 {
-		minPause = 200 * time.Millisecond
-	}
-	if maxPause <= 0 {
-		maxPause = 10 * time.Second
-	}
-	log := l.Log
-	if log == nil {
-		log = slog.Default()
-	}
-	pause := minPause
-	for ctx.Err() == nil {
-		started := time.Now()
-		err := l.listenOnce(ctx, notify, resync)
-		if ctx.Err() != nil {
-			return
-		}
-		if time.Since(started) > maxPause {
-			pause = minPause
-		}
-		log.Warn("task stream listener lost its connection", "err", err, "retry_in", pause.String())
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(pause):
-		}
-		pause = min(pause*2, maxPause)
-	}
-}
-
-func (l Listener) listenOnce(ctx context.Context, notify func(string), resync func()) error {
-	cfg := l.Config.Copy()
-	if cfg.RuntimeParams == nil {
-		cfg.RuntimeParams = map[string]string{}
-	}
-	cfg.RuntimeParams["application_name"] = ApplicationName
-	conn, err := pgx.ConnectConfig(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close(context.Background()) }()
-	if _, err := conn.Exec(ctx, "LISTEN "+Channel); err != nil {
-		return err
-	}
-	// Listening has begun, so a notification from here on arrives. Rows
-	// written before it are read from the tables.
-	resync()
-	for {
-		wait, cancel := context.WithTimeout(ctx, keepalive)
-		note, err := conn.WaitForNotification(wait)
-		cancel()
-		switch {
-		case err == nil:
-			var payload struct {
-				Task string `json:"task"`
-			}
-			if json.Unmarshal([]byte(note.Payload), &payload) == nil && payload.Task != "" {
-				notify(payload.Task)
-			}
-		case ctx.Err() != nil:
-			return ctx.Err()
-		case errors.Is(err, context.DeadlineExceeded):
-			pctx, pcancel := context.WithTimeout(ctx, keepalive)
-			err := conn.Ping(pctx)
-			pcancel()
-			if err != nil {
-				return err
-			}
-		default:
-			return err
-		}
-	}
+func (l Listener) Listen(ctx context.Context, notify func(key string), resync func()) {
+	stream.Listener{
+		Config:          l.Config,
+		Log:             l.Log,
+		Channel:         Channel,
+		ApplicationName: ApplicationName,
+		Subject:         "task",
+		MinBackoff:      l.MinBackoff,
+		MaxBackoff:      l.MaxBackoff,
+	}.Listen(ctx, notify, resync)
 }

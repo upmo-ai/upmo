@@ -2,26 +2,16 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/platform/stream"
 )
-
-// writeDeadline is how long each write to a stream may take. The server's
-// WriteTimeout counts from the request header and would cut a long stream off,
-// so every write sets a new deadline.
-const writeDeadline = 30 * time.Second
-
-// retryMillis is the reconnect delay the browser is told to use.
-const retryMillis = 3000
 
 // resumeAfter returns the id of the last event the client has: the Last-Event-ID
 // header, which wins, else the after query. It reports false for one that is
@@ -106,9 +96,9 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 	header.Set("Cache-Control", "no-cache, no-store")
 	header.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	out := sseWriter{w: w, rc: http.NewResponseController(w)}
+	out := stream.NewSSEWriter(w)
 
-	if out.write(": ok\n\nretry: "+strconv.Itoa(retryMillis)+"\n\n") != nil {
+	if out.Hello() != nil {
 		reason = "write failed"
 		return
 	}
@@ -126,15 +116,15 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 			reason = "lifetime"
 			return
 		case <-beat.C:
-			err = out.write(": hb\n\n")
+			err = out.Heartbeat()
 		case <-sub.Closed():
 			reason = sub.Reason()
 			if reason == app.EndAccess {
-				_ = out.end(app.EndAccess)
+				_ = out.End(app.EndAccess)
 			}
 			return
 		case m := <-sub.Out():
-			err = out.event(m.Event)
+			err = writeEvent(out, m.Event)
 			sub.Taken()
 		}
 		if err != nil {
@@ -144,54 +134,22 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sseWriter writes event stream frames. Each write sets a new write deadline
-// and is flushed.
-type sseWriter struct {
-	w  io.Writer
-	rc *http.ResponseController
-}
-
-func (s sseWriter) write(frame string) error {
-	if err := s.rc.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return err
-	}
-	if _, err := io.WriteString(s.w, frame); err != nil {
-		return err
-	}
-	return s.rc.Flush()
-}
-
-func (s sseWriter) end(reason string) error {
-	data, err := json.Marshal(map[string]string{"reason": reason})
-	if err != nil {
-		return err
-	}
-	return s.write("event: end\ndata: " + string(data) + "\n\n")
-}
-
-// event writes one delta, status or line. Its id is the row's, so a client
-// that reconnects resumes after it.
-func (s sseWriter) event(e app.StreamEvent) error {
-	var name string
-	var body any
+// writeEvent writes one delta, status or line. Its id is the row's, so a
+// client that reconnects resumes after it.
+func writeEvent(s stream.SSEWriter, e app.StreamEvent) error {
 	switch e.Kind {
 	case app.EventDelta:
-		name, body = "delta", deltaJSON{LineID: e.LineID, Seq: e.Seq, Body: e.Body}
+		return s.Event("delta", e.ID, deltaJSON{LineID: e.LineID, Seq: e.Seq, Body: e.Body})
 	case app.EventStatus:
-		name, body = "status", noticeJSON{
+		return s.Event("status", e.ID, noticeJSON{
 			LineID:      e.LineID,
 			FailedModel: e.Notice.FailedModel,
 			Reason:      domain.Reason(e.Notice.Class),
 			NextModel:   e.Notice.NextModel,
-		}
+		})
 	case app.EventLine:
-		name, body = "line", lineBody(e.Line)
+		return s.Event("line", e.ID, lineBody(e.Line))
 	default:
 		return nil
 	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	return s.write("event: " + name + "\nid: " + e.ID + "\ndata: " + string(data) + "\n\n")
 }
