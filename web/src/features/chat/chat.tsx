@@ -46,17 +46,6 @@ const REPLY_POLL_MS = 300;
 const noLines: ChatLine[] = [];
 const noChats: ChatSummary[] = [];
 
-// The tools mode is not sent with a line yet, so its pill is locked and this says so. It repeats the
-// composer's own keyboard hint, which a hint replaces.
-const COMPOSER_HINT = "Enter to send · Shift+Enter for a new line · Tools are not used in chat yet";
-
-const TOOLS_OPTIONS: ComposerOption[] = [
-  { value: "auto", label: "Auto", description: "Allow model to call connected tools" },
-  { value: "all", label: "All Tools", description: "Connectors and MCPs enabled" },
-  { value: "search", label: "Search Only", description: "Only web search allowed" },
-  { value: "disabled", label: "Disabled", description: "Pure model generation" },
-];
-
 // The composer labels only consecutive options of one group, so a provider's models sit together, in the order its first account was listed.
 function byProvider<T extends { provider: string }>(items: readonly T[]): T[] {
   const order = [...new Set(items.map((item) => item.provider))];
@@ -89,7 +78,6 @@ export function ChatPage() {
   const [draft, setDraft] = useState("");
   // What this browser remembered; a pick that names something gone is Auto again once the lists are read.
   const [remembered, setRemembered] = useState<Picks>(loadPicks);
-  const [selectedTools, setSelectedTools] = useState("auto");
   const [sendError, setSendError] = useState<string>();
   // Chats a reply was asked for in this session (a send or a retry went through).
   // A reply the page asked for in this session is a wait even before the brain marks the
@@ -532,8 +520,6 @@ export function ChatPage() {
                   { label: "Model", value: picks.model, options: modelOptions, onChange: pick("model"), searchable: true },
                 ],
               }}
-              toolsMode={{ value: selectedTools, options: TOOLS_OPTIONS, onChange: setSelectedTools, disabled: true }}
-              hint={COMPOSER_HINT}
               onAttach={() => {}}
               onDictate={() => {}}
             />
