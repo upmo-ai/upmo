@@ -63,9 +63,9 @@ type Routes interface {
 }
 
 // PinAccounts looks up the provider account a pin names. ok is false when
-// there is no such account.
+// there is no such account or it does not list the model.
 type PinAccounts interface {
-	PinAccount(ctx context.Context, id string) (account domain.Account, ok bool, err error)
+	PinAccount(ctx context.Context, id, model string) (account domain.Account, ok bool, err error)
 	// PinProvider resolves a provider name and a model for one person: their
 	// own account of that provider that lists the model, else a global
 	// account of it that does. ok is false when there is none.
@@ -670,7 +670,7 @@ func (d Dispatch) pinAccount(ctx context.Context, who domain.Principal, pin doma
 	if pin.Provider != "" {
 		account, found, err = d.Pins.PinProvider(ctx, who.User, pin.Provider, pin.Model)
 	} else {
-		account, found, err = d.Pins.PinAccount(ctx, pin.AccountID)
+		account, found, err = d.Pins.PinAccount(ctx, pin.AccountID, pin.Model)
 	}
 	if err != nil || !found {
 		return domain.Account{}, false, false, err
