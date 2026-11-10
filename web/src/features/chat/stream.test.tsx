@@ -162,11 +162,11 @@ type Call = { method: string; path: string; body: unknown };
  * its reply is written on the stream. The second ends in a failed reply.
  */
 function brain(
-  options: { routesRefused?: boolean; listsRefused?: boolean; listsFail?: number; agents?: unknown[]; accounts?: unknown[] } = {},
+  options: { pendingMarker?: boolean; routesRefused?: boolean; listsRefused?: boolean; listsFail?: number; agents?: unknown[]; accounts?: unknown[] } = {},
 ) {
   const failedAt = Date.now() - 60_000;
   const chats = [
-    { id: askedId, at: Date.now() - 10 * 60_000, lines: [stored("u1", "user", "Plan the offsite")] },
+    { id: askedId, at: Date.now() - 10 * 60_000, lines: [stored("u1", "user", "Plan the offsite", options.pendingMarker ? { pending: true } : {})] },
     {
       id: failedChatId,
       at: failedAt,
@@ -308,6 +308,24 @@ describe("chat stream page", () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("UPM-251 shows Thinking from the pending marker right after a reload", async () => {
+    const { fetcher } = brain({ pendingMarker: true });
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    expect(await within(log()).findByText("Thinking")).toBeTruthy();
+    expect(log().getAttribute("aria-busy")).toBe("true");
+  });
+
+  it("UPM-251 shows no Thinking for a stored user line without the marker", async () => {
+    const { fetcher } = brain();
+    vi.stubGlobal("fetch", fetcher);
+    renderChat();
+    await openStream();
+    expect(await within(log()).findByText("Plan the offsite")).toBeTruthy();
+    expect(within(log()).queryByText("Thinking")).toBeNull();
   });
 
   it("grows the reply as deltas arrive, then shows the stored line in its place", async () => {

@@ -323,6 +323,7 @@ export function toChatLine(value: unknown): ChatLine {
   const status = source.status;
   if (status === "done" || status === "failed") parsed.status = status;
   if (typeof source.reply_to === "string") parsed.reply_to = source.reply_to;
+  if (source.pending === true) parsed.pending = true;
   if (Array.isArray(source.attempts) && source.attempts.length > 0) {
     parsed.attempts = source.attempts.map((item) => {
       const attempt = record(item, "attempt");

@@ -604,3 +604,49 @@ func TestVisible_UPM252_AnswersForTheOwnerAndASharedViewerAndNoOneElse(t *testin
 		t.Fatalf("no such chat = %v", err)
 	}
 }
+
+func TestRead_UPM251_PendingMarksAUserLineWithNoStoredReply(t *testing.T) {
+	owner := up(t)
+	store := quietStore(t, owner)
+	ctx := context.Background()
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"answered", "failed", "waiting"} {
+		if err := app.Say(ctx, store, ownerAccess, opened.ID, body, app.Picks{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Given a done reply to the first line and a failed reply to the second,
+	// and none to the third.
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO chat.lines (chat_id, seq, role, body, model, status, reply_to)
+		SELECT chat_id, seq + 10, 'assistant', CASE body WHEN 'answered' THEN 'Here you go' ELSE '' END,
+		       CASE body WHEN 'answered' THEN 'claude-opus-5-5' ELSE '' END,
+		       CASE body WHEN 'answered' THEN 'done' ELSE 'failed' END, id
+		FROM chat.lines
+		WHERE chat_id = $1::uuid AND role = 'user' AND body IN ('answered', 'failed')`, opened.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// When the thread is read.
+	got, err := app.Read(ctx, store, ownerAccess, opened.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then only the user line with no reply is pending.
+	pending := map[string]bool{}
+	for _, line := range got.Lines {
+		if line.Role == "user" {
+			pending[line.Body] = line.Pending
+		} else if line.Pending {
+			t.Fatalf("assistant line %q is pending", line.Body)
+		}
+	}
+	want := map[string]bool{"answered": false, "failed": false, "waiting": true}
+	if !reflect.DeepEqual(pending, want) {
+		t.Fatalf("pending = %v, want %v", pending, want)
+	}
+}
