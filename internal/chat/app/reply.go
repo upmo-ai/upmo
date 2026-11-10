@@ -56,13 +56,18 @@ const finishTimeout = 15 * time.Second
 // that user line. ReplyID is the id the assistant line will get; it is chosen
 // when the job is enqueued, so a rerun finds the deltas of the run before it.
 // A job is unique by LineID while one is waiting or running, so a line has one
-// reply on its way at a time.
+// reply on its way at a time. PinAccount and PinModel, both or neither, are
+// the model pinned for this reply; AgentID is the agent picked. All three are
+// carried and not used yet beyond the pin.
 type ReplyJobArgs struct {
-	ChatID  string `json:"chat_id"`
-	LineID  string `json:"line_id" river:"unique"`
-	ReplyID string `json:"reply_id"`
-	UserID  string `json:"user_id"`
-	Route   string `json:"route"`
+	ChatID     string `json:"chat_id"`
+	LineID     string `json:"line_id" river:"unique"`
+	ReplyID    string `json:"reply_id"`
+	UserID     string `json:"user_id"`
+	Route      string `json:"route"`
+	PinAccount string `json:"pin_account,omitempty"`
+	PinModel   string `json:"pin_model,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
 }
 
 // Kind is the River job kind.
@@ -173,6 +178,9 @@ type ModelRequest struct {
 	UserID          string
 	Messages        []ModelMessage
 	MaxOutputTokens int
+	PinAccount      string
+	PinModel        string
+	AgentID         string
 }
 
 // ModelAttempt is a model that failed before any text, and the next one.
@@ -445,6 +453,9 @@ func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobAr
 		UserID:          args.UserID,
 		Messages:        history(lines, w.cfg.HistoryChars),
 		MaxOutputTokens: w.cfg.MaxOutputTokens,
+		PinAccount:      args.PinAccount,
+		PinModel:        args.PinModel,
+		AgentID:         args.AgentID,
 	}, sink.add, func(a ModelAttempt) {
 		attempts = append(attempts, domain.Attempt{Model: a.FailedModel, Class: a.Class})
 		sink.notice(Notice(a))

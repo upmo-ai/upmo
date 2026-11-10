@@ -30,7 +30,9 @@ type Message struct {
 // Request is one chat turn: a prompt, or a message history when the turn
 // builds on earlier lines. Route names the gateway chat route for this turn;
 // CredentialRef, when set, spends a bring-your-own key instead of the house
-// one.
+// one. PinAccount and PinModel, both or neither, name the provider account and
+// model the gateway tries before the route. AgentID is carried with the turn
+// and not sent: the gateway reads an agent id as a tool bundle to look up.
 type Request struct {
 	Route           string
 	CredentialRef   string
@@ -39,6 +41,9 @@ type Request struct {
 	System          string
 	Messages        []Message
 	MaxOutputTokens int
+	PinAccount      string
+	PinModel        string
+	AgentID         string
 }
 
 // Attempt names the model that failed before any text and the next one.
@@ -119,6 +124,7 @@ func (c Client) ChatStream(ctx context.Context, req Request, onDelta func(string
 		System:          req.System,
 		Messages:        req.Messages,
 		MaxOutputTokens: req.MaxOutputTokens,
+		Pin:             pinOf(req),
 		UserID:          req.UserID,
 	})
 	if err != nil {
@@ -162,7 +168,21 @@ type chatTurn struct {
 	System          string    `json:"system,omitempty"`
 	Messages        []Message `json:"messages,omitempty"`
 	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
+	Pin             *pinTurn  `json:"pin,omitempty"`
 	UserID          string    `json:"user_id"`
+}
+
+// pinTurn is the pin as the gateway reads it.
+type pinTurn struct {
+	AccountID string `json:"account_id"`
+	Model     string `json:"model"`
+}
+
+func pinOf(req Request) *pinTurn {
+	if req.PinAccount == "" && req.PinModel == "" {
+		return nil
+	}
+	return &pinTurn{AccountID: req.PinAccount, Model: req.PinModel}
 }
 
 // frame is one line of a chat stream. Exactly one field is set.

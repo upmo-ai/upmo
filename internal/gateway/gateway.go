@@ -65,6 +65,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 	httpapi.Handler{
 		Dispatch: app.Dispatch{
 			Routes:  store,
+			Pins:    store,
 			Secrets: secrets,
 			Prices:  store,
 			Ledger:  store,

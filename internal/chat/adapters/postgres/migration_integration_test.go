@@ -99,7 +99,7 @@ func TestStreamMigrationDownRestoresTheLinesShapeExactly(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := shape(t, pool)
-	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
+	if err := migrate.Up(ctx, pool, chat.Schema, migrationsUpTo(t, "00001_chat.sql", "00002_chat_lines.sql", "00003_chat_stream.sql")); err != nil {
 		t.Fatal(err)
 	}
 	if got := triggerCount(t, pool); got != 2 {
@@ -170,5 +170,37 @@ func TestStreamMigrationGoesDownAndUpAgain(t *testing.T) {
 	}
 	if got := triggerCount(t, pool); got != 2 {
 		t.Fatalf("triggers after up again = %d", got)
+	}
+}
+
+func TestPicksMigrationDownRestoresTheLinesShapeExactly(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, pool, chat.Schema, migrationsUpTo(t, "00001_chat.sql", "00002_chat_lines.sql", "00003_chat_stream.sql")); err != nil {
+		t.Fatal(err)
+	}
+	before := shape(t, pool)
+	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(before, shape(t, pool)) {
+		t.Fatal("the migration changed nothing")
+	}
+	raw, err := fs.ReadFile(chat.Migrations(), "00004_chat_picks.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, down, found := strings.Cut(string(raw), "-- +goose Down")
+	if !found {
+		t.Fatal("no down section")
+	}
+	if _, err := pool.Exec(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	if got := shape(t, pool); !reflect.DeepEqual(before, got) {
+		t.Fatalf("shape after down differs from 00003:\nbefore %q\nafter  %q", before, got)
 	}
 }

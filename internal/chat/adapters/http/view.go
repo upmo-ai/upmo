@@ -35,6 +35,18 @@ type lineJSON struct {
 	Status   string        `json:"status"`
 	ReplyTo  *string       `json:"reply_to"`
 	Attempts []attemptJSON `json:"attempts"`
+	// Route, Pin and AgentID, on a user line, are the picks it was sent with;
+	// each is null when the person made no pick.
+	Route   *string  `json:"route"`
+	Pin     *pinJSON `json:"pin"`
+	AgentID *string  `json:"agent_id"`
+}
+
+// pinJSON is the model a user line was pinned to. The account is left out
+// for anyone but the line's author.
+type pinJSON struct {
+	AccountID string `json:"account_id,omitempty"`
+	Model     string `json:"model"`
 }
 
 // attemptJSON is one model a reply tried and the phrase for why it failed.
@@ -72,6 +84,13 @@ func lineBody(line app.Line) lineJSON {
 	for _, attempt := range line.Attempts {
 		attempts = append(attempts, attemptJSON{Model: attempt.Model, Reason: domain.Reason(attempt.Class)})
 	}
+	var pin *pinJSON
+	if line.PinModel != nil {
+		pin = &pinJSON{Model: *line.PinModel}
+		if line.PinAccount != nil {
+			pin.AccountID = *line.PinAccount
+		}
+	}
 	return lineJSON{
 		ID:       line.ID,
 		Role:     line.Role,
@@ -83,5 +102,8 @@ func lineBody(line app.Line) lineJSON {
 		Status:   line.Status,
 		ReplyTo:  line.ReplyTo,
 		Attempts: attempts,
+		Route:    line.Route,
+		Pin:      pin,
+		AgentID:  line.AgentID,
 	}
 }

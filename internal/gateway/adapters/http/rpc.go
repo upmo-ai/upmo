@@ -67,7 +67,22 @@ type chatBody struct {
 	Messages        []domain.Message `json:"messages"`
 	CredentialRef   string           `json:"credential_ref"`
 	MaxOutputTokens int              `json:"max_output_tokens"`
+	// Pin, on a stream, is the account and model tried before the route.
+	Pin *pinBody `json:"pin"`
 	actorBody
+}
+
+// pinBody is the optional pin of a chat stream.
+type pinBody struct {
+	AccountID string `json:"account_id"`
+	Model     string `json:"model"`
+}
+
+func (b chatBody) pin() domain.Pin {
+	if b.Pin == nil {
+		return domain.Pin{}
+	}
+	return domain.Pin{AccountID: b.Pin.AccountID, Model: b.Pin.Model}
 }
 
 func (h Handler) Mount(mux *http.ServeMux) {
@@ -182,7 +197,7 @@ func (h Handler) streamReply(ctx context.Context, w http.ResponseWriter, body ch
 			httpserver.Fail(w, h.Log, "internal", http.StatusInternalServerError, err)
 		}
 	}()
-	return h.Dispatch.ChatStreamCall(ctx, body.Route, body.CredentialRef, body.principal(), in, body.MaxOutputTokens, out)
+	return h.Dispatch.ChatStreamPinned(ctx, body.Route, body.CredentialRef, body.principal(), in, body.pin(), body.MaxOutputTokens, out)
 }
 
 type (

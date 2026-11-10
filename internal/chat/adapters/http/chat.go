@@ -73,17 +73,48 @@ func (h Handler) say(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Body  *string `json:"body"`
-		Route string  `json:"route"`
+		pickInput
+		Body *string `json:"body"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Body == nil {
 		writeError(w, http.StatusBadRequest, "a chat needs a line")
 		return
 	}
-	if err := app.Say(r.Context(), h.Book, access, r.PathValue("id"), *input.Body, input.Route); refuse(w, err) {
+	if err := app.Say(r.Context(), h.Book, access, r.PathValue("id"), *input.Body, input.picks()); refuse(w, err) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// pickInput is what the composer sends with a line or a retry: the route, the
+// model pinned as a provider account and a model id, and the agent. Each is
+// optional.
+type pickInput struct {
+	Route   string    `json:"route"`
+	Pin     *pinInput `json:"pin"`
+	AgentID string    `json:"agent_id"`
+}
+
+type pinInput struct {
+	AccountID string `json:"account_id"`
+	Model     string `json:"model"`
+}
+
+func (p pickInput) picks() app.Picks {
+	picks := app.Picks{Route: p.Route, AgentID: p.AgentID}
+	if p.Pin != nil {
+		picks.PinAccount, picks.PinModel = p.Pin.AccountID, p.Pin.Model
+	}
+	return picks
+}
+
+// retryPicks is the picks of a retry body, nil when it had none.
+func retryPicks(input *pickInput) *app.Picks {
+	if input == nil {
+		return nil
+	}
+	picks := input.picks()
+	return &picks
 }
 
 func (h Handler) retry(w http.ResponseWriter, r *http.Request) {
@@ -91,14 +122,14 @@ func (h Handler) retry(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var input struct {
-		Route string `json:"route"`
-	}
+	// No body reuses the picks stored on the line; any JSON object, even an
+	// empty one, is the picks made now.
+	var input *pickInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "the retry needs a route or nothing")
+		writeError(w, http.StatusBadRequest, "the retry needs picks or nothing")
 		return
 	}
-	if err := app.Retry(r.Context(), h.Book, access, r.PathValue("id"), r.PathValue("line"), input.Route); refuse(w, err) {
+	if err := app.Retry(r.Context(), h.Book, access, r.PathValue("id"), r.PathValue("line"), retryPicks(input)); refuse(w, err) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -153,7 +184,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusConflict, "a reply is already on its way")
 	case errors.Is(err, app.ErrReplies):
 		writeError(w, http.StatusServiceUnavailable, "replies are off")
-	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrLine), errors.Is(err, domain.ErrRoute):
+	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrLine), errors.Is(err, domain.ErrRoute),
+		errors.Is(err, domain.ErrPin), errors.Is(err, domain.ErrAgent):
 		writeError(w, http.StatusBadRequest, "the chat input was refused")
 	case errors.Is(err, domain.ErrWriter):
 		writeError(w, http.StatusConflict, "the chat cannot take that change")

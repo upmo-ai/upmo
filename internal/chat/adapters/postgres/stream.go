@@ -120,11 +120,11 @@ func (s Store) Tail(ctx context.Context, access app.Access, chatID, after string
 		s.BetweenReads()
 	}
 	rows, err = tx.Query(ctx, `
-		SELECT line.feed_id::text, `+lineColumns+`
+		SELECT line.feed_id::text, `+lineColumnsFor("$4::uuid")+`
 		FROM chat.lines AS line
 		WHERE line.chat_id = $1::uuid AND ($2::text = '' OR line.feed_id > NULLIF($2::text, '')::uuid)
 		ORDER BY line.feed_id
-		LIMIT $3`, chatID, after, limit+1)
+		LIMIT $3`, chatID, after, limit+1, access.UserID)
 	if err != nil {
 		return app.Tail{}, fmt.Errorf("chat: tail lines: %w", err)
 	}

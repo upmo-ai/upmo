@@ -55,8 +55,9 @@ func (s Store) Open(ctx context.Context, access app.Access) (app.ChatSummary, er
 	return app.ChatSummary{ID: id, Title: domain.NewChatTitle, LastActivity: createdAt.UTC()}, nil
 }
 
-// Say appends one line and, in the same transaction, asks for its reply.
-func (s Store) Say(ctx context.Context, access app.Access, chatID, body, route string) error {
+// Say appends one line with the picks it was sent with and, in the same
+// transaction, asks for its reply.
+func (s Store) Say(ctx context.Context, access app.Access, chatID, body string, picks app.Picks) error {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return err
@@ -74,11 +75,12 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body, route s
 	var seq int
 	var lineID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO chat.lines (chat_id, seq, body)
+		INSERT INTO chat.lines (chat_id, seq, body, agent_id, route, pin_account_id, pin_model, author_id)
 		SELECT $1::uuid,
 		       COALESCE((SELECT MAX(seq) FROM chat.lines WHERE chat_id = $1::uuid), 0) + 1,
-		       $2
-		RETURNING seq, id::text`, chatID, body).Scan(&seq, &lineID)
+		       $2, $3::uuid, $4, $5::uuid, $6, $7::uuid
+		RETURNING seq, id::text`, chatID, body,
+		orNull(picks.AgentID), orNull(picks.Route), orNull(picks.PinAccount), orNull(picks.PinModel), access.UserID).Scan(&seq, &lineID)
 	if err != nil {
 		return writeErr(err)
 	}
@@ -102,7 +104,7 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body, route s
 		}
 	}
 	if s.replying() {
-		if _, err := s.enqueueReply(ctx, tx, access, chatID, lineID, route); err != nil {
+		if _, err := s.enqueueReply(ctx, tx, access, chatID, lineID, picks); err != nil {
 			return err
 		}
 	} else if err := noReply(ctx, tx, chatID, lineID); err != nil {
@@ -130,9 +132,10 @@ func noReply(ctx context.Context, tx pgx.Tx, chatID, lineID string) error {
 }
 
 // enqueueReply asks for the reply to the user line lineID, in the caller's
-// transaction. It reports false when a reply to that line is already on its
-// way, or when replies are off.
-func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID, route string) (bool, error) {
+// transaction, with the picks it is to be answered with. It reports false
+// when a reply to that line is already on its way, or when replies are off.
+func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID string, picks app.Picks) (bool, error) {
+	route := picks.Route
 	if route == "" {
 		route = s.ReplyRoute
 	}
@@ -141,16 +144,27 @@ func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, c
 		return false, err
 	}
 	res, err := s.Enqueuer.InsertTx(ctx, tx, app.ReplyJobArgs{
-		ChatID:  chatID,
-		LineID:  lineID,
-		ReplyID: replyID.String(),
-		UserID:  access.UserID,
-		Route:   route,
+		ChatID:     chatID,
+		LineID:     lineID,
+		ReplyID:    replyID.String(),
+		UserID:     access.UserID,
+		Route:      route,
+		PinAccount: picks.PinAccount,
+		PinModel:   picks.PinModel,
+		AgentID:    picks.AgentID,
 	}, nil)
 	if err != nil {
 		return false, fmt.Errorf("chat: reply enqueue: %w", err)
 	}
 	return !res.UniqueSkippedAsDuplicate, nil
+}
+
+// orNull binds an empty pick as NULL.
+func orNull(pick string) *string {
+	if pick == "" {
+		return nil
+	}
+	return &pick
 }
 
 // goneOrSay splits a locked miss in Say. The lock asks for edit rights too, so
@@ -244,11 +258,11 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 		return app.Chat{}, fmt.Errorf("chat: read: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT `+lineColumns+`
+		SELECT `+lineColumnsFor("$2::uuid")+`
 		FROM chat.lines AS line
 		WHERE chat_id = $1::uuid
 		  AND NOT (`+superseded+`)
-		ORDER BY seq`, chatID)
+		ORDER BY seq`, chatID, access.UserID)
 	if err != nil {
 		return app.Chat{}, fmt.Errorf("chat: lines: %w", err)
 	}
@@ -315,9 +329,18 @@ func writeErr(err error) error {
 	return fmt.Errorf("chat: line: %w", err)
 }
 
-// lineColumns are the columns scanLine reads, from a chat.lines row named line.
-const lineColumns = `line.id::text, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
-	line.status, line.reply_to::text, line.attempts`
+// lineColumnsFor are the columns scanLine reads, from a chat.lines row named
+// line. viewer is an SQL uuid expression for the person reading: only the
+// author of a line gets the account and agent they picked back, anyone else
+// gets the route and the model name alone.
+func lineColumnsFor(viewer string) string {
+	return `line.id::text, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
+	line.status, line.reply_to::text, line.attempts,
+	line.route,
+	CASE WHEN line.author_id = ` + viewer + ` THEN line.pin_account_id::text END,
+	line.pin_model,
+	CASE WHEN line.author_id = ` + viewer + ` THEN line.agent_id::text END`
+}
 
 // superseded holds for a failed reply that a later reply to the same user
 // line has answered, on a chat.lines row named line. Such a line stays
@@ -327,12 +350,12 @@ const superseded = `line.status = 'failed' AND EXISTS (
 	WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq
 )`
 
-// scanLine reads the lineColumns of a row, after any lead columns.
+// scanLine reads the lineColumnsFor of a row, after any lead columns.
 func scanLine(rows pgx.Rows, lead ...any) (app.Line, error) {
 	var line app.Line
 	var attempts []byte
 	dest := append(lead, &line.ID, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
-		&line.Status, &line.ReplyTo, &attempts)
+		&line.Status, &line.ReplyTo, &attempts, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID)
 	if err := rows.Scan(dest...); err != nil {
 		return app.Line{}, fmt.Errorf("chat: line: %w", err)
 	}
