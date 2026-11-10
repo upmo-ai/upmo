@@ -138,14 +138,14 @@ describe("Chat page", () => {
     }
 
     await choose("Agent", "Code Specialist");
-    await choose("Route", "Cost Optimized");
+    await choose("Route", "chat-stream");
     await choose("Model", "Claude 3.7 Sonnet");
 
     const pill = screen.getByRole("button", { name: /Agent, route and model:/ });
     expect(pill.getAttribute("aria-label")).toBe(
-      "Agent, route and model: Code Specialist · Cost Optimized · Claude 3.7 Sonnet",
+      "Agent, route and model: Code Specialist · chat-stream · Claude 3.7 Sonnet",
     );
-    expect(pill.textContent).toContain("Code Specialist · Cost Optimized · Claude 3.7 Sonnet");
+    expect(pill.textContent).toContain("Code Specialist · chat-stream · Claude 3.7 Sonnet");
     expect(pill.textContent).not.toContain("claude-3.7-sonnet");
   });
 

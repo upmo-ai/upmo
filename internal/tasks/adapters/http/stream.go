@@ -188,7 +188,7 @@ func (s sseWriter) message(m app.StreamMessage) error {
 		}
 		return s.write("event: line\nid: " + m.Event.ID + "\ndata: " + string(data) + "\n\n")
 	case app.StreamStatus:
-		return s.status(m.Status, m.Phase)
+		return s.status(m.Summary.Status, m.Summary.Phase)
 	case app.StreamEnd:
 		return s.end(app.EndFinished)
 	default:

@@ -22,6 +22,15 @@ var (
 	ErrGone = errors.New("chat: no such chat")
 	// ErrSay is a chat this person can see but not write to.
 	ErrSay = errors.New("chat: say")
+	// ErrNoLine is a line that is not in the chat.
+	ErrNoLine = errors.New("chat: no such line")
+	// ErrRetry is a line that is not a failed reply, or one that a later
+	// reply has already answered.
+	ErrRetry = errors.New("chat: retry")
+	// ErrBusy is a line with a reply already on its way.
+	ErrBusy = errors.New("chat: reply under way")
+	// ErrReplies is a chat that gets no replies in this install.
+	ErrReplies = errors.New("chat: replies are off")
 )
 
 // Access is the signed-in person and the allow list on this call.
@@ -35,6 +44,8 @@ type Access struct {
 }
 
 // Line is one stored line of a chat. A user line carries no model and no cost.
+// An assistant line is done or failed, says which user line it answers, and
+// when failed lists the models tried and why each failed.
 type Line struct {
 	ID           string
 	Role         string
@@ -43,6 +54,9 @@ type Line struct {
 	Tokens       int
 	CostMicroUSD *int64
 	At           time.Time
+	Status       string
+	ReplyTo      *string
+	Attempts     []domain.Attempt
 }
 
 // ChatSummary is one chat in a list: its derived title and preview, and when
@@ -64,7 +78,8 @@ type Chat struct {
 type Book interface {
 	Open(ctx context.Context, access Access) (ChatSummary, error)
 	List(ctx context.Context, access Access) ([]ChatSummary, error)
-	Say(ctx context.Context, access Access, chatID, body string) error
+	Say(ctx context.Context, access Access, chatID, body, route string) error
+	Retry(ctx context.Context, access Access, chatID, lineID, route string) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
 }
 
@@ -97,8 +112,9 @@ func List(ctx context.Context, book Book, access Access) ([]ChatSummary, error) 
 	return got, nil
 }
 
-// Say appends one line.
-func Say(ctx context.Context, book Book, access Access, chatID, body string) error {
+// Say appends one line. route names the gateway route that answers it; empty
+// takes the install's chat route.
+func Say(ctx context.Context, book Book, access Access, chatID, body, route string) error {
 	if err := caller(access); err != nil {
 		return err
 	}
@@ -109,7 +125,31 @@ func Say(ctx context.Context, book Book, access Access, chatID, body string) err
 	if err != nil {
 		return err
 	}
-	return book.Say(ctx, access, chatID, body)
+	route, err = domain.Route(route)
+	if err != nil {
+		return err
+	}
+	return book.Say(ctx, access, chatID, body, route)
+}
+
+// Retry asks again for the reply to the user line that a failed assistant
+// line left unanswered. route is the one picked now; empty takes the
+// install's chat route.
+func Retry(ctx context.Context, book Book, access Access, chatID, lineID, route string) error {
+	if err := caller(access); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ErrChat
+	}
+	if _, err := uuid.Parse(lineID); err != nil {
+		return ErrNoLine
+	}
+	route, err := domain.Route(route)
+	if err != nil {
+		return err
+	}
+	return book.Retry(ctx, access, chatID, lineID, route)
 }
 
 // Read returns the chat and its lines in order.

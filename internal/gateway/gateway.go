@@ -37,6 +37,7 @@ func Migrations() fs.FS {
 type adapter interface {
 	app.Decider
 	app.Chatter
+	app.StreamChatter
 	app.Embedder
 	app.Prober
 }
@@ -52,13 +53,14 @@ func adapters() map[string]adapter {
 }
 
 // Mount registers the JSON debug routes. cmd/gateway wraps them with HMAC.
-func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
+func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slog.Logger) {
 	store := postgres.Store{Pool: pool}
 	decide := map[string]app.Decider{}
 	chat := map[string]app.Chatter{}
+	stream := map[string]app.StreamChatter{}
 	embed := map[string]app.Embedder{}
 	for name, a := range adapters() {
-		decide[name], chat[name], embed[name] = a, a, a
+		decide[name], chat[name], stream[name], embed[name] = a, a, a, a
 	}
 	httpapi.Handler{
 		Dispatch: app.Dispatch{
@@ -69,6 +71,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 			Bundles: store,
 			Decide:  decide,
 			Chat:    chat,
+			Stream:  stream,
 			Embed:   embed,
 			Gates:   app.NewGates(),
 			Status:  app.NewStatusRecorder(store.RecordStatus),
@@ -83,6 +86,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets) {
 		Names: func(r *http.Request) ([]string, error) {
 			return store.Names(r.Context())
 		},
+		Log: log,
 	}.Mount(mux)
 }
 

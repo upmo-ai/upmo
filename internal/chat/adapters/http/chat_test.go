@@ -23,9 +23,12 @@ var openedAt = time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
 type fakeBook struct {
 	opens     int
 	says      int
+	retries   int
 	lists     int
 	reads     int
 	body      string
+	route     string
+	retried   string
 	lines     []app.Line
 	summaries []app.ChatSummary
 	err       error
@@ -47,9 +50,17 @@ func (f *fakeBook) List(context.Context, app.Access) ([]app.ChatSummary, error) 
 	return f.summaries, nil
 }
 
-func (f *fakeBook) Say(_ context.Context, _ app.Access, _, body string) error {
+func (f *fakeBook) Say(_ context.Context, _ app.Access, _, body, route string) error {
 	f.says++
 	f.body = body
+	f.route = route
+	return f.err
+}
+
+func (f *fakeBook) Retry(_ context.Context, _ app.Access, _, line, route string) error {
+	f.retries++
+	f.retried = line
+	f.route = route
 	return f.err
 }
 
@@ -108,6 +119,75 @@ func TestSayAppendsALine(t *testing.T) {
 	rec := call(t, book, http.MethodPost, "/api/chats/"+chatID, `{"body":" hello "}`, true)
 	if rec.Code != http.StatusAccepted || book.says != 1 || book.body != "hello" || rec.Body.Len() != 0 {
 		t.Fatalf("status %d says %d body %q resp %q", rec.Code, book.says, book.body, rec.Body.String())
+	}
+}
+
+func TestSayPassesTheRoute(t *testing.T) {
+	book := &fakeBook{}
+	rec := call(t, book, http.MethodPost, "/api/chats/"+chatID, `{"body":"hello","route":"draft"}`, true)
+	if rec.Code != http.StatusAccepted || book.route != "draft" {
+		t.Fatalf("status %d route %q", rec.Code, book.route)
+	}
+	rec = call(t, book, http.MethodPost, "/api/chats/"+chatID, `{"body":"hello","route":"two words"}`, true)
+	if rec.Code != http.StatusBadRequest || book.says != 1 {
+		t.Fatalf("bad route: status %d says %d", rec.Code, book.says)
+	}
+}
+
+func TestRetryAsksForANewReply(t *testing.T) {
+	line := "018f3b2c-7a10-7c4a-8e11-dddddddddddd"
+	path := "/api/chats/" + chatID + "/lines/" + line + "/retry"
+	book := &fakeBook{}
+	rec := call(t, book, http.MethodPost, path, `{"route":"draft"}`, true)
+	if rec.Code != http.StatusAccepted || book.retried != line || book.route != "draft" {
+		t.Fatalf("status %d line %q route %q", rec.Code, book.retried, book.route)
+	}
+	rec = call(t, book, http.MethodPost, path, "", true)
+	if rec.Code != http.StatusAccepted || book.retries != 2 || book.route != "" {
+		t.Fatalf("no body: status %d retries %d route %q", rec.Code, book.retries, book.route)
+	}
+	for err, want := range map[error]int{
+		app.ErrNoLine:  http.StatusNotFound,
+		app.ErrRetry:   http.StatusConflict,
+		app.ErrBusy:    http.StatusConflict,
+		app.ErrReplies: http.StatusServiceUnavailable,
+		app.ErrSay:     http.StatusForbidden,
+		app.ErrGone:    http.StatusNotFound,
+	} {
+		if rec := call(t, &fakeBook{err: err}, http.MethodPost, path, "", true); rec.Code != want {
+			t.Fatalf("%v: status %d, want %d", err, rec.Code, want)
+		}
+	}
+	if rec := call(t, book, http.MethodPost, path, "", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no session: status %d", rec.Code)
+	}
+}
+
+func TestReadShowsStatusReplyToAndAttemptReasons(t *testing.T) {
+	model := "m2"
+	user := "u1"
+	book := &fakeBook{lines: []app.Line{{
+		ID: "l2", Role: "assistant", Body: "half", Model: &model, Status: "failed", ReplyTo: &user,
+		Attempts: []domain.Attempt{{Model: "m1", Class: "rate_limit"}, {Model: "m2", Class: "internal"}},
+	}}}
+	rec := call(t, book, http.MethodGet, "/api/chats/"+chatID, "", true)
+	var got struct {
+		Lines []struct {
+			Status   string
+			ReplyTo  *string `json:"reply_to"`
+			Attempts []struct{ Model, Reason string }
+		}
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	line := got.Lines[0]
+	if line.Status != "failed" || line.ReplyTo == nil || *line.ReplyTo != "u1" ||
+		len(line.Attempts) != 2 || line.Attempts[0].Reason != "rate limited" || line.Attempts[1].Reason != "stopped" {
+		t.Fatalf("line = %+v", line)
+	}
+	if strings.Contains(rec.Body.String(), "rate_limit") || strings.Contains(rec.Body.String(), "internal") {
+		t.Fatalf("a failure class leaked: %s", rec.Body.String())
 	}
 }
 

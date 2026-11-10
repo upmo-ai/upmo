@@ -41,6 +41,7 @@ import {
   type WorkspaceRole,
 } from "../features/identity/types";
 import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
+import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteDecision, type RouteHop } from "../features/models/types";
 import { adapterKey } from "../features/providers/rules";
 
 type Json = Record<string, unknown>;
@@ -306,7 +307,7 @@ export function toChatLine(value: unknown): ChatLine {
   if (model !== null && typeof model !== "string") throw new Error("The brain sent no model.");
   const cost = source.cost_usd;
   if (cost !== null && typeof cost !== "number") throw new Error("The brain sent no cost_usd.");
-  return {
+  const parsed: ChatLine = {
     id: text(source, "id"),
     role,
     body: text(source, "body"),
@@ -314,6 +315,51 @@ export function toChatLine(value: unknown): ChatLine {
     tokens: whole(source, "tokens"),
     cost_usd: cost,
     at: text(source, "at"),
+  };
+  // The reply fields are sent by a brain that writes replies; an older one omits them.
+  const status = source.status;
+  if (status === "done" || status === "failed") parsed.status = status;
+  if (typeof source.reply_to === "string") parsed.reply_to = source.reply_to;
+  if (Array.isArray(source.attempts) && source.attempts.length > 0) {
+    parsed.attempts = source.attempts.map((item) => {
+      const attempt = record(item, "attempt");
+      return { model: text(attempt, "model"), reason: text(attempt, "reason") };
+    });
+  }
+  return parsed;
+}
+
+function toRouteHop(value: unknown): RouteHop {
+  const source = record(value, "hop");
+  return {
+    position: whole(source, "position"),
+    adapter: text(source, "adapter"),
+    model: text(source, "model"),
+    weight: whole(source, "weight"),
+    retry: whole(source, "retry"),
+  };
+}
+
+/**
+ * A route as GET /api/gateway/routes sends it. The brain sends no scope: every
+ * route listed is the workspace's, so it reads as global.
+ */
+export function toGatewayRoute(value: unknown): GatewayRoute {
+  const source = record(value, "route");
+  const capability = source.capability;
+  if (!(routeCapabilities as readonly unknown[]).includes(capability)) {
+    throw new Error("The brain sent an unknown route capability.");
+  }
+  const decision = source.decision;
+  if (decision !== "" && decision !== "yesno" && decision !== "choice") {
+    throw new Error("The brain sent an unknown route decision.");
+  }
+  return {
+    name: text(source, "name"),
+    scope: source.scope === "own" ? "own" : "global",
+    capability: capability as RouteCapability,
+    decision: decision as RouteDecision,
+    hops: list(source.hops, "hops").map(toRouteHop),
   };
 }
 
@@ -518,6 +564,10 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
     get taskEventsStream() {
       return settled === "brain";
     },
+    // The same for a chat's stream (GET /api/chats/{id}/stream).
+    get chatStream() {
+      return settled === "brain";
+    },
     async listTasks() {
       if ((await chosen()) === "stub") return stub.listTasks();
       return list(await call("/api/tasks"), "tasks").map(toTask);
@@ -605,6 +655,12 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
         return toTestResult(await call("/api/providers/test", { method: "POST", body: providerTestBody(config) }));
       },
     },
+    gateway: {
+      async routes() {
+        if ((await chosen()) === "stub") return stub.gateway.routes();
+        return list(await call("/api/gateway/routes"), "routes").map(toGatewayRoute);
+      },
+    },
     chats: {
       // The stub plays the assistant a moment later; the brain only stores the
       // line, so a reply is worth waiting for only while the stub owes one.
@@ -623,9 +679,13 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
         if ((await chosen()) === "stub") return stub.chats.get(id);
         return toChat(await call(chatPath(id)));
       },
-      async send(id, body) {
-        if ((await chosen()) === "stub") return stub.chats.send(id, body);
-        await call(chatPath(id), { method: "POST", body: { body } });
+      async send(id, body, route = "") {
+        if ((await chosen()) === "stub") return stub.chats.send(id, body, route);
+        await call(chatPath(id), { method: "POST", body: route ? { body, route } : { body } });
+      },
+      async retry(id, lineId, route) {
+        if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, route);
+        await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: route ? { route } : {} });
       },
     },
   };

@@ -32,17 +32,47 @@ func TestSayNeutralisesTheLine(t *testing.T) {
 	book := &fakeBook{}
 	access := Access{UserID: userID, Allow: "chat:edit"}
 	chatID := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
-	if err := Say(context.Background(), book, access, chatID, " {{no}} "); err != nil {
+	if err := Say(context.Background(), book, access, chatID, " {{no}} ", ""); err != nil {
 		t.Fatal(err)
 	}
 	if book.body != "{ {no}}" {
 		t.Fatalf("body = %q", book.body)
 	}
-	if err := Say(context.Background(), book, access, "bad", "hello"); !errors.Is(err, ErrChat) {
+	if err := Say(context.Background(), book, access, "bad", "hello", ""); !errors.Is(err, ErrChat) {
 		t.Fatalf("bad id error = %v", err)
 	}
 	if book.says != 1 {
 		t.Fatalf("says = %d", book.says)
+	}
+}
+
+func TestSayChecksTheRoute(t *testing.T) {
+	book := &fakeBook{}
+	access := Access{UserID: userID, Allow: "chat:edit"}
+	chatID := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
+	if err := Say(context.Background(), book, access, chatID, "hello", " draft "); err != nil || book.route != "draft" {
+		t.Fatalf("route %q error %v", book.route, err)
+	}
+	if err := Say(context.Background(), book, access, chatID, "hello", "has space"); !errors.Is(err, domain.ErrRoute) {
+		t.Fatalf("bad route error = %v", err)
+	}
+	if book.says != 1 {
+		t.Fatalf("says = %d", book.says)
+	}
+}
+
+func TestRetryChecksItsInput(t *testing.T) {
+	book := &fakeBook{}
+	access := Access{UserID: userID, Allow: "chat:edit"}
+	chatID := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
+	if err := Retry(context.Background(), book, access, "bad", chatID, ""); !errors.Is(err, ErrChat) {
+		t.Fatalf("bad chat error = %v", err)
+	}
+	if err := Retry(context.Background(), book, access, chatID, "bad", ""); !errors.Is(err, ErrNoLine) {
+		t.Fatalf("bad line error = %v", err)
+	}
+	if err := Retry(context.Background(), book, Access{}, chatID, chatID, ""); !errors.Is(err, ErrAccess) {
+		t.Fatalf("no access error = %v", err)
 	}
 }
 
@@ -92,6 +122,7 @@ type fakeBook struct {
 	lists     int
 	reads     int
 	body      string
+	route     string
 	lines     []Line
 	summaries []ChatSummary
 }
@@ -106,11 +137,14 @@ func (f *fakeBook) List(context.Context, Access) ([]ChatSummary, error) {
 	return f.summaries, nil
 }
 
-func (f *fakeBook) Say(_ context.Context, _ Access, _, body string) error {
+func (f *fakeBook) Say(_ context.Context, _ Access, _, body, route string) error {
 	f.says++
 	f.body = body
+	f.route = route
 	return nil
 }
+
+func (f *fakeBook) Retry(context.Context, Access, string, string, string) error { return nil }
 
 func (f *fakeBook) Read(context.Context, Access, string) (Chat, error) {
 	f.reads++

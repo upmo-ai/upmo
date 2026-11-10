@@ -581,6 +581,7 @@ describe("app shell", () => {
         };
       },
       taskEventsStream: false,
+      chatStream: false,
       approvals: {
         async list() {
           return [];
@@ -849,6 +850,7 @@ describe("app shell", () => {
         throw new Error("task missing");
       },
       taskEventsStream: false,
+      chatStream: false,
       approvals: {
         async list() {
           return [];

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -265,5 +266,344 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatal("the redirect was followed with the key")
+	}
+}
+
+// sseServer streams chunks as SSE data lines, then [DONE]. When cut is set
+// the connection is aborted after the first chunk instead.
+func sseServer(t *testing.T, cut bool, chunks ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i, chunk := range chunks {
+			_, _ = io.WriteString(w, "data: "+chunk+"\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			if cut && i == 0 {
+				panic(http.ErrAbortHandler)
+			}
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+var streamDeltas = []string{
+	`{"choices":[{"delta":{"content":"Hel"}}]}`,
+	`{"choices":[{"delta":{"content":"lo"}}]}`,
+}
+
+func streamRequest(srv *httptest.Server) (app.Attempt, domain.Request) {
+	return app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"},
+		domain.Request{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+}
+
+func TestChatStreamTextInOrderWithUsage(t *testing.T) {
+	var got []string
+	srv := sseServer(t, false, append(streamDeltas,
+		`{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":1}}}`)...)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	usage, class, err := a.ChatStream(context.Background(), attempt, req, func(text string) error {
+		got = append(got, text)
+		return nil
+	})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if len(got) != 2 || got[0] != "Hel" || got[1] != "lo" {
+		t.Fatalf("deltas = %v", got)
+	}
+	if !usage.Arrived || usage.Input != 3 || usage.Output != 2 || usage.CacheRead != 1 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestChatStreamSendsStreamFlagsAndCap(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	req.MaxOutputTokens = 7
+	_, _, _ = a.ChatStream(context.Background(), attempt, req, func(string) error { return nil })
+	if body["stream"] != true {
+		t.Fatalf("stream = %v", body["stream"])
+	}
+	opts, _ := body["stream_options"].(map[string]any)
+	if opts["include_usage"] != true {
+		t.Fatalf("stream_options = %v", body["stream_options"])
+	}
+	if body["max_tokens"] != float64(7) {
+		t.Fatalf("max_tokens = %v", body["max_tokens"])
+	}
+}
+
+func TestChatStreamMapsStatusBeforeFirstChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	_, class, err := a.ChatStream(context.Background(), attempt, req, func(string) error { return nil })
+	if err == nil || class != domain.ClassCredential {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+}
+
+func TestChatStreamCutMidStreamKeepsPartialText(t *testing.T) {
+	var got []string
+	srv := sseServer(t, true, streamDeltas...)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	usage, class, err := a.ChatStream(context.Background(), attempt, req, func(text string) error {
+		got = append(got, text)
+		return nil
+	})
+	if err == nil || class != domain.ClassTransient {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if len(got) != 1 || got[0] != "Hel" {
+		t.Fatalf("deltas = %v", got)
+	}
+	if usage.Arrived {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestChatStreamStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+streamDeltas[0]+"\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	var got []string
+	_, class, err := a.ChatStream(ctx, attempt, req, func(text string) error {
+		got = append(got, text)
+		cancel()
+		return nil
+	})
+	if err == nil || class == domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("deltas = %v", got)
+	}
+}
+
+func TestChatStreamCancelDuringTheReadIsCancelledAndEndsTheWalk(t *testing.T) {
+	// The provider sends one delta and then stalls; the caller cancels while
+	// the adapter is reading. The row and the failure say cancelled, the
+	// partial text stays, and the second link is never tried.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+streamDeltas[0]+"\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	one := domain.Account{ID: "1", Adapter: "openai", BaseURL: srv.URL, CredentialRef: "house", House: true}
+	two := domain.Account{ID: "2", Adapter: "openai", BaseURL: srv.URL, CredentialRef: "house", House: true}
+	route := domain.Route{Name: "draft", Capability: domain.CapChat, Links: []domain.Link{
+		{Position: 1, Account: one, Model: "m1", RetryBudget: 1},
+		{Position: 2, Account: two, Model: "m2", RetryBudget: 0},
+	}}
+	led := &classLedger{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sink := &cancelOnDeltaSink{cancel: cancel}
+	disp := app.Dispatch{
+		Routes:  dispatchRoute{route},
+		Secrets: mapSecrets{"house": "s"},
+		Ledger:  led,
+		Stream:  map[string]app.StreamChatter{"openai": Adapter{Client: srv.Client()}},
+	}
+	err := disp.ChatStreamCall(ctx, "draft", "", domain.Principal{}, domain.Input{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	}, 0, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sink.fail == nil || sink.fail.Class != domain.ClassCancelled || sink.fail.Model != "m1" {
+		t.Fatalf("fail = %+v", sink.fail)
+	}
+	if sink.text != "Hel" {
+		t.Fatalf("text = %q", sink.text)
+	}
+	if len(led.classes) != 1 || led.classes[0] != domain.ClassCancelled {
+		t.Fatalf("ledger = %v", led.classes)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("provider hits = %d", hits.Load())
+	}
+}
+
+// cancelOnDeltaSink keeps the text and the failure of one streamed call and
+// cancels the call on the first delta.
+type cancelOnDeltaSink struct {
+	failSink
+	text   string
+	cancel context.CancelFunc
+}
+
+func (s *cancelOnDeltaSink) Delta(text string) error {
+	s.text += text
+	s.cancel()
+	return nil
+}
+
+func TestReadStreamEndedWhileCancelledIsCancelled(t *testing.T) {
+	// A body can end with EOF or a plain error once the context is done,
+	// without the error naming the cancellation.
+	for name, tail := range map[string]error{"eof": io.EOF, "reset": errors.New("connection reset")} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			body := io.MultiReader(strings.NewReader("data: "+streamDeltas[0]+"\n\n"), errReader{tail})
+			var got []string
+			_, class, err := readStream(ctx, body, func(text string) error {
+				got = append(got, text)
+				return nil
+			})
+			if err == nil || class != domain.ClassCancelled {
+				t.Fatalf("class=%s err=%v", class, err)
+			}
+			if len(got) != 1 || got[0] != "Hel" {
+				t.Fatalf("deltas = %v", got)
+			}
+		})
+	}
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestChatStreamJoinsTheDataLinesOfOneEvent(t *testing.T) {
+	// One event whose JSON spans two data: lines, with a comment and other
+	// fields around it: only the joined data lines are the chunk.
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, ": keep-alive\n\n")
+		_, _ = io.WriteString(w, "event: message\nid: 7\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}],\n")
+		_, _ = io.WriteString(w, "data: \"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	usage, class, err := a.ChatStream(context.Background(), attempt, req, func(text string) error {
+		got = append(got, text)
+		return nil
+	})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if len(got) != 1 || got[0] != "Hel" {
+		t.Fatalf("deltas = %v", got)
+	}
+	if !usage.Arrived || usage.Input != 3 || usage.Output != 2 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+// dispatchRoute serves one chat route for a Dispatch test.
+type dispatchRoute struct{ r domain.Route }
+
+func (m dispatchRoute) ByName(context.Context, string) (domain.Route, error) { return m.r, nil }
+
+type mapSecrets map[string]string
+
+func (m mapSecrets) Get(ref string) (string, error) {
+	s, ok := m[ref]
+	if !ok {
+		return "", errors.New("missing")
+	}
+	return s, nil
+}
+
+// classLedger keeps the class of every attempt row.
+type classLedger struct{ classes []domain.FailureClass }
+
+func (l *classLedger) Record(_ context.Context, row domain.Entry) error {
+	l.classes = append(l.classes, row.Class)
+	return nil
+}
+
+// failSink keeps the final failure of one streamed call.
+type failSink struct{ fail *app.StreamFail }
+
+func (s *failSink) Delta(string) error            { return nil }
+func (s *failSink) Notice(app.StreamNotice) error { return nil }
+func (s *failSink) Done(app.StreamDone)           {}
+func (s *failSink) Fail(f app.StreamFail)         { s.fail = &f }
+
+func TestChatStreamCancelledContextIsCancelledAndEndsTheWalk(t *testing.T) {
+	// The context is cancelled before the call, so the provider is never
+	// reached: the row says cancelled and the second link is never tried.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+	}))
+	t.Cleanup(srv.Close)
+	one := domain.Account{ID: "1", Adapter: "openai", BaseURL: srv.URL, CredentialRef: "house", House: true}
+	two := domain.Account{ID: "2", Adapter: "openai", BaseURL: srv.URL, CredentialRef: "house", House: true}
+	route := domain.Route{Name: "draft", Capability: domain.CapChat, Links: []domain.Link{
+		{Position: 1, Account: one, Model: "m1", RetryBudget: 0},
+		{Position: 2, Account: two, Model: "m2", RetryBudget: 0},
+	}}
+	led := &classLedger{}
+	sink := &failSink{}
+	disp := app.Dispatch{
+		Routes:  dispatchRoute{route},
+		Secrets: mapSecrets{"house": "s"},
+		Ledger:  led,
+		Stream:  map[string]app.StreamChatter{"openai": Adapter{Client: srv.Client()}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := disp.ChatStreamCall(ctx, "draft", "", domain.Principal{}, domain.Input{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	}, 0, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sink.fail == nil || sink.fail.Class != domain.ClassCancelled || sink.fail.Model != "m1" {
+		t.Fatalf("fail = %+v", sink.fail)
+	}
+	if len(led.classes) != 1 || led.classes[0] != domain.ClassCancelled {
+		t.Fatalf("ledger = %v", led.classes)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("provider hits = %d", hits.Load())
+	}
+}
+
+func TestChatStreamStopsWhenEmitFails(t *testing.T) {
+	gone := errors.New("caller went away")
+	srv := sseServer(t, false, streamDeltas...)
+	a := Adapter{Client: srv.Client()}
+	attempt, req := streamRequest(srv)
+	_, class, err := a.ChatStream(context.Background(), attempt, req, func(string) error { return gone })
+	if !errors.Is(err, gone) || class != domain.ClassCancelled {
+		t.Fatalf("class=%s err=%v", class, err)
 	}
 }
