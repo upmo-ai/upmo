@@ -244,6 +244,31 @@ func TestSharingLetsAViewerReadAndAnEditorWrite(t *testing.T) {
 	}
 }
 
+func TestRecentLinesReadsASharedChatForAnEditorAndNotAStranger(t *testing.T) {
+	owner := up(t)
+	store := quietStore(t, owner)
+	ctx := context.Background()
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	editor := app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + opened.ID + "}", SharedEdit: "{" + opened.ID + "}"}
+	if err := app.Say(ctx, store, editor, opened.ID, "hi there", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.RecentLines(ctx, editor, opened.ID, 10)
+	if err != nil || !reflect.DeepEqual(got, []string{"hello", "hi there"}) {
+		t.Fatalf("editor lines = %v %v", got, err)
+	}
+	if _, err := store.RecentLines(ctx, otherAccess, opened.ID, 10); !errors.Is(err, app.ErrGone) {
+		t.Fatalf("stranger lines = %v", err)
+	}
+}
+
 func TestReadTypesTheLines(t *testing.T) {
 	owner := up(t)
 	store := quietStore(t, owner)
