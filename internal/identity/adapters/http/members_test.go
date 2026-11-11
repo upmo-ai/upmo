@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
@@ -171,6 +173,9 @@ func (f *memberFake) TaskGrants(context.Context, string) ([]app.TaskGrant, error
 	return nil, nil
 }
 func (f *memberFake) ReplaceTaskGrants(context.Context, string, []app.GrantWrite, domain.UserID) error {
+	return nil
+}
+func (f *memberFake) ReplaceTaskGrantsTx(context.Context, pgx.Tx, string, []app.GrantWrite, domain.UserID) error {
 	return nil
 }
 func (f *memberFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {

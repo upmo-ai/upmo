@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
@@ -46,6 +48,22 @@ func (g taskGrants) ReplaceTaskGrants(ctx context.Context, taskID string, grants
 		})
 	}
 	return g.members.ReplaceTaskGrants(ctx, taskID, writes, by)
+}
+
+func (g taskGrants) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []tasks.ShareGrant, grantedBy string) error {
+	by, err := identity.ParseUserID(grantedBy)
+	if err != nil {
+		return err
+	}
+	writes := make([]identity.GrantWrite, 0, len(grants))
+	for _, grant := range grants {
+		writes = append(writes, identity.GrantWrite{
+			SubjectType: grant.SubjectType,
+			SubjectID:   grant.SubjectID,
+			Level:       grant.Role,
+		})
+	}
+	return g.members.ReplaceTaskGrantsTx(ctx, tx, taskID, writes, by)
 }
 
 func (g taskGrants) Names(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {

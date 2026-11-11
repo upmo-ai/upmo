@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -124,6 +125,15 @@ func (s Store) Fire(ctx context.Context, access app.Access, automationID, dedup 
 		return "", false, fmt.Errorf("tasks: open from automation: %w", err)
 	}
 	if err := insertTaskEvent(ctx, tx, taskID, effect); err != nil {
+		return "", false, err
+	}
+	// The automation fired, so the system opened the task on its owner's
+	// behalf; the owner stays the task's owner, not the event's actor.
+	if err := audit.Record(audit.WithRunner(ctx, audit.CredentialRun), tx, audit.Event{
+		Action:   audit.TaskCreate,
+		Outcome:  audit.Success,
+		TargetID: taskID,
+	}); err != nil {
 		return "", false, err
 	}
 	tag, err := tx.Exec(ctx, `UPDATE tasks.tasks SET budget = $2 WHERE id = $1::uuid`, taskID, budget)

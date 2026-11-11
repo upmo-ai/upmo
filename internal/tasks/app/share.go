@@ -34,11 +34,11 @@ type TaskShare struct {
 }
 
 // ShareBook is the tasks side of a share. ShareRow answers under row
-// security, ErrGone for a task this person cannot see. SaveVisibility is the
-// second of the two share transactions, after the grants.
+// security, ErrGone for a task this person cannot see. SaveShare replaces the
+// grants and stores visibility in one transaction and seals task.share.
 type ShareBook interface {
 	ShareRow(ctx context.Context, access Access, taskID string) (TaskShare, error)
-	SaveVisibility(ctx context.Context, access Access, taskID, visibility, teamID string) error
+	SaveShare(ctx context.Context, access Access, taskID, visibility, teamID string, grants []domain.ShareGrant, grantedBy string) error
 }
 
 // ShareGrants is the identity side of a share. The context owns none of this
@@ -79,8 +79,9 @@ func ReadShare(ctx context.Context, book ShareBook, grants ShareGrants, access A
 }
 
 // WriteShare replaces the share of one task. Only the owner may write: the
-// update is validated, then the grants are replaced, then the visibility is
-// stored, so a retry with the same body converges.
+// update is validated, then the store replaces grants, stores visibility, and
+// seals the audit event in one transaction, so a retry with the same body
+// converges.
 func WriteShare(ctx context.Context, book ShareBook, grants ShareGrants, access Access, taskID string, update domain.ShareUpdate) (Share, error) {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
 		return Share{}, ErrAccess
@@ -108,10 +109,7 @@ func WriteShare(ctx context.Context, book ShareBook, grants ShareGrants, access 
 	if err != nil {
 		return Share{}, err
 	}
-	if err := grants.ReplaceTaskGrants(ctx, taskID, stored, access.UserID); err != nil {
-		return Share{}, err
-	}
-	if err := book.SaveVisibility(ctx, access, taskID, update.Visibility, teamID); err != nil {
+	if err := book.SaveShare(ctx, access, taskID, update.Visibility, teamID, stored, access.UserID); err != nil {
 		return Share{}, err
 	}
 	return storedShare(ctx, grants, TaskShare{OwnerID: row.OwnerID, Visibility: update.Visibility, TeamID: teamID}, taskID)

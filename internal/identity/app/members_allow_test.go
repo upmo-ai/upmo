@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
@@ -98,6 +100,9 @@ func (f *allowFake) SharedObjects(_ context.Context, objectType domain.ObjectTyp
 }
 func (f allowFake) TaskGrants(context.Context, string) ([]TaskGrant, error) { return nil, nil }
 func (f allowFake) ReplaceTaskGrants(context.Context, string, []GrantWrite, domain.UserID) error {
+	return nil
+}
+func (f allowFake) ReplaceTaskGrantsTx(context.Context, pgx.Tx, string, []GrantWrite, domain.UserID) error {
 	return nil
 }
 func (f allowFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
