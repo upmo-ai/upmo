@@ -419,6 +419,9 @@ describe("provider request bodies", () => {
     expect(providerChangeBody({})).toEqual({});
     // An empty model list is a change to nothing, not an omission.
     expect(providerChangeBody({ models: [] })).toEqual({ models: [] });
+    // An emptied base URL is an explicit clear, so "" is sent; a missing one is not.
+    expect(providerChangeBody({ base_url: "" })).toEqual({ base_url: "" });
+    expect(providerChangeBody({ base_url: undefined })).toEqual({});
   });
 
   it("always sends plan_kind in a test when it is known, with the brain's adapter key", () => {

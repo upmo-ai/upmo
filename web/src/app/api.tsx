@@ -226,7 +226,7 @@ export type ProviderAdd = {
   models: string[];
 };
 
-/** PUT /api/providers/{id}. A field left out stays as it is; no api_key keeps the saved key. */
+/** PUT /api/providers/{id}. A field left out stays as it is; an empty base_url clears the saved address, and no api_key keeps the saved key. */
 export type ProviderChange = {
   name?: string;
   plan_kind?: ProviderPlanKind;

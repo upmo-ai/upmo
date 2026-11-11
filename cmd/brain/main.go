@@ -528,8 +528,20 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	if err != nil {
 		return nil, err
 	}
+	// A local-plan account reaches private addresses on the workspace's own
+	// network, so it stays with the people who manage the settings; every
+	// other plan stays open to each person's own accounts.
+	providers := gateway.NewProviders(pool, masterKeys, log)
+	providers.LocalPlan = func(ctx context.Context, user string) bool {
+		id, err := identity.ParseUserID(user)
+		if err != nil {
+			return false
+		}
+		allow, err := members.SettingsAllow(ctx, id)
+		return err == nil && allow != ""
+	}
 	gateway.ProvidersHandler{
-		Service: gateway.NewProviders(pool, masterKeys, log),
+		Service: providers,
 		Log:     log,
 		Access: func(r *http.Request) (string, bool) {
 			person, ok := identity.SessionFrom(r.Context())
