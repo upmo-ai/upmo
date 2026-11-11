@@ -64,6 +64,21 @@ func TestEventForHonoursRecordedEvents(t *testing.T) {
 	}
 }
 
+func TestEventForSkipsANoChangeSuccess(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	route := Route{Action: AuthSignOut}
+
+	idempotent := &scope{}
+	idempotent.noChange = true
+	if _, write := eventFor(route, 204, idempotent, log); write {
+		t.Fatal("a request that changed nothing got a fallback event")
+	}
+	// A failure still records its own event, exemption or not.
+	if _, write := eventFor(route, 500, idempotent, log); !write {
+		t.Fatal("a failed response needs its own failure event")
+	}
+}
+
 func TestEventForMergesTheAnnotation(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	route := Route{Action: AuthSignOut}

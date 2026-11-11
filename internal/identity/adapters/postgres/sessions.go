@@ -19,16 +19,41 @@ type Sessions struct {
 	Pool *pgxpool.Pool
 }
 
+// Insert opens a session and records the sign-in event in the same
+// transaction, so a session cannot open without its audit row. Only sign-in
+// flows call it; the method parameter names how.
 func (s Sessions) Insert(ctx context.Context, user domain.UserID, hash []byte, created, expires time.Time, method, agent string) (string, error) {
-	var id string
-	err := s.Pool.QueryRow(ctx, `
-		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at, sign_in_method, signed_in_at, user_agent)
-		VALUES ($1, $2, $3, $3, $4, $5, $3, $6)
-		RETURNING id::text`, user, hash, created, expires, method, agent).Scan(&id)
+	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
-	return id, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	var roleID string
+	if err := tx.QueryRow(ctx, `SELECT role_id::text FROM identity.users WHERE id = $1`, user).Scan(&roleID); err != nil {
+		return "", err
+	}
+	var id string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at, sign_in_method, signed_in_at, user_agent)
+		VALUES ($1, $2, $3, $3, $4, $5, $3, $6)
+		RETURNING id::text`, user, hash, created, expires, method, agent).Scan(&id); err != nil {
+		return "", err
+	}
+	audit.WithActor(ctx, audit.Actor{
+		Type: "user", ID: user.String(), RoleID: roleID,
+		CredentialType: "session", CredentialID: id,
+	})
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AuthSignIn,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Values: map[string]audit.Change{"method": {To: method}},
+		},
+	}); err != nil {
+		return "", err
+	}
+	return id, tx.Commit(ctx)
 }
 
 func (s Sessions) Find(ctx context.Context, hash []byte) (app.Row, bool, error) {
@@ -81,14 +106,75 @@ func (s Sessions) DeleteUser(ctx context.Context, user domain.UserID) error {
 	return err
 }
 
+// RevokeAudited ends one session and records the revoke event in the same
+// transaction. The caller resolved the session before, so the id is known.
+func (s Sessions) RevokeAudited(ctx context.Context, id string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM identity.sessions WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AuthSessionRevoke,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// EndAllAudited ends every session of one person and records the sign-out-all
+// event in the same transaction.
+func (s Sessions) EndAllAudited(ctx context.Context, user domain.UserID) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM identity.sessions WHERE user_id = $1`, user); err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AuthSignOutAll,
+		Outcome:  audit.Success,
+		TargetID: user.String(),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s Sessions) DeleteOthers(ctx context.Context, user domain.UserID, keep string) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM identity.sessions WHERE user_id = $1 AND id <> $2`, user, keep)
 	return err
 }
 
+// Refresh marks a session freshly signed in and records the step-up event in
+// the same transaction. Only step-up flows call it.
 func (s Sessions) Refresh(ctx context.Context, id, method string, at time.Time) error {
-	_, err := s.Pool.Exec(ctx, `UPDATE identity.sessions SET sign_in_method = $2, signed_in_at = $3 WHERE id = $1`, id, method, at)
-	return err
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE identity.sessions SET sign_in_method = $2, signed_in_at = $3 WHERE id = $1`, id, method, at); err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AuthStepUp,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Values: map[string]audit.Change{"method": {To: method}},
+		},
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s Sessions) List(ctx context.Context, user domain.UserID) ([]app.Device, error) {

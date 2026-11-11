@@ -79,7 +79,7 @@ func eventFor(route Route, status int, s *scope, log *slog.Logger) (Event, bool)
 		return annotate(Event{Action: route.Action, Outcome: Denied}, s), true
 	case status >= http.StatusInternalServerError:
 		return annotate(Event{Action: route.Action, Outcome: Failure}, s), true
-	case status >= 200 && status < 400 && !s.recorded:
+	case status >= 200 && status < 400 && !s.recorded && !s.noChange:
 		log.Error("audit event missing", "action", string(route.Action))
 		if onUnrecorded != nil {
 			onUnrecorded(route.Action)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // Store is the identity schema database adapter.
@@ -61,6 +62,7 @@ func (p Passkeys) ChangeCredentials(ctx context.Context, user domain.UserID, kee
 }
 
 // AddPasskey adds a passkey through ChangeCredentials and ends other sessions.
+// The passkey.add event is recorded in the same transaction.
 func (p Passkeys) AddPasskey(ctx context.Context, user domain.UserID, keep string, item domain.Credential, name string, now time.Time) (string, error) {
 	var id string
 	err := p.ChangeCredentials(ctx, user, keep,
@@ -69,20 +71,28 @@ func (p Passkeys) AddPasskey(ctx context.Context, user domain.UserID, keep strin
 			return nil
 		},
 		func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `
+			if err := tx.QueryRow(ctx, `
 				INSERT INTO identity.passkeys (
 				  user_id, credential_id, public_key, sign_count, aaguid, transports,
 				  backup_eligible, backup_state, attestation, name, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 				RETURNING id::text`,
 				user, item.ID, item.PublicKey, item.SignCount, item.AAGUID, item.Transports,
-				item.BackupEligible, item.BackupState, item.Attestation, name, now).Scan(&id)
+				item.BackupEligible, item.BackupState, item.Attestation, name, now).Scan(&id); err != nil {
+				return err
+			}
+			return audit.Record(ctx, tx, audit.Event{
+				Action:   audit.PasskeyAdd,
+				Outcome:  audit.Success,
+				TargetID: id,
+			})
 		},
 	)
 	return id, err
 }
 
-// RemovePasskey removes a passkey through ChangeCredentials and ends other sessions.
+// RemovePasskey removes a passkey through ChangeCredentials and ends other
+// sessions. The passkey.remove event is recorded in the same transaction.
 func (p Passkeys) RemovePasskey(ctx context.Context, user domain.UserID, keep, id string) ([]byte, error) {
 	var credentialID []byte
 	err := p.ChangeCredentials(ctx, user, keep,
@@ -95,7 +105,14 @@ func (p Passkeys) RemovePasskey(ctx context.Context, user domain.UserID, keep, i
 			if errors.Is(err, pgx.ErrNoRows) {
 				return app.ErrNotSignedIn
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			return audit.Record(ctx, tx, audit.Event{
+				Action:   audit.PasskeyRemove,
+				Outcome:  audit.Success,
+				TargetID: id,
+			})
 		},
 	)
 	return credentialID, err

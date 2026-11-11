@@ -86,7 +86,7 @@ func (failingExecer) Exec(context.Context, string, ...any) (pgconn.CommandTag, e
 }
 
 func TestRecordRefusesUnknownAction(t *testing.T) {
-	err := Record(context.Background(), failingExecer{}, Event{Action: "auth.sign_in"})
+	err := Record(context.Background(), failingExecer{}, Event{Action: "test.unknown"})
 	if err == nil || !strings.Contains(err.Error(), "not in the catalog") {
 		t.Fatalf("err = %v, want a catalog refusal", err)
 	}

@@ -140,8 +140,18 @@ func (s Service) Devices(ctx context.Context, user domain.UserID) ([]Device, err
 	return s.Store.List(ctx, user)
 }
 
-// End ends one session.
+// Revoker is a store that can end one session and record its event in one
+// transaction.
+type Revoker interface {
+	RevokeAudited(ctx context.Context, id string) error
+}
+
+// End ends one session. A store that can transact records the revoke event
+// with it.
 func (s Service) End(ctx context.Context, id string) error {
+	if revoker, ok := s.Store.(Revoker); ok {
+		return revoker.RevokeAudited(ctx, id)
+	}
 	return s.Store.Delete(ctx, id)
 }
 
@@ -161,7 +171,16 @@ func (s Service) EndAudited(ctx context.Context, id string, event audit.Event) e
 	return s.Store.Delete(ctx, id)
 }
 
+// AllEnder is a store that can end every session of one person and record the
+// event in one transaction.
+type AllEnder interface {
+	EndAllAudited(ctx context.Context, user domain.UserID) error
+}
+
 // EndSessions ends every session for user. Credential changes call this.
 func (s Service) EndSessions(ctx context.Context, user domain.UserID) error {
+	if ender, ok := s.Store.(AllEnder); ok {
+		return ender.EndAllAudited(ctx, user)
+	}
 	return s.Store.DeleteUser(ctx, user)
 }

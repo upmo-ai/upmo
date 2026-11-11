@@ -10,6 +10,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // Passkeys is the passkey, link, challenge and throttle tables.
@@ -183,15 +184,29 @@ func (p Passkeys) ListPasskeys(ctx context.Context, user domain.UserID) ([]app.P
 	return out, rows.Err()
 }
 
+// RenamePasskey renames one passkey and records the passkey.rename event in
+// the same transaction. The new name is never recorded.
 func (p Passkeys) RenamePasskey(ctx context.Context, user domain.UserID, id, name string) error {
-	tag, err := p.Pool.Exec(ctx, `UPDATE identity.passkeys SET name = $3 WHERE id = $1 AND user_id = $2`, id, user, name)
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `UPDATE identity.passkeys SET name = $3 WHERE id = $1 AND user_id = $2`, id, user, name)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.PasskeyRename,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (p Passkeys) DeletePasskey(ctx context.Context, user domain.UserID, id string) ([]byte, error) {
