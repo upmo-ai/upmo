@@ -419,25 +419,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	chat.AgentsHandler{
-		Agents: chatBook,
-		Log:    log,
-		Access: func(r *http.Request) (chat.Access, bool) {
-			person, ok := identity.SessionFrom(r.Context())
-			if !ok {
-				return chat.Access{}, false
-			}
-			// Agents need no chat permission: the person is the session's, and
-			// settings:manage is looked up on its own.
-			manage, err := members.SettingsAllow(r.Context(), person.UserID)
-			if err != nil {
-				return chat.Access{}, false
-			}
-			return chat.Access{UserID: person.UserID.String(), Allow: manage}, true
-		},
-	}.Mount(mux, func(next http.Handler) http.Handler {
-		return identity.RequireSession(sessions, next)
-	})
+	// The agents handler is mounted beside the gateway handlers below: its
+	// usable answer reads the same routes and provider accounts.
 	knowledgeBook := knowledge.NewStore(pool, work)
 	knowledgeConverter := knowledge.Converter{Text: knowledge.PassThroughText{}}
 	if markitdownURL := os.Getenv("UPMO_MARKITDOWN_URL"); markitdownURL != "" {
@@ -512,18 +495,6 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	gateway.RoutesHandler{
-		Book: gateway.NewRouteBook(pool),
-		Access: func(r *http.Request) (string, bool) {
-			person, ok := identity.SessionFrom(r.Context())
-			if !ok {
-				return "", false
-			}
-			return person.UserID.String(), true
-		},
-	}.MountRoutes(mux, func(next http.Handler) http.Handler {
-		return identity.RequireSession(sessions, next)
-	})
 	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
 		return nil, err
@@ -551,6 +522,45 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 			return person.UserID.String(), true
 		},
 	}.MountProviders(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	routeBook := gateway.NewRouteBook(pool)
+	gateway.RoutesHandler{
+		Book:     routeBook,
+		Accounts: providers,
+		Access: func(r *http.Request) (string, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return "", false
+			}
+			return person.UserID.String(), true
+		},
+	}.MountRoutes(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+	// The pickers only offer what a person can use, so each agent carries its
+	// usable answer: the install's chat route decides for one that names no
+	// route of its own.
+	chat.AgentsHandler{
+		Agents:       chatBook,
+		Log:          log,
+		Routes:       routeBook,
+		Accounts:     providers,
+		DefaultRoute: cfg.ChatRoute,
+		Access: func(r *http.Request) (chat.Access, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return chat.Access{}, false
+			}
+			// Agents need no chat permission: the person is the session's, and
+			// settings:manage is looked up on its own.
+			manage, err := members.SettingsAllow(r.Context(), person.UserID)
+			if err != nil {
+				return chat.Access{}, false
+			}
+			return chat.Access{UserID: person.UserID.String(), Allow: manage}, true
+		},
+	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
 	notices.Handler{

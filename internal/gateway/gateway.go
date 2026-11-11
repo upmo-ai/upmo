@@ -125,17 +125,28 @@ type ProvidersHandler = httpapi.ProvidersHandler
 
 // A model request and the input it is built from.
 type (
-	Input      = domain.Input
-	Message    = domain.Message
-	Request    = domain.Request
-	Role       = domain.Role
-	Breakpoint = domain.Breakpoint
+	Input       = domain.Input
+	Message     = domain.Message
+	Request     = domain.Request
+	Role        = domain.Role
+	Breakpoint  = domain.Breakpoint
+	ListedHop   = app.ListedHop
+	ListedRoute = app.ListedRoute
+	RouteBook   = app.RouteBook
+	Provider    = domain.Provider
 )
+
+// UsableAgent reports whether an agent can be offered to a person now.
+func UsableAgent(enabled bool, route, modelProvider, modelID string, routes []ListedRoute, accounts []Provider, defaultRoute string) bool {
+	return app.UsableAgent(enabled, route, modelProvider, modelID, routes, accounts, defaultRoute)
+}
 
 // Message roles and cache breakpoints.
 const (
-	RoleUser    = domain.RoleUser
-	BreakSystem = domain.BreakSystem
+	RoleUser           = domain.RoleUser
+	BreakSystem        = domain.BreakSystem
+	StatusConnected    = domain.StatusConnected
+	StatusNotConnected = domain.StatusNotConnected
 )
 
 // Build returns the provider-neutral request for in.

@@ -75,7 +75,7 @@ func (a *recordedAccounts) Note(context.Context, string, string, string) error {
 
 // providersService is the use case the tests drive. gate says who may use
 // the local plan, as the brain wires it to the settings managers.
-func providersService(t *testing.T, accounts *recordedAccounts, gate bool) app.Providers {
+func providersService(t *testing.T, accounts app.Accounts, gate bool) app.Providers {
 	t.Helper()
 	keys, err := domain.NewKeyring("k1", map[string][]byte{"k1": bytes.Repeat([]byte{1}, domain.MasterKeyLen)})
 	if err != nil {
@@ -211,5 +211,44 @@ func TestLocalPlanTestNeedsTheWorkspaceManagers(t *testing.T) {
 	var result app.TestResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || !result.OK {
 		t.Fatalf("manager test result = %s, %v", rec.Body.String(), err)
+	}
+}
+
+// listedAccounts answers the list with fixed rows.
+type listedAccounts struct {
+	recordedAccounts
+	rows []domain.Provider
+}
+
+func (f *listedAccounts) List(context.Context, string) ([]domain.Provider, error) {
+	return f.rows, nil
+}
+
+// A person reads with every account which of its models they can use now: a
+// Not connected account offers nothing, a Connected one lists the models it
+// has.
+func TestListProvidersCarriesTheUsableAnswer(t *testing.T) {
+	broken := savedAccount
+	broken.ID = "018f3b2c-7a10-7c4a-8e11-0000000000bb"
+	broken.Name = "Broken"
+	broken.Status = domain.StatusNotConnected
+	accounts := &listedAccounts{rows: []domain.Provider{savedAccount, broken}}
+
+	rec := callProviders(t, providersService(t, accounts, true), http.MethodGet, "/api/providers", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []providerJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("list = %+v", got)
+	}
+	if !got[0].Usable || len(got[0].UsableModels) != 1 || got[0].UsableModels[0] != "m1" {
+		t.Fatalf("the Connected account read %v with %v", got[0].Usable, got[0].UsableModels)
+	}
+	if got[1].Usable || got[1].UsableModels == nil || len(got[1].UsableModels) != 0 {
+		t.Fatalf("the Not connected account read %v with %v", got[1].Usable, got[1].UsableModels)
 	}
 }

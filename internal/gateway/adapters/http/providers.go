@@ -50,7 +50,12 @@ type providerJSON struct {
 	BaseURL  string   `json:"base_url,omitempty"`
 	Status   string   `json:"status"`
 	Models   []string `json:"models"`
-	Scope    string   `json:"scope"`
+	// Usable says whether the person can use the account now, and
+	// UsableModels lists the models of theirs that count: the rule is
+	// domain's, computed per account here.
+	Usable       bool     `json:"usable"`
+	UsableModels []string `json:"usable_models"`
+	Scope        string   `json:"scope"`
 }
 
 func providerBody(p domain.Provider) providerJSON {
@@ -62,16 +67,19 @@ func providerBody(p domain.Provider) providerJSON {
 	if models == nil {
 		models = []string{}
 	}
+	usable := domain.UsableModels(p)
 	return providerJSON{
-		ID:       p.ID,
-		Provider: p.Provider,
-		Name:     p.Name,
-		Adapter:  p.Adapter,
-		PlanKind: p.PlanKind,
-		BaseURL:  p.BaseURL,
-		Status:   p.Status,
-		Models:   models,
-		Scope:    scope,
+		ID:           p.ID,
+		Provider:     p.Provider,
+		Name:         p.Name,
+		Adapter:      p.Adapter,
+		PlanKind:     p.PlanKind,
+		BaseURL:      p.BaseURL,
+		Status:       p.Status,
+		Models:       models,
+		Usable:       len(usable) > 0,
+		UsableModels: usable,
+		Scope:        scope,
 	}
 }
 

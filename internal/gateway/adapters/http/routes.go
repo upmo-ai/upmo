@@ -1,18 +1,30 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
+	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
+
+// AccountList reads the provider accounts one person can use: their own and
+// the workspace's.
+type AccountList interface {
+	List(ctx context.Context, user string) ([]domain.Provider, error)
+}
 
 // RoutesHandler lists gateway routes for any signed-in person. The rows hold
 // route names and model chains, never a credential.
 type RoutesHandler struct {
 	Book   app.RouteBook
 	Access func(r *http.Request) (userID string, ok bool)
+	// Accounts reads what the calling person can use, so each route is
+	// marked usable or not. Nil marks none usable; a read that fails refuses
+	// the request.
+	Accounts AccountList
 }
 
 // MountRoutes registers GET /api/gateway/routes. guard runs first.
@@ -45,6 +57,14 @@ func (h RoutesHandler) list(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeRouteError(w, http.StatusInternalServerError, "gateway")
 		return
+	}
+	if h.Accounts != nil {
+		accounts, err := h.Accounts.List(r.Context(), userID)
+		if err != nil {
+			writeRouteError(w, http.StatusInternalServerError, "gateway")
+			return
+		}
+		app.MarkUsable(rows, accounts)
 	}
 	writeRouteJSON(w, http.StatusOK, rows)
 }

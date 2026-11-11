@@ -190,6 +190,11 @@ function AgentCard({
                 Off
               </Badge>
             )}
+            {agent.enabled && !agent.usable ? (
+              <Badge variant="light" size="sm">
+                Inactive
+              </Badge>
+            ) : null}
           </Group>
         </Group>
         {agent.description ? (
