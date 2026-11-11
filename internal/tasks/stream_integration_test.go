@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
@@ -78,6 +79,10 @@ func newRig(t *testing.T, cfg tasks.StreamConfig) *rig {
 	t.Helper()
 	owner := pgtest.New(t)
 	ctx := context.Background()
+	// The store records audit events, so the audit schema comes up first.
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
@@ -691,13 +696,13 @@ func TestStreamEndsWhenAccessIsLost(t *testing.T) {
 		cfg.Refresh = 300 * time.Millisecond
 		r := newRig(t, cfg)
 		task := r.task("Unshare", domain.Working)
-		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "everyone", ""); err != nil {
+		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "everyone", "", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		s := r.open("other", "/api/tasks/"+task.ID+"/stream", nil)
 		s.expectHello()
 		s.expectStatus("Working", "Working")
-		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "private", ""); err != nil {
+		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "private", "", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		s.expectEnd("access")
@@ -710,13 +715,13 @@ func TestStreamEndsWhenAccessIsLost(t *testing.T) {
 		// stream to an access check at once.
 		r := newRig(t, quiet())
 		task := r.task("Detected", domain.Working)
-		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "everyone", ""); err != nil {
+		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "everyone", "", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		s := r.open("other", "/api/tasks/"+task.ID+"/stream", nil)
 		s.expectHello()
 		s.expectStatus("Working", "Working")
-		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "private", ""); err != nil {
+		if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "private", "", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		r.chat(task.ID, "private now")
@@ -843,7 +848,7 @@ func TestStreamCapsStreamsPerPersonAndPerProcess(t *testing.T) {
 	cfg.PerProcess = 10
 	r := newRig(t, cfg)
 	task := r.task("Caps", domain.Working)
-	if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "everyone", ""); err != nil {
+	if err := r.store.SaveVisibility(context.Background(), ownerAccess, task.ID, "everyone", "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	path := "/api/tasks/" + task.ID + "/stream"

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
@@ -35,6 +37,11 @@ func (m Members) TaskGrants(ctx context.Context, taskID string) ([]TaskGrant, er
 // changes where it differs. Role grants are untouched.
 func (m Members) ReplaceTaskGrants(ctx context.Context, taskID string, grants []GrantWrite, grantedBy domain.UserID) error {
 	return m.Store.ReplaceTaskGrants(ctx, taskID, grants, grantedBy)
+}
+
+// ReplaceTaskGrantsTx is ReplaceTaskGrants inside a transaction the caller owns.
+func (m Members) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []GrantWrite, grantedBy domain.UserID) error {
+	return m.Store.ReplaceTaskGrantsTx(ctx, tx, taskID, grants, grantedBy)
 }
 
 // NamesOf returns the display names of the enabled people in persons and the

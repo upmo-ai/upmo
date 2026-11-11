@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // ErrKind is returned when kind is not allowed.
@@ -150,15 +152,37 @@ func (s Store) Dismiss(ctx context.Context, userID, id uuid.UUID) (bool, error) 
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE notices.notifications
-		SET dismissed_at = COALESCE(dismissed_at, now())
-		WHERE id = $1`, id)
+		SET dismissed_at = now()
+		WHERE id = $1 AND dismissed_at IS NULL`, id)
 	if err != nil {
+		return false, fmt.Errorf("notices: dismiss: %w", err)
+	}
+	// Only a row dismissed now seals its event. A repeat dismiss and a miss
+	// changed nothing, so neither leaves one.
+	if tag.RowsAffected() == 1 {
+		if err := audit.Record(ctx, tx, audit.Event{
+			Action:   audit.NotificationDismiss,
+			Outcome:  audit.Success,
+			TargetID: id.String(),
+		}); err != nil {
+			return false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	// A repeat dismiss keeps the first time and answers found; the notice has
+	// to exist and be this person's, so a miss still answers not found.
+	var stored bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM notices.notifications WHERE id = $1)`, id).Scan(&stored); err != nil {
 		return false, fmt.Errorf("notices: dismiss: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() == 1, nil
+	return stored, nil
 }
 
 func setUser(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {

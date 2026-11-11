@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 var (
@@ -90,7 +92,9 @@ func Reingest(
 		}
 		run(func() {
 			_ = ProcessURL(
-				context.Background(),
+				// The re-fetch runs after the response, so its writes record the
+				// system as the actor, with the run credential of the reingest.
+				audit.WithRunner(context.Background(), audit.CredentialRun),
 				book,
 				book,
 				access,
@@ -189,7 +193,9 @@ func reingestFileBlob(
 	}
 	run(func() {
 		_ = ProcessFile(
-			context.Background(),
+			// The re-conversion runs after the response, so its writes record
+			// the system as the actor, with the run credential of the reingest.
+			audit.WithRunner(context.Background(), audit.CredentialRun),
 			book,
 			book,
 			access,

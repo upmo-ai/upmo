@@ -296,6 +296,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
 	taskBook := tasks.NewStore(pool, work)
+	taskBook.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	var editorSigner tasks.EditorSigner
 	if cfg.ServiceKey != "" {
 		editorTokens, err := tasks.NewEditorTokens(cfg.ServiceKey, cfg.ServiceKeyPrevious)
@@ -335,6 +336,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		PublicURL:    cfg.PublicURL,
 		Editor:       boxes,
 		EditorSigner: editorSigner,
+		Audit:        pool,
 		Stream:       streams,
 		Access: func(r *http.Request) (tasks.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())

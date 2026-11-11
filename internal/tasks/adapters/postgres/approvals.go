@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -59,7 +60,7 @@ func (s Store) Request(ctx context.Context, access app.Access, taskID string, as
 		return app.Approval{}, domain.ErrPending
 	}
 
-	task, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Pause})
+	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Pause})
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -145,13 +146,30 @@ func (s Store) Decide(ctx context.Context, access app.Access, approvalID string,
 	if tag.RowsAffected() != 1 {
 		return app.Approval{}, app.ErrNoApproval
 	}
-	if _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind}); err != nil {
+	if _, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind}); err != nil {
 		return app.Approval{}, err
 	}
 	if kind == domain.Deny {
 		if _, err := insertChatEvent(ctx, tx, taskID, domain.DeniedLine); err != nil {
 			return app.Approval{}, err
 		}
+	}
+	// One event per decision: the resume edge it applies and the denial line
+	// it leaves are part of that same decision.
+	action := audit.ApprovalApprove
+	if kind == domain.Deny {
+		action = audit.ApprovalDeny
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   action,
+		Outcome:  audit.Success,
+		TargetID: approvalID,
+		Changes: audit.Changes{
+			Fields: []string{"state"},
+			Values: map[string]audit.Change{"state": {From: state, To: string(next)}},
+		},
+	}); err != nil {
+		return app.Approval{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Approval{}, err

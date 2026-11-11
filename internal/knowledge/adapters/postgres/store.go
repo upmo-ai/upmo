@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/knowledge/app"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
@@ -54,13 +55,21 @@ func (s Store) CreateFolder(ctx context.Context, access app.Access, name string)
 	if err != nil {
 		return "", fmt.Errorf("knowledge: folder: %w", err)
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.FolderCreate,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	return id, nil
 }
 
-// RenameFolder updates the folder name under edit policy.
+// RenameFolder updates the folder name under edit policy. The name is
+// content, so the event records the field name alone.
 func (s Store) RenameFolder(ctx context.Context, access app.Access, folderID, name string) error {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
@@ -74,6 +83,14 @@ func (s Store) RenameFolder(ctx context.Context, access app.Access, folderID, na
 	}
 	if tag.RowsAffected() == 0 {
 		return app.ErrGone
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.FolderUpdate,
+		Outcome:  audit.Success,
+		TargetID: folderID,
+		Changes:  audit.Changes{Fields: []string{"name"}},
+	}); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -114,6 +131,13 @@ func (s Store) DeleteFolder(ctx context.Context, access app.Access, folderID str
 	if tag.RowsAffected() == 0 {
 		return nil, app.ErrGone
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.FolderDelete,
+		Outcome:  audit.Success,
+		TargetID: folderID,
+	}); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -150,6 +174,17 @@ func (s Store) CreatePending(ctx context.Context, access app.Access, pending app
 		pending.Kind, pending.SourceRef, pending.Provenance).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("knowledge: pending: %w", err)
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.SourceAdd,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Fields: []string{"kind", "revision"},
+			Values: map[string]audit.Change{"kind": {To: pending.Kind}, "revision": {To: 0}},
+		},
+	}); err != nil {
+		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
@@ -199,13 +234,25 @@ func (s Store) MarkFailed(ctx context.Context, access app.Access, sourceID, mess
 	return tx.Commit(ctx)
 }
 
-// ResetPending moves a failed or ready source back to pending for retry.
+// ResetPending moves a failed or ready source back to pending for retry. Only
+// Reingest calls it, so the event is the reingest the route applied.
 func (s Store) ResetPending(ctx context.Context, access app.Access, sourceID string) error {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var prior string
+	err = tx.QueryRow(ctx, `
+		SELECT status FROM knowledge.sources
+		WHERE id = $1::uuid AND status IN ('failed', 'ready')`,
+		sourceID).Scan(&prior)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrGone
+	}
+	if err != nil {
+		return fmt.Errorf("knowledge: reset: %w", err)
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE knowledge.sources
 		SET status = 'pending', error = '', updated_at = $2
@@ -216,6 +263,17 @@ func (s Store) ResetPending(ctx context.Context, access app.Access, sourceID str
 	}
 	if tag.RowsAffected() == 0 {
 		return app.ErrGone
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.SourceReingest,
+		Outcome:  audit.Success,
+		TargetID: sourceID,
+		Changes: audit.Changes{
+			Fields: []string{"status"},
+			Values: map[string]audit.Change{"status": {From: prior, To: "pending"}},
+		},
+	}); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -445,7 +503,7 @@ func (t rowTx) Save(
 				return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 			}
 		} else if err = t.tx.QueryRow(ctx, `
-			SELECT revision FROM knowledge.sources WHERE id = $1::uuid`, sourceID).Scan(&revision); err != nil {
+			SELECT revision, kind FROM knowledge.sources WHERE id = $1::uuid`, sourceID).Scan(&revision, &kind); err != nil {
 			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 		}
 	}
@@ -473,6 +531,17 @@ func (t rowTx) Save(
 	if _, err := t.tx.Exec(ctx, `
 		DELETE FROM knowledge.chunks WHERE source_id = $1::uuid AND revision <> $2`, id, newRev); err != nil {
 		return app.Result{}, fmt.Errorf("knowledge: revision: %w", err)
+	}
+	if err := audit.Record(ctx, t.tx, audit.Event{
+		Action:   audit.SourceAdd,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Fields: []string{"kind", "revision"},
+			Values: map[string]audit.Change{"kind": {To: kind}, "revision": {To: newRev}},
+		},
+	}); err != nil {
+		return app.Result{}, err
 	}
 	if t.store != nil && t.store.Enqueuer != nil && t.access.UserID != "" {
 		if _, err := t.store.Enqueuer.InsertTx(ctx, t.tx, tasks.ScoutJobArgs{
@@ -675,6 +744,13 @@ func (s Store) DeleteSource(ctx context.Context, access app.Access, folderID, so
 	}
 	if tag.RowsAffected() == 0 {
 		return "", app.ErrGone
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.SourceDelete,
+		Outcome:  audit.Success,
+		TargetID: sourceID,
+	}); err != nil {
+		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err

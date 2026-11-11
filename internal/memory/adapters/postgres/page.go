@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/upmo-ai/upmo/internal/memory/app"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // InPerson runs one transaction as the signed-in person.
@@ -35,7 +36,13 @@ func (p personTx) WriteProfile(ctx context.Context, body string, at time.Time) e
 	if err != nil {
 		return fmt.Errorf("memory: profile: %w", err)
 	}
-	return nil
+	// The body is content, so the event records the field name alone.
+	return audit.Record(ctx, p.tx, audit.Event{
+		Action:   audit.ProfileUpdate,
+		Outcome:  audit.Success,
+		TargetID: p.userID,
+		Changes:  audit.Changes{Fields: []string{"body"}},
+	})
 }
 
 func (p personTx) ReadPage(ctx context.Context) (app.Page, error) {
@@ -72,6 +79,26 @@ func (p personTx) ReadPage(ctx context.Context) (app.Page, error) {
 }
 
 func (p personTx) InsertUser(ctx context.Context, claim string, hash [32]byte, at time.Time) (string, error) {
+	id, err := p.insertUserRow(ctx, claim, hash, at)
+	if err != nil {
+		return "", err
+	}
+	// The claim is content, so the event records the field name alone.
+	if err := audit.Record(ctx, p.tx, audit.Event{
+		Action:   audit.FactCreate,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes:  audit.Changes{Fields: []string{"claim"}},
+	}); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// insertUserRow stores one user-typed fact row and records nothing: both the
+// create and the edit paths store a row this way, and each records its own
+// action.
+func (p personTx) insertUserRow(ctx context.Context, claim string, hash [32]byte, at time.Time) (string, error) {
 	var id string
 	err := p.tx.QueryRow(ctx, `
 		INSERT INTO memory.facts (
@@ -105,7 +132,11 @@ func (p personTx) Tombstone(ctx context.Context, id string, at time.Time) error 
 	if tag.RowsAffected() == 0 {
 		return app.ErrGone
 	}
-	return nil
+	return audit.Record(ctx, p.tx, audit.Event{
+		Action:   audit.FactDelete,
+		Outcome:  audit.Success,
+		TargetID: id,
+	})
 }
 
 func (p personTx) Supersede(ctx context.Context, id, claim string, hash [32]byte, at time.Time) (string, error) {
@@ -123,7 +154,7 @@ func (p personTx) Supersede(ctx context.Context, id, claim string, hash [32]byte
 	if len(current) == len(hash) && string(current) == string(hash[:]) {
 		return id, nil
 	}
-	next, err := p.InsertUser(ctx, claim, hash, at)
+	next, err := p.insertUserRow(ctx, claim, hash, at)
 	if err != nil {
 		return "", err
 	}
@@ -137,6 +168,19 @@ func (p personTx) Supersede(ctx context.Context, id, claim string, hash [32]byte
 	}
 	if tag.RowsAffected() == 0 {
 		return "", app.ErrGone
+	}
+	// One event for the edit: the old row superseded, the new wording's id as
+	// its safe value. The claim is content and never appears.
+	if err := audit.Record(ctx, p.tx, audit.Event{
+		Action:   audit.FactUpdate,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Fields: []string{"claim", "superseded_by"},
+			Values: map[string]audit.Change{"superseded_by": {To: next}},
+		},
+	}); err != nil {
+		return "", err
 	}
 	return next, nil
 }

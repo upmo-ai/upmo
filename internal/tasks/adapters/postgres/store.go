@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
@@ -17,6 +18,9 @@ import (
 type Store struct {
 	Pool     *pgxpool.Pool
 	Enqueuer jobs.Enqueuer
+	// ReplaceTaskGrants runs identity's grant replacement inside a transaction
+	// the store already opened. cmd wires it from taskGrants.
+	ReplaceTaskGrants func(ctx context.Context, tx pgx.Tx, taskID string, grants []domain.ShareGrant, grantedBy string) error
 }
 
 // Transition locks the task, applies Step, and appends its events.
@@ -28,12 +32,16 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var task app.Task
+	var effect domain.Effect
 	if taskID == "" {
 		task, err = insertOpen(ctx, tx, access.UserID, access.Allow, input)
 	} else {
-		task, err = stepLocked(ctx, tx, taskID, input)
+		task, effect, err = stepLocked(ctx, tx, taskID, input)
 	}
 	if err != nil {
+		return app.Task{}, err
+	}
+	if err := recordTransition(ctx, tx, taskID, task, effect); err != nil {
 		return app.Task{}, err
 	}
 	if task.Status == domain.Done || task.Status == domain.Failed {
@@ -124,13 +132,28 @@ func (s Store) Admit(ctx context.Context, access app.Access, taskID, runID strin
 	}
 
 	var run app.Run
+	var prior domain.RunState
 	if runID == "" {
 		run, err = insertRun(ctx, tx, access.UserID, taskID)
 	} else {
-		run, err = admitRunLocked(ctx, tx, access.UserID, runID)
+		run, prior, err = admitRunLocked(ctx, tx, access.UserID, runID)
 	}
 	if err != nil {
 		return app.Run{}, err
+	}
+	// A run already admitted changed nothing, so it records nothing.
+	if runID == "" || prior != run.State {
+		if err := audit.Record(audit.WithRunner(ctx, audit.CredentialRun), tx, audit.Event{
+			Action:   audit.TaskRun,
+			Outcome:  audit.Success,
+			TargetID: run.ID,
+			Changes: audit.Changes{
+				Fields: []string{"state"},
+				Values: map[string]audit.Change{"state": {From: string(prior), To: string(run.State)}},
+			},
+		}); err != nil {
+			return app.Run{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Run{}, err
@@ -283,37 +306,38 @@ func insertRun(ctx context.Context, tx pgx.Tx, userID, taskID string) (app.Run, 
 	return run, nil
 }
 
-func admitRunLocked(ctx context.Context, tx pgx.Tx, userID, runID string) (app.Run, error) {
+func admitRunLocked(ctx context.Context, tx pgx.Tx, userID, runID string) (app.Run, domain.RunState, error) {
 	run, err := lockRun(ctx, tx, runID)
 	if err != nil {
-		return app.Run{}, err
+		return app.Run{}, "", err
 	}
 	if run.State == domain.RunAdmitted {
-		return run, nil
+		return run, run.State, nil
 	}
 
 	active, err := countAdmittedRuns(ctx, tx, userID)
 	if err != nil {
-		return app.Run{}, err
+		return app.Run{}, "", err
 	}
 	next, err := domain.RunStep(run.State, domain.RunInput{
 		Kind: domain.RunAdmit,
 		Room: domain.Room(active),
 	})
 	if err != nil {
-		return app.Run{}, err
+		return app.Run{}, "", err
 	}
 	if next == run.State {
-		return run, nil
+		return run, run.State, nil
 	}
 	if err := insertRunEvent(ctx, tx, run.ID, run.State, next, domain.RunAdmit); err != nil {
-		return app.Run{}, err
+		return app.Run{}, "", err
 	}
 	if err := updateRunState(ctx, tx, run.ID, next); err != nil {
-		return app.Run{}, err
+		return app.Run{}, "", err
 	}
+	prior := run.State
 	run.State = next
-	return run, nil
+	return run, prior, nil
 }
 
 func lockRun(ctx context.Context, tx pgx.Tx, runID string) (app.Run, error) {
@@ -400,7 +424,7 @@ func insertOpen(ctx context.Context, tx pgx.Tx, userID, allow string, input doma
 	return app.Task{ID: id, Status: next, Goal: effect.Goal}, nil
 }
 
-func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, error) {
+func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
 	var status, goal string
 	var passes, paused bool
 	err := tx.QueryRow(ctx, `
@@ -409,60 +433,60 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 		WHERE id = $1::uuid
 		FOR UPDATE`, taskID).Scan(&status, &goal, &passes, &paused)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return app.Task{}, app.ErrGone
+		return app.Task{}, domain.Effect{}, app.ErrGone
 	}
 	if err != nil {
-		return app.Task{}, fmt.Errorf("tasks: lock: %w", err)
+		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: lock: %w", err)
 	}
 	if paused && (input.Kind == domain.Advance || input.Kind == domain.Plan) {
-		return app.Task{}, domain.ErrExhausted
+		return app.Task{}, domain.Effect{}, domain.ErrExhausted
 	}
 	if input.Kind == domain.Pass && !passes {
-		return app.Task{}, domain.ErrEvidence
+		return app.Task{}, domain.Effect{}, domain.ErrEvidence
 	}
 	var turnBody string
 	if input.Kind == domain.Advance && domain.Status(status) == domain.Working {
 		var ended bool
 		turnBody, ended = domain.EndTurn(input.Turn)
 		if !ended {
-			return app.Task{}, domain.ErrTurn
+			return app.Task{}, domain.Effect{}, domain.ErrTurn
 		}
 		if turnBody != "" {
 			_, effect, err := domain.Step(domain.Working, domain.Input{Kind: domain.Chat, Body: turnBody})
 			if err != nil {
-				return app.Task{}, err
+				return app.Task{}, domain.Effect{}, err
 			}
 			turnBody = effect.Body
 		}
 	}
 	next, effect, err := domain.Step(domain.Status(status), input)
 	if err != nil {
-		return app.Task{}, err
+		return app.Task{}, domain.Effect{}, err
 	}
 	if effect.Kind == domain.Chat {
 		chatID, err := insertChatEvent(ctx, tx, taskID, effect.Body)
 		if err != nil {
-			return app.Task{}, err
+			return app.Task{}, domain.Effect{}, err
 		}
-		return app.Task{ID: taskID, Status: next, Goal: goal, ChatID: chatID}, nil
+		return app.Task{ID: taskID, Status: next, Goal: goal, ChatID: chatID}, effect, nil
 	}
 	if turnBody != "" {
 		if _, err := insertChatEvent(ctx, tx, taskID, turnBody); err != nil {
-			return app.Task{}, err
+			return app.Task{}, domain.Effect{}, err
 		}
 	}
 	if err := insertTaskEvent(ctx, tx, taskID, effect); err != nil {
-		return app.Task{}, err
+		return app.Task{}, domain.Effect{}, err
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks.tasks
 		SET status = $2, updated_at = now()
 		WHERE id = $1::uuid`, taskID, string(next))
 	if err != nil {
-		return app.Task{}, fmt.Errorf("tasks: status: %w", err)
+		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: status: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return app.Task{}, app.ErrGone
+		return app.Task{}, domain.Effect{}, app.ErrGone
 	}
 	if next == domain.Done || next == domain.Failed {
 		// The task ended, so an approval it waits for can never be decided.
@@ -471,10 +495,40 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 			UPDATE tasks.approvals
 			SET state = 'closed', decided_at = now()
 			WHERE task_id = $1::uuid AND state = 'pending'`, taskID); err != nil {
-			return app.Task{}, fmt.Errorf("tasks: close approval: %w", err)
+			return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: close approval: %w", err)
 		}
 	}
-	return app.Task{ID: taskID, Status: next, Goal: goal}, nil
+	return app.Task{ID: taskID, Status: next, Goal: goal}, effect, nil
+}
+
+// recordTransition seals the event of one transition: one action per
+// transition the step took, with the status edge as its safe value. The
+// event shares the transition's transaction, so a rolled-back step leaves no
+// event behind.
+func recordTransition(ctx context.Context, tx pgx.Tx, taskID string, task app.Task, effect domain.Effect) error {
+	event := audit.Event{Outcome: audit.Success}
+	if taskID == "" {
+		event.Action = audit.TaskCreate
+		event.TargetID = task.ID
+		return audit.Record(ctx, tx, event)
+	}
+	event.TargetID = taskID
+	switch effect.Kind {
+	case domain.Chat:
+		event.Action = audit.TaskChat
+		event.TargetType = "line"
+		event.TargetID = task.ChatID
+	default:
+		event.Action = audit.TaskUpdate
+		if effect.Kind == domain.Fail || effect.Kind == domain.Pass {
+			event.Action = audit.TaskStatusChange
+		}
+		event.Changes = audit.Changes{
+			Fields: []string{"status"},
+			Values: map[string]audit.Change{"status": {From: string(effect.From), To: string(effect.To)}},
+		}
+	}
+	return audit.Record(ctx, tx, event)
 }
 
 func insertTaskEvent(ctx context.Context, tx pgx.Tx, taskID string, effect domain.Effect) error {
