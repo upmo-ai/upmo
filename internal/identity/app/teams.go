@@ -56,7 +56,6 @@ func (t Teams) Create(ctx context.Context, session Session, name string) (domain
 	if err != nil {
 		return domain.TeamID{}, t.refuse("team create refused", session, err)
 	}
-	t.note("team created", session, id)
 	return id, nil
 }
 
@@ -68,7 +67,6 @@ func (t Teams) Add(ctx context.Context, session Session, team domain.TeamID, use
 	if err := t.Store.AddTeamMember(ctx, team, user); err != nil {
 		return t.refuse("team member refused", session, err)
 	}
-	t.note("team member added", session, team)
 	return nil
 }
 
@@ -80,7 +78,6 @@ func (t Teams) Remove(ctx context.Context, session Session, team domain.TeamID, 
 	if err := t.Store.RemoveTeamMember(ctx, team, user); err != nil {
 		return t.refuse("team member refused", session, err)
 	}
-	t.note("team member removed", session, team)
 	return nil
 }
 
@@ -122,16 +119,8 @@ func (t Teams) fresh(session Session) error {
 	return nil
 }
 
-func (t Teams) refuse(message string, session Session, err error) error {
-	if t.Log != nil && err != nil {
-		t.Log.Info(message, "actor", session.UserID.String(), "err", err.Error())
-	}
+// refuse keeps the call sites uniform. The audit middleware seals a refused
+// mutation as a denied event, so nothing is logged here.
+func (t Teams) refuse(_ string, _ Session, err error) error {
 	return err
-}
-
-func (t Teams) note(message string, session Session, team domain.TeamID) {
-	if t.Log == nil {
-		return
-	}
-	t.Log.Info(message, "actor", session.UserID.String(), "team", team.String())
 }

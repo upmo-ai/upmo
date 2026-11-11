@@ -148,6 +148,7 @@ type scope struct {
 	sourceIP  string
 	userAgent string
 	annotated Event
+	noChange  bool
 	recorded  bool
 }
 
@@ -174,6 +175,15 @@ func Annotate(ctx context.Context, event Event) {
 		if event.TargetID != "" {
 			s.annotated.TargetID = event.TargetID
 		}
+	}
+}
+
+// NoChange marks a successful request that found nothing to do, like an
+// idempotent write that matched no row: the middleware then skips its
+// unrecorded fallback, because there is no change to seal.
+func NoChange(ctx context.Context) {
+	if s, ok := ctx.Value(scopeKey{}).(*scope); ok {
+		s.noChange = true
 	}
 }
 

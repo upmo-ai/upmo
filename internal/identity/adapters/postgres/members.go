@@ -11,6 +11,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // ListRoles returns every role, system key or empty.
@@ -225,10 +226,19 @@ func (p Passkeys) InviteMember(ctx context.Context, email, name string, role dom
 	if err != nil {
 		return domain.Member{}, err
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.MemberInvite,
+		Outcome:  audit.Success,
+		TargetID: userID.String(),
+	}); err != nil {
+		return domain.Member{}, err
+	}
 	return member, tx.Commit(ctx)
 }
 
-// RemoveMember disables a person and clears their access, inside one transaction.
+// RemoveMember disables a person and clears their access, inside one
+// transaction with the member.disable event. The disable trigger ends the
+// person's sessions, which the event reports as sessions_ended.
 func (p Passkeys) RemoveMember(ctx context.Context, id domain.UserID, now time.Time, rule func(system string) error) error {
 	return p.changeMember(ctx, id, func(system string, _ bool) error {
 		return rule(system)
@@ -246,22 +256,40 @@ func (p Passkeys) RemoveMember(ctx context.Context, id domain.UserID, now time.T
 		if tag.RowsAffected() != 1 {
 			return domain.ErrNoSuchMember
 		}
-		return nil
+		return audit.Record(ctx, tx, audit.Event{
+			Action:   audit.MemberDisable,
+			Outcome:  audit.Success,
+			TargetID: id.String(),
+			Changes: audit.Changes{
+				Values: map[string]audit.Change{"sessions_ended": {To: true}},
+			},
+		})
 	})
 }
 
-// ReplaceMemberLink voids unused links and stores one new link.
+// ReplaceMemberLink voids unused links and stores one new link, with the
+// invite or reset event in the same transaction.
 func (p Passkeys) ReplaceMemberLink(ctx context.Context, id domain.UserID, purpose string, hash []byte, expires time.Time, rule func(system string, invited bool) error) error {
+	action := audit.MemberInviteLink
+	if purpose != "invite" {
+		action = audit.MemberResetLink
+	}
 	return p.changeMember(ctx, id, rule, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			DELETE FROM identity.sign_in_links
 			WHERE user_id = $1 AND used_at IS NULL`, id); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO identity.sign_in_links (token_hash, user_id, purpose, expires_at)
-			VALUES ($1, $2, $3, $4)`, hash, id, purpose, expires)
-		return err
+			VALUES ($1, $2, $3, $4)`, hash, id, purpose, expires); err != nil {
+			return err
+		}
+		return audit.Record(ctx, tx, audit.Event{
+			Action:   action,
+			Outcome:  audit.Success,
+			TargetID: id.String(),
+		})
 	})
 }
 

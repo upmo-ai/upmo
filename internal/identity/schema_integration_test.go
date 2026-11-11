@@ -14,6 +14,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -527,6 +528,11 @@ func upOwner(t *testing.T) (*pgxpool.Pool, context.Context) {
 	pool := pgtest.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
+	// Identity writes record their audit events in the same transaction, so
+	// the audit schema migrates with identity here.
+	if err := audit.Up(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}

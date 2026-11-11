@@ -12,6 +12,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -19,6 +20,9 @@ import (
 func TestSessions(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}

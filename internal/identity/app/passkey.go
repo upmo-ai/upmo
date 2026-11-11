@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 var (
@@ -88,12 +89,14 @@ func (p Passkeys) BeginSignIn(ctx context.Context) (cookie string, options []byt
 func (p Passkeys) FinishSignIn(ctx context.Context, cookie string, body []byte, agent string) (text string, err error) {
 	session, _, _, err := p.take(ctx, cookie, "sign-in")
 	if err != nil {
+		audit.Annotate(ctx, audit.Event{Reason: "bad_credential"})
 		return "", err
 	}
 	account, credential, err := p.Ceremony.FinishDiscoverable(session, body, func(credentialID, userHandle []byte) (domain.Account, error) {
 		return p.Store.AccountByCredential(ctx, credentialID, userHandle)
 	})
 	if err != nil {
+		p.annotateAttempt(ctx, err)
 		return "", err
 	}
 	p.noteClone(credential)
@@ -255,15 +258,18 @@ func (p Passkeys) FinishStepUp(ctx context.Context, user domain.UserID, sessionI
 	}
 	session, _, _, err := p.take(ctx, cookie, "sign-in")
 	if err != nil {
+		audit.Annotate(ctx, audit.Event{Reason: "bad_credential"})
 		return err
 	}
 	account, credential, err := p.Ceremony.FinishDiscoverable(session, body, func(credentialID, userHandle []byte) (domain.Account, error) {
 		return p.Store.AccountByCredential(ctx, credentialID, userHandle)
 	})
 	if err != nil {
+		p.annotateAttempt(ctx, err)
 		return err
 	}
 	if account.ID != user {
+		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: user.String()})
 		return ErrChallenge
 	}
 	p.noteClone(credential)
@@ -371,6 +377,16 @@ func (p Passkeys) account(ctx context.Context, user domain.UserID) (domain.Accou
 		return domain.Account{}, err
 	}
 	return p.Store.Account(ctx, user)
+}
+
+// annotateAttempt names why a ceremony failed, for the denied event the
+// middleware writes: unknown account or bad credential.
+func (p Passkeys) annotateAttempt(ctx context.Context, err error) {
+	if errors.Is(err, ErrNotSignedIn) {
+		audit.Annotate(ctx, audit.Event{Reason: "unknown_account"})
+		return
+	}
+	audit.Annotate(ctx, audit.Event{Reason: "bad_credential"})
 }
 
 func (p Passkeys) noteClone(credential domain.Credential) {

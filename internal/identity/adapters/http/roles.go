@@ -151,6 +151,7 @@ func (h Roles) session(w http.ResponseWriter, r *http.Request) (app.Session, boo
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 		return app.Session{}, false
 	}
+	markActor(r, session)
 	return session, true
 }
 

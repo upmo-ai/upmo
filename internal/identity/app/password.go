@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // ErrWrong is the one answer for a failed password sign-in.
@@ -18,6 +19,8 @@ var ErrLimited = errors.New("identity: slow down")
 type PasswordStore interface {
 	Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error)
 	PasswordAccount(ctx context.Context, email string) (user domain.UserID, hash, personName string, found bool, err error)
+	// PersonByEmail resolves a person for sign-in failure audit only.
+	PersonByEmail(ctx context.Context, email string) (user domain.UserID, disabled, found bool, err error)
 	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
 	SetPassword(ctx context.Context, user domain.UserID, hash string) error
 	ClearPassword(ctx context.Context, user domain.UserID) error
@@ -56,7 +59,7 @@ func (p Passwords) SignIn(ctx context.Context, email, password, ip, agent string
 		return "", false, 0, err
 	}
 	if !found || hash == "" {
-		if err := domain.DummyPasswordHash(); err != nil {
+		if err := p.guardMissingAccount(ctx, email); err != nil {
 			return "", false, 0, err
 		}
 		return "", false, 0, ErrWrong
@@ -66,6 +69,7 @@ func (p Passwords) SignIn(ctx context.Context, email, password, ip, agent string
 		return "", false, 0, err
 	}
 	if !ok {
+		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: user.String()})
 		return "", false, 0, ErrWrong
 	}
 	if rehash {
@@ -130,7 +134,7 @@ func (p Passwords) Verify(ctx context.Context, user domain.UserID, sessionID, em
 		return 0, err
 	}
 	if !found || hash == "" {
-		if err := domain.DummyPasswordHash(); err != nil {
+		if err := p.guardMissingAccount(ctx, email); err != nil {
 			return 0, err
 		}
 		return 0, ErrWrong
@@ -140,6 +144,7 @@ func (p Passwords) Verify(ctx context.Context, user domain.UserID, sessionID, em
 		if err != nil {
 			return 0, err
 		}
+		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: user.String()})
 		return 0, ErrWrong
 	}
 	return 0, p.Sessions.Refresh(ctx, sessionID, "password", now)
@@ -150,12 +155,28 @@ func (p Passwords) HasPassword(ctx context.Context, user domain.UserID) (bool, e
 	return p.Store.HasPassword(ctx, user)
 }
 
+// guardMissingAccount names an unknown or disabled person and does the same hash
+// work as a wrong password, without returning the email.
+func (p Passwords) guardMissingAccount(ctx context.Context, email string) error {
+	id, disabled, found, err := p.Store.PersonByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	if found && disabled {
+		audit.Annotate(ctx, audit.Event{Reason: "disabled", TargetType: "user", TargetID: id.String()})
+	} else {
+		audit.Annotate(ctx, audit.Event{Reason: "unknown_account"})
+	}
+	return domain.DummyPasswordHash()
+}
+
 func (p Passwords) limit(ctx context.Context, email, ip string, now time.Time) (time.Duration, error) {
 	allowed, retry, err := p.Store.Take(ctx, domain.AccountKey(email), now, domain.AccountBurst, domain.AccountPerSecond)
 	if err != nil {
 		return 0, err
 	}
 	if !allowed {
+		audit.Annotate(ctx, audit.Event{Reason: "throttled"})
 		return retry, ErrLimited
 	}
 	allowed, retry, err = p.Store.Take(ctx, domain.AccountIPKey(email, ip), now, domain.AccountIPBurst, domain.AccountIPPerSecond)
@@ -163,6 +184,7 @@ func (p Passwords) limit(ctx context.Context, email, ip string, now time.Time) (
 		return 0, err
 	}
 	if !allowed {
+		audit.Annotate(ctx, audit.Event{Reason: "throttled"})
 		return retry, ErrLimited
 	}
 	return 0, nil

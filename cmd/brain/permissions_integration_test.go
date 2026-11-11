@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -21,6 +22,11 @@ import (
 func TestRoutePermissionRefusal_UPM243_KeepsSession(t *testing.T) {
 	ctx := context.Background()
 	owner := pgtest.New(t)
+	// Session writes record their audit events in the same transaction, so the
+	// audit schema migrates with identity here.
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}

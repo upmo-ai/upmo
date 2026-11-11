@@ -12,6 +12,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 )
 
@@ -65,6 +66,7 @@ func (h Passkeys) limited(next http.HandlerFunc) http.HandlerFunc {
 			if secs < 1 {
 				secs = 1
 			}
+			audit.Annotate(r.Context(), audit.Event{Reason: "throttled"})
 			w.Header().Set("Retry-After", strconv.Itoa(secs))
 			writeRaw(w, http.StatusTooManyRequests, slowDown)
 			return
@@ -286,6 +288,7 @@ func (h Passkeys) session(w http.ResponseWriter, r *http.Request) (app.Session, 
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 		return app.Session{}, false
 	}
+	markActor(r, session)
 	return session, true
 }
 
