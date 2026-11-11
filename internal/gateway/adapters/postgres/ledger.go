@@ -67,25 +67,26 @@ func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, err
 	}, true, nil
 }
 
-// Record writes one attempt. cost_usd stays NULL when CostUSD is nil.
+// Record writes one attempt. cost_usd stays NULL when CostUSD is nil, and
+// owner_team_id when the account was not reached through a team.
 func (s Store) Record(ctx context.Context, row domain.Entry) error {
 	_, err := s.Pool.Exec(ctx, `
 		INSERT INTO gateway.ledger (
 			route, link_position, provider_account_id, model, plan_kind, failure_class,
 			user_id, agent_id, run_id, parent_run_id,
 			input_tokens, output_tokens, cache_read, cache_write, reasoning,
-			usage_arrived, cost_usd, price_version
+			usage_arrived, cost_usd, price_version, owner_team_id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10,
 			$11, $12, $13, $14, $15,
-			$16, $17, $18
+			$16, $17, $18, $19
 		)`,
 		row.Route, row.LinkPosition, uuidOrNil(row.AccountID), row.Model, row.PlanKind, string(row.Class),
 		uuidOrNil(row.Principal.User), uuidOrNil(row.Principal.Agent),
 		uuidOrNil(row.Principal.Run), uuidOrNil(row.Principal.Parent),
 		row.Usage.Input, row.Usage.Output, row.Usage.CacheRead, row.Usage.CacheWrite, row.Usage.Reasoning,
-		row.Usage.Arrived, numericOrNil(row.CostUSD), nullIfEmpty(row.PriceVersion),
+		row.Usage.Arrived, numericOrNil(row.CostUSD), nullIfEmpty(row.PriceVersion), uuidOrNil(row.OwnerTeamID),
 	)
 	return err
 }

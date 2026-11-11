@@ -118,7 +118,7 @@ func TestOwnLinksAreTheOwnersAloneAndMayBeNone(t *testing.T) {
 	}
 }
 
-func TestPinUsableIsOwnOrGlobalNeverSomeoneElses(t *testing.T) {
+func TestPinUsableIsOwnTeamOrWorkspaceNeverSomeoneElses(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		account Account
@@ -128,8 +128,10 @@ func TestPinUsableIsOwnOrGlobalNeverSomeoneElses(t *testing.T) {
 		{"house", Account{House: true}, true},
 		{"global without house key", Account{}, true},
 		{"another person's", Account{OwnerUserID: "u2"}, false},
+		{"shared with a team of theirs", Account{TeamIDs: []string{"t1", "t9"}}, true},
+		{"shared only with other teams", Account{TeamIDs: []string{"t8", "t9"}}, false},
 	} {
-		if got := PinUsable(tc.account, "u1"); got != tc.ok {
+		if got := PinUsable(tc.account, "u1", []string{"t1", "t2"}); got != tc.ok {
 			t.Errorf("%s: PinUsable = %v, want %v", tc.name, got, tc.ok)
 		}
 	}

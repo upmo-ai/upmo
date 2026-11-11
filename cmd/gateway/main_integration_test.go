@@ -139,8 +139,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 3 || latest != 3 {
-		t.Fatalf("applied versions = %d latest = %d, want 3 and 3", n, latest)
+	if n != 4 || latest != 5 {
+		t.Fatalf("applied versions = %d latest = %d, want 4 and 5", n, latest)
 	}
 
 	var attempts, priced int

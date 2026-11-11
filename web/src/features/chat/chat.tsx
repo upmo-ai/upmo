@@ -30,6 +30,7 @@ import {
   chatRoutes,
   loadPicks,
   modelChoices,
+  modelDescription,
   modelLabel,
   pickableAgents,
   savePicks,
@@ -245,7 +246,7 @@ export function ChatPage() {
       value: item.value,
       label: item.model,
       group: item.provider,
-      description: item.scope === "global" ? `${item.account} (workspace)` : item.account,
+      description: modelDescription(item),
     })),
   ];
   // Taken when the button is pressed, so a retry asks on the picks made now.

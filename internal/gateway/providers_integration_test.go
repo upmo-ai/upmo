@@ -30,6 +30,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/netguard"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -43,6 +44,20 @@ const (
 	adaKey = "sk-ada-aaaa-aaaa-aaaa-aaaa"
 	newKey = "sk-new-bbbb-bbbb-bbbb-bbbb"
 )
+
+// migrateWithIdentity brings the schemas up in the order brain does. An
+// account shared with a team points at identity's teams, so identity comes
+// first.
+func migrateWithIdentity(t *testing.T, owner *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // syncBuf is a log sink that is safe to read while handlers write.
 type syncBuf struct {
@@ -102,15 +117,20 @@ func newRig(t *testing.T, keys Keyring) *rig { return newRigLimited(t, keys, 100
 func newRigLimited(t *testing.T, keys Keyring, max int) *rig {
 	t.Helper()
 	owner := pgtest.New(t)
-	if err := migrate.Up(context.Background(), owner, Schema, Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	migrateWithIdentity(t, owner)
 	r := &rig{t: t, owner: owner, app: pgtest.App(t, owner), keys: keys, logs: &syncBuf{}}
 	log := slog.New(slog.NewJSONHandler(r.logs, nil))
 	r.svc = NewProviders(r.app, keys, log)
 	if max > 0 {
 		r.svc.Limiter = app.NewTestLimiter(max, time.Minute)
 	}
+	r.mount(log)
+	return r
+}
+
+// mount serves r.svc the way brain does. A test that changes r.svc mounts
+// again.
+func (r *rig) mount(log *slog.Logger) {
 	mux := http.NewServeMux()
 	ProvidersHandler{
 		Service: r.svc,
@@ -122,7 +142,6 @@ func newRigLimited(t *testing.T, keys Keyring, max int) *rig {
 		},
 	}.MountProviders(mux, nil)
 	r.handler = mux
-	return r
 }
 
 func (r *rig) call(user, method, path string, body any) (int, []byte) {
@@ -166,15 +185,18 @@ func (r *rig) assertNoSecrets(secrets ...string) {
 }
 
 type account struct {
-	ID       string   `json:"id"`
-	Provider string   `json:"provider"`
-	Name     string   `json:"name"`
-	Adapter  string   `json:"adapter"`
-	PlanKind string   `json:"plan_kind"`
-	BaseURL  string   `json:"base_url"`
-	Status   string   `json:"status"`
-	Models   []string `json:"models"`
-	Scope    string   `json:"scope"`
+	ID        string   `json:"id"`
+	Provider  string   `json:"provider"`
+	Name      string   `json:"name"`
+	Adapter   string   `json:"adapter"`
+	PlanKind  string   `json:"plan_kind"`
+	BaseURL   string   `json:"base_url"`
+	Status    string   `json:"status"`
+	Models    []string `json:"models"`
+	Scope     string   `json:"scope"`
+	TeamIDs   []string `json:"team_ids"`
+	TeamNames []string `json:"team_names"`
+	CanManage bool     `json:"can_manage"`
 }
 
 func decode[T any](t *testing.T, raw []byte) T {
@@ -536,7 +558,7 @@ func TestGlobalAccountsAreListedAndReadOnly(t *testing.T) {
 	r.mustAdd(ada, body("House", prov.url(), ""))
 
 	rows := r.list(ada)
-	if len(rows) != 3 || rows[0].Scope != "own" || rows[1].Scope != "own" || rows[2].Scope != "global" ||
+	if len(rows) != 3 || rows[0].Scope != "own" || rows[1].Scope != "own" || rows[2].Scope != "workspace" ||
 		rows[0].Name != "House" || rows[1].Name != "Zed own" {
 		t.Fatalf("list = %+v", rows)
 	}
@@ -821,7 +843,7 @@ func TestWithoutAMasterKeyWritesAreRefusedAndListStillWorks(t *testing.T) {
 	r := newRig(t, Keyring{})
 	prov := newFakeProvider(t)
 	r.globalAccount("House")
-	if rows := r.list(ada); len(rows) != 1 || rows[0].Scope != "global" {
+	if rows := r.list(ada); len(rows) != 1 || rows[0].Scope != "workspace" {
 		t.Fatalf("list = %+v", rows)
 	}
 	// An account made while a key was set, then the key went away.
@@ -1470,23 +1492,21 @@ func servicePool(t *testing.T, like *pgxpool.Pool, role string) *pgxpool.Pool {
 func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
-	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
-		t.Fatal(err)
-	}
+	migrateWithIdentity(t, owner)
 	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 3 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 5 {
 		t.Fatalf("version %d, %v", version, err)
 	}
 	var n int
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*) FROM pg_policies WHERE schemaname = 'gateway'
-		AND tablename IN ('provider_accounts', 'provider_models', 'credentials')`).Scan(&n); err != nil || n != 11 {
+		AND tablename IN ('provider_accounts', 'provider_models', 'credentials')`).Scan(&n); err != nil || n != 17 {
 		t.Fatalf("policies = %d, %v", n, err)
 	}
 	var forced int
 	if err := owner.QueryRow(ctx, `
-		SELECT count(*) FROM pg_class WHERE oid IN ('gateway.provider_accounts'::regclass, 'gateway.provider_models'::regclass, 'gateway.credentials'::regclass)
-		AND relrowsecurity AND relforcerowsecurity`).Scan(&forced); err != nil || forced != 3 {
+		SELECT count(*) FROM pg_class WHERE oid IN ('gateway.provider_accounts'::regclass, 'gateway.provider_models'::regclass, 'gateway.credentials'::regclass, 'gateway.provider_account_teams'::regclass)
+		AND relrowsecurity AND relforcerowsecurity`).Scan(&forced); err != nil || forced != 4 {
 		t.Fatalf("tables with forced row security = %d, %v", forced, err)
 	}
 	// A row written the way the first migration allowed has no owner.
@@ -1499,7 +1519,25 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT owner_user_id IS NULL AND status = 'Not connected' FROM gateway.provider_accounts`).Scan(&global); err != nil || !global {
 		t.Fatalf("existing-shaped row: global=%v err=%v", global, err)
 	}
+	var team, sharedID string
+	if err := owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Down migration team') RETURNING id::text`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
+		VALUES ('team shared', 'fake', 'team-ref', 'local', false) RETURNING id::text`).Scan(&sharedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO gateway.provider_account_teams (account_id, team_id) VALUES ($1::uuid, $2::uuid)`, sharedID, team); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Down(ctx, owner, Schema, Migrations()); err != nil {
 		t.Fatalf("down: %v", err)
+	}
+	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
+		t.Fatalf("up after down with team rows: %v", err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 5 {
+		t.Fatalf("version after re-up = %d, %v", version, err)
 	}
 }
