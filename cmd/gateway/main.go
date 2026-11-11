@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
@@ -41,6 +42,11 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+	// Accounts shared with a team point at identity's teams, so that schema
+	// is brought up first. brain does the same before it migrates gateway.
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		return err
+	}
 	if err := migrate.Up(ctx, pool, gateway.Schema, gateway.Migrations()); err != nil {
 		return err
 	}

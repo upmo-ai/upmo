@@ -11,6 +11,7 @@ import {
   Checkbox,
   ConnectWizard,
   Input,
+  Radio,
   Select,
   StatusAlert,
   Table,
@@ -21,13 +22,14 @@ import {
 import {
   PROVIDERS_KEY,
   providersQueryKey,
+  teamsQueryKey,
   useApi,
-  type ProviderAccount,
   type TestResult,
 } from "../../app/api";
 import { formatPricing, getProviderModels, type ModelInfo } from "./models";
 import { ALL_PROVIDERS, KNOWN_PROVIDERS, PICKABLE_PROVIDERS, type KnownProvider } from "./providers";
 import { baseUrlRequired, hostedBaseUrl, keyRequired, providerProblem, showsKeyField } from "./rules";
+import { canManage, fetchCanShare, type ListedProvider, type SharedAdd, type SharedChange } from "./sharing";
 
 interface ProviderFormPageProps {
   mode: "create" | "edit";
@@ -35,8 +37,11 @@ interface ProviderFormPageProps {
 
 interface ProviderFormProps {
   mode: "create" | "edit";
-  existing?: ProviderAccount;
+  existing?: ListedProvider;
 }
+
+/** Who an account is for: the person alone, the whole workspace, or specific teams. */
+type ShareAsk = "own" | "workspace" | "teams";
 
 function baseUrlHelp(meta: KnownProvider): string {
   if (meta.id === "lmstudio") return "Required. Address of your local LM Studio service.";
@@ -77,6 +82,27 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
   );
   const [customModelInput, setCustomModelInput] = useState<string>("");
 
+  // Sharing: who may use the account. Only a person who may share is asked.
+  const existingShare = existing?.share;
+  const initialShare: ShareAsk =
+    existingShare?.scope === "team" ? "teams" : existingShare?.scope === "workspace" ? "workspace" : "own";
+  const [shareScope, setShareScope] = useState<ShareAsk>(initialShare);
+  const [shareTeams, setShareTeams] = useState<string[]>(existingShare?.team_ids ?? []);
+  const canShareQuery = useQuery({
+    queryKey: [...PROVIDERS_KEY, "sharing"],
+    queryFn: fetchCanShare,
+  });
+  // The choice is offered when adding an account, and when changing one that
+  // is shared already; a personal account stays personal.
+  const offerSharing = canShareQuery.data === true && (mode === "create" || initialShare !== "own");
+  const teamsQuery = useQuery({
+    queryKey: teamsQueryKey(),
+    queryFn: () => api.shares.teams(),
+    enabled: offerSharing,
+  });
+  const teamList = teamsQuery.data ?? [];
+  const sharedWithTeams = offerSharing && shareScope === "teams";
+
   // Testing & Validation state
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [isTesting, setIsTesting] = useState<boolean>(false);
@@ -115,6 +141,10 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     setSelectedModels((prev) =>
       prev.includes(modelId) ? prev.filter((m) => m !== modelId) : [...prev, modelId],
     );
+  };
+
+  const handleToggleTeam = (teamId: string) => {
+    setShareTeams((prev) => (prev.includes(teamId) ? prev.filter((id) => id !== teamId) : [...prev, teamId]));
   };
 
   const handleAddCustomModel = () => {
@@ -162,7 +192,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
       setSubmitError("");
 
       if (mode === "create") {
-        return api.providers.add({
+        const input: SharedAdd = {
           provider: selectedProviderId,
           name: name.trim() || selectedMeta.name,
           adapter: selectedMeta.adapter,
@@ -170,19 +200,29 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           base_url: sentBaseUrl,
           api_key: typedKey || undefined,
           models: selectedModels,
-        });
+        };
+        if (offerSharing && shareScope !== "own") {
+          input.scope = shareScope;
+          if (shareScope === "teams") input.team_ids = shareTeams;
+        }
+        return api.providers.add(input);
       }
 
       // An empty key field keeps the saved key. An emptied base URL is sent
       // as "", so the brain clears the saved address.
       if (!existing?.id) throw new Error("Missing provider ID");
-      return api.providers.update(existing.id, {
+      const change: SharedChange = {
         name: name.trim() || existing.name,
         plan_kind: planKind,
-        base_url: sentBaseUrl,
+        base_url: sentBaseUrl ?? "",
         api_key: typedKey || undefined,
         models: selectedModels,
-      });
+      };
+      if (offerSharing && shareScope !== "own") {
+        change.scope = shareScope;
+        if (shareScope === "teams") change.team_ids = shareTeams;
+      }
+      return api.providers.update(existing.id, change);
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
@@ -212,7 +252,8 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
   const canProceedStep2 =
     name.trim().length > 0 &&
     (!needsKey || typedKey.length > 0) &&
-    (!needsBaseUrl || baseUrl.trim().length > 0);
+    (!needsBaseUrl || baseUrl.trim().length > 0) &&
+    (!sharedWithTeams || shareTeams.length > 0);
   const canProceedStep3 = selectedModels.length > 0;
   const canSubmit = testResult?.ok === true && !saveMutation.isPending;
 
@@ -225,6 +266,14 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
         : "error";
   const testErrorMessage =
     testResult?.error || "Failed to reach provider. Check your API key or endpoint URL.";
+
+  const sharedWithText =
+    shareScope === "workspace"
+      ? "the whole workspace"
+      : teamList
+          .filter((team) => shareTeams.includes(team.id))
+          .map((team) => team.name)
+          .join(", ");
 
   const providerStep = (
     <Card withBorder radius="lg" padding="lg">
@@ -355,6 +404,49 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             }
           }}
         />
+
+        {offerSharing ? (
+          <Stack gap="xs">
+            <Text fw={500} size="sm">
+              Who can use this provider
+            </Text>
+            <Radio.Group value={shareScope} onChange={(value) => setShareScope(value as ShareAsk)}>
+              <Stack gap="xs">
+                {mode === "create" ? <Radio value="own" label="Only me" /> : null}
+                <Radio
+                  value="workspace"
+                  label="The whole workspace"
+                  description="Everyone can use it. Only admins change it. Nobody sees the key."
+                />
+                <Radio
+                  value="teams"
+                  label="Specific teams"
+                  description="Only members of the teams you choose can use it. Nobody sees the key."
+                />
+              </Stack>
+            </Radio.Group>
+            {sharedWithTeams ? (
+              teamList.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  There are no teams yet. Make one under Teams first.
+                </Text>
+              ) : (
+                <Stack gap="xs">
+                  {teamList.map((team) => (
+                    <Group key={team.id} gap="xs">
+                      <Checkbox
+                        checked={shareTeams.includes(team.id)}
+                        onChange={() => handleToggleTeam(team.id)}
+                        aria-label={`Share with ${team.name}`}
+                      />
+                      <Text size="sm">{team.name}</Text>
+                    </Group>
+                  ))}
+                </Stack>
+              )
+            ) : null}
+          </Stack>
+        ) : null}
 
         <Group justify="space-between" mt="md">
           {mode === "create" ? (
@@ -569,6 +661,12 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             </Text>
           ) : null}
 
+          {offerSharing && shareScope !== "own" ? (
+            <Text size="xs" c="dimmed">
+              Shared with: {sharedWithText}
+            </Text>
+          ) : null}
+
           <Group gap={6}>
             {selectedModels.map((m) => (
               <Badge key={m} size="xs" variant="default" leftSection={<IconCpu size={10} />}>
@@ -679,7 +777,8 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
     enabled: mode === "edit",
   });
 
-  const existing = mode === "edit" ? accounts.data?.find((p) => p.id === providerId) : undefined;
+  const existing: ListedProvider | undefined =
+    mode === "edit" ? accounts.data?.find((p) => p.id === providerId) : undefined;
 
   if (mode === "edit" && !existing && accounts.isError) {
     return (
@@ -717,7 +816,7 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
     );
   }
 
-  if (existing?.scope === "global") {
+  if (existing && !canManage(existing)) {
     return (
       <Stack gap="md" className="identity-page">
         <Title order={1}>{existing.name}</Title>

@@ -41,37 +41,37 @@ type recordedAccounts struct {
 	createRef string
 }
 
-func (a *recordedAccounts) List(context.Context, string) ([]domain.Provider, error) {
+func (a *recordedAccounts) List(context.Context, app.Caller) ([]domain.Provider, error) {
 	return nil, nil
 }
 
-func (a *recordedAccounts) Get(_ context.Context, _ string, id string) (domain.Provider, error) {
+func (a *recordedAccounts) Get(_ context.Context, _ app.Caller, id string) (domain.Provider, error) {
 	if id != savedID {
 		return domain.Provider{}, app.ErrNotFound
 	}
 	return savedAccount, nil
 }
 
-func (a *recordedAccounts) Create(_ context.Context, _ string, p domain.Provider, _ *domain.Sealed) (domain.Provider, error) {
+func (a *recordedAccounts) Create(_ context.Context, _ app.Caller, p domain.Provider, _ *domain.Sealed) (domain.Provider, error) {
 	a.created++
 	a.createRef = p.CredentialRef
 	return p, nil
 }
 
-func (a *recordedAccounts) Update(_ context.Context, _ string, p domain.Provider, _ *domain.Sealed, reset bool) (domain.Provider, error) {
+func (a *recordedAccounts) Update(_ context.Context, _ app.Caller, p domain.Provider, _ *domain.Sealed, reset bool) (domain.Provider, error) {
 	a.updates++
 	a.updated = p
 	a.reset = reset
 	return p, nil
 }
 
-func (a *recordedAccounts) Remove(context.Context, string, string) error { return app.ErrNotFound }
+func (a *recordedAccounts) Remove(context.Context, app.Caller, string) error { return app.ErrNotFound }
 
-func (a *recordedAccounts) Sealed(context.Context, string, string) (domain.Sealed, error) {
+func (a *recordedAccounts) Sealed(context.Context, app.Caller, string) (domain.Sealed, error) {
 	return domain.Sealed{}, app.ErrNotFound
 }
 
-func (a *recordedAccounts) Note(context.Context, string, string, string) error { return nil }
+func (a *recordedAccounts) Note(context.Context, app.Caller, string, string) error { return nil }
 
 // providersService is the use case the tests drive. gate says who may use
 // the local plan, as the brain wires it to the settings managers.

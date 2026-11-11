@@ -64,7 +64,7 @@ func TestBringYourOwnKeyNeverFallsBackToHouse(t *testing.T) {
 	}
 }
 
-func TestLinksForUserPrefersTheirOwnThenTheHouseAndNeverMixes(t *testing.T) {
+func TestLinksForUserHasTheirOwnAndTheWorkspaceAndNeverAnotherPersons(t *testing.T) {
 	mine := Account{ID: "1", Adapter: "a", CredentialRef: "personal", OwnerUserID: "u1"}
 	theirs := Account{ID: "3", Adapter: "a", CredentialRef: "other", OwnerUserID: "u2"}
 	r := Route{Name: "chat", Capability: CapChat, Links: []Link{
@@ -72,16 +72,16 @@ func TestLinksForUserPrefersTheirOwnThenTheHouseAndNeverMixes(t *testing.T) {
 		{Position: 2, Account: theirs, Model: "theirs"},
 		{Position: 3, Account: house(), Model: "house"},
 	}}
-	got, err := r.LinksForUser("u1")
-	if err != nil || len(got) != 1 || got[0].Model != "mine" {
+	got, err := r.LinksForUser("u1", nil)
+	if err != nil || len(got) != 2 || got[0].Model != "mine" || got[1].Model != "house" {
 		t.Fatalf("own chain = %+v %v", got, err)
 	}
-	got, err = r.LinksForUser("u3")
+	got, err = r.LinksForUser("u3", nil)
 	if err != nil || len(got) != 1 || got[0].Model != "house" {
 		t.Fatalf("house chain = %+v %v", got, err)
 	}
 	onlyMine := Route{Name: "chat", Capability: CapChat, Links: r.Links[:1]}
-	if _, err := onlyMine.LinksForUser("u3"); err == nil {
+	if _, err := onlyMine.LinksForUser("u3", nil); err == nil {
 		t.Fatal("another person was given a personal link")
 	}
 }

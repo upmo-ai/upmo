@@ -540,6 +540,16 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		allow, err := members.SettingsAllow(ctx, id)
 		return err == nil && allow != ""
 	}
+	// Sharing an account with the workspace or with teams is for the people
+	// whose role holds teams:manage, the permission that manages teams.
+	providers.Share = func(ctx context.Context, user string) (bool, error) {
+		person, err := identity.ParseUserID(user)
+		if err != nil {
+			return false, err
+		}
+		allow, err := members.TeamsAllow(ctx, person)
+		return allow != "", err
+	}
 	gateway.ProvidersHandler{
 		Service: providers,
 		Log:     log,

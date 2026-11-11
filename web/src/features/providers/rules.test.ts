@@ -98,8 +98,8 @@ describe("providerProblem", () => {
     expect(providerProblem(new BrainError(409, "You already have a provider with that name."))).toBe(
       "You already have a provider with that name.",
     );
-    expect(providerProblem(new BrainError(403, "This provider is managed by your workspace."))).toBe(
-      "This provider is managed by your workspace.",
+    expect(providerProblem(new BrainError(403, "This provider is shared. Only workspace managers can change it."))).toBe(
+      "This provider is shared. Only workspace managers can change it.",
     );
     expect(providerProblem(new BrainError(429, "Too many tests. Try again in a minute."))).toBe(
       "Too many tests. Try again in a minute.",

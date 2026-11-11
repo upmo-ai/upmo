@@ -18,8 +18,12 @@ import (
 var (
 	// ErrNotFound is an account that does not exist or belongs to someone else.
 	ErrNotFound = errors.New("gateway: no such provider")
-	// ErrGlobal is a workspace account, which these routes never change.
+	// ErrGlobal is a workspace account, or a shared one the person may not
+	// change, which these routes never change for them.
 	ErrGlobal = errors.New("gateway: provider is global")
+	// ErrShareOnly is a person who asked to share an account but does not
+	// hold teams:manage.
+	ErrShareOnly = errors.New("gateway: sharing a provider needs teams:manage")
 	// ErrDuplicate is a name the person already uses.
 	ErrDuplicate = errors.New("gateway: provider name in use")
 	// ErrLimit is a person at the cap of own accounts.
@@ -38,28 +42,48 @@ type InUseError struct{ Routes []string }
 
 func (InUseError) Error() string { return "gateway: provider in use by a route" }
 
+// Caller is the person a provider call is for, and whether they may share
+// accounts (hold teams:manage). The store writes both into the transaction
+// that row security reads.
+type Caller struct {
+	User  string
+	Share bool
+}
+
+// manages reports whether the caller may change or remove p: their own
+// account, or a shared one when they may share. A house account is read from
+// the environment and nobody changes it here.
+func (c Caller) manages(p domain.Provider) bool {
+	return p.Own || (c.Share && !p.Share.House)
+}
+
 // Accounts is where provider accounts and their sealed keys are kept. Every
-// call is for one person; an implementation shows them their own accounts and
-// the global ones, and changes only their own.
+// call is for one person; an implementation shows them their own accounts,
+// the workspace's, and the ones shared with a team of theirs (an admin sees
+// every shared one), and changes only the ones they may.
 type Accounts interface {
-	// List returns own accounts first, then global ones, each by name.
-	List(ctx context.Context, user string) ([]domain.Provider, error)
+	// List returns own accounts first, then team ones, then workspace ones,
+	// each by name.
+	List(ctx context.Context, who Caller) ([]domain.Provider, error)
 	// Get returns an account the person can see, or ErrNotFound.
-	Get(ctx context.Context, user, id string) (domain.Provider, error)
+	Get(ctx context.Context, who Caller, id string) (domain.Provider, error)
 	// Create stores an account with its models and, when sealed is set, its
-	// key, in one transaction. It returns ErrDuplicate or ErrLimit.
-	Create(ctx context.Context, user string, p domain.Provider, sealed *domain.Sealed) (domain.Provider, error)
-	// Update writes the account's fields and replaces its models. When sealed
-	// is set it replaces the key. When reset is set the status goes back to
-	// Not connected. It returns ErrNotFound or ErrDuplicate.
-	Update(ctx context.Context, user string, p domain.Provider, sealed *domain.Sealed, reset bool) (domain.Provider, error)
+	// key, in one transaction. An account that is not Own is shared: with the
+	// teams in Share.TeamIDs for ScopeTeam, else with the whole workspace.
+	// It returns ErrDuplicate or ErrLimit.
+	Create(ctx context.Context, who Caller, p domain.Provider, sealed *domain.Sealed) (domain.Provider, error)
+	// Update writes the account's fields and replaces its models and, for a
+	// shared account, its teams. When sealed is set it replaces the key. When
+	// reset is set the status goes back to Not connected. It returns
+	// ErrNotFound or ErrDuplicate.
+	Update(ctx context.Context, who Caller, p domain.Provider, sealed *domain.Sealed, reset bool) (domain.Provider, error)
 	// Remove deletes the account, its models and its key in one transaction.
 	// It returns ErrNotFound, or InUseError while a route links to it.
-	Remove(ctx context.Context, user, id string) error
-	// Sealed returns the stored key for an own account's ref, or ErrNotFound.
-	Sealed(ctx context.Context, user, ref string) (domain.Sealed, error)
-	// Note stores the status a test found for an own account.
-	Note(ctx context.Context, user, id, status string) error
+	Remove(ctx context.Context, who Caller, id string) error
+	// Sealed returns the stored key for an account's ref, or ErrNotFound.
+	Sealed(ctx context.Context, who Caller, ref string) (domain.Sealed, error)
+	// Note stores the status a test found for an account.
+	Note(ctx context.Context, who Caller, id, status string) error
 }
 
 // Prober makes one cheap call through an adapter to see whether an account
@@ -82,6 +106,9 @@ type Providers struct {
 	// LocalPlan says whether this person may add or test a local-plan
 	// account. Nil denies the local plan to every person.
 	LocalPlan func(ctx context.Context, user string) bool
+	// Share reports whether a person may share accounts, which they may when
+	// they hold teams:manage. Nil means nobody may.
+	Share func(ctx context.Context, user string) (bool, error)
 	// Log records add, update and remove with ids only. Nil logs nothing.
 	Log *slog.Logger
 }
@@ -89,7 +116,9 @@ type Providers struct {
 // TestTimeout bounds one test call.
 const TestTimeout = 10 * time.Second
 
-// NewProvider is what a person sends to add an account.
+// NewProvider is what a person sends to add an account. A Scope makes it a
+// shared account: the whole workspace or, with TeamIDs, specific teams. No
+// Scope is a personal account.
 type NewProvider struct {
 	Provider string
 	Name     string
@@ -98,16 +127,21 @@ type NewProvider struct {
 	BaseURL  string
 	APIKey   string
 	Models   []string
+	Scope    string
+	TeamIDs  []string
 }
 
 // ProviderChange is what a person sends to change an account. A nil field is
-// left as it is. An empty APIKey leaves the saved key as it is.
+// left as it is. An empty APIKey leaves the saved key as it is. Scope and
+// TeamIDs change who a shared account is for.
 type ProviderChange struct {
 	Name     *string
 	PlanKind *string
 	BaseURL  *string
 	APIKey   *string
 	Models   *[]string
+	Scope    *string
+	TeamIDs  *[]string
 }
 
 // TestRequest is what a person sends to test an account. With an ID and no
@@ -128,19 +162,62 @@ type TestResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// List returns the person's own accounts and the global ones.
+// caller names the person and says whether they may share.
+func (s Providers) caller(ctx context.Context, user string) (Caller, error) {
+	who := Caller{User: user}
+	if s.Share == nil {
+		return who, nil
+	}
+	ok, err := s.Share(ctx, user)
+	if err != nil {
+		return Caller{}, fmt.Errorf("gateway: sharing permission: %w", err)
+	}
+	who.Share = ok
+	return who, nil
+}
+
+// CanShare reports whether the person may share accounts.
+func (s Providers) CanShare(ctx context.Context, user string) (bool, error) {
+	who, err := s.caller(ctx, user)
+	return who.Share, err
+}
+
+// List returns the accounts the person may see: their own, the ones shared
+// with a team of theirs, and the workspace's. Each says whether they may
+// change it.
 func (s Providers) List(ctx context.Context, user string) ([]domain.Provider, error) {
-	out, err := s.Accounts.List(ctx, user)
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	out, err := s.Accounts.List(ctx, who)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: list providers: %w", err)
+	}
+	for i := range out {
+		out[i].Share.CanManage = who.manages(out[i])
 	}
 	return out, nil
 }
 
-// Add validates and stores a new own account.
+// Add validates and stores a new account: the person's own, or a shared one
+// when the request names a scope and the person may share.
 func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain.Provider, error) {
 	if !s.Keys.Ready() {
 		return domain.Provider{}, ErrNoMasterKey
+	}
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return domain.Provider{}, err
+	}
+	scope, teams := domain.ScopeOwn, []string(nil)
+	if in.Scope != "" || len(in.TeamIDs) > 0 {
+		if !who.Share {
+			return domain.Provider{}, ErrShareOnly
+		}
+		if scope, teams, err = domain.CleanShare(in.Scope, in.TeamIDs); err != nil {
+			return domain.Provider{}, err
+		}
 	}
 	label, err := domain.CleanLabel(in.Provider)
 	if err != nil {
@@ -190,7 +267,7 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		}
 		sealed = &boxed
 	}
-	made, err := s.Accounts.Create(ctx, user, domain.Provider{
+	made, err := s.Accounts.Create(ctx, who, domain.Provider{
 		Provider:      label,
 		Name:          name,
 		Adapter:       in.Adapter,
@@ -198,27 +275,56 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		BaseURL:       base,
 		Status:        domain.StatusNotConnected,
 		Models:        models,
-		Own:           true,
+		Own:           scope == domain.ScopeOwn,
 		CredentialRef: ref,
+		Share:         domain.Share{Scope: scope, TeamIDs: teams},
 	}, sealed)
 	if err != nil {
 		return domain.Provider{}, err
 	}
+	made.Share.CanManage = who.manages(made)
 	s.log("provider added", made.ID, user)
 	return made, nil
 }
 
-// Change validates and stores a change to one own account.
+// Change validates and stores a change to one account the person may change.
 func (s Providers) Change(ctx context.Context, user, id string, in ProviderChange) (domain.Provider, error) {
 	if !s.Keys.Ready() {
 		return domain.Provider{}, ErrNoMasterKey
 	}
-	cur, err := s.own(ctx, user, id)
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return domain.Provider{}, err
+	}
+	cur, err := s.manageable(ctx, who, id)
 	if err != nil {
 		return domain.Provider{}, err
 	}
 	next := cur
 	reset := false
+	if in.Scope != nil || in.TeamIDs != nil {
+		if cur.Own {
+			return domain.Provider{}, domain.Invalid("A personal provider is not shared.")
+		}
+		ask := domain.ShareWorkspace
+		if cur.Share.Scope == domain.ScopeTeam {
+			ask = domain.ShareTeams
+		}
+		if in.Scope != nil {
+			ask = *in.Scope
+		}
+		ids := cur.Share.TeamIDs
+		switch {
+		case in.TeamIDs != nil:
+			ids = *in.TeamIDs
+		case ask == domain.ShareWorkspace:
+			ids = nil
+		}
+		next.Share.Scope, next.Share.TeamIDs, err = domain.CleanShare(ask, ids)
+		if err != nil {
+			return domain.Provider{}, err
+		}
+	}
 	if in.Name != nil {
 		if next.Name, err = domain.CleanName(*in.Name); err != nil {
 			return domain.Provider{}, err
@@ -273,23 +379,28 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 		sealed = &boxed
 		reset = true
 	}
-	made, err := s.Accounts.Update(ctx, user, next, sealed, reset)
+	made, err := s.Accounts.Update(ctx, who, next, sealed, reset)
 	if err != nil {
 		return domain.Provider{}, err
 	}
+	made.Share.CanManage = who.manages(made)
 	s.log("provider updated", made.ID, user)
 	return made, nil
 }
 
-// Remove deletes one own account that no route uses.
+// Remove deletes one account the person may change, that no route uses.
 func (s Providers) Remove(ctx context.Context, user, id string) error {
 	if !s.Keys.Ready() {
 		return ErrNoMasterKey
 	}
-	if _, err := s.own(ctx, user, id); err != nil {
+	who, err := s.caller(ctx, user)
+	if err != nil {
 		return err
 	}
-	if err := s.Accounts.Remove(ctx, user, id); err != nil {
+	if _, err := s.manageable(ctx, who, id); err != nil {
+		return err
+	}
+	if err := s.Accounts.Remove(ctx, who, id); err != nil {
 		return err
 	}
 	s.log("provider removed", id, user)
@@ -303,11 +414,15 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if s.Limiter != nil && !s.Limiter.Allow(user) {
 		return TestResult{}, ErrRate
 	}
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return TestResult{}, err
+	}
 	adapter, plan, base, key := in.Adapter, in.PlanKind, in.BaseURL, in.APIKey
 	var saved domain.Provider
 	if in.ID != "" {
 		var err error
-		if saved, err = s.own(ctx, user, in.ID); err != nil {
+		if saved, err = s.manageable(ctx, who, in.ID); err != nil {
 			return TestResult{}, err
 		}
 		if adapter == "" {
@@ -328,7 +443,7 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if s.Known == nil || !s.Known(adapter) {
 		return refuse("That adapter is not available.")
 	}
-	plan, err := domain.CleanPlan(plan)
+	plan, err = domain.CleanPlan(plan)
 	if err != nil {
 		return refuse(err.Error())
 	}
@@ -345,7 +460,7 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		return refuse(err.Error())
 	}
 	if key == "" && saved.HasKey {
-		boxed, err := s.Accounts.Sealed(ctx, user, saved.CredentialRef)
+		boxed, err := s.Accounts.Sealed(ctx, who, saved.CredentialRef)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return TestResult{}, fmt.Errorf("gateway: read saved key: %w", err)
 		}
@@ -371,7 +486,7 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
 	result := TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class)}
 	if in.ID != "" {
-		if err := s.Accounts.Note(ctx, user, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
+		if err := s.Accounts.Note(ctx, who, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
 			s.Log.Warn("provider status not stored", "account", in.ID, "owner", user)
 		}
 	}
@@ -385,13 +500,14 @@ func (s Providers) mayLocal(ctx context.Context, user string) bool {
 	return s.LocalPlan != nil && s.LocalPlan(ctx, user)
 }
 
-// own loads an account and refuses one that is not the person's to change.
-func (s Providers) own(ctx context.Context, user, id string) (domain.Provider, error) {
-	cur, err := s.Accounts.Get(ctx, user, id)
+// manageable loads an account and refuses one the person may not change: a
+// workspace account, or a shared one when they may not share.
+func (s Providers) manageable(ctx context.Context, who Caller, id string) (domain.Provider, error) {
+	cur, err := s.Accounts.Get(ctx, who, id)
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	if !cur.Own {
+	if !who.manages(cur) {
 		return domain.Provider{}, ErrGlobal
 	}
 	return cur, nil
