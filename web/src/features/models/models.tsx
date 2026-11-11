@@ -1,4 +1,4 @@
-import { Popover, Stack, Text, Title } from "@mantine/core";
+import { Group, Popover, Stack, Text, Title } from "@mantine/core";
 import { IconCheck, IconX } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
@@ -117,7 +117,21 @@ function RoutesTable({ routes }: { routes: GatewayRoute[] }) {
   }
 
   const columns: DataTableColumn<GatewayRoute>[] = [
-    { key: "name", header: "Name", mono: true, render: (route) => route.name },
+    {
+      key: "name",
+      header: "Name",
+      mono: true,
+      render: (route) => (
+        <Group gap="xs" wrap="nowrap">
+          {route.name}
+          {route.usable ? null : (
+            <Badge variant="light" size="sm">
+              Inactive
+            </Badge>
+          )}
+        </Group>
+      ),
+    },
     {
       key: "capability",
       header: "Capability",

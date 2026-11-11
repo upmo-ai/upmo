@@ -52,6 +52,11 @@ type providerJSON struct {
 	BaseURL  string   `json:"base_url,omitempty"`
 	Status   string   `json:"status"`
 	Models   []string `json:"models"`
+	// Usable says whether the person can use the account now, and
+	// UsableModels lists the models of theirs that count: the rule is
+	// domain's, computed per account here.
+	Usable       bool     `json:"usable"`
+	UsableModels []string `json:"usable_models"`
 	// Scope is own, workspace or team.
 	Scope string `json:"scope"`
 	// TeamIDs and TeamNames are the teams a team account is shared with, in
@@ -81,19 +86,22 @@ func providerBody(p domain.Provider) providerJSON {
 	if teamNames == nil {
 		teamNames = []string{}
 	}
+	usable := domain.UsableModels(p)
 	return providerJSON{
-		ID:        p.ID,
-		Provider:  p.Provider,
-		Name:      p.Name,
-		Adapter:   p.Adapter,
-		PlanKind:  p.PlanKind,
-		BaseURL:   p.BaseURL,
-		Status:    p.Status,
-		Models:    models,
-		Scope:     scope,
-		TeamIDs:   teamIDs,
-		TeamNames: teamNames,
-		CanManage: p.Share.CanManage,
+		ID:           p.ID,
+		Provider:     p.Provider,
+		Name:         p.Name,
+		Adapter:      p.Adapter,
+		PlanKind:     p.PlanKind,
+		BaseURL:      p.BaseURL,
+		Status:       p.Status,
+		Models:       models,
+		Usable:       len(usable) > 0,
+		UsableModels: usable,
+		Scope:        scope,
+		TeamIDs:      teamIDs,
+		TeamNames:    teamNames,
+		CanManage:    p.Share.CanManage,
 	}
 }
 

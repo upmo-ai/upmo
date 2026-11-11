@@ -10,6 +10,8 @@ const base = {
   plan_kind: "metered",
   base_url: "https://api.openai.com",
   status: "Connected",
+  usable: true,
+  usable_models: ["gpt-x"],
   models: ["gpt-4o"],
 };
 

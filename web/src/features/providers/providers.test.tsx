@@ -66,6 +66,8 @@ const anthropicAccount: ProviderAccount = {
   base_url: "https://api.anthropic.com",
   status: "Connected",
   models: ["claude-3-7-sonnet"],
+  usable: true,
+  usable_models: ["claude-3-7-sonnet"],
   scope: "own",
 };
 
@@ -192,6 +194,8 @@ describe("providers", () => {
         plan_kind: "metered",
         status,
         models: ["gpt-4o"],
+        usable: status === "Connected",
+        usable_models: status === "Connected" ? ["gpt-4o"] : [],
         scope: "own",
       })),
     });

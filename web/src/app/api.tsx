@@ -165,6 +165,10 @@ export type ProviderAccount = {
   base_url?: string;
   status: ProviderStatus;
   models: string[];
+  /** Whether the person can use the account now: Connected, with a usable model. */
+  usable: boolean;
+  /** The models of the account that count as usable. */
+  usable_models: string[];
   /** "global" accounts belong to the workspace and are read only; "own" ones the person manages. */
   scope: "own" | "global";
   /** Sharing details the brain supplies for accounts that support team sharing. */
@@ -202,6 +206,8 @@ export type AgentProfile = {
   model_id: string;
   /** A switched off agent cannot be picked, and a reply that names it fails. */
   enabled: boolean;
+  /** Whether this person can pick it in the chat now: its model, or its route, resolves to something usable. */
+  usable: boolean;
   /** "global" agents belong to the workspace; a member sees them read only. */
   scope: "own" | "global";
   /** Whether this person may change or delete it: their own, or a global one for a settings manager. */
@@ -1172,8 +1178,16 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     }
     return grant;
   }
+  // The usable models of an account, as the brain's rule answers them: the
+  // account is Connected and lists the model. The stub keeps its accounts
+  // truthful with the same rule.
+  const withUsable = (account: Omit<ProviderAccount, "usable" | "usable_models">): ProviderAccount => {
+    const usable_models = account.status === "Connected" ? [...account.models] : [];
+    return { ...account, usable: usable_models.length > 0, usable_models };
+  };
+
   const providerAccounts: ProviderAccount[] = [
-    {
+    withUsable({
       id: "provider-anthropic",
       provider: "anthropic",
       name: "Anthropic Claude",
@@ -1183,8 +1197,8 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       status: "Connected",
       models: ["claude-3-7-sonnet", "claude-3-5-haiku"],
       scope: "own",
-    },
-    {
+    }),
+    withUsable({
       id: "provider-ollama",
       provider: "ollama",
       name: "Ollama Local",
@@ -1194,8 +1208,24 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       status: "Connected",
       models: ["llama3.3:70b", "deepseek-r1:14b"],
       scope: "own",
-    },
+    }),
   ];
+  // The same rule for agents: enabled, and its model — or its route, else
+  // the install's chat route — resolves to something usable.
+  const agentUsable = (agent: Pick<AgentProfile, "enabled" | "route" | "model_provider" | "model_id">): boolean => {
+    if (!agent.enabled) return false;
+    if (agent.model_provider !== "" && agent.model_id !== "") {
+      return providerAccounts.some(
+        (account) =>
+          account.provider.toLowerCase() === agent.model_provider.toLowerCase() &&
+          account.usable_models.includes(agent.model_id),
+      );
+    }
+    const name = agent.route || "chat";
+    return sampleRoutes.some(
+      (route) => route.name === name && (route.capability === "chat" || route.capability === "stream") && route.usable,
+    );
+  };
   const agentProfiles: AgentProfile[] = [
     {
       id: "agent-research",
@@ -1206,6 +1236,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       model_provider: "",
       model_id: "",
       enabled: true,
+      usable: agentUsable({ enabled: true, route: "", model_provider: "", model_id: "" }),
       scope: "global",
       editable: false,
     },
@@ -1721,7 +1752,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
             can_manage: true,
           };
         }
-        const account: ProviderAccount = {
+        const made = withUsable({
           id: nextId("provider"),
           provider: input.provider,
           name: input.name,
@@ -1732,9 +1763,9 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           models: copy(input.models),
           scope: share ? "global" : "own",
           ...(share ? { share } : {}),
-        };
-        providerAccounts.push(account);
-        return copy(account);
+        });
+        providerAccounts.push(made);
+        return copy(made);
       },
       async update(id, input) {
         const account = providerAccounts.find((item) => item.id === id);
@@ -1770,6 +1801,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         if (input.plan_kind !== undefined) account.plan_kind = input.plan_kind;
         if (input.base_url !== undefined) account.base_url = input.base_url;
         if (input.models !== undefined) account.models = copy(input.models);
+        Object.assign(account, withUsable(account));
         return copy(account);
       },
       async remove(id) {
@@ -1804,7 +1836,13 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           (item) => item.scope === "own" && item.name.toLowerCase() === input.name.toLowerCase(),
         );
         if (taken) throw new BrainError(409, "An agent with that name already exists.");
-        const agent: AgentProfile = { ...input, id: nextId("agent"), scope: "own", editable: true };
+        const agent: AgentProfile = {
+          ...input,
+          id: nextId("agent"),
+          usable: agentUsable(input),
+          scope: "own",
+          editable: true,
+        };
         agentProfiles.push(agent);
         return copy(agent);
       },
@@ -1813,6 +1851,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         if (!agent) throw new BrainError(404, "Not found.");
         if (!agent.editable) throw new BrainError(403, "This agent is managed by your workspace.");
         Object.assign(agent, input);
+        agent.usable = agentUsable(agent);
         return copy(agent);
       },
       async remove(id) {

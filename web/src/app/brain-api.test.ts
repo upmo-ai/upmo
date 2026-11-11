@@ -334,6 +334,8 @@ describe("toProvider", () => {
     base_url: "https://api.openai.com",
     status: "Not connected",
     models: ["gpt-4o", "o3-mini"],
+    usable: false,
+    usable_models: [],
     scope: "own",
   };
 
@@ -343,6 +345,14 @@ describe("toProvider", () => {
       scope: "global",
       status: "Key rejected",
     });
+  });
+
+  it("reads the usable answer with the models that count", () => {
+    expect(
+      toProvider({ ...sent, status: "Connected", usable: true, usable_models: ["gpt-4o"] }),
+    ).toMatchObject({ usable: true, usable_models: ["gpt-4o"] });
+    expect(() => toProvider({ ...sent, usable: undefined })).toThrow("no usable");
+    expect(() => toProvider({ ...sent, usable_models: ["gpt-4o", 4] })).toThrow("no usable_models");
   });
 
   it("leaves base_url out when the account has none", () => {
@@ -462,6 +472,7 @@ describe("toGatewayRoute", () => {
     name: "chat",
     capability: "chat",
     decision: "",
+    usable: true,
     hops: [{ position: 1, adapter: "anthropic", model: "claude-opus-5-5", weight: 3, retry: 1 }],
   };
 
@@ -474,11 +485,22 @@ describe("toGatewayRoute", () => {
     });
   });
 
+  it("reads the account a hop names, when the brain sends one", () => {
+    expect(
+      toGatewayRoute({ ...sent, hops: [{ ...sent.hops[0], account_id: "01990000-0000-7000-8000-0000000000e1" }] }),
+    ).toMatchObject({ hops: [{ account_id: "01990000-0000-7000-8000-0000000000e1" }] });
+    expect(toGatewayRoute(sent).hops[0]).not.toHaveProperty("account_id");
+  });
+
   it("refuses a capability or decision the web does not know, and a hop with no model", () => {
     expect(() => toGatewayRoute({ ...sent, capability: "image" })).toThrow("capability");
     expect(() => toGatewayRoute({ ...sent, decision: "maybe" })).toThrow("decision");
     expect(() => toGatewayRoute({ ...sent, hops: [{ ...sent.hops[0], model: 4 }] })).toThrow("no model");
     expect(() => toGatewayRoute("chat")).toThrow("no route");
+  });
+
+  it("refuses an answer with no usable flag", () => {
+    expect(() => toGatewayRoute({ ...sent, usable: undefined })).toThrow("no usable");
   });
 });
 
@@ -492,6 +514,7 @@ describe("toAgent", () => {
     model_provider: "OpenAI",
     model_id: "gpt-x",
     enabled: true,
+    usable: true,
     scope: "own",
     editable: true,
   };
@@ -509,6 +532,7 @@ describe("toAgent", () => {
     expect(() => toAgent(null)).toThrow("The brain sent no agent.");
     expect(() => toAgent({ ...sent, scope: "team" })).toThrow("The brain sent an unknown scope.");
     expect(() => toAgent({ ...sent, enabled: "yes" })).toThrow("The brain sent no enabled.");
+    expect(() => toAgent({ ...sent, usable: undefined })).toThrow("The brain sent no usable.");
     expect(() => toAgent({ ...sent, editable: undefined })).toThrow("The brain sent no editable.");
     expect(() => toAgent({ ...sent, name: 5 })).toThrow("The brain sent no name.");
   });

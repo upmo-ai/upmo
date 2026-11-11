@@ -234,6 +234,8 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
           plan_kind: input.plan_kind,
           status: "Connected",
           models: input.models,
+          usable: true,
+          usable_models: input.models,
           scope: "own",
         };
       },
@@ -246,6 +248,8 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
           plan_kind: input.plan_kind ?? "metered",
           status: "Connected",
           models: input.models ?? [],
+          usable: true,
+          usable_models: input.models ?? [],
           scope: "own",
         };
       },

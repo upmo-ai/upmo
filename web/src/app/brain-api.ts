@@ -333,13 +333,15 @@ export function toChatLine(value: unknown): ChatLine {
 
 function toRouteHop(value: unknown): RouteHop {
   const source = record(value, "hop");
-  return {
+  const hop: RouteHop = {
     position: whole(source, "position"),
     adapter: text(source, "adapter"),
     model: text(source, "model"),
     weight: whole(source, "weight"),
     retry: whole(source, "retry"),
   };
+  if (typeof source.account_id === "string" && source.account_id !== "") hop.account_id = source.account_id;
+  return hop;
 }
 
 /**
@@ -356,11 +358,13 @@ export function toGatewayRoute(value: unknown): GatewayRoute {
   if (decision !== "" && decision !== "yesno" && decision !== "choice") {
     throw new Error("The brain sent an unknown route decision.");
   }
+  if (typeof source.usable !== "boolean") throw new Error("The brain sent no usable.");
   return {
     name: text(source, "name"),
     scope: source.scope === "own" ? "own" : "global",
     capability: capability as RouteCapability,
     decision: decision as RouteDecision,
+    usable: source.usable,
     hops: list(source.hops, "hops").map(toRouteHop),
   };
 }
@@ -414,6 +418,9 @@ export function toProvider(value: unknown): ListedProvider {
   if (scope === "team" && !Array.isArray(source.team_ids)) throw new Error("The brain sent an unknown scope.");
   const models = list(source.models, "models");
   if (models.some((model) => typeof model !== "string")) throw new Error("The brain sent no models.");
+  if (typeof source.usable !== "boolean") throw new Error("The brain sent no usable.");
+  const usableModels = list(source.usable_models, "usable_models");
+  if (usableModels.some((model) => typeof model !== "string")) throw new Error("The brain sent no usable_models.");
   const account: ListedProvider = {
     id: text(source, "id"),
     provider: text(source, "provider"),
@@ -422,6 +429,8 @@ export function toProvider(value: unknown): ListedProvider {
     plan_kind: plan as ProviderPlanKind,
     status: status as ProviderStatus,
     models: models as string[],
+    usable: source.usable,
+    usable_models: usableModels as string[],
     scope: scope === "own" ? "own" : "global",
   };
   if (typeof source.base_url === "string" && source.base_url !== "") account.base_url = source.base_url;
@@ -443,6 +452,7 @@ export function toAgent(value: unknown): AgentProfile {
   const scope = source.scope;
   if (scope !== "own" && scope !== "global") throw new Error("The brain sent an unknown scope.");
   if (typeof source.enabled !== "boolean") throw new Error("The brain sent no enabled.");
+  if (typeof source.usable !== "boolean") throw new Error("The brain sent no usable.");
   if (typeof source.editable !== "boolean") throw new Error("The brain sent no editable.");
   return {
     id: text(source, "id"),
@@ -453,6 +463,7 @@ export function toAgent(value: unknown): AgentProfile {
     model_provider: text(source, "model_provider"),
     model_id: text(source, "model_id"),
     enabled: source.enabled,
+    usable: source.usable,
     scope,
     editable: source.editable,
   };

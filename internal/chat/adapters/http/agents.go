@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -9,11 +10,18 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/gateway"
 )
 
 // maxAgentBody bounds an agent request: the instructions are at most 4000
 // characters, so this is generous.
 const maxAgentBody = 64 << 10
+
+// AccountList reads the provider accounts one person can use: their own and
+// the workspace's. The gateway's provider service answers it.
+type AccountList interface {
+	List(ctx context.Context, user string) ([]gateway.Provider, error)
+}
 
 // AgentsHandler serves a signed-in person's own agents and the global ones
 // beside them. Any signed-in person may use it; Access carries only
@@ -23,6 +31,13 @@ type AgentsHandler struct {
 	Access func(r *http.Request) (app.Access, bool)
 	// Log records unexpected failures.
 	Log *slog.Logger
+	// Routes lists the workspace routes and Accounts the provider accounts
+	// the calling person can use; DefaultRoute is the one a chat takes when
+	// the agent names none. Together they mark each agent usable or not.
+	// Any missing source marks every agent not usable.
+	Routes       gateway.RouteBook
+	Accounts     AccountList
+	DefaultRoute string
 }
 
 // Mount registers the agent routes. guard runs first.
@@ -48,11 +63,15 @@ type agentJSON struct {
 	ModelProvider string `json:"model_provider"`
 	ModelID       string `json:"model_id"`
 	Enabled       bool   `json:"enabled"`
-	Scope         string `json:"scope"`
-	Editable      bool   `json:"editable"`
+	// Usable says whether the calling person can pick the agent in the chat
+	// now: enabled, and its model, or its route, resolves to something
+	// usable. The rule is the gateway domain's; the sources are read here.
+	Usable   bool   `json:"usable"`
+	Scope    string `json:"scope"`
+	Editable bool   `json:"editable"`
 }
 
-func agentBody(a app.Agent) agentJSON {
+func agentBody(a app.Agent, usable bool) agentJSON {
 	scope := "own"
 	if a.Global {
 		scope = "global"
@@ -66,6 +85,7 @@ func agentBody(a app.Agent) agentJSON {
 		ModelProvider: a.ModelProvider,
 		ModelID:       a.ModelID,
 		Enabled:       a.Enabled,
+		Usable:        usable,
 		Scope:         scope,
 		Editable:      a.Editable,
 	}
@@ -113,11 +133,61 @@ func (h AgentsHandler) list(w http.ResponseWriter, r *http.Request) {
 	if h.refuse(w, err) {
 		return
 	}
+	// Read once for the whole list: what the person can use decides every
+	// row. A wired source that fails is a real failure; answering rows that
+	// all read unusable would hide the agents instead.
+	var (
+		routes   []gateway.ListedRoute
+		accounts []gateway.Provider
+	)
+	if h.Routes != nil && h.Accounts != nil {
+		if routes, err = h.Routes.List(r.Context()); err != nil {
+			h.sourceFailed(w, err)
+			return
+		}
+		if accounts, err = h.Accounts.List(r.Context(), access.UserID); err != nil {
+			h.sourceFailed(w, err)
+			return
+		}
+	}
 	out := make([]agentJSON, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, agentBody(row))
+		usable := gateway.UsableAgent(row.Enabled, row.Route, row.ModelProvider, row.ModelID, routes, accounts, h.DefaultRoute)
+		out = append(out, agentBody(row, usable))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// usableNow answers one agent's usable flag, reading the sources when they
+// are wired. A failed read is logged and counts as unusable: the write has
+// already succeeded, so the answer must not fail it.
+func (h AgentsHandler) usableNow(ctx context.Context, user string, a app.Agent) bool {
+	if h.Routes == nil || h.Accounts == nil {
+		return false
+	}
+	routes, err := h.Routes.List(ctx)
+	if err != nil {
+		if h.Log != nil {
+			h.Log.Warn("agents routes failed", "err", err)
+		}
+		return false
+	}
+	accounts, err := h.Accounts.List(ctx, user)
+	if err != nil {
+		if h.Log != nil {
+			h.Log.Warn("agents accounts failed", "err", err)
+		}
+		return false
+	}
+	return gateway.UsableAgent(a.Enabled, a.Route, a.ModelProvider, a.ModelID, routes, accounts, h.DefaultRoute)
+}
+
+// sourceFailed answers a list whose usable sources could not be read.
+func (h AgentsHandler) sourceFailed(w http.ResponseWriter, err error) {
+	if h.Log != nil {
+		h.Log.Error("agents usable sources failed", "err", err)
+	}
+	writeError(w, http.StatusInternalServerError, "agents")
 }
 
 func (h AgentsHandler) create(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +224,7 @@ func (h AgentsHandler) create(w http.ResponseWriter, r *http.Request) {
 	if h.refuse(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusCreated, agentBody(made))
+	writeJSON(w, http.StatusCreated, agentBody(made, h.usableNow(r.Context(), access.UserID, made)))
 }
 
 func (h AgentsHandler) change(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +256,7 @@ func (h AgentsHandler) change(w http.ResponseWriter, r *http.Request) {
 	if h.refuse(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, agentBody(made))
+	writeJSON(w, http.StatusOK, agentBody(made, h.usableNow(r.Context(), access.UserID, made)))
 }
 
 func (h AgentsHandler) remove(w http.ResponseWriter, r *http.Request) {
