@@ -345,7 +345,49 @@ describe("providers from the brain", () => {
     await waitFor(() => {
       expect(writes(calls, "PUT")).toHaveLength(1);
     });
-    expect(writes(calls, "PUT")[0]?.body).toEqual({ name: "Bare fake", plan_kind: "local", models: ["alpha"] });
+    expect(writes(calls, "PUT")[0]?.body).toEqual({
+      name: "Bare fake",
+      plan_kind: "local",
+      base_url: "",
+      models: ["alpha"],
+    });
+  });
+
+  it("sends an emptied address as an explicit clear when a saved account is edited", async () => {
+    const pointed: Row = {
+      id: "f2",
+      provider: "fake",
+      name: "Pointed fake",
+      adapter: "fake",
+      plan_kind: "local",
+      base_url: "http://127.0.0.1:4000",
+      status: "Connected",
+      models: ["alpha"],
+      scope: "own",
+    };
+    const { fetcher, calls } = brain({ accounts: [pointed] });
+    vi.stubGlobal("fetch", fetcher);
+    renderAt("/providers/f2/edit");
+    expect(await screen.findByText(/Test provider Credentials & Plan/)).toBeTruthy();
+
+    const baseUrl = screen.getByLabelText(/Base URL/);
+    expect(baseUrl).toHaveProperty("value", "http://127.0.0.1:4000");
+    fireEvent.change(baseUrl, { target: { value: "" } });
+    await continueTo(/Models & Pricing for/);
+    await continueTo("Review Configuration");
+    clickButton("Test connection");
+    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    clickButton("Save changes");
+    await waitFor(() => {
+      expect(writes(calls, "PUT")).toHaveLength(1);
+    });
+    // "" is the clear; leaving the field out would keep the saved address.
+    expect(writes(calls, "PUT")[0]?.body).toEqual({
+      name: "Pointed fake",
+      plan_kind: "local",
+      base_url: "",
+      models: ["alpha"],
+    });
   });
 
   it("adds the built in test provider on the local plan with no key", async () => {

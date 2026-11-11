@@ -44,8 +44,10 @@ type Keyring struct {
 }
 
 // NewKeyring builds a ring from raw 32-byte keys. current must be one of them.
-// The returned error names an id or a length, never key bytes.
+// The returned error names an id or a length, never key bytes. The raw key
+// bytes are wiped before NewKeyring returns: each cipher keeps its own copy.
 func NewKeyring(current string, keys map[string][]byte) (Keyring, error) {
+	defer wipeKeys(keys)
 	if !ValidKeyID(current) {
 		return Keyring{}, fmt.Errorf("gateway: master key id %q", current)
 	}
@@ -73,6 +75,14 @@ func NewKeyring(current string, keys map[string][]byte) (Keyring, error) {
 	return ring, nil
 }
 
+// wipeKeys clears the raw key bytes a ring was built from, so the plain key
+// does not outlive the ciphers that copied it.
+func wipeKeys(keys map[string][]byte) {
+	for _, raw := range keys {
+		clear(raw)
+	}
+}
+
 // Ready reports whether the ring can seal.
 func (k Keyring) Ready() bool { return k.keys[k.current] != nil }
 
@@ -96,6 +106,8 @@ func (k Keyring) Seal(ref, plaintext string) (Sealed, error) {
 }
 
 // Open decrypts s for ref. Any failure is ErrUnseal and returns no bytes.
+// The buffer the decryption wrote is wiped on the way out; what the caller
+// keeps is its own copy as a string.
 func (k Keyring) Open(ref string, s Sealed) (string, error) {
 	aead := k.keys[s.KeyID]
 	if aead == nil || len(s.Nonce) != aead.NonceSize() {
@@ -105,5 +117,7 @@ func (k Keyring) Open(ref string, s Sealed) (string, error) {
 	if err != nil {
 		return "", ErrUnseal
 	}
-	return string(plain), nil
+	key := string(plain)
+	clear(plain)
+	return key, nil
 }

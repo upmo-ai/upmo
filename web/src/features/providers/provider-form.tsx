@@ -165,12 +165,13 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
         });
       }
 
-      // An empty key field keeps the saved key.
+      // An empty key field keeps the saved key. An emptied base URL is sent
+      // as "", so the brain clears the saved address.
       if (!existing?.id) throw new Error("Missing provider ID");
       return api.providers.update(existing.id, {
         name: name.trim() || existing.name,
         plan_kind: planKind,
-        base_url: resolvedBaseUrl,
+        base_url: resolvedBaseUrl ?? "",
         api_key: typedKey || undefined,
         models: selectedModels,
       });

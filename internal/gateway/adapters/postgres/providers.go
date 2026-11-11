@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -222,7 +223,7 @@ func (p Providers) Update(ctx context.Context, user string, a domain.Provider, s
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `
 		UPDATE gateway.provider_accounts
-		SET name = $3, plan_kind = $4, base_url = $5,
+		SET name = $3, plan_kind = $4, base_url = $5, updated_at = now(),
 			status = CASE WHEN $6 THEN 'Not connected' ELSE status END,
 			checked_at = CASE WHEN $6 THEN NULL ELSE checked_at END
 		WHERE id = $1::uuid AND owner_user_id = $2::uuid`,
@@ -345,7 +346,7 @@ func (p Providers) Note(ctx context.Context, user, id, status string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `
-		UPDATE gateway.provider_accounts SET status = $3, checked_at = now()
+		UPDATE gateway.provider_accounts SET status = $3, checked_at = now(), updated_at = now()
 		WHERE id = $1::uuid AND owner_user_id = $2::uuid`, id, user, status)
 	if err != nil {
 		return err
@@ -403,10 +404,18 @@ func (s Store) SealedCredential(ctx context.Context, ref string) (domain.Sealed,
 }
 
 // RecordStatus stores what a model call learned about the account with this
-// credential ref. It is best-effort and called off the calling path.
-func (s Store) RecordStatus(ctx context.Context, ref, status string) error {
+// credential ref. An outcome that started before the account last changed is
+// stale — an edit reset the status while the attempt ran — and is dropped. An
+// unchanged outcome is written again only after a minute, so a busy account
+// costs a write a minute; the wait is kept in the row itself, so an edit that
+// resets the account clears it at once and the next outcome is heard even
+// when it repeats the last one. It is best-effort and called off the calling
+// path.
+func (s Store) RecordStatus(ctx context.Context, ref, status string, started time.Time) error {
 	_, err := s.Pool.Exec(ctx, `
-		UPDATE gateway.provider_accounts SET status = $2, checked_at = now()
-		WHERE credential_ref = $1`, ref, status)
+		UPDATE gateway.provider_accounts SET status = $2, checked_at = now(), updated_at = now()
+		WHERE credential_ref = $1 AND updated_at <= $3
+			AND (status IS DISTINCT FROM $2 OR checked_at IS NULL OR checked_at <= now() - interval '1 minute')`,
+		ref, status, started)
 	return err
 }

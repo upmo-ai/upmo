@@ -146,3 +146,21 @@ func TestNewKeyringErrorNeverCarriesKeyBytes(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestNewKeyringWipesTheRawKeyBytes(t *testing.T) {
+	raw := testKey('a')
+	if _, err := NewKeyring("k1", map[string][]byte{"k1": raw}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, make([]byte, MasterKeyLen)) {
+		t.Fatal("the raw key bytes are not wiped after the ring is built")
+	}
+	// A ring that refuses to build wipes them too.
+	rejected := testKey('b')
+	if _, err := NewKeyring("nope", map[string][]byte{"k1": rejected}); err == nil {
+		t.Fatal("NewKeyring accepted a current id that is not in the ring")
+	}
+	if !bytes.Equal(rejected, make([]byte, MasterKeyLen)) {
+		t.Fatal("the refused key bytes are not wiped")
+	}
+}
