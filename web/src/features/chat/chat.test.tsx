@@ -717,3 +717,96 @@ describe("UPM-261 composer toolbar", () => {
     expect(model.hasAttribute("disabled")).toBe(false);
   });
 });
+
+describe("UPM-265 nothing usable", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    cleanup();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  // Every account Not connected and no usable route: the thread guides the
+  // person to a provider first, then a route or an agent, and the composer
+  // stays usable for the day Auto works again.
+  async function nothingUsableClient(): Promise<ApiClient> {
+    const base = quick();
+    const routes = (await base.gateway.routes()).map((item) => ({ ...item, usable: false }));
+    return {
+      ...base,
+      gateway: { ...base.gateway, routes: async () => routes },
+      providers: {
+        ...base.providers,
+        list: async () =>
+          (await base.providers.list()).map((account) => ({
+            ...account,
+            status: "Not connected" as const,
+            usable: false,
+            usable_models: [],
+          })),
+      },
+    };
+  }
+
+  it("guides to a provider, then a route or an agent, instead of the blank thread", async () => {
+    renderChat("/chat", await nothingUsableClient());
+    fireEvent.click(await within(await findChatList()).findByRole("button", { name: "New chat" }));
+
+    const guide = await screen.findByTestId("chat-setup-guide");
+    expect(within(guide).getByRole("heading", { name: "Connect a provider" })).toBeTruthy();
+    expect(within(guide).getByRole("link", { name: "Add provider" }).getAttribute("href")).toBe("/providers/new");
+    expect(within(guide).getByRole("link", { name: "route" }).getAttribute("href")).toBe("/models");
+    expect(within(guide).getByRole("link", { name: "agent" }).getAttribute("href")).toBe("/agents");
+    expect(screen.queryByText("Write a message to start this chat.")).toBeNull();
+
+    // The composer still takes a line: Auto may work again by the time it is sent.
+    const composer = screen.getByRole("form", { name: "Chat composer" });
+    expect(within(composer).getByRole("textbox", { name: "Message" })).toBeTruthy();
+  });
+
+  it("keeps the blank thread when something usable remains", async () => {
+    renderChat("/chat", quick());
+    const list = await findChatList();
+    fireEvent.click(within(list).getByRole("button", { name: "New chat" }));
+
+    expect(await screen.findByText("Write a message to start this chat.")).toBeTruthy();
+    expect(screen.queryByTestId("chat-setup-guide")).toBeNull();
+  });
+
+  it("offers no unusable agent, route or model in the pickers", async () => {
+    const base = quick();
+    const routes = await base.gateway.routes();
+    const client: ApiClient = {
+      ...base,
+      gateway: {
+        ...base.gateway,
+        routes: async () => routes.map((item) => (item.name === "chat" ? item : { ...item, usable: false })),
+      },
+      providers: {
+        ...base.providers,
+        list: async () => {
+          const accounts = await base.providers.list();
+          return accounts.map((account) =>
+            account.provider === "anthropic"
+              ? account
+              : { ...account, status: "Key rejected" as const, usable: false, usable_models: [] },
+          );
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("button", { name: "Copy reply" });
+
+    const pill = screen.getByRole("button", { name: /Agent, route and model:/ });
+    fireEvent.click(pill);
+    const model = await screen.findByRole("menuitem", { name: "Model", hidden: true });
+    fireEvent.mouseEnter(model);
+    // Only the models of the account that still works are offered.
+    expect(await screen.findByRole("menuitemradio", { name: "claude-3-7-sonnet", hidden: true })).toBeTruthy();
+    expect(screen.queryByRole("menuitemradio", { name: "llama3.3:70b", hidden: true })).toBeNull();
+    expect(screen.queryByRole("menuitemradio", { name: "deepseek-r1:14b", hidden: true })).toBeNull();
+  });
+});

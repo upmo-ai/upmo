@@ -18,6 +18,8 @@ type Row = {
   base_url?: string;
   status: string;
   models: string[];
+  usable: boolean;
+  usable_models: string[];
   scope: "own" | "global";
 };
 
@@ -32,6 +34,8 @@ const claude: Row = {
   base_url: "https://api.anthropic.com",
   status: "Connected",
   models: ["claude-3-7-sonnet"],
+  usable: true,
+  usable_models: ["claude-3-7-sonnet"],
   scope: "own",
 };
 const local: Row = {
@@ -43,6 +47,8 @@ const local: Row = {
   base_url: "http://ollama.office:11434",
   status: "Key rejected",
   models: ["llama3.3:70b"],
+  usable: false,
+  usable_models: [],
   scope: "own",
 };
 const shared: Row = {
@@ -53,6 +59,8 @@ const shared: Row = {
   plan_kind: "metered",
   status: "Offline",
   models: ["gpt-4o"],
+  usable: false,
+  usable_models: [],
   scope: "global",
 };
 
@@ -110,6 +118,8 @@ function brain(
         ...(typeof sent.base_url === "string" ? { base_url: sent.base_url } : {}),
         status: "Not connected",
         models: sent.models as string[],
+        usable: false,
+        usable_models: [],
         scope: "own",
       };
       accounts.push(made);
@@ -332,6 +342,8 @@ describe("providers from the brain", () => {
       plan_kind: "local",
       status: "Connected",
       models: ["alpha"],
+      usable: true,
+      usable_models: ["alpha"],
       scope: "own",
     };
     const { fetcher, calls } = brain({ accounts: [bare] });
@@ -362,6 +374,8 @@ describe("providers from the brain", () => {
       base_url: "http://127.0.0.1:4000",
       status: "Connected",
       models: ["alpha"],
+      usable: true,
+      usable_models: ["alpha"],
       scope: "own",
     };
     const { fetcher, calls } = brain({ accounts: [pointed] });

@@ -1,7 +1,8 @@
-import { Text, Title, useMantineTheme } from "@mantine/core";
+import { Anchor, Card, Stack, Text, ThemeIcon, Title, useMantineTheme } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-import { IconLayoutSidebar, IconSearch } from "@tabler/icons-react";
+import { IconLayoutSidebar, IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
@@ -51,6 +52,34 @@ const noChats: ChatSummary[] = [];
 function byProvider<T extends { provider: string }>(items: readonly T[]): T[] {
   const order = [...new Set(items.map((item) => item.provider))];
   return [...items].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+}
+
+// The guide a chat shows when nothing in the workspace can answer: a
+// provider first, then a route or an agent if one is still needed. The same
+// pieces as the providers page's empty state.
+function SetupGuide() {
+  return (
+    <div data-testid="chat-setup-guide">
+    <Card withBorder radius="lg" padding="xl" style={{ borderStyle: "dashed" }}>
+      <Stack align="center" gap="sm" py={48}>
+        <ThemeIcon variant="light" size={48} radius="lg" color="teal">
+          <IconServer size={24} aria-hidden="true" />
+        </ThemeIcon>
+        <Title order={3}>Connect a provider</Title>
+        <Text c="dimmed" size="sm" maw={360} ta="center">
+          Nothing here can answer yet. Connect a provider with a working model first.
+        </Text>
+        <Button mt="xs" component={Link} to="/providers/new" leftSection={<IconPlus size={16} aria-hidden="true" />}>
+          Add provider
+        </Button>
+        <Text size="sm" c="dimmed" ta="center">
+          Then create a <Anchor component={Link} to="/models">route</Anchor> or an{" "}
+          <Anchor component={Link} to="/agents">agent</Anchor> if you need one.
+        </Text>
+      </Stack>
+    </Card>
+    </div>
+  );
 }
 
 export function ChatPage() {
@@ -211,6 +240,10 @@ export function ChatPage() {
   const agentsKnown = agentList.data != null;
   const routesKnown = gatewayRoutes.data != null;
   const modelsKnown = accountList.data != null;
+  // Nothing usable anywhere: no model and no route can answer, so the thread
+  // guides the person to a provider first. Only lists that loaded may say
+  // so, or a slow brain would flash the guide.
+  const nothingUsable = modelsKnown && routesKnown && models.length === 0 && routes.length === 0;
   useEffect(() => {
     savePicks({
       agent: agentsKnown ? picks.agent : remembered.agent,
@@ -454,7 +487,7 @@ export function ChatPage() {
             scrollKey={`${activeId ?? ""}:${sentCounts[activeId ?? ""] ?? 0}`}
             announcement={announcement}
             busy={thinking}
-            empty={<Text className="chat-thread-empty">Write a message to start this chat.</Text>}
+            empty={nothingUsable ? <SetupGuide /> : <Text className="chat-thread-empty">Write a message to start this chat.</Text>}
           >
             {lines.map((line) => {
               if (line.status === "failed" && retrying.has(line.id)) return null;
