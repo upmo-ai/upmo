@@ -52,6 +52,10 @@ type Entry struct {
 	Usage        Usage
 	CostUSD      *float64
 	PriceVersion string
+	// OwnerTeamID is the team through which the person reached a shared
+	// account, as it was when the attempt ran. It is empty for their own
+	// account and for a workspace-wide one.
+	OwnerTeamID string
 }
 
 // CostUSD is the metered cost for an attempt. It is nil when the plan is

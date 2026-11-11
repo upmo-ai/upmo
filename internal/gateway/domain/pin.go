@@ -105,9 +105,11 @@ func Pinned(pin Link, chain []Link) []Link {
 	return out
 }
 
-// PinUsable reports whether person may pin account: their own account, or
-// one with no owner, which is global. Another person's account is never
-// usable.
-func PinUsable(account Account, person string) bool {
-	return account.OwnerUserID == "" || account.OwnerUserID == person
+// PinUsable reports whether person, who is on teams, may pin account: their
+// own account, one shared with a team of theirs, or one shared with the whole
+// workspace. It is the set LinksForUser draws on. Another person's account,
+// or one shared only with teams they are not on, is never usable.
+func PinUsable(account Account, person string, teams []string) bool {
+	reach, _ := account.ReachedBy(person, teams)
+	return reach != ReachNone
 }

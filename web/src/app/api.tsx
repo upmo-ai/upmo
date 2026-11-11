@@ -167,6 +167,13 @@ export type ProviderAccount = {
   models: string[];
   /** "global" accounts belong to the workspace and are read only; "own" ones the person manages. */
   scope: "own" | "global";
+  /** Sharing details the brain supplies for accounts that support team sharing. */
+  share?: {
+    scope: "own" | "workspace" | "team";
+    team_ids: string[];
+    team_names: string[];
+    can_manage: boolean;
+  };
 };
 
 /**
@@ -224,6 +231,8 @@ export type ProviderAdd = {
   base_url?: string;
   api_key?: string;
   models: string[];
+  scope?: "workspace" | "teams";
+  team_ids?: string[];
 };
 
 /** PUT /api/providers/{id}. A field left out stays as it is; an empty base_url clears the saved address, and no api_key keeps the saved key. */
@@ -233,6 +242,8 @@ export type ProviderChange = {
   base_url?: string;
   api_key?: string;
   models?: string[];
+  scope?: "workspace" | "teams";
+  team_ids?: string[];
 };
 
 /**
@@ -1683,6 +1694,33 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         return providerAccounts.map((item) => copy(item));
       },
       async add(input) {
+        const acting = actor();
+        let share: ProviderAccount["share"];
+        if (input.scope === undefined && input.team_ids !== undefined) {
+          throw new BrainError(422, "invalid", "Choose who can use this provider.");
+        }
+        if (input.scope !== undefined) {
+          if (!canManageMembers(acting.role)) {
+            throw new BrainError(403, "forbidden", "Only workspace admins can share a provider.");
+          }
+          const ids = input.scope === "teams" ? input.team_ids ?? [] : [];
+          if (input.scope === "workspace" && (input.team_ids?.length ?? 0) > 0) {
+            throw new BrainError(422, "invalid", "Sharing with the whole workspace takes no teams.");
+          }
+          if (input.scope === "teams" && ids.length === 0) {
+            throw new BrainError(422, "invalid", "Choose at least one team.");
+          }
+          const selected = ids.map((id) => teams.find((team) => team.id === id));
+          if (selected.some((team) => !team)) {
+            throw new BrainError(422, "invalid", "Choose teams from the list.");
+          }
+          share = {
+            scope: input.scope === "teams" ? "team" : "workspace",
+            team_ids: [...ids],
+            team_names: selected.map((team) => team!.name),
+            can_manage: true,
+          };
+        }
         const account: ProviderAccount = {
           id: nextId("provider"),
           provider: input.provider,
@@ -1692,7 +1730,8 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           base_url: input.base_url,
           status: "Connected",
           models: copy(input.models),
-          scope: "own",
+          scope: share ? "global" : "own",
+          ...(share ? { share } : {}),
         };
         providerAccounts.push(account);
         return copy(account);
@@ -1700,6 +1739,33 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async update(id, input) {
         const account = providerAccounts.find((item) => item.id === id);
         if (!account) throw new Error("Provider missing.");
+        if (input.scope !== undefined || input.team_ids !== undefined) {
+          if (!canManageMembers(actor().role)) {
+            throw new BrainError(403, "forbidden", "Only workspace admins can share a provider.");
+          }
+          if (account.scope === "own") {
+            throw new BrainError(422, "invalid", "A personal provider is not shared.");
+          }
+          const scope = input.scope ?? (account.share?.scope === "team" ? "teams" : "workspace");
+          const ids = scope === "teams" ? input.team_ids ?? account.share?.team_ids ?? [] : [];
+          if (scope === "workspace" && (input.team_ids?.length ?? 0) > 0) {
+            throw new BrainError(422, "invalid", "Sharing with the whole workspace takes no teams.");
+          }
+          if (scope === "teams" && ids.length === 0) {
+            throw new BrainError(422, "invalid", "Choose at least one team.");
+          }
+          const selected = ids.map((teamId) => teams.find((team) => team.id === teamId));
+          if (selected.some((team) => !team)) {
+            throw new BrainError(422, "invalid", "Choose teams from the list.");
+          }
+          account.scope = "global";
+          account.share = {
+            scope: scope === "teams" ? "team" : "workspace",
+            team_ids: [...ids],
+            team_names: selected.map((team) => team!.name),
+            can_manage: true,
+          };
+        }
         if (input.name !== undefined) account.name = input.name;
         if (input.plan_kind !== undefined) account.plan_kind = input.plan_kind;
         if (input.base_url !== undefined) account.base_url = input.base_url;

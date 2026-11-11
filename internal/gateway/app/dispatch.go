@@ -63,14 +63,23 @@ type Routes interface {
 	ByName(ctx context.Context, name string) (domain.Route, error)
 }
 
+// Teams lists the teams a person is on, by id. The accounts shared with those
+// teams are among the ones the person may use.
+type Teams interface {
+	TeamsOf(ctx context.Context, user string) ([]string, error)
+}
+
 // PinAccounts looks up the provider account a pin names. ok is false when
 // there is no such account or it does not list the model.
 type PinAccounts interface {
+	// PinAccount loads the account with the teams it is shared with, so the
+	// caller can judge whether the person may use it.
 	PinAccount(ctx context.Context, id, model string) (account domain.Account, ok bool, err error)
-	// PinProvider resolves a provider name and a model for one person: their
-	// own account of that provider that lists the model, else a global
-	// account of it that does. ok is false when there is none.
-	PinProvider(ctx context.Context, user, provider, model string) (account domain.Account, ok bool, err error)
+	// PinProvider resolves a provider name and a model for one person, who
+	// is on teams: their own account of that provider that lists the model,
+	// else one shared with a team of theirs, else a workspace one. ok is
+	// false when there is none.
+	PinProvider(ctx context.Context, user string, teams []string, provider, model string) (account domain.Account, ok bool, err error)
 }
 
 // Secrets resolves a credential_ref. Implementations must not log the value.
@@ -90,12 +99,15 @@ type Dispatch struct {
 	Prices  Prices
 	Ledger  Ledger
 	Bundles Bundles
-	Decide  map[string]Decider
-	Chat    map[string]Chatter
-	Stream  map[string]StreamChatter
-	Embed   map[string]Embedder
-	Gates   *Gates
-	Caps    Caps
+	// Teams says which teams a person is on, for the accounts shared with
+	// them. Nil means nobody is on a team.
+	Teams  Teams
+	Decide map[string]Decider
+	Chat   map[string]Chatter
+	Stream map[string]StreamChatter
+	Embed  map[string]Embedder
+	Gates  *Gates
+	Caps   Caps
 	// Status hears the outcome of every attempt, by credential ref. It must
 	// not block. Nil hears nothing.
 	Status Statuses
@@ -110,7 +122,8 @@ func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who
 }
 
 // writeCost prices one attempt, records its ledger row and returns the cost
-// it priced, so a caller can report the same number the row holds.
+// it priced, so a caller can report the same number the row holds. The row
+// keeps the team the link was reached through (link.ViaTeam), as it was now.
 func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) (*float64, error) {
 	cost, version, err := d.priceCost(ctx, link, usage)
 	if err != nil {
@@ -130,6 +143,7 @@ func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link,
 		Usage:        usage,
 		CostUSD:      cost,
 		PriceVersion: version,
+		OwnerTeamID:  link.ViaTeam,
 	})
 }
 
@@ -380,8 +394,9 @@ func (d Dispatch) ChatStreamCall(ctx context.Context, routeName, credentialRef s
 // before the route's chain, on the credential of the account it names, and
 // the chain follows as the fallback with the pinned account and model taken
 // out of it. A pin names an account, or a provider that is resolved to the
-// person's own account of it that lists the model, else a global one. A pin
-// to another person's account is refused before any frame.
+// person's own account of it that lists the model, else one shared with a
+// team of theirs, else a workspace one. A pin to an account the person may
+// not use is refused before any frame.
 // A pin that cannot be used (no such account, or no stream adapter for it)
 // is skipped, and the sink hears a notice that names the pinned model before
 // the chain starts. The zero pin leaves the call as ChatStreamCall made it.
@@ -392,9 +407,14 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	if !pin.IsZero() && (who.User == "" || credentialRef != "") {
 		return domain.ErrPinCaller
 	}
+	// The teams the person is on say which shared accounts they may use.
+	teams, err := d.teamsOf(ctx, credentialRef, who)
+	if err != nil {
+		return err
+	}
 	// Whose account the pin names is settled first, so another person's
 	// account is refused whatever else is wrong with the call.
-	account, found, own, err := d.pinAccount(ctx, who, pin)
+	account, found, reach, via, err := d.pinAccount(ctx, who, teams, pin)
 	if err != nil {
 		return err
 	}
@@ -422,8 +442,8 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	var links []domain.Link
 	if credentialRef == "" && who.User != "" {
 		// A streamed reply is paid by the person it is for when the route has
-		// links of theirs, and by the house otherwise.
-		links, err = route.LinksForUser(who.User)
+		// links they may use: their own, their teams', the workspace's.
+		links, err = route.LinksForUser(who.User, teams)
 	} else {
 		links, err = route.LinksFor(credentialRef)
 	}
@@ -434,8 +454,8 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		pinFirst  bool
 	)
 	if !pin.IsZero() {
-		pinned := d.pinLink(route, account, found, pin)
-		if own {
+		pinned := d.pinLink(route, account, found, via, pin)
+		if reach == domain.ReachOwn {
 			// A pin to the person's own account is paid by them alone: the
 			// fallback is their own links of the route, which may be none.
 			links, err = route.OwnLinks(who.User), nil
@@ -668,36 +688,50 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 	return "", nil, last
 }
 
-// pinAccount looks up the account a pin names and settles whose it is. It
-// returns an error for an account that belongs to another person, which is
-// refused. found is false when there is no such account, or no lookup; own
-// says the account is the person's own.
-func (d Dispatch) pinAccount(ctx context.Context, who domain.Principal, pin domain.Pin) (account domain.Account, found, own bool, err error) {
+// teamsOf looks up the teams the person is on, for a call that is paid by the
+// person (a streamed reply with no credential ref). Every other call has no
+// use for them.
+func (d Dispatch) teamsOf(ctx context.Context, credentialRef string, who domain.Principal) ([]string, error) {
+	if d.Teams == nil || credentialRef != "" || who.User == "" {
+		return nil, nil
+	}
+	return d.Teams.TeamsOf(ctx, who.User)
+}
+
+// pinAccount looks up the account a pin names and settles whether the person,
+// who is on teams, may use it. It returns an error for an account they may
+// not, which is refused. found is false when there is no such account, or no
+// lookup; reach says how the person reaches the account (their own, a team's,
+// the workspace's) and via the team, for a team account.
+func (d Dispatch) pinAccount(ctx context.Context, who domain.Principal, teams []string, pin domain.Pin) (account domain.Account, found bool, reach domain.Reach, via string, err error) {
 	if pin.IsZero() || d.Pins == nil {
-		return domain.Account{}, false, false, nil
+		return domain.Account{}, false, domain.ReachNone, "", nil
 	}
 	if pin.Provider != "" {
-		account, found, err = d.Pins.PinProvider(ctx, who.User, pin.Provider, pin.Model)
+		account, found, err = d.Pins.PinProvider(ctx, who.User, teams, pin.Provider, pin.Model)
 	} else {
 		account, found, err = d.Pins.PinAccount(ctx, pin.AccountID, pin.Model)
 	}
 	if err != nil || !found {
-		return domain.Account{}, false, false, err
+		return domain.Account{}, false, domain.ReachNone, "", err
 	}
-	if !domain.PinUsable(account, who.User) {
-		return domain.Account{}, false, false, domain.ErrPinAccount
+	if !domain.PinUsable(account, who.User, teams) {
+		return domain.Account{}, false, domain.ReachNone, "", domain.ErrPinAccount
 	}
-	return account, true, account.OwnerUserID != "", nil
+	reach, via = account.ReachedBy(who.User, teams)
+	return account, true, reach, via, nil
 }
 
 // pinLink makes the link that goes first from a found account, with the
-// credential ref of that account. It is nil for a pin that cannot be used: no
-// such account, or no stream adapter for it.
-func (d Dispatch) pinLink(route domain.Route, account domain.Account, found bool, pin domain.Pin) *domain.Link {
+// credential ref of that account and the team it was reached through. It is
+// nil for a pin that cannot be used: no such account, or no stream adapter
+// for it.
+func (d Dispatch) pinLink(route domain.Route, account domain.Account, found bool, via string, pin domain.Pin) *domain.Link {
 	if !found || d.Stream[account.Adapter] == nil {
 		return nil
 	}
 	link := route.PinLink(account, pin.Model)
+	link.ViaTeam = via
 	return &link
 }
 

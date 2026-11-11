@@ -9,6 +9,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -29,7 +30,7 @@ func TestStaleOutcomeDoesNotOverwriteAReset(t *testing.T) {
 	providers := postgres.Providers{Pool: pgtest.App(t, pool)}
 	store := postgres.Store{Pool: pool}
 
-	made, err := providers.Create(ctx, staleOwner, domain.Provider{
+	made, err := providers.Create(ctx, app.Caller{User: staleOwner}, domain.Provider{
 		Provider:      "fake",
 		Name:          "stale-check",
 		Adapter:       domain.AdapterFake,
@@ -48,14 +49,14 @@ func TestStaleOutcomeDoesNotOverwriteAReset(t *testing.T) {
 	started := time.Now()
 	stale := made
 	stale.Name = "renamed"
-	if _, err := providers.Update(ctx, staleOwner, stale, nil, true); err != nil {
+	if _, err := providers.Update(ctx, app.Caller{User: staleOwner}, stale, nil, true); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusConnected, started); err != nil {
 		t.Fatal(err)
 	}
-	got, err := providers.Get(ctx, staleOwner, made.ID)
+	got, err := providers.Get(ctx, app.Caller{User: staleOwner}, made.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestStaleOutcomeDoesNotOverwriteAReset(t *testing.T) {
 	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusConnected, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	got, err = providers.Get(ctx, staleOwner, made.ID)
+	got, err = providers.Get(ctx, app.Caller{User: staleOwner}, made.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestAnUnchangedStatusIsSkippedUntilAReset(t *testing.T) {
 	providers := postgres.Providers{Pool: pgtest.App(t, pool)}
 	store := postgres.Store{Pool: pool}
 
-	made, err := providers.Create(ctx, staleOwner, domain.Provider{
+	made, err := providers.Create(ctx, app.Caller{User: staleOwner}, domain.Provider{
 		Provider:      "fake",
 		Name:          "dedupe-check",
 		Adapter:       domain.AdapterFake,
@@ -110,7 +111,7 @@ func TestAnUnchangedStatusIsSkippedUntilAReset(t *testing.T) {
 		return at
 	}
 	status := func() string {
-		got, err := providers.Get(ctx, staleOwner, made.ID)
+		got, err := providers.Get(ctx, app.Caller{User: staleOwner}, made.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +140,7 @@ func TestAnUnchangedStatusIsSkippedUntilAReset(t *testing.T) {
 	// same outcome starts again: it lands.
 	edited := made
 	edited.Name = "renamed"
-	if _, err := providers.Update(ctx, staleOwner, edited, nil, true); err != nil {
+	if _, err := providers.Update(ctx, app.Caller{User: staleOwner}, edited, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := status(); got != domain.StatusNotConnected {
