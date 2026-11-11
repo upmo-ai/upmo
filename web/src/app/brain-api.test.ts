@@ -396,11 +396,15 @@ describe("provider request bodies", () => {
     expect(providerAddBody(add)).toEqual({
       provider: "anthropic",
       name: "Claude Team",
-      adapter: "openai_compat",
+      adapter: "anthropic",
       plan_kind: "metered",
       base_url: "https://api.anthropic.com",
       api_key: "sk-ant-1",
       models: ["claude-3-7-sonnet"],
+    });
+    expect(providerAddBody({ ...add, provider: "openai", adapter: "openai" })).toMatchObject({
+      provider: "openai",
+      adapter: "openai_compat",
     });
     expect(providerAddBody({ ...add, adapter: "fake", plan_kind: "local" })).toMatchObject({ adapter: "fake" });
   });
@@ -430,6 +434,9 @@ describe("provider request bodies", () => {
       plan_kind: "local",
       base_url: "http://ollama:11434",
       model: "llama3.3:70b",
+    });
+    expect(providerTestBody({ provider: "anthropic", adapter: "anthropic", plan_kind: "metered" })).toMatchObject({
+      adapter: "anthropic",
     });
   });
 

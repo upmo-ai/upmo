@@ -647,7 +647,7 @@ func TestValidation(t *testing.T) {
 		{"blank name", func(b map[string]any) { b["name"] = "   " }, http.StatusUnprocessableEntity},
 		{"61 char name", func(b map[string]any) { b["name"] = strings.Repeat("n", 61) }, http.StatusUnprocessableEntity},
 		{"control char name", func(b map[string]any) { b["name"] = "a\x01b" }, http.StatusUnprocessableEntity},
-		{"unknown adapter", func(b map[string]any) { b["adapter"] = "anthropic" }, http.StatusUnprocessableEntity},
+		{"unknown adapter", func(b map[string]any) { b["adapter"] = "cohere" }, http.StatusUnprocessableEntity},
 		{"no adapter", func(b map[string]any) { delete(b, "adapter") }, http.StatusUnprocessableEntity},
 		{"unknown plan", func(b map[string]any) { b["plan_kind"] = "free" }, http.StatusUnprocessableEntity},
 		{"no plan", func(b map[string]any) { delete(b, "plan_kind") }, http.StatusUnprocessableEntity},
@@ -1068,7 +1068,7 @@ func TestTestRoute(t *testing.T) {
 		prov.status.Store(200)
 		before := prov.hits.Load()
 		for name, extra := range map[string]map[string]any{
-			"unknown adapter":         {"adapter": "anthropic"},
+			"unknown adapter":         {"adapter": "cohere"},
 			"no adapter":              {"adapter": ""},
 			"bad plan":                {"plan_kind": "free"},
 			"no key for metered":      {"plan_kind": "metered", "base_url": "https://api.example.com", "api_key": ""},
