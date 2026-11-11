@@ -10,6 +10,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 )
 
 const wrongPassword = `{"error":"Email or password is wrong"}` + "\n"
@@ -23,7 +24,7 @@ func (h Passkeys) passwordSignIn(w http.ResponseWriter, r *http.Request) {
 		writeRaw(w, http.StatusUnauthorized, wrongPassword)
 		return
 	}
-	token, offer, retry, err := h.Password.SignIn(r.Context(), input.Email, input.Password, domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted), agent(r))
+	token, offer, retry, err := h.Password.SignIn(r.Context(), input.Email, input.Password, httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted), agent(r))
 	if writePasswordErr(w, retry, err) {
 		return
 	}
@@ -90,7 +91,7 @@ func (h Passkeys) passwordVerify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "password", http.StatusInternalServerError)
 		return
 	}
-	retry, err := h.Password.Verify(r.Context(), session.UserID, session.ID, email, input.Password, domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted))
+	retry, err := h.Password.Verify(r.Context(), session.UserID, session.ID, email, input.Password, httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted))
 	if writePasswordErr(w, retry, err) {
 		return
 	}
