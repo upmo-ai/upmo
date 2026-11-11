@@ -52,7 +52,6 @@ func (r Roles) Create(ctx context.Context, session Session, name string, names [
 	if err != nil {
 		return domain.RoleID{}, r.refuse("role create refused", session, err)
 	}
-	r.note("role created", session.UserID, id)
 	return id, nil
 }
 
@@ -85,7 +84,6 @@ func (r Roles) Change(ctx context.Context, session Session, id domain.RoleID, na
 	if err := r.Store.ChangeRole(ctx, id, clean, permissionNames(permissions)); err != nil {
 		return r.refuse("role change refused", session, err)
 	}
-	r.note("role changed", session.UserID, id)
 	return nil
 }
 
@@ -113,7 +111,6 @@ func (r Roles) Duplicate(ctx context.Context, session Session, id domain.RoleID,
 	if err != nil {
 		return domain.RoleID{}, r.refuse("role duplicate refused", session, err)
 	}
-	r.note("role duplicated", session.UserID, created)
 	return created, nil
 }
 
@@ -142,7 +139,6 @@ func (r Roles) Delete(ctx context.Context, session Session, id domain.RoleID) er
 	if err := r.Store.DeleteRole(ctx, id); err != nil {
 		return r.refuse("role delete refused", session, err)
 	}
-	r.note("role deleted", session.UserID, id)
 	return nil
 }
 
@@ -163,9 +159,6 @@ func (r Roles) Set(ctx context.Context, session Session, member domain.UserID, r
 	})
 	if err != nil {
 		return r.refuse("member role refused", session, err)
-	}
-	if r.Log != nil {
-		r.Log.Info("member role changed", "actor", session.UserID.String(), "member", member.String(), "role", role.String())
 	}
 	return nil
 }
@@ -194,18 +187,10 @@ func (r Roles) fresh(session Session) error {
 	return nil
 }
 
-func (r Roles) refuse(message string, session Session, err error) error {
-	if r.Log != nil && err != nil {
-		r.Log.Info(message, "actor", session.UserID.String(), "err", err.Error())
-	}
+// refuse keeps the call sites uniform. The audit middleware seals a refused
+// mutation as a denied event, so nothing is logged here.
+func (r Roles) refuse(_ string, _ Session, err error) error {
 	return err
-}
-
-func (r Roles) note(message string, actor domain.UserID, role domain.RoleID) {
-	if r.Log == nil {
-		return
-	}
-	r.Log.Info(message, "actor", actor.String(), "role", role.String())
 }
 
 func permissionNames(permissions []domain.Permission) []string {

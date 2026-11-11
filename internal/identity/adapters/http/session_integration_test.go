@@ -14,6 +14,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -22,6 +23,9 @@ import (
 func TestSessionHTTP(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,11 @@ func TestSessionHTTP(t *testing.T) {
 	h := httpapi.Handler{Sessions: svc, Log: slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 	mux := http.NewServeMux()
 	h.Mount(mux)
-	protected := httpserver.Protect(mux)
+	// The brain mount: the audit middleware outside the cross-origin guard, in
+	// a server that expects the handler to carry its own guard, so a refused
+	// request is still recorded.
+	served := audit.Middleware(audit.Routes(), mux, pool, "brain", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(httpserver.Protect(mux))
+	protected := httpserver.NewGuarded("127.0.0.1:0", served).Handler
 
 	t.Run("missing", func(t *testing.T) {
 		rec := call(protected, http.MethodGet, "/api/session", "")

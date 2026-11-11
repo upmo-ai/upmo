@@ -9,6 +9,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.UserID, string, string, bool, error) {
@@ -29,6 +30,22 @@ func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.Use
 		stored = *hash
 	}
 	return id, stored, name, true, nil
+}
+
+func (p Passkeys) PersonByEmail(ctx context.Context, email string) (domain.UserID, bool, bool, error) {
+	var id domain.UserID
+	var disabled bool
+	err := p.Pool.QueryRow(ctx, `
+		SELECT id, disabled_at IS NOT NULL
+		FROM identity.users
+		WHERE lower(email) = lower($1)`, email).Scan(&id, &disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.UserID{}, false, false, nil
+	}
+	if err != nil {
+		return domain.UserID{}, false, false, err
+	}
+	return id, disabled, true, nil
 }
 
 func (p Passkeys) Profile(ctx context.Context, user domain.UserID) (string, string, error) {
@@ -54,13 +71,26 @@ func (p Passkeys) SetPasswordWithKeep(ctx context.Context, user domain.UserID, k
 			if tag.RowsAffected() != 1 {
 				return pgx.ErrNoRows
 			}
-			return nil
+			return audit.Record(ctx, tx, audit.Event{
+				Action:   audit.PasswordSet,
+				Outcome:  audit.Success,
+				TargetID: user.String(),
+			})
 		},
 	)
 }
 
+// SetPassword stores a hash and records nothing: the sign-in rehash calls it,
+// and a transparent hash upgrade is not a person's password change.
 func (p Passkeys) SetPassword(ctx context.Context, user domain.UserID, hash string) error {
-	return p.SetPasswordWithKeep(ctx, user, "", hash)
+	tag, err := p.Pool.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, user, hash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func (p Passkeys) RemovePassword(ctx context.Context, user domain.UserID, keep string) error {
@@ -76,7 +106,11 @@ func (p Passkeys) RemovePassword(ctx context.Context, user domain.UserID, keep s
 			if tag.RowsAffected() != 1 {
 				return pgx.ErrNoRows
 			}
-			return nil
+			return audit.Record(ctx, tx, audit.Event{
+				Action:   audit.PasswordRemove,
+				Outcome:  audit.Success,
+				TargetID: user.String(),
+			})
 		},
 	)
 }

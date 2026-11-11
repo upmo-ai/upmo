@@ -107,6 +107,7 @@ func (h ConnectorGrants) session(w http.ResponseWriter, r *http.Request) (app.Se
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 		return app.Session{}, false
 	}
+	markActor(r, session)
 	return session, true
 }
 
