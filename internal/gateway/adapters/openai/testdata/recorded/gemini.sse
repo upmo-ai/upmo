@@ -1,0 +1,5 @@
+data: {"choices":[{"delta":{"content":"One, two, three, four, five.","role":"assistant"},"index":0}],"created":1794361499,"id":"msjzaqSGIK3NnsEPzKSXoA4","model":"gemini-flash-lite-latest","object":"chat.completion.chunk","usage":{"completion_tokens":10,"prompt_tokens":9,"total_tokens":19}}
+
+data: {"choices":[{"delta":{"extra_content":{"google":{"thought_signature":"redacted"}},"role":"assistant"},"finish_reason":"stop","index":0}],"created":1794361499,"id":"msjzaqSGIK3NnsEPzKSXoA4","model":"gemini-flash-lite-latest","object":"chat.completion.chunk","usage":{"completion_tokens":10,"prompt_tokens":9,"total_tokens":19}}
+
+data: [DONE]

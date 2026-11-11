@@ -303,6 +303,36 @@ func TestContractGeminiHasNoV1InItsURLs(t *testing.T) {
 	}
 }
 
+// testdata/recorded/gemini.sse is a real capture (2026-11-11, gemini-flash-lite-latest,
+// stream_options.include_usage). Gemini repeats the same usage on every chunk,
+// the first one that carries text included, and sends no usage-only chunk at
+// the end, so usage has to be read as the latest value, not summed.
+func TestContractGeminiRecordedStreamCountsRepeatedUsageOnce(t *testing.T) {
+	stream, err := os.ReadFile(filepath.Join("testdata/recorded", "gemini.sse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := newContractServer(t, stream)
+	to, _ := url.Parse(cs.srv.URL)
+	a := Adapter{Client: &http.Client{Transport: &redirect{to: to}}}
+	v, _ := domain.VendorFor("gemini")
+	var text string
+	usage, class, err := a.ChatStream(context.Background(), app.Attempt{BaseURL: v.BaseURL, Model: "gemini-flash-lite-latest", Secret: "k"},
+		domain.Request{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}, func(s string) error {
+			text += s
+			return nil
+		})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if text != "One, two, three, four, five." {
+		t.Errorf("text = %q", text)
+	}
+	if want := (domain.Usage{Arrived: true, Input: 9, Output: 10}); usage != want {
+		t.Errorf("usage = %+v, want %+v", usage, want)
+	}
+}
+
 func TestContractStreamWithoutUsageLeavesUsageNotArrived(t *testing.T) {
 	// A vendor that sends no usage in its stream still completes: the text
 	// arrives and the usage says it never did, so the ledger books no cost.
