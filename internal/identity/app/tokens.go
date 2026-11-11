@@ -103,9 +103,6 @@ func (t APITokens) Create(ctx context.Context, session Session, name string, sco
 	if err != nil {
 		return "", "", err
 	}
-	if t.Log != nil {
-		t.Log.Info("token created", "actor", session.UserID.String(), "token", id)
-	}
 	return id, secret, nil
 }
 
@@ -126,9 +123,6 @@ func (t APITokens) Revoke(ctx context.Context, user domain.UserID, id string) er
 	if err := t.Store.DeleteToken(ctx, user, id); err != nil {
 		t.note("token revoke refused", user, err)
 		return err
-	}
-	if t.Log != nil {
-		t.Log.Info("token revoked", "actor", user.String(), "token", id)
 	}
 	return nil
 }

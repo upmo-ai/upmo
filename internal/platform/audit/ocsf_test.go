@@ -52,7 +52,7 @@ func TestOCSFMapsRefusals(t *testing.T) {
 
 func TestOCSFRefusesUnknownAction(t *testing.T) {
 	row := goldenRow()
-	row.Action = "auth.sign_in"
+	row.Action = "test.unknown"
 	if _, err := OCSF(Sealed{Row: row}); err == nil {
 		t.Fatal("an action outside the catalog mapped without complaint")
 	}

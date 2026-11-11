@@ -205,7 +205,19 @@ func (h Handler) authenticate(w http.ResponseWriter, r *http.Request) (app.Sessi
 		refuse(w, http.StatusUnauthorized)
 		return app.Session{}, false
 	}
+	markActor(r, session)
 	return session, true
+}
+
+// markActor tells the audit scope who acts, once a session resolver knows.
+func markActor(r *http.Request, session app.Session) {
+	audit.WithActor(r.Context(), audit.Actor{
+		Type:           "user",
+		ID:             session.UserID.String(),
+		RoleID:         session.RoleID,
+		CredentialType: "session",
+		CredentialID:   session.ID,
+	})
 }
 
 func (h Handler) log(err error) {

@@ -109,6 +109,11 @@ func TestReadyAndSession(t *testing.T) {
 func TestRequireSessionSeamIntegration(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
+	// Session writes record their audit events in the same transaction, so the
+	// audit schema migrates with identity here.
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}

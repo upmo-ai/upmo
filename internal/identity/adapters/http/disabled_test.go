@@ -104,6 +104,9 @@ func (disabledPassword) Take(context.Context, string, time.Time, float64, float6
 func (disabledPassword) PasswordAccount(context.Context, string) (domain.UserID, string, string, bool, error) {
 	return domain.UserID{}, "", "", false, nil
 }
+func (disabledPassword) PersonByEmail(context.Context, string) (domain.UserID, bool, bool, error) {
+	return domain.UserID{}, false, false, nil
+}
 func (disabledPassword) Profile(context.Context, domain.UserID) (string, string, error) {
 	return "", "", app.ErrNotSignedIn
 }

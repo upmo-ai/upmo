@@ -169,10 +169,10 @@ func TestSignOutSealsOneChainedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sealed != 1 {
-		t.Fatalf("sealed %d events, want 1", sealed)
+	if sealed != 2 {
+		t.Fatalf("sealed %d events, want the seeded sign-in and the sign-out", sealed)
 	}
-	row, prev, hash := readEvent(t, owner, 1)
+	row, _, _ := readEvent(t, owner, 2)
 	userID, roleID := lookupPerson(t, owner, "ada@example.com")
 
 	if row.Action != audit.AuthSignOut || row.Outcome != audit.Success {
@@ -203,31 +203,33 @@ func TestSignOutSealsOneChainedEvent(t *testing.T) {
 		t.Fatalf("target = %s %s, want session %s", row.TargetType, row.TargetID, sessionID)
 	}
 
+	// The chain runs zero seed, sign-in, sign-out; the sign-out hash covers it.
+	first, firstPrev, _ := readEvent(t, owner, 1)
+	if first.Action != audit.AuthSignIn {
+		t.Fatalf("first event = %s, want the seeded sign-in", first.Action)
+	}
 	seed := make([]byte, 32)
-	if !bytes.Equal(prev, seed) {
-		t.Fatalf("first prev_hash = %x, want the zero seed", prev)
+	if !bytes.Equal(firstPrev, seed) {
+		t.Fatalf("first prev_hash = %x, want the zero seed", firstPrev)
 	}
-	want := sha256.Sum256(append(append([]byte{}, prev...), audit.Canonical(row)...))
-	if !bytes.Equal(hash, want[:]) {
-		t.Fatalf("hash %x does not cover the canonical bytes", hash)
-	}
+	checkChain(t, owner, 2)
 
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("%d OCSF lines, want 1", len(lines))
+	if len(lines) != 2 {
+		t.Fatalf("%d OCSF lines, want 2", len(lines))
 	}
 	var line map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &line); err != nil {
+	if err := json.Unmarshal([]byte(lines[1]), &line); err != nil {
 		t.Fatal(err)
 	}
 	if line["stream"] != "audit" {
 		t.Fatalf("stream = %v", line["stream"])
 	}
-	if line["class_uid"] != float64(3002) || line["activity_id"] != float64(1) {
+	if line["class_uid"] != float64(3002) || line["activity_id"] != float64(2) {
 		t.Fatalf("class %v activity %v", line["class_uid"], line["activity_id"])
 	}
 	metadata, ok := line["metadata"].(map[string]any)
-	if !ok || metadata["uid"] != row.ID || metadata["sequence"] != float64(1) {
+	if !ok || metadata["uid"] != row.ID || metadata["sequence"] != float64(2) {
 		t.Fatalf("metadata = %v", line["metadata"])
 	}
 	api, ok := line["api"].(map[string]any)
@@ -253,7 +255,8 @@ func TestUnauthorisedSignOutRecordsDenied(t *testing.T) {
 	if _, err := audit.SealOnce(context.Background(), owner, out); err != nil {
 		t.Fatal(err)
 	}
-	row, _, _ := readEvent(t, owner, 1)
+	// Position 1 is the seeded sign-in; the refusal follows it.
+	row, _, _ := readEvent(t, owner, 2)
 	if row.Action != audit.AuthSignOut || row.Outcome != audit.Denied {
 		t.Fatalf("event = %s %s, want a denied sign-out", row.Action, row.Outcome)
 	}
@@ -285,7 +288,7 @@ func TestCrossOriginRefusalRecordsDenied(t *testing.T) {
 	if _, err := audit.SealOnce(context.Background(), owner, out); err != nil {
 		t.Fatal(err)
 	}
-	row, _, _ := readEvent(t, owner, 1)
+	row, _, _ := readEvent(t, owner, 2)
 	if row.Action != audit.AuthSignOut || row.Outcome != audit.Denied {
 		t.Fatalf("event = %s %s, want a denied sign-out", row.Action, row.Outcome)
 	}
@@ -520,7 +523,7 @@ func TestFailedAuditInsertRollsTheChangeBack(t *testing.T) {
 		VALUES ('sam@example.com', 'Sam', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
 		t.Fatal(err)
 	}
-	if err := audit.Record(ctx, tx, audit.Event{Action: "auth.sign_in"}); err == nil {
+	if err := audit.Record(ctx, tx, audit.Event{Action: "test.unknown"}); err == nil {
 		t.Fatal("an action outside the catalog was recorded")
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -800,16 +803,16 @@ func TestSealedChangesCarryThePendingValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sealed != 2 {
-		t.Fatalf("sealed %d events, want the migrated and the sign-out", sealed)
+	if sealed != 3 {
+		t.Fatalf("sealed %d events, want the migrated, the seeded sign-in and the sign-out", sealed)
 	}
-	checkChain(t, owner, 2)
+	checkChain(t, owner, 3)
 
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("%d OCSF lines, want 2", len(lines))
+	if len(lines) != 3 {
+		t.Fatalf("%d OCSF lines, want 3", len(lines))
 	}
-	for position := int64(1); position <= 2; position++ {
+	for position := int64(1); position <= 3; position++ {
 		row, _, _ := readEvent(t, owner, position)
 		want, ok := pending[string(row.Action)]
 		if !ok {

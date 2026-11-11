@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
@@ -354,6 +355,11 @@ func TestAppRoleMayOnlySetDismissedAtOnOwnRows(t *testing.T) {
 
 func migrateIdentity(t *testing.T, owner *pgxpool.Pool) {
 	t.Helper()
+	// Identity session writes record their audit events in the same
+	// transaction, so the audit schema migrates with identity here.
+	if err := audit.Up(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(context.Background(), owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
