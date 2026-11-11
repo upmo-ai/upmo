@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -54,6 +55,10 @@ func shareSetup(t *testing.T) *shareEnv {
 	t.Helper()
 	owner := pgtest.New(t)
 	ctx := context.Background()
+	// The task store records audit events, so the audit schema comes up first.
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +68,7 @@ func shareSetup(t *testing.T) *shareEnv {
 	pool := pgtest.App(t, owner)
 	members := identity.Members(pool, "", nil, nil)
 	store := tasks.NewStore(pool, nil)
+	store.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	mux := http.NewServeMux()
 	tasks.Handler{
 		Book:   store,

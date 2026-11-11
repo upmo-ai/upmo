@@ -10,6 +10,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // lockChat locks the chat row for a write and tells a chat that is gone from
@@ -221,14 +222,38 @@ func (s Store) Finish(ctx context.Context, access app.Access, reply app.Reply) e
 	return tx.Commit(ctx)
 }
 
-// Sweep deletes the deltas that are older than two hours.
+// Sweep deletes the deltas that are older than two hours. The service runs it
+// on its own schedule, so its event carries the system actor with a service
+// credential.
 func (s Store) Sweep(ctx context.Context) (int64, error) {
 	if s.Pool == nil {
 		return 0, fmt.Errorf("chat: no database")
 	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var swept int64
-	if err := s.Pool.QueryRow(ctx, `SELECT chat.sweep_deltas()`).Scan(&swept); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT chat.sweep_deltas()`).Scan(&swept); err != nil {
 		return 0, fmt.Errorf("chat: sweep: %w", err)
+	}
+	// A sweep that deleted nothing changed nothing, so it records nothing.
+	if swept == 0 {
+		return 0, tx.Commit(ctx)
+	}
+	if err := audit.Record(audit.WithRunner(ctx, audit.CredentialService), tx, audit.Event{
+		Action:  audit.ChatSweep,
+		Outcome: audit.Success,
+		Changes: audit.Changes{
+			Fields: []string{"rows"},
+			Values: map[string]audit.Change{"rows": {To: swept}},
+		},
+	}); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
 	}
 	return swept, nil
 }
@@ -326,6 +351,14 @@ func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID stri
 	}
 	if !queued {
 		return app.ErrBusy
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ChatRetry,
+		Outcome:  audit.Success,
+		TargetID: *userLine,
+		Changes:  pickChanges(picks),
+	}); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

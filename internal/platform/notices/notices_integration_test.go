@@ -355,8 +355,8 @@ func TestAppRoleMayOnlySetDismissedAtOnOwnRows(t *testing.T) {
 
 func migrateIdentity(t *testing.T, owner *pgxpool.Pool) {
 	t.Helper()
-	// Identity session writes record their audit events in the same
-	// transaction, so the audit schema migrates with identity here.
+	// Identity session writes and notice dismissals record their audit events
+	// in the same transaction, so the audit schema migrates with identity here.
 	if err := audit.Up(context.Background(), owner); err != nil {
 		t.Fatal(err)
 	}

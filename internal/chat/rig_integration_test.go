@@ -21,6 +21,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/memory"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
@@ -83,6 +84,10 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 	t.Helper()
 	owner := pgtest.New(t)
 	ctx := context.Background()
+	// The store records audit events, so the audit schema comes up first.
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}

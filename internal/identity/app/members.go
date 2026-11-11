@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 )
@@ -21,6 +23,7 @@ type MemberStore interface {
 	SharedObjects(ctx context.Context, objectType domain.ObjectType, user domain.UserID, teams []string, role domain.RoleID) ([]ObjectShare, error)
 	TaskGrants(ctx context.Context, taskID string) ([]TaskGrant, error)
 	ReplaceTaskGrants(ctx context.Context, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
+	ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
 	NamesOf(ctx context.Context, persons, teams []string) (personNames, teamNames map[string]string, err error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
