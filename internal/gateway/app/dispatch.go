@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
@@ -173,12 +174,13 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 			last = err
 			continue
 		}
+		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return domain.DecideResult{}, werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential)
+			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			if domain.NextAction(domain.ClassCredential, 0) == domain.ActionNext {
 				last = err
 				continue
@@ -188,11 +190,12 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
+			started := time.Now()
 			result, usage, class, err := decider.Decide(ctx, attempt, req)
 			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
 				return domain.DecideResult{}, werr
 			}
-			d.seen(link.Account.CredentialRef, class)
+			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				return result, nil
 			}
@@ -287,23 +290,25 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 			last = err
 			continue
 		}
+		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return "", werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential)
+			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last = err
 			continue
 		}
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
+			started := time.Now()
 			text, usage, class, err := chatter.Chat(ctx, attempt, built)
 			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
 				return "", werr
 			}
-			d.seen(link.Account.CredentialRef, class)
+			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				return text, nil
 			}
@@ -485,12 +490,13 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 			}
 			continue
 		}
+		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential)
+			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last, lastModel, lastClass = err, link.Model, domain.ClassCredential
 			next := ""
 			if i+1 < len(links) {
@@ -504,6 +510,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
+			started := time.Now()
 			text := false
 			usage, class, err := chatStream(ctx, streamer, attempt, built, func(delta string) error {
 				if err := sink.Delta(delta); err != nil {
@@ -516,7 +523,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 			if werr != nil {
 				return werr
 			}
-			d.seen(link.Account.CredentialRef, class)
+			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				sink.Done(StreamDone{Model: link.Model, Usage: usage, CostUSD: cost})
 				return nil
@@ -611,18 +618,20 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 			last = err
 			continue
 		}
+		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
 				return "", nil, werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential)
+			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last = err
 			continue
 		}
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
+			started := time.Now()
 			vectors, usage, class, err := embedder.Embed(ctx, attempt, inputs)
 			if class == domain.ClassOK && err == nil {
 				if verr := domain.CheckEmbeddings(len(inputs), vectors); verr != nil {
@@ -634,7 +643,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
 				return "", nil, werr
 			}
-			d.seen(link.Account.CredentialRef, class)
+			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				return link.Model, vectors, nil
 			}
@@ -709,11 +718,11 @@ func (d Dispatch) skip(link domain.Link) (bool, error) {
 	return false, nil
 }
 
-func (d Dispatch) seen(ref string, class domain.FailureClass) {
+func (d Dispatch) seen(ref string, class domain.FailureClass, started time.Time) {
 	if d.Gates != nil {
 		d.Gates.Observe(ref, class, 0)
 	}
 	if d.Status != nil {
-		d.Status.Note(ref, class)
+		d.Status.Note(ref, class, started)
 	}
 }

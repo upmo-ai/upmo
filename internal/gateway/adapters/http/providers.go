@@ -271,6 +271,8 @@ func (h ProvidersHandler) refuse(w http.ResponseWriter, err error) {
 		writeRouteError(w, http.StatusServiceUnavailable, "Saving provider keys is not set up on this server.")
 	case errors.Is(err, app.ErrRate):
 		writeRouteError(w, http.StatusTooManyRequests, "Too many tests. Try again in a minute.")
+	case errors.Is(err, app.ErrLocalPlan):
+		writeRouteError(w, http.StatusForbidden, "Only the workspace owner or an admin can use a provider on the local plan.")
 	default:
 		if h.Log != nil {
 			h.Log.Error("providers failed", "err", err)

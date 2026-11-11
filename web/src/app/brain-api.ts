@@ -441,7 +441,7 @@ export function toTestResult(value: unknown): TestResult {
   return result;
 }
 
-/** A field with a value, or nothing: an empty base URL or key is never sent. */
+/** A field with a value, or nothing: an add and a test never send an empty value. */
 function given(key: string, value: string | undefined): Json {
   return value === undefined || value === "" ? {} : { [key]: value };
 }
@@ -459,12 +459,16 @@ export function providerAddBody(input: ProviderAdd): Json {
   };
 }
 
-/** The PUT body of a change. Without an api_key the saved key stays. */
+/**
+ * The PUT body of a change. A field left out stays as it is; an emptied base
+ * URL is sent as "" so the brain clears the saved address, and without an
+ * api_key the saved key stays.
+ */
 export function providerChangeBody(input: ProviderChange): Json {
   return {
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(input.plan_kind !== undefined ? { plan_kind: input.plan_kind } : {}),
-    ...given("base_url", input.base_url),
+    ...(input.base_url !== undefined ? { base_url: input.base_url } : {}),
     ...given("api_key", input.api_key),
     ...(input.models !== undefined ? { models: input.models } : {}),
   };

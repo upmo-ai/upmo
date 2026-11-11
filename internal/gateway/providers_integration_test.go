@@ -108,6 +108,9 @@ func newRigLimited(t *testing.T, keys Keyring, max int) *rig {
 	r := &rig{t: t, owner: owner, app: pgtest.App(t, owner), keys: keys, logs: &syncBuf{}}
 	log := slog.New(slog.NewJSONHandler(r.logs, nil))
 	r.svc = NewProviders(r.app, keys, log)
+	// The rig stands in for the brain's wiring: here every person may use a
+	// local-plan account.
+	r.svc.LocalPlan = func(context.Context, string) bool { return true }
 	if max > 0 {
 		r.svc.Limiter = app.NewTestLimiter(max, time.Minute)
 	}
@@ -933,6 +936,7 @@ func TestRotationOldKeyReadsNewKeyWrites(t *testing.T) {
 	}
 	rotatedRig := &rig{t: t, owner: r.owner, app: r.app, keys: rotated, logs: r.logs}
 	rotatedRig.svc = NewProviders(r.app, rotated, nil)
+	rotatedRig.svc.LocalPlan = func(context.Context, string) bool { return true }
 	made2, err := rotatedRig.svc.Add(context.Background(), ada, app.NewProvider{
 		Provider: "p", Name: "New", Adapter: "openai_compat", PlanKind: "local", BaseURL: prov.url(), APIKey: newKey,
 	})
@@ -1159,6 +1163,7 @@ func TestTestRouteWithASavedAccountUsesItsKeyAndStoresTheStatus(t *testing.T) {
 	}
 	// The saved key cannot be opened by the wrong master key: say so, plainly.
 	other := NewProviders(r.app, masterKeys(t, 'b'), nil)
+	other.LocalPlan = func(context.Context, string) bool { return true }
 	res, err := other.Test(context.Background(), ada, app.TestRequest{ID: made.ID})
 	if err != nil || res.OK || res.Error == "" || strings.Contains(res.Error, adaKey) {
 		t.Fatalf("wrong master key: %+v, %v", res, err)
@@ -1423,7 +1428,7 @@ func TestGatewayProcessReadsEveryAccountUnderForcedRowSecurity(t *testing.T) {
 		}
 	}
 	// It can record a status, and the route reads still work through RLS.
-	if err := (postgres.Store{Pool: svc}).RecordStatus(ctx, refOf(t, r, made.ID), "Offline"); err != nil {
+	if err := (postgres.Store{Pool: svc}).RecordStatus(ctx, refOf(t, r, made.ID), "Offline", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if r.count(`SELECT count(*) FROM gateway.provider_accounts WHERE status = 'Offline'`) != 1 {
@@ -1474,7 +1479,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 3 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 4 {
 		t.Fatalf("version %d, %v", version, err)
 	}
 	var n int
