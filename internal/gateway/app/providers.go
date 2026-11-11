@@ -26,6 +26,9 @@ var (
 	ErrLimit = errors.New("gateway: too many providers")
 	// ErrRate is a person who tested too often.
 	ErrRate = errors.New("gateway: too many tests")
+	// ErrLocalPlan is a local-plan account, which reaches private addresses
+	// and so only the people who manage the workspace may add or test.
+	ErrLocalPlan = errors.New("gateway: local provider plan")
 	// ErrNoMasterKey is a server that has no master key, so it cannot hold keys.
 	ErrNoMasterKey = domain.ErrNoMasterKey
 )
@@ -76,6 +79,9 @@ type Providers struct {
 	Probes map[string]Prober
 	// Limiter bounds how often a person may test. Nil allows every test.
 	Limiter *TestLimiter
+	// LocalPlan says whether this person may add or test a local-plan
+	// account. Nil denies the local plan to every person.
+	LocalPlan func(ctx context.Context, user string) bool
 	// Log records add, update and remove with ids only. Nil logs nothing.
 	Log *slog.Logger
 }
@@ -151,6 +157,9 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 	if err != nil {
 		return domain.Provider{}, err
 	}
+	if plan == domain.PlanLocal && !s.mayLocal(ctx, user) {
+		return domain.Provider{}, ErrLocalPlan
+	}
 	base, err := domain.CleanBaseURL(plan, in.BaseURL)
 	if err != nil {
 		return domain.Provider{}, err
@@ -220,6 +229,13 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 			return domain.Provider{}, err
 		}
 		reset = reset || next.PlanKind != cur.PlanKind
+	}
+	// Making an account local, or re-pointing one that is, is the act Add
+	// guards: it reaches private addresses, so the same people decide it.
+	if next.PlanKind == domain.PlanLocal && (in.PlanKind != nil || in.BaseURL != nil) {
+		if !s.mayLocal(ctx, user) {
+			return domain.Provider{}, ErrLocalPlan
+		}
 	}
 	if in.BaseURL != nil {
 		next.BaseURL = *in.BaseURL
@@ -316,6 +332,9 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if err != nil {
 		return refuse(err.Error())
 	}
+	if plan == domain.PlanLocal && !s.mayLocal(ctx, user) {
+		return TestResult{}, ErrLocalPlan
+	}
 	if base, err = domain.CleanBaseURL(plan, base); err != nil {
 		return refuse(err.Error())
 	}
@@ -357,6 +376,13 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		}
 	}
 	return result, nil
+}
+
+// mayLocal asks LocalPlan whether this person may add or test a local-plan
+// account. Without a policy nobody may: a missing wiring must not open
+// private addresses to everyone.
+func (s Providers) mayLocal(ctx context.Context, user string) bool {
+	return s.LocalPlan != nil && s.LocalPlan(ctx, user)
 }
 
 // own loads an account and refuses one that is not the person's to change.

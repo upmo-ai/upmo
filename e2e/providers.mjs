@@ -52,8 +52,23 @@ try {
     await page.getByText("Review Configuration").waitFor();
   }
 
-  async function overflow() {
-    return page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  // A viewport change relayouts over the next rendered frames, so the
+  // sideways measure is read once it has settled: it is polled until three
+  // passes in a row read the same value, within an overall timeout.
+  async function settledOverflow() {
+    const measure = () =>
+      page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    const seen = [];
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      seen.push(await measure());
+      const [a, b, c] = seen.slice(-3);
+      if (a === b && b === c) return a;
+      if (Date.now() > deadline) {
+        throw new Error(`the sideways measure never settled; last readings: ${seen.join(", ")}`);
+      }
+      await page.waitForTimeout(50);
+    }
   }
 
   // The seed clears the person's own accounts, so the list starts without ours.
@@ -87,15 +102,13 @@ try {
 
   // Phones: neither the form nor the list scrolls sideways.
   await page.setViewportSize({ width: 360, height: 800 });
-  await page.waitForTimeout(500);
-  const formOverflow = await overflow();
+  const formOverflow = await settledOverflow();
   if (formOverflow > 0) {
     throw new Error(`the provider form scrolls sideways on a phone by ${formOverflow}px`);
   }
   await openProviders();
   await card().waitFor();
-  await page.waitForTimeout(500);
-  const listOverflow = await overflow();
+  const listOverflow = await settledOverflow();
   if (listOverflow > 0) {
     throw new Error(`the providers page scrolls sideways on a phone by ${listOverflow}px`);
   }
