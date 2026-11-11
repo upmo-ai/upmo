@@ -65,10 +65,10 @@ func (p Passkeys) HeldFor(ctx context.Context, user domain.UserID) (app.Held, er
 	var raw []string
 	err := p.Pool.QueryRow(ctx, `
 		SELECT person.id::text, person.disabled_at IS NOT NULL, person.joined_at IS NOT NULL,
-		       COALESCE(role.key, ''), role.permissions
+		       person.role_id::text, COALESCE(role.key, ''), role.permissions
 		FROM identity.users AS person
 		JOIN identity.roles AS role ON role.id = person.role_id
-		WHERE person.id = $1`, user).Scan(&idText, &held.Disabled, &held.Joined, &system, &raw)
+		WHERE person.id = $1`, user).Scan(&idText, &held.Disabled, &held.Joined, &held.RoleID, &system, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Held{}, domain.ErrToken
 	}
@@ -92,13 +92,13 @@ func (p Passkeys) FindToken(ctx context.Context, hash []byte, now time.Time) (ap
 	err := p.Pool.QueryRow(ctx, `
 		SELECT token.id::text, token.name, token.scope, token.created_at, token.expires_at, token.last_used_at,
 		       person.id::text, person.disabled_at IS NOT NULL, person.joined_at IS NOT NULL,
-		       COALESCE(role.key, ''), role.permissions
+		       person.role_id::text, COALESCE(role.key, ''), role.permissions
 		FROM identity.api_tokens AS token
 		JOIN identity.users AS person ON person.id = token.user_id
 		JOIN identity.roles AS role ON role.id = person.role_id
 		WHERE token.token_hash = $1`, hash).Scan(
 		&row.ID, &row.Name, &row.Scope, &row.Created, &row.Expires, &row.LastUsed,
-		&idText, &held.Disabled, &held.Joined, &system, &raw)
+		&idText, &held.Disabled, &held.Joined, &held.RoleID, &system, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.TokenRecord{}, app.Held{}, domain.ErrToken
 	}

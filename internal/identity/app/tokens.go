@@ -21,6 +21,7 @@ type TokenRecord struct {
 // Held is the role set a person holds now.
 type Held struct {
 	UserID      domain.UserID
+	RoleID      string
 	Disabled    bool
 	Joined      bool
 	Permissions []domain.Permission
@@ -30,6 +31,7 @@ type Held struct {
 type Bearer struct {
 	ID     string
 	UserID domain.UserID
+	RoleID string
 	Name   string
 	Scope  []string
 }
@@ -168,7 +170,7 @@ func (t APITokens) Authenticate(ctx context.Context, secret string) (Bearer, err
 			return Bearer{}, err
 		}
 	}
-	return Bearer{ID: row.ID, UserID: held.UserID, Name: row.Name, Scope: narrowed}, nil
+	return Bearer{ID: row.ID, UserID: held.UserID, RoleID: held.RoleID, Name: row.Name, Scope: narrowed}, nil
 }
 
 func (t APITokens) note(message string, user domain.UserID, err error) {

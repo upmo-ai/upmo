@@ -12,6 +12,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 )
 
 // ChallengeCookie is the WebAuthn challenge cookie.
@@ -54,7 +55,7 @@ func (h Passkeys) Mount(mux *http.ServeMux) {
 func (h Passkeys) limited(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		allowed, retry, err := h.Pass.Store.Take(r.Context(), domain.ThrottleAddress(domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted)), passkeyNow(h.Pass), domain.ThrottleBurst, domain.ThrottlePerSecond)
+		allowed, retry, err := h.Pass.Store.Take(r.Context(), domain.ThrottleAddress(httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted)), passkeyNow(h.Pass), domain.ThrottleBurst, domain.ThrottlePerSecond)
 		if err != nil {
 			http.Error(w, "throttle", http.StatusInternalServerError)
 			return

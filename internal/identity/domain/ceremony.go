@@ -2,7 +2,6 @@ package domain
 
 import (
 	"net"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,45 +76,6 @@ func RetryAfter(tokens, perSecond float64) time.Duration {
 	}
 	seconds := (1 - tokens) / perSecond
 	return time.Duration(seconds * float64(time.Second))
-}
-
-// ClientIP is the address a request is limited by. A forwarded header is
-// read only when the connection itself comes from a trusted proxy, and then
-// only the right-most hop that is not itself a trusted proxy.
-func ClientIP(remote, forwarded string, trusted []*net.IPNet) string {
-	host := hostOnly(remote)
-	ip := net.ParseIP(host)
-	if ip == nil || !trustedIP(ip, trusted) {
-		return host
-	}
-	hops := strings.Split(forwarded, ",")
-	for i := len(hops) - 1; i >= 0; i-- {
-		hop := hostOnly(strings.TrimSpace(hops[i]))
-		parsed := net.ParseIP(hop)
-		if parsed == nil {
-			continue
-		}
-		if !trustedIP(parsed, trusted) {
-			return hop
-		}
-	}
-	return host
-}
-
-func hostOnly(value string) string {
-	if host, _, err := net.SplitHostPort(value); err == nil {
-		return host
-	}
-	return value
-}
-
-func trustedIP(ip net.IP, trusted []*net.IPNet) bool {
-	for _, network := range trusted {
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 // ThrottleAddress is the bucket key for a client address. IPv6 addresses in
