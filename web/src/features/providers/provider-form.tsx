@@ -27,7 +27,7 @@ import {
 } from "../../app/api";
 import { formatPricing, getProviderModels, type ModelInfo } from "./models";
 import { ALL_PROVIDERS, KNOWN_PROVIDERS, PICKABLE_PROVIDERS, type KnownProvider } from "./providers";
-import { baseUrlRequired, keyRequired, providerProblem, showsKeyField } from "./rules";
+import { baseUrlRequired, hostedBaseUrl, keyRequired, providerProblem, showsKeyField } from "./rules";
 
 interface ProviderFormPageProps {
   mode: "create" | "edit";
@@ -41,8 +41,14 @@ interface ProviderFormProps {
 function baseUrlHelp(meta: KnownProvider): string {
   if (meta.id === "lmstudio") return "Required. Address of your local LM Studio service.";
   if (meta.id === "ollama") return "Required. Address of your local or private Ollama service.";
-  if (!baseUrlRequired(meta.adapter)) return "Optional for the built in test provider.";
-  return "Required. Address of the provider's API, for example https://api.example.com, without a /v1 path.";
+  if (!baseUrlRequired(meta.adapter, meta.defaultBaseUrl) && meta.adapter === "fake") {
+    return "Optional for the built in test provider.";
+  }
+  const fallback = hostedBaseUrl(meta.defaultBaseUrl);
+  if (fallback) {
+    return `Optional. Empty uses ${fallback}. Change it only for a proxy or a private deployment, and give the address without the chat path.`;
+  }
+  return "Required. Address of the provider's API as its documentation gives it, for example https://api.example.com, without the chat path.";
 }
 
 function ProviderForm({ mode, existing }: ProviderFormProps) {
@@ -83,7 +89,10 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
   const hasSavedKey = existing !== undefined && existing.plan_kind !== "local";
   const showKey = showsKeyField(selectedMeta.requiresKey, planKind);
   const needsKey = keyRequired(planKind, hasSavedKey);
-  const needsBaseUrl = baseUrlRequired(selectedMeta.adapter);
+  const needsBaseUrl = baseUrlRequired(selectedMeta.adapter, selectedMeta.defaultBaseUrl);
+  // An empty field sends the provider's hosted address, if it has one, so the
+  // brain never has to guess where an account lives.
+  const sentBaseUrl = baseUrl.trim() || hostedBaseUrl(selectedMeta.defaultBaseUrl);
   // A key typed while the field was shown is not sent once it is hidden.
   const typedKey = showKey ? apiKey.trim() : "";
 
@@ -129,7 +138,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
         adapter: selectedMeta.adapter,
         plan_kind: planKind,
         api_key: typedKey || undefined,
-        base_url: baseUrl.trim() || undefined,
+        base_url: sentBaseUrl,
         model: selectedModels[0],
         id: savedId,
       });
@@ -151,7 +160,6 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     meta: { shown: true },
     mutationFn: async () => {
       setSubmitError("");
-      const resolvedBaseUrl = baseUrl.trim() || undefined;
 
       if (mode === "create") {
         return api.providers.add({
@@ -159,7 +167,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           name: name.trim() || selectedMeta.name,
           adapter: selectedMeta.adapter,
           plan_kind: planKind,
-          base_url: resolvedBaseUrl,
+          base_url: sentBaseUrl,
           api_key: typedKey || undefined,
           models: selectedModels,
         });
@@ -171,7 +179,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
       return api.providers.update(existing.id, {
         name: name.trim() || existing.name,
         plan_kind: planKind,
-        base_url: resolvedBaseUrl ?? "",
+        base_url: sentBaseUrl,
         api_key: typedKey || undefined,
         models: selectedModels,
       });
@@ -555,9 +563,9 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             </Badge>
           </Group>
 
-          {baseUrl ? (
+          {sentBaseUrl ? (
             <Text size="xs" c="dimmed">
-              Endpoint: <Text span ff="monospace">{baseUrl}</Text>
+              Endpoint: <Text span ff="monospace">{sentBaseUrl}</Text>
             </Text>
           ) : null}
 

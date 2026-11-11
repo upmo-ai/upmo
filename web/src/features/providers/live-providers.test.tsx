@@ -279,7 +279,7 @@ describe("providers from the brain", () => {
     expect(JSON.stringify(postSave)).not.toContain(secret);
   });
 
-  it("starts OpenAI and Anthropic on their own address and holds every other hosted vendor until one is typed", async () => {
+  it("starts every hosted vendor on its own address and lets a typed address replace it", async () => {
     vi.stubGlobal("fetch", brain().fetcher);
     renderAt("/providers/new");
     await screen.findByRole("heading", { level: 1, name: "Connect a provider" });
@@ -292,13 +292,12 @@ describe("providers from the brain", () => {
     clickButton("DeepSeek");
     await continueTo(/DeepSeek Credentials & Plan/);
     const baseUrl = screen.getByLabelText(/Base URL/);
-    expect(baseUrl).toHaveProperty("value", "");
-    expect(screen.getByText(/^Required\. Address of the provider's API/)).toBeTruthy();
+    expect(baseUrl).toHaveProperty("value", "https://api.deepseek.com");
     fireEvent.change(screen.getByLabelText(/^API Key/), { target: { value: secret } });
-    expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(true);
+    expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(false);
 
     fireEvent.change(baseUrl, { target: { value: "   " } });
-    expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(true);
+    expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(false);
 
     fireEvent.change(baseUrl, { target: { value: "https://api.deepseek.com" } });
     expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(false);
@@ -440,7 +439,7 @@ describe("providers from the brain", () => {
 
     expect(writes(calls, "POST")[0]?.body).toEqual({
       provider: "anthropic",
-      adapter: "openai_compat",
+      adapter: "anthropic",
       plan_kind: "metered",
       base_url: "https://api.anthropic.com",
       model: "claude-3-7-sonnet",
