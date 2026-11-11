@@ -453,7 +453,7 @@ func TestTwoConcurrentDemotionsLeaveOneOwner(t *testing.T) {
 	}
 }
 
-func TestIdentityIsOneMigration(t *testing.T) {
+func TestIdentityMigrationVersions(t *testing.T) {
 	pool, ctx := upOwner(t)
 	var n, latest int
 	if err := pool.QueryRow(ctx, `
@@ -462,8 +462,8 @@ func TestIdentityIsOneMigration(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 || latest != 1 {
-		t.Fatalf("applied versions = %d latest = %d, want 1 and 1", n, latest)
+	if n != 2 || latest != 2 {
+		t.Fatalf("applied versions = %d latest = %d, want 2 and 2", n, latest)
 	}
 }
 
