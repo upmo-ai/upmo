@@ -1,0 +1,8 @@
+data: {"id":"8e1f","object":"chat.completion.chunk","created":1731200000,"model":"meta-llama/Llama-3.3-70B-Instruct-Turbo","choices":[{"index":0,"text":"Hel","logprobs":null,"finish_reason":null,"seed":null,"delta":{"token_id":9906,"role":"assistant","content":"Hel","tool_calls":null}}],"usage":null}
+
+data: {"id":"8e1f","object":"chat.completion.chunk","created":1731200000,"model":"meta-llama/Llama-3.3-70B-Instruct-Turbo","choices":[{"index":0,"text":"lo","logprobs":null,"finish_reason":null,"seed":null,"delta":{"token_id":385,"role":"assistant","content":"lo","tool_calls":null}}],"usage":null}
+
+data: {"id":"8e1f","object":"chat.completion.chunk","created":1731200000,"model":"meta-llama/Llama-3.3-70B-Instruct-Turbo","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":"stop","seed":3,"delta":{"token_id":128009,"role":"assistant","content":"","tool_calls":null}}],"usage":{"prompt_tokens":16,"completion_tokens":5,"total_tokens":21}}
+
+data: [DONE]
+

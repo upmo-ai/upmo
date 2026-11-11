@@ -1,18 +1,20 @@
 import { BrainError, type ProviderPlanKind } from "../../app/api";
 
 /**
- * The brain dispatches to two adapters: `fake`, which has no network, and
- * `openai_compat`, which every hosted or local provider in the picker is
- * reached through. The picker keeps its own labels (anthropic, openai, ...) as
- * the vendor name; this is the one place they turn into the adapter key the
- * brain accepts.
+ * The brain dispatches to three adapters: `fake`, which has no network,
+ * `anthropic`, which speaks the Anthropic Messages API, and `openai_compat`,
+ * which every other hosted or local provider in the picker is reached
+ * through. The picker keeps its own labels (anthropic, openai, ...) as the
+ * vendor name; this is the one place they turn into the adapter key the brain
+ * accepts. The brain tells the compatible vendors apart by their address.
  */
 export function adapterKey(pickerAdapter: string): string {
-  return pickerAdapter === "fake" ? "fake" : "openai_compat";
+  return pickerAdapter === "fake" || pickerAdapter === "anthropic" ? pickerAdapter : "openai_compat";
 }
 
 const adapterLabels: Readonly<Record<string, string>> = {
   fake: "Test adapter",
+  anthropic: "Anthropic Messages",
   openai_compat: "OpenAI-compatible",
 };
 
@@ -40,12 +42,21 @@ export function showsKeyField(providerTakesKey: boolean, plan: ProviderPlanKind)
 }
 
 /**
- * Whether the base URL must be filled in. The brain refuses a test without one
- * for every adapter except `fake`, and hosted vendors have no address of their
- * own that the brain could fall back to.
+ * The address a provider is reached at when the person gives none: its
+ * default, when that is a hosted https address. A local runtime has no such
+ * address, since only its owner knows where it runs.
  */
-export function baseUrlRequired(pickerAdapter: string): boolean {
-  return pickerAdapter !== "fake";
+export function hostedBaseUrl(defaultBaseUrl?: string): string | undefined {
+  return defaultBaseUrl?.startsWith("https://") ? defaultBaseUrl : undefined;
+}
+
+/**
+ * Whether the base URL must be filled in. The brain refuses a test without one
+ * for every adapter except `fake`, so it is required unless the provider has a
+ * hosted address to fall back on (see hostedBaseUrl).
+ */
+export function baseUrlRequired(pickerAdapter: string, defaultBaseUrl?: string): boolean {
+  return pickerAdapter !== "fake" && hostedBaseUrl(defaultBaseUrl) === undefined;
 }
 
 export const keysOffSentence = "Saving keys is turned off on this server.";

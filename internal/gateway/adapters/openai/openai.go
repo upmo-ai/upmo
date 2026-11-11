@@ -9,66 +9,51 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"strings"
 
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/wire"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
-	"github.com/upmo-ai/upmo/internal/platform/netguard"
 )
 
-// Adapter talks OpenAI-compatible /v1/chat/completions. Production dials
-// through netguard; tests inject Client.
+// Adapter talks OpenAI-compatible chat completions. The paths come from the
+// vendor the account's base URL belongs to (domain.CompatPaths); a host that
+// is no known vendor's gets /v1/chat/completions. Production dials through
+// netguard; tests inject Client.
 type Adapter struct {
 	Client *http.Client
 	// Lookup resolves host names for the guarded clients. Nil uses the system
 	// resolver. Tests set it to re-point a name.
-	Lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)
-}
-
-// The guarded clients. Every connection resolves the host and refuses the
-// dial when any address is one the account's plan forbids, then dials the
-// vetted address, so a name cannot be re-pointed after a URL was saved. Only
-// a local account may reach a private or loopback address; none may reach a
-// link-local or metadata address. A redirect is never followed: the answer
-// is the redirect itself, so a key is not sent on to another place.
-var (
-	strictClient = guardedClient(false, nil)
-	localClient  = guardedClient(true, nil)
-)
-
-func guardedClient(local bool, lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)) *http.Client {
-	g := &netguard.Guard{LocalNetwork: local, Lookup: lookup}
-	return &http.Client{
-		Transport: g.Transport(),
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	Lookup wire.Lookup
 }
 
 func (a Adapter) client(attempt app.Attempt) *http.Client {
-	if a.Client != nil {
-		return a.Client
+	return wire.Client(a.Client, a.Lookup, attempt.PlanKind)
+}
+
+var (
+	statusClass = wire.StatusClass
+	classForErr = wire.ClassForErr
+)
+
+// target splits an attempt into the account's base URL and the paths of the
+// vendor that base URL is on. ok is false when the account has no base URL.
+func target(attempt app.Attempt) (base string, paths domain.Vendor, ok bool) {
+	base = strings.TrimRight(attempt.BaseURL, "/")
+	if base == "" {
+		return "", domain.Vendor{}, false
 	}
-	local := attempt.PlanKind == domain.PlanLocal
-	if a.Lookup != nil {
-		return guardedClient(local, a.Lookup)
-	}
-	if local {
-		return localClient
-	}
-	return strictClient
+	return base, domain.CompatPaths(base), true
 }
 
 // Probe asks for the model list, the cheapest call that needs the key. It
 // returns the failure class of the answer.
 func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) (domain.FailureClass, error) {
-	base := strings.TrimRight(attempt.BaseURL, "/")
-	if base == "" {
+	base, paths, ok := target(attempt)
+	if !ok {
 		return domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+paths.ModelsPath, nil)
 	if err != nil {
 		return domain.ClassCaller, err
 	}
@@ -122,15 +107,15 @@ func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Reque
 // ChatStream streams a chat reply, handing each text delta to emit in order.
 // When emit fails the caller is gone; the read stops and the call returns.
 func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, req domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
-	base := strings.TrimRight(attempt.BaseURL, "/")
-	if base == "" {
+	base, paths, ok := target(attempt)
+	if !ok {
 		return domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	body, err := encodeStream(attempt.Model, req)
 	if err != nil {
 		return domain.Usage{}, domain.ClassCaller, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+paths.ChatPath, bytes.NewReader(body))
 	if err != nil {
 		return domain.Usage{}, domain.ClassCaller, err
 	}
@@ -352,15 +337,15 @@ func oneChunk(payload string, usage *domain.Usage, emit func(string) error) (dom
 }
 
 func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (string, domain.Usage, domain.FailureClass, error) {
-	base := strings.TrimRight(attempt.BaseURL, "/")
-	if base == "" {
+	base, paths, ok := target(attempt)
+	if !ok {
 		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	body, err := encodeChat(attempt.Model, built)
 	if err != nil {
 		return "", domain.Usage{}, domain.ClassCaller, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+paths.ChatPath, bytes.NewReader(body))
 	if err != nil {
 		return "", domain.Usage{}, domain.ClassCaller, err
 	}
@@ -413,8 +398,8 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 	if err := domain.CheckEmbedInputs(inputs); err != nil {
 		return nil, domain.Usage{}, domain.ClassCaller, err
 	}
-	base := strings.TrimRight(attempt.BaseURL, "/")
-	if base == "" {
+	base, paths, ok := target(attempt)
+	if !ok {
 		return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	body, err := json.Marshal(struct {
@@ -424,7 +409,7 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 	if err != nil {
 		return nil, domain.Usage{}, domain.ClassCaller, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/embeddings", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+paths.EmbedPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, domain.Usage{}, domain.ClassCaller, err
 	}
@@ -476,34 +461,4 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 		usage.Input = parsed.Usage.PromptTokens
 	}
 	return out, usage, domain.ClassOK, nil
-}
-
-func statusClass(code int) (domain.FailureClass, error) {
-	switch {
-	case code == http.StatusTooManyRequests:
-		return domain.ClassRateLimit, fmt.Errorf("gateway: provider %d", code)
-	case code == http.StatusUnauthorized || code == http.StatusForbidden:
-		return domain.ClassCredential, fmt.Errorf("gateway: provider %d", code)
-	case code == http.StatusNotFound:
-		return domain.ClassModelAccess, fmt.Errorf("gateway: provider %d", code)
-	case code >= 500:
-		return domain.ClassTransient, fmt.Errorf("gateway: provider %d", code)
-	case code < 200 || code >= 300:
-		return domain.ClassCaller, fmt.Errorf("gateway: provider %d", code)
-	default:
-		return domain.ClassOK, nil
-	}
-}
-
-func classForErr(err error) domain.FailureClass {
-	if err == nil {
-		return domain.ClassOK
-	}
-	if errors.Is(err, context.Canceled) {
-		return domain.ClassCancelled
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
-		return domain.ClassTimeout
-	}
-	return domain.ClassTransient
 }

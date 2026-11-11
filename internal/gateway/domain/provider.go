@@ -15,8 +15,9 @@ import (
 
 // The adapter keys the gateway dispatches to. A provider account names one.
 const (
-	AdapterFake   = "fake"
-	AdapterOpenAI = "openai_compat"
+	AdapterFake      = "fake"
+	AdapterOpenAI    = "openai_compat"
+	AdapterAnthropic = "anthropic"
 )
 
 // ScriptedPrefix starts the model ids that only the fake adapter acts on.
