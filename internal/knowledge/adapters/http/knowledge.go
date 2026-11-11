@@ -11,6 +11,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/knowledge/app"
 	"github.com/upmo-ai/upmo/internal/knowledge/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // Handler creates folders, ingests sources and searches through the existing store.
@@ -355,9 +356,11 @@ func (h Handler) ingestURL(w http.ResponseWriter, r *http.Request) {
 		run = func(fn func()) { go fn() }
 	}
 	embedder := h.embedder(access.UserID)
+	// The fetch and the publish run after the response, so their writes record
+	// the system as the actor, with the run credential of the ingest.
 	run(func() {
 		_ = app.ProcessURL(
-			context.Background(),
+			audit.WithRunner(context.Background(), audit.CredentialRun),
 			h.Pending,
 			h.Store,
 			access,
@@ -432,9 +435,11 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 		run = func(fn func()) { go fn() }
 	}
 	embedder := h.embedder(access.UserID)
+	// The conversion and the publish run after the response, so their writes
+	// record the system as the actor, with the run credential of the ingest.
 	run(func() {
 		_ = app.ProcessFile(
-			context.Background(),
+			audit.WithRunner(context.Background(), audit.CredentialRun),
 			h.Pending,
 			h.Store,
 			access,

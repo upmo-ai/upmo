@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
@@ -53,6 +54,10 @@ type Handler struct {
 	Editor app.EditorSandboxes
 	// EditorSigner mints the bound editor JWT. Nil refuses.
 	EditorSigner app.EditorSigner
+	// Audit takes the editor-open event: opening an editor writes no row, so
+	// the event runs as its own statement. Nil leaves the middleware's
+	// fallback to record the open.
+	Audit audit.Execer
 	// Now returns the current time. Nil uses time.Now().
 	Now func() time.Time
 }
@@ -126,6 +131,18 @@ func (h Handler) editor(w http.ResponseWriter, r *http.Request) {
 	out, err := app.OpenEditor(r.Context(), h.View, h.Editor, h.EditorSigner, h.PublicURL, access, r.PathValue("id"), now())
 	if refuse(w, err) {
 		return
+	}
+	// Opening a code editor is sensitive and writes no row, so its event is
+	// recorded here, in its own statement, before the response.
+	if h.Audit != nil {
+		if err := audit.Record(r.Context(), h.Audit, audit.Event{
+			Action:   audit.TaskEditorOpen,
+			Outcome:  audit.Success,
+			TargetID: r.PathValue("id"),
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "task")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"url":        out.URL,

@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
@@ -46,7 +48,20 @@ func (p Passkeys) ReplaceTaskGrants(ctx context.Context, taskID string, grants [
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := p.replaceTaskGrants(ctx, tx, taskID, grants, grantedBy); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
+// ReplaceTaskGrantsTx replaces the person and team grants inside a transaction
+// the caller already opened, for example when tasks seals task.share in the
+// same commit as the visibility write.
+func (p Passkeys) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
+	return p.replaceTaskGrants(ctx, tx, taskID, grants, grantedBy)
+}
+
+func (p Passkeys) replaceTaskGrants(ctx context.Context, tx pgx.Tx, taskID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
 	// A task with no grants has no rows to lock, so two replacements would
 	// both insert and the loser would fail the unique index: one advisory
 	// lock per task makes the second wait and then converge.
@@ -124,7 +139,7 @@ func (p Passkeys) ReplaceTaskGrants(ctx context.Context, taskID string, grants [
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // NamesOf returns the display names of the enabled people in persons and the

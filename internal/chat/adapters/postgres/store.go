@@ -15,6 +15,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/memory"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
@@ -48,6 +49,13 @@ func (s Store) Open(ctx context.Context, access app.Access) (app.ChatSummary, er
 		RETURNING id::text, created_at`, access.UserID).Scan(&id, &createdAt)
 	if err != nil {
 		return app.ChatSummary{}, fmt.Errorf("chat: open: %w", err)
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ChatCreate,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return app.ChatSummary{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.ChatSummary{}, err
@@ -83,6 +91,14 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string, 
 		orNull(picks.AgentID), orNull(picks.Route), orNull(picks.PinAccount), orNull(picks.PinModel), access.UserID).Scan(&seq, &lineID)
 	if err != nil {
 		return writeErr(err)
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ChatMessage,
+		Outcome:  audit.Success,
+		TargetID: lineID,
+		Changes:  pickChanges(picks),
+	}); err != nil {
+		return err
 	}
 	if s.Enqueuer != nil && access.UserID != "" {
 		if _, err := s.Enqueuer.InsertTx(ctx, tx, tasks.ScoutJobArgs{
@@ -166,6 +182,21 @@ func orNull(pick string) *string {
 		return nil
 	}
 	return &pick
+}
+
+// pickChanges lists a line's picks as the safe values the audit catalog
+// admits: the route and the ids and names of the model and the agent. The
+// line's text is content and never appears.
+func pickChanges(picks app.Picks) audit.Changes {
+	return audit.Changes{
+		Fields: []string{"agent_id", "model_id", "model_provider", "route"},
+		Values: map[string]audit.Change{
+			"route":          {To: picks.Route},
+			"model_provider": {To: picks.PinAccount},
+			"model_id":       {To: picks.PinModel},
+			"agent_id":       {To: picks.AgentID},
+		},
+	}
 }
 
 // goneOrSay splits a locked miss in Say. The lock asks for edit rights too, so
