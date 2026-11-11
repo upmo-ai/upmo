@@ -881,14 +881,168 @@ func TestDispatchChatStreamUsesTheAuthorsOwnLinkAndTheHouseForOthers(t *testing.
 	}
 }
 
-func TestDispatchChatStreamNeverFallsBackToTheHouseKeyFromAnOwnLink(t *testing.T) {
+// An account the person may use is one more link of the chain, whoever it is
+// shared by: UPM-245 settled that availability is the union, with no rule that
+// keeps a person's own failure from the workspace's account. Their own link is
+// still the first one tried.
+func TestDispatchChatStreamTriesTheOwnLinkFirstAndThenTheWorkspaceLink(t *testing.T) {
 	own, solid := &scriptStream{reply: "no", failClass: domain.ClassCredential}, &scriptStream{reply: "house"}
+	led := &memLedger{}
 	disp := ownedDispatch(own, solid)
+	disp.Ledger = led
 	sink := &recordingSink{}
 	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
 		t.Fatal(err)
 	}
-	if solid.calls != 0 || sink.fail == nil || sink.fail.Model != "mine" || sink.done != nil {
-		t.Fatalf("house calls %d fail %+v done %+v", solid.calls, sink.fail, sink.done)
+	if own.calls != 1 || solid.calls != 1 || sink.done == nil || sink.done.Model != "m2" || sink.fail != nil {
+		t.Fatalf("own %d house %d done %+v fail %+v", own.calls, solid.calls, sink.done, sink.fail)
+	}
+	if len(sink.notices) != 1 || sink.notices[0] != (StreamNotice{FailedModel: "mine", Class: domain.ClassCredential, NextModel: "m2"}) {
+		t.Fatalf("notices = %+v", sink.notices)
+	}
+	// Neither link was reached through a team.
+	if len(led.rows) != 2 || led.rows[0].OwnerTeamID != "" || led.rows[1].OwnerTeamID != "" {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+}
+
+type memTeams struct {
+	ids   []string
+	err   error
+	asked []string
+}
+
+func (m *memTeams) TeamsOf(_ context.Context, user string) ([]string, error) {
+	m.asked = append(m.asked, user)
+	return m.ids, m.err
+}
+
+// teamRoute is a chat route with a workspace link first and a link on an
+// account shared with teams t1 and t2 second.
+func teamRoute() domain.Route {
+	workspace := domain.Account{ID: "w", Adapter: "solid", CredentialRef: "house", House: true}
+	shared := domain.Account{ID: "s", Adapter: "team", CredentialRef: "shared", TeamIDs: []string{"t1", "t2"}}
+	return domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{
+			{Position: 1, Account: workspace, Model: "m2"},
+			{Position: 2, Account: shared, Model: "team-m"},
+		},
+	}
+}
+
+func teamDispatch(teams Teams, team, solid *scriptStream, led *memLedger) Dispatch {
+	return Dispatch{
+		Routes:  memRoutes{teamRoute()},
+		Teams:   teams,
+		Secrets: memSecrets{map[string]string{"house": "secret", "shared": "team-secret"}},
+		Ledger:  led,
+		Stream:  map[string]StreamChatter{"team": team, "solid": solid},
+	}
+}
+
+func TestDispatchChatStreamTriesATeamsAccountBeforeTheWorkspaceAndBooksTheTeam(t *testing.T) {
+	team, solid := &scriptStream{reply: "no", failClass: domain.ClassRateLimit}, &scriptStream{reply: "house"}
+	led := &memLedger{}
+	teams := &memTeams{ids: []string{"t2", "t3"}}
+	disp := teamDispatch(teams, team, solid, led)
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 1 || solid.calls != 1 || sink.done == nil || sink.done.Model != "m2" {
+		t.Fatalf("team %d house %d done %+v", team.calls, solid.calls, sink.done)
+	}
+	if len(sink.notices) != 1 || sink.notices[0].FailedModel != "team-m" || sink.notices[0].NextModel != "m2" {
+		t.Fatalf("notices = %+v", sink.notices)
+	}
+	// The team's attempt is booked against the team the person reached it through.
+	if len(led.rows) != 2 || led.rows[0].Model != "team-m" || led.rows[0].OwnerTeamID != "t2" ||
+		led.rows[1].Model != "m2" || led.rows[1].OwnerTeamID != "" {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+	if len(teams.asked) != 1 || teams.asked[0] != "u1" {
+		t.Fatalf("teams asked for %v", teams.asked)
+	}
+}
+
+func TestDispatchChatStreamLeavesATeamsAccountToItsMembers(t *testing.T) {
+	team, solid := &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	disp := teamDispatch(&memTeams{ids: []string{"t9"}}, team, solid, &memLedger{})
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 0 || solid.calls != 1 || sink.done == nil || sink.done.Model != "m2" {
+		t.Fatalf("team %d house %d done %+v", team.calls, solid.calls, sink.done)
+	}
+	// Without a lookup nobody is on a team.
+	team, solid = &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	disp = teamDispatch(nil, team, solid, &memLedger{})
+	disp.Teams = nil
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, &recordingSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 0 || solid.calls != 1 {
+		t.Fatalf("team %d house %d", team.calls, solid.calls)
+	}
+}
+
+func TestDispatchChatStreamStopsWhenTheTeamsCannotBeRead(t *testing.T) {
+	team, solid := &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	broken := errors.New("identity is down")
+	disp := teamDispatch(&memTeams{err: broken}, team, solid, &memLedger{})
+	err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), 0, &recordingSink{})
+	if !errors.Is(err, broken) || team.calls != 0 || solid.calls != 0 {
+		t.Fatalf("err = %v team %d house %d", err, team.calls, solid.calls)
+	}
+}
+
+// memPins answers pins from a fixed set of accounts.
+type memPins struct{ accounts map[string]domain.Account }
+
+func (m memPins) PinAccount(_ context.Context, id, _ string) (domain.Account, bool, error) {
+	account, ok := m.accounts[id]
+	return account, ok, nil
+}
+
+func (m memPins) PinProvider(context.Context, string, []string, string, string) (domain.Account, bool, error) {
+	return domain.Account{}, false, nil
+}
+
+const sharedPinID = "018f3b2c-7a10-7c4a-8e11-0000000000b1"
+
+func TestDispatchPinToATeamsAccountIsForItsMembersAndBooksTheTeam(t *testing.T) {
+	shared := domain.Account{ID: sharedPinID, Adapter: "team", CredentialRef: "shared", TeamIDs: []string{"t1", "t2"}}
+	pins := memPins{accounts: map[string]domain.Account{sharedPinID: shared}}
+	pin := domain.Pin{AccountID: sharedPinID, Model: "pinned"}
+
+	// A member of one of its teams: the pin is tried first, at position 0.
+	team, solid := &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	led := &memLedger{}
+	disp := teamDispatch(&memTeams{ids: []string{"t2"}}, team, solid, led)
+	disp.Pins = pins
+	sink := &recordingSink{}
+	if err := disp.ChatStreamPinned(context.Background(), "draft", "", domain.Principal{User: "u1"}, streamInput(), pin, 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 1 || solid.calls != 0 || sink.done == nil || sink.done.Model != "pinned" {
+		t.Fatalf("team %d house %d done %+v", team.calls, solid.calls, sink.done)
+	}
+	if len(led.rows) != 1 || led.rows[0].LinkPosition != domain.PinPosition || led.rows[0].OwnerTeamID != "t2" {
+		t.Fatalf("ledger = %+v", led.rows)
+	}
+
+	// Someone on none of them is refused before any call, and the refusal
+	// names nothing.
+	team, solid = &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	disp = teamDispatch(&memTeams{ids: []string{"t9"}}, team, solid, &memLedger{})
+	disp.Pins = pins
+	err := disp.ChatStreamPinned(context.Background(), "draft", "", domain.Principal{User: "u2"}, streamInput(), pin, 0, &recordingSink{})
+	if !errors.Is(err, domain.ErrPinAccount) || team.calls != 0 || solid.calls != 0 {
+		t.Fatalf("err = %v team %d house %d", err, team.calls, solid.calls)
+	}
+	if strings.Contains(err.Error(), sharedPinID) || strings.Contains(err.Error(), "t1") {
+		t.Fatalf("the refusal names the account or a team: %v", err)
 	}
 }

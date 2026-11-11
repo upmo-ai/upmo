@@ -10,7 +10,15 @@ export type Picks = { agent: string; route: string; model: string };
 export const autoPicks: Picks = { agent: AUTO, route: AUTO, model: AUTO };
 
 /** One model a person can pin: an account they can see and a model id on it. */
-export type ModelChoice = { value: string; account_id: string; model: string; provider: string; account: string; scope: ProviderAccount["scope"] };
+export type ModelChoice = { value: string; account_id: string; model: string; provider: string; account: string; scope: ProviderAccount["scope"]; share?: ProviderAccount["share"] };
+
+export function modelDescription(item: ModelChoice): string {
+  if (item.scope !== "global") return item.account;
+  if (item.share?.scope === "team") {
+    return `${item.account} (${item.share.team_names.length > 0 ? item.share.team_names.join(", ") : "team"})`;
+  }
+  return `${item.account} (workspace)`;
+}
 
 /** Every model of every account, in the order the brain lists the accounts (own first). */
 export function modelChoices(accounts: readonly ProviderAccount[]): ModelChoice[] {
@@ -22,6 +30,7 @@ export function modelChoices(accounts: readonly ProviderAccount[]): ModelChoice[
       provider: account.provider,
       account: account.name,
       scope: account.scope,
+      share: account.share,
     })),
   );
 }

@@ -5,9 +5,6 @@ import {
   type AgentInput,
   type AgentProfile,
   type ApiClient,
-  type ProviderAccount,
-  type ProviderAdd,
-  type ProviderChange,
   type ProviderPlanKind,
   type ProviderProbe,
   type ProviderStatus,
@@ -46,6 +43,7 @@ import {
 import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteDecision, type RouteHop } from "../features/models/types";
 import { adapterKey } from "../features/providers/rules";
+import type { ListedProvider, ProviderScope, SharedAdd, SharedChange } from "../features/providers/sharing";
 
 type Json = Record<string, unknown>;
 
@@ -382,22 +380,41 @@ const providerStatuses: readonly ProviderStatus[] = [
   "Offline",
 ];
 
+/** A list of text the brain sends, or nothing when it sends none. */
+function names(value: unknown, what: string): string[] {
+  if (value === undefined) return [];
+  const items = list(value, what);
+  if (items.some((item) => typeof item !== "string")) throw new Error(`The brain sent no ${what}.`);
+  return items as string[];
+}
+
 /**
  * A provider account as GET /api/providers and the write routes send it.
  * base_url is left out when the account has none. The brain never sends a key,
  * so none is read.
+ *
+ * scope reads as the web always has: "global" is an account the workspace
+ * shares and the person only reads, and "own" one they manage. The brain now
+ * says "workspace" or "team" for a shared account (and "global" was its old
+ * word for the workspace's); with can_manage it also says who may change it, so
+ * that comes as share. An older brain sends no share, and the account then
+ * reads as it always did.
  */
-export function toProvider(value: unknown): ProviderAccount {
+export function toProvider(value: unknown): ListedProvider {
   const source = record(value, "provider");
   const plan = source.plan_kind;
   if (!planKinds.some((kind) => kind === plan)) throw new Error("The brain sent an unknown plan kind.");
   const status = source.status;
   if (!providerStatuses.some((known) => known === status)) throw new Error("The brain sent an unknown status.");
   const scope = source.scope;
-  if (scope !== "own" && scope !== "global") throw new Error("The brain sent an unknown scope.");
+  if (scope !== "own" && scope !== "global" && scope !== "workspace" && scope !== "team") {
+    throw new Error("The brain sent an unknown scope.");
+  }
+  // A team account names its teams. One that does not is not a scope the web knows.
+  if (scope === "team" && !Array.isArray(source.team_ids)) throw new Error("The brain sent an unknown scope.");
   const models = list(source.models, "models");
   if (models.some((model) => typeof model !== "string")) throw new Error("The brain sent no models.");
-  const account: ProviderAccount = {
+  const account: ListedProvider = {
     id: text(source, "id"),
     provider: text(source, "provider"),
     name: text(source, "name"),
@@ -405,9 +422,18 @@ export function toProvider(value: unknown): ProviderAccount {
     plan_kind: plan as ProviderPlanKind,
     status: status as ProviderStatus,
     models: models as string[],
-    scope,
+    scope: scope === "own" ? "own" : "global",
   };
   if (typeof source.base_url === "string" && source.base_url !== "") account.base_url = source.base_url;
+  if (typeof source.can_manage === "boolean") {
+    const shareScope: ProviderScope = scope === "global" ? "workspace" : scope;
+    account.share = {
+      scope: shareScope,
+      team_ids: names(source.team_ids, "team_ids"),
+      team_names: names(source.team_names, "team_names"),
+      can_manage: source.can_manage,
+    };
+  }
   return account;
 }
 
@@ -446,8 +472,19 @@ function given(key: string, value: string | undefined): Json {
   return value === undefined || value === "" ? {} : { [key]: value };
 }
 
+/**
+ * The sharing of a write: the scope an admin chose, and the teams only for
+ * specific teams. A workspace share takes none.
+ */
+function sharing(input: { scope?: "workspace" | "teams"; team_ids?: string[] }): Json {
+  if (input.scope === undefined) return {};
+  return input.scope === "teams"
+    ? { scope: "teams", team_ids: input.team_ids ?? [] }
+    : { scope: input.scope };
+}
+
 /** The POST body of a new account: the picker's adapter becomes the brain's adapter key. */
-export function providerAddBody(input: ProviderAdd): Json {
+export function providerAddBody(input: SharedAdd): Json {
   return {
     provider: input.provider,
     name: input.name,
@@ -456,17 +493,19 @@ export function providerAddBody(input: ProviderAdd): Json {
     ...given("base_url", input.base_url),
     ...given("api_key", input.api_key),
     models: input.models,
+    ...sharing(input),
   };
 }
 
 /** The PUT body of a change. Without an api_key the saved key stays. */
-export function providerChangeBody(input: ProviderChange): Json {
+export function providerChangeBody(input: SharedChange): Json {
   return {
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(input.plan_kind !== undefined ? { plan_kind: input.plan_kind } : {}),
     ...given("base_url", input.base_url),
     ...given("api_key", input.api_key),
     ...(input.models !== undefined ? { models: input.models } : {}),
+    ...sharing(input),
   };
 }
 

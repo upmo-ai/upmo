@@ -56,6 +56,7 @@ type Provider struct {
 	Own           bool
 	CredentialRef string
 	HasKey        bool
+	Share         Share
 }
 
 // Invalid is a plain-language reason an input was refused.

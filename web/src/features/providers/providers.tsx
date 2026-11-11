@@ -5,8 +5,9 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { Badge, Button, ConfirmDialog, Input, ProviderCard, StatusAlert } from "@upmo-ai/components";
 
-import { PROVIDERS_KEY, providersQueryKey, useApi, type ProviderAccount } from "../../app/api";
+import { PROVIDERS_KEY, providersQueryKey, useApi } from "../../app/api";
 import { adapterLabel, providerProblem } from "./rules";
+import { canManage, sharedNote, type ListedProvider } from "./sharing";
 
 export interface KnownProvider {
   id: string;
@@ -211,8 +212,8 @@ export function ProvidersPage() {
     queryFn: () => api.providers.list(),
   });
 
-  const providers = providersQuery.data ?? [];
-  const [disconnectTarget, setDisconnectTarget] = useState<ProviderAccount | null>(null);
+  const providers: ListedProvider[] = providersQuery.data ?? [];
+  const [disconnectTarget, setDisconnectTarget] = useState<ListedProvider | null>(null);
   const [disconnectError, setDisconnectError] = useState("");
 
   // meta.shown: the dialog words a failure itself, so the shell banner does not
@@ -227,7 +228,7 @@ export function ProvidersPage() {
     onError: (error: unknown) => setDisconnectError(providerProblem(error)),
   });
 
-  const askDisconnect = (account: ProviderAccount | null) => {
+  const askDisconnect = (account: ListedProvider | null) => {
     setDisconnectError("");
     setDisconnectTarget(account);
   };
@@ -312,7 +313,9 @@ export function ProvidersPage() {
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
           {filteredProviders.map((prov) => {
-            const shared = prov.scope === "global";
+            // Edit and disconnect only when the brain says this person may.
+            const manage = canManage(prov);
+            const note = sharedNote(prov);
             return (
               <Stack key={prov.id} gap="xs">
                 <ProviderCard
@@ -326,23 +329,23 @@ export function ProvidersPage() {
                   baseUrl={prov.base_url}
                   models={prov.models}
                   onEdit={
-                    shared
-                      ? undefined
-                      : () =>
+                    manage
+                      ? () =>
                           void navigate({
                             to: "/providers/$providerId/edit",
                             params: { providerId: prov.id },
                           })
+                      : undefined
                   }
-                  onDisconnect={shared ? undefined : () => askDisconnect(prov)}
+                  onDisconnect={manage ? () => askDisconnect(prov) : undefined}
                 />
-                {shared ? (
+                {note ? (
                   <Group gap="xs">
                     <Badge variant="light" size="sm">
-                      Shared
+                      {note.badge}
                     </Badge>
                     <Text size="xs" c="dimmed">
-                      Managed by your workspace. Read only.
+                      {note.text}
                     </Text>
                   </Group>
                 ) : null}

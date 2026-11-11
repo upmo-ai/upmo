@@ -17,7 +17,8 @@ import (
 const maxProviderBody = 64 << 10
 
 // ProvidersHandler serves a signed-in person's own provider accounts and the
-// global ones beside them. A key is accepted but never returned.
+// ones shared with them beside them: their teams' and the workspace's. A key
+// is accepted but never returned.
 type ProvidersHandler struct {
 	Service app.Providers
 	// Access names the signed-in person. It is false without a session.
@@ -35,6 +36,7 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 		return guard(next)
 	}
 	mux.Handle("GET /api/providers", wrap(h.list))
+	mux.Handle("GET /api/providers/sharing", wrap(h.sharing))
 	mux.Handle("POST /api/providers", wrap(h.add))
 	mux.Handle("POST /api/providers/test", wrap(h.test))
 	mux.Handle("PUT /api/providers/{id}", wrap(h.change))
@@ -50,28 +52,48 @@ type providerJSON struct {
 	BaseURL  string   `json:"base_url,omitempty"`
 	Status   string   `json:"status"`
 	Models   []string `json:"models"`
-	Scope    string   `json:"scope"`
+	// Scope is own, workspace or team.
+	Scope string `json:"scope"`
+	// TeamIDs and TeamNames are the teams a team account is shared with, in
+	// the same order. They are empty for any other scope.
+	TeamIDs   []string `json:"team_ids"`
+	TeamNames []string `json:"team_names"`
+	// CanManage says whether the person may change or remove the account.
+	CanManage bool `json:"can_manage"`
 }
 
 func providerBody(p domain.Provider) providerJSON {
-	scope := "global"
-	if p.Own {
-		scope = "own"
+	scope := p.Share.Scope
+	if scope == "" {
+		scope = domain.ScopeWorkspace
+		if p.Own {
+			scope = domain.ScopeOwn
+		}
 	}
 	models := p.Models
 	if models == nil {
 		models = []string{}
 	}
+	teamIDs, teamNames := p.Share.TeamIDs, p.Share.TeamNames
+	if teamIDs == nil {
+		teamIDs = []string{}
+	}
+	if teamNames == nil {
+		teamNames = []string{}
+	}
 	return providerJSON{
-		ID:       p.ID,
-		Provider: p.Provider,
-		Name:     p.Name,
-		Adapter:  p.Adapter,
-		PlanKind: p.PlanKind,
-		BaseURL:  p.BaseURL,
-		Status:   p.Status,
-		Models:   models,
-		Scope:    scope,
+		ID:        p.ID,
+		Provider:  p.Provider,
+		Name:      p.Name,
+		Adapter:   p.Adapter,
+		PlanKind:  p.PlanKind,
+		BaseURL:   p.BaseURL,
+		Status:    p.Status,
+		Models:    models,
+		Scope:     scope,
+		TeamIDs:   teamIDs,
+		TeamNames: teamNames,
+		CanManage: p.Share.CanManage,
 	}
 }
 
@@ -125,6 +147,21 @@ func (h ProvidersHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeRouteJSON(w, http.StatusOK, out)
 }
 
+// sharing answers whether the person may share accounts, so the screen knows
+// whether to offer the choice.
+func (h ProvidersHandler) sharing(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	can, err := h.Service.CanShare(r.Context(), user)
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	writeRouteJSON(w, http.StatusOK, map[string]bool{"can_share": can})
+}
+
 func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
 	if !ok {
@@ -142,6 +179,8 @@ func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 		BaseURL  string   `json:"base_url"`
 		APIKey   string   `json:"api_key"`
 		Models   []string `json:"models"`
+		Scope    string   `json:"scope"`
+		TeamIDs  []string `json:"team_ids"`
 	}
 	if !decodeProvider(w, r, &body) {
 		return
@@ -154,6 +193,8 @@ func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 		BaseURL:  body.BaseURL,
 		APIKey:   body.APIKey,
 		Models:   body.Models,
+		Scope:    body.Scope,
+		TeamIDs:  body.TeamIDs,
 	})
 	if err != nil {
 		h.refuse(w, err)
@@ -177,6 +218,8 @@ func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 		BaseURL  *string   `json:"base_url"`
 		APIKey   *string   `json:"api_key"`
 		Models   *[]string `json:"models"`
+		Scope    *string   `json:"scope"`
+		TeamIDs  *[]string `json:"team_ids"`
 	}
 	if !decodeProvider(w, r, &body) {
 		return
@@ -187,6 +230,8 @@ func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 		BaseURL:  body.BaseURL,
 		APIKey:   body.APIKey,
 		Models:   body.Models,
+		Scope:    body.Scope,
+		TeamIDs:  body.TeamIDs,
 	})
 	if err != nil {
 		h.refuse(w, err)
@@ -256,7 +301,9 @@ func (h ProvidersHandler) refuse(w http.ResponseWriter, err error) {
 	case errors.Is(err, app.ErrNotFound):
 		writeRouteError(w, http.StatusNotFound, "Not found.")
 	case errors.Is(err, app.ErrGlobal):
-		writeRouteError(w, http.StatusForbidden, "This provider is managed by your workspace.")
+		writeRouteError(w, http.StatusForbidden, "This provider is shared. Only workspace managers can change it.")
+	case errors.Is(err, app.ErrShareOnly):
+		writeRouteError(w, http.StatusForbidden, "Only workspace admins can share a provider.")
 	case errors.Is(err, app.ErrDuplicate):
 		writeRouteError(w, http.StatusConflict, "You already have a provider with that name.")
 	case errors.Is(err, app.ErrLimit):
