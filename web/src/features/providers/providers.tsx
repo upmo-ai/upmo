@@ -16,6 +16,11 @@ export interface KnownProvider {
   defaultPlan: "metered" | "subscription" | "local";
   defaultModels: string[];
   requiresKey: boolean;
+  /**
+   * The address the provider is reached at, as the brain's vendor table has it
+   * (internal/gateway/domain/vendor.go). The brain adds the chat, models and
+   * embeddings paths itself, which it picks from this address.
+   */
   defaultBaseUrl?: string;
 }
 
@@ -48,6 +53,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["gemini-2.0-flash", "gemini-1.5-pro"],
     requiresKey: true,
+    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
   },
   {
     id: "nebius",
@@ -81,6 +87,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["deepseek-r1", "deepseek-v3"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.deepseek.com",
   },
   {
     id: "groq",
@@ -90,6 +97,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["llama-3.3-70b-versatile"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.groq.com/openai",
   },
   {
     id: "xai",
@@ -99,6 +107,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["grok-2", "grok-2-mini"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.x.ai",
   },
   {
     id: "openrouter",
@@ -108,6 +117,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["anthropic/claude-3.7-sonnet", "openai/gpt-4o"],
     requiresKey: true,
+    defaultBaseUrl: "https://openrouter.ai/api",
   },
   {
     id: "mistral",
@@ -117,6 +127,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["mistral-large-latest", "codestral-latest"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.mistral.ai",
   },
   {
     id: "together",
@@ -126,6 +137,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "deepseek-ai/DeepSeek-R1"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.together.xyz",
   },
   {
     id: "cerebras",
@@ -135,6 +147,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["llama3.3-70b", "llama3.1-8b"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.cerebras.ai",
   },
   {
     id: "fireworks",
@@ -147,6 +160,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
       "accounts/fireworks/models/deepseek-r1",
     ],
     requiresKey: true,
+    defaultBaseUrl: "https://api.fireworks.ai/inference",
   },
   {
     id: "perplexity",
@@ -156,6 +170,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["sonar-pro", "sonar", "sonar-reasoning"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.perplexity.ai",
   },
   {
     id: "cohere",
@@ -165,6 +180,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultPlan: "metered",
     defaultModels: ["command-r-plus-08-2024", "command-r-08-2024"],
     requiresKey: true,
+    defaultBaseUrl: "https://api.cohere.ai/compatibility/v1",
   },
   {
     id: "lmstudio",

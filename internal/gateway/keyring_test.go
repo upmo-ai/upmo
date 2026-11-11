@@ -92,7 +92,7 @@ func TestEveryAdapterCanBeDispatchedAndProbed(t *testing.T) {
 			t.Errorf("adapter %q is not known to the provider settings", name)
 		}
 	}
-	for _, name := range []string{"", "anthropic", "openai", "ollama", "FAKE"} {
+	for _, name := range []string{"", "cohere", "openai", "ollama", "FAKE"} {
 		if p.Known(name) {
 			t.Errorf("adapter %q should not be known", name)
 		}

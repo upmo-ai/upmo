@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/anthropic"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/fake"
 	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
@@ -33,12 +34,12 @@ func Migrations() fs.FS {
 	return files
 }
 
-// adapter is everything one adapter key can do.
+// adapter is everything every adapter key can do. An adapter may also embed
+// (app.Embedder); one that cannot, such as anthropic, simply lacks the method.
 type adapter interface {
 	app.Decider
 	app.Chatter
 	app.StreamChatter
-	app.Embedder
 	app.Prober
 }
 
@@ -47,8 +48,9 @@ type adapter interface {
 // can be called.
 func adapters() map[string]adapter {
 	return map[string]adapter{
-		domain.AdapterFake:   fake.Adapter{YesNo: true, Reply: "ok"},
-		domain.AdapterOpenAI: openai.Adapter{},
+		domain.AdapterFake:      fake.Adapter{YesNo: true, Reply: "ok"},
+		domain.AdapterOpenAI:    openai.Adapter{},
+		domain.AdapterAnthropic: anthropic.Adapter{},
 	}
 }
 
@@ -60,7 +62,12 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 	stream := map[string]app.StreamChatter{}
 	embed := map[string]app.Embedder{}
 	for name, a := range adapters() {
-		decide[name], chat[name], stream[name], embed[name] = a, a, a, a
+		decide[name], chat[name], stream[name] = a, a, a
+		// An adapter without embeddings stays out of the embed table, so an
+		// embed route that reaches it finds no embed adapter and moves on.
+		if e, ok := a.(app.Embedder); ok {
+			embed[name] = e
+		}
 	}
 	httpapi.Handler{
 		Dispatch: app.Dispatch{

@@ -5,6 +5,7 @@ import {
   adapterKey,
   adapterLabel,
   baseUrlRequired,
+  hostedBaseUrl,
   keyRequired,
   keysOffSentence,
   providerProblem,
@@ -12,9 +13,10 @@ import {
 } from "./rules";
 
 describe("adapterKey", () => {
-  it("sends the fake adapter as fake and every other picker adapter as openai_compat", () => {
+  it("sends fake as fake, anthropic as anthropic, and every other picker adapter as openai_compat", () => {
     expect(adapterKey("fake")).toBe("fake");
-    for (const picked of ["anthropic", "openai", "gemini", "nebius", "ollama", "lmstudio", "openai_compat"]) {
+    expect(adapterKey("anthropic")).toBe("anthropic");
+    for (const picked of ["openai", "gemini", "nebius", "ollama", "lmstudio", "cohere", "openai_compat"]) {
       expect(adapterKey(picked)).toBe("openai_compat");
     }
   });
@@ -23,8 +25,9 @@ describe("adapterKey", () => {
 describe("adapterLabel", () => {
   it("names the brain's adapters and shows any other key as sent", () => {
     expect(adapterLabel("openai_compat")).toBe("OpenAI-compatible");
+    expect(adapterLabel("anthropic")).toBe("Anthropic Messages");
     expect(adapterLabel("fake")).toBe("Test adapter");
-    expect(adapterLabel("anthropic")).toBe("anthropic");
+    expect(adapterLabel("ollama")).toBe("ollama");
     // A key that is also an object property name is not mistaken for a label.
     expect(adapterLabel("constructor")).toBe("constructor");
   });
@@ -56,11 +59,30 @@ describe("showsKeyField", () => {
   });
 });
 
+describe("hostedBaseUrl", () => {
+  it("falls back to a hosted https address and to nothing else", () => {
+    expect(hostedBaseUrl("https://api.openai.com")).toBe("https://api.openai.com");
+    expect(hostedBaseUrl("http://localhost:11434")).toBeUndefined();
+    expect(hostedBaseUrl("")).toBeUndefined();
+    expect(hostedBaseUrl(undefined)).toBeUndefined();
+  });
+});
+
 describe("baseUrlRequired", () => {
-  it("requires a base URL for every adapter except the built in test one", () => {
-    for (const picked of ["anthropic", "openai", "deepseek", "ollama", "lmstudio", "openai_compat"]) {
-      expect(baseUrlRequired(picked)).toBe(true);
-    }
+  it("requires a base URL when the provider has no hosted address to fall back on", () => {
+    expect(baseUrlRequired("openai_compat")).toBe(true);
+    expect(baseUrlRequired("ollama", "http://localhost:11434")).toBe(true);
+    expect(baseUrlRequired("lmstudio", "http://localhost:1234")).toBe(true);
+    expect(baseUrlRequired("deepseek")).toBe(true);
+  });
+
+  it("does not require one when the provider has a hosted default", () => {
+    expect(baseUrlRequired("anthropic", "https://api.anthropic.com")).toBe(false);
+    expect(baseUrlRequired("openai", "https://api.openai.com")).toBe(false);
+    expect(baseUrlRequired("gemini", "https://generativelanguage.googleapis.com/v1beta/openai")).toBe(false);
+  });
+
+  it("never requires one for the built in test adapter", () => {
     expect(baseUrlRequired("fake")).toBe(false);
   });
 });
