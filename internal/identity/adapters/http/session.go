@@ -13,6 +13,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 )
 
@@ -78,7 +79,18 @@ func (h Handler) signOut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Sessions.End(r.Context(), session.ID); err != nil {
+	audit.WithActor(r.Context(), audit.Actor{
+		Type:           "user",
+		ID:             session.UserID.String(),
+		RoleID:         session.RoleID,
+		CredentialType: "session",
+		CredentialID:   session.ID,
+	})
+	if err := h.Sessions.EndAudited(r.Context(), session.ID, audit.Event{
+		Action:   audit.AuthSignOut,
+		Outcome:  audit.Success,
+		TargetID: session.ID,
+	}); err != nil {
 		http.Error(w, "session", http.StatusInternalServerError)
 		return
 	}
@@ -119,6 +131,13 @@ func (h Handler) presentToken(w http.ResponseWriter, r *http.Request, secret str
 		writeRaw(w, http.StatusUnauthorized, `{"error":"invalid token"}`+"\n")
 		return
 	}
+	audit.WithActor(r.Context(), audit.Actor{
+		Type:           "user",
+		ID:             bearer.UserID.String(),
+		RoleID:         bearer.RoleID,
+		CredentialType: "token",
+		CredentialID:   bearer.ID,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"principal": "token",
 		"user_id":   bearer.UserID.String(),
@@ -147,7 +166,7 @@ func (h Handler) allow(w http.ResponseWriter, r *http.Request) bool {
 	if h.Now != nil {
 		now = h.Now()
 	}
-	allowed, retry, err := h.Limit.Take(r.Context(), domain.ThrottleAddress(domain.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted)), now, domain.ThrottleBurst, domain.ThrottlePerSecond)
+	allowed, retry, err := h.Limit.Take(r.Context(), domain.ThrottleAddress(httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted)), now, domain.ThrottleBurst, domain.ThrottlePerSecond)
 	if err != nil {
 		http.Error(w, "throttle", http.StatusInternalServerError)
 		return false
