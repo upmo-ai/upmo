@@ -767,6 +767,28 @@ describe("UPM-265 nothing usable", () => {
     expect(within(composer).getByRole("textbox", { name: "Message" })).toBeTruthy();
   });
 
+  it("shows no guide while a route can still answer, even with no usable model", async () => {
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      providers: {
+        ...base.providers,
+        list: async () =>
+          (await base.providers.list()).map((account) => ({
+            ...account,
+            status: "Not connected" as const,
+            usable: false,
+            usable_models: [],
+          })),
+      },
+    };
+    renderChat("/chat", client);
+    fireEvent.click(await within(await findChatList()).findByRole("button", { name: "New chat" }));
+
+    expect(await screen.findByText("Write a message to start this chat.")).toBeTruthy();
+    expect(screen.queryByTestId("chat-setup-guide")).toBeNull();
+  });
+
   it("keeps the blank thread when something usable remains", async () => {
     renderChat("/chat", quick());
     const list = await findChatList();
