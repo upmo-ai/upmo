@@ -24,6 +24,7 @@ const agent: AgentProfile = {
   model_provider: "OpenAI",
   model_id: "gpt-x",
   enabled: true,
+  usable: true,
   scope: "own",
   editable: true,
 };
@@ -86,6 +87,8 @@ describe("agent rules", () => {
       plan_kind: "metered",
       status: "Connected",
       models,
+      usable: models.length > 0,
+      usable_models: models,
       scope: "own",
     });
     const choices = modelChoices([
@@ -98,6 +101,23 @@ describe("agent rules", () => {
       { provider: "OpenAI", model: "meta/llama" },
       { provider: "Nebius", model: "gpt-x" },
     ]);
+  });
+
+  it("UPM-265 lists only the usable models of the accounts", () => {
+    const broken: ProviderAccount = {
+      id: "b",
+      provider: "Nebius",
+      name: "b",
+      adapter: "openai_compat",
+      plan_kind: "metered",
+      status: "Not connected",
+      models: ["gpt-x"],
+      usable: false,
+      usable_models: [],
+      scope: "own",
+    };
+    const working: ProviderAccount = { ...broken, id: "w", status: "Connected", usable: true, usable_models: ["gpt-x"] };
+    expect(modelChoices([broken, working])).toEqual([{ provider: "Nebius", model: "gpt-x" }]);
   });
 
   it("round-trips a choice whatever the model id holds", () => {

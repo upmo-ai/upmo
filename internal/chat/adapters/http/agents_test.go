@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/gateway"
 )
 
 const agentID = "018f3b2c-7a10-7c4a-8e11-cccccccccccc"
@@ -209,5 +210,128 @@ func TestAgentsNeedNoChatPermissionOnlyASession(t *testing.T) {
 	}
 	if rec := agentCall(t, book, "settings:manage", http.MethodPost, "/api/agents", `{"name":"H","scope":"global"}`); rec.Code != http.StatusCreated || !book.global {
 		t.Fatalf("global for a settings-only manager: status %d global %v", rec.Code, book.global)
+	}
+}
+
+// fakeRouteBook answers the route list with fixed rows.
+type fakeRouteBook struct{ rows []gateway.ListedRoute }
+
+func (f *fakeRouteBook) List(context.Context) ([]gateway.ListedRoute, error) {
+	return f.rows, nil
+}
+
+// fakeAccountList answers the person's provider accounts with fixed rows.
+type fakeAccountList struct{ rows []gateway.Provider }
+
+func (f *fakeAccountList) List(context.Context, string) ([]gateway.Provider, error) {
+	return f.rows, nil
+}
+
+// usableSources is what the usability rule reads: one route the person can
+// reach through a working account, and that account.
+func usableSources() (*fakeRouteBook, *fakeAccountList) {
+	routes := &fakeRouteBook{rows: []gateway.ListedRoute{{
+		Name:       "chat",
+		Capability: "chat",
+		Hops:       []gateway.ListedHop{{Position: 1, Adapter: "fake", Model: "m1", AccountID: "mine"}},
+	}}}
+	accounts := &fakeAccountList{rows: []gateway.Provider{
+		{ID: "mine", Provider: "fake", Status: gateway.StatusConnected, Models: []string{"m1"}, Own: true},
+	}}
+	return routes, accounts
+}
+
+func usableAgentCall(t *testing.T, book *fakeAgents, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	routes, accounts := usableSources()
+	mux := http.NewServeMux()
+	AgentsHandler{
+		Agents:       book,
+		Log:          nil,
+		Routes:       routes,
+		Accounts:     accounts,
+		DefaultRoute: "chat",
+		Access: func(*http.Request) (app.Access, bool) {
+			return app.Access{UserID: userID, Allow: memberAllow}, true
+		},
+	}.Mount(mux, nil)
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	return rec
+}
+
+// The list marks every agent usable or not for the calling person, by the
+// same rule the chat composer picks with.
+func TestAgentsListCarriesTheUsableAnswer(t *testing.T) {
+	book := &fakeAgents{list: []app.Agent{
+		{ID: agentID, Name: "By model", ModelProvider: "fake", ModelID: "m1", Enabled: true, Editable: true},
+		{ID: "018f3b2c-7a10-7c4a-8e11-dddddddddddd", Name: "By route", Route: "chat", Enabled: true, Editable: true},
+		{ID: "018f3b2c-7a10-7c4a-8e11-ddddddddddde", Name: "By default", Enabled: true, Editable: true},
+		{ID: "018f3b2c-7a10-7c4a-8e11-dddddddddddf", Name: "Off", ModelProvider: "fake", ModelID: "m1", Enabled: false, Editable: true},
+		{ID: "018f3b2c-7a10-7c4a-8e11-dddddddddddg", Name: "Missing model", ModelProvider: "fake", ModelID: "other", Enabled: true, Editable: true},
+	}}
+	rec := usableAgentCall(t, book, http.MethodGet, "/api/agents", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []agentJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []bool{true, true, true, false, false} {
+		if len(got) <= i {
+			t.Fatalf("agent %d missing from the list (%+v)", i, got)
+		}
+		if got[i].Usable != want {
+			t.Fatalf("agent %d usable = %v, want %v", i, got[i].Usable, want)
+		}
+	}
+
+	// The account stops working: nothing resolves, nobody is offered.
+	routes, accounts := usableSources()
+	accounts.rows[0].Status = gateway.StatusNotConnected
+	mux := http.NewServeMux()
+	AgentsHandler{
+		Agents:       book,
+		Routes:       routes,
+		Accounts:     accounts,
+		DefaultRoute: "chat",
+		Access: func(*http.Request) (app.Access, bool) {
+			return app.Access{UserID: userID, Allow: memberAllow}, true
+		},
+	}.Mount(mux, nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
+	got = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range got {
+		if row.Usable {
+			t.Fatalf("%s read usable through a Not connected account", row.Name)
+		}
+	}
+}
+
+// A created agent answers with its usable flag like the list does.
+func TestAgentCreateAnswersUsable(t *testing.T) {
+	book := &fakeAgents{}
+	rec := usableAgentCall(t, book, http.MethodPost, "/api/agents", `{"name":"Mine"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got agentJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	// No route and no model: the install default route decides.
+	if !got.Usable {
+		t.Fatalf("an agent on the usable default route read unusable: %+v", got)
 	}
 }

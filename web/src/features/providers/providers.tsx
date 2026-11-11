@@ -346,6 +346,13 @@ export function ProvidersPage() {
                     </Text>
                   </Group>
                 ) : null}
+                {!prov.usable ? (
+                  <Group gap="xs">
+                    <Badge variant="light" size="sm">
+                      Inactive
+                    </Badge>
+                  </Group>
+                ) : null}
               </Stack>
             );
           })}

@@ -105,14 +105,19 @@ DELETE FROM gateway.provider_accounts WHERE owner_user_id IS NULL AND name IN ('
 INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, provider, status) VALUES
   ('e2e00000-0000-7000-8000-00000000f001', 'e2e-house', 'fake', 'house', 'local', true, 'e2e', 'Connected');
 INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, provider, status) VALUES
-  ('e2e00000-0000-7000-8000-00000000f002', 'e2e-sample', 'anthropic', 'sample', 'metered', false, 'anthropic', 'Not connected');
+  ('e2e00000-0000-7000-8000-00000000f002', 'e2e-sample', 'anthropic', 'sample', 'metered', false, 'anthropic', 'Connected');
 INSERT INTO gateway.provider_models (account_id, model, position) VALUES
   ('e2e00000-0000-7000-8000-00000000f001', 'fake-ok', 1),
   ('e2e00000-0000-7000-8000-00000000f001', 'fake-slow', 2),
   ('e2e00000-0000-7000-8000-00000000f001', 'fake-fail-ratelimit', 3),
   ('e2e00000-0000-7000-8000-00000000f001', 'fake-fail-after-2', 4),
   ('e2e00000-0000-7000-8000-00000000f001', 'plain-1', 5),
-  ('e2e00000-0000-7000-8000-00000000f001', 'plain-2', 6);
+  ('e2e00000-0000-7000-8000-00000000f001', 'plain-2', 6),
+  ('e2e00000-0000-7000-8000-00000000f002', 'claude-3-7-sonnet', 1),
+  ('e2e00000-0000-7000-8000-00000000f002', 'gpt-4.1', 2),
+  ('e2e00000-0000-7000-8000-00000000f002', 'llama3.3:70b', 3),
+  ('e2e00000-0000-7000-8000-00000000f002', 'claude-3-5-haiku', 4),
+  ('e2e00000-0000-7000-8000-00000000f002', 'gpt-4.1-mini', 5);
 INSERT INTO gateway.routes (id, name, capability, decision) VALUES
   ('e2e00000-0000-7000-8000-00000000f101', 'e2e-main', 'chat', ''),
   ('e2e00000-0000-7000-8000-00000000f102', 'e2e-spare', 'chat', ''),

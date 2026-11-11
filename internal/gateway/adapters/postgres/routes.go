@@ -125,11 +125,13 @@ func (s Store) Names(ctx context.Context) ([]string, error) {
 	return names, rows.Err()
 }
 
-// List returns every route with hops in position order. Credential refs stay out.
+// List returns every route with hops in position order. Credential refs stay
+// out; each hop names the account it calls, so the HTTP layer can compute
+// what the calling person can use.
 func (s Store) List(ctx context.Context) ([]app.ListedRoute, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT r.name, r.capability, r.decision,
-			l.position, account.adapter, l.model, l.weight, l.retry_budget
+			l.position, account.adapter, l.model, l.weight, l.retry_budget, account.id::text
 		FROM gateway.routes AS r
 		LEFT JOIN gateway.route_links AS l ON l.route_id = r.id
 		LEFT JOIN gateway.provider_accounts AS account ON account.id = l.provider_account_id
@@ -144,24 +146,25 @@ func (s Store) List(ctx context.Context) ([]app.ListedRoute, error) {
 	for rows.Next() {
 		var name, capability, decision string
 		var position *int
-		var adapter, model *string
+		var adapter, model, accountID *string
 		var weight, retry *int
-		if err := rows.Scan(&name, &capability, &decision, &position, &adapter, &model, &weight, &retry); err != nil {
+		if err := rows.Scan(&name, &capability, &decision, &position, &adapter, &model, &weight, &retry, &accountID); err != nil {
 			return nil, fmt.Errorf("gateway: list routes: %w", err)
 		}
 		if cur == nil || cur.Name != name {
 			out = append(out, app.ListedRoute{Name: name, Capability: capability, Decision: decision, Hops: []app.ListedHop{}})
 			cur = &out[len(out)-1]
 		}
-		if position == nil || adapter == nil || model == nil || weight == nil || retry == nil {
+		if position == nil || adapter == nil || model == nil || weight == nil || retry == nil || accountID == nil {
 			continue
 		}
 		cur.Hops = append(cur.Hops, app.ListedHop{
-			Position: *position,
-			Adapter:  *adapter,
-			Model:    *model,
-			Weight:   *weight,
-			Retry:    *retry,
+			Position:  *position,
+			Adapter:   *adapter,
+			Model:     *model,
+			Weight:    *weight,
+			Retry:     *retry,
+			AccountID: *accountID,
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -126,6 +126,7 @@ describe("UPM-202 models and routes", () => {
               scope: "global",
               capability: "chat",
               decision: "",
+              usable: true,
               hops: [
                 { position: 2, adapter: "b", model: "second", weight: 1, retry: 0 },
                 { position: 1, adapter: "a", model: "first", weight: 1, retry: 0 },
@@ -405,7 +406,7 @@ describe("UPM-202 models and routes", () => {
       gateway: {
         async routes() {
           const routes = await stub.gateway.routes();
-          return [...routes, { name: "mine", scope: "own", capability: "chat", decision: "", hops: [] }];
+          return [...routes, { name: "mine", scope: "own", capability: "chat", decision: "", usable: true, hops: [] }];
         },
       },
       decisions: {

@@ -12,10 +12,10 @@ export const autoPicks: Picks = { agent: AUTO, route: AUTO, model: AUTO };
 /** One model a person can pin: an account they can see and a model id on it. */
 export type ModelChoice = { value: string; account_id: string; model: string; provider: string; account: string; scope: ProviderAccount["scope"] };
 
-/** Every model of every account, in the order the brain lists the accounts (own first). */
+/** Every usable model of every account, in the order the brain lists the accounts (own first). */
 export function modelChoices(accounts: readonly ProviderAccount[]): ModelChoice[] {
   return accounts.flatMap((account) =>
-    account.models.map((model) => ({
+    account.usable_models.map((model) => ({
       value: `${account.id}/${model}`,
       account_id: account.id,
       model,
@@ -26,14 +26,19 @@ export function modelChoices(accounts: readonly ProviderAccount[]): ModelChoice[
   );
 }
 
-/** The routes a reply can be written on: an embed or decide route cannot. */
+/**
+ * The routes a reply can be written on: an embed or decide route cannot, and
+ * one with no usable hop reads as inactive and is not offered.
+ */
 export function chatRoutes(routes: readonly GatewayRoute[]): GatewayRoute[] {
-  return routes.filter((item) => item.capability === "chat" || item.capability === "stream");
+  return routes.filter(
+    (item) => (item.capability === "chat" || item.capability === "stream") && item.usable,
+  );
 }
 
-/** The agents a person can pick: the enabled ones. */
+/** The agents a person can pick: the enabled ones whose model or route works. */
 export function pickableAgents(agents: readonly AgentProfile[]): AgentProfile[] {
-  return agents.filter((item) => item.enabled);
+  return agents.filter((item) => item.enabled && item.usable);
 }
 
 /** A pick that names something no longer there is Auto again. */

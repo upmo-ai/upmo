@@ -587,6 +587,8 @@ const account = (id: string, provider: string, models: string[], scope = "own") 
   plan_kind: "metered",
   status: "Connected",
   models,
+  usable: true,
+  usable_models: models,
   scope,
 });
 
@@ -599,6 +601,7 @@ const agentRow = (id: string, name: string, extra: Record<string, unknown> = {})
   model_provider: "",
   model_id: "",
   enabled: true,
+  usable: true,
   scope: "own",
   editable: true,
   ...extra,

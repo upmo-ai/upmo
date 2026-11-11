@@ -18,6 +18,8 @@ export interface RouteHop {
   model: string;
   weight: number;
   retry: number;
+  /** The account the hop calls, when the brain names one. */
+  account_id?: string;
 }
 
 export interface GatewayRoute {
@@ -26,6 +28,8 @@ export interface GatewayRoute {
   capability: RouteCapability;
   decision: RouteDecision;
   hops: RouteHop[];
+  /** Whether the signed-in person can use the route now. */
+  usable: boolean;
 }
 
 export type GateKind = "yesno" | "choice" | "filter" | "rank";

@@ -23,6 +23,7 @@ type Row = {
   model_provider: string;
   model_id: string;
   enabled: boolean;
+  usable: boolean;
   scope: "own" | "global";
   editable: boolean;
 };
@@ -36,6 +37,7 @@ const mine: Row = {
   model_provider: "OpenAI",
   model_id: "gpt-x",
   enabled: true,
+  usable: true,
   scope: "own",
   editable: true,
 };
@@ -48,6 +50,7 @@ const house: Row = {
   model_provider: "",
   model_id: "",
   enabled: true,
+  usable: true,
   scope: "global",
   editable: false,
 };
@@ -83,13 +86,15 @@ function brain(rows: Row[], refuse?: (call: Call) => Response | undefined) {
             plan_kind: "metered",
             status: "Connected",
             models: ["gpt-x", "gpt-y"],
+            usable: true,
+            usable_models: ["gpt-x", "gpt-y"],
             scope: "own",
           },
         ]);
       }
       if (path === "/api/agents" && method === "GET") return Response.json(agents);
       if (path === "/api/agents" && method === "POST") {
-        const made = { id: "new1", scope: "own", editable: true, ...body } as Row;
+        const made = { id: "new1", usable: true, scope: "own", editable: true, ...body } as Row;
         agents.push(made);
         return Response.json(made, { status: 201 });
       }

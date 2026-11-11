@@ -6,6 +6,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "chat",
     decision: "",
+    usable: true,
     hops: [
       { position: 1, adapter: "anthropic", model: "claude-3-7-sonnet", weight: 3, retry: 1 },
       { position: 2, adapter: "openai_compat", model: "gpt-4.1", weight: 1, retry: 1 },
@@ -17,6 +18,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "stream",
     decision: "",
+    usable: true,
     hops: [
       { position: 1, adapter: "anthropic", model: "claude-3-7-sonnet", weight: 1, retry: 1 },
       { position: 2, adapter: "openai_compat", model: "gpt-4.1", weight: 1, retry: 1 },
@@ -27,6 +29,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "embed",
     decision: "",
+    usable: true,
     hops: [{ position: 1, adapter: "openai_compat", model: "text-embedding-3-small", weight: 1, retry: 2 }],
   },
   {
@@ -34,6 +37,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "decide",
     decision: "choice",
+    usable: true,
     hops: [
       { position: 1, adapter: "anthropic", model: "claude-3-5-haiku", weight: 1, retry: 1 },
       { position: 2, adapter: "openai_compat", model: "gpt-4.1-mini", weight: 1, retry: 1 },
@@ -44,6 +48,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "decide",
     decision: "choice",
+    usable: true,
     hops: [{ position: 1, adapter: "anthropic", model: "claude-3-5-haiku", weight: 1, retry: 1 }],
   },
   {
@@ -51,6 +56,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "decide",
     decision: "yesno",
+    usable: true,
     hops: [
       { position: 1, adapter: "openai_compat", model: "gpt-4.1-mini", weight: 2, retry: 1 },
       { position: 2, adapter: "ollama", model: "deepseek-r1:14b", weight: 1, retry: 0 },
@@ -61,6 +67,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "decide",
     decision: "yesno",
+    usable: true,
     hops: [{ position: 1, adapter: "anthropic", model: "claude-3-5-haiku", weight: 1, retry: 1 }],
   },
   {
@@ -68,6 +75,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "decide",
     decision: "choice",
+    usable: true,
     hops: [{ position: 1, adapter: "openai_compat", model: "gpt-4.1-mini", weight: 1, retry: 1 }],
   },
   {
@@ -75,6 +83,7 @@ export const sampleRoutes: GatewayRoute[] = [
     scope: "global",
     capability: "decide",
     decision: "yesno",
+    usable: true,
     hops: [{ position: 1, adapter: "ollama", model: "llama3.3:70b", weight: 1, retry: 0 }],
   },
 ];
