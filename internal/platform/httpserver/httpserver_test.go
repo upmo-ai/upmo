@@ -4,11 +4,33 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestClientIP(t *testing.T) {
+	proxy := mustCIDR(t, "203.0.113.8/32")
+	got := ClientIP("203.0.113.8:443", "198.51.100.4, 203.0.113.8", []*net.IPNet{proxy})
+	if got != "198.51.100.4" {
+		t.Fatalf("forwarded = %s", got)
+	}
+	got = ClientIP("198.51.100.9:443", "203.0.113.8", []*net.IPNet{proxy})
+	if got != "198.51.100.9" {
+		t.Fatalf("untrusted connection used the header: %s", got)
+	}
+}
+
+func mustCIDR(t *testing.T, cidr string) *net.IPNet {
+	t.Helper()
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return network
+}
 
 func TestHealthHandlers(t *testing.T) {
 	mux := http.NewServeMux()

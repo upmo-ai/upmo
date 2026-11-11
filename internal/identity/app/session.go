@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // ErrNotFound is an unknown session. ErrEnded is a session that has timed out.
@@ -25,6 +26,7 @@ type Session struct {
 	Expires  time.Time
 	Method   string
 	SignedIn time.Time
+	RoleID   string
 }
 
 // Row is a stored session, including one that has ended.
@@ -36,6 +38,7 @@ type Row struct {
 	Expires  time.Time
 	Method   string
 	SignedIn time.Time
+	RoleID   string
 }
 
 // Store is the session table.
@@ -119,7 +122,7 @@ func (s Service) Lookup(ctx context.Context, text string) (Session, error) {
 			return Session{}, err
 		}
 	}
-	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn}, nil
+	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn, RoleID: row.RoleID}, nil
 }
 
 // EndOthers ends every session for user except keep.
@@ -139,6 +142,22 @@ func (s Service) Devices(ctx context.Context, user domain.UserID) ([]Device, err
 
 // End ends one session.
 func (s Service) End(ctx context.Context, id string) error {
+	return s.Store.Delete(ctx, id)
+}
+
+// Ender is a store that can end a session and record its event in one
+// transaction.
+type Ender interface {
+	EndAudited(ctx context.Context, id string, event audit.Event) error
+}
+
+// EndAudited ends one session and records the event in the same transaction,
+// so a change without its event never commits. A store that cannot transact
+// falls back to a plain delete.
+func (s Service) EndAudited(ctx context.Context, id string, event audit.Event) error {
+	if ender, ok := s.Store.(Ender); ok {
+		return ender.EndAudited(ctx, id, event)
+	}
 	return s.Store.Delete(ctx, id)
 }
 

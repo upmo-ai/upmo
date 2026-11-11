@@ -8,6 +8,7 @@ import (
 
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity/app"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // Identity is the identity facade embedding this context's use cases.
@@ -40,6 +41,7 @@ type Principal struct {
 	SessionID string
 	Method    string
 	SignedIn  time.Time
+	RoleID    string
 }
 
 // User returns the principal's user ID.
@@ -86,8 +88,11 @@ func RequireSession(sessions app.Service, next http.Handler) http.Handler {
 			SessionID: session.ID,
 			Method:    session.Method,
 			SignedIn:  session.SignedIn,
+			RoleID:    session.RoleID,
 		}
-		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
+		ctx := WithPrincipal(r.Context(), p)
+		audit.WithActor(ctx, audit.Actor{Type: "user", ID: session.UserID.String(), RoleID: session.RoleID, CredentialType: "session", CredentialID: session.ID})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -114,6 +119,7 @@ func Recheck(ctx context.Context, sessions app.Service, r *http.Request) (Princi
 		SessionID: session.ID,
 		Method:    session.Method,
 		SignedIn:  session.SignedIn,
+		RoleID:    session.RoleID,
 	}, true, nil
 }
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -29,8 +30,10 @@ import (
 func TestReadyAndSession(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
-	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
-		t.Fatal(err)
+	for schema, files := range map[string]fs.FS{audit.Schema: audit.Migrations(), identity.Schema: identity.Migrations()} {
+		if err := migrate.Up(ctx, owner, schema, files); err != nil {
+			t.Fatal(err)
+		}
 	}
 	pool := pgtest.App(t, owner)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -52,7 +55,9 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	protected := httpserver.New("127.0.0.1:0", handler).Handler
+	// NewGuarded, like main.go: the brain handler carries its own guard, with
+	// the audit middleware outside Protect so a refusal is still recorded.
+	protected := httpserver.NewGuarded("127.0.0.1:0", handler).Handler
 
 	ready := httptest.NewRecorder()
 	protected.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -79,6 +84,25 @@ func TestReadyAndSession(t *testing.T) {
 	protected.ServeHTTP(cross, req)
 	if cross.Code != http.StatusForbidden {
 		t.Fatalf("cross-site delete = %d, want 403", cross.Code)
+	}
+
+	// The refusal on a table route is still recorded, anonymously, with the
+	// request id the response carried.
+	out := &bytes.Buffer{}
+	if _, err := audit.SealOnce(ctx, owner, out); err != nil {
+		t.Fatal(err)
+	}
+	var action, outcome, requestID string
+	if err := owner.QueryRow(ctx,
+		`SELECT action, outcome, COALESCE(request_id::text, '') FROM audit.events WHERE position = 1`,
+	).Scan(&action, &outcome, &requestID); err != nil {
+		t.Fatal(err)
+	}
+	if action != "auth.sign_out" || outcome != "denied" {
+		t.Fatalf("sealed %s %s, want a denied sign-out", action, outcome)
+	}
+	if requestID != cross.Header().Get("X-Request-Id") || requestID == "" {
+		t.Fatalf("request id %q, header %q", requestID, cross.Header().Get("X-Request-Id"))
 	}
 }
 
@@ -153,7 +177,11 @@ func TestRequireSessionSeamIntegration(t *testing.T) {
 func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
-	for schema, files := range map[string]fs.FS{identity.Schema: identity.Migrations(), gateway.Schema: gateway.Migrations()} {
+	for schema, files := range map[string]fs.FS{
+		audit.Schema:    audit.Migrations(),
+		identity.Schema: identity.Migrations(),
+		gateway.Schema:  gateway.Migrations(),
+	} {
 		if err := migrate.Up(ctx, owner, schema, files); err != nil {
 			t.Fatal(err)
 		}
@@ -201,7 +229,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return httpserver.New("127.0.0.1:0", handler).Handler
+		return httpserver.NewGuarded("127.0.0.1:0", handler).Handler
 	}
 	do := func(h http.Handler, who *http.Cookie, method, path, body string, header ...string) *httptest.ResponseRecorder {
 		t.Helper()

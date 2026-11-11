@@ -9,15 +9,61 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// ClientIP returns the client address, trusting forwarded hops only from a
+// configured proxy.
+func ClientIP(remote, forwarded string, trusted []*net.IPNet) string {
+	host := hostOnly(remote)
+	ip := net.ParseIP(host)
+	if ip == nil || !trustedIP(ip, trusted) {
+		return host
+	}
+	for hops := strings.Split(forwarded, ","); len(hops) > 0; hops = hops[:len(hops)-1] {
+		hop := hostOnly(strings.TrimSpace(hops[len(hops)-1]))
+		parsed := net.ParseIP(hop)
+		if parsed != nil && !trustedIP(parsed, trusted) {
+			return hop
+		}
+	}
+	return host
+}
+
+func hostOnly(value string) string {
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return host
+	}
+	return value
+}
+
+func trustedIP(ip net.IP, trusted []*net.IPNet) bool {
+	for _, network := range trusted {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // New returns an http.Server on addr with conservative timeouts. Every route
 // sits behind the cross-origin guard.
 func New(addr string, h http.Handler) *http.Server {
+	return newServer(addr, Protect(h))
+}
+
+// NewGuarded is New for a handler that already carries its cross-origin guard
+// inside, the way brain wraps Protect with the audit middleware so a refused
+// request is still recorded.
+func NewGuarded(addr string, h http.Handler) *http.Server {
+	return newServer(addr, h)
+}
+
+func newServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           Protect(h),
+		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

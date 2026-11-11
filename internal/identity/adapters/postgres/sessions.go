@@ -11,6 +11,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // Sessions is the identity.sessions table.
@@ -34,11 +35,11 @@ func (s Sessions) Find(ctx context.Context, hash []byte) (app.Row, bool, error) 
 	var row app.Row
 	err := s.Pool.QueryRow(ctx, `
 		SELECT session.id::text, session.user_id, session.created_at, session.last_seen_at, session.expires_at,
-		       session.sign_in_method, session.signed_in_at
+		       session.sign_in_method, session.signed_in_at, person.role_id::text
 		FROM identity.sessions AS session
 		JOIN identity.users AS person ON person.id = session.user_id
 		WHERE session.token_hash = $1
-		  AND person.disabled_at IS NULL`, hash).Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn)
+		  AND person.disabled_at IS NULL`, hash).Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn, &row.RoleID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Row{}, false, nil
 	}
@@ -56,6 +57,23 @@ func (s Sessions) Touch(ctx context.Context, id string, seen time.Time) error {
 func (s Sessions) Delete(ctx context.Context, id string) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM identity.sessions WHERE id = $1`, id)
 	return err
+}
+
+// EndAudited ends one session and records its sign-out event in the same
+// transaction, so the session cannot end without its audit row.
+func (s Sessions) EndAudited(ctx context.Context, id string, event audit.Event) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := audit.Record(ctx, tx, event); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM identity.sessions WHERE id = $1`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s Sessions) DeleteUser(ctx context.Context, user domain.UserID) error {

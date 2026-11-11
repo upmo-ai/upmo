@@ -24,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/memory"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -61,11 +62,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	owner, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	ownerConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	err = migrate.Up(ctx, owner, identity.Schema, identity.Migrations())
+	ownerConfig.MaxConns = 2
+	owner, err := pgxpool.NewWithConfig(ctx, ownerConfig)
+	if err != nil {
+		return err
+	}
+	err = migrate.Up(ctx, owner, audit.Schema, audit.Migrations())
+	if err == nil {
+		err = migrate.Up(ctx, owner, identity.Schema, identity.Migrations())
+	}
 	if err == nil {
 		err = migrate.Up(ctx, owner, memory.Schema, memory.Migrations())
 	}
@@ -98,10 +107,14 @@ func run() error {
 	if err == nil {
 		err = notices.Up(ctx, owner)
 	}
-	owner.Close()
+	if err == nil {
+		err = audit.Migrated(ctx, owner)
+	}
 	if err != nil {
+		owner.Close()
 		return err
 	}
+	defer owner.Close()
 	pool, err := requestPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -109,6 +122,10 @@ func run() error {
 	defer pool.Close()
 
 	workers := river.NewWorkers()
+	// The sealer runs on the owner pool: pending and sealed events are the
+	// app role's to insert and read, never to move. The owner pool stays
+	// open until work.Stop has drained the workers at shutdown.
+	audit.AddSealer(workers, owner, os.Stdout)
 	noticeStore := notices.Store{Pool: pool}
 	memoryFacts := memory.NewFacts(pool)
 	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
@@ -165,7 +182,7 @@ func run() error {
 	work, err := jobs.Open(pool,
 		jobs.WithWorkers(workers),
 		jobs.WithQueue(chat.ReplyQueue, cfg.ChatWorkers),
-		jobs.WithPeriodic(chat.SweepPeriodic()),
+		jobs.WithPeriodic(chat.SweepPeriodic(), audit.SealPeriodic()),
 	)
 	if err != nil {
 		return err
@@ -195,7 +212,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := httpserver.New(cfg.ListenAddr, handler)
+	srv := httpserver.NewGuarded(cfg.ListenAddr, handler)
 	srv.RegisterOnShutdown(streams.Close)
 	srv.RegisterOnShutdown(chatStreams.Close)
 	err = httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
@@ -586,7 +603,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	return mux, nil
+	// The audit middleware sits outside the cross-origin guard, so a request
+	// Protect refuses is still recorded; the mux resolves the pattern then.
+	return audit.Middleware(audit.Routes(), mux, pool, "brain", cfg.TrustedProxies, log)(httpserver.Protect(mux)), nil
 }
 
 // chatAccess is what a person may do with chats. It reports false for a
