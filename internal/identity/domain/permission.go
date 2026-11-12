@@ -54,6 +54,7 @@ const (
 	PermSettingsManage   Permission = "settings:manage"
 	PermConnectorsManage Permission = "connectors:manage"
 	PermOwnersManage     Permission = "owners:manage"
+	PermAuditView        Permission = "audit:view"
 )
 
 // Permissions is the whole catalog.
@@ -100,8 +101,9 @@ func SystemPermissions(role Role) ([]Permission, error) {
 }
 
 // EffectivePermissions is the set a subject actually holds. A run's policy
-// and a token's scope only narrow, and neither holds a delete or an install
-// permission. An agent holds nothing. Names outside the catalog are dropped.
+// and a token's scope only narrow, and neither holds a delete. A run never
+// holds an install permission; a token holds audit:view alone. An agent
+// holds nothing. Names outside the catalog are dropped.
 func EffectivePermissions(subject Subject) []Permission {
 	if subject.Kind == KindAgent {
 		return nil
@@ -111,9 +113,13 @@ func EffectivePermissions(subject Subject) []Permission {
 		return held
 	}
 	held = intersect(held, known(subject.Policy))
+	forbidden := runForbidden
+	if subject.Kind == KindToken {
+		forbidden = tokenForbidden
+	}
 	var out []Permission
 	for _, permission := range held {
-		if runForbidden(permission) {
+		if forbidden(permission) {
 			continue
 		}
 		out = append(out, permission)
@@ -139,6 +145,7 @@ func installPermissions() []Permission {
 		PermSettingsManage,
 		PermConnectorsManage,
 		PermOwnersManage,
+		PermAuditView,
 	}
 }
 
@@ -186,4 +193,14 @@ func runForbidden(permission Permission) bool {
 		return true
 	}
 	return strings.HasSuffix(string(permission), ":delete")
+}
+
+// tokenForbidden is runForbidden with audit:view let through: the one
+// install permission a token may hold. Every other install permission and
+// every delete stays forbidden.
+func tokenForbidden(permission Permission) bool {
+	if permission == PermAuditView {
+		return false
+	}
+	return runForbidden(permission)
 }

@@ -30,6 +30,7 @@ func Routes() Table {
 		noticeRoutes(),
 		gatewayRoutes(),
 		sandboxdRoutes(),
+		auditRoutes(),
 	} {
 		for _, e := range area {
 			table[e.pattern] = e.route

@@ -234,6 +234,50 @@ func run() error {
 	return err
 }
 
+// auditCallers resolves the events endpoint's two credentials through the
+// identity services: a bearer secret runs through the token service and
+// narrows the caller to the token's scope, anything else runs through the
+// session lookup and the person's effective permissions.
+type auditCallers struct {
+	sessions identity.SessionService
+	tokens   identity.TokenService
+	members  identity.MemberService
+}
+
+// Token resolves one bearer secret to its token's reader.
+func (c auditCallers) Token(ctx context.Context, secret string) (audit.Reader, error) {
+	bearer, err := c.tokens.Authenticate(ctx, secret)
+	if err != nil {
+		return audit.Reader{}, err
+	}
+	return audit.Reader{
+		UserID:         bearer.UserID.String(),
+		RoleID:         bearer.RoleID,
+		CredentialType: "token",
+		CredentialID:   bearer.ID,
+		Allow:          strings.Join(bearer.Scope, ","),
+	}, nil
+}
+
+// Session resolves the request's session to the signed-in person's reader.
+func (c auditCallers) Session(ctx context.Context, r *http.Request) (audit.Reader, bool, error) {
+	person, ok, err := identity.Recheck(ctx, c.sessions, r)
+	if err != nil || !ok {
+		return audit.Reader{}, false, err
+	}
+	allow, err := c.members.EffectiveAllow(ctx, person.UserID)
+	if err != nil {
+		return audit.Reader{}, false, err
+	}
+	return audit.Reader{
+		UserID:         person.UserID.String(),
+		RoleID:         person.RoleID,
+		CredentialType: "session",
+		CredentialID:   person.SessionID,
+		Allow:          allow,
+	}, true, nil
+}
+
 // linkMail is the sender for invite and recover links. With SMTP unset it
 // sends nothing and the links are only copied.
 func linkMail(s config.SMTP) mail.Sender {
@@ -287,7 +331,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	passwords := identity.Passwords(pool, sessions)
-	identity.MountAPITokens(mux, sessions, identity.APITokens(pool, log), log, passwords.HasPassword, pool, cfg.TrustedProxies)
+	tokens := identity.APITokens(pool, log)
+	identity.MountAPITokens(mux, sessions, tokens, log, passwords.HasPassword, pool, cfg.TrustedProxies)
 	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return nil, err
@@ -617,6 +662,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
+	// The events endpoint answers a session cookie or a bearer token: the
+	// token narrows the person to the token's scope, the session to their
+	// effective permissions, and only audit:view reads. The guard resolves
+	// the caller for the handler and names them on the audit scope, so the
+	// middleware's refusals say who was refused.
+	(&audit.ReadHandler{Pool: pool}).Mount(mux, audit.Guard(auditCallers{sessions: sessions, tokens: tokens, members: members}))
 	// The audit middleware sits outside the cross-origin guard, so a request
 	// Protect refuses is still recorded; the mux resolves the pattern then.
 	return audit.Middleware(audit.Routes(), mux, pool, "brain", cfg.TrustedProxies, log)(httpserver.Protect(mux)), nil
