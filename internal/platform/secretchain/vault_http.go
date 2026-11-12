@@ -1,4 +1,4 @@
-package gateway
+package secretchain
 
 import (
 	"encoding/json"

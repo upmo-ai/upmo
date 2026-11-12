@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ type directChain struct {
 // head along. It returns the event's hash.
 func (c *directChain) add(t *testing.T, occurred, sealed time.Time) []byte {
 	t.Helper()
-	row := audit.Row{
+	return c.sealRow(t, audit.Row{
 		ID:             uuid.NewString(),
 		OccurredAt:     occurred,
 		Service:        "brain",
@@ -80,7 +81,35 @@ func (c *directChain) add(t *testing.T, occurred, sealed time.Time) []byte {
 		TargetType:     "session",
 		TargetID:       uuid.NewString(),
 		Changes:        audit.Changes{Fields: []string{}, Values: map[string]audit.Change{}},
-	}
+	}, sealed)
+}
+
+// addHeavy seals one event whose changes carry a note of the given size: the
+// payloads near the sealer's 8192 byte cap a busy install produces.
+func (c *directChain) addHeavy(t *testing.T, occurred, sealed time.Time, size int) []byte {
+	t.Helper()
+	return c.sealRow(t, audit.Row{
+		ID:             uuid.NewString(),
+		OccurredAt:     occurred,
+		Service:        "brain",
+		Action:         audit.AuthSignOut,
+		Outcome:        audit.Success,
+		ActorType:      "system",
+		CredentialType: "none",
+		TargetType:     "session",
+		TargetID:       uuid.NewString(),
+		Changes: audit.Changes{
+			Fields: []string{"note"},
+			Values: map[string]audit.Change{"note": {To: strings.Repeat("a", size)}},
+		},
+	}, sealed)
+}
+
+// sealRow inserts one sealed event as the owner, with the gapless position
+// and chain hash the sealer would give it, and moves the head along. It
+// returns the event's hash.
+func (c *directChain) sealRow(t *testing.T, row audit.Row, sealed time.Time) []byte {
+	t.Helper()
 	changes, err := json.Marshal(row.Changes)
 	if err != nil {
 		t.Fatal(err)
