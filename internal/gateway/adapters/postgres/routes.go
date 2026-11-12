@@ -21,13 +21,16 @@ type Store struct {
 var _ app.Teams = Store{}
 
 // accountTeams is the ids of the teams an account is shared with, as text. It
-// is empty for a personal account and for a workspace one.
+// is empty for a private account and for one shared with everyone.
 const accountTeams = `COALESCE((
-	SELECT array_agg(t.team_id::text ORDER BY t.team_id)
-	FROM gateway.provider_account_teams AS t
-	WHERE t.account_id = %s.id), '{}'::text[])`
+	SELECT array_agg(tid::text ORDER BY tid)
+	FROM unnest(%s.team_ids) AS tid), '{}'::text[])`
 
-func teamsOfAccount(alias string) string { return fmt.Sprintf(accountTeams, alias) }
+// accountReach is the owner, the visibility and the teams. Routing branches
+// on visibility and house. The owner is reported for every non-house account.
+func accountReach(alias string) string {
+	return fmt.Sprintf(`COALESCE(%s.owner_user_id::text, ''), %s.visibility, `+accountTeams, alias, alias, alias)
+}
 
 // TeamsOf lists the ids of the teams a person is on, by id. It reads the
 // identity tables as the table owner, like the rest of Store, so the caller
@@ -76,7 +79,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT link.position, link.model, link.weight, link.retry_budget, link.required_capabilities,
 			account.id::text, account.adapter, account.credential_ref, account.plan_kind, account.house, account.base_url,
-			COALESCE(account.owner_user_id::text, ''), `+teamsOfAccount("account")+`
+			`+accountReach("account")+`
 		FROM gateway.route_links AS link
 		JOIN gateway.provider_accounts AS account ON account.id = link.provider_account_id
 		WHERE link.route_id = (SELECT id FROM gateway.routes WHERE name = $1)
@@ -91,7 +94,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 			&link.Position, &link.Model, &link.Weight, &link.RetryBudget, &link.Need,
 			&link.Account.ID, &link.Account.Adapter, &link.Account.CredentialRef,
 			&link.Account.PlanKind, &link.Account.House, &link.Account.BaseURL, &link.Account.OwnerUserID,
-			&link.Account.TeamIDs,
+			&link.Account.Visibility, &link.Account.TeamIDs,
 		); err != nil {
 			return domain.Route{}, err
 		}
@@ -110,11 +113,10 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 func (s Store) PinAccount(ctx context.Context, id, model string) (domain.Account, bool, error) {
 	var a domain.Account
 	err := s.Pool.QueryRow(ctx, `
-		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, COALESCE(a.owner_user_id::text, ''),
-			`+teamsOfAccount("a")+`
+		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
 		FROM gateway.provider_accounts AS a
 		WHERE a.id = $1::uuid
-		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.TeamIDs)
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}
@@ -125,10 +127,10 @@ func (s Store) PinAccount(ctx context.Context, id, model string) (domain.Account
 }
 
 // PinProvider resolves a provider name and a model for one person, who is on
-// teams, as the table owner like PinAccount: their own account of that
+// teams, as the table owner like PinAccount: their private account of that
 // provider that lists the model comes first, then one shared with a team of
-// theirs, then a workspace one (the house account before the others), each by
-// name. The provider matches without regard to case, and an account with no
+// theirs, then one shared with everyone, then a house account, each by name.
+// The provider matches without regard to case, and an account with no
 // provider label counts as its adapter. ok is false when no account the
 // person may use lists the model.
 func (s Store) PinProvider(ctx context.Context, user string, teams []string, provider, model string) (domain.Account, bool, error) {
@@ -137,26 +139,20 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 	}
 	var a domain.Account
 	err := s.Pool.QueryRow(ctx, `
-		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, COALESCE(a.owner_user_id::text, ''),
-			`+teamsOfAccount("a")+`
+		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
 		FROM gateway.provider_accounts AS a
 		WHERE lower(COALESCE(NULLIF(a.provider, ''), a.adapter)) = lower($2)
-		  AND (
-			a.owner_user_id = $1::uuid
-			OR (a.owner_user_id IS NULL AND (
-				NOT EXISTS (SELECT 1 FROM gateway.provider_account_teams AS t WHERE t.account_id = a.id)
-				OR EXISTS (SELECT 1 FROM gateway.provider_account_teams AS t WHERE t.account_id = a.id AND t.team_id = ANY ($4::uuid[]))
-			))
-		  )
+		  AND identity.can_use($1::uuid, COALESCE($4::uuid[], '{}'), a.owner_user_id, a.visibility, a.team_ids)
 		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $3)
 		ORDER BY
 			CASE
-				WHEN a.owner_user_id IS NOT NULL THEN 0
-				WHEN EXISTS (SELECT 1 FROM gateway.provider_account_teams AS t WHERE t.account_id = a.id) THEN 1
-				ELSE 2
+				WHEN a.visibility = 'private' THEN 0
+				WHEN a.visibility = 'team' THEN 1
+				WHEN NOT a.house THEN 2
+				ELSE 3
 			END,
-			a.house DESC, a.name
-		LIMIT 1`, user, provider, model, teams).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.TeamIDs)
+			a.name
+		LIMIT 1`, user, provider, model, teams).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}

@@ -57,22 +57,27 @@ type providerJSON struct {
 	// domain's, computed per account here.
 	Usable       bool     `json:"usable"`
 	UsableModels []string `json:"usable_models"`
-	// Scope is own, workspace or team.
-	Scope string `json:"scope"`
+	// Visibility is private, team or everyone.
+	Visibility string `json:"visibility"`
 	// TeamIDs and TeamNames are the teams a team account is shared with, in
-	// the same order. They are empty for any other scope.
+	// the same order. They are empty for any other visibility.
 	TeamIDs   []string `json:"team_ids"`
 	TeamNames []string `json:"team_names"`
 	// CanManage says whether the person may change or remove the account.
 	CanManage bool `json:"can_manage"`
+	// CanUse says whether the person may route a call through the account.
+	CanUse bool `json:"can_use"`
+	// IsOwner says the account is this person's and not a house account.
+	// It is a display flag. Access and tiering follow Visibility and House.
+	IsOwner bool `json:"is_owner"`
 }
 
 func providerBody(p domain.Provider) providerJSON {
-	scope := p.Share.Scope
-	if scope == "" {
-		scope = domain.ScopeWorkspace
+	visibility := p.Share.Visibility
+	if visibility == "" {
+		visibility = domain.VisibilityEveryone
 		if p.Own {
-			scope = domain.ScopeOwn
+			visibility = domain.VisibilityPrivate
 		}
 	}
 	models := p.Models
@@ -86,7 +91,10 @@ func providerBody(p domain.Provider) providerJSON {
 	if teamNames == nil {
 		teamNames = []string{}
 	}
-	usable := domain.UsableModels(p)
+	usable := []string{}
+	if p.Share.CanUse {
+		usable = domain.UsableModels(p)
+	}
 	return providerJSON{
 		ID:           p.ID,
 		Provider:     p.Provider,
@@ -98,10 +106,12 @@ func providerBody(p domain.Provider) providerJSON {
 		Models:       models,
 		Usable:       len(usable) > 0,
 		UsableModels: usable,
-		Scope:        scope,
+		Visibility:   visibility,
 		TeamIDs:      teamIDs,
 		TeamNames:    teamNames,
 		CanManage:    p.Share.CanManage,
+		CanUse:       p.Share.CanUse,
+		IsOwner:      p.Share.IsOwner,
 	}
 }
 
@@ -180,29 +190,29 @@ func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Provider string   `json:"provider"`
-		Name     string   `json:"name"`
-		Adapter  string   `json:"adapter"`
-		PlanKind string   `json:"plan_kind"`
-		BaseURL  string   `json:"base_url"`
-		APIKey   string   `json:"api_key"`
-		Models   []string `json:"models"`
-		Scope    string   `json:"scope"`
-		TeamIDs  []string `json:"team_ids"`
+		Provider   string   `json:"provider"`
+		Name       string   `json:"name"`
+		Adapter    string   `json:"adapter"`
+		PlanKind   string   `json:"plan_kind"`
+		BaseURL    string   `json:"base_url"`
+		APIKey     string   `json:"api_key"`
+		Models     []string `json:"models"`
+		Visibility string   `json:"visibility"`
+		TeamIDs    []string `json:"team_ids"`
 	}
 	if !decodeProvider(w, r, &body) {
 		return
 	}
 	made, err := h.Service.Add(r.Context(), user, app.NewProvider{
-		Provider: body.Provider,
-		Name:     body.Name,
-		Adapter:  body.Adapter,
-		PlanKind: body.PlanKind,
-		BaseURL:  body.BaseURL,
-		APIKey:   body.APIKey,
-		Models:   body.Models,
-		Scope:    body.Scope,
-		TeamIDs:  body.TeamIDs,
+		Provider:   body.Provider,
+		Name:       body.Name,
+		Adapter:    body.Adapter,
+		PlanKind:   body.PlanKind,
+		BaseURL:    body.BaseURL,
+		APIKey:     body.APIKey,
+		Models:     body.Models,
+		Visibility: body.Visibility,
+		TeamIDs:    body.TeamIDs,
 	})
 	if err != nil {
 		h.refuse(w, err)
@@ -221,25 +231,25 @@ func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name     *string   `json:"name"`
-		PlanKind *string   `json:"plan_kind"`
-		BaseURL  *string   `json:"base_url"`
-		APIKey   *string   `json:"api_key"`
-		Models   *[]string `json:"models"`
-		Scope    *string   `json:"scope"`
-		TeamIDs  *[]string `json:"team_ids"`
+		Name       *string   `json:"name"`
+		PlanKind   *string   `json:"plan_kind"`
+		BaseURL    *string   `json:"base_url"`
+		APIKey     *string   `json:"api_key"`
+		Models     *[]string `json:"models"`
+		Visibility *string   `json:"visibility"`
+		TeamIDs    *[]string `json:"team_ids"`
 	}
 	if !decodeProvider(w, r, &body) {
 		return
 	}
 	made, err := h.Service.Change(r.Context(), user, r.PathValue("id"), app.ProviderChange{
-		Name:     body.Name,
-		PlanKind: body.PlanKind,
-		BaseURL:  body.BaseURL,
-		APIKey:   body.APIKey,
-		Models:   body.Models,
-		Scope:    body.Scope,
-		TeamIDs:  body.TeamIDs,
+		Name:       body.Name,
+		PlanKind:   body.PlanKind,
+		BaseURL:    body.BaseURL,
+		APIKey:     body.APIKey,
+		Models:     body.Models,
+		Visibility: body.Visibility,
+		TeamIDs:    body.TeamIDs,
 	})
 	if err != nil {
 		h.refuse(w, err)

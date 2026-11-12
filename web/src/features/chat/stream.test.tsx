@@ -579,7 +579,7 @@ async function choose(group: string, option: string, provider?: string) {
   fireEvent.click(await scope.findByRole("menuitemradio", { name: option, hidden: true }));
 }
 
-const account = (id: string, provider: string, models: string[], scope = "own") => ({
+const account = (id: string, provider: string, models: string[], visibility: "private" | "everyone" = "private") => ({
   id,
   provider,
   name: `${provider} account`,
@@ -589,7 +589,12 @@ const account = (id: string, provider: string, models: string[], scope = "own") 
   models,
   usable: true,
   usable_models: models,
-  scope,
+  visibility,
+  team_ids: [] as string[],
+  team_names: [] as string[],
+  can_manage: visibility === "private",
+  can_use: true,
+  is_owner: true,
 });
 
 const agentRow = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
@@ -613,7 +618,7 @@ const pickLists = {
     agentRow("a2", "Writer", { route: "chat", model_provider: "anthropic", model_id: "claude-y" }),
     agentRow("a3", "Retired", { enabled: false }),
   ],
-  accounts: [account("acc-own", "openai", ["gpt-x"]), account("acc-house", "anthropic", ["claude-y"], "global")],
+  accounts: [account("acc-own", "openai", ["gpt-x"]), account("acc-house", "anthropic", ["claude-y"], "everyone")],
 };
 
 const pillLabel = () => screen.getByRole("button", { name: /Agent, route and model:/ }).getAttribute("aria-label");
@@ -719,7 +724,7 @@ describe("chat composer picks", () => {
     const accounts = [
       account("acc-1", "openai", ["gpt-x"]),
       account("acc-2", "anthropic", ["claude-y"]),
-      account("acc-3", "openai", ["gpt-z"], "global"),
+      account("acc-3", "openai", ["gpt-z"], "everyone"),
     ];
     vi.stubGlobal("fetch", brain({ ...pickLists, accounts }).fetcher);
     renderChat();

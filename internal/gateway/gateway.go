@@ -101,7 +101,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 
 // NewProviders is the use case behind the provider settings. It seals the
 // keys a person adds with keys; a zero Keyring leaves it unable to save one.
-// Nobody may share an account until the caller sets Share.
+// Nobody may share an account until the caller sets Allow.
 func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Providers {
 	table := adapters()
 	probes := make(map[string]app.Prober, len(table))

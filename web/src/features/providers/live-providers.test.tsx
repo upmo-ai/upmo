@@ -20,7 +20,21 @@ type Row = {
   models: string[];
   usable: boolean;
   usable_models: string[];
-  scope: "own" | "global";
+  visibility: "private" | "team" | "everyone";
+  team_ids: string[];
+  team_names: string[];
+  can_manage: boolean;
+  can_use: boolean;
+  is_owner: boolean;
+};
+
+const own = {
+  visibility: "private" as const,
+  team_ids: [] as string[],
+  team_names: [] as string[],
+  can_manage: true,
+  can_use: true,
+  is_owner: true,
 };
 
 const secret = "sk-live-secret-9d41f7";
@@ -36,7 +50,7 @@ const claude: Row = {
   models: ["claude-3-7-sonnet"],
   usable: true,
   usable_models: ["claude-3-7-sonnet"],
-  scope: "own",
+  ...own,
 };
 const local: Row = {
   id: "p2",
@@ -49,7 +63,7 @@ const local: Row = {
   models: ["llama3.3:70b"],
   usable: false,
   usable_models: [],
-  scope: "own",
+  ...own,
 };
 const shared: Row = {
   id: "g1",
@@ -61,7 +75,12 @@ const shared: Row = {
   models: ["gpt-4o"],
   usable: false,
   usable_models: [],
-  scope: "global",
+  visibility: "everyone",
+  team_ids: [],
+  team_names: [],
+  can_manage: false,
+  can_use: true,
+  is_owner: false,
 };
 
 /**
@@ -120,7 +139,7 @@ function brain(
         models: sent.models as string[],
         usable: false,
         usable_models: [],
-        scope: "own",
+        ...own,
       };
       accounts.push(made);
       return Response.json(made, { status: 201 });
@@ -214,19 +233,19 @@ describe("providers from the brain", () => {
     await screen.findByTestId("provider-card-p1");
     expect(cardIds()).toEqual(["provider-card-p1", "provider-card-p2", "provider-card-g1"]);
 
-    const own = screen.getByTestId("provider-card-p1");
-    expect(within(own).getByText("Connected")).toBeTruthy();
-    expect(within(own).getByText("OpenAI-compatible")).toBeTruthy();
-    expect(within(own).getByRole("button", { name: "Edit" })).toBeTruthy();
-    expect(within(own).getByRole("button", { name: "Disconnect" })).toBeTruthy();
+    const ownCard = screen.getByTestId("provider-card-p1");
+    expect(within(ownCard).getByText("Connected")).toBeTruthy();
+    expect(within(ownCard).getByText("OpenAI-compatible")).toBeTruthy();
+    expect(within(ownCard).getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(within(ownCard).getByRole("button", { name: "Disconnect" })).toBeTruthy();
     expect(within(screen.getByTestId("provider-card-p2")).getByText("Key rejected")).toBeTruthy();
 
     const global = screen.getByTestId("provider-card-g1");
     expect(within(global).getByText("Offline")).toBeTruthy();
     expect(within(global).queryByRole("button", { name: "Edit" })).toBeNull();
     expect(within(global).queryByRole("button", { name: "Disconnect" })).toBeNull();
-    expect(screen.getByText("Shared")).toBeTruthy();
-    expect(screen.getByText("Managed by your workspace. Read only.")).toBeTruthy();
+    const note = screen.getByText("Shared with the whole workspace. Read only.");
+    expect(within(note.parentElement as HTMLElement).getByText("Workspace")).toBeTruthy();
 
     // One read of the list when the page opens: it is not seeded from a snapshot.
     expect(calls.filter((call) => call.method === "GET" && call.path === "/api/providers")).toHaveLength(1);
@@ -344,7 +363,7 @@ describe("providers from the brain", () => {
       models: ["alpha"],
       usable: true,
       usable_models: ["alpha"],
-      scope: "own",
+      ...own,
     };
     const { fetcher, calls } = brain({ accounts: [bare] });
     vi.stubGlobal("fetch", fetcher);
@@ -376,7 +395,7 @@ describe("providers from the brain", () => {
       models: ["alpha"],
       usable: true,
       usable_models: ["alpha"],
-      scope: "own",
+      ...own,
     };
     const { fetcher, calls } = brain({ accounts: [pointed] });
     vi.stubGlobal("fetch", fetcher);

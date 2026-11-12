@@ -13,54 +13,54 @@ const base = {
   usable: true,
   usable_models: ["gpt-x"],
   models: ["gpt-4o"],
+  team_ids: [] as string[],
+  team_names: [] as string[],
+  can_manage: true,
+  can_use: true,
+  is_owner: true,
 };
 
 const financeTeam = "01990000-0000-7000-8000-0000000000d1";
 
 describe("toProvider with sharing", () => {
-  it("reads a team account with its teams and whether the person may manage it", () => {
+  it("reads a team account with its teams and whether the person may manage or use it", () => {
     const account = toProvider({
       ...base,
-      scope: "team",
+      visibility: "team",
       team_ids: [financeTeam],
       team_names: ["Finance"],
       can_manage: false,
+      can_use: true,
     });
-    // The account is still the workspace's as far as the old reading goes: shared and not the person's own.
-    expect(account.scope).toBe("global");
-    expect(account.share).toEqual({
-      scope: "team",
-      team_ids: [financeTeam],
-      team_names: ["Finance"],
-      can_manage: false,
+    expect(account.visibility).toBe("team");
+    expect(account.team_ids).toEqual([financeTeam]);
+    expect(account.team_names).toEqual(["Finance"]);
+    expect(account.can_manage).toBe(false);
+    expect(account.can_use).toBe(true);
+  });
+
+  it("reads a workspace account and a private account", () => {
+    expect(toProvider({ ...base, visibility: "everyone", can_manage: true, can_use: true })).toMatchObject({
+      visibility: "everyone",
+      team_ids: [],
+      team_names: [],
+      can_manage: true,
+      can_use: true,
+    });
+    expect(toProvider({ ...base, visibility: "private", can_manage: true, can_use: false })).toMatchObject({
+      visibility: "private",
+      can_manage: true,
+      can_use: false,
     });
   });
 
-  it("reads a workspace account, and an account of the person's own, with what the brain says about managing", () => {
-    expect(toProvider({ ...base, scope: "workspace", team_ids: [], team_names: [], can_manage: true })).toMatchObject({
-      scope: "global",
-      share: { scope: "workspace", team_ids: [], team_names: [], can_manage: true },
-    });
-    expect(toProvider({ ...base, scope: "own", team_ids: [], team_names: [], can_manage: true })).toMatchObject({
-      scope: "own",
-      share: { scope: "own", can_manage: true },
-    });
-  });
-
-  it("reads an older brain's global account as the workspace's, with no sharing to show", () => {
-    const account = toProvider({ ...base, scope: "global" });
-    expect(account.scope).toBe("global");
-    expect(account).not.toHaveProperty("share");
-  });
-
-  it("refuses a team account that names no teams, and a team list that is not text", () => {
-    expect(() => toProvider({ ...base, scope: "team", can_manage: true })).toThrow("unknown scope");
+  it("refuses a visibility the web does not know, and a team list that is not text", () => {
+    expect(() => toProvider({ ...base, visibility: "workspace" })).toThrow("unknown visibility");
+    expect(() => toProvider({ ...base, visibility: "team", team_ids: undefined })).toThrow("no team_ids");
     expect(() =>
-      toProvider({ ...base, scope: "team", team_ids: [7], team_names: ["Finance"], can_manage: true }),
+      toProvider({ ...base, visibility: "team", team_ids: [7], team_names: ["Finance"], can_manage: true }),
     ).toThrow("no team_ids");
-    expect(() => toProvider({ ...base, scope: "workspace", team_names: "Finance", can_manage: true })).toThrow(
-      "no team_names",
-    );
+    expect(() => toProvider({ ...base, visibility: "everyone", team_names: "Finance" })).toThrow("no team_names");
   });
 });
 
@@ -75,27 +75,32 @@ describe("provider request bodies with sharing", () => {
     models: ["gpt-4o"],
   };
 
-  it("sends the teams only for a share with specific teams", () => {
-    expect(providerAddBody({ ...add, scope: "teams", team_ids: [financeTeam] })).toMatchObject({
-      scope: "teams",
+  it("sends the teams only for a team account", () => {
+    expect(providerAddBody({ ...add, visibility: "team", team_ids: [financeTeam] })).toMatchObject({
+      visibility: "team",
       team_ids: [financeTeam],
     });
-    const workspace = providerAddBody({ ...add, scope: "workspace", team_ids: [financeTeam] });
-    expect(workspace).toMatchObject({ scope: "workspace" });
+    const workspace = providerAddBody({ ...add, visibility: "everyone", team_ids: [financeTeam] });
+    expect(workspace).toMatchObject({ visibility: "everyone" });
     expect(workspace).not.toHaveProperty("team_ids");
   });
 
   it("sends no sharing for a personal account, and none on a change that leaves it alone", () => {
-    expect(providerAddBody(add)).not.toHaveProperty("scope");
+    expect(providerAddBody(add)).not.toHaveProperty("visibility");
     expect(providerAddBody(add)).not.toHaveProperty("team_ids");
+    expect(providerAddBody({ ...add, visibility: "private", team_ids: [financeTeam] })).not.toHaveProperty("visibility");
     expect(providerChangeBody({ name: "Renamed" })).toEqual({ name: "Renamed" });
   });
 
   it("sends the sharing of a change", () => {
-    expect(providerChangeBody({ scope: "teams", team_ids: [financeTeam] })).toEqual({
-      scope: "teams",
+    expect(providerChangeBody({ visibility: "team", team_ids: [financeTeam] })).toEqual({
+      visibility: "team",
       team_ids: [financeTeam],
     });
-    expect(providerChangeBody({ scope: "workspace" })).toEqual({ scope: "workspace" });
+    expect(providerChangeBody({ visibility: "everyone" })).toEqual({ visibility: "everyone" });
+    expect(providerChangeBody({ visibility: "private" })).toEqual({ visibility: "private" });
+    expect(providerChangeBody({ visibility: "private", team_ids: [financeTeam] })).toEqual({
+      visibility: "private",
+    });
   });
 });

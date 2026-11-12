@@ -156,6 +156,9 @@ export type ProviderPlanKind = "metered" | "subscription" | "local";
 
 export type ProviderStatus = "Connected" | "Not connected" | "Rate limited" | "Key rejected" | "Offline";
 
+/** Who may use a provider account: the owner, named teams, or the whole workspace. */
+export type ProviderVisibility = "private" | "team" | "everyone";
+
 export type ProviderAccount = {
   id: string;
   provider: string;
@@ -165,19 +168,21 @@ export type ProviderAccount = {
   base_url?: string;
   status: ProviderStatus;
   models: string[];
-  /** Whether the person can use the account now: Connected, with a usable model. */
+  /** Whether the person can use the account now: they may route through it, and it has a usable model. */
   usable: boolean;
-  /** The models of the account that count as usable. */
+  /** The models of the account that count as usable. Empty when can_use is false. */
   usable_models: string[];
-  /** "global" accounts belong to the workspace and are read only; "own" ones the person manages. */
-  scope: "own" | "global";
-  /** Sharing details the brain supplies for accounts that support team sharing. */
-  share?: {
-    scope: "own" | "workspace" | "team";
-    team_ids: string[];
-    team_names: string[];
-    can_manage: boolean;
-  };
+  /** private, team, or everyone. */
+  visibility: ProviderVisibility;
+  /** The teams a team account is shared with, and their names in the same order. Empty otherwise. */
+  team_ids: string[];
+  team_names: string[];
+  /** Whether this person may change or disconnect the account. */
+  can_manage: boolean;
+  /** Whether this person may route a call through the account. */
+  can_use: boolean;
+  /** Whether this person owns the account. A house account is never theirs. Display only. */
+  is_owner: boolean;
 };
 
 /**
@@ -237,7 +242,8 @@ export type ProviderAdd = {
   base_url?: string;
   api_key?: string;
   models: string[];
-  scope?: "workspace" | "teams";
+  /** Left out, the account stays private. team_ids is sent only for team. */
+  visibility?: ProviderVisibility;
   team_ids?: string[];
 };
 
@@ -248,7 +254,8 @@ export type ProviderChange = {
   base_url?: string;
   api_key?: string;
   models?: string[];
-  scope?: "workspace" | "teams";
+  /** Left out, the sharing stays as it is. team_ids is sent only for team. */
+  visibility?: ProviderVisibility;
   team_ids?: string[];
 };
 
@@ -507,7 +514,7 @@ export interface ApiClient {
     };
   };
   providers: {
-    /** GET /api/providers: own accounts first, then the workspace's, each by name. */
+    /** GET /api/providers: accounts this person may see, own first, each by name. */
     list(): Promise<ProviderAccount[]>;
     /**
      * POST /api/providers. 422 and 409 carry a plain sentence in BrainError.error;
@@ -1179,10 +1186,10 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     return grant;
   }
   // The usable models of an account, as the brain's rule answers them: the
-  // account is Connected and lists the model. The stub keeps its accounts
-  // truthful with the same rule.
+  // person may use the account, it is Connected, and it lists the model. The
+  // stub keeps its accounts truthful with the same rule.
   const withUsable = (account: Omit<ProviderAccount, "usable" | "usable_models">): ProviderAccount => {
-    const usable_models = account.status === "Connected" ? [...account.models] : [];
+    const usable_models = account.can_use && account.status === "Connected" ? [...account.models] : [];
     return { ...account, usable: usable_models.length > 0, usable_models };
   };
 
@@ -1196,7 +1203,12 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       base_url: "https://api.anthropic.com",
       status: "Connected",
       models: ["claude-3-7-sonnet", "claude-3-5-haiku"],
-      scope: "own",
+      visibility: "private",
+      team_ids: [],
+      team_names: [],
+      can_manage: true,
+      can_use: true,
+      is_owner: true,
     }),
     withUsable({
       id: "provider-ollama",
@@ -1207,7 +1219,12 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       base_url: "http://localhost:11434",
       status: "Connected",
       models: ["llama3.3:70b", "deepseek-r1:14b"],
-      scope: "own",
+      visibility: "private",
+      team_ids: [],
+      team_names: [],
+      can_manage: true,
+      can_use: true,
+      is_owner: true,
     }),
   ];
   // The same rule for agents: enabled, and its model — or its route, else
@@ -1726,31 +1743,30 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       },
       async add(input) {
         const acting = actor();
-        let share: ProviderAccount["share"];
-        if (input.scope === undefined && input.team_ids !== undefined) {
+        let visibility: ProviderVisibility = "private";
+        let teamIds: string[] = [];
+        let teamNames: string[] = [];
+        if (input.visibility === undefined && input.team_ids !== undefined) {
           throw new BrainError(422, "invalid", "Choose who can use this provider.");
         }
-        if (input.scope !== undefined) {
+        if (input.visibility !== undefined && input.visibility !== "private") {
           if (!canManageMembers(acting.role)) {
-            throw new BrainError(403, "forbidden", "Only workspace admins can share a provider.");
+            throw new BrainError(403, "forbidden", "Sharing a provider needs settings:manage.");
           }
-          const ids = input.scope === "teams" ? input.team_ids ?? [] : [];
-          if (input.scope === "workspace" && (input.team_ids?.length ?? 0) > 0) {
+          const ids = input.visibility === "team" ? input.team_ids ?? [] : [];
+          if (input.visibility === "everyone" && (input.team_ids?.length ?? 0) > 0) {
             throw new BrainError(422, "invalid", "Sharing with the whole workspace takes no teams.");
           }
-          if (input.scope === "teams" && ids.length === 0) {
+          if (input.visibility === "team" && ids.length === 0) {
             throw new BrainError(422, "invalid", "Choose at least one team.");
           }
           const selected = ids.map((id) => teams.find((team) => team.id === id));
           if (selected.some((team) => !team)) {
             throw new BrainError(422, "invalid", "Choose teams from the list.");
           }
-          share = {
-            scope: input.scope === "teams" ? "team" : "workspace",
-            team_ids: [...ids],
-            team_names: selected.map((team) => team!.name),
-            can_manage: true,
-          };
+          visibility = input.visibility;
+          teamIds = [...ids];
+          teamNames = selected.map((team) => team!.name);
         }
         const made = withUsable({
           id: nextId("provider"),
@@ -1761,8 +1777,12 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           base_url: input.base_url,
           status: "Connected",
           models: copy(input.models),
-          scope: share ? "global" : "own",
-          ...(share ? { share } : {}),
+          visibility,
+          team_ids: teamIds,
+          team_names: teamNames,
+          can_manage: true,
+          can_use: true,
+          is_owner: true,
         });
         providerAccounts.push(made);
         return copy(made);
@@ -1770,32 +1790,30 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async update(id, input) {
         const account = providerAccounts.find((item) => item.id === id);
         if (!account) throw new Error("Provider missing.");
-        if (input.scope !== undefined || input.team_ids !== undefined) {
+        if (input.visibility !== undefined || input.team_ids !== undefined) {
           if (!canManageMembers(actor().role)) {
-            throw new BrainError(403, "forbidden", "Only workspace admins can share a provider.");
+            throw new BrainError(403, "forbidden", "Sharing a provider needs settings:manage.");
           }
-          if (account.scope === "own") {
+          if (account.visibility === "private") {
             throw new BrainError(422, "invalid", "A personal provider is not shared.");
           }
-          const scope = input.scope ?? (account.share?.scope === "team" ? "teams" : "workspace");
-          const ids = scope === "teams" ? input.team_ids ?? account.share?.team_ids ?? [] : [];
-          if (scope === "workspace" && (input.team_ids?.length ?? 0) > 0) {
+          const visibility = input.visibility ?? account.visibility;
+          const ids = visibility === "team" ? input.team_ids ?? account.team_ids : [];
+          if (visibility === "everyone" && (input.team_ids?.length ?? 0) > 0) {
             throw new BrainError(422, "invalid", "Sharing with the whole workspace takes no teams.");
           }
-          if (scope === "teams" && ids.length === 0) {
+          if (visibility === "team" && ids.length === 0) {
             throw new BrainError(422, "invalid", "Choose at least one team.");
           }
           const selected = ids.map((teamId) => teams.find((team) => team.id === teamId));
           if (selected.some((team) => !team)) {
             throw new BrainError(422, "invalid", "Choose teams from the list.");
           }
-          account.scope = "global";
-          account.share = {
-            scope: scope === "teams" ? "team" : "workspace",
-            team_ids: [...ids],
-            team_names: selected.map((team) => team!.name),
-            can_manage: true,
-          };
+          account.visibility = visibility;
+          account.team_ids = [...ids];
+          account.team_names = selected.map((team) => team!.name);
+          account.can_manage = true;
+          account.can_use = true;
         }
         if (input.name !== undefined) account.name = input.name;
         if (input.plan_kind !== undefined) account.plan_kind = input.plan_kind;

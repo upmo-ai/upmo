@@ -33,8 +33,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('local', 'fake', 'house', 'local', true)
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('local', 'fake', 'house', 'local', true, 'everyone')
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +139,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 5 || latest != 5 {
-		t.Fatalf("applied versions = %d latest = %d, want 5 and 5", n, latest)
+	if n != 6 || latest != 6 {
+		t.Fatalf("applied versions = %d latest = %d, want 6 and 6", n, latest)
 	}
 
 	var attempts, priced int

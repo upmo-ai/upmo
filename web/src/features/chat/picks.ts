@@ -9,30 +9,39 @@ export type Picks = { agent: string; route: string; model: string };
 
 export const autoPicks: Picks = { agent: AUTO, route: AUTO, model: AUTO };
 
-/** One model a person can pin: an account they can see and a model id on it. */
-export type ModelChoice = { value: string; account_id: string; model: string; provider: string; account: string; scope: ProviderAccount["scope"]; share?: ProviderAccount["share"] };
+/** One model a person can pin: an account they may use and a model id on it. */
+export type ModelChoice = {
+  value: string;
+  account_id: string;
+  model: string;
+  provider: string;
+  account: string;
+  visibility: ProviderAccount["visibility"];
+  team_names: string[];
+};
 
 export function modelDescription(item: ModelChoice): string {
-  if (item.scope !== "global") return item.account;
-  if (item.share?.scope === "team") {
-    return `${item.account} (${item.share.team_names.length > 0 ? item.share.team_names.join(", ") : "team"})`;
+  if (item.visibility === "team") {
+    return `${item.account} (${item.team_names.length > 0 ? item.team_names.join(", ") : "team"})`;
   }
-  return `${item.account} (workspace)`;
+  if (item.visibility === "everyone") return `${item.account} (workspace)`;
+  return item.account;
 }
 
-/** Every usable model of every account, in the order the brain lists the accounts (own first). */
+/** Every usable model of every account the person may use, in the order the brain lists the accounts. */
 export function modelChoices(accounts: readonly ProviderAccount[]): ModelChoice[] {
-  return accounts.flatMap((account) =>
-    account.usable_models.map((model) => ({
+  return accounts.flatMap((account) => {
+    if (!account.can_use) return [];
+    return account.usable_models.map((model) => ({
       value: `${account.id}/${model}`,
       account_id: account.id,
       model,
       provider: account.provider,
       account: account.name,
-      scope: account.scope,
-      share: account.share,
-    })),
-  );
+      visibility: account.visibility,
+      team_names: account.team_names,
+    }));
+  });
 }
 
 /**
