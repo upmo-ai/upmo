@@ -582,6 +582,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	// route of its own.
 	chat.AgentsHandler{
 		Agents:       chatBook,
+		Teams:        agentTeamLookup{members: members},
 		Log:          log,
 		Routes:       routeBook,
 		Accounts:     providers,
@@ -591,13 +592,11 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 			if !ok {
 				return chat.Access{}, false
 			}
-			// Agents need no chat permission: the person is the session's, and
-			// settings:manage is looked up on its own.
-			manage, err := members.SettingsAllow(r.Context(), person.UserID)
-			if err != nil {
+			access, ok, err := agentAccess(r.Context(), members, person.UserID)
+			if err != nil || !ok {
 				return chat.Access{}, false
 			}
-			return chat.Access{UserID: person.UserID.String(), Allow: manage}, true
+			return access, true
 		},
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
@@ -618,6 +617,33 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	// The audit middleware sits outside the cross-origin guard, so a request
 	// Protect refuses is still recorded; the mux resolves the pattern then.
 	return audit.Middleware(audit.Routes(), mux, pool, "brain", cfg.TrustedProxies, log)(httpserver.Protect(mux)), nil
+}
+
+// agentAccess is what a person may do with agents. It carries their effective
+// permissions and teams, like chatAccess, but needs no chat permission.
+func agentAccess(ctx context.Context, members identity.MemberService, user identity.UserID) (chat.Access, bool, error) {
+	allow, err := members.EffectiveAllow(ctx, user)
+	if err != nil {
+		return chat.Access{}, false, err
+	}
+	shares, err := members.ShareAccess(ctx, user, identity.TypeAgent)
+	if err != nil {
+		return chat.Access{}, false, err
+	}
+	return chat.Access{
+		UserID: user.String(),
+		Allow:  allow,
+		Teams:  shares.Teams,
+	}, true, nil
+}
+
+type agentTeamLookup struct {
+	members identity.MemberService
+}
+
+func (a agentTeamLookup) TeamNames(ctx context.Context, teamIDs []string) (map[string]string, error) {
+	_, names, err := a.members.NamesOf(ctx, nil, teamIDs)
+	return names, err
 }
 
 // chatAccess is what a person may do with chats. It reports false for a

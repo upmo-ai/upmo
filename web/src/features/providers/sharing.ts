@@ -3,6 +3,9 @@ import type { ProviderAccount } from "../../app/api";
 /** An account as the list gives it. */
 export type ListedProvider = ProviderAccount;
 
+/** Anything with visibility and team names, for the shared label. */
+export type ShareListed = Pick<ListedProvider, "visibility" | "team_names" | "can_manage">;
+
 /**
  * Whether this person may change or disconnect the account, as the brain says
  * with can_manage.
@@ -12,7 +15,7 @@ export function canManage(account: ListedProvider): boolean {
 }
 
 /** The label and sentence under a card that is shared. Nothing for a personal account. */
-export function sharedNote(account: ListedProvider): { badge: string; text: string } | null {
+export function sharedNote(account: ShareListed): { badge: string; text: string } | null {
   const readOnly = account.can_manage ? "" : " Read only.";
   switch (account.visibility) {
     case "everyone":

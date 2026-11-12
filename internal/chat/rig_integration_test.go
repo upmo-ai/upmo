@@ -37,8 +37,8 @@ const (
 )
 
 var (
-	ownerAccess = chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit"}
-	otherAccess = chat.Access{UserID: otherUser, Allow: "chat:create,chat:view,chat:edit"}
+	ownerAccess = chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,agent:create,agent:view,agent:edit,agent:delete,agent:share"}
+	otherAccess = chat.Access{UserID: otherUser, Allow: "chat:create,chat:view,chat:edit,agent:create,agent:view,agent:edit,agent:delete,agent:share"}
 )
 
 // rig is the chat store, the real reply worker and a stub gateway over a real

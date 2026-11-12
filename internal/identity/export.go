@@ -24,6 +24,7 @@ const (
 	TypeTask     = domain.TypeTask
 	TypeChat     = domain.TypeChat
 	TypeFolder   = domain.TypeFolder
+	TypeAgent    = domain.TypeAgent
 	TypeArtifact = domain.TypeArtifact
 )
 

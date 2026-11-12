@@ -43,8 +43,11 @@ const agent = (id: string, over: Partial<AgentProfile> = {}): AgentProfile => ({
   model_id: "",
   enabled: true,
   usable: true,
-  scope: "own",
-  editable: true,
+  visibility: "private",
+  team_ids: [],
+  team_names: [],
+  can_use: true,
+  can_manage: true,
   ...over,
 });
 
@@ -76,6 +79,7 @@ describe("UPM-265 picker filters", () => {
       agent("broken", { usable: false }),
       agent("off", { enabled: false }),
       agent("off-and-broken", { enabled: false, usable: false }),
+      agent("managed-not-on-team", { can_use: false }),
     ];
     expect(pickableAgents(agents).map((item) => item.id)).toEqual(["working"]);
   });

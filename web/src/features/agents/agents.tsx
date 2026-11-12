@@ -1,4 +1,4 @@
-import { Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Card, Checkbox, Group, Radio, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { IconPlus, IconRobot, IconSearch } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
@@ -7,14 +7,16 @@ import { Badge, Button, ConfirmDialog, Dialog, Input, Select, StatusAlert, Switc
 import {
   AGENTS_KEY,
   agentsQueryKey,
+  PROVIDERS_KEY,
   providersQueryKey,
+  teamsQueryKey,
   useApi,
   useWrite,
   type AgentProfile,
 } from "../../app/api";
+import { fetchCanShare, sharedNote } from "../providers/sharing";
 import {
   agentProblem,
-  changesOf,
   choiceOf,
   choiceValue,
   descriptionProblem,
@@ -27,8 +29,10 @@ import {
   overlayMax,
   overlayProblem,
   routeProblem,
+  savePatch,
   trimmedDraft,
   type AgentDraft,
+  type ShareAsk,
 } from "./rules";
 
 function matches(agent: AgentProfile, search: string): boolean {
@@ -170,7 +174,7 @@ function AgentCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const shared = agent.scope === "global";
+  const note = sharedNote(agent);
   const model = agent.model_id ? `${agent.model_provider} / ${agent.model_id}` : "";
   return (
     <Card withBorder radius="lg" padding="md" data-testid={`agent-card-${agent.id}`}>
@@ -180,9 +184,9 @@ function AgentCard({
             {agent.name}
           </Title>
           <Group gap={4} wrap="nowrap">
-            {shared ? (
+            {note ? (
               <Badge variant="light" size="sm">
-                Shared
+                {note.badge}
               </Badge>
             ) : null}
             {agent.enabled ? null : (
@@ -204,12 +208,12 @@ function AgentCard({
         ) : null}
         {agent.route ? <Text size="xs">Route: {agent.route}</Text> : null}
         {model ? <Text size="xs">Model: {model}</Text> : null}
-        {shared && !agent.editable ? (
+        {note ? (
           <Text size="xs" c="dimmed">
-            Managed by your workspace. Read only.
+            {note.text}
           </Text>
         ) : null}
-        {agent.editable ? (
+        {agent.can_manage ? (
           <Group gap="xs" mt="auto">
             <Button size="xs" variant="default" onClick={onEdit} aria-label={`Edit ${agent.name}`}>
               Edit
@@ -226,9 +230,24 @@ function AgentCard({
 
 function AgentDialog({ agent, onClose }: { agent?: AgentProfile; onClose: () => void }) {
   const api = useApi();
+  const initialShare: ShareAsk =
+    agent?.visibility === "team" || agent?.visibility === "everyone" ? agent.visibility : "private";
   const [draft, setDraft] = useState<AgentDraft>(agent ? draftOf(agent) : emptyDraft());
+  const [shareScope, setShareScope] = useState<ShareAsk>(initialShare);
+  const [shareTeams, setShareTeams] = useState<string[]>(agent?.team_ids ?? []);
   const [touched, setTouched] = useState(false);
   const [failure, setFailure] = useState("");
+  const canShareQuery = useQuery({
+    queryKey: [...PROVIDERS_KEY, "sharing"],
+    queryFn: fetchCanShare,
+  });
+  const offerSharing = canShareQuery.data === true;
+  const teamsQuery = useQuery({
+    queryKey: teamsQueryKey(),
+    queryFn: () => api.shares.teams(),
+    enabled: offerSharing,
+  });
+  const teamList = teamsQuery.data ?? [];
 
   // The models the person's own and the workspace's accounts list. A model the
   // agent already has stays offered even when no account lists it any more.
@@ -244,8 +263,22 @@ function AgentDialog({ agent, onClose }: { agent?: AgentProfile; onClose: () => 
       .map((choice) => ({ value: choiceValue(choice), label: choice.model })),
   }));
 
+  const payload = (): AgentDraft => {
+    const base = trimmedDraft(draft);
+    if (!offerSharing || shareScope === "private") return base;
+    base.visibility = shareScope;
+    if (shareScope === "team") base.team_ids = shareTeams;
+    return base;
+  };
+
   const save = useWrite(
-    () => (agent ? api.agents.update(agent.id, changesOf(agent, draft)) : api.agents.create(trimmedDraft(draft))),
+    () => {
+      const body = payload();
+      if (agent) {
+        return api.agents.update(agent.id, savePatch(agent, draft, shareScope, shareTeams, offerSharing));
+      }
+      return api.agents.create(body);
+    },
     [AGENTS_KEY],
     {
       shown: true,
@@ -326,6 +359,36 @@ function AgentDialog({ agent, onClose }: { agent?: AgentProfile; onClose: () => 
             checked={draft.enabled}
             onChange={(event) => set({ enabled: event.currentTarget.checked })}
           />
+          {offerSharing ? (
+            <Stack gap="xs">
+              <Text size="sm" fw={500}>
+                Who can use this agent
+              </Text>
+              <Radio.Group value={shareScope} onChange={(value) => setShareScope(value as ShareAsk)}>
+                <Stack gap={6}>
+                  <Radio value="private" label="Only me" />
+                  <Radio value="team" label="Teams" description="Members of the teams you choose can pick it." />
+                  <Radio value="everyone" label="Workspace" description="Anyone in the workspace can pick it." />
+                </Stack>
+              </Radio.Group>
+              {shareScope === "team" ? (
+                <Stack gap={4}>
+                  {teamList.map((team) => (
+                    <Checkbox
+                      key={team.id}
+                      label={team.name}
+                      checked={shareTeams.includes(team.id)}
+                      onChange={() =>
+                        setShareTeams((prev) =>
+                          prev.includes(team.id) ? prev.filter((id) => id !== team.id) : [...prev, team.id],
+                        )
+                      }
+                    />
+                  ))}
+                </Stack>
+              ) : null}
+            </Stack>
+          ) : null}
           {failure ? (
             <Text role="alert" c="red" size="sm">
               {failure}

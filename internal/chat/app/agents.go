@@ -13,23 +13,24 @@ import (
 )
 
 var (
-	// ErrAgentNotFound is an agent that does not exist, that this person
-	// cannot see, or that is switched off for a reply.
-	ErrAgentNotFound = errors.New("chat: no such agent")
-	// ErrAgentGlobal is a change to a global agent by someone who may not
-	// manage global settings.
-	ErrAgentGlobal = errors.New("chat: agent is global")
-	// ErrAgentDuplicate is a name the owner already uses.
+	ErrAgentNotFound  = errors.New("chat: no such agent")
+	ErrAgentManaged   = errors.New("chat: agent managed")
+	ErrAgentCreate    = errors.New("chat: agent create")
 	ErrAgentDuplicate = errors.New("chat: agent name in use")
 )
 
-// ManageGlobal is the permission that lets a person create, change and delete
-// the global agents.
-const ManageGlobal = "settings:manage"
+const permAgentCreate = "agent:create"
 
-// Agent is one saved profile as a person sees it. Route, ModelProvider and
-// ModelID are empty when the agent has none. Global says it has no owner;
-// Editable says this person may change or delete it.
+// AgentShare is how an agent is shared, as a person sees it.
+type AgentShare struct {
+	Visibility string
+	TeamIDs    []string
+	TeamNames  []string
+	CanManage  bool
+	CanUse     bool
+}
+
+// Agent is one saved profile as a person sees it.
 type Agent struct {
 	ID            string
 	Name          string
@@ -39,8 +40,7 @@ type Agent struct {
 	ModelProvider string
 	ModelID       string
 	Enabled       bool
-	Global        bool
-	Editable      bool
+	Share         AgentShare
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
@@ -59,10 +59,11 @@ type AgentFields struct {
 	ModelProvider string
 	ModelID       string
 	Enabled       bool
+	Visibility    string
+	TeamIDs       []string
 }
 
-// AgentChange is what a person sends to change an agent. A nil field is left
-// as it is. An empty route or model clears it.
+// AgentChange is what a person sends to change an agent.
 type AgentChange struct {
 	Name          *string
 	Description   *string
@@ -71,31 +72,24 @@ type AgentChange struct {
 	ModelProvider *string
 	ModelID       *string
 	Enabled       *bool
+	Visibility    *string
+	TeamIDs       *[]string
 }
 
-// AgentBook keeps agents. Every call is for one person; an implementation
-// shows them their own agents and the enabled global ones, and lets them
-// write their own, and the global ones only with ManageGlobal.
+// TeamNames resolves team ids to names. Nil returns no names.
+type TeamNames interface {
+	TeamNames(ctx context.Context, teamIDs []string) (map[string]string, error)
+}
+
+// AgentBook keeps agents.
 type AgentBook interface {
-	// ListAgents returns own agents first, then global ones, each by name.
 	ListAgents(ctx context.Context, access Access) ([]Agent, error)
-	// GetAgent returns an agent the person can see, or ErrAgentNotFound.
 	GetAgent(ctx context.Context, access Access, id string) (Agent, error)
-	// CreateAgent stores an agent, global or the person's own. It returns
-	// ErrAgentDuplicate, or ErrAgentGlobal for a global one the person may
-	// not create.
-	CreateAgent(ctx context.Context, access Access, fields AgentFields, global bool) (Agent, error)
-	// UpdateAgent writes all the fields of an agent. It returns
-	// ErrAgentNotFound, ErrAgentGlobal or ErrAgentDuplicate.
+	CreateAgent(ctx context.Context, access Access, fields AgentFields) (Agent, error)
 	UpdateAgent(ctx context.Context, access Access, id string, fields AgentFields) (Agent, error)
-	// DeleteAgent removes an agent. It returns ErrAgentNotFound or
-	// ErrAgentGlobal.
 	DeleteAgent(ctx context.Context, access Access, id string) error
 }
 
-// agentCaller checks that a person is signed in. Agents need no chat
-// permission: any signed-in person uses their own agents and reads the global
-// ones, and Allow carries only settings:manage, when they hold it.
 func agentCaller(access Access) error {
 	if _, err := uuid.Parse(access.UserID); err != nil {
 		return ErrAccess
@@ -103,66 +97,38 @@ func agentCaller(access Access) error {
 	return nil
 }
 
-// CanManageGlobal reports whether the person may write global agents.
-func (a Access) CanManageGlobal() bool {
-	return slices.Contains(strings.Split(a.Allow, ","), ManageGlobal)
+func allows(access Access, want string) bool {
+	return slices.Contains(strings.Split(access.Allow, ","), want)
 }
 
-// ListAgents returns the person's own agents and the global ones.
-func ListAgents(ctx context.Context, book AgentBook, access Access) ([]Agent, error) {
-	if err := agentCaller(access); err != nil {
-		return nil, err
-	}
-	got, err := book.ListAgents(ctx, access)
-	if err != nil {
-		return nil, err
-	}
-	if got == nil {
-		got = []Agent{}
-	}
-	return got, nil
-}
-
-// CleanAgent checks every field of an agent.
-func CleanAgent(in AgentFields) (AgentFields, error) {
-	var err error
-	if in.Name, err = domain.AgentName(in.Name); err != nil {
-		return AgentFields{}, err
-	}
-	if in.Description, err = domain.AgentDescription(in.Description); err != nil {
-		return AgentFields{}, err
-	}
-	if in.PromptOverlay, err = domain.AgentOverlay(in.PromptOverlay); err != nil {
-		return AgentFields{}, err
-	}
-	if in.Route, err = domain.AgentRoute(in.Route); err != nil {
-		return AgentFields{}, err
-	}
-	if in.ModelProvider, in.ModelID, err = domain.AgentModel(in.ModelProvider, in.ModelID); err != nil {
-		return AgentFields{}, err
-	}
-	return in, nil
-}
-
-// CreateAgent validates and stores a new agent. A global one needs
-// ManageGlobal.
-func CreateAgent(ctx context.Context, book AgentBook, access Access, in AgentFields, global bool) (Agent, error) {
+// CreateAgent validates and stores a new agent. Creating needs agent:create.
+func CreateAgent(ctx context.Context, book AgentBook, teams TeamNames, access Access, in AgentFields) (Agent, error) {
 	if err := agentCaller(access); err != nil {
 		return Agent{}, err
 	}
-	if global && !access.CanManageGlobal() {
-		return Agent{}, ErrAgentGlobal
+	if !allows(access, permAgentCreate) {
+		return Agent{}, ErrAgentCreate
 	}
-	in, err := CleanAgent(in)
+	visibility, teamIDs, err := domain.CleanVisibility(in.Visibility, in.TeamIDs)
 	if err != nil {
 		return Agent{}, err
 	}
-	return book.CreateAgent(ctx, access, in, global)
+	if visibility != domain.VisibilityPrivate && !allows(access, "settings:manage") {
+		return Agent{}, ErrAgentManaged
+	}
+	if err := knownTeams(ctx, teams, teamIDs); err != nil {
+		return Agent{}, err
+	}
+	in.Visibility, in.TeamIDs = visibility, teamIDs
+	in, err = CleanAgent(in)
+	if err != nil {
+		return Agent{}, err
+	}
+	return book.CreateAgent(ctx, access, in)
 }
 
-// ChangeAgent applies the change to the agent and stores it. Another person's
-// agent is not found, and a global one needs ManageGlobal.
-func ChangeAgent(ctx context.Context, book AgentBook, access Access, id string, change AgentChange) (Agent, error) {
+// ChangeAgent applies the change to the agent and stores it.
+func ChangeAgent(ctx context.Context, book AgentBook, teams TeamNames, access Access, id string, change AgentChange) (Agent, error) {
 	if err := agentCaller(access); err != nil {
 		return Agent{}, err
 	}
@@ -173,8 +139,8 @@ func ChangeAgent(ctx context.Context, book AgentBook, access Access, id string, 
 	if err != nil {
 		return Agent{}, err
 	}
-	if !current.Editable {
-		return Agent{}, ErrAgentGlobal
+	if !current.Share.CanManage {
+		return Agent{}, ErrAgentManaged
 	}
 	fields := AgentFields{
 		Name:          current.Name,
@@ -184,6 +150,8 @@ func ChangeAgent(ctx context.Context, book AgentBook, access Access, id string, 
 		ModelProvider: current.ModelProvider,
 		ModelID:       current.ModelID,
 		Enabled:       current.Enabled,
+		Visibility:    current.Share.Visibility,
+		TeamIDs:       append([]string(nil), current.Share.TeamIDs...),
 	}
 	if change.Name != nil {
 		fields.Name = *change.Name
@@ -206,6 +174,27 @@ func ChangeAgent(ctx context.Context, book AgentBook, access Access, id string, 
 	if change.Enabled != nil {
 		fields.Enabled = *change.Enabled
 	}
+	if change.Visibility != nil || change.TeamIDs != nil {
+		visibility := fields.Visibility
+		teamIDs := fields.TeamIDs
+		if change.Visibility != nil {
+			visibility = *change.Visibility
+		}
+		switch {
+		case change.TeamIDs != nil:
+			teamIDs = append([]string(nil), *change.TeamIDs...)
+		case visibility != domain.VisibilityTeam:
+			teamIDs = nil
+		}
+		var err error
+		fields.Visibility, fields.TeamIDs, err = domain.CleanVisibility(visibility, teamIDs)
+		if err != nil {
+			return Agent{}, err
+		}
+		if err := knownTeams(ctx, teams, fields.TeamIDs); err != nil {
+			return Agent{}, err
+		}
+	}
 	fields, err = CleanAgent(fields)
 	if err != nil {
 		return Agent{}, err
@@ -213,8 +202,7 @@ func ChangeAgent(ctx context.Context, book AgentBook, access Access, id string, 
 	return book.UpdateAgent(ctx, access, id, fields)
 }
 
-// DeleteAgent removes an agent. Another person's agent is not found, and a
-// global one needs ManageGlobal.
+// DeleteAgent removes an agent.
 func DeleteAgent(ctx context.Context, book AgentBook, access Access, id string) error {
 	if err := agentCaller(access); err != nil {
 		return err
@@ -226,8 +214,61 @@ func DeleteAgent(ctx context.Context, book AgentBook, access Access, id string) 
 	if err != nil {
 		return err
 	}
-	if !current.Editable {
-		return ErrAgentGlobal
+	if !current.Share.CanManage {
+		return ErrAgentManaged
 	}
 	return book.DeleteAgent(ctx, access, id)
+}
+
+// ListAgents returns the agents this person can see.
+func ListAgents(ctx context.Context, book AgentBook, access Access) ([]Agent, error) {
+	if err := agentCaller(access); err != nil {
+		return nil, err
+	}
+	got, err := book.ListAgents(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	if got == nil {
+		got = []Agent{}
+	}
+	return got, nil
+}
+
+// CleanAgent checks every field of an agent except sharing, which is cleaned
+// separately.
+func CleanAgent(in AgentFields) (AgentFields, error) {
+	var err error
+	if in.Name, err = domain.AgentName(in.Name); err != nil {
+		return AgentFields{}, err
+	}
+	if in.Description, err = domain.AgentDescription(in.Description); err != nil {
+		return AgentFields{}, err
+	}
+	if in.PromptOverlay, err = domain.AgentOverlay(in.PromptOverlay); err != nil {
+		return AgentFields{}, err
+	}
+	if in.Route, err = domain.AgentRoute(in.Route); err != nil {
+		return AgentFields{}, err
+	}
+	if in.ModelProvider, in.ModelID, err = domain.AgentModel(in.ModelProvider, in.ModelID); err != nil {
+		return AgentFields{}, err
+	}
+	return in, nil
+}
+
+func knownTeams(ctx context.Context, teams TeamNames, ids []string) error {
+	if len(ids) == 0 || teams == nil {
+		return nil
+	}
+	names, err := teams.TeamNames(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if names[id] == "" {
+			return domain.Invalid("Choose teams from the list.")
+		}
+	}
+	return nil
 }
