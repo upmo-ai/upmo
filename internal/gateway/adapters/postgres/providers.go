@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 // Providers keeps the provider accounts people add, with their models and
@@ -287,6 +290,22 @@ func (p Providers) Create(ctx context.Context, who app.Caller, a domain.Provider
 	if err != nil {
 		return domain.Provider{}, err
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ProviderCreate,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Fields: []string{"plan_kind", "provider", "team_ids", "visibility"},
+			Values: map[string]audit.Change{
+				"provider":   {To: made.Provider},
+				"plan_kind":  {To: made.PlanKind},
+				"visibility": {To: made.Share.Visibility},
+				"team_ids":   {To: made.Share.TeamIDs},
+			},
+		},
+	}); err != nil {
+		return domain.Provider{}, err
+	}
 	return made, tx.Commit(ctx)
 }
 
@@ -306,10 +325,15 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	if err := knownTeams(ctx, tx, teamIDs); err != nil {
 		return domain.Provider{}, err
 	}
-	var current, owner string
+	var cur domain.Provider
+	var curTeams []string
 	err = tx.QueryRow(ctx, `
-		SELECT visibility, owner_user_id::text FROM gateway.provider_accounts
-		WHERE id = $1::uuid AND `+changeable, a.ID).Scan(&current, &owner)
+		SELECT name, plan_kind, base_url, status, visibility,
+		       COALESCE((SELECT array_agg(tid::text ORDER BY tid) FROM unnest(team_ids) AS tid), '{}'),
+		       COALESCE(owner_user_id::text, '')
+		FROM gateway.provider_accounts
+		WHERE id = $1::uuid AND `+changeable, a.ID).
+		Scan(&cur.Name, &cur.PlanKind, &cur.BaseURL, &cur.Status, &cur.Share.Visibility, &curTeams, &cur.OwnerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Provider{}, app.ErrNotFound
 	}
@@ -318,19 +342,23 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	}
 	// A shared account turned private counts against the owner's personal cap,
 	// under the same lock as a new private account.
-	if visibility == domain.VisibilityPrivate && current != domain.VisibilityPrivate {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('gateway.providers:' || $1::text, 0))`, owner); err != nil {
+	if visibility == domain.VisibilityPrivate && cur.Share.Visibility != domain.VisibilityPrivate {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('gateway.providers:' || $1::text, 0))`, cur.OwnerUserID); err != nil {
 			return domain.Provider{}, err
 		}
 		var count int
 		if err := tx.QueryRow(ctx, `
 			SELECT count(*) FROM gateway.provider_accounts
-			WHERE owner_user_id = $1::uuid AND visibility = 'private'`, owner).Scan(&count); err != nil {
+			WHERE owner_user_id = $1::uuid AND visibility = 'private'`, cur.OwnerUserID).Scan(&count); err != nil {
 			return domain.Provider{}, err
 		}
 		if count >= domain.MaxOwnAccounts {
 			return domain.Provider{}, app.ErrLimit
 		}
+	}
+	curModels, err := modelsOf(ctx, tx, []string{a.ID})
+	if err != nil {
+		return domain.Provider{}, err
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE gateway.provider_accounts
@@ -360,6 +388,31 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	made, err := getAccount(ctx, tx, a.ID)
 	if err != nil {
 		return domain.Provider{}, err
+	}
+	changes, share := providerChanges(cur, curTeams, curModels[a.ID], made, sealed != nil)
+	if changes.Fields != nil {
+		if err := audit.Record(ctx, tx, audit.Event{
+			Action:   audit.ProviderUpdate,
+			Outcome:  audit.Success,
+			TargetID: a.ID,
+			Changes:  changes,
+		}); err != nil {
+			return domain.Provider{}, err
+		}
+	}
+	if share.Fields != nil {
+		if err := audit.Record(ctx, tx, audit.Event{
+			Action:   audit.ProviderShare,
+			Outcome:  audit.Success,
+			TargetID: a.ID,
+			Changes:  share,
+		}); err != nil {
+			return domain.Provider{}, err
+		}
+	}
+	if changes.Fields == nil && share.Fields == nil {
+		// The change repeated the stored account, so nothing happened.
+		audit.NoChange(ctx)
 	}
 	return made, tx.Commit(ctx)
 }
@@ -423,6 +476,13 @@ func (p Providers) Remove(ctx context.Context, who app.Caller, id string) error 
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return app.InUseError{}
 		}
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ProviderDelete,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -540,6 +600,89 @@ func putSealed(ctx context.Context, tx pgx.Tx, ref string, s domain.Sealed) erro
 			key_id = EXCLUDED.key_id, created_at = now()`,
 		ref, s.Ciphertext, s.Nonce, s.KeyID)
 	return err
+}
+
+// SealTest records the outcome of one provider test in a transaction of its
+// own: a test has no business transaction, so the event commits alone,
+// before the answer goes out. A test that did not work, one refused before
+// it probed included, is a failure.
+func (p Providers) SealTest(ctx context.Context, id string, ok bool) error {
+	if p.Pool == nil {
+		return fmt.Errorf("gateway: no database")
+	}
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	outcome := audit.Failure
+	if ok {
+		outcome = audit.Success
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ProviderTest,
+		Outcome:  outcome,
+		TargetID: id,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// providerChanges compares an account before and after an update. A content
+// field (name, base URL, models) keeps the field name alone, and so does a
+// replaced key, as credential; plan kind, status, visibility and teams carry
+// from and to. The second Changes holds the sharing move, and stays empty
+// when who the account is for did not change.
+func providerChanges(before domain.Provider, beforeTeams, beforeModels []string, after domain.Provider, rekeyed bool) (changes, share audit.Changes) {
+	put := func(into *audit.Changes, field string, from, to any) {
+		into.Fields = append(into.Fields, field)
+		if into.Values == nil {
+			into.Values = map[string]audit.Change{}
+		}
+		into.Values[field] = audit.Change{From: from, To: to}
+	}
+	named := func(into *audit.Changes, field string) {
+		into.Fields = append(into.Fields, field)
+	}
+	if before.Name != after.Name {
+		named(&changes, "name")
+	}
+	if before.PlanKind != after.PlanKind {
+		put(&changes, "plan_kind", before.PlanKind, after.PlanKind)
+	}
+	if before.BaseURL != after.BaseURL {
+		named(&changes, "base_url")
+	}
+	if !slices.Equal(beforeModels, after.Models) {
+		named(&changes, "models")
+	}
+	if before.Status != after.Status {
+		put(&changes, "status", before.Status, after.Status)
+	}
+	fromTeams, toTeams := sortedTeams(beforeTeams), sortedTeams(after.Share.TeamIDs)
+	if before.Share.Visibility != after.Share.Visibility || !slices.Equal(fromTeams, toTeams) {
+		put(&changes, "visibility", before.Share.Visibility, after.Share.Visibility)
+		put(&changes, "team_ids", fromTeams, toTeams)
+		put(&share, "visibility", before.Share.Visibility, after.Share.Visibility)
+		put(&share, "team_ids", fromTeams, toTeams)
+	}
+	if rekeyed {
+		named(&changes, "credential")
+	}
+	sort.Strings(changes.Fields)
+	sort.Strings(share.Fields)
+	return changes, share
+}
+
+// sortedTeams copies a team list in one order, so a set read two ways is
+// equal to itself. An empty list comes back empty, never nil, so the stored
+// value is an empty array.
+func sortedTeams(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	out = append(out, ids...)
+	sort.Strings(out)
+	return out
 }
 
 // mapWrite turns a name collision into app.ErrDuplicate. Other errors pass

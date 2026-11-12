@@ -2,12 +2,10 @@ package audit
 
 // Route describes the audit coverage of one mutating HTTP route. Exactly one
 // field is set: Action for an instrumented route, Exempt for one whose
-// originating action is recorded elsewhere, and Todo for one a later ticket
-// will instrument.
+// originating action is recorded elsewhere.
 type Route struct {
 	Action Action
 	Exempt string
-	Todo   string
 }
 
 // Table maps one ServeMux pattern to its coverage.
