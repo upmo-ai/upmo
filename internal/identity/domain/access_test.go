@@ -210,6 +210,59 @@ func TestRunPolicyOnlyNarrows(t *testing.T) {
 	}
 }
 
+func TestOwnerAndAdminHoldAuditView(t *testing.T) {
+	for _, role := range []Role{RoleOwner, RoleAdmin} {
+		permissions, err := SystemPermissions(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !has(permissions, PermAuditView) {
+			t.Fatalf("%s lost audit:view", role)
+		}
+	}
+	member, err := SystemPermissions(RoleMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has(member, PermAuditView) {
+		t.Fatal("member holds audit:view")
+	}
+}
+
+func TestTokenKeepsAuditView(t *testing.T) {
+	owner, err := SystemPermissions(RoleOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := joined(owner)
+	subject.Kind = KindToken
+	subject.Policy = []Permission{PermAuditView, PermMembersManage}
+	effective := EffectivePermissions(subject)
+	if !has(effective, PermAuditView) || has(effective, PermMembersManage) {
+		t.Fatalf("token effective = %v", effective)
+	}
+	if got := Permitted(subject, PermAuditView); !got.Allow {
+		t.Fatalf("token audit:view: %+v", got)
+	}
+}
+
+func TestRunRefusesAuditView(t *testing.T) {
+	owner, err := SystemPermissions(RoleOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := joined(owner)
+	subject.Kind = KindRun
+	subject.Policy = []Permission{PermAuditView, PermMembersManage}
+	effective := EffectivePermissions(subject)
+	if has(effective, PermAuditView) || has(effective, PermMembersManage) {
+		t.Fatalf("run effective = %v", effective)
+	}
+	if got := Permitted(subject, PermAuditView); got.Allow || got.Reason != ReasonPolicy {
+		t.Fatalf("run audit:view: %+v", got)
+	}
+}
+
 func TestAlwaysRefused(t *testing.T) {
 	member, err := SystemPermissions(RoleMember)
 	if err != nil {

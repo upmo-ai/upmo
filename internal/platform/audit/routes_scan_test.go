@@ -33,6 +33,11 @@ func TestRouteTableCoversTheSource(t *testing.T) {
 			t.Errorf("%s covers %s, which is not in the catalog", pattern, route.Action)
 		}
 	}
+	for pattern := range sensitiveReads {
+		if _, ok := table[pattern]; !ok {
+			t.Errorf("%s is listed as a sensitive read but missing from the route table", pattern)
+		}
+	}
 }
 
 // TestRouteScanFailsOnPlantedRoute proves the ratchet bites: a route the table
@@ -80,6 +85,13 @@ func TestRouteScanResolvesRouteLoop(t *testing.T) {
 	}
 }
 
+// sensitiveReads are read-only routes the table covers on purpose: the scan
+// tracks changing methods, and these reads are guarded and audited like
+// changes.
+var sensitiveReads = map[string]bool{
+	"GET /api/audit/events": true,
+}
+
 // compare returns the source patterns the table lacks, and the table entries
 // the source no longer registers, both sorted.
 func compare(registered map[string]bool, table Table) (missing, gone []string) {
@@ -89,7 +101,7 @@ func compare(registered map[string]bool, table Table) (missing, gone []string) {
 		}
 	}
 	for pattern := range table {
-		if !registered[pattern] {
+		if !registered[pattern] && !sensitiveReads[pattern] {
 			gone = append(gone, pattern)
 		}
 	}
