@@ -75,7 +75,7 @@ func newShareWorld(t *testing.T, fail map[string]domain.FailureClass) shareWorld
 			t.Fatal(err)
 		}
 	}
-	addPerson("founder", "owner")
+	founder := addPerson("founder", "owner")
 	w.finance = addPerson("finance", "member")
 	w.ops = addPerson("ops", "member")
 	w.both = addPerson("both", "member")
@@ -89,17 +89,25 @@ func newShareWorld(t *testing.T, fail map[string]domain.FailureClass) shareWorld
 	// addAccount makes an account that lists its route model and "common",
 	// owned by owner (or by none) and shared with teams (or with none).
 	addAccount := func(name, owner, ref, model string, teams ...string) string {
+		ownerID := owner
+		visibility := "private"
+		if owner == "" {
+			ownerID = founder
+			visibility = "everyone"
+			if len(teams) > 0 {
+				visibility = "team"
+			}
+		}
+		if teams == nil {
+			teams = []string{}
+		}
 		var id string
 		if err := pool.QueryRow(ctx, `
-			INSERT INTO gateway.provider_accounts (owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url)
-			VALUES (NULLIF($1, '')::uuid, 'acme', $2, 'fake', $3, 'metered', false, '')
-			RETURNING id::text`, owner, name, ref).Scan(&id); err != nil {
+			INSERT INTO gateway.provider_accounts
+				(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, visibility, team_ids)
+			VALUES ($1::uuid, 'acme', $2, 'fake', $3, 'metered', false, '', $4, $5::uuid[])
+			RETURNING id::text`, ownerID, name, ref, visibility, teams).Scan(&id); err != nil {
 			t.Fatal(err)
-		}
-		for _, teamID := range teams {
-			if _, err := pool.Exec(ctx, `INSERT INTO gateway.provider_account_teams (account_id, team_id) VALUES ($1::uuid, $2::uuid)`, id, teamID); err != nil {
-				t.Fatal(err)
-			}
 		}
 		for i, m := range []string{model, "common"} {
 			if _, err := pool.Exec(ctx, `INSERT INTO gateway.provider_models (account_id, model, position) VALUES ($1::uuid, $2, $3)`, id, m, i+1); err != nil {

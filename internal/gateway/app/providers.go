@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,8 +24,8 @@ var (
 	// change, which these routes never change for them.
 	ErrGlobal = errors.New("gateway: provider is global")
 	// ErrShareOnly is a person who asked to share an account but does not
-	// hold teams:manage.
-	ErrShareOnly = errors.New("gateway: sharing a provider needs teams:manage")
+	// hold settings:manage.
+	ErrShareOnly = errors.New("gateway: sharing a provider needs settings:manage")
 	// ErrDuplicate is a name the person already uses.
 	ErrDuplicate = errors.New("gateway: provider name in use")
 	// ErrLimit is a person at the cap of own accounts.
@@ -42,19 +44,74 @@ type InUseError struct{ Routes []string }
 
 func (InUseError) Error() string { return "gateway: provider in use by a route" }
 
-// Caller is the person a provider call is for, and whether they may share
-// accounts (hold teams:manage). The store writes both into the transaction
-// that row security reads.
+// Caller is the person a provider call is for. Allow is the permissions they
+// hold (settings:manage when they may share). Teams are the teams they are
+// on. The store writes user, allow and teams into the transaction that row
+// security reads.
 type Caller struct {
 	User  string
-	Share bool
+	Allow string
+	Teams []string
 }
 
-// manages reports whether the caller may change or remove p: their own
-// account, or a shared one when they may share. A house account is read from
-// the environment and nobody changes it here.
+// mayShare reports whether Allow holds settings:manage.
+func (c Caller) mayShare() bool {
+	for _, name := range strings.Split(c.Allow, ",") {
+		if strings.TrimSpace(name) == domain.SharePermission {
+			return true
+		}
+	}
+	return false
+}
+
+// manages reports whether the caller may change or remove p: a private
+// account of their own, or a shared one when they hold settings:manage. A
+// house account is read from the environment and nobody changes it here.
 func (c Caller) manages(p domain.Provider) bool {
-	return p.Own || (c.Share && !p.Share.House)
+	if p.Share.House {
+		return false
+	}
+	if visibilityOf(p) == domain.VisibilityPrivate {
+		return p.Own || (c.User != "" && p.OwnerUserID == c.User)
+	}
+	return c.mayShare()
+}
+
+// uses reports whether the caller may route a call through p. A private
+// account is its owner's. A team account is for the teams it names. Everyone,
+// and a house account, are for every person.
+func (c Caller) uses(p domain.Provider) bool {
+	if p.Share.House {
+		return true
+	}
+	switch visibilityOf(p) {
+	case domain.VisibilityPrivate:
+		return p.Own || (c.User != "" && p.OwnerUserID == c.User)
+	case domain.VisibilityEveryone:
+		return true
+	case domain.VisibilityTeam:
+		for _, id := range p.Share.TeamIDs {
+			if slices.Contains(c.Teams, id) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func visibilityOf(p domain.Provider) string {
+	if p.Share.Visibility != "" {
+		return p.Share.Visibility
+	}
+	if p.Share.House {
+		return domain.VisibilityEveryone
+	}
+	if p.Own {
+		return domain.VisibilityPrivate
+	}
+	return ""
 }
 
 // Accounts is where provider accounts and their sealed keys are kept. Every
@@ -68,14 +125,14 @@ type Accounts interface {
 	// Get returns an account the person can see, or ErrNotFound.
 	Get(ctx context.Context, who Caller, id string) (domain.Provider, error)
 	// Create stores an account with its models and, when sealed is set, its
-	// key, in one transaction. An account that is not Own is shared: with the
-	// teams in Share.TeamIDs for ScopeTeam, else with the whole workspace.
+	// key, in one transaction. Visibility private is the person's own. Team
+	// is shared with Share.TeamIDs. Everyone is shared with the workspace.
 	// It returns ErrDuplicate or ErrLimit.
 	Create(ctx context.Context, who Caller, p domain.Provider, sealed *domain.Sealed) (domain.Provider, error)
-	// Update writes the account's fields and replaces its models and, for a
-	// shared account, its teams. When sealed is set it replaces the key. When
+	// Update writes the account's fields, its visibility and its teams, and
+	// replaces its models. When sealed is set it replaces the key. When
 	// reset is set the status goes back to Not connected. It returns
-	// ErrNotFound or ErrDuplicate.
+	// ErrNotFound, ErrDuplicate or ErrLimit.
 	Update(ctx context.Context, who Caller, p domain.Provider, sealed *domain.Sealed, reset bool) (domain.Provider, error)
 	// Remove deletes the account, its models and its key in one transaction.
 	// It returns ErrNotFound, or InUseError while a route links to it.
@@ -106,9 +163,14 @@ type Providers struct {
 	// LocalPlan says whether this person may add or test a local-plan
 	// account. Nil denies the local plan to every person.
 	LocalPlan func(ctx context.Context, user string) bool
-	// Share reports whether a person may share accounts, which they may when
-	// they hold teams:manage. Nil means nobody may.
-	Share func(ctx context.Context, user string) (bool, error)
+	// Allow is settings:manage when the person holds it, otherwise empty.
+	// Nil means nobody may share.
+	Allow func(ctx context.Context, user string) (string, error)
+	// Teams lists the teams the person is on. Nil means they are on none.
+	Teams func(ctx context.Context, user string) ([]string, error)
+	// Names returns the names of the teams that exist. A missing id is unknown.
+	// Nil leaves that check to the store.
+	Names func(ctx context.Context, teams []string) (map[string]string, error)
 	// Log records add, update and remove with ids only. Nil logs nothing.
 	Log *slog.Logger
 }
@@ -116,32 +178,32 @@ type Providers struct {
 // TestTimeout bounds one test call.
 const TestTimeout = 10 * time.Second
 
-// NewProvider is what a person sends to add an account. A Scope makes it a
-// shared account: the whole workspace or, with TeamIDs, specific teams. No
-// Scope is a personal account.
+// NewProvider is what a person sends to add an account. Visibility private,
+// or none, is a personal account. Team shares it with TeamIDs. Everyone
+// shares it with the workspace.
 type NewProvider struct {
-	Provider string
-	Name     string
-	Adapter  string
-	PlanKind string
-	BaseURL  string
-	APIKey   string
-	Models   []string
-	Scope    string
-	TeamIDs  []string
+	Provider   string
+	Name       string
+	Adapter    string
+	PlanKind   string
+	BaseURL    string
+	APIKey     string
+	Models     []string
+	Visibility string
+	TeamIDs    []string
 }
 
 // ProviderChange is what a person sends to change an account. A nil field is
-// left as it is. An empty APIKey leaves the saved key as it is. Scope and
-// TeamIDs change who a shared account is for.
+// left as it is. An empty APIKey leaves the saved key as it is. Visibility
+// and TeamIDs change who the account is for.
 type ProviderChange struct {
-	Name     *string
-	PlanKind *string
-	BaseURL  *string
-	APIKey   *string
-	Models   *[]string
-	Scope    *string
-	TeamIDs  *[]string
+	Name       *string
+	PlanKind   *string
+	BaseURL    *string
+	APIKey     *string
+	Models     *[]string
+	Visibility *string
+	TeamIDs    *[]string
 }
 
 // TestRequest is what a person sends to test an account. With an ID and no
@@ -162,24 +224,30 @@ type TestResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// caller names the person and says whether they may share.
+// caller names the person, the permissions they hold, and the teams they are on.
 func (s Providers) caller(ctx context.Context, user string) (Caller, error) {
 	who := Caller{User: user}
-	if s.Share == nil {
-		return who, nil
+	if s.Allow != nil {
+		allow, err := s.Allow(ctx, user)
+		if err != nil {
+			return Caller{}, fmt.Errorf("gateway: sharing permission: %w", err)
+		}
+		who.Allow = allow
 	}
-	ok, err := s.Share(ctx, user)
-	if err != nil {
-		return Caller{}, fmt.Errorf("gateway: sharing permission: %w", err)
+	if s.Teams != nil {
+		teams, err := s.Teams(ctx, user)
+		if err != nil {
+			return Caller{}, fmt.Errorf("gateway: teams: %w", err)
+		}
+		who.Teams = teams
 	}
-	who.Share = ok
 	return who, nil
 }
 
 // CanShare reports whether the person may share accounts.
 func (s Providers) CanShare(ctx context.Context, user string) (bool, error) {
 	who, err := s.caller(ctx, user)
-	return who.Share, err
+	return who.mayShare(), err
 }
 
 // List returns the accounts the person may see: their own, the ones shared
@@ -195,13 +263,13 @@ func (s Providers) List(ctx context.Context, user string) ([]domain.Provider, er
 		return nil, fmt.Errorf("gateway: list providers: %w", err)
 	}
 	for i := range out {
-		out[i].Share.CanManage = who.manages(out[i])
+		s.note(&out[i], who)
 	}
 	return out, nil
 }
 
 // Add validates and stores a new account: the person's own, or a shared one
-// when the request names a scope and the person may share.
+// when the request names a shared visibility and the person holds settings:manage.
 func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain.Provider, error) {
 	if !s.Keys.Ready() {
 		return domain.Provider{}, ErrNoMasterKey
@@ -210,14 +278,16 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	scope, teams := domain.ScopeOwn, []string(nil)
-	if in.Scope != "" || len(in.TeamIDs) > 0 {
-		if !who.Share {
-			return domain.Provider{}, ErrShareOnly
-		}
-		if scope, teams, err = domain.CleanShare(in.Scope, in.TeamIDs); err != nil {
-			return domain.Provider{}, err
-		}
+	plain := (in.Visibility == "" || in.Visibility == domain.VisibilityPrivate) && len(in.TeamIDs) == 0
+	if !plain && !who.mayShare() {
+		return domain.Provider{}, ErrShareOnly
+	}
+	visibility, teams, err := domain.CleanVisibility(in.Visibility, in.TeamIDs)
+	if err != nil {
+		return domain.Provider{}, err
+	}
+	if err := s.knownTeams(ctx, teams); err != nil {
+		return domain.Provider{}, err
 	}
 	label, err := domain.CleanLabel(in.Provider)
 	if err != nil {
@@ -275,14 +345,14 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		BaseURL:       base,
 		Status:        domain.StatusNotConnected,
 		Models:        models,
-		Own:           scope == domain.ScopeOwn,
+		Own:           visibility == domain.VisibilityPrivate,
 		CredentialRef: ref,
-		Share:         domain.Share{Scope: scope, TeamIDs: teams},
+		Share:         domain.Share{Visibility: visibility, TeamIDs: teams},
 	}, sealed)
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	made.Share.CanManage = who.manages(made)
+	s.note(&made, who)
 	s.log("provider added", made.ID, user)
 	return made, nil
 }
@@ -302,28 +372,36 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	}
 	next := cur
 	reset := false
-	if in.Scope != nil || in.TeamIDs != nil {
-		if cur.Own {
-			return domain.Provider{}, domain.Invalid("A personal provider is not shared.")
-		}
-		ask := domain.ShareWorkspace
-		if cur.Share.Scope == domain.ScopeTeam {
-			ask = domain.ShareTeams
-		}
-		if in.Scope != nil {
-			ask = *in.Scope
+	if in.Visibility != nil || in.TeamIDs != nil {
+		ask := visibilityOf(cur)
+		if in.Visibility != nil {
+			ask = *in.Visibility
 		}
 		ids := cur.Share.TeamIDs
 		switch {
 		case in.TeamIDs != nil:
 			ids = *in.TeamIDs
-		case ask == domain.ShareWorkspace:
+		case ask != domain.VisibilityTeam:
 			ids = nil
 		}
-		next.Share.Scope, next.Share.TeamIDs, err = domain.CleanShare(ask, ids)
+		vis, teams, err := domain.CleanVisibility(ask, ids)
 		if err != nil {
 			return domain.Provider{}, err
 		}
+		if vis != domain.VisibilityPrivate && !who.mayShare() {
+			return domain.Provider{}, ErrShareOnly
+		}
+		// Taking a shared account private is the owner's act. settings:manage
+		// can change who a shared account is for, and cannot take someone
+		// else's private.
+		if vis == domain.VisibilityPrivate && visibilityOf(cur) != domain.VisibilityPrivate && cur.OwnerUserID != who.User {
+			return domain.Provider{}, domain.Invalid("Only the owner can make a shared provider private.")
+		}
+		if err := s.knownTeams(ctx, teams); err != nil {
+			return domain.Provider{}, err
+		}
+		next.Share.Visibility, next.Share.TeamIDs = vis, teams
+		next.Own = vis == domain.VisibilityPrivate
 	}
 	if in.Name != nil {
 		if next.Name, err = domain.CleanName(*in.Name); err != nil {
@@ -383,7 +461,7 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	made.Share.CanManage = who.manages(made)
+	s.note(&made, who)
 	s.log("provider updated", made.ID, user)
 	return made, nil
 }
@@ -500,8 +578,35 @@ func (s Providers) mayLocal(ctx context.Context, user string) bool {
 	return s.LocalPlan != nil && s.LocalPlan(ctx, user)
 }
 
+// note records whether this person may change the account and use it, and
+// whether they own it. Ownership is for the screen. Access and tiering still
+// follow visibility and house.
+func (s Providers) note(p *domain.Provider, who Caller) {
+	p.Share.CanManage = who.manages(*p)
+	p.Share.CanUse = who.uses(*p)
+	p.Share.IsOwner = !p.Share.House && who.User != "" && p.OwnerUserID == who.User
+}
+
+// knownTeams refuses a team id Names does not know. The store checks again.
+func (s Providers) knownTeams(ctx context.Context, teams []string) error {
+	if len(teams) == 0 || s.Names == nil {
+		return nil
+	}
+	names, err := s.Names(ctx, teams)
+	if err != nil {
+		return fmt.Errorf("gateway: team names: %w", err)
+	}
+	for _, id := range teams {
+		if names[id] == "" {
+			return domain.Invalid("Choose teams from the list.")
+		}
+	}
+	return nil
+}
+
 // manageable loads an account and refuses one the person may not change: a
-// workspace account, or a shared one when they may not share.
+// house account, a private account of someone else, or a shared one when
+// they do not hold settings:manage.
 func (s Providers) manageable(ctx context.Context, who Caller, id string) (domain.Provider, error) {
 	cur, err := s.Accounts.Get(ctx, who, id)
 	if err != nil {

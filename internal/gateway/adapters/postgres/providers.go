@@ -17,10 +17,10 @@ import (
 )
 
 // Providers keeps the provider accounts people add, with their models and
-// sealed keys. Every call runs in a transaction that names the person (and
-// whether they hold teams:manage) to row security, which shows them their
-// own accounts, the workspace's and the ones shared with a team of theirs, and
-// lets them write only their own, or a shared one when they may share.
+// sealed keys. Every call runs in a transaction that names the person, their
+// teams, and whether they hold settings:manage. Row security shows them the
+// accounts they can use and the shared ones they may manage, and lets them
+// write their own private account, or a shared one when they may manage it.
 type Providers struct {
 	Pool *pgxpool.Pool
 }
@@ -40,15 +40,16 @@ func (p Providers) begin(ctx context.Context, who app.Caller) (pgx.Tx, error) {
 	if _, err := uuid.Parse(who.User); err != nil {
 		return nil, fmt.Errorf("gateway: provider owner")
 	}
-	allow := ""
-	if who.Share {
-		allow = domain.SharePermission
-	}
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true)`, who.User, allow); err != nil {
+	// The caller read allow and teams for this request. The next request
+	// reads them again, so a team change takes effect then.
+	if _, err := tx.Exec(ctx, `
+		SELECT set_config('upmo.user_id', $1, true),
+			set_config('upmo.allow', $2, true),
+			set_config('upmo.teams', $3, true)`, who.User, who.Allow, uuidList(who.Teams)); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, err
 	}
@@ -56,46 +57,29 @@ func (p Providers) begin(ctx context.Context, who app.Caller) (pgx.Tx, error) {
 }
 
 // accountColumns reads an account as a person sees it. The credential ref is
-// shown only for an account the person may change, and never to a member of a
-// team it is shared with.
+// shown only for an account the person may manage, and never for a house key
+// or to someone who can only use a shared account.
 const accountColumns = `a.id::text, a.provider, a.name, a.adapter, a.plan_kind, a.base_url, a.status,
-	a.owner_user_id IS NOT NULL,
-	CASE WHEN a.owner_user_id IS NOT NULL OR (NOT a.house AND gateway.may_share()) THEN a.credential_ref ELSE '' END,
+	a.visibility, COALESCE(a.owner_user_id::text, ''),
+	CASE WHEN NOT a.house AND identity.may_manage(a.owner_user_id, a.visibility) THEN a.credential_ref ELSE '' END,
 	EXISTS (SELECT 1 FROM gateway.credentials AS c WHERE c.ref = a.credential_ref),
-	a.house, gateway.team_shared(a.id)`
+	a.house`
 
-// visibleTo is the accounts a person is shown, with the person as the
-// parameter user: their own, a workspace one (which has no team rows), one
-// shared with a team of theirs, and, for an admin, every shared one. Row
-// security says the same; this keeps the answer right on a pool that row
-// security does not cover.
-func visibleTo(user string) string {
-	return `(a.owner_user_id = ` + user + `::uuid
-		OR (a.owner_user_id IS NULL AND (
-			NOT gateway.team_shared(a.id)
-			OR gateway.may_share()
-			OR EXISTS (
-				SELECT 1 FROM gateway.provider_account_teams AS t
-				WHERE t.account_id = a.id AND t.team_id = ANY (gateway.my_teams()))
-		)))`
+// visibleTo is the accounts a person is shown: one they can use, and a shared
+// one they may manage. Row security says the same.
+func visibleTo() string {
+	return `(identity.may_use(a.owner_user_id, a.visibility, a.team_ids)
+		OR identity.may_manage(a.owner_user_id, a.visibility))`
 }
 
 func scanAccount(row pgx.Row) (domain.Provider, error) {
 	var a domain.Provider
-	var teamShared bool
 	err := row.Scan(&a.ID, &a.Provider, &a.Name, &a.Adapter, &a.PlanKind, &a.BaseURL, &a.Status,
-		&a.Own, &a.CredentialRef, &a.HasKey, &a.Share.House, &teamShared)
+		&a.Share.Visibility, &a.OwnerUserID, &a.CredentialRef, &a.HasKey, &a.Share.House)
 	if a.Provider == "" {
 		a.Provider = a.Adapter
 	}
-	switch {
-	case a.Own:
-		a.Share.Scope = domain.ScopeOwn
-	case teamShared:
-		a.Share.Scope = domain.ScopeTeam
-	default:
-		a.Share.Scope = domain.ScopeWorkspace
-	}
+	a.Own = a.Share.Visibility == domain.VisibilityPrivate
 	a.Models = []string{}
 	a.Share.TeamIDs = []string{}
 	a.Share.TeamNames = []string{}
@@ -113,8 +97,13 @@ func (p Providers) List(ctx context.Context, who app.Caller) ([]domain.Provider,
 	rows, err := tx.Query(ctx, `
 		SELECT `+accountColumns+`
 		FROM gateway.provider_accounts AS a
-		WHERE `+visibleTo("$1")+`
-		ORDER BY CASE WHEN a.owner_user_id IS NOT NULL THEN 0 WHEN gateway.team_shared(a.id) THEN 1 ELSE 2 END, a.name`, who.User)
+		WHERE `+visibleTo()+`
+		ORDER BY CASE
+			WHEN a.house THEN 3
+			WHEN a.visibility = 'private' THEN 0
+			WHEN a.visibility = 'team' THEN 1
+			ELSE 2
+		END, a.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -161,21 +150,21 @@ func (p Providers) Get(ctx context.Context, who app.Caller, id string) (domain.P
 		return domain.Provider{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	a, err := getAccount(ctx, tx, who.User, id)
+	a, err := getAccount(ctx, tx, id)
 	if err != nil {
 		return domain.Provider{}, err
 	}
 	return a, tx.Commit(ctx)
 }
 
-func getAccount(ctx context.Context, q querier, user, id string) (domain.Provider, error) {
+func getAccount(ctx context.Context, q querier, id string) (domain.Provider, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return domain.Provider{}, app.ErrNotFound
 	}
 	a, err := scanAccount(q.QueryRow(ctx, `
 		SELECT `+accountColumns+`
 		FROM gateway.provider_accounts AS a
-		WHERE a.id = $1::uuid AND `+visibleTo("$2"), id, user))
+		WHERE a.id = $1::uuid AND `+visibleTo(), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Provider{}, app.ErrNotFound
 	}
@@ -223,15 +212,15 @@ func modelsOf(ctx context.Context, q querier, ids []string) (map[string][]string
 // sharedWith is the teams one account is shared with, by name.
 type sharedWith struct{ ids, names []string }
 
-// teamsOf reads the teams each account is shared with that the person may
-// see: a member sees their own teams among them, an admin sees all.
+// teamsOf reads the teams each account is shared with.
 func teamsOf(ctx context.Context, q querier, ids []string) (map[string]sharedWith, error) {
 	rows, err := q.Query(ctx, `
-		SELECT t.account_id::text, t.team_id::text, team.name
-		FROM gateway.provider_account_teams AS t
-		JOIN identity.teams AS team ON team.id = t.team_id
-		WHERE t.account_id = ANY($1::uuid[])
-		ORDER BY t.account_id, team.name, t.team_id`, ids)
+		SELECT a.id::text, tid::text, team.name
+		FROM gateway.provider_accounts AS a
+		CROSS JOIN LATERAL unnest(a.team_ids) AS tid
+		JOIN identity.teams AS team ON team.id = tid
+		WHERE a.id = ANY($1::uuid[])
+		ORDER BY a.id, team.name, tid`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -250,68 +239,59 @@ func teamsOf(ctx context.Context, q querier, ids []string) (map[string]sharedWit
 }
 
 // Create stores a new account, its models and its sealed key in one
-// transaction. A personal account is counted under a lock for its person, so
-// two requests cannot both take the last place. A shared account has no cap;
-// row security lets only a person who may share write one.
+// transaction. A private account is counted under a lock for its person, so
+// two requests cannot both take the last place. A shared account has no cap.
 func (p Providers) Create(ctx context.Context, who app.Caller, a domain.Provider, sealed *domain.Sealed) (domain.Provider, error) {
 	tx, err := p.begin(ctx, who)
 	if err != nil {
 		return domain.Provider{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var id string
-	if a.Own {
+	visibility, teamIDs := shareOf(a)
+	if err := knownTeams(ctx, tx, teamIDs); err != nil {
+		return domain.Provider{}, err
+	}
+	if visibility == domain.VisibilityPrivate {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('gateway.providers:' || $1::text, 0))`, who.User); err != nil {
 			return domain.Provider{}, err
 		}
 		var count int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM gateway.provider_accounts WHERE owner_user_id = $1::uuid`, who.User).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM gateway.provider_accounts
+			WHERE owner_user_id = $1::uuid AND visibility = 'private'`, who.User).Scan(&count); err != nil {
 			return domain.Provider{}, err
 		}
 		if count >= domain.MaxOwnAccounts {
 			return domain.Provider{}, app.ErrLimit
 		}
-		err = tx.QueryRow(ctx, `
-			INSERT INTO gateway.provider_accounts
-				(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, status)
-			VALUES ($1::uuid, $2, $3, $4, $5, $6, false, $7, $8)
-			RETURNING id::text`,
-			who.User, a.Provider, a.Name, a.Adapter, a.CredentialRef, a.PlanKind, a.BaseURL, domain.StatusNotConnected).Scan(&id)
-	} else {
-		err = tx.QueryRow(ctx, `
-			INSERT INTO gateway.provider_accounts
-				(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, status)
-			VALUES (NULL, $1, $2, $3, $4, $5, false, $6, $7)
-			RETURNING id::text`,
-			a.Provider, a.Name, a.Adapter, a.CredentialRef, a.PlanKind, a.BaseURL, domain.StatusNotConnected).Scan(&id)
 	}
+	var id string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO gateway.provider_accounts
+			(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, status, visibility, team_ids)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, false, $7, $8, $9, $10::uuid[])
+		RETURNING id::text`,
+		who.User, a.Provider, a.Name, a.Adapter, a.CredentialRef, a.PlanKind, a.BaseURL, domain.StatusNotConnected, visibility, teamIDs).Scan(&id)
 	if err != nil {
 		return domain.Provider{}, mapWrite(err)
 	}
 	if err := putModels(ctx, tx, id, a.Models); err != nil {
 		return domain.Provider{}, err
 	}
-	if !a.Own {
-		if err := putTeams(ctx, tx, id, a.Share.Scope, a.Share.TeamIDs); err != nil {
-			return domain.Provider{}, err
-		}
-	}
 	if sealed != nil {
 		if err := putSealed(ctx, tx, a.CredentialRef, *sealed); err != nil {
 			return domain.Provider{}, err
 		}
 	}
-	made, err := getAccount(ctx, tx, who.User, id)
+	made, err := getAccount(ctx, tx, id)
 	if err != nil {
 		return domain.Provider{}, err
 	}
 	return made, tx.Commit(ctx)
 }
 
-// changeable is the accounts a person may write, with the person as $2: their
-// own, and a shared one (which has an owner of none and no house key). Row
-// security lets a shared write through only for a person who may share.
-const changeable = `(owner_user_id = $2::uuid OR (owner_user_id IS NULL AND NOT house))`
+// changeable is an account the person may manage, and not a house account.
+const changeable = `(NOT house AND identity.may_manage(owner_user_id, visibility))`
 
 // Update writes an account's fields, replaces its models and, for a shared
 // account, the teams it is shared with and, when sealed is set, replaces its
@@ -322,13 +302,44 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 		return domain.Provider{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	visibility, teamIDs := shareOf(a)
+	if err := knownTeams(ctx, tx, teamIDs); err != nil {
+		return domain.Provider{}, err
+	}
+	var current, owner string
+	err = tx.QueryRow(ctx, `
+		SELECT visibility, owner_user_id::text FROM gateway.provider_accounts
+		WHERE id = $1::uuid AND `+changeable, a.ID).Scan(&current, &owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Provider{}, app.ErrNotFound
+	}
+	if err != nil {
+		return domain.Provider{}, err
+	}
+	// A shared account turned private counts against the owner's personal cap,
+	// under the same lock as a new private account.
+	if visibility == domain.VisibilityPrivate && current != domain.VisibilityPrivate {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('gateway.providers:' || $1::text, 0))`, owner); err != nil {
+			return domain.Provider{}, err
+		}
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM gateway.provider_accounts
+			WHERE owner_user_id = $1::uuid AND visibility = 'private'`, owner).Scan(&count); err != nil {
+			return domain.Provider{}, err
+		}
+		if count >= domain.MaxOwnAccounts {
+			return domain.Provider{}, app.ErrLimit
+		}
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE gateway.provider_accounts
-		SET name = $3, plan_kind = $4, base_url = $5, updated_at = now(),
-			status = CASE WHEN $6 THEN 'Not connected' ELSE status END,
-			checked_at = CASE WHEN $6 THEN NULL ELSE checked_at END
+		SET name = $2, plan_kind = $3, base_url = $4, updated_at = now(),
+			status = CASE WHEN $5 THEN 'Not connected' ELSE status END,
+			checked_at = CASE WHEN $5 THEN NULL ELSE checked_at END,
+			visibility = $6, team_ids = $7::uuid[]
 		WHERE id = $1::uuid AND `+changeable,
-		a.ID, who.User, a.Name, a.PlanKind, a.BaseURL, reset)
+		a.ID, a.Name, a.PlanKind, a.BaseURL, reset, visibility, teamIDs)
 	if err != nil {
 		return domain.Provider{}, mapWrite(err)
 	}
@@ -341,20 +352,12 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	if err := putModels(ctx, tx, a.ID, a.Models); err != nil {
 		return domain.Provider{}, err
 	}
-	if !a.Own {
-		if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_account_teams WHERE account_id = $1::uuid`, a.ID); err != nil {
-			return domain.Provider{}, err
-		}
-		if err := putTeams(ctx, tx, a.ID, a.Share.Scope, a.Share.TeamIDs); err != nil {
-			return domain.Provider{}, err
-		}
-	}
 	if sealed != nil {
 		if err := putSealed(ctx, tx, a.CredentialRef, *sealed); err != nil {
 			return domain.Provider{}, err
 		}
 	}
-	made, err := getAccount(ctx, tx, who.User, a.ID)
+	made, err := getAccount(ctx, tx, a.ID)
 	if err != nil {
 		return domain.Provider{}, err
 	}
@@ -376,7 +379,7 @@ func (p Providers) Remove(ctx context.Context, who app.Caller, id string) error 
 	err = tx.QueryRow(ctx, `
 		SELECT credential_ref FROM gateway.provider_accounts
 		WHERE id = $1::uuid AND `+changeable+`
-		FOR UPDATE`, id, who.User).Scan(&ref)
+		FOR UPDATE`, id).Scan(&ref)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrNotFound
 	}
@@ -408,18 +411,14 @@ func (p Providers) Remove(ctx context.Context, who app.Caller, id string) error 
 	if len(names) > 0 {
 		return app.InUseError{Routes: names}
 	}
-	// Models, teams and the key go first: their row security looks the
-	// account up.
+	// Models and the key go first: their row security looks the account up.
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_account_teams WHERE account_id = $1::uuid`, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.credentials WHERE ref = $1`, ref); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_accounts WHERE id = $1::uuid AND `+changeable, id, who.User); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_accounts WHERE id = $1::uuid AND `+changeable, id); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return app.InUseError{}
@@ -462,8 +461,8 @@ func (p Providers) Note(ctx context.Context, who app.Caller, id, status string) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `
-		UPDATE gateway.provider_accounts SET status = $3, checked_at = now(), updated_at = now()
-		WHERE id = $1::uuid AND `+changeable, id, who.User, status)
+		UPDATE gateway.provider_accounts SET status = $2, checked_at = now(), updated_at = now()
+		WHERE id = $1::uuid AND `+changeable, id, status)
 	if err != nil {
 		return err
 	}
@@ -484,22 +483,50 @@ func putModels(ctx context.Context, tx pgx.Tx, id string, models []string) error
 	return nil
 }
 
-// putTeams shares an account with its teams. A workspace account has none.
-// A team that does not exist is a plain refusal, not a server error.
-func putTeams(ctx context.Context, tx pgx.Tx, id, scope string, teams []string) error {
-	if scope != domain.ScopeTeam {
+// shareOf is the visibility and teams an account is stored with. A private
+// account has no teams. A team account has the teams it was shared with. Any
+// other shared account is for everyone.
+func shareOf(a domain.Provider) (string, []string) {
+	vis := a.Share.Visibility
+	if vis == "" {
+		if a.Own {
+			vis = domain.VisibilityPrivate
+		} else {
+			vis = domain.VisibilityEveryone
+		}
+	}
+	switch vis {
+	case domain.VisibilityTeam:
+		if a.Share.TeamIDs == nil {
+			return domain.VisibilityTeam, []string{}
+		}
+		return domain.VisibilityTeam, a.Share.TeamIDs
+	case domain.VisibilityPrivate:
+		return domain.VisibilityPrivate, []string{}
+	default:
+		return domain.VisibilityEveryone, []string{}
+	}
+}
+
+// uuidList is the Postgres uuid array literal the settings statement writes.
+func uuidList(ids []string) string {
+	if len(ids) == 0 {
+		return "{}"
+	}
+	return "{" + strings.Join(ids, ",") + "}"
+}
+
+// knownTeams refuses a team id that is not a team. An empty list is fine.
+func knownTeams(ctx context.Context, tx pgx.Tx, teams []string) error {
+	if len(teams) == 0 {
 		return nil
 	}
-	for _, team := range teams {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO gateway.provider_account_teams (account_id, team_id)
-			VALUES ($1::uuid, $2::uuid)`, id, team); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-				return domain.Invalid("Choose teams from the list.")
-			}
-			return err
-		}
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM identity.teams WHERE id = ANY($1::uuid[])`, teams).Scan(&n); err != nil {
+		return err
+	}
+	if n != len(teams) {
+		return domain.Invalid("Choose teams from the list.")
 	}
 	return nil
 }

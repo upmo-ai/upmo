@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
@@ -59,7 +60,7 @@ func (r *rig) tryAs(user, allow, sql string, args ...any) (int64, error) {
 		r.t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true)`, user, allow); err != nil {
+	if err := r.asPerson(ctx, tx, user, allow); err != nil {
 		r.t.Fatal(err)
 	}
 	tag, err := tx.Exec(ctx, sql, args...)
@@ -75,7 +76,7 @@ func (r *rig) seenBy(user, allow, table string) int {
 		r.t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true)`, user, allow); err != nil {
+	if err := r.asPerson(ctx, tx, user, allow); err != nil {
 		r.t.Fatal(err)
 	}
 	var n int
@@ -83,6 +84,28 @@ func (r *rig) seenBy(user, allow, table string) int {
 		r.t.Fatal(err)
 	}
 	return n
+}
+
+// asPerson names the person, their permissions and their current teams on the
+// transaction, which is what a request writes before it touches a row.
+func (r *rig) asPerson(ctx context.Context, tx pgx.Tx, user, allow string) error {
+	teams := "{}"
+	if user != "" {
+		var got *string
+		if err := r.owner.QueryRow(ctx, `
+			SELECT array_agg(team_id ORDER BY team_id)::text
+			FROM identity.team_members WHERE user_id = $1::uuid`, user).Scan(&got); err != nil {
+			return err
+		}
+		if got != nil {
+			teams = *got
+		}
+	}
+	_, err := tx.Exec(ctx, `
+		SELECT set_config('upmo.user_id', $1, true),
+			set_config('upmo.allow', $2, true),
+			set_config('upmo.teams', $3, true)`, user, allow, teams)
+	return err
 }
 
 // crowd is a workspace with an admin, members of two teams, a member of both
@@ -98,14 +121,24 @@ func newCrowd(t *testing.T) *crowd {
 	t.Helper()
 	r := newRig(t, masterKeys(t, 'a'))
 	members := identity.Members(r.app, "", nil, nil)
-	// Sharing is for the roles that hold teams:manage, as brain wires it.
-	r.svc.Share = func(ctx context.Context, user string) (bool, error) {
+	// Sharing is for the roles that hold settings:manage, as brain wires it.
+	r.svc.Allow = func(ctx context.Context, user string) (string, error) {
 		person, err := identity.ParseUserID(user)
 		if err != nil {
-			return false, err
+			return "", err
 		}
-		allow, err := members.TeamsAllow(ctx, person)
-		return allow != "", err
+		return members.SettingsAllow(ctx, person)
+	}
+	r.svc.Teams = func(ctx context.Context, user string) ([]string, error) {
+		person, err := identity.ParseUserID(user)
+		if err != nil {
+			return nil, err
+		}
+		return members.TeamsOf(ctx, person)
+	}
+	r.svc.Names = func(ctx context.Context, teams []string) (map[string]string, error) {
+		_, names, err := members.NamesOf(ctx, nil, teams)
+		return names, err
 	}
 	r.mount(nil)
 	c := &crowd{rig: r}
@@ -125,11 +158,10 @@ func newCrowd(t *testing.T) *crowd {
 	return c
 }
 
-// shared is the body of a shared account. teams may be empty for the whole
-// workspace.
-func shared(name, baseURL, key, scope string, teams ...string) map[string]any {
+// shared is the body of a shared account. teams may be empty for everyone.
+func shared(name, baseURL, key, visibility string, teams ...string) map[string]any {
 	b := body(name, baseURL, key)
-	b["scope"] = scope
+	b["visibility"] = visibility
 	if len(teams) > 0 {
 		b["team_ids"] = teams
 	}
@@ -147,15 +179,16 @@ func names(rows []account) string {
 func TestAnAdminSharesAnAccountWithATeamAndOnlyItsMembersSeeIt(t *testing.T) {
 	c := newCrowd(t)
 	prov := newFakeProvider(t)
-	made := c.mustAdd(c.admin, shared("Finance models", prov.url(), adaKey, "teams", c.financeTeam))
-	if made.Scope != "team" || !made.CanManage || len(made.TeamIDs) != 1 || made.TeamIDs[0] != c.financeTeam ||
+	made := c.mustAdd(c.admin, shared("Finance models", prov.url(), adaKey, "team", c.financeTeam))
+	if made.Visibility != "team" || !made.CanManage || made.CanUse || len(made.UsableModels) != 0 ||
+		len(made.TeamIDs) != 1 || made.TeamIDs[0] != c.financeTeam ||
 		len(made.TeamNames) != 1 || made.TeamNames[0] != "Finance" || made.Name != "Finance models" {
 		t.Fatalf("made = %+v", made)
 	}
 
 	// A member of the team sees the account and its models, and may not change it.
 	rows := c.list(c.finance)
-	if len(rows) != 1 || rows[0].ID != made.ID || rows[0].Scope != "team" || rows[0].CanManage ||
+	if len(rows) != 1 || rows[0].ID != made.ID || rows[0].Visibility != "team" || rows[0].CanManage || !rows[0].CanUse ||
 		strings.Join(rows[0].Models, ",") != "m1,m2" || rows[0].PlanKind != "local" {
 		t.Fatalf("finance sees %+v", rows)
 	}
@@ -215,7 +248,7 @@ func TestAnAdminSharesAnAccountWithATeamAndOnlyItsMembersSeeIt(t *testing.T) {
 		t.Fatal("a member of the team read the sealed key")
 	}
 	// The admin's request reaches the key, to replace it or to test it.
-	if n := c.seenBy(c.admin, "teams:manage", "credentials"); n != 1 {
+	if n := c.seenBy(c.admin, "settings:manage", "credentials"); n != 1 {
 		t.Errorf("the admin sees %d credentials", n)
 	}
 	c.assertNoSecrets(adaKey, newKey, ref)
@@ -224,16 +257,16 @@ func TestAnAdminSharesAnAccountWithATeamAndOnlyItsMembersSeeIt(t *testing.T) {
 func TestAWorkspaceAccountIsSeenByEveryoneAndChangedByAdminsOnly(t *testing.T) {
 	c := newCrowd(t)
 	prov := newFakeProvider(t)
-	made := c.mustAdd(c.admin, shared("Everyone models", prov.url(), adaKey, "workspace"))
-	if made.Scope != "workspace" || !made.CanManage || len(made.TeamIDs) != 0 {
+	made := c.mustAdd(c.admin, shared("Everyone models", prov.url(), adaKey, "everyone"))
+	if made.Visibility != "everyone" || !made.CanManage || !made.CanUse || len(made.TeamIDs) != 0 {
 		t.Fatalf("made = %+v", made)
 	}
-	if n := c.count(`SELECT count(*) FROM gateway.provider_account_teams`); n != 0 {
-		t.Fatalf("a workspace account has %d team rows", n)
+	if n := c.count(`SELECT count(*) FROM gateway.provider_accounts WHERE visibility = 'everyone' AND cardinality(team_ids) > 0`); n != 0 {
+		t.Fatalf("a workspace account lists %d team sets", n)
 	}
 	for name, who := range map[string]string{"finance": c.finance, "ops": c.ops, "both": c.both, "outsider": c.outsider} {
 		rows := c.list(who)
-		if len(rows) != 1 || rows[0].ID != made.ID || rows[0].Scope != "workspace" || rows[0].CanManage {
+		if len(rows) != 1 || rows[0].ID != made.ID || rows[0].Visibility != "everyone" || rows[0].CanManage || !rows[0].CanUse {
 			t.Errorf("%s sees %+v", name, rows)
 		}
 		if code, raw := c.call(who, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"name": "mine now"}); code != http.StatusForbidden {
@@ -252,12 +285,12 @@ func TestAWorkspaceAccountIsSeenByEveryoneAndChangedByAdminsOnly(t *testing.T) {
 func TestTwoTeamsGiveTheUnionAndAnAccountReachedTwiceAppearsOnce(t *testing.T) {
 	c := newCrowd(t)
 	prov := newFakeProvider(t)
-	c.mustAdd(c.admin, shared("A finance", prov.url(), "", "teams", c.financeTeam))
-	c.mustAdd(c.admin, shared("B ops", prov.url(), "", "teams", c.opsTeam))
-	c.mustAdd(c.admin, shared("C both", prov.url(), "", "teams", c.financeTeam, c.opsTeam))
-	c.mustAdd(c.admin, shared("D workspace", prov.url(), "", "workspace"))
+	c.mustAdd(c.admin, shared("A finance", prov.url(), "", "team", c.financeTeam))
+	c.mustAdd(c.admin, shared("B ops", prov.url(), "", "team", c.opsTeam))
+	c.mustAdd(c.admin, shared("C both", prov.url(), "", "team", c.financeTeam, c.opsTeam))
+	c.mustAdd(c.admin, shared("D workspace", prov.url(), "", "everyone"))
 	own := c.mustAdd(c.both, body("E mine", prov.url(), ""))
-	if own.Scope != "own" || !own.CanManage {
+	if own.Visibility != "private" || !own.CanManage || !own.CanUse {
 		t.Fatalf("own = %+v", own)
 	}
 
@@ -285,15 +318,53 @@ func TestTwoTeamsGiveTheUnionAndAnAccountReachedTwiceAppearsOnce(t *testing.T) {
 			t.Errorf("the admin sees a personal account: %+v", row)
 		}
 	}
+
+	// is_owner is only a display flag: true for the owner of a private account
+	// and of a shared one, false for another admin and for a house account.
+	if !own.IsOwner {
+		t.Fatal("the owner of a private account was not marked")
+	}
+	for _, row := range c.list(c.admin) {
+		if !row.IsOwner {
+			t.Errorf("the owner of shared %q was not marked", row.Name)
+		}
+	}
+	for _, row := range c.list(c.both) {
+		want := row.ID == own.ID
+		if row.IsOwner != want {
+			t.Errorf("%s is_owner = %v, want %v", row.Name, row.IsOwner, want)
+		}
+	}
+	other := c.person("other-admin", "admin")
+	otherRows := c.list(other)
+	if names(otherRows) != "A finance,B ops,C both,D workspace" {
+		t.Fatalf("another admin sees %s", names(otherRows))
+	}
+	for _, row := range otherRows {
+		if row.IsOwner {
+			t.Errorf("another admin is marked owner of %q", row.Name)
+		}
+	}
+	c.globalAccount("House install")
+	var house account
+	var found bool
+	for _, row := range c.list(c.admin) {
+		if row.Name == "House install" {
+			house, found = row, true
+		}
+	}
+	if !found || house.IsOwner {
+		t.Fatalf("house account = %+v, found %v", house, found)
+	}
 }
 
 func TestOnlyAnAdminSharesAccounts(t *testing.T) {
 	c := newCrowd(t)
 	prov := newFakeProvider(t)
 	for name, b := range map[string]map[string]any{
-		"workspace": shared("Mine for all", prov.url(), "", "workspace"),
-		"teams":     shared("Mine for finance", prov.url(), "", "teams", c.financeTeam),
-		"teams, no scope": func() map[string]any {
+		"everyone": shared("Mine for all", prov.url(), "", "everyone"),
+		"team":     shared("Mine for finance", prov.url(), "", "team", c.financeTeam),
+		"teams, no visibility": func() map[string]any {
 			b := body("Sneaky", prov.url(), "")
 			b["team_ids"] = []string{c.financeTeam}
 			return b
@@ -309,7 +380,7 @@ func TestOnlyAnAdminSharesAccounts(t *testing.T) {
 	}
 	// A member's own account stays theirs, and cannot be turned into a shared one.
 	mine := c.mustAdd(c.finance, body("Plain", prov.url(), ""))
-	if code, raw := c.call(c.finance, http.MethodPut, "/api/providers/"+mine.ID, map[string]any{"scope": "workspace"}); code != http.StatusUnprocessableEntity {
+	if code, raw := c.call(c.finance, http.MethodPut, "/api/providers/"+mine.ID, map[string]any{"visibility": "everyone"}); code != http.StatusForbidden {
 		t.Errorf("a personal account was shared by its owner: %d %s", code, raw)
 	}
 	if rows := c.list(c.outsider); len(rows) != 0 {
@@ -317,38 +388,36 @@ func TestOnlyAnAdminSharesAccounts(t *testing.T) {
 	}
 
 	// An admin can.
-	made := c.mustAdd(c.admin, shared("For finance", prov.url(), "", "teams", c.financeTeam))
-	if made.Scope != "team" {
+	made := c.mustAdd(c.admin, shared("For finance", prov.url(), "", "team", c.financeTeam))
+	if made.Visibility != "team" {
 		t.Fatalf("made = %+v", made)
 	}
 	// An admin cannot name a team that does not exist, or none, or a workspace
 	// with teams.
 	for name, b := range map[string]map[string]any{
-		"unknown team":         shared("X1", prov.url(), "", "teams", uuid.NewString()),
-		"not a team id":        shared("X2", prov.url(), "", "teams", "finance"),
-		"teams with none":      shared("X3", prov.url(), "", "teams"),
-		"workspace with teams": shared("X4", prov.url(), "", "workspace", c.financeTeam),
-		"unknown scope":        shared("X5", prov.url(), "", "everyone"),
+		"unknown team":          shared("X1", prov.url(), "", "team", uuid.NewString()),
+		"not a team id":         shared("X2", prov.url(), "", "team", "finance"),
+		"team with none":        shared("X3", prov.url(), "", "team"),
+		"everyone with teams":   shared("X4", prov.url(), "", "everyone", c.financeTeam),
+		"unknown visibility":    shared("X5", prov.url(), "", "workspace"),
 	} {
 		if code, raw := c.add(c.admin, b); code != http.StatusUnprocessableEntity || message(t, raw) == "" {
 			t.Errorf("%s = %d %s", name, code, raw)
 		}
 	}
-	if n := c.count(`SELECT count(*) FROM gateway.provider_accounts WHERE owner_user_id IS NULL`); n != 1 {
+	if n := c.count(`SELECT count(*) FROM gateway.provider_accounts WHERE visibility <> 'private'`); n != 1 {
 		t.Fatalf("shared accounts = %d, want the one made", n)
 	}
 
 	// Row security refuses a write a member makes around the handler, even
 	// when no one checked the permission before it.
 	if _, err := c.tryAs(c.finance, "", `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('forged', 'fake', 'forged_ref', 'local', false)`); err == nil {
+		INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house, visibility, team_ids)
+		VALUES ($1::uuid, 'forged', 'fake', 'forged_ref', 'local', false, 'team', ARRAY[$2]::uuid[])`, c.finance, c.opsTeam); err == nil {
 		t.Error("a member inserted a shared account")
 	}
-	if _, err := c.tryAs(c.finance, "", `
-		INSERT INTO gateway.provider_account_teams (account_id, team_id)
-		SELECT id, $1::uuid FROM gateway.provider_accounts WHERE name = 'For finance'`, c.opsTeam); err == nil {
-		t.Error("a member shared an account with another team")
+	if n, err := c.tryAs(c.finance, "", `UPDATE gateway.provider_accounts SET team_ids = ARRAY[$1]::uuid[] WHERE name = 'For finance'`, c.opsTeam); err != nil || n != 0 {
+		t.Errorf("a member retargeted %d shared accounts: %v", n, err)
 	}
 	if n, err := c.tryAs(c.finance, "", `UPDATE gateway.provider_accounts SET name = 'taken' WHERE name = 'For finance'`); err != nil || n != 0 {
 		t.Errorf("a member updated %d shared accounts: %v", n, err)
@@ -356,61 +425,23 @@ func TestOnlyAnAdminSharesAccounts(t *testing.T) {
 	if n, err := c.tryAs(c.finance, "", `DELETE FROM gateway.provider_accounts WHERE name = 'For finance'`); err != nil || n != 0 {
 		t.Errorf("a member deleted %d shared accounts: %v", n, err)
 	}
-	if n, err := c.tryAs(c.finance, "", `DELETE FROM gateway.provider_account_teams`); err != nil || n != 0 {
-		t.Errorf("a member deleted %d share rows: %v", n, err)
-	}
-	// The same statements work with the permission.
-	if n, err := c.tryAs(c.admin, "teams:manage", `UPDATE gateway.provider_accounts SET name = 'renamed' WHERE name = 'For finance'`); err != nil || n != 1 {
+	// The same statement works with the permission.
+	if n, err := c.tryAs(c.admin, "settings:manage", `UPDATE gateway.provider_accounts SET name = 'renamed' WHERE name = 'For finance'`); err != nil || n != 1 {
 		t.Errorf("an admin updated %d shared accounts: %v", n, err)
-	}
-}
-
-func TestTeamRowsCanOnlyAttachToSharedAccounts(t *testing.T) {
-	c := newCrowd(t)
-	ctx := context.Background()
-	prov := newFakeProvider(t)
-	sharedAccount := c.mustAdd(c.admin, shared("Team rows", prov.url(), "", "teams", c.financeTeam))
-	var houseID, personalID string
-	if err := c.owner.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('House for RLS', 'fake', 'house-ref', 'local', true) RETURNING id::text`).Scan(&houseID); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.owner.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house)
-		VALUES ($1::uuid, 'Personal for RLS', 'fake', 'personal-ref', 'local', false) RETURNING id::text`, c.admin).Scan(&personalID); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{houseID, personalID} {
-		if _, err := c.owner.Exec(ctx, `INSERT INTO gateway.provider_account_teams (account_id, team_id) VALUES ($1::uuid, $2::uuid)`, id, c.financeTeam); err != nil {
-			t.Fatal(err)
-		}
-		if n, err := c.tryAs(c.admin, "teams:manage", `INSERT INTO gateway.provider_account_teams (account_id, team_id) VALUES ($1::uuid, $2::uuid)`, id, c.opsTeam); err == nil || n != 0 {
-			t.Errorf("admin attached team to personal/house account %s: %d rows, %v", id, n, err)
-		}
-		if n, err := c.tryAs(c.admin, "teams:manage", `DELETE FROM gateway.provider_account_teams WHERE account_id = $1::uuid`, id); err != nil || n != 0 {
-			t.Errorf("admin detached team from personal/house account %s: %d rows, %v", id, n, err)
-		}
-	}
-	if n, err := c.tryAs(c.admin, "teams:manage", `INSERT INTO gateway.provider_account_teams (account_id, team_id) VALUES ($1::uuid, $2::uuid)`, sharedAccount.ID, c.opsTeam); err != nil || n != 1 {
-		t.Fatalf("admin attached team to shared account: %d rows, %v", n, err)
-	}
-	if n, err := c.tryAs(c.admin, "teams:manage", `DELETE FROM gateway.provider_account_teams WHERE account_id = $1::uuid AND team_id = $2::uuid`, sharedAccount.ID, c.financeTeam); err != nil || n != 1 {
-		t.Fatalf("admin detached team from shared account: %d rows, %v", n, err)
 	}
 }
 
 func TestAnAdminChangesWhoAnAccountIsSharedWithAndRemovesIt(t *testing.T) {
 	c := newCrowd(t)
 	prov := newFakeProvider(t)
-	made := c.mustAdd(c.admin, shared("Moving", prov.url(), adaKey, "teams", c.financeTeam))
+	made := c.mustAdd(c.admin, shared("Moving", prov.url(), adaKey, "team", c.financeTeam))
 
 	// Finance to Ops.
-	code, raw := c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"scope": "teams", "team_ids": []string{c.opsTeam}})
+	code, raw := c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"visibility": "team", "team_ids": []string{c.opsTeam}})
 	if code != http.StatusOK {
 		t.Fatalf("move = %d %s", code, raw)
 	}
-	if got := decode[account](t, raw); got.Scope != "team" || len(got.TeamIDs) != 1 || got.TeamIDs[0] != c.opsTeam {
+	if got := decode[account](t, raw); got.Visibility != "team" || len(got.TeamIDs) != 1 || got.TeamIDs[0] != c.opsTeam {
 		t.Fatalf("moved = %+v", got)
 	}
 	if len(c.list(c.finance)) != 0 || len(c.list(c.ops)) != 1 {
@@ -420,25 +451,25 @@ func TestAnAdminChangesWhoAnAccountIsSharedWithAndRemovesIt(t *testing.T) {
 	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"name": "Moved"}); code != http.StatusOK {
 		t.Fatalf("rename = %d %s", code, raw)
 	}
-	if got := decode[account](t, raw); got.Name != "Moved" || got.Scope != "team" || len(got.TeamIDs) != 1 || got.TeamIDs[0] != c.opsTeam {
+	if got := decode[account](t, raw); got.Name != "Moved" || got.Visibility != "team" || len(got.TeamIDs) != 1 || got.TeamIDs[0] != c.opsTeam {
 		t.Fatalf("renamed = %+v", got)
 	}
 	// A team-less change is refused and nothing moves.
-	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"scope": "teams", "team_ids": []string{}}); code != http.StatusUnprocessableEntity {
+	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"visibility": "team", "team_ids": []string{}}); code != http.StatusUnprocessableEntity {
 		t.Fatalf("no teams = %d %s", code, raw)
 	}
 	if len(c.list(c.ops)) != 1 {
 		t.Fatal("a refused change moved the account")
 	}
 	// To the whole workspace: the team rows go.
-	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"scope": "workspace"}); code != http.StatusOK {
-		t.Fatalf("to the workspace = %d %s", code, raw)
+	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"visibility": "everyone"}); code != http.StatusOK {
+		t.Fatalf("to everyone = %d %s", code, raw)
 	}
-	if got := decode[account](t, raw); got.Scope != "workspace" || len(got.TeamIDs) != 0 {
+	if got := decode[account](t, raw); got.Visibility != "everyone" || len(got.TeamIDs) != 0 {
 		t.Fatalf("workspace = %+v", got)
 	}
-	if n := c.count(`SELECT count(*) FROM gateway.provider_account_teams`); n != 0 {
-		t.Fatalf("team rows left = %d", n)
+	if n := c.count(`SELECT count(*) FROM gateway.provider_accounts WHERE cardinality(team_ids) > 0`); n != 0 {
+		t.Fatalf("team ids left on %d accounts", n)
 	}
 	for _, who := range []string{c.finance, c.outsider} {
 		if len(c.list(who)) != 1 {
@@ -454,7 +485,7 @@ func TestAnAdminChangesWhoAnAccountIsSharedWithAndRemovesIt(t *testing.T) {
 	}
 
 	// Back to a team, then remove: models, shares and key go too.
-	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"scope": "teams", "team_ids": []string{c.opsTeam, c.financeTeam}}); code != http.StatusOK {
+	if code, raw = c.call(c.admin, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"visibility": "team", "team_ids": []string{c.opsTeam, c.financeTeam}}); code != http.StatusOK {
 		t.Fatalf("back to teams = %d %s", code, raw)
 	}
 	if code, raw = c.call(c.admin, http.MethodDelete, "/api/providers/"+made.ID, nil); code != http.StatusNoContent {
@@ -462,7 +493,6 @@ func TestAnAdminChangesWhoAnAccountIsSharedWithAndRemovesIt(t *testing.T) {
 	}
 	for _, q := range []string{
 		`SELECT count(*) FROM gateway.provider_accounts`,
-		`SELECT count(*) FROM gateway.provider_account_teams`,
 		`SELECT count(*) FROM gateway.provider_models`,
 		`SELECT count(*) FROM gateway.credentials`,
 	} {
@@ -476,23 +506,23 @@ func TestAnAdminChangesWhoAnAccountIsSharedWithAndRemovesIt(t *testing.T) {
 func TestSharedAccountsKeepTheirNamesAndRefsUnique(t *testing.T) {
 	c := newCrowd(t)
 	prov := newFakeProvider(t)
-	c.mustAdd(c.admin, shared("Taken", prov.url(), "", "workspace"))
-	if code, raw := c.add(c.admin, shared("Taken", prov.url(), "", "teams", c.opsTeam)); code != http.StatusConflict {
+	c.mustAdd(c.admin, shared("Taken", prov.url(), "", "everyone"))
+	if code, raw := c.add(c.admin, shared("Taken", prov.url(), "", "team", c.opsTeam)); code != http.StatusConflict {
 		t.Errorf("a second shared account with the name = %d %s", code, raw)
 	}
 	// A personal account is in a scope of its own.
-	if made := c.mustAdd(c.finance, body("Taken", prov.url(), "")); made.Scope != "own" {
+	if made := c.mustAdd(c.finance, body("Taken", prov.url(), "")); made.Visibility != "private" {
 		t.Errorf("made = %+v", made)
 	}
 	// Two shared accounts cannot hold one credential ref, which the personal
 	// ones already could not.
 	insert := `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ($1, 'fake', 'same_ref', 'local', false)`
-	if _, err := c.owner.Exec(context.Background(), insert, "ref one"); err != nil {
+		INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ($2::uuid, $1, 'fake', 'same_ref', 'local', false, 'everyone')`
+	if _, err := c.owner.Exec(context.Background(), insert, "ref one", c.admin); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.owner.Exec(context.Background(), insert, "ref two"); err == nil {
+	if _, err := c.owner.Exec(context.Background(), insert, "ref two", c.admin); err == nil {
 		t.Error("two shared accounts share a credential ref")
 	}
 }

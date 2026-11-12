@@ -840,7 +840,7 @@ func TestDispatchChatStreamStopsWhenTheNoticeWriteFails(t *testing.T) {
 // ownedRoute is a chat route with a link of one person's own, then a house
 // link: model mine on adapter own, model m2 on adapter solid.
 func ownedRoute(owner string) domain.Route {
-	mine := domain.Account{ID: "1", Adapter: "own", CredentialRef: "personal", OwnerUserID: owner}
+	mine := domain.Account{ID: "1", Adapter: "own", CredentialRef: "personal", OwnerUserID: owner, Visibility: domain.VisibilityPrivate}
 	house := domain.Account{ID: "2", Adapter: "solid", CredentialRef: "house", House: true}
 	return domain.Route{
 		Name: "draft", Capability: domain.CapChat,
@@ -921,7 +921,7 @@ func (m *memTeams) TeamsOf(_ context.Context, user string) ([]string, error) {
 // account shared with teams t1 and t2 second.
 func teamRoute() domain.Route {
 	workspace := domain.Account{ID: "w", Adapter: "solid", CredentialRef: "house", House: true}
-	shared := domain.Account{ID: "s", Adapter: "team", CredentialRef: "shared", TeamIDs: []string{"t1", "t2"}}
+	shared := domain.Account{ID: "s", Adapter: "team", CredentialRef: "shared", OwnerUserID: "u9", Visibility: domain.VisibilityTeam, TeamIDs: []string{"t1", "t2"}}
 	return domain.Route{
 		Name: "draft", Capability: domain.CapChat,
 		Links: []domain.Link{
@@ -1013,7 +1013,7 @@ func (m memPins) PinProvider(context.Context, string, []string, string, string) 
 const sharedPinID = "018f3b2c-7a10-7c4a-8e11-0000000000b1"
 
 func TestDispatchPinToATeamsAccountIsForItsMembersAndBooksTheTeam(t *testing.T) {
-	shared := domain.Account{ID: sharedPinID, Adapter: "team", CredentialRef: "shared", TeamIDs: []string{"t1", "t2"}}
+	shared := domain.Account{ID: sharedPinID, Adapter: "team", CredentialRef: "shared", OwnerUserID: "u9", Visibility: domain.VisibilityTeam, TeamIDs: []string{"t1", "t2"}}
 	pins := memPins{accounts: map[string]domain.Account{sharedPinID: shared}}
 	pin := domain.Pin{AccountID: sharedPinID, Model: "pinned"}
 

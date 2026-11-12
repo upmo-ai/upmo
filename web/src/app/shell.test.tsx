@@ -236,7 +236,12 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
           models: input.models,
           usable: true,
           usable_models: input.models,
-          scope: "own",
+          visibility: "private",
+          team_ids: [],
+          team_names: [],
+          can_manage: true,
+          can_use: true,
+          is_owner: true,
         };
       },
       async update(id, input) {
@@ -250,7 +255,12 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
           models: input.models ?? [],
           usable: true,
           usable_models: input.models ?? [],
-          scope: "own",
+          visibility: "private",
+          team_ids: [],
+          team_names: [],
+          can_manage: true,
+          can_use: true,
+          is_owner: true,
         };
       },
       async remove() {},

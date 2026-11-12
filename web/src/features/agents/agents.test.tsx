@@ -88,7 +88,12 @@ function brain(rows: Row[], refuse?: (call: Call) => Response | undefined) {
             models: ["gpt-x", "gpt-y"],
             usable: true,
             usable_models: ["gpt-x", "gpt-y"],
-            scope: "own",
+            visibility: "private",
+            team_ids: [],
+            team_names: [],
+            can_manage: true,
+            can_use: true,
+            is_owner: true,
           },
         ]);
       }

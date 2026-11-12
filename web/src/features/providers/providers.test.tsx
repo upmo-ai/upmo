@@ -68,7 +68,12 @@ const anthropicAccount: ProviderAccount = {
   models: ["claude-3-7-sonnet"],
   usable: true,
   usable_models: ["claude-3-7-sonnet"],
-  scope: "own",
+  visibility: "private",
+  team_ids: [],
+  team_names: [],
+  can_manage: true,
+  can_use: true,
+  is_owner: true,
 };
 
 function click(element: HTMLElement) {
@@ -196,7 +201,12 @@ describe("providers", () => {
         models: ["gpt-4o"],
         usable: status === "Connected",
         usable_models: status === "Connected" ? ["gpt-4o"] : [],
-        scope: "own",
+        visibility: "private",
+        team_ids: [],
+        team_names: [],
+        can_manage: true,
+        can_use: true,
+        is_owner: true,
       })),
     });
     renderAt("/providers");

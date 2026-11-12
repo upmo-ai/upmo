@@ -5,9 +5,12 @@ import {
   type AgentInput,
   type AgentProfile,
   type ApiClient,
+  type ProviderAdd,
+  type ProviderChange,
   type ProviderPlanKind,
   type ProviderProbe,
   type ProviderStatus,
+  type ProviderVisibility,
   type TestResult,
 } from "./api";
 import {
@@ -43,7 +46,7 @@ import {
 import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteDecision, type RouteHop } from "../features/models/types";
 import { adapterKey } from "../features/providers/rules";
-import type { ListedProvider, ProviderScope, SharedAdd, SharedChange } from "../features/providers/sharing";
+import type { ListedProvider } from "../features/providers/sharing";
 
 type Json = Record<string, unknown>;
 
@@ -384,25 +387,21 @@ const providerStatuses: readonly ProviderStatus[] = [
   "Offline",
 ];
 
-/** A list of text the brain sends, or nothing when it sends none. */
-function names(value: unknown, what: string): string[] {
-  if (value === undefined) return [];
+/** A list of text. A missing list, or one that is not all text, is refused. */
+function strings(value: unknown, what: string): string[] {
   const items = list(value, what);
   if (items.some((item) => typeof item !== "string")) throw new Error(`The brain sent no ${what}.`);
   return items as string[];
 }
 
+const providerVisibilities: readonly ProviderVisibility[] = ["private", "team", "everyone"];
+
 /**
  * A provider account as GET /api/providers and the write routes send it.
  * base_url is left out when the account has none. The brain never sends a key,
- * so none is read.
- *
- * scope reads as the web always has: "global" is an account the workspace
- * shares and the person only reads, and "own" one they manage. The brain now
- * says "workspace" or "team" for a shared account (and "global" was its old
- * word for the workspace's); with can_manage it also says who may change it, so
- * that comes as share. An older brain sends no share, and the account then
- * reads as it always did.
+ * so none is read. visibility is private, team or everyone. can_manage says
+ * who may change the account, can_use who may route a call through it, and
+ * is_owner whether this person owns it. is_owner is for the screen only.
  */
 export function toProvider(value: unknown): ListedProvider {
   const source = record(value, "provider");
@@ -410,17 +409,14 @@ export function toProvider(value: unknown): ListedProvider {
   if (!planKinds.some((kind) => kind === plan)) throw new Error("The brain sent an unknown plan kind.");
   const status = source.status;
   if (!providerStatuses.some((known) => known === status)) throw new Error("The brain sent an unknown status.");
-  const scope = source.scope;
-  if (scope !== "own" && scope !== "global" && scope !== "workspace" && scope !== "team") {
-    throw new Error("The brain sent an unknown scope.");
+  const visibility = source.visibility;
+  if (!providerVisibilities.some((known) => known === visibility)) {
+    throw new Error("The brain sent an unknown visibility.");
   }
-  // A team account names its teams. One that does not is not a scope the web knows.
-  if (scope === "team" && !Array.isArray(source.team_ids)) throw new Error("The brain sent an unknown scope.");
-  const models = list(source.models, "models");
-  if (models.some((model) => typeof model !== "string")) throw new Error("The brain sent no models.");
   if (typeof source.usable !== "boolean") throw new Error("The brain sent no usable.");
-  const usableModels = list(source.usable_models, "usable_models");
-  if (usableModels.some((model) => typeof model !== "string")) throw new Error("The brain sent no usable_models.");
+  if (typeof source.can_manage !== "boolean") throw new Error("The brain sent no can_manage.");
+  if (typeof source.can_use !== "boolean") throw new Error("The brain sent no can_use.");
+  if (typeof source.is_owner !== "boolean") throw new Error("The brain sent no is_owner.");
   const account: ListedProvider = {
     id: text(source, "id"),
     provider: text(source, "provider"),
@@ -428,21 +424,17 @@ export function toProvider(value: unknown): ListedProvider {
     adapter: text(source, "adapter"),
     plan_kind: plan as ProviderPlanKind,
     status: status as ProviderStatus,
-    models: models as string[],
+    models: strings(source.models, "models"),
     usable: source.usable,
-    usable_models: usableModels as string[],
-    scope: scope === "own" ? "own" : "global",
+    usable_models: strings(source.usable_models, "usable_models"),
+    visibility: visibility as ProviderVisibility,
+    team_ids: strings(source.team_ids, "team_ids"),
+    team_names: strings(source.team_names, "team_names"),
+    can_manage: source.can_manage,
+    can_use: source.can_use,
+    is_owner: source.is_owner,
   };
   if (typeof source.base_url === "string" && source.base_url !== "") account.base_url = source.base_url;
-  if (typeof source.can_manage === "boolean") {
-    const shareScope: ProviderScope = scope === "global" ? "workspace" : scope;
-    account.share = {
-      scope: shareScope,
-      team_ids: names(source.team_ids, "team_ids"),
-      team_names: names(source.team_names, "team_names"),
-      can_manage: source.can_manage,
-    };
-  }
   return account;
 }
 
@@ -484,18 +476,20 @@ function given(key: string, value: string | undefined): Json {
 }
 
 /**
- * The sharing of a write: the scope an admin chose, and the teams only for
- * specific teams. A workspace share takes none.
+ * The sharing of a write. A new personal account, and a write that leaves
+ * sharing alone, send none. A change to private sends private and no teams.
+ * A team account names its teams. A workspace account takes none.
  */
-function sharing(input: { scope?: "workspace" | "teams"; team_ids?: string[] }): Json {
-  if (input.scope === undefined) return {};
-  return input.scope === "teams"
-    ? { scope: "teams", team_ids: input.team_ids ?? [] }
-    : { scope: input.scope };
+function sharing(input: { visibility?: ProviderVisibility; team_ids?: string[] }, change = false): Json {
+  if (input.visibility === undefined) return {};
+  if (input.visibility === "private") return change ? { visibility: "private" } : {};
+  return input.visibility === "team"
+    ? { visibility: "team", team_ids: input.team_ids ?? [] }
+    : { visibility: "everyone" };
 }
 
 /** The POST body of a new account: the picker's adapter becomes the brain's adapter key. */
-export function providerAddBody(input: SharedAdd): Json {
+export function providerAddBody(input: ProviderAdd): Json {
   return {
     provider: input.provider,
     name: input.name,
@@ -513,14 +507,14 @@ export function providerAddBody(input: SharedAdd): Json {
  * URL is sent as "" so the brain clears the saved address, and without an
  * api_key the saved key stays.
  */
-export function providerChangeBody(input: SharedChange): Json {
+export function providerChangeBody(input: ProviderChange): Json {
   return {
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(input.plan_kind !== undefined ? { plan_kind: input.plan_kind } : {}),
     ...(input.base_url !== undefined ? { base_url: input.base_url } : {}),
     ...given("api_key", input.api_key),
     ...(input.models !== undefined ? { models: input.models } : {}),
-    ...sharing(input),
+    ...sharing(input, true),
   };
 }
 
