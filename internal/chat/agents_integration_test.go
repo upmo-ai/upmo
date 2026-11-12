@@ -129,9 +129,21 @@ func TestAReplyWithAnAgentThatIsNotAvailableFailsPlainlyAndAsksNoModel(t *testin
 	disabled := r.agent(ownerAccess, app.AgentFields{Name: "Off", Enabled: false})
 	foreign := r.agent(otherAccess, app.AgentFields{Name: "Theirs", Enabled: true})
 	offGlobal := r.agent(adminAccess, app.AgentFields{Name: "Off house", Enabled: false, Visibility: "everyone"})
+	var team string
+	if err := r.owner.QueryRow(context.Background(),
+		`INSERT INTO identity.teams (name) VALUES ('Finance') RETURNING id::text`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	teamAgent := r.agent(adminAccess, app.AgentFields{
+		Name: "Finance", Enabled: true, Visibility: domain.VisibilityTeam, TeamIDs: []string{team},
+	})
+	// The author manages agents, so the team agent is one they can see — but
+	// they are not on its team, so a reply must not run it.
+	r.setAccess(ownerUser, chat.Access{UserID: ownerUser, Allow: ownerAccess.Allow + ",settings:manage"})
 
 	for name, id := range map[string]string{
-		"missing": missing, "disabled": disabled.ID, "foreign": foreign.ID, "disabled global": offGlobal.ID,
+		"missing": missing, "disabled": disabled.ID, "foreign": foreign.ID,
+		"disabled global": offGlobal.ID, "team off the roster": teamAgent.ID,
 	} {
 		before := len(r.lines(chatID))
 		r.sayWith(chatID, app.Picks{AgentID: id})
