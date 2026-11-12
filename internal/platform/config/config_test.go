@@ -323,6 +323,77 @@ func TestLoadAuditRetentionDays(t *testing.T) {
 	}
 }
 
+func TestLoadAuditWebhookURL(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuditWebhookURL != "" {
+		t.Fatalf("default = %q, want empty", cfg.AuditWebhookURL)
+	}
+	base["UPMO_AUDIT_WEBHOOK_URL"] = "https://siem.example.com/audit/"
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuditWebhookURL != "https://siem.example.com/audit" {
+		t.Fatalf("AuditWebhookURL = %q", cfg.AuditWebhookURL)
+	}
+	for _, bad := range []string{
+		"http://siem.example.com/audit", "siem.example.com/audit", "https://", "/audit", "ftp://siem.example.com/audit",
+	} {
+		base["UPMO_AUDIT_WEBHOOK_URL"] = bad
+		_, err := load(lookupFrom(base))
+		if err == nil {
+			t.Errorf("%q was accepted", bad)
+			continue
+		}
+		if strings.Contains(err.Error(), bad) {
+			t.Errorf("%q: the error names the value: %v", bad, err)
+		}
+	}
+}
+
+func TestLoadAuditSyslogAddr(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuditSyslogAddr != "" {
+		t.Fatalf("default = %q, want empty", cfg.AuditSyslogAddr)
+	}
+	base["UPMO_AUDIT_SYSLOG_ADDR"] = "siem.example.com:6514"
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuditSyslogAddr != "siem.example.com:6514" {
+		t.Fatalf("AuditSyslogAddr = %q", cfg.AuditSyslogAddr)
+	}
+	for _, bad := range []string{
+		"siem.example.com", "siem.example.com:", "siem.example.com:syslog", ":6514",
+		"siem.example.com:0", "siem.example.com:-1", "siem.example.com:65536",
+	} {
+		base["UPMO_AUDIT_SYSLOG_ADDR"] = bad
+		_, err := load(lookupFrom(base))
+		if err == nil {
+			t.Errorf("%q was accepted", bad)
+			continue
+		}
+		if strings.Contains(err.Error(), bad) {
+			t.Errorf("%q: the error names the value: %v", bad, err)
+		}
+	}
+}
+
 func TestLoadSandboxImage(t *testing.T) {
 	base := map[string]string{
 		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
