@@ -11,6 +11,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 )
 
 // Keyring holds the master keys that seal the provider keys people add.
@@ -99,7 +100,7 @@ type DBSecrets struct {
 }
 
 func (d DBSecrets) Get(ref string) (string, error) {
-	if !credentialRef.MatchString(ref) {
+	if !secretchain.ValidRef(ref) {
 		return "", fmt.Errorf("gateway: credential ref")
 	}
 	if d.Pool == nil || !d.Keys.Ready() {

@@ -19,6 +19,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
@@ -98,17 +99,10 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 // secretBackends is the order a key is looked for: the environment, then the
 // keys people sealed into the database (when a master key is set), then Vault.
 func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) gateway.Chain {
-	chain := gateway.Chain{gateway.EnvSecrets{}}
+	fromEnv := secretchain.FromEnv(os.LookupEnv) // env, then Vault when set
+	chain := gateway.Chain{fromEnv[0]}
 	if keys.Ready() {
 		chain = append(chain, gateway.DBSecrets{Pool: pool, Keys: keys})
 	}
-	if addr, token := os.Getenv("UPMO_VAULT_ADDR"), os.Getenv("UPMO_VAULT_TOKEN"); addr != "" && token != "" {
-		chain = append(chain, gateway.VaultSecrets{
-			Addr:  addr,
-			Token: token,
-			Path:  os.Getenv("UPMO_VAULT_PATH"),
-			Fetch: gateway.VaultHTTP,
-		})
-	}
-	return chain
+	return append(chain, fromEnv[1:]...)
 }

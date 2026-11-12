@@ -64,6 +64,13 @@ type Config struct {
 	// practice, PCI DSS), 2190 (six years, HIPAA practice), 2555 (seven
 	// years, SOX practice).
 	AuditRetentionDays int
+	// AuditWebhookURL is the HTTPS webhook sealed audit events are pushed to
+	// (UPMO_AUDIT_WEBHOOK_URL). Empty registers no pusher at all.
+	AuditWebhookURL string
+	// AuditSyslogAddr is the host:port of the syslog collector sealed audit
+	// events are pushed to over TLS (UPMO_AUDIT_SYSLOG_ADDR). Empty pushes
+	// no syslog.
+	AuditSyslogAddr string
 	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
 	// is empty when mail is unset, and links are then only copied.
 	SMTP SMTP
@@ -198,6 +205,24 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("config: UPMO_AUDIT_RETENTION_DAYS must be a number of days between 30 and 3650")
 		}
 		cfg.AuditRetentionDays = n
+	}
+	if v, ok := lookup("UPMO_AUDIT_WEBHOOK_URL"); ok && v != "" {
+		parsed, err := url.Parse(v)
+		if err != nil || parsed.Host == "" || parsed.Scheme != "https" {
+			return Config{}, fmt.Errorf("config: UPMO_AUDIT_WEBHOOK_URL must be an absolute https URL")
+		}
+		cfg.AuditWebhookURL = strings.TrimRight(v, "/")
+	}
+	if v, ok := lookup("UPMO_AUDIT_SYSLOG_ADDR"); ok && v != "" {
+		host, port, err := net.SplitHostPort(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: UPMO_AUDIT_SYSLOG_ADDR must be host:port with a port from 1 to 65535")
+		}
+		n, err := strconv.Atoi(port)
+		if host == "" || err != nil || n < 1 || n > 65535 {
+			return Config{}, fmt.Errorf("config: UPMO_AUDIT_SYSLOG_ADDR must be host:port with a port from 1 to 65535")
+		}
+		cfg.AuditSyslogAddr = v
 	}
 	if v, ok := lookup("UPMO_SANDBOXD_URL"); ok && v != "" {
 		parsed, err := url.Parse(v)
