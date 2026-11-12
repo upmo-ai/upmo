@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,6 +195,17 @@ func TestSettingsAllowReturnsManageWhenHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != string(domain.PermSettingsManage) {
+		t.Fatalf("allow = %q", got)
+	}
+}
+
+func TestEffectiveAllowListsEveryPermissionAJoinedPersonHolds(t *testing.T) {
+	members := Members{Store: &allowFake{system: "member", joined: true}}
+	got, err := members.EffectiveAllow(context.Background(), domain.UserID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == "" || !strings.Contains(got, "agent:create") || strings.Contains(got, "settings:manage") {
 		t.Fatalf("allow = %q", got)
 	}
 }

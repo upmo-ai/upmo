@@ -56,7 +56,7 @@ export function chatRoutes(routes: readonly GatewayRoute[]): GatewayRoute[] {
 
 /** The agents a person can pick: the enabled ones whose model or route works. */
 export function pickableAgents(agents: readonly AgentProfile[]): AgentProfile[] {
-  return agents.filter((item) => item.enabled && item.usable);
+  return agents.filter((item) => item.enabled && item.usable && item.can_use);
 }
 
 /** A pick that names something no longer there is Auto again. */
@@ -67,7 +67,7 @@ export function validPicks(
   models: readonly ModelChoice[],
 ): Picks {
   return {
-    agent: agents.some((item) => item.id === picks.agent) ? picks.agent : AUTO,
+    agent: agents.some((item) => item.id === picks.agent && item.can_use) ? picks.agent : AUTO,
     route: routes.some((item) => item.name === picks.route) ? picks.route : AUTO,
     model: models.some((item) => item.value === picks.model) ? picks.model : AUTO,
   };

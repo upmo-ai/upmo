@@ -4,6 +4,7 @@ import { BrainError, type AgentProfile, type ProviderAccount } from "../../app/a
 import {
   agentProblem,
   changesOf,
+  savePatch,
   choiceOf,
   choiceValue,
   draftOf,
@@ -25,8 +26,11 @@ const agent: AgentProfile = {
   model_id: "gpt-x",
   enabled: true,
   usable: true,
-  scope: "own",
-  editable: true,
+  visibility: "private",
+  team_ids: [],
+  team_names: [],
+  can_use: true,
+  can_manage: true,
 };
 
 describe("agent rules", () => {
@@ -57,12 +61,24 @@ describe("agent rules", () => {
 
   it("trims every text before it is sent", () => {
     expect(trimmedDraft({ ...emptyDraft(), name: " a ", description: " d ", prompt_overlay: " p ", route: " r " })).toEqual({
-      ...emptyDraft(),
       name: "a",
       description: "d",
       prompt_overlay: "p",
       route: "r",
+      model_provider: "",
+      model_id: "",
+      enabled: true,
     });
+  });
+
+  it("builds a team to workspace patch without team_ids", () => {
+    const teamAgent: AgentProfile = {
+      ...agent,
+      visibility: "team",
+      team_ids: ["t1"],
+      team_names: ["Finance"],
+    };
+    expect(savePatch(teamAgent, draftOf(teamAgent), "everyone", ["t1"], true)).toEqual({ visibility: "everyone" });
   });
 
   it("sends only what changed, and an empty string to clear", () => {

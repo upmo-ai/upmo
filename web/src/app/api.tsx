@@ -213,13 +213,14 @@ export type AgentProfile = {
   enabled: boolean;
   /** Whether this person can pick it in the chat now: its model, or its route, resolves to something usable. */
   usable: boolean;
-  /** "global" agents belong to the workspace; a member sees them read only. */
-  scope: "own" | "global";
-  /** Whether this person may change or delete it: their own, or a global one for a settings manager. */
-  editable: boolean;
+  visibility: ProviderVisibility;
+  team_ids: string[];
+  team_names: string[];
+  can_use: boolean;
+  can_manage: boolean;
 };
 
-/** POST /api/agents. The scope is the person's own. */
+/** POST /api/agents. Private when visibility is left out. */
 export type AgentInput = {
   name: string;
   description: string;
@@ -228,6 +229,8 @@ export type AgentInput = {
   model_provider: string;
   model_id: string;
   enabled: boolean;
+  visibility?: ProviderVisibility;
+  team_ids?: string[];
 };
 
 /** PATCH /api/agents/{id}. A field left out stays as it is; an empty route or model clears it. */
@@ -1254,8 +1257,11 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       model_id: "",
       enabled: true,
       usable: agentUsable({ enabled: true, route: "", model_provider: "", model_id: "" }),
-      scope: "global",
-      editable: false,
+      visibility: "everyone",
+      team_ids: [],
+      team_names: [],
+      can_use: true,
+      can_manage: false,
     },
   ];
   let serial = 0;
@@ -1845,21 +1851,26 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     agents: {
       async list() {
         const named = (a: AgentProfile, b: AgentProfile) => a.name.localeCompare(b.name);
-        const own = agentProfiles.filter((item) => item.scope === "own").sort(named);
-        const global = agentProfiles.filter((item) => item.scope === "global").sort(named);
-        return [...own, ...global].map((item) => copy(item));
+        return [...agentProfiles].sort(named).map((item) => copy(item));
       },
       async create(input) {
+        const vis = input.visibility ?? "private";
         const taken = agentProfiles.some(
-          (item) => item.scope === "own" && item.name.toLowerCase() === input.name.toLowerCase(),
+          (item) =>
+            item.visibility === vis &&
+            item.name.toLowerCase() === input.name.toLowerCase() &&
+            (vis === "private" || item.visibility !== "private"),
         );
         if (taken) throw new BrainError(409, "An agent with that name already exists.");
         const agent: AgentProfile = {
           ...input,
           id: nextId("agent"),
           usable: agentUsable(input),
-          scope: "own",
-          editable: true,
+          visibility: vis,
+          team_ids: input.team_ids ?? [],
+          team_names: [],
+          can_use: true,
+          can_manage: true,
         };
         agentProfiles.push(agent);
         return copy(agent);
@@ -1867,7 +1878,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async update(id, input) {
         const agent = agentProfiles.find((item) => item.id === id);
         if (!agent) throw new BrainError(404, "Not found.");
-        if (!agent.editable) throw new BrainError(403, "This agent is managed by your workspace.");
+        if (!agent.can_manage) throw new BrainError(403, "This agent is managed by your workspace.");
         Object.assign(agent, input);
         agent.usable = agentUsable(agent);
         return copy(agent);
@@ -1875,7 +1886,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       async remove(id) {
         const index = agentProfiles.findIndex((item) => item.id === id);
         if (index < 0) throw new BrainError(404, "Not found.");
-        if (!agentProfiles[index]?.editable) throw new BrainError(403, "This agent is managed by your workspace.");
+        if (!agentProfiles[index]?.can_manage) throw new BrainError(403, "This agent is managed by your workspace.");
         agentProfiles.splice(index, 1);
       },
     },

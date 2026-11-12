@@ -125,7 +125,6 @@ describe("toNotification", () => {
       title: sent.title,
       taskId: "01990000-0000-7000-8000-000000000003",
     });
-    // The brain leaves task_id out when there is no task, but a null reads the same.
     expect(toNotification({ ...sent, task_id: null })).not.toHaveProperty("taskId");
   });
 
@@ -236,7 +235,6 @@ describe("shareBody", () => {
     expect(shareBody({ visibility: "team", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants })).toEqual(
       { visibility: "team", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants },
     );
-    // A stale team never rides along on a visibility that has no team.
     expect(
       shareBody({ visibility: "everyone", team_id: "01990000-0000-7000-8000-0000000000d1", members: grants }),
     ).not.toHaveProperty("team_id");
@@ -303,7 +301,6 @@ describe("toChat and toChatLine", () => {
       attempts: [{ model: "gpt-x", reason: "rate limited" }],
     };
     expect(toChatLine(failed)).toEqual(failed);
-    // An empty attempts list and a null reply_to are as good as none.
     expect(toChatLine({ ...assistantLine, status: "done", reply_to: null, attempts: [] })).toEqual({
       ...assistantLine,
       status: "done",
@@ -440,9 +437,7 @@ describe("provider request bodies", () => {
     expect(providerChangeBody({ plan_kind: "local", api_key: "" })).toEqual({ plan_kind: "local" });
     expect(providerChangeBody({ api_key: "sk-new" })).toEqual({ api_key: "sk-new" });
     expect(providerChangeBody({})).toEqual({});
-    // An empty model list is a change to nothing, not an omission.
     expect(providerChangeBody({ models: [] })).toEqual({ models: [] });
-    // An emptied base URL is an explicit clear, so "" is sent; a missing one is not.
     expect(providerChangeBody({ base_url: "" })).toEqual({ base_url: "" });
     expect(providerChangeBody({ base_url: undefined })).toEqual({});
   });
@@ -524,25 +519,28 @@ describe("toAgent", () => {
     model_id: "gpt-x",
     enabled: true,
     usable: true,
-    scope: "own",
-    editable: true,
+    visibility: "private",
+    team_ids: [],
+    team_names: [],
+    can_use: true,
+    can_manage: true,
   };
 
   it("reads an agent as the brain sends it", () => {
     expect(toAgent(sent)).toEqual(sent);
-    expect(toAgent({ ...sent, scope: "global", editable: false, route: "", model_provider: "", model_id: "" })).toMatchObject({
-      scope: "global",
-      editable: false,
+    expect(toAgent({ ...sent, visibility: "everyone", can_manage: false, route: "", model_provider: "", model_id: "" })).toMatchObject({
+      visibility: "everyone",
+      can_manage: false,
       route: "",
     });
   });
 
   it("refuses what is not an agent", () => {
     expect(() => toAgent(null)).toThrow("The brain sent no agent.");
-    expect(() => toAgent({ ...sent, scope: "team" })).toThrow("The brain sent an unknown scope.");
+    expect(() => toAgent({ ...sent, visibility: "workspace" })).toThrow("unknown visibility");
     expect(() => toAgent({ ...sent, enabled: "yes" })).toThrow("The brain sent no enabled.");
     expect(() => toAgent({ ...sent, usable: undefined })).toThrow("The brain sent no usable.");
-    expect(() => toAgent({ ...sent, editable: undefined })).toThrow("The brain sent no editable.");
+    expect(() => toAgent({ ...sent, can_manage: undefined })).toThrow("no can_manage");
     expect(() => toAgent({ ...sent, name: 5 })).toThrow("The brain sent no name.");
   });
 });
