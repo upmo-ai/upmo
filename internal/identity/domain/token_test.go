@@ -24,6 +24,30 @@ func TestTokenScopeNarrows(t *testing.T) {
 	}
 }
 
+func TestTokenScopeAllowsAuditView(t *testing.T) {
+	owner, err := SystemPermissions(RoleOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := TokenScope(owner, []string{"audit:view"})
+	if err != nil || len(scope) != 1 || scope[0] != PermAuditView {
+		t.Fatalf("scope = %v %v", scope, err)
+	}
+	member, err := SystemPermissions(RoleMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TokenScope(member, []string{"audit:view"}); !errors.Is(err, ErrTokenScope) {
+		t.Fatalf("beyond role = %v", err)
+	}
+	if _, err := TokenScope(owner, []string{"members:manage"}); !errors.Is(err, ErrTokenScope) {
+		t.Fatalf("install = %v", err)
+	}
+	if _, err := TokenScope(owner, []string{"task:delete"}); !errors.Is(err, ErrTokenScope) {
+		t.Fatalf("delete = %v", err)
+	}
+}
+
 func TestAPITokenSecretRoundTrip(t *testing.T) {
 	secret, hash, err := NewAPITokenSecret()
 	if err != nil {

@@ -59,8 +59,9 @@ func TokenExpiryDate(text string, now time.Time) (time.Time, error) {
 	return expires, nil
 }
 
-// TokenScope is the set a token may be given. It must be object permissions
-// the person holds, and it never includes a delete or an install permission.
+// TokenScope is the set a token may be given. It must be permissions the
+// person holds, and it never includes a delete or an install permission
+// other than audit:view, which a token may hold when the person does.
 func TokenScope(held []Permission, requested []string) ([]Permission, error) {
 	if len(requested) == 0 {
 		return nil, ErrTokenScope
@@ -69,7 +70,7 @@ func TokenScope(held []Permission, requested []string) ([]Permission, error) {
 	seen := map[Permission]bool{}
 	for _, name := range requested {
 		permission, err := ParsePermission(strings.TrimSpace(name))
-		if err != nil || runForbidden(permission) || !has(held, permission) || seen[permission] {
+		if err != nil || tokenForbidden(permission) || !has(held, permission) || seen[permission] {
 			return nil, ErrTokenScope
 		}
 		seen[permission] = true

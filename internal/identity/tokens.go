@@ -14,6 +14,10 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
+// TokenService is the personal token use case. Commands use this name so they
+// do not import the app package.
+type TokenService = app.APITokens
+
 // APITokens builds personal token use cases.
 func APITokens(pool *pgxpool.Pool, log *slog.Logger) app.APITokens {
 	return app.APITokens{Store: postgres.Passkeys{Pool: pool}, Log: log}
