@@ -108,8 +108,10 @@ func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Provid
 	for name, a := range table {
 		probes[name] = a
 	}
+	accounts := postgres.Providers{Pool: pool}
 	return app.Providers{
-		Accounts: postgres.Providers{Pool: pool},
+		Accounts: accounts,
+		SealTest: accounts.SealTest,
 		Keys:     keys,
 		Known: func(name string) bool {
 			_, ok := table[name]
