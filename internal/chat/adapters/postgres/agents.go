@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
 var _ app.AgentBook = Store{}
@@ -159,6 +162,24 @@ func (s Store) CreateAgent(ctx context.Context, access app.Access, in app.AgentF
 	if err != nil {
 		return app.Agent{}, err
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AgentCreate,
+		Outcome:  audit.Success,
+		TargetID: id,
+		Changes: audit.Changes{
+			Fields: []string{"enabled", "model_id", "model_provider", "route", "team_ids", "visibility"},
+			Values: map[string]audit.Change{
+				"enabled":        {To: a.Enabled},
+				"route":          {To: a.Route},
+				"model_provider": {To: a.ModelProvider},
+				"model_id":       {To: a.ModelID},
+				"visibility":     {To: a.Share.Visibility},
+				"team_ids":       {To: a.Share.TeamIDs},
+			},
+		},
+	}); err != nil {
+		return app.Agent{}, err
+	}
 	return a, tx.Commit(ctx)
 }
 
@@ -169,6 +190,13 @@ func (s Store) UpdateAgent(ctx context.Context, access app.Access, id string, in
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := knownTeams(ctx, tx, in.TeamIDs); err != nil {
+		return app.Agent{}, err
+	}
+	current, err := getAgent(ctx, tx, access, id, false)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Agent{}, app.ErrAgentNotFound
+	}
+	if err != nil {
 		return app.Agent{}, err
 	}
 	visibility := in.Visibility
@@ -194,6 +222,31 @@ func (s Store) UpdateAgent(ctx context.Context, access app.Access, id string, in
 	if err != nil {
 		return app.Agent{}, err
 	}
+	changes, share := agentChanges(current, a)
+	if changes.Fields != nil {
+		if err := audit.Record(ctx, tx, audit.Event{
+			Action:   audit.AgentUpdate,
+			Outcome:  audit.Success,
+			TargetID: id,
+			Changes:  changes,
+		}); err != nil {
+			return app.Agent{}, err
+		}
+	}
+	if share.Fields != nil {
+		if err := audit.Record(ctx, tx, audit.Event{
+			Action:   audit.AgentShare,
+			Outcome:  audit.Success,
+			TargetID: id,
+			Changes:  share,
+		}); err != nil {
+			return app.Agent{}, err
+		}
+	}
+	if changes.Fields == nil && share.Fields == nil {
+		// The change repeated the stored agent, so nothing happened.
+		audit.NoChange(ctx)
+	}
 	return a, tx.Commit(ctx)
 }
 
@@ -210,7 +263,62 @@ func (s Store) DeleteAgent(ctx context.Context, access app.Access, id string) er
 	if tag.RowsAffected() == 0 {
 		return refusedAgent(ctx, tx, access, id)
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AgentDelete,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// agentChanges compares an agent before and after an update. The name, the
+// description and the prompt overlay are content and keep the field name
+// alone, with no text; the route, the model, the enabled flag, the visibility
+// and the teams carry from and to. The second Changes holds the sharing move,
+// and stays empty when who the agent is for did not change.
+func agentChanges(before, after app.Agent) (changes, share audit.Changes) {
+	put := func(into *audit.Changes, field string, from, to any) {
+		into.Fields = append(into.Fields, field)
+		if into.Values == nil {
+			into.Values = map[string]audit.Change{}
+		}
+		into.Values[field] = audit.Change{From: from, To: to}
+	}
+	named := func(into *audit.Changes, field string) {
+		into.Fields = append(into.Fields, field)
+	}
+	if before.Name != after.Name {
+		named(&changes, "name")
+	}
+	if before.Description != after.Description {
+		named(&changes, "description")
+	}
+	if before.PromptOverlay != after.PromptOverlay {
+		named(&changes, "prompt_overlay")
+	}
+	if before.Route != after.Route {
+		put(&changes, "route", before.Route, after.Route)
+	}
+	if before.ModelProvider != after.ModelProvider {
+		put(&changes, "model_provider", before.ModelProvider, after.ModelProvider)
+	}
+	if before.ModelID != after.ModelID {
+		put(&changes, "model_id", before.ModelID, after.ModelID)
+	}
+	if before.Enabled != after.Enabled {
+		put(&changes, "enabled", before.Enabled, after.Enabled)
+	}
+	if before.Share.Visibility != after.Share.Visibility || !slices.Equal(before.Share.TeamIDs, after.Share.TeamIDs) {
+		put(&changes, "visibility", before.Share.Visibility, after.Share.Visibility)
+		put(&changes, "team_ids", before.Share.TeamIDs, after.Share.TeamIDs)
+		put(&share, "visibility", before.Share.Visibility, after.Share.Visibility)
+		put(&share, "team_ids", before.Share.TeamIDs, after.Share.TeamIDs)
+	}
+	sort.Strings(changes.Fields)
+	sort.Strings(share.Fields)
+	return changes, share
 }
 
 func refusedAgent(ctx context.Context, tx pgx.Tx, access app.Access, id string) error {

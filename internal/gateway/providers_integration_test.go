@@ -31,6 +31,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/netguard"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -45,12 +46,15 @@ const (
 	newKey = "sk-new-bbbb-bbbb-bbbb-bbbb"
 )
 
-// migrateWithIdentity brings the schemas up in the order brain does. An
-// account shared with a team points at identity's teams, so identity comes
-// first.
+// migrateWithIdentity brings the schemas up in the order brain does. The
+// store records audit events, so audit comes first, and an account shared
+// with a team points at identity's teams, so identity follows.
 func migrateWithIdentity(t *testing.T, owner *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}

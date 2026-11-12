@@ -171,6 +171,11 @@ type Providers struct {
 	// Names returns the names of the teams that exist. A missing id is unknown.
 	// Nil leaves that check to the store.
 	Names func(ctx context.Context, teams []string) (map[string]string, error)
+	// SealTest records one test's outcome in a transaction of its own. The
+	// store sets it: a test has no business transaction to record inside.
+	// Nil leaves the test unrecorded, which the route's audit middleware
+	// surfaces.
+	SealTest func(ctx context.Context, id string, ok bool) error
 	// Log records add, update and remove with ids only. Nil logs nothing.
 	Log *slog.Logger
 }
@@ -516,7 +521,12 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if plan == "" {
 		plan = domain.PlanMetered
 	}
-	refuse := func(text string) (TestResult, error) { return TestResult{Error: text}, nil }
+	refuse := func(text string) (TestResult, error) {
+		if err := s.sealTest(ctx, in.ID, false); err != nil {
+			return TestResult{}, err
+		}
+		return TestResult{Error: text}, nil
+	}
 
 	if s.Known == nil || !s.Known(adapter) {
 		return refuse("That adapter is not available.")
@@ -563,6 +573,9 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	defer cancel()
 	class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
 	result := TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class)}
+	if err := s.sealTest(ctx, in.ID, result.OK); err != nil {
+		return TestResult{}, err
+	}
 	if in.ID != "" {
 		if err := s.Accounts.Note(ctx, who, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
 			s.Log.Warn("provider status not stored", "account", in.ID, "owner", user)
@@ -576,6 +589,14 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 // private addresses to everyone.
 func (s Providers) mayLocal(ctx context.Context, user string) bool {
 	return s.LocalPlan != nil && s.LocalPlan(ctx, user)
+}
+
+// sealTest records a finished test through SealTest when it is wired.
+func (s Providers) sealTest(ctx context.Context, id string, ok bool) error {
+	if s.SealTest == nil {
+		return nil
+	}
+	return s.SealTest(ctx, id, ok)
 }
 
 // note records whether this person may change the account and use it, and

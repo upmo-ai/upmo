@@ -2,14 +2,10 @@ package audit
 
 import "testing"
 
-// TestIdentityRoutesAreInstrumented keeps the identity area off the Todo list:
-// every route carries an action, or the exemption a ceremony start needs.
+// TestIdentityRoutesAreInstrumented keeps the identity area strict: every
+// route carries an action, or the exemption a ceremony start needs.
 func TestIdentityRoutesAreInstrumented(t *testing.T) {
 	for _, e := range identityRoutes() {
-		if e.route.Todo != "" {
-			t.Errorf("%s is still a Todo", e.pattern)
-			continue
-		}
 		if e.route.Action == "" && e.route.Exempt == "" {
 			t.Errorf("%s has neither an action nor an exemption", e.pattern)
 		}
