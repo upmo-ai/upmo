@@ -112,11 +112,16 @@ func (s Store) Agent(ctx context.Context, access app.Access, id string) (app.Age
 	return a, tx.Commit(ctx)
 }
 
-func getAgent(ctx context.Context, tx pgx.Tx, access app.Access, id string, enabledOnly bool) (app.Agent, error) {
+// getAgent reads one agent. forUse is the reply's look-up: the agent must be
+// switched on and one the person may use, not merely one they can see, and a
+// refused agent comes back as not found.
+func getAgent(ctx context.Context, tx pgx.Tx, access app.Access, id string, forUse bool) (app.Agent, error) {
 	a, err := scanAgent(tx.QueryRow(ctx, `
 		SELECT `+agentColumns+`
 		FROM chat.agents AS a
-		WHERE a.id = $1::uuid AND (a.enabled OR NOT $2::boolean)`, id, enabledOnly))
+		WHERE a.id = $1::uuid AND (($2::boolean AND a.enabled
+			AND identity.may_use(a.owner_user_id, a.visibility, a.team_ids))
+			OR NOT $2::boolean)`, id, forUse))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Agent{}, app.ErrAgentNotFound
 	}

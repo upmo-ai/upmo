@@ -167,7 +167,7 @@ type ReplyRows interface {
 	// to the chat.
 	CanWrite(ctx context.Context, access Access, chatID string) error
 	// Agent returns the agent a reply is for, as the person who wrote the
-	// line: one they can see that is switched on. Anything else is
+	// line: one they can use that is switched on. Anything else is
 	// ErrAgentNotFound.
 	Agent(ctx context.Context, access Access, id string) (Agent, error)
 }

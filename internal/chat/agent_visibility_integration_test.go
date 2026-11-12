@@ -584,3 +584,29 @@ func TestATeamChangeTakesEffectOnTheNextRequest(t *testing.T) {
 		t.Fatalf("after join: %v", err)
 	}
 }
+
+// The reply's look-up is stricter than the picker's: a manager sees a team
+// agent they are not on, but a reply must not run it for them.
+func TestAReplyRunsOnlyAgentsThePersonMayUse(t *testing.T) {
+	w := newAgWorld(t)
+	store := postgres.Store{Pool: w.app}
+	ctx := context.Background()
+	manager := app.Access{UserID: agOwner, Allow: w.allow("owner"), Teams: "{}"}
+	if _, err := store.GetAgent(ctx, manager, w.shared["team"]); err != nil {
+		t.Fatalf("a manager off the team still sees the team agent: %v", err)
+	}
+	if _, err := store.Agent(ctx, manager, w.shared["team"]); !errors.Is(err, app.ErrAgentNotFound) {
+		t.Fatalf("a manager off the team runs a team agent: %v", err)
+	}
+	member := app.Access{UserID: agMember, Allow: w.allow("member"), Teams: "{" + agTeam + "}"}
+	if _, err := store.Agent(ctx, member, w.shared["team"]); err != nil {
+		t.Fatalf("a member on the team: %v", err)
+	}
+	mine := app.Access{UserID: agStranger, Allow: w.allow("member"), Teams: "{}"}
+	if _, err := store.Agent(ctx, mine, w.shared["private"]); err != nil {
+		t.Fatalf("the owner of a private agent: %v", err)
+	}
+	if _, err := store.Agent(ctx, member, w.shared["private"]); !errors.Is(err, app.ErrAgentNotFound) {
+		t.Fatalf("another person on a private agent: %v", err)
+	}
+}
