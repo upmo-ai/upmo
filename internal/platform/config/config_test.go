@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -289,6 +290,36 @@ func TestLoadSandboxdURL(t *testing.T) {
 	base["UPMO_SANDBOXD_URL"] = "sandboxd:8083"
 	if _, err := load(lookupFrom(base)); err == nil {
 		t.Fatal("relative sandboxd url")
+	}
+}
+
+func TestLoadAuditRetentionDays(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuditRetentionDays != 365 {
+		t.Fatalf("default = %d, want 365", cfg.AuditRetentionDays)
+	}
+	for _, days := range []string{"30", "365", "2190", "2555", "3650"} {
+		base["UPMO_AUDIT_RETENTION_DAYS"] = days
+		cfg, err := load(lookupFrom(base))
+		if err != nil {
+			t.Fatalf("%s: %v", days, err)
+		}
+		if want, _ := strconv.Atoi(days); cfg.AuditRetentionDays != want {
+			t.Fatalf("UPMO_AUDIT_RETENTION_DAYS=%s gave %d days", days, cfg.AuditRetentionDays)
+		}
+	}
+	for _, days := range []string{"29", "3651", "0", "-30", "soon", "abc"} {
+		base["UPMO_AUDIT_RETENTION_DAYS"] = days
+		if _, err := load(lookupFrom(base)); err == nil {
+			t.Errorf("%s was accepted", days)
+		}
 	}
 }
 

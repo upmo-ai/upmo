@@ -58,6 +58,12 @@ type Config struct {
 	// ArtifactsDir is the Compose volume root for artifact bytes (UPMO_ARTIFACTS_DIR).
 	// Empty refuses volume downloads until set.
 	ArtifactsDir string
+	// AuditRetentionDays is how long sealed audit events are kept before their
+	// whole expired month is dropped (UPMO_AUDIT_RETENTION_DAYS). 365 by
+	// default. Usual presets: 365 (SOC 2 observation period, common ISO 27001
+	// practice, PCI DSS), 2190 (six years, HIPAA practice), 2555 (seven
+	// years, SOX practice).
+	AuditRetentionDays int
 	// SMTP is the relay for invite and recover emails (UPMO_SMTP_*). Its Host
 	// is empty when mail is unset, and links are then only copied.
 	SMTP SMTP
@@ -83,13 +89,14 @@ func Load() (Config, error) {
 
 func load(lookup func(string) (string, bool)) (Config, error) {
 	cfg := Config{
-		ListenAddr:      ":8080",
-		ShutdownTimeout: 10 * time.Second,
-		LogLevel:        "info",
-		ChatRoute:       "chat",
-		ChatWorkers:     8,
-		SessionIdle:     24 * time.Hour,
-		SessionMaxAge:   14 * 24 * time.Hour,
+		ListenAddr:         ":8080",
+		ShutdownTimeout:    10 * time.Second,
+		LogLevel:           "info",
+		ChatRoute:          "chat",
+		ChatWorkers:        8,
+		SessionIdle:        24 * time.Hour,
+		SessionMaxAge:      14 * 24 * time.Hour,
+		AuditRetentionDays: 365,
 	}
 	v, ok := lookup("UPMO_DATABASE_URL")
 	if !ok || v == "" {
@@ -184,6 +191,13 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("config: UPMO_CHAT_WORKERS must be a positive number")
 		}
 		cfg.ChatWorkers = n
+	}
+	if v, ok := lookup("UPMO_AUDIT_RETENTION_DAYS"); ok && v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 30 || n > 3650 {
+			return Config{}, fmt.Errorf("config: UPMO_AUDIT_RETENTION_DAYS must be a number of days between 30 and 3650")
+		}
+		cfg.AuditRetentionDays = n
 	}
 	if v, ok := lookup("UPMO_SANDBOXD_URL"); ok && v != "" {
 		parsed, err := url.Parse(v)
