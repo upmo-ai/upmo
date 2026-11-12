@@ -104,8 +104,11 @@ func TestAPinnedLinkIsAlwaysAtPositionZeroAndRouteLinksKeepTheirs(t *testing.T) 
 func TestOwnLinksAreTheOwnersAloneAndMayBeNone(t *testing.T) {
 	route := Route{Links: []Link{
 		{Position: 1, Account: Account{ID: "h", House: true}, Model: "mh"},
-		{Position: 2, Account: Account{ID: "x", OwnerUserID: "u2"}, Model: "mx"},
-		{Position: 3, Account: Account{ID: "o", OwnerUserID: "u1"}, Model: "mo"},
+		{Position: 2, Account: Account{ID: "x", OwnerUserID: "u2", Visibility: VisibilityPrivate}, Model: "mx"},
+		{Position: 3, Account: Account{ID: "o", OwnerUserID: "u1", Visibility: VisibilityPrivate}, Model: "mo"},
+		// Owned, but shared: it is not a private key, so a pin to a private
+		// account does not fall back through it.
+		{Position: 4, Account: Account{ID: "s", OwnerUserID: "u1", Visibility: VisibilityTeam, TeamIDs: []string{"t1"}}, Model: "ms"},
 	}}
 	if got := route.OwnLinks("u1"); len(got) != 1 || got[0].Model != "mo" {
 		t.Fatalf("own links = %+v", got)
@@ -124,12 +127,12 @@ func TestPinUsableIsOwnTeamOrWorkspaceNeverSomeoneElses(t *testing.T) {
 		account Account
 		ok      bool
 	}{
-		{"own", Account{OwnerUserID: "u1"}, true},
+		{"own", Account{OwnerUserID: "u1", Visibility: VisibilityPrivate}, true},
 		{"house", Account{House: true}, true},
-		{"global without house key", Account{}, true},
-		{"another person's", Account{OwnerUserID: "u2"}, false},
-		{"shared with a team of theirs", Account{TeamIDs: []string{"t1", "t9"}}, true},
-		{"shared only with other teams", Account{TeamIDs: []string{"t8", "t9"}}, false},
+		{"everyone", Account{OwnerUserID: "u9", Visibility: VisibilityEveryone}, true},
+		{"another person's", Account{OwnerUserID: "u2", Visibility: VisibilityPrivate}, false},
+		{"shared with a team of theirs", Account{OwnerUserID: "u9", Visibility: VisibilityTeam, TeamIDs: []string{"t1", "t9"}}, true},
+		{"shared only with other teams", Account{OwnerUserID: "u1", Visibility: VisibilityTeam, TeamIDs: []string{"t8", "t9"}}, false},
 	} {
 		if got := PinUsable(tc.account, "u1", []string{"t1", "t2"}); got != tc.ok {
 			t.Errorf("%s: PinUsable = %v, want %v", tc.name, got, tc.ok)

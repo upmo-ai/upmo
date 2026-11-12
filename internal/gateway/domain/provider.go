@@ -46,15 +46,17 @@ const (
 // Provider is one account as a person sees it. CredentialRef names its sealed
 // key and never leaves the backend.
 type Provider struct {
-	ID            string
-	Provider      string
-	Name          string
-	Adapter       string
-	PlanKind      string
-	BaseURL       string
-	Status        string
-	Models        []string
-	Own           bool
+	ID       string
+	Provider string
+	Name     string
+	Adapter  string
+	PlanKind string
+	BaseURL  string
+	Status   string
+	Models   []string
+	Own      bool
+	// OwnerUserID is the account's owner. It is empty for a house account.
+	OwnerUserID   string
 	CredentialRef string
 	HasKey        bool
 	Share         Share

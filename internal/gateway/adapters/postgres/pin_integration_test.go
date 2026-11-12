@@ -125,8 +125,9 @@ func seedPins(t *testing.T, pool *pgxpool.Pool) {
 	} {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO gateway.provider_accounts
-				(id, owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url)
-			VALUES ($1::uuid, NULLIF($2, '')::uuid, 'fake', $3, 'fake', $4, 'metered', $2 = '', '')`,
+				(id, owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, visibility)
+			VALUES ($1::uuid, NULLIF($2, '')::uuid, 'fake', $3, 'fake', $4, 'metered', $2 = '', '',
+				CASE WHEN $2 = '' THEN 'everyone' ELSE 'private' END)`,
 			a.id, a.owner, a.name, a.ref); err != nil {
 			t.Fatal(err)
 		}

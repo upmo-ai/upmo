@@ -65,8 +65,8 @@ func TestBringYourOwnKeyNeverFallsBackToHouse(t *testing.T) {
 }
 
 func TestLinksForUserHasTheirOwnAndTheWorkspaceAndNeverAnotherPersons(t *testing.T) {
-	mine := Account{ID: "1", Adapter: "a", CredentialRef: "personal", OwnerUserID: "u1"}
-	theirs := Account{ID: "3", Adapter: "a", CredentialRef: "other", OwnerUserID: "u2"}
+	mine := Account{ID: "1", Adapter: "a", CredentialRef: "personal", OwnerUserID: "u1", Visibility: VisibilityPrivate}
+	theirs := Account{ID: "3", Adapter: "a", CredentialRef: "other", OwnerUserID: "u2", Visibility: VisibilityPrivate}
 	r := Route{Name: "chat", Capability: CapChat, Links: []Link{
 		{Position: 1, Account: mine, Model: "mine"},
 		{Position: 2, Account: theirs, Model: "theirs"},

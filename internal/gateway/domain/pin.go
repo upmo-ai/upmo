@@ -65,12 +65,16 @@ func (p Pin) Check() error {
 // of the route, whose own positions start at 1.
 const PinPosition = 0
 
-// OwnLinks are the route's links on accounts the person owns, in order, and
-// none when they have none. It never falls back to a house link.
+// OwnLinks are the route's links on the person's private accounts, in order,
+// and none when they have none. A shared account has an owner too, and is not
+// one of these. It never falls back to a house link.
 func (r Route) OwnLinks(userID string) []Link {
 	var own []Link
 	for _, link := range r.Links {
-		if userID != "" && link.Account.OwnerUserID == userID && !link.Account.House {
+		if userID == "" || link.Account.House || link.Account.Visibility != VisibilityPrivate {
+			continue
+		}
+		if link.Account.OwnerUserID == userID {
 			own = append(own, link)
 		}
 	}

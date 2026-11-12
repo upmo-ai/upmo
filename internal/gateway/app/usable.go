@@ -9,6 +9,7 @@ import (
 // — that is Connected and lists the hop's model. The rules are domain's; this
 // only carries the listed rows over to them.
 func MarkUsable(routes []ListedRoute, accounts []domain.Provider) {
+	accounts = accountsTheyCanUse(accounts)
 	for i := range routes {
 		routes[i].Usable = domain.UsableRoute(usableView(routes[i]), accounts)
 	}
@@ -18,6 +19,7 @@ func MarkUsable(routes []ListedRoute, accounts []domain.Provider) {
 // accounts belong to: enabled, and its model, or its route — the named one,
 // else defaultRoute — usable.
 func UsableAgent(enabled bool, route, modelProvider, modelID string, routes []ListedRoute, accounts []domain.Provider, defaultRoute string) bool {
+	accounts = accountsTheyCanUse(accounts)
 	views := make([]domain.UsableRouteView, 0, len(routes))
 	for _, r := range routes {
 		views = append(views, usableView(r))
@@ -28,6 +30,20 @@ func UsableAgent(enabled bool, route, modelProvider, modelID string, routes []Li
 		ModelProvider: modelProvider,
 		ModelID:       modelID,
 	}, views, accounts, defaultRoute)
+}
+
+// accountsTheyCanUse drops an account the person can see but not use, such as
+// a team account an admin manages without being on the team. An account with
+// no visibility set is left in: callers that predate can_use did not say.
+func accountsTheyCanUse(accounts []domain.Provider) []domain.Provider {
+	out := make([]domain.Provider, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Share.Visibility != "" && !account.Share.CanUse {
+			continue
+		}
+		out = append(out, account)
+	}
+	return out
 }
 
 func usableView(r ListedRoute) domain.UsableRouteView {

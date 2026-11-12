@@ -263,7 +263,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		t.Fatalf("add = %d %s", rec.Code, rec.Body.String())
 	}
 	list := do(with, ada, http.MethodGet, "/api/providers", "")
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"scope":"own"`) || !strings.Contains(list.Body.String(), `"name":"Mine"`) {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"visibility":"private"`) || !strings.Contains(list.Body.String(), `"name":"Mine"`) {
 		t.Fatalf("list = %d %s", list.Code, list.Body.String())
 	}
 	if rec := do(with, bob, http.MethodGet, "/api/providers", ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
