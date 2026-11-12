@@ -32,6 +32,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
+	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
 
@@ -128,6 +129,17 @@ func run() error {
 	audit.AddSealer(workers, owner, os.Stdout)
 	audit.AddRetention(workers, owner, cfg.AuditRetentionDays)
 	audit.AddVerifier(workers, owner)
+	// The pusher runs only when a target is configured: with both the webhook
+	// and the syslog collector unset no worker and no periodic job is
+	// registered at all.
+	auditPush := cfg.AuditWebhookURL != "" || cfg.AuditSyslogAddr != ""
+	if auditPush {
+		audit.AddPusher(workers, owner, audit.PushConfig{
+			WebhookURL: cfg.AuditWebhookURL,
+			SyslogAddr: cfg.AuditSyslogAddr,
+			Secrets:    secretchain.FromEnv(os.LookupEnv),
+		})
+	}
 	noticeStore := notices.Store{Pool: pool}
 	memoryFacts := memory.NewFacts(pool)
 	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
@@ -181,11 +193,17 @@ func run() error {
 	}
 	// Outbox drain runs with Open. Product topic handlers
 	// register here when they exist; this slice leaves the registry empty.
+	periodic := []*river.PeriodicJob{
+		chat.SweepPeriodic(), audit.SealPeriodic(),
+		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
+	}
+	if auditPush {
+		periodic = append(periodic, audit.PushPeriodic())
+	}
 	work, err := jobs.Open(pool,
 		jobs.WithWorkers(workers),
 		jobs.WithQueue(chat.ReplyQueue, cfg.ChatWorkers),
-		jobs.WithPeriodic(chat.SweepPeriodic(), audit.SealPeriodic(),
-			audit.RetentionPeriodic(), audit.VerifyPeriodic()),
+		jobs.WithPeriodic(periodic...),
 	)
 	if err != nil {
 		return err
