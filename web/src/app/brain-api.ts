@@ -441,11 +441,14 @@ export function toProvider(value: unknown): ListedProvider {
 /** An agent as GET /api/agents and the write routes send it. */
 export function toAgent(value: unknown): AgentProfile {
   const source = record(value, "agent");
-  const scope = source.scope;
-  if (scope !== "own" && scope !== "global") throw new Error("The brain sent an unknown scope.");
+  const visibility = source.visibility;
+  if (!providerVisibilities.some((known) => known === visibility)) {
+    throw new Error("The brain sent an unknown visibility.");
+  }
   if (typeof source.enabled !== "boolean") throw new Error("The brain sent no enabled.");
   if (typeof source.usable !== "boolean") throw new Error("The brain sent no usable.");
-  if (typeof source.editable !== "boolean") throw new Error("The brain sent no editable.");
+  if (typeof source.can_manage !== "boolean") throw new Error("The brain sent no can_manage.");
+  if (typeof source.can_use !== "boolean") throw new Error("The brain sent no can_use.");
   return {
     id: text(source, "id"),
     name: text(source, "name"),
@@ -456,8 +459,11 @@ export function toAgent(value: unknown): AgentProfile {
     model_id: text(source, "model_id"),
     enabled: source.enabled,
     usable: source.usable,
-    scope,
-    editable: source.editable,
+    visibility: visibility as ProviderVisibility,
+    team_ids: strings(source.team_ids, "team_ids"),
+    team_names: strings(source.team_names, "team_names"),
+    can_use: source.can_use,
+    can_manage: source.can_manage,
   };
 }
 

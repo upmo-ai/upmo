@@ -13,7 +13,7 @@ import (
 
 const adminUser = "018f3b2c-7a10-7c4a-8e11-999999999999"
 
-var adminAccess = chat.Access{UserID: adminUser, Allow: "chat:create,chat:view,chat:edit,settings:manage"}
+var adminAccess = chat.Access{UserID: adminUser, Allow: "chat:create,chat:view,chat:edit,agent:create,agent:view,agent:edit,agent:delete,agent:share,settings:manage"}
 
 // answer makes the stub gateway answer every call.
 func (r *rig) answer() {
@@ -31,9 +31,9 @@ func (r *rig) sayWith(chatID string, picks app.Picks) {
 	}
 }
 
-func (r *rig) agent(access chat.Access, fields app.AgentFields, global bool) app.Agent {
+func (r *rig) agent(access chat.Access, fields app.AgentFields) app.Agent {
 	r.t.Helper()
-	made, err := r.store.CreateAgent(context.Background(), access, fields, global)
+	made, err := r.store.CreateAgent(context.Background(), access, fields)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestTheAgentsInstructionsRouteAndModelReachTheGateway(t *testing.T) {
 	agent := r.agent(ownerAccess, app.AgentFields{
 		Name: "Research", PromptOverlay: "Answer as a researcher.", Route: "deep",
 		ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true,
-	}, false)
+	})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID})
 
@@ -78,7 +78,7 @@ func TestTheComposersRouteAndModelWinOverTheAgents(t *testing.T) {
 	agent := r.agent(ownerAccess, app.AgentFields{
 		Name: "Research", PromptOverlay: "Answer as a researcher.", Route: "deep",
 		ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true,
-	}, false)
+	})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID, Route: "fast", PinAccount: account, PinModel: "gpt-y"})
 
@@ -98,7 +98,7 @@ func TestAModelOnlyAgentUsesTheInstallDefaultRoute(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	agent := r.agent(ownerAccess, app.AgentFields{Name: "Fast", ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true}, false)
+	agent := r.agent(ownerAccess, app.AgentFields{Name: "Fast", ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true	})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID})
 
@@ -112,7 +112,7 @@ func TestAGlobalAgentWorksForAMember(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	house := r.agent(adminAccess, app.AgentFields{Name: "House", PromptOverlay: "House rules.", Enabled: true}, true)
+	house := r.agent(adminAccess, app.AgentFields{Name: "House", PromptOverlay: "House rules.", Enabled: true, Visibility: "everyone"})
 
 	r.sayWith(chatID, app.Picks{AgentID: house.ID})
 
@@ -126,9 +126,9 @@ func TestAReplyWithAnAgentThatIsNotAvailableFailsPlainlyAndAsksNoModel(t *testin
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	disabled := r.agent(ownerAccess, app.AgentFields{Name: "Off", Enabled: false}, false)
-	foreign := r.agent(otherAccess, app.AgentFields{Name: "Theirs", Enabled: true}, false)
-	offGlobal := r.agent(adminAccess, app.AgentFields{Name: "Off house", Enabled: false}, true)
+	disabled := r.agent(ownerAccess, app.AgentFields{Name: "Off", Enabled: false})
+	foreign := r.agent(otherAccess, app.AgentFields{Name: "Theirs", Enabled: true})
+	offGlobal := r.agent(adminAccess, app.AgentFields{Name: "Off house", Enabled: false, Visibility: "everyone"})
 
 	for name, id := range map[string]string{
 		"missing": missing, "disabled": disabled.ID, "foreign": foreign.ID, "disabled global": offGlobal.ID,
