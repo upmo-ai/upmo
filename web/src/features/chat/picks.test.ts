@@ -14,7 +14,12 @@ const account = (id: string, provider: string, over: Partial<ProviderAccount> = 
   models: ["m1"],
   usable: true,
   usable_models: ["m1"],
-  scope: "own",
+  visibility: "private",
+  team_ids: [],
+  team_names: [],
+  can_manage: true,
+  can_use: true,
+  is_owner: true,
   ...over,
 });
 
@@ -78,7 +83,11 @@ describe("UPM-265 picker filters", () => {
   it("returns a remembered pick to Auto when it is no longer offered", () => {
     const agents = [agent("working"), agent("broken", { usable: false })];
     const routes = [route("chat"), route("dead", { usable: false })];
-    const models = modelChoices([account("a1", "openai"), account("a2", "anthropic", { usable: false, usable_models: [] })]);
+    const models = modelChoices([
+      account("a1", "openai"),
+      account("a2", "anthropic", { usable: false, usable_models: [] }),
+      account("a3", "openai", { can_use: false }),
+    ]);
     // The page hands the filtered lists over, exactly as the pickers show them.
     const picks = validPicks(
       { agent: "broken", route: "dead", model: "a2/m1" },
@@ -91,31 +100,44 @@ describe("UPM-265 picker filters", () => {
 });
 
 describe("modelDescription", () => {
-  const sharedAccount = {
+  const sharedAccount: ProviderAccount = {
     id: "account-1",
     provider: "openai",
     name: "Shared models",
     adapter: "openai_compat",
-    plan_kind: "local" as const,
-    status: "Connected" as const,
+    plan_kind: "local",
+    status: "Connected",
     models: ["gpt-x"],
     usable: true,
     usable_models: ["gpt-x"],
-    scope: "global" as const,
+    visibility: "everyone",
+    team_ids: [],
+    team_names: [],
+    can_manage: false,
+    can_use: true,
+    is_owner: false,
   };
 
-  it("labels workspace shares, team shares, and older workspace accounts", () => {
-    const workspace = modelChoices([{ ...sharedAccount, share: { scope: "workspace", team_ids: [], team_names: [], can_manage: false } }])[0];
+  it("labels a workspace account and a team account, and leaves a personal one as its name", () => {
+    const workspace = modelChoices([sharedAccount])[0];
     const team = modelChoices([
-      { ...sharedAccount, share: { scope: "team", team_ids: ["team-1"], team_names: ["Finance", "Ops"], can_manage: false } },
+      { ...sharedAccount, visibility: "team", team_ids: ["team-1"], team_names: ["Finance", "Ops"] },
     ])[0];
     const unnamedTeam = modelChoices([
-      { ...sharedAccount, share: { scope: "team", team_ids: ["team-1"], team_names: [], can_manage: false } },
+      { ...sharedAccount, visibility: "team", team_ids: ["team-1"], team_names: [] },
     ])[0];
+    const personal = modelChoices([{ ...sharedAccount, visibility: "private", can_manage: true }])[0];
 
     expect(modelDescription(workspace)).toBe("Shared models (workspace)");
     expect(modelDescription(team)).toBe("Shared models (Finance, Ops)");
     expect(modelDescription(unnamedTeam)).toBe("Shared models (team)");
-    expect(modelDescription(modelChoices([sharedAccount])[0])).toBe("Shared models (workspace)");
+    expect(modelDescription(personal)).toBe("Shared models");
+  });
+
+  it("offers a model only when the person may use the account and it has a usable model", () => {
+    const blocked = { ...sharedAccount, id: "blocked", can_use: false };
+    const empty = { ...sharedAccount, id: "empty", usable_models: [] };
+    expect(modelChoices([blocked, empty]).map((choice) => choice.account_id)).toEqual([]);
+    expect(modelChoices([sharedAccount]).map((choice) => choice.model)).toEqual(["gpt-x"]);
   });
 });

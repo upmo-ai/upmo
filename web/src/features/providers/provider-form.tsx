@@ -24,12 +24,14 @@ import {
   providersQueryKey,
   teamsQueryKey,
   useApi,
+  type ProviderAdd,
+  type ProviderChange,
   type TestResult,
 } from "../../app/api";
 import { formatPricing, getProviderModels, type ModelInfo } from "./models";
 import { ALL_PROVIDERS, KNOWN_PROVIDERS, PICKABLE_PROVIDERS, type KnownProvider } from "./providers";
 import { baseUrlRequired, hostedBaseUrl, keyRequired, providerProblem, showsKeyField } from "./rules";
-import { canManage, fetchCanShare, type ListedProvider, type SharedAdd, type SharedChange } from "./sharing";
+import { canManage, fetchCanShare, type ListedProvider } from "./sharing";
 
 interface ProviderFormPageProps {
   mode: "create" | "edit";
@@ -40,8 +42,21 @@ interface ProviderFormProps {
   existing?: ListedProvider;
 }
 
-/** Who an account is for: the person alone, the whole workspace, or specific teams. */
-type ShareAsk = "own" | "workspace" | "teams";
+/** Who an account is for: the person alone, named teams, or the whole workspace. */
+type ShareAsk = "private" | "team" | "everyone";
+
+function sameTeamIds(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((id, index) => id === b[index]);
+}
+
+/** True when the sharing choice is not the account's current visibility, or the team list changed. */
+function shareChoiceChanged(existing: ListedProvider, scope: ShareAsk, teams: readonly string[]): boolean {
+  if (scope !== existing.visibility) return true;
+  return scope === "team" && !sameTeamIds(teams, existing.team_ids);
+}
 
 function baseUrlHelp(meta: KnownProvider): string {
   if (meta.id === "lmstudio") return "Required. Address of your local LM Studio service.";
@@ -83,25 +98,23 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
   const [customModelInput, setCustomModelInput] = useState<string>("");
 
   // Sharing: who may use the account. Only a person who may share is asked.
-  const existingShare = existing?.share;
-  const initialShare: ShareAsk =
-    existingShare?.scope === "team" ? "teams" : existingShare?.scope === "workspace" ? "workspace" : "own";
+  const initialShare: ShareAsk = existing?.visibility === "team" || existing?.visibility === "everyone" ? existing.visibility : "private";
   const [shareScope, setShareScope] = useState<ShareAsk>(initialShare);
-  const [shareTeams, setShareTeams] = useState<string[]>(existingShare?.team_ids ?? []);
+  const [shareTeams, setShareTeams] = useState<string[]>(existing?.team_ids ?? []);
   const canShareQuery = useQuery({
     queryKey: [...PROVIDERS_KEY, "sharing"],
     queryFn: fetchCanShare,
   });
-  // The choice is offered when adding an account, and when changing one that
-  // is shared already; a personal account stays personal.
-  const offerSharing = canShareQuery.data === true && (mode === "create" || initialShare !== "own");
+  // The choice is offered to a person who may share, when adding an account
+  // and when changing a private or a shared one.
+  const offerSharing = canShareQuery.data === true;
   const teamsQuery = useQuery({
     queryKey: teamsQueryKey(),
     queryFn: () => api.shares.teams(),
     enabled: offerSharing,
   });
   const teamList = teamsQuery.data ?? [];
-  const sharedWithTeams = offerSharing && shareScope === "teams";
+  const sharedWithTeams = offerSharing && shareScope === "team";
 
   // Testing & Validation state
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -192,7 +205,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
       setSubmitError("");
 
       if (mode === "create") {
-        const input: SharedAdd = {
+        const input: ProviderAdd = {
           provider: selectedProviderId,
           name: name.trim() || selectedMeta.name,
           adapter: selectedMeta.adapter,
@@ -201,9 +214,9 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           api_key: typedKey || undefined,
           models: selectedModels,
         };
-        if (offerSharing && shareScope !== "own") {
-          input.scope = shareScope;
-          if (shareScope === "teams") input.team_ids = shareTeams;
+        if (offerSharing && shareScope !== "private") {
+          input.visibility = shareScope;
+          if (shareScope === "team") input.team_ids = shareTeams;
         }
         return api.providers.add(input);
       }
@@ -211,16 +224,16 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
       // An empty key field keeps the saved key. An emptied base URL is sent
       // as "", so the brain clears the saved address.
       if (!existing?.id) throw new Error("Missing provider ID");
-      const change: SharedChange = {
+      const change: ProviderChange = {
         name: name.trim() || existing.name,
         plan_kind: planKind,
         base_url: sentBaseUrl ?? "",
         api_key: typedKey || undefined,
         models: selectedModels,
       };
-      if (offerSharing && shareScope !== "own") {
-        change.scope = shareScope;
-        if (shareScope === "teams") change.team_ids = shareTeams;
+      if (offerSharing && shareChoiceChanged(existing, shareScope, shareTeams)) {
+        change.visibility = shareScope;
+        if (shareScope === "team") change.team_ids = shareTeams;
       }
       return api.providers.update(existing.id, change);
     },
@@ -268,7 +281,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     testResult?.error || "Failed to reach provider. Check your API key or endpoint URL.";
 
   const sharedWithText =
-    shareScope === "workspace"
+    shareScope === "everyone"
       ? "the whole workspace"
       : teamList
           .filter((team) => shareTeams.includes(team.id))
@@ -412,16 +425,16 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             </Text>
             <Radio.Group value={shareScope} onChange={(value) => setShareScope(value as ShareAsk)}>
               <Stack gap="xs">
-                {mode === "create" ? <Radio value="own" label="Only me" /> : null}
+                {mode === "create" || existing?.is_owner ? <Radio value="private" label="Only me" /> : null}
                 <Radio
-                  value="workspace"
-                  label="The whole workspace"
-                  description="Everyone can use it. Only admins change it. Nobody sees the key."
+                  value="team"
+                  label="Teams"
+                  description="Only members of the teams you choose can use it. Nobody sees the key."
                 />
                 <Radio
-                  value="teams"
-                  label="Specific teams"
-                  description="Only members of the teams you choose can use it. Nobody sees the key."
+                  value="everyone"
+                  label="Workspace"
+                  description="Everyone can use it. Only admins change it. Nobody sees the key."
                 />
               </Stack>
             </Radio.Group>
@@ -661,7 +674,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             </Text>
           ) : null}
 
-          {offerSharing && shareScope !== "own" ? (
+          {offerSharing && shareScope !== "private" ? (
             <Text size="xs" c="dimmed">
               Shared with: {sharedWithText}
             </Text>

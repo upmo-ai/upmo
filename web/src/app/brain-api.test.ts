@@ -336,14 +336,20 @@ describe("toProvider", () => {
     models: ["gpt-4o", "o3-mini"],
     usable: false,
     usable_models: [],
-    scope: "own",
+    visibility: "private",
+    team_ids: [],
+    team_names: [],
+    can_manage: true,
+    can_use: false,
+    is_owner: true,
   };
 
-  it("keeps the account as the brain sends it, status and scope included", () => {
+  it("keeps the account as the brain sends it, status and visibility included", () => {
     expect(toProvider(sent)).toEqual(sent);
-    expect(toProvider({ ...sent, scope: "global", status: "Key rejected" })).toMatchObject({
-      scope: "global",
+    expect(toProvider({ ...sent, visibility: "everyone", status: "Key rejected", can_manage: false })).toMatchObject({
+      visibility: "everyone",
       status: "Key rejected",
+      can_manage: false,
     });
   });
 
@@ -361,11 +367,14 @@ describe("toProvider", () => {
     expect(toProvider({ ...bare, base_url: "" })).not.toHaveProperty("base_url");
   });
 
-  it("refuses an unknown plan, status or scope, and models that are not text", () => {
+  it("refuses an unknown plan, status or visibility, and models that are not text", () => {
     expect(() => toProvider({ ...sent, plan_kind: "free" })).toThrow("unknown plan kind");
     expect(() => toProvider({ ...sent, status: "Broken" })).toThrow("unknown status");
-    expect(() => toProvider({ ...sent, scope: "team" })).toThrow("unknown scope");
-    expect(() => toProvider({ ...sent, scope: undefined })).toThrow("unknown scope");
+    expect(() => toProvider({ ...sent, visibility: "workspace" })).toThrow("unknown visibility");
+    expect(() => toProvider({ ...sent, visibility: undefined })).toThrow("unknown visibility");
+    expect(() => toProvider({ ...sent, can_manage: undefined })).toThrow("no can_manage");
+    expect(() => toProvider({ ...sent, can_use: "yes" })).toThrow("no can_use");
+    expect(() => toProvider({ ...sent, is_owner: undefined })).toThrow("no is_owner");
     expect(() => toProvider({ ...sent, models: ["gpt-4o", 4] })).toThrow("no models");
     expect(() => toProvider({ ...sent, models: null })).toThrow("no models");
   });

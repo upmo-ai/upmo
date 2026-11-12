@@ -23,27 +23,37 @@ const personal: Row = {
   usable: true,
   usable_models: ["gpt-x"],
   models: ["claude-3-7-sonnet"],
-  scope: "own",
+  visibility: "private",
   team_ids: [],
   team_names: [],
   can_manage: true,
+  can_use: true,
+  is_owner: true,
 };
 const forTeams: Row = {
   ...personal,
   id: "p-team",
   name: "Finance and Ops models",
-  scope: "team",
+  visibility: "team",
   team_ids: [financeTeam, opsTeam],
   team_names: ["Finance", "Ops"],
   can_manage: false,
+  is_owner: false,
 };
-const forTeamsAsAdmin: Row = { ...forTeams, id: "p-team-admin", name: "Admin's team account", can_manage: true };
+const forTeamsAsAdmin: Row = {
+  ...forTeams,
+  id: "p-team-admin",
+  name: "Admin's team account",
+  can_manage: true,
+  is_owner: true,
+};
 const forWorkspace: Row = {
   ...personal,
   id: "p-workspace",
   name: "Everyone models",
-  scope: "workspace",
+  visibility: "everyone",
   can_manage: false,
+  is_owner: false,
 };
 
 interface Recorded {
@@ -78,6 +88,11 @@ function stubBrain(options: { accounts?: Row[]; canShare?: boolean }) {
       if (url === "/api/providers/test" && method === "POST") return Response.json({ ok: true });
       if (url === "/api/providers" && method === "POST") {
         return Response.json({ ...personal, id: "made", name: String(body?.name ?? "") }, { status: 201 });
+      }
+      if (method === "PUT" && url.startsWith("/api/providers/")) {
+        const id = url.slice("/api/providers/".length);
+        const current = (options.accounts ?? []).find((account) => account.id === id);
+        return Response.json({ ...(current ?? personal), ...body, id });
       }
       return new Response(null, { status: 404 });
     }),
@@ -151,39 +166,56 @@ describe("what the page says about sharing", () => {
     usable: true,
     usable_models: ["gpt-x"],
     models: [],
-    scope: "own",
+    visibility: "private",
+    team_ids: [],
+    team_names: [],
+    can_manage: true,
+    can_use: true,
+    is_owner: true,
     ...patch,
   });
 
-  it("lets a person manage what the brain says they may, and else their own and not the workspace's", () => {
-    expect(canManage(account({ scope: "own" }))).toBe(true);
-    expect(canManage(account({ scope: "global" }))).toBe(false);
-    const team = { scope: "team" as const, team_ids: [financeTeam], team_names: ["Finance"] };
-    expect(canManage(account({ scope: "global", share: { ...team, can_manage: true } }))).toBe(true);
-    expect(canManage(account({ scope: "global", share: { ...team, can_manage: false } }))).toBe(false);
+  it("lets a person manage what the brain says they may", () => {
+    expect(canManage(account({ can_manage: true }))).toBe(true);
+    expect(canManage(account({ can_manage: false }))).toBe(false);
   });
 
   it("words who a shared account is shared with, and stays quiet for a personal one", () => {
-    const team = { scope: "team" as const, team_ids: [financeTeam, opsTeam], team_names: ["Finance", "Ops"] };
-    expect(sharedNote(account({ scope: "global", share: { ...team, can_manage: false } }))).toEqual({
-      badge: "Team",
+    expect(
+      sharedNote(
+        account({
+          visibility: "team",
+          team_ids: [financeTeam, opsTeam],
+          team_names: ["Finance", "Ops"],
+          can_manage: false,
+        }),
+      ),
+    ).toEqual({
+      badge: "Teams",
       text: "Shared with Finance, Ops. Read only.",
     });
-    expect(sharedNote(account({ scope: "global", share: { ...team, can_manage: true } }))).toEqual({
-      badge: "Team",
+    expect(
+      sharedNote(
+        account({
+          visibility: "team",
+          team_ids: [financeTeam, opsTeam],
+          team_names: ["Finance", "Ops"],
+          can_manage: true,
+        }),
+      ),
+    ).toEqual({
+      badge: "Teams",
       text: "Shared with Finance, Ops.",
     });
-    expect(
-      sharedNote(account({ scope: "global", share: { scope: "workspace", team_ids: [], team_names: [], can_manage: false } })),
-    ).toEqual({ badge: "Workspace", text: "Shared with the whole workspace. Read only." });
-    expect(sharedNote(account({ scope: "global" }))).toEqual({
-      badge: "Shared",
-      text: "Managed by your workspace. Read only.",
+    expect(sharedNote(account({ visibility: "everyone", can_manage: false }))).toEqual({
+      badge: "Workspace",
+      text: "Shared with the whole workspace. Read only.",
     });
-    expect(sharedNote(account({ scope: "own" }))).toBeNull();
-    expect(
-      sharedNote(account({ scope: "own", share: { scope: "own", team_ids: [], team_names: [], can_manage: true } })),
-    ).toBeNull();
+    expect(sharedNote(account({ visibility: "team", team_names: [], can_manage: false }))).toEqual({
+      badge: "Teams",
+      text: "Shared with your team. Read only.",
+    });
+    expect(sharedNote(account({ visibility: "private" }))).toBeNull();
   });
 });
 
@@ -219,7 +251,7 @@ describe("sharing a provider", () => {
       expect([id, disconnect]).toEqual([id, null]);
     }
 
-    expect(withNote("p-team").getByText("Team")).toBeTruthy();
+    expect(withNote("p-team").getByText("Teams")).toBeTruthy();
     expect(withNote("p-team").getByText("Shared with Finance, Ops. Read only.")).toBeTruthy();
     expect(withNote("p-team-admin").getByText("Shared with Finance, Ops.")).toBeTruthy();
     expect(withNote("p-workspace").getByText("Workspace")).toBeTruthy();
@@ -240,7 +272,7 @@ describe("sharing a provider", () => {
     await openCredentials();
 
     expect(await screen.findByText("Who can use this provider")).toBeTruthy();
-    click(screen.getByRole("radio", { name: /Specific teams/ }));
+    click(screen.getByRole("radio", { name: /^Teams/ }));
     // A team has to be chosen before the next step.
     expect(await screen.findByRole("checkbox", { name: "Share with Finance" })).toBeTruthy();
     expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(true);
@@ -248,7 +280,7 @@ describe("sharing a provider", () => {
     expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(false);
 
     const sent = await connect(requests);
-    expect(sent.scope).toBe("teams");
+    expect(sent.visibility).toBe("team");
     expect(sent.team_ids).toEqual([financeTeam]);
     expect(JSON.stringify(sent)).not.toContain(opsTeam);
   });
@@ -258,9 +290,9 @@ describe("sharing a provider", () => {
     await openCredentials();
 
     expect(await screen.findByText("Who can use this provider")).toBeTruthy();
-    click(screen.getByRole("radio", { name: /The whole workspace/ }));
+    click(screen.getByRole("radio", { name: /^Workspace/ }));
     const sent = await connect(requests);
-    expect(sent.scope).toBe("workspace");
+    expect(sent.visibility).toBe("everyone");
     expect(sent).not.toHaveProperty("team_ids");
   });
 
@@ -270,7 +302,7 @@ describe("sharing a provider", () => {
 
     expect(await screen.findByText("Who can use this provider")).toBeTruthy();
     const sent = await connect(requests);
-    expect(sent).not.toHaveProperty("scope");
+    expect(sent).not.toHaveProperty("visibility");
     expect(sent).not.toHaveProperty("team_ids");
   });
 
@@ -283,6 +315,81 @@ describe("sharing a provider", () => {
     });
     expect(screen.queryByText("Who can use this provider")).toBeNull();
     const sent = await connect(requests);
-    expect(sent).not.toHaveProperty("scope");
+    expect(sent).not.toHaveProperty("visibility");
+  });
+
+  async function saveEdit(requests: Recorded[]) {
+    await continueTo(/Models & Pricing for/);
+    await continueTo("Review Configuration");
+    clickButton("Test connection");
+    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    clickButton("Save changes");
+    await waitFor(() => {
+      expect(requests.some((request) => request.method === "PUT" && request.url.startsWith("/api/providers/"))).toBe(
+        true,
+      );
+    });
+    const put = requests.find((request) => request.method === "PUT" && request.url.startsWith("/api/providers/"));
+    if (!put?.body) throw new Error("the change was not sent");
+    return put.body;
+  }
+
+  it("offers the sharing choice when editing a private account and sends the teams that were picked", async () => {
+    const requests = stubBrain({ accounts: [personal], canShare: true });
+    renderAt("/providers/p-own/edit");
+
+    expect(await screen.findByText("Who can use this provider")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Only me/ })).toBeTruthy();
+    click(screen.getByRole("radio", { name: /^Teams/ }));
+    click(await screen.findByRole("checkbox", { name: "Share with Finance" }));
+
+    const sent = await saveEdit(requests);
+    expect(sent.visibility).toBe("team");
+    expect(sent.team_ids).toEqual([financeTeam]);
+  });
+
+  it("lets the owner of a shared account take it back to only them", async () => {
+    const requests = stubBrain({ accounts: [forTeamsAsAdmin], canShare: true });
+    renderAt("/providers/p-team-admin/edit");
+
+    expect(await screen.findByRole("radio", { name: /^Only me/ })).toBeTruthy();
+    click(screen.getByRole("radio", { name: /^Only me/ }));
+
+    const sent = await saveEdit(requests);
+    expect(sent.visibility).toBe("private");
+    expect(sent).not.toHaveProperty("team_ids");
+  });
+
+  it("hides Only me when a person who may share does not own the account", async () => {
+    stubBrain({ accounts: [{ ...forTeamsAsAdmin, is_owner: false }], canShare: true });
+    renderAt("/providers/p-team-admin/edit");
+
+    expect(await screen.findByText("Who can use this provider")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Teams/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Workspace/ })).toBeTruthy();
+    expect(screen.queryByRole("radio", { name: /^Only me/ })).toBeNull();
+  });
+
+  it("does not ask a person who may not share when they edit an account", async () => {
+    const requests = stubBrain({ accounts: [personal], canShare: false });
+    renderAt("/providers/p-own/edit");
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Edit My Claude" })).toBeTruthy();
+    await waitFor(() => {
+      expect(requests.some((request) => request.url === "/api/providers/sharing")).toBe(true);
+    });
+    expect(screen.queryByText("Who can use this provider")).toBeNull();
+    const sent = await saveEdit(requests);
+    expect(sent).not.toHaveProperty("visibility");
+  });
+
+  it("sends no visibility when an edit leaves the sharing choice alone", async () => {
+    const requests = stubBrain({ accounts: [forTeamsAsAdmin], canShare: true });
+    renderAt("/providers/p-team-admin/edit");
+
+    expect(await screen.findByText("Who can use this provider")).toBeTruthy();
+    const sent = await saveEdit(requests);
+    expect(sent).not.toHaveProperty("visibility");
+    expect(sent).not.toHaveProperty("team_ids");
   });
 });

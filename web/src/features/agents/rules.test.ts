@@ -89,7 +89,12 @@ describe("agent rules", () => {
       models,
       usable: models.length > 0,
       usable_models: models,
-      scope: "own",
+      visibility: "private",
+      team_ids: [],
+      team_names: [],
+      can_manage: true,
+      can_use: true,
+      is_owner: true,
     });
     const choices = modelChoices([
       account("a", "OpenAI", ["gpt-x", "meta/llama"]),
@@ -114,10 +119,16 @@ describe("agent rules", () => {
       models: ["gpt-x"],
       usable: false,
       usable_models: [],
-      scope: "own",
+      visibility: "private",
+      team_ids: [],
+      team_names: [],
+      can_manage: true,
+      can_use: true,
+      is_owner: true,
     };
     const working: ProviderAccount = { ...broken, id: "w", status: "Connected", usable: true, usable_models: ["gpt-x"] };
-    expect(modelChoices([broken, working])).toEqual([{ provider: "Nebius", model: "gpt-x" }]);
+    const blocked: ProviderAccount = { ...working, id: "x", can_use: false };
+    expect(modelChoices([broken, working, blocked])).toEqual([{ provider: "Nebius", model: "gpt-x" }]);
   });
 
   it("round-trips a choice whatever the model id holds", () => {

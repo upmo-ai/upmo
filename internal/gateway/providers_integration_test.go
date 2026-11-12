@@ -188,18 +188,22 @@ func (r *rig) assertNoSecrets(secrets ...string) {
 }
 
 type account struct {
-	ID        string   `json:"id"`
-	Provider  string   `json:"provider"`
-	Name      string   `json:"name"`
-	Adapter   string   `json:"adapter"`
-	PlanKind  string   `json:"plan_kind"`
-	BaseURL   string   `json:"base_url"`
-	Status    string   `json:"status"`
-	Models    []string `json:"models"`
-	Scope     string   `json:"scope"`
-	TeamIDs   []string `json:"team_ids"`
-	TeamNames []string `json:"team_names"`
-	CanManage bool     `json:"can_manage"`
+	ID           string   `json:"id"`
+	Provider     string   `json:"provider"`
+	Name         string   `json:"name"`
+	Adapter      string   `json:"adapter"`
+	PlanKind     string   `json:"plan_kind"`
+	BaseURL      string   `json:"base_url"`
+	Status       string   `json:"status"`
+	Models       []string `json:"models"`
+	Visibility   string   `json:"visibility"`
+	CanUse       bool     `json:"can_use"`
+	Usable       bool     `json:"usable"`
+	UsableModels []string `json:"usable_models"`
+	TeamIDs      []string `json:"team_ids"`
+	TeamNames    []string `json:"team_names"`
+	CanManage    bool     `json:"can_manage"`
+	IsOwner      bool     `json:"is_owner"`
 }
 
 func decode[T any](t *testing.T, raw []byte) T {
@@ -266,8 +270,8 @@ func (r *rig) globalAccount(name string) {
 	ctx := context.Background()
 	var id string
 	err := r.owner.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, base_url, provider)
-		VALUES ($1, 'openai_compat', 'house_secret_ref', 'metered', true, 'https://api.example.com', 'openai')
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, base_url, provider, visibility)
+		VALUES ($1, 'openai_compat', 'house_secret_ref', 'metered', true, 'https://api.example.com', 'openai', 'everyone')
 		RETURNING id::text`, name).Scan(&id)
 	if err != nil {
 		r.t.Fatal(err)
@@ -341,7 +345,7 @@ func TestOwnerAddsListsUpdatesAndRemoves(t *testing.T) {
 		"plan_kind": "metered", "base_url": "https://api.example.com/", "api_key": adaKey,
 		"models": []string{" gpt-a ", "gpt-b"},
 	})
-	if made.ID == "" || made.Name != "Work OpenAI" || made.Scope != "own" || made.Status != "Not connected" ||
+	if made.ID == "" || made.Name != "Work OpenAI" || made.Visibility != "private" || !made.CanUse || made.Status != "Not connected" ||
 		made.Provider != "openai" || made.Adapter != "openai_compat" || made.PlanKind != "metered" ||
 		made.BaseURL != "https://api.example.com" || strings.Join(made.Models, ",") != "gpt-a,gpt-b" {
 		t.Fatalf("made = %+v", made)
@@ -561,7 +565,7 @@ func TestGlobalAccountsAreListedAndReadOnly(t *testing.T) {
 	r.mustAdd(ada, body("House", prov.url(), ""))
 
 	rows := r.list(ada)
-	if len(rows) != 3 || rows[0].Scope != "own" || rows[1].Scope != "own" || rows[2].Scope != "workspace" ||
+	if len(rows) != 3 || rows[0].Visibility != "private" || rows[1].Visibility != "private" || rows[2].Visibility != "everyone" ||
 		rows[0].Name != "House" || rows[1].Name != "Zed own" {
 		t.Fatalf("list = %+v", rows)
 	}
@@ -793,8 +797,8 @@ func TestDuplicateNamesPerOwner(t *testing.T) {
 	// Two global accounts cannot share a name either.
 	r.globalAccount("House")
 	_, err := r.owner.Exec(context.Background(), `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('House', 'fake', 'other', 'local', true)`)
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('House', 'fake', 'other', 'local', true, 'everyone')`)
 	if err == nil {
 		t.Fatal("two global accounts share a name")
 	}
@@ -846,7 +850,7 @@ func TestWithoutAMasterKeyWritesAreRefusedAndListStillWorks(t *testing.T) {
 	r := newRig(t, Keyring{})
 	prov := newFakeProvider(t)
 	r.globalAccount("House")
-	if rows := r.list(ada); len(rows) != 1 || rows[0].Scope != "workspace" {
+	if rows := r.list(ada); len(rows) != 1 || rows[0].Visibility != "everyone" || !rows[0].CanUse {
 		t.Fatalf("list = %+v", rows)
 	}
 	// An account made while a key was set, then the key went away.
@@ -1428,6 +1432,8 @@ func TestGatewayProcessReadsEveryAccountUnderForcedRowSecurity(t *testing.T) {
 		`ALTER TABLE gateway.credentials OWNER TO ` + role,
 		`GRANT USAGE ON SCHEMA gateway TO ` + role,
 		`GRANT ALL ON ALL TABLES IN SCHEMA gateway TO ` + role,
+		// The real gateway owns these functions.
+		`GRANT EXECUTE ON FUNCTION identity.may_use(uuid, text, uuid[]), identity.may_manage(uuid, text), identity.can_use(uuid, uuid[], uuid, text, uuid[]) TO ` + role,
 	} {
 		if _, err := r.owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -1472,8 +1478,8 @@ func TestGatewayProcessReadsEveryAccountUnderForcedRowSecurity(t *testing.T) {
 	if err := r.app.QueryRow(ctx, `SELECT count(*) FROM gateway.credentials`).Scan(&credentials); err != nil || credentials != 0 {
 		t.Fatalf("a request with no person sees %d credentials: %v", credentials, err)
 	}
-	if err := r.app.QueryRow(ctx, `SELECT count(*) FROM gateway.provider_accounts`).Scan(&accounts); err != nil || accounts != 1 {
-		t.Fatalf("a request with no person sees %d accounts, want only the global one: %v", accounts, err)
+	if err := r.app.QueryRow(ctx, `SELECT count(*) FROM gateway.provider_accounts`).Scan(&accounts); err != nil || accounts != 0 {
+		t.Fatalf("a request with no person sees %d accounts, want none: %v", accounts, err)
 	}
 }
 
@@ -1499,50 +1505,40 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	ctx := context.Background()
 	migrateWithIdentity(t, owner)
 	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 5 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 6 {
 		t.Fatalf("version %d, %v", version, err)
 	}
 	var n int
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*) FROM pg_policies WHERE schemaname = 'gateway'
-		AND tablename IN ('provider_accounts', 'provider_models', 'credentials')`).Scan(&n); err != nil || n != 17 {
+		AND tablename IN ('provider_accounts', 'provider_models', 'credentials')`).Scan(&n); err != nil || n != 11 {
 		t.Fatalf("policies = %d, %v", n, err)
 	}
 	var forced int
 	if err := owner.QueryRow(ctx, `
-		SELECT count(*) FROM pg_class WHERE oid IN ('gateway.provider_accounts'::regclass, 'gateway.provider_models'::regclass, 'gateway.credentials'::regclass, 'gateway.provider_account_teams'::regclass)
-		AND relrowsecurity AND relforcerowsecurity`).Scan(&forced); err != nil || forced != 4 {
+		SELECT count(*) FROM pg_class WHERE oid IN ('gateway.provider_accounts'::regclass, 'gateway.provider_models'::regclass, 'gateway.credentials'::regclass)
+		AND relrowsecurity AND relforcerowsecurity`).Scan(&forced); err != nil || forced != 3 {
 		t.Fatalf("tables with forced row security = %d, %v", forced, err)
 	}
-	// A row written the way the first migration allowed has no owner.
+	// A house row is ownerless, visible to everyone, and not connected until a call says so.
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('local', 'fake', 'house', 'local', true)`); err != nil {
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('local', 'fake', 'house', 'local', true, 'everyone')`); err != nil {
 		t.Fatal(err)
 	}
 	var global bool
-	if err := owner.QueryRow(ctx, `SELECT owner_user_id IS NULL AND status = 'Not connected' FROM gateway.provider_accounts`).Scan(&global); err != nil || !global {
-		t.Fatalf("existing-shaped row: global=%v err=%v", global, err)
-	}
-	var team, sharedID string
-	if err := owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Down migration team') RETURNING id::text`).Scan(&team); err != nil {
-		t.Fatal(err)
-	}
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('team shared', 'fake', 'team-ref', 'local', false) RETURNING id::text`).Scan(&sharedID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := owner.Exec(ctx, `INSERT INTO gateway.provider_account_teams (account_id, team_id) VALUES ($1::uuid, $2::uuid)`, sharedID, team); err != nil {
-		t.Fatal(err)
+		SELECT owner_user_id IS NULL AND house AND visibility = 'everyone' AND status = 'Not connected'
+		FROM gateway.provider_accounts`).Scan(&global); err != nil || !global {
+		t.Fatalf("existing-shaped row: global=%v err=%v", global, err)
 	}
 	if err := migrate.Down(ctx, owner, Schema, Migrations()); err != nil {
 		t.Fatalf("down: %v", err)
 	}
 	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
-		t.Fatalf("up after down with team rows: %v", err)
+		t.Fatalf("up after down: %v", err)
 	}
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 5 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 6 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
 	}
 }

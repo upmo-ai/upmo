@@ -91,11 +91,12 @@ export function changesOf(agent: AgentProfile, draft: AgentDraft): Partial<Agent
 /** One model a person can give an agent: a provider name and a model id. */
 export type ModelChoice = { provider: string; model: string };
 
-/** The usable models the signed-in person's accounts list, each provider and model once, in the order the accounts come. */
+/** The usable models of accounts the person may use, each provider and model once, in the order the accounts come. */
 export function modelChoices(accounts: readonly ProviderAccount[]): ModelChoice[] {
   const seen = new Set<string>();
   const out: ModelChoice[] = [];
   for (const account of accounts) {
+    if (!account.can_use) continue;
     for (const model of account.usable_models) {
       const key = choiceValue({ provider: account.provider, model });
       if (seen.has(key)) continue;
