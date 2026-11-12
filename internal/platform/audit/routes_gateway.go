@@ -6,13 +6,12 @@ package audit
 const exemptService = "service-to-service call; the originating brain action is recorded"
 
 func gatewayRoutes() []entry {
-	todo := Route{Todo: "UPM-272"}
 	exempt := Route{Exempt: exemptService}
 	return []entry{
-		{pattern: "POST /api/providers", route: todo},
-		{pattern: "POST /api/providers/test", route: todo},
-		{pattern: "PUT /api/providers/{id}", route: todo},
-		{pattern: "DELETE /api/providers/{id}", route: todo},
+		{pattern: "POST /api/providers", route: Route{Action: ProviderCreate}},
+		{pattern: "POST /api/providers/test", route: Route{Action: ProviderTest}},
+		{pattern: "PUT /api/providers/{id}", route: Route{Action: ProviderUpdate}},
+		{pattern: "DELETE /api/providers/{id}", route: Route{Action: ProviderDelete}},
 		{pattern: "POST /upmo.gateway.v1.Gateway/Chat", route: exempt},
 		{pattern: "POST /upmo.gateway.v1.Gateway/ChatStream", route: exempt},
 		{pattern: "POST /upmo.gateway.v1.Gateway/Decide", route: exempt},
