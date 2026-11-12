@@ -13,34 +13,27 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 )
 
-// maxAgentBody bounds an agent request: the instructions are at most 4000
-// characters, so this is generous.
 const maxAgentBody = 64 << 10
 
-// AccountList reads the provider accounts one person can use: their own and
-// the workspace's. The gateway's provider service answers it.
 type AccountList interface {
 	List(ctx context.Context, user string) ([]gateway.Provider, error)
 }
 
-// AgentsHandler serves a signed-in person's own agents and the global ones
-// beside them. Any signed-in person may use it; Access carries only
-// settings:manage in Allow, for a person who may write the global agents.
+// AgentTeams validates team ids against the workspace.
+type AgentTeams interface {
+	TeamNames(ctx context.Context, teamIDs []string) (map[string]string, error)
+}
+
 type AgentsHandler struct {
-	Agents app.AgentBook
-	Access func(r *http.Request) (app.Access, bool)
-	// Log records unexpected failures.
-	Log *slog.Logger
-	// Routes lists the workspace routes and Accounts the provider accounts
-	// the calling person can use; DefaultRoute is the one a chat takes when
-	// the agent names none. Together they mark each agent usable or not.
-	// Any missing source marks every agent not usable.
+	Agents       app.AgentBook
+	Teams        AgentTeams
+	Access       func(r *http.Request) (app.Access, bool)
+	Log          *slog.Logger
 	Routes       gateway.RouteBook
 	Accounts     AccountList
 	DefaultRoute string
 }
 
-// Mount registers the agent routes. guard runs first.
 func (h AgentsHandler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler) {
 	wrap := func(next http.HandlerFunc) http.Handler {
 		if guard == nil {
@@ -55,26 +48,33 @@ func (h AgentsHandler) Mount(mux *http.ServeMux, guard func(http.Handler) http.H
 }
 
 type agentJSON struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	PromptOverlay string `json:"prompt_overlay"`
-	Route         string `json:"route"`
-	ModelProvider string `json:"model_provider"`
-	ModelID       string `json:"model_id"`
-	Enabled       bool   `json:"enabled"`
-	// Usable says whether the calling person can pick the agent in the chat
-	// now: enabled, and its model, or its route, resolves to something
-	// usable. The rule is the gateway domain's; the sources are read here.
-	Usable   bool   `json:"usable"`
-	Scope    string `json:"scope"`
-	Editable bool   `json:"editable"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	PromptOverlay string   `json:"prompt_overlay"`
+	Route         string   `json:"route"`
+	ModelProvider string   `json:"model_provider"`
+	ModelID       string   `json:"model_id"`
+	Enabled       bool     `json:"enabled"`
+	Usable        bool     `json:"usable"`
+	Visibility    string   `json:"visibility"`
+	TeamIDs       []string `json:"team_ids"`
+	TeamNames     []string `json:"team_names"`
+	CanUse        bool     `json:"can_use"`
+	CanManage     bool     `json:"can_manage"`
 }
 
 func agentBody(a app.Agent, usable bool) agentJSON {
-	scope := "own"
-	if a.Global {
-		scope = "global"
+	teamIDs, teamNames := a.Share.TeamIDs, a.Share.TeamNames
+	if teamIDs == nil {
+		teamIDs = []string{}
+	}
+	if teamNames == nil {
+		teamNames = []string{}
+	}
+	visibility := a.Share.Visibility
+	if visibility == "" {
+		visibility = domain.VisibilityPrivate
 	}
 	return agentJSON{
 		ID:            a.ID,
@@ -86,8 +86,11 @@ func agentBody(a app.Agent, usable bool) agentJSON {
 		ModelID:       a.ModelID,
 		Enabled:       a.Enabled,
 		Usable:        usable,
-		Scope:         scope,
-		Editable:      a.Editable,
+		Visibility:    visibility,
+		TeamIDs:       teamIDs,
+		TeamNames:     teamNames,
+		CanUse:        a.Share.CanUse,
+		CanManage:     a.Share.CanManage,
 	}
 }
 
@@ -109,7 +112,6 @@ func (h AgentsHandler) person(w http.ResponseWriter, r *http.Request) (app.Acces
 	return access, true
 }
 
-// decode reads a bounded JSON body. It answers 400 or 413 itself on failure.
 func decodeAgent(w http.ResponseWriter, r *http.Request, into any) bool {
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBody)).Decode(into)
 	if err == nil {
@@ -133,9 +135,6 @@ func (h AgentsHandler) list(w http.ResponseWriter, r *http.Request) {
 	if h.refuse(w, err) {
 		return
 	}
-	// Read once for the whole list: what the person can use decides every
-	// row. A wired source that fails is a real failure; answering rows that
-	// all read unusable would hide the agents instead.
 	var (
 		routes   []gateway.ListedRoute
 		accounts []gateway.Provider
@@ -158,9 +157,6 @@ func (h AgentsHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// usableNow answers one agent's usable flag, reading the sources when they
-// are wired. A failed read is logged and counts as unusable: the write has
-// already succeeded, so the answer must not fail it.
 func (h AgentsHandler) usableNow(ctx context.Context, user string, a app.Agent) bool {
 	if h.Routes == nil || h.Accounts == nil {
 		return false
@@ -182,7 +178,6 @@ func (h AgentsHandler) usableNow(ctx context.Context, user string, a app.Agent) 
 	return gateway.UsableAgent(a.Enabled, a.Route, a.ModelProvider, a.ModelID, routes, accounts, h.DefaultRoute)
 }
 
-// sourceFailed answers a list whose usable sources could not be read.
 func (h AgentsHandler) sourceFailed(w http.ResponseWriter, err error) {
 	if h.Log != nil {
 		h.Log.Error("agents usable sources failed", "err", err)
@@ -196,23 +191,20 @@ func (h AgentsHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name          string `json:"name"`
-		Description   string `json:"description"`
-		PromptOverlay string `json:"prompt_overlay"`
-		Route         string `json:"route"`
-		ModelProvider string `json:"model_provider"`
-		ModelID       string `json:"model_id"`
-		Enabled       *bool  `json:"enabled"`
-		Scope         string `json:"scope"`
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		PromptOverlay string   `json:"prompt_overlay"`
+		Route         string   `json:"route"`
+		ModelProvider string   `json:"model_provider"`
+		ModelID       string   `json:"model_id"`
+		Enabled       *bool    `json:"enabled"`
+		Visibility    string   `json:"visibility"`
+		TeamIDs       []string `json:"team_ids"`
 	}
 	if !decodeAgent(w, r, &body) {
 		return
 	}
-	if body.Scope != "" && body.Scope != "own" && body.Scope != "global" {
-		writeError(w, http.StatusUnprocessableEntity, "The scope is own or global.")
-		return
-	}
-	made, err := app.CreateAgent(r.Context(), h.Agents, access, app.AgentFields{
+	made, err := app.CreateAgent(r.Context(), h.Agents, h.Teams, access, app.AgentFields{
 		Name:          body.Name,
 		Description:   body.Description,
 		PromptOverlay: body.PromptOverlay,
@@ -220,7 +212,9 @@ func (h AgentsHandler) create(w http.ResponseWriter, r *http.Request) {
 		ModelProvider: body.ModelProvider,
 		ModelID:       body.ModelID,
 		Enabled:       body.Enabled == nil || *body.Enabled,
-	}, body.Scope == "global")
+		Visibility:    body.Visibility,
+		TeamIDs:       body.TeamIDs,
+	})
 	if h.refuse(w, err) {
 		return
 	}
@@ -233,18 +227,20 @@ func (h AgentsHandler) change(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name          *string `json:"name"`
-		Description   *string `json:"description"`
-		PromptOverlay *string `json:"prompt_overlay"`
-		Route         *string `json:"route"`
-		ModelProvider *string `json:"model_provider"`
-		ModelID       *string `json:"model_id"`
-		Enabled       *bool   `json:"enabled"`
+		Name          *string   `json:"name"`
+		Description   *string   `json:"description"`
+		PromptOverlay *string   `json:"prompt_overlay"`
+		Route         *string   `json:"route"`
+		ModelProvider *string   `json:"model_provider"`
+		ModelID       *string   `json:"model_id"`
+		Enabled       *bool     `json:"enabled"`
+		Visibility    *string   `json:"visibility"`
+		TeamIDs       *[]string `json:"team_ids"`
 	}
 	if !decodeAgent(w, r, &body) {
 		return
 	}
-	made, err := app.ChangeAgent(r.Context(), h.Agents, access, r.PathValue("id"), app.AgentChange{
+	made, err := app.ChangeAgent(r.Context(), h.Agents, h.Teams, access, r.PathValue("id"), app.AgentChange{
 		Name:          body.Name,
 		Description:   body.Description,
 		PromptOverlay: body.PromptOverlay,
@@ -252,6 +248,8 @@ func (h AgentsHandler) change(w http.ResponseWriter, r *http.Request) {
 		ModelProvider: body.ModelProvider,
 		ModelID:       body.ModelID,
 		Enabled:       body.Enabled,
+		Visibility:    body.Visibility,
+		TeamIDs:       body.TeamIDs,
 	})
 	if h.refuse(w, err) {
 		return
@@ -270,9 +268,6 @@ func (h AgentsHandler) remove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// refuse answers a failed agent request with a fixed plain message. Nothing
-// from the error text reaches the caller except a validation message, which
-// is written by this context's domain and never carries input back.
 func (h AgentsHandler) refuse(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false
@@ -283,9 +278,11 @@ func (h AgentsHandler) refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusUnprocessableEntity, string(invalid))
 	case errors.Is(err, app.ErrAccess):
 		writeError(w, http.StatusForbidden, "unauthorised")
+	case errors.Is(err, app.ErrAgentCreate):
+		writeError(w, http.StatusForbidden, "You cannot create an agent.")
 	case errors.Is(err, app.ErrAgentNotFound):
 		writeError(w, http.StatusNotFound, "Not found.")
-	case errors.Is(err, app.ErrAgentGlobal):
+	case errors.Is(err, app.ErrAgentManaged):
 		writeError(w, http.StatusForbidden, "This agent is managed by your workspace.")
 	case errors.Is(err, app.ErrAgentDuplicate):
 		writeError(w, http.StatusConflict, "An agent with that name already exists.")

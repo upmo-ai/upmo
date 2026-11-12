@@ -607,8 +607,11 @@ const agentRow = (id: string, name: string, extra: Record<string, unknown> = {})
   model_id: "",
   enabled: true,
   usable: true,
-  scope: "own",
-  editable: true,
+  visibility: "private" as const,
+  team_ids: [] as string[],
+  team_names: [] as string[],
+  can_use: true,
+  can_manage: true,
   ...extra,
 });
 

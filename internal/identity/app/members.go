@@ -293,6 +293,19 @@ func (m Members) FolderAllow(ctx context.Context, id domain.UserID) (string, err
 	return strings.Join(names, ","), nil
 }
 
+// EffectiveAllow is every permission a joined person holds, comma-separated.
+func (m Members) EffectiveAllow(ctx context.Context, id domain.UserID) (string, error) {
+	subject, err := m.actor(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, permission := range domain.EffectivePermissions(subject) {
+		names = append(names, string(permission))
+	}
+	return strings.Join(names, ","), nil
+}
+
 // SettingsAllow is settings:manage when the person holds it, otherwise empty.
 func (m Members) SettingsAllow(ctx context.Context, id domain.UserID) (string, error) {
 	subject, err := m.actor(ctx, id)

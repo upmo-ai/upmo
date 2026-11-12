@@ -24,8 +24,11 @@ type Row = {
   model_id: string;
   enabled: boolean;
   usable: boolean;
-  scope: "own" | "global";
-  editable: boolean;
+  visibility: "private" | "team" | "everyone";
+  team_ids: string[];
+  team_names: string[];
+  can_use: boolean;
+  can_manage: boolean;
 };
 
 const mine: Row = {
@@ -38,8 +41,11 @@ const mine: Row = {
   model_id: "gpt-x",
   enabled: true,
   usable: true,
-  scope: "own",
-  editable: true,
+  visibility: "private",
+  team_ids: [],
+  team_names: [],
+  can_use: true,
+  can_manage: true,
 };
 const house: Row = {
   id: "g1",
@@ -51,10 +57,13 @@ const house: Row = {
   model_id: "",
   enabled: true,
   usable: true,
-  scope: "global",
-  editable: false,
+  visibility: "everyone",
+  team_ids: [],
+  team_names: [],
+  can_use: true,
+  can_manage: false,
 };
-const managed: Row = { ...house, id: "g2", name: "Managed", editable: true };
+const managed: Row = { ...house, id: "g2", name: "Managed", can_manage: true };
 
 type Call = { method: string; path: string; body: Record<string, unknown> | undefined };
 
@@ -76,6 +85,8 @@ function brain(rows: Row[], refuse?: (call: Call) => Response | undefined) {
       const refused = refuse?.({ method, path, body });
       if (refused) return refused;
       if (path === "/api/tasks") return Response.json([]);
+      if (path === "/api/providers/sharing") return Response.json({ can_share: false });
+      if (path === "/api/shares/teams") return Response.json([]);
       if (path === "/api/providers") {
         return Response.json([
           {
@@ -99,7 +110,21 @@ function brain(rows: Row[], refuse?: (call: Call) => Response | undefined) {
       }
       if (path === "/api/agents" && method === "GET") return Response.json(agents);
       if (path === "/api/agents" && method === "POST") {
-        const made = { id: "new1", usable: true, scope: "own", editable: true, ...body } as Row;
+        const made = {
+          id: "new1",
+          usable: true,
+          visibility: "private",
+          team_ids: [],
+          team_names: [],
+          can_use: true,
+          can_manage: true,
+          description: "",
+          prompt_overlay: "",
+          route: "",
+          model_provider: "",
+          model_id: "",
+          ...body,
+        } as Row;
         agents.push(made);
         return Response.json(made, { status: 201 });
       }
@@ -143,8 +168,8 @@ describe("agents page", () => {
     expect(within(own).queryByText("Shared")).toBeNull();
 
     const shared = screen.getByTestId("agent-card-g1");
-    expect(within(shared).getByText("Shared")).toBeTruthy();
-    expect(within(shared).getByText("Managed by your workspace. Read only.")).toBeTruthy();
+    expect(within(shared).getByText("Workspace")).toBeTruthy();
+    expect(within(shared).getByText("Shared with the whole workspace. Read only.")).toBeTruthy();
     expect(within(shared).queryByRole("button", { name: /Edit|Delete/ })).toBeNull();
     const cards = screen.getAllByTestId(/^agent-card-/).map((card) => card.getAttribute("data-testid"));
     expect(cards).toEqual(["agent-card-a1", "agent-card-g1"]);
@@ -155,9 +180,9 @@ describe("agents page", () => {
     renderAgents();
 
     const card = await screen.findByTestId("agent-card-g2");
-    expect(within(card).getByText("Shared")).toBeTruthy();
+    expect(within(card).getByText("Workspace")).toBeTruthy();
     expect(within(card).getByRole("button", { name: "Edit Managed" })).toBeTruthy();
-    expect(within(card).queryByText("Managed by your workspace. Read only.")).toBeNull();
+    expect(within(card).queryByText(/Read only/)).toBeNull();
   });
 
   it("creates an agent with its instructions, route and a model from the person's accounts", async () => {
@@ -255,6 +280,37 @@ describe("agents page", () => {
     expect(await screen.findByRole("heading", { name: "Add an agent" })).toBeTruthy();
   });
 
+  it("omits the sharing choice when the brain says the person may not share", async () => {
+    brain([managed]);
+    renderAgents();
+    click(await screen.findByRole("button", { name: "Edit Managed" }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).queryByText("Who can use this agent")).toBeNull());
+  });
+
+  it("hides the sharing choice unless the brain says the person may share", async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        const method = init?.method ?? "GET";
+        calls.push({ method, path, body: undefined });
+        if (path === "/api/providers/sharing") return Response.json({ can_share: true });
+        if (path === "/api/shares/teams") return Response.json([{ id: "t1", name: "Finance" }]);
+        if (path === "/api/tasks") return Response.json([]);
+        if (path === "/api/providers") return Response.json([]);
+        if (path === "/api/agents") return Response.json([]);
+        return new Response(null, { status: 404 });
+      }),
+    );
+    renderAgents();
+    click(await screen.findByRole("button", { name: "New agent" }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText("Who can use this agent")).toBeTruthy());
+    expect(calls.some((c) => c.path === "/api/providers/sharing")).toBe(true);
+  });
+
   it("says plainly when the list could not be loaded, never with the server's own words", async () => {
     brain([], (call) =>
       call.path === "/api/agents" ? Response.json({ error: "pq: relation secret" }, { status: 500 }) : undefined,
@@ -274,7 +330,7 @@ describe("agents page without a brain", () => {
     renderAgents();
 
     const sample = await screen.findByTestId("agent-card-agent-research");
-    expect(within(sample).getByText("Shared")).toBeTruthy();
+    expect(within(sample).getByText("Workspace")).toBeTruthy();
     expect(within(sample).queryByRole("button", { name: /Edit|Delete/ })).toBeNull();
 
     click(screen.getByRole("button", { name: "New agent" }));

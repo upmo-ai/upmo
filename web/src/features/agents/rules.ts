@@ -9,6 +9,8 @@ const routeName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** What the form holds for an agent: the input, with the model as one picked value. */
 export type AgentDraft = AgentInput;
 
+export type ShareAsk = "private" | "team" | "everyone";
+
 export function emptyDraft(): AgentDraft {
   return {
     name: "",
@@ -18,6 +20,8 @@ export function emptyDraft(): AgentDraft {
     model_provider: "",
     model_id: "",
     enabled: true,
+    visibility: "private",
+    team_ids: [],
   };
 }
 
@@ -30,7 +34,33 @@ export function draftOf(agent: AgentProfile): AgentDraft {
     model_provider: agent.model_provider,
     model_id: agent.model_id,
     enabled: agent.enabled,
+    visibility: agent.visibility,
+    team_ids: [...agent.team_ids],
   };
+}
+
+export function shareChoiceChanged(agent: AgentProfile, scope: ShareAsk, teams: readonly string[]): boolean {
+  if (scope !== agent.visibility) return true;
+  if (scope !== "team") return false;
+  if (teams.length !== agent.team_ids.length) return true;
+  const have = new Set(agent.team_ids);
+  return teams.some((id) => !have.has(id));
+}
+
+/** PATCH body for saving an existing agent, including sharing when offered. */
+export function savePatch(
+  agent: AgentProfile,
+  draft: AgentDraft,
+  shareScope: ShareAsk,
+  shareTeams: readonly string[],
+  offerSharing: boolean,
+): Partial<AgentInput> {
+  const patch = changesOf(agent, { ...draft, visibility: shareScope, team_ids: [...shareTeams] });
+  if (offerSharing && shareChoiceChanged(agent, shareScope, shareTeams)) {
+    patch.visibility = shareScope;
+    if (shareScope === "team") patch.team_ids = [...shareTeams];
+  }
+  return patch;
 }
 
 /** The first thing wrong with a name, as a sentence, or null. The brain checks the same limits. */
@@ -68,13 +98,20 @@ export function draftProblem(draft: AgentDraft): string | null {
 
 /** The draft as the brain takes it: every text trimmed. */
 export function trimmedDraft(draft: AgentDraft): AgentDraft {
-  return {
+  const out: AgentDraft = {
     ...draft,
     name: draft.name.trim(),
     description: draft.description.trim(),
     prompt_overlay: draft.prompt_overlay.trim(),
     route: draft.route.trim(),
   };
+  if (out.visibility === "private") {
+    delete out.visibility;
+    delete out.team_ids;
+  } else if (out.visibility === "everyone") {
+    delete out.team_ids;
+  }
+  return out;
 }
 
 /** The fields of a draft that differ from the agent it was made from. */
@@ -83,7 +120,13 @@ export function changesOf(agent: AgentProfile, draft: AgentDraft): Partial<Agent
   const before = draftOf(agent);
   const out: Partial<AgentInput> = {};
   for (const key of Object.keys(before) as (keyof AgentInput)[]) {
-    if (before[key] !== next[key]) Object.assign(out, { [key]: next[key] });
+    const a = before[key];
+    const b = next[key];
+    if (key === "team_ids" && Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length || a.some((id, i) => id !== b[i])) out.team_ids = b;
+      continue;
+    }
+    if (a !== b) Object.assign(out, { [key]: b });
   }
   return out;
 }

@@ -1213,7 +1213,7 @@ func TestThePinGoesFromTheLineToTheGatewayAndARetryReusesItUnlessOverridden(t *t
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
 	ctx := context.Background()
-	made, err := r.store.CreateAgent(ctx, ownerAccess, app.AgentFields{Name: "Research", Enabled: true}, false)
+	made, err := r.store.CreateAgent(ctx, ownerAccess, app.AgentFields{Name: "Research", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
