@@ -126,6 +126,8 @@ func run() error {
 	// app role's to insert and read, never to move. The owner pool stays
 	// open until work.Stop has drained the workers at shutdown.
 	audit.AddSealer(workers, owner, os.Stdout)
+	audit.AddRetention(workers, owner, cfg.AuditRetentionDays)
+	audit.AddVerifier(workers, owner)
 	noticeStore := notices.Store{Pool: pool}
 	memoryFacts := memory.NewFacts(pool)
 	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
@@ -182,7 +184,8 @@ func run() error {
 	work, err := jobs.Open(pool,
 		jobs.WithWorkers(workers),
 		jobs.WithQueue(chat.ReplyQueue, cfg.ChatWorkers),
-		jobs.WithPeriodic(chat.SweepPeriodic(), audit.SealPeriodic()),
+		jobs.WithPeriodic(chat.SweepPeriodic(), audit.SealPeriodic(),
+			audit.RetentionPeriodic(), audit.VerifyPeriodic()),
 	)
 	if err != nil {
 		return err
