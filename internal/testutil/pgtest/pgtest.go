@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -62,6 +63,60 @@ func App(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// appLoginPassword is the fixed password AppLogin logs in with. The role is
+// cluster-wide, so parallel test packages would race on per-call passwords;
+// one fixed test-cluster password has nothing to race on.
+const appLoginPassword = "pgtest-upmo-app" // #nosec G101 -- a test cluster's password, never a real credential
+
+// AppLogin returns a pool on the same database as owner that really logs in
+// as upmo_app with a password, the way the brain request pool does: no SET
+// ROLE, the login itself is the app role. The identity migration (or any
+// other) must have created the role already.
+func AppLogin(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(AppLoginURL(t, owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// AppLoginURL sets the app role's password through owner and returns a URL
+// that logs in as upmo_app on owner's own database.
+func AppLoginURL(t *testing.T, owner *pgxpool.Pool) string {
+	t.Helper()
+	var stmt string
+	if err := owner.QueryRow(context.Background(),
+		"SELECT format('ALTER ROLE upmo_app WITH LOGIN PASSWORD %L', $1::text)", appLoginPassword,
+	).Scan(&stmt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(context.Background(), stmt); err != nil {
+		t.Fatal(err)
+	}
+	return loginURL(t, owner, "upmo_app", appLoginPassword)
+}
+
+// loginURL builds a URL for user with password on owner's own database. The
+// pool's ConnString points at the base database, so the path is set from the
+// pool's live config.
+func loginURL(t *testing.T, owner *pgxpool.Pool, user, password string) string {
+	t.Helper()
+	u, err := url.Parse(owner.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(user, password)
+	u.Path = "/" + owner.Config().ConnConfig.Database
+	return u.String()
 }
 
 func useAppRole(cfg *pgxpool.Config) {
