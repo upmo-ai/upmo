@@ -482,6 +482,64 @@ func TestTwoFinishesRedeemOneLink(t *testing.T) {
 	}
 }
 
+// Saving a challenge sweeps links that expired over a day ago; a link expired
+// an hour ago and a valid one stay.
+func TestChallengeSaveSweepsExpiredLinks(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	pool, ctx := up(t)
+	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
+	sessions.Now = func() time.Time { return now }
+	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	passkeys.Now = sessions.Now
+	ada, err := domain.ParseUserID(seedOwner(t, pool, ctx, "ada@example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := now.Add(-48 * time.Hour)
+	for _, at := range []time.Time{expired, now.Add(-time.Hour), now.Add(time.Hour)} {
+		token, _, err := domain.NewToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO identity.sign_in_links (token_hash, user_id, purpose, expires_at)
+			VALUES ($1, $2, 'recover', $3)`, domain.Hash(token), ada, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := passkeys.BeginSignIn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var left []time.Time
+	rows, err := pool.Query(ctx, `SELECT expires_at FROM identity.sign_in_links WHERE user_id = $1`, ada)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var at time.Time
+		if err := rows.Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, at)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Time{now.Add(-time.Hour), now.Add(time.Hour)}
+	if len(left) != len(want) {
+		t.Fatalf("links left = %v, want %v", left, want)
+	}
+	for _, at := range left {
+		if at.Equal(expired) {
+			t.Fatalf("links left = %v, want the two-day-old link gone", left)
+		}
+	}
+}
+
 func TestIPv6PrefixSharesAThrottleBucket(t *testing.T) {
 	_, mux, _, _ := identityMux(t, time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC))
 	for range domain.ThrottleBurst {

@@ -149,6 +149,36 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestLoadDatabaseAppURL(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseAppURL != "" {
+		t.Fatalf("default = %q, want empty", cfg.DatabaseAppURL)
+	}
+	if _, err := loadBrain(lookupFrom(base)); err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_APP_URL is required") {
+		t.Fatalf("brain without an app URL: %v", err)
+	}
+	base["UPMO_DATABASE_APP_URL"] = "postgres://upmo_app:s3cret@localhost/upmo"
+	cfg, err = loadBrain(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseAppURL != "postgres://upmo_app:s3cret@localhost/upmo" { // #nosec G101 -- a fake password in a config test
+		t.Fatalf("DatabaseAppURL = %q", cfg.DatabaseAppURL)
+	}
+	// A load error still comes through before the app URL is checked.
+	delete(base, "UPMO_PUBLIC_URL")
+	if _, err := loadBrain(lookupFrom(base)); err == nil || !strings.Contains(err.Error(), "UPMO_PUBLIC_URL") {
+		t.Fatalf("brain without a public URL: %v", err)
+	}
+}
+
 func TestLoadRejectsIdleLongerThanMaxAge(t *testing.T) {
 	_, err := load(lookupFrom(map[string]string{
 		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",

@@ -17,6 +17,9 @@ import (
 // Keyring holds the master keys that seal the provider keys people add.
 type Keyring = domain.Keyring
 
+// Sealed is a credential as stored: ciphertext, its nonce and the key id.
+type Sealed = domain.Sealed
+
 // The configuration names. The current key is UPMO_MASTER_KEY, base64 of
 // exactly 32 bytes, named by UPMO_MASTER_KEY_ID ("k1" when unset). An older
 // key that still opens credentials sealed with it is
