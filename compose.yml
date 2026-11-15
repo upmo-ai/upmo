@@ -47,6 +47,9 @@ services:
         condition: service_healthy
     environment:
       UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
+      # Dev only. Never reuse outside the local compose stack. The request
+      # pool logs in as the app role, which owns nothing.
+      UPMO_DATABASE_APP_URL: postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable
       UPMO_PUBLIC_URL: http://localhost:5173
       # brain reaches sandboxd only over HTTP, signed with the service key; it
       # never gets the engine socket. A task that needs a sandbox
