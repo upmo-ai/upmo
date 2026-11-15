@@ -23,6 +23,13 @@ func (p Passkeys) SweepChallenges(ctx context.Context, now time.Time) error {
 	return err
 }
 
+// SweepLinks deletes links that expired over a day ago, so a used link with a
+// future expiry stays until it expires.
+func (p Passkeys) SweepLinks(ctx context.Context, now time.Time) error {
+	_, err := p.Pool.Exec(ctx, `DELETE FROM identity.sign_in_links WHERE expires_at <= $1`, now.Add(-24*time.Hour))
+	return err
+}
+
 func (p Passkeys) SaveChallenge(ctx context.Context, hash, session []byte, purpose string, user *domain.UserID, expires time.Time) error {
 	_, err := p.Pool.Exec(ctx, `
 		INSERT INTO identity.webauthn_challenges (token_hash, session, purpose, user_id, expires_at)

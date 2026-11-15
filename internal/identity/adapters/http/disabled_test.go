@@ -122,6 +122,7 @@ func (disabledPassword) ClaimOffer(context.Context, domain.UserID, time.Time) (b
 type disabledPass struct{}
 
 func (disabledPass) SweepChallenges(context.Context, time.Time) error { return nil }
+func (disabledPass) SweepLinks(context.Context, time.Time) error      { return nil }
 func (disabledPass) SaveChallenge(context.Context, []byte, []byte, string, *domain.UserID, time.Time) error {
 	return nil
 }
