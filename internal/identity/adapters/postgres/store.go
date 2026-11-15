@@ -126,16 +126,14 @@ func (p Passkeys) RedeemLink(ctx context.Context, user domain.UserID, linkHash [
 			return nil
 		},
 		func(tx pgx.Tx) error {
-			tag, err := tx.Exec(ctx, `
-				UPDATE identity.sign_in_links SET used_at = $2
-				WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $2`, linkHash, now)
-			if err != nil {
+			var spent bool
+			if err := tx.QueryRow(ctx, `SELECT identity.link_spend($1, $2)`, linkHash, now).Scan(&spent); err != nil {
 				return err
 			}
-			if tag.RowsAffected() != 1 {
+			if !spent {
 				return app.ErrInvalidLink
 			}
-			_, err = tx.Exec(ctx, `
+			_, err := tx.Exec(ctx, `
 				INSERT INTO identity.passkeys (
 				  user_id, credential_id, public_key, sign_count, aaguid, transports,
 				  backup_eligible, backup_state, attestation, name, created_at)
