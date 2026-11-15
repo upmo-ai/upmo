@@ -293,9 +293,22 @@ $$;
 
 GRANT USAGE ON SCHEMA identity TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO upmo_app;
+-- A table-wide grant cannot lose one column, so the hash-bearing tables keep
+-- their blanket grants and get SELECT narrowed to the non-secret columns.
+-- Hash lookups run through the definer functions below instead.
+REVOKE SELECT ON identity.sessions FROM upmo_app;
+GRANT SELECT (id, user_id, created_at, last_seen_at, expires_at, sign_in_method, signed_in_at, user_agent) ON identity.sessions TO upmo_app;
+REVOKE SELECT ON identity.api_tokens FROM upmo_app;
+GRANT SELECT (id, user_id, name, scope, created_at, expires_at, last_used_at) ON identity.api_tokens TO upmo_app;
+REVOKE SELECT ON identity.sign_in_links FROM upmo_app;
+GRANT SELECT (id, user_id, purpose, expires_at, used_at) ON identity.sign_in_links TO upmo_app;
+REVOKE SELECT ON identity.webauthn_challenges FROM upmo_app;
+GRANT SELECT (purpose, user_id, expires_at) ON identity.webauthn_challenges TO upmo_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA identity TO upmo_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA identity TO upmo_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO upmo_app;
+-- A future identity table gets no SELECT by default: reading it needs an
+-- explicit grant.
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT INSERT, UPDATE, DELETE ON TABLES TO upmo_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT USAGE, SELECT ON SEQUENCES TO upmo_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT EXECUTE ON FUNCTIONS TO upmo_app;
 REVOKE ALL ON identity.goose_db_version FROM upmo_app;
@@ -416,6 +429,137 @@ $$;
 
 REVOKE ALL ON FUNCTION identity.protect(regclass) FROM PUBLIC;
 REVOKE ALL ON FUNCTION identity.protect(regclass) FROM upmo_app;
+
+-- Hash lookups for upmo_app, which cannot read the hash columns directly.
+-- Each one is a definer function over the secret columns only, so a leaked
+-- app credential still cannot bulk-read them.
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.session_find(hash bytea)
+RETURNS TABLE (
+  id uuid,
+  user_id uuid,
+  created_at timestamptz,
+  last_seen_at timestamptz,
+  expires_at timestamptz,
+  sign_in_method text,
+  signed_in_at timestamptz,
+  role_id uuid
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT session.id, session.user_id, session.created_at, session.last_seen_at,
+         session.expires_at, session.sign_in_method, session.signed_in_at,
+         person.role_id
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  WHERE session.token_hash = hash
+    AND person.disabled_at IS NULL
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.session_find(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.session_find(bytea) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.token_find(hash bytea)
+RETURNS TABLE (
+  id uuid,
+  name text,
+  scope text[],
+  created_at timestamptz,
+  expires_at timestamptz,
+  last_used_at timestamptz,
+  person_id uuid,
+  disabled boolean,
+  joined boolean,
+  role_id uuid,
+  role_key text,
+  permissions text[]
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT token.id, token.name, token.scope, token.created_at, token.expires_at,
+         token.last_used_at, person.id, person.disabled_at IS NOT NULL,
+         person.joined_at IS NOT NULL, person.role_id, COALESCE(role.key, ''),
+         role.permissions
+  FROM identity.api_tokens AS token
+  JOIN identity.users AS person ON person.id = token.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE token.token_hash = hash
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.token_find(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.token_find(bytea) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.link_find(hash bytea, at timestamptz)
+RETURNS TABLE (user_id uuid, purpose text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT link.user_id, link.purpose
+  FROM identity.sign_in_links AS link
+  JOIN identity.users AS person ON person.id = link.user_id
+  WHERE link.token_hash = hash
+    AND link.used_at IS NULL
+    AND link.expires_at > at
+    AND person.disabled_at IS NULL
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.link_find(bytea, timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.link_find(bytea, timestamptz) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.link_spend(hash bytea, at timestamptz)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  UPDATE identity.sign_in_links AS link
+  SET used_at = at
+  WHERE link.token_hash = hash
+    AND link.used_at IS NULL
+    AND link.expires_at > at;
+  RETURN FOUND;
+END
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.link_spend(bytea, timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.link_spend(bytea, timestamptz) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.challenge_take(hash bytea, at timestamptz)
+RETURNS TABLE (session jsonb, purpose text, user_id uuid)
+LANGUAGE sql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  DELETE FROM identity.webauthn_challenges AS challenge
+  WHERE challenge.token_hash = hash
+    AND challenge.expires_at > at
+  RETURNING challenge.session, challenge.purpose, challenge.user_id
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.challenge_take(bytea, timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.challenge_take(bytea, timestamptz) TO upmo_app;
+
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA identity FROM PUBLIC;
 
 -- +goose StatementBegin
@@ -430,6 +574,11 @@ $$;
 
 -- +goose Down
 
+DROP FUNCTION IF EXISTS identity.challenge_take(bytea, timestamptz);
+DROP FUNCTION IF EXISTS identity.link_spend(bytea, timestamptz);
+DROP FUNCTION IF EXISTS identity.link_find(bytea, timestamptz);
+DROP FUNCTION IF EXISTS identity.token_find(bytea);
+DROP FUNCTION IF EXISTS identity.session_find(bytea);
 DROP FUNCTION IF EXISTS identity.protect(regclass);
 DROP FUNCTION IF EXISTS identity.may(text, text, uuid, text, uuid, uuid);
 REVOKE ALL ON ALL TABLES IN SCHEMA identity FROM upmo_app;

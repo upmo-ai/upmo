@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -54,7 +55,7 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadBrain()
 	if err != nil {
 		return err
 	}
@@ -116,7 +117,10 @@ func run() error {
 		return err
 	}
 	defer owner.Close()
-	pool, err := requestPool(ctx, cfg.DatabaseURL)
+	if err := enableAppLogin(ctx, owner, cfg.DatabaseAppURL); err != nil {
+		return err
+	}
+	pool, err := openAppPool(ctx, owner, cfg.DatabaseAppURL)
 	if err != nil {
 		return err
 	}
@@ -216,8 +220,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// The stream hub listens on one connection of its own, made from the
-	// same URL as the pool, and closes every open stream when the server
+	// The stream hub listens on one connection of its own, on the owner
+	// credential only, and closes every open stream when the server
 	// shuts down so a 30 minute stream does not hold the shutdown.
 	listenConn, err := pgx.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
@@ -325,12 +329,12 @@ func taskSandboxes(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*ru
 	return boxes, nil
 }
 
-// requestPool opens connections that run as upmo_app, which owns nothing, and
-// sets that role again on every checkout.
+// requestPool opens connections that log in as upmo_app, which owns nothing,
+// and sets that role again on every checkout.
 func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		return nil, err
+		return nil, appPoolError(url)
 	}
 	setRole := func(ctx context.Context, conn *pgx.Conn) error {
 		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
@@ -341,14 +345,33 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		err := setRole(ctx, conn)
 		return err == nil, err
 	}
-	return pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, appPoolError(url)
+	}
+	return pool, nil
+}
+
+// appPoolError reports a request pool that did not open. The parse and
+// connect errors name the URL, which holds the password and would reach the
+// brain stopped log, so only the host is kept from it.
+func appPoolError(appURL string) error {
+	if u, err := url.Parse(appURL); err == nil && u.Host != "" {
+		return fmt.Errorf("brain: UPMO_DATABASE_APP_URL could not be opened (host %s)", u.Host)
+	}
+	return errors.New("brain: UPMO_DATABASE_APP_URL could not be opened")
 }
 
 func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
+	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		return nil, err
+	}
 	passwords := identity.Passwords(pool, sessions)
+	passwords.Sealer = passwordSealer{keys: masterKeys}
 	tokens := identity.APITokens(pool, log)
 	identity.MountAPITokens(mux, sessions, tokens, log, passwords.HasPassword, pool, cfg.TrustedProxies)
 	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
@@ -580,10 +603,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
-	if err != nil {
-		return nil, err
-	}
+	// One keyring for the whole process: it seals the stored password hashes
+	// and the provider keys people add.
 	// A local-plan account reaches private addresses on the workspace's own
 	// network, so it stays with the people who manage the settings; every
 	// other plan stays open to each person's own accounts.

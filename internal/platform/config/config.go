@@ -16,6 +16,10 @@ import (
 type Config struct {
 	// DatabaseURL is the Postgres URL (UPMO_DATABASE_URL). It is required.
 	DatabaseURL string
+	// DatabaseAppURL is the Postgres URL the request pool logs in with, as
+	// the upmo_app role (UPMO_DATABASE_APP_URL). It is required for brain;
+	// gateway and sandboxd never read it.
+	DatabaseAppURL string
 	// SessionIdle ends a session with no requests (UPMO_SESSION_IDLE_TIMEOUT).
 	SessionIdle time.Duration
 	// SessionMaxAge is the absolute session lifetime (UPMO_SESSION_MAX_AGE).
@@ -94,6 +98,23 @@ func Load() (Config, error) {
 	return load(os.LookupEnv)
 }
 
+// LoadBrain reads the brain configuration from the environment. Brain alone
+// opens a request pool, so UPMO_DATABASE_APP_URL is required for it.
+func LoadBrain() (Config, error) {
+	return loadBrain(os.LookupEnv)
+}
+
+func loadBrain(lookup func(string) (string, bool)) (Config, error) {
+	cfg, err := load(lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.DatabaseAppURL == "" {
+		return Config{}, fmt.Errorf("config: UPMO_DATABASE_APP_URL is required")
+	}
+	return cfg, nil
+}
+
 func load(lookup func(string) (string, bool)) (Config, error) {
 	cfg := Config{
 		ListenAddr:         ":8080",
@@ -110,6 +131,9 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("config: UPMO_DATABASE_URL is required")
 	}
 	cfg.DatabaseURL = v
+	if v, ok := lookup("UPMO_DATABASE_APP_URL"); ok {
+		cfg.DatabaseAppURL = v
+	}
 	public, ok := lookup("UPMO_PUBLIC_URL")
 	if !ok || public == "" {
 		return Config{}, fmt.Errorf("config: UPMO_PUBLIC_URL is required")

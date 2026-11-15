@@ -59,12 +59,9 @@ func (s Sessions) Insert(ctx context.Context, user domain.UserID, hash []byte, c
 func (s Sessions) Find(ctx context.Context, hash []byte) (app.Row, bool, error) {
 	var row app.Row
 	err := s.Pool.QueryRow(ctx, `
-		SELECT session.id::text, session.user_id, session.created_at, session.last_seen_at, session.expires_at,
-		       session.sign_in_method, session.signed_in_at, person.role_id::text
-		FROM identity.sessions AS session
-		JOIN identity.users AS person ON person.id = session.user_id
-		WHERE session.token_hash = $1
-		  AND person.disabled_at IS NULL`, hash).Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn, &row.RoleID)
+		SELECT id::text, user_id, created_at, last_seen_at, expires_at,
+		       sign_in_method, signed_in_at, role_id::text
+		FROM identity.session_find($1)`, hash).Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn, &row.RoleID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Row{}, false, nil
 	}
