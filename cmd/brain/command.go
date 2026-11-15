@@ -30,6 +30,8 @@ func command(name string, args []string) error {
 		return err
 	}
 	ctx := context.Background()
+	// Operator commands keep the owner credential: they migrate and write as
+	// the schema owner, and never open a request pool.
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
