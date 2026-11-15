@@ -289,6 +289,8 @@ export function ChatPage() {
     (input: { id: string; body: string; picks: ChatPicks }) => api.chats.send(input.id, input.body, input.picks),
     [chatsQueryKey(), chatQueryKey(activeId ?? "")],
     {
+      // The composer words a failure itself, so the shell banner does not.
+      shown: true,
       onSuccess: (_, input) => {
         // The chat the line went to may no longer be the open one.
         void queryClient.invalidateQueries({ queryKey: chatQueryKey(input.id) });
@@ -309,6 +311,7 @@ export function ChatPage() {
     (input: { id: string; lineId: string; picks: ChatPicks }) => api.chats.retry(input.id, input.lineId, input.picks),
     [chatQueryKey(activeId ?? "")],
     {
+      shown: true,
       onSuccess: (_, input) => {
         setAsked((before) => ({ ...before, [input.id]: true }));
       },
