@@ -31,7 +31,19 @@ func Passkeys(pool *pgxpool.Pool, sessions app.Service, publicURL, rpID string, 
 	}, nil
 }
 
+// PasswordSealer seals and opens a stored password hash. The brain wires it
+// from the master keyring.
+type PasswordSealer = app.PasswordSealer
+
+var (
+	// ErrNoSealer means no master key is wired, so no password hash can be stored.
+	ErrNoSealer = app.ErrNoSealer
+	// PasswordRef is the seal ref of one person's stored password hash.
+	PasswordRef = app.PasswordRef
+)
+
 // Passwords builds the password use case on the same pool as the passkeys.
+// The caller sets the returned value's Sealer from the master keyring.
 func Passwords(pool *pgxpool.Pool, sessions app.Service) app.Passwords {
 	return app.Passwords{Sessions: sessions, Store: postgres.Passkeys{Pool: pool}}
 }

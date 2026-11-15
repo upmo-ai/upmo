@@ -35,6 +35,7 @@ type Ceremonies interface {
 // PassStore is the passkey tables.
 type PassStore interface {
 	SweepChallenges(ctx context.Context, now time.Time) error
+	SweepLinks(ctx context.Context, now time.Time) error
 	SaveChallenge(ctx context.Context, hash, session []byte, purpose string, user *domain.UserID, expires time.Time) error
 	TakeChallenge(ctx context.Context, hash []byte, now time.Time) (session []byte, purpose string, user domain.UserID, ok bool, err error)
 	InsertLink(ctx context.Context, hash []byte, user domain.UserID, purpose string, expires time.Time) error
@@ -343,6 +344,9 @@ func (p Passkeys) begin(ctx context.Context, purpose string, user *domain.UserID
 
 func (p Passkeys) save(ctx context.Context, session []byte, purpose string, user *domain.UserID) (string, error) {
 	if err := p.Store.SweepChallenges(ctx, p.now()); err != nil {
+		return "", err
+	}
+	if err := p.Store.SweepLinks(ctx, p.now()); err != nil {
 		return "", err
 	}
 	token, text, err := domain.NewToken()
