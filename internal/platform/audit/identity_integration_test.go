@@ -27,6 +27,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 // kit is the identity area on one mux, wrapped by the audit middleware.
@@ -47,6 +48,7 @@ func newKit(t *testing.T) *kit {
 		t.Fatal(err)
 	}
 	passwords := identity.Passwords(appPool, sessions)
+	passwords.Sealer = sealer.New(t)
 	mux := http.NewServeMux()
 	// MountAPITokens registers the session routes and accepts a bearer on
 	// GET /api/session, as brain does; there is no separate MountSessions.

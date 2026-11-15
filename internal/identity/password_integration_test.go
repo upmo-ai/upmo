@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestPasswordSignIn(t *testing.T) {
@@ -33,6 +35,7 @@ func TestPasswordSignIn(t *testing.T) {
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
 	passwords := identity.Passwords(pool, sessions)
+	passwords.Sealer = sealer.New(t)
 	passwords.Now = sessions.Now
 	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -119,7 +122,11 @@ func TestPasswordSignIn(t *testing.T) {
 	salt := []byte("salt-is-16-bytes")
 	key := argon2.IDKey([]byte(password), salt, 1, 8, 1, 16)
 	weak := "$argon2id$v=19$m=8,t=1,p=1$" + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(key)
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, user, weak); err != nil {
+	sealedWeak, err := passwords.Sealer.Seal(identity.PasswordRef(user), weak)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, user, sealedWeak); err != nil {
 		t.Fatal(err)
 	}
 	replaced := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "ada@example.com", "password": password})
@@ -130,8 +137,15 @@ func TestPasswordSignIn(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains([]byte(stored), []byte("m=19456,t=2,p=1")) {
-		t.Fatalf("stored hash = %s", stored)
+	if strings.HasPrefix(stored, "$argon2id$") {
+		t.Fatalf("the rehash left a plain hash: %s", stored)
+	}
+	rehashed, err := passwords.Sealer.Open(identity.PasswordRef(user), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains([]byte(rehashed), []byte("m=19456,t=2,p=1")) {
+		t.Fatalf("stored hash = %s", rehashed)
 	}
 
 	wrong := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "ada@example.com", "password": "not the password!!"})
