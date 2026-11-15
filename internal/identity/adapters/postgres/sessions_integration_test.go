@@ -42,7 +42,8 @@ func TestSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var hash []byte
-	if err := pool.QueryRow(ctx, `SELECT token_hash FROM identity.sessions WHERE id = $1`, adaSession.ID).Scan(&hash); err != nil {
+	// token_hash is revoked from upmo_app, so the probe reads it as owner.
+	if err := owner.QueryRow(ctx, `SELECT token_hash FROM identity.sessions WHERE id = $1`, adaSession.ID).Scan(&hash); err != nil {
 		t.Fatal(err)
 	}
 	if len(hash) != 32 {

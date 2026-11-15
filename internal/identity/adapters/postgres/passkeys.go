@@ -33,9 +33,8 @@ func (p Passkeys) SaveChallenge(ctx context.Context, hash, session []byte, purpo
 func (p Passkeys) TakeChallenge(ctx context.Context, hash []byte, now time.Time) (session []byte, purpose string, user domain.UserID, ok bool, err error) {
 	var id *domain.UserID
 	err = p.Pool.QueryRow(ctx, `
-		DELETE FROM identity.webauthn_challenges
-		WHERE token_hash = $1 AND expires_at > $2
-		RETURNING session, purpose, user_id`, hash, now).Scan(&session, &purpose, &id)
+		SELECT session, purpose, user_id
+		FROM identity.challenge_take($1, $2)`, hash, now).Scan(&session, &purpose, &id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", domain.UserID{}, false, nil
 	}
@@ -57,13 +56,8 @@ func (p Passkeys) InsertLink(ctx context.Context, hash []byte, user domain.UserI
 
 func (p Passkeys) FindLink(ctx context.Context, hash []byte, now time.Time) (user domain.UserID, purpose string, ok bool, err error) {
 	err = p.Pool.QueryRow(ctx, `
-		SELECT link.user_id, link.purpose
-		FROM identity.sign_in_links AS link
-		JOIN identity.users AS person ON person.id = link.user_id
-		WHERE link.token_hash = $1
-		  AND link.used_at IS NULL
-		  AND link.expires_at > $2
-		  AND person.disabled_at IS NULL`, hash, now).Scan(&user, &purpose)
+		SELECT user_id, purpose
+		FROM identity.link_find($1, $2)`, hash, now).Scan(&user, &purpose)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.UserID{}, "", false, nil
 	}
@@ -74,13 +68,11 @@ func (p Passkeys) FindLink(ctx context.Context, hash []byte, now time.Time) (use
 }
 
 func (p Passkeys) SpendLink(ctx context.Context, hash []byte, now time.Time) error {
-	tag, err := p.Pool.Exec(ctx, `
-		UPDATE identity.sign_in_links SET used_at = $2
-		WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $2`, hash, now)
-	if err != nil {
+	var spent bool
+	if err := p.Pool.QueryRow(ctx, `SELECT identity.link_spend($1, $2)`, hash, now).Scan(&spent); err != nil {
 		return err
 	}
-	if tag.RowsAffected() != 1 {
+	if !spent {
 		return errSpent
 	}
 	return nil
