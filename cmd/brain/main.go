@@ -348,7 +348,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
+	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		return nil, err
+	}
 	passwords := identity.Passwords(pool, sessions)
+	passwords.Sealer = passwordSealer{keys: masterKeys}
 	tokens := identity.APITokens(pool, log)
 	identity.MountAPITokens(mux, sessions, tokens, log, passwords.HasPassword, pool, cfg.TrustedProxies)
 	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
@@ -580,10 +585,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.Mount(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
-	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
-	if err != nil {
-		return nil, err
-	}
+	// One keyring for the whole process: it seals the stored password hashes
+	// and the provider keys people add.
 	// A local-plan account reaches private addresses on the workspace's own
 	// network, so it stays with the people who manage the settings; every
 	// other plan stays open to each person's own accounts.

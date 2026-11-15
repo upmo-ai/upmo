@@ -99,7 +99,7 @@ func bootstrap(ctx context.Context, passkeys identity.PasskeyService, args []str
 	if _, err := fmt.Fprintln(os.Stdout, passkeys.LinkURL(token)); err != nil {
 		return err
 	}
-	slog.Info("bootstrap link issued", "email", *email)
+	slog.Info("bootstrap link issued")
 	return nil
 }
 
@@ -123,6 +123,6 @@ func recover(ctx context.Context, passkeys identity.PasskeyService, members iden
 	if _, err := fmt.Fprintln(os.Stdout, passkeys.LinkURL(token)); err != nil {
 		return err
 	}
-	slog.Info("recover link issued", "email", *email)
+	slog.Info("recover link issued")
 	return nil
 }
