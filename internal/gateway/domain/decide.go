@@ -30,10 +30,16 @@ type DecideRequest struct {
 }
 
 // DecideResult is the model's pick. YesNo is set for yesno; Choice is the
-// matching option for choice.
+// matching option for choice. Usage and pricing fields are populated by
+// Dispatch.
 type DecideResult struct {
-	YesNo  bool
-	Choice string
+	YesNo         bool
+	Choice        string
+	Model         string
+	Usage         Usage
+	CostUSD       *float64
+	CostMicroUSD  *int64
+	ContextWindow int
 }
 
 func (d Decision) known() bool {

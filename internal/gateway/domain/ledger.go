@@ -1,7 +1,13 @@
 package domain
 
+import "math"
+
 // CacheHitAlertBelow is the cache hit rate that should raise an alert (UPM-26).
 const CacheHitAlertBelow = 0.7
+
+// DefaultContextWindow is the fallback context window size in tokens when a
+// model's catalog entry does not specify one.
+const DefaultContextWindow = 128000
 
 const tokensPerMillion = 1_000_000
 
@@ -17,12 +23,12 @@ type Principal struct {
 // Usage is the normalised token counts for one attempt. Arrived is false
 // when the provider returned no usage block.
 type Usage struct {
-	Arrived    bool
-	Input      int
-	Output     int
-	CacheRead  int
-	CacheWrite int
-	Reasoning  int
+	Arrived    bool `json:"arrived"`
+	Input      int  `json:"input_tokens"`
+	Output     int  `json:"output_tokens"`
+	CacheRead  int  `json:"cache_read"`
+	CacheWrite int  `json:"cache_write"`
+	Reasoning  int  `json:"reasoning"`
 }
 
 // Tokens is every counted token on this attempt.
@@ -38,6 +44,7 @@ type Price struct {
 	OutputPerMTok  *float64
 	CacheReadMTok  *float64
 	CacheWriteMTok *float64
+	ContextWindow  int
 }
 
 // Entry is one ledger row, written per attempt.
@@ -89,6 +96,15 @@ func CostUSD(plan string, usage Usage, price Price, found bool) *float64 {
 		return nil
 	}
 	return &sum
+}
+
+// MicroUSD converts a USD cost to rounded micro-USD (1e-6 USD). Nil stays nil.
+func MicroUSD(costUSD *float64) *int64 {
+	if costUSD == nil {
+		return nil
+	}
+	v := int64(math.Round(*costUSD * tokensPerMillion))
+	return &v
 }
 
 // CacheHitRate is cache read divided by input plus cache read.

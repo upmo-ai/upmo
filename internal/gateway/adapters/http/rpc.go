@@ -58,18 +58,37 @@ type embedBody struct {
 }
 
 type chatBody struct {
-	Route           string           `json:"route"`
-	Prompt          string           `json:"prompt"`
-	System          string           `json:"system"`
-	Tools           []domain.Tool    `json:"tools"`
-	AllowTools      []string         `json:"allow_tools"`
-	Bundle          string           `json:"bundle"`
-	Messages        []domain.Message `json:"messages"`
-	CredentialRef   string           `json:"credential_ref"`
-	MaxOutputTokens int              `json:"max_output_tokens"`
+	Route           string            `json:"route"`
+	Prompt          string            `json:"prompt"`
+	System          string            `json:"system"`
+	Tools           []domain.Tool     `json:"tools"`
+	AllowTools      []string          `json:"allow_tools"`
+	CoreTools       bool              `json:"core_tools"`
+	Bundle          string            `json:"bundle"`
+	Messages        []domain.Message  `json:"messages"`
+	ToolChoice      domain.ToolChoice `json:"tool_choice"`
+	CredentialRef   string            `json:"credential_ref"`
+	MaxOutputTokens int               `json:"max_output_tokens"`
 	// Pin, on a stream, is the account and model tried before the route.
 	Pin *pinBody `json:"pin"`
 	actorBody
+}
+
+func chatInput(body chatBody) domain.Input {
+	in := domain.Input{
+		Tools:           body.Tools,
+		AllowTools:      body.AllowTools,
+		CoreTools:       body.CoreTools,
+		Bundle:          body.Bundle,
+		System:          body.System,
+		Messages:        body.Messages,
+		ToolChoice:      body.ToolChoice,
+		MaxOutputTokens: body.MaxOutputTokens,
+	}
+	if len(in.Messages) == 0 && body.Prompt != "" {
+		in.Messages = []domain.Message{{Role: domain.RoleUser, Text: body.Prompt}}
+	}
+	return in
 }
 
 // pinBody is the optional pin of a chat stream: a model on an account, or on
@@ -95,6 +114,49 @@ func (h Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+PathModels, h.models)
 }
 
+type usageSummary struct {
+	InputTokens   int      `json:"input_tokens"`
+	OutputTokens  int      `json:"output_tokens"`
+	CacheRead     int      `json:"cache_read"`
+	CacheWrite    int      `json:"cache_write"`
+	Reasoning     int      `json:"reasoning"`
+	Arrived       bool     `json:"arrived"`
+	CostUSD       *float64 `json:"cost_usd"`
+	CostMicroUSD  *int64   `json:"cost_micro_usd"`
+	ContextWindow int      `json:"context_window"`
+}
+
+func toUsageSummary(u domain.Usage, costUSD *float64, costMicroUSD *int64, ctxWindow int) usageSummary {
+	return usageSummary{
+		InputTokens:   u.Input,
+		OutputTokens:  u.Output,
+		CacheRead:     u.CacheRead,
+		CacheWrite:    u.CacheWrite,
+		Reasoning:     u.Reasoning,
+		Arrived:       u.Arrived,
+		CostUSD:       costUSD,
+		CostMicroUSD:  costMicroUSD,
+		ContextWindow: ctxWindow,
+	}
+}
+
+type decideResponse struct {
+	YesNo  bool         `json:"yes"`
+	Choice string       `json:"choice"`
+	Usage  usageSummary `json:"usage"`
+}
+
+type chatResponse struct {
+	Text          string            `json:"text"`
+	ToolCalls     []domain.ToolCall `json:"tool_calls,omitempty"`
+	StopReason    string            `json:"stop_reason,omitempty"`
+	Model         string            `json:"model"`
+	Usage         domain.Usage      `json:"usage"`
+	CostUSD       *float64          `json:"cost_usd"`
+	CostMicroUSD  *int64            `json:"cost_micro_usd"`
+	ContextWindow int               `json:"context_window"`
+}
+
 func (h Handler) decide(w http.ResponseWriter, r *http.Request) {
 	var body decideBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -110,7 +172,11 @@ func (h Handler) decide(w http.ResponseWriter, r *http.Request) {
 		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return
 	}
-	httpserver.WriteJSON(w, http.StatusOK, map[string]any{"yes": result.YesNo, "choice": result.Choice})
+	httpserver.WriteJSON(w, http.StatusOK, decideResponse{
+		YesNo:  result.YesNo,
+		Choice: result.Choice,
+		Usage:  toUsageSummary(result.Usage, result.CostUSD, result.CostMicroUSD, result.ContextWindow),
+	})
 }
 
 func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
@@ -119,22 +185,21 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
 		return
 	}
-	in := domain.Input{
-		Tools:      body.Tools,
-		AllowTools: body.AllowTools,
-		Bundle:     body.Bundle,
-		System:     body.System,
-		Messages:   body.Messages,
-	}
-	if len(in.Messages) == 0 && body.Prompt != "" {
-		in.Messages = []domain.Message{{Role: domain.RoleUser, Text: body.Prompt}}
-	}
-	text, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, body.principal(), in)
+	res, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, body.principal(), chatInput(body))
 	if err != nil {
 		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return
 	}
-	httpserver.WriteJSON(w, http.StatusOK, map[string]string{"text": text})
+	httpserver.WriteJSON(w, http.StatusOK, chatResponse{
+		Text:          res.Text,
+		ToolCalls:     res.ToolCalls,
+		StopReason:    res.StopReason,
+		Model:         res.Model,
+		Usage:         res.Usage,
+		CostUSD:       res.CostUSD,
+		CostMicroUSD:  res.CostMicroUSD,
+		ContextWindow: res.ContextWindow,
+	})
 }
 
 // writeDeadline is how long one frame of a chat stream may take to write.
@@ -146,8 +211,9 @@ const writeDeadline = 30 * time.Second
 // JSON object per line, flushed as written:
 //
 //	{"delta":"..."}
+//	{"tool_call":{"index":0,"id":"...","name":"...","arguments_delta":"..."}}
 //	{"attempt":{"failed_model":"...","failure_class":"...","next_model":"..."}}
-//	{"done":{"model":"...","input_tokens":n,"output_tokens":n,"cost_usd":x|null}}
+//	{"done":{"model":"...","input_tokens":n,"output_tokens":n,"cache_read":n,"cache_write":n,"reasoning":n,"arrived":true,"cost_usd":x|null,"cost_micro_usd":n|null,"context_window":n}}
 //	{"error":{"failure_class":"...","model":"...","message":"..."}}
 //
 // Exactly one done or error frame ends the stream. The error message is a
@@ -160,16 +226,7 @@ func (h Handler) chatStream(w http.ResponseWriter, r *http.Request) {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
 		return
 	}
-	in := domain.Input{
-		Tools:      body.Tools,
-		AllowTools: body.AllowTools,
-		Bundle:     body.Bundle,
-		System:     body.System,
-		Messages:   body.Messages,
-	}
-	if len(in.Messages) == 0 && body.Prompt != "" {
-		in.Messages = []domain.Message{{Role: domain.RoleUser, Text: body.Prompt}}
-	}
+	in := chatInput(body)
 	out := &chatStreamOut{w: w, rc: http.NewResponseController(w), log: h.Log}
 	if err := h.streamReply(r.Context(), w, body, in, out); err != nil {
 		switch {
@@ -206,6 +263,9 @@ type (
 	chatStreamDelta struct {
 		Delta string `json:"delta"`
 	}
+	chatStreamToolCall struct {
+		ToolCall app.ToolCallDelta `json:"tool_call"`
+	}
 	chatStreamAttempt struct {
 		Attempt chatStreamNotice `json:"attempt"`
 	}
@@ -218,10 +278,18 @@ type (
 		Done chatStreamResult `json:"done"`
 	}
 	chatStreamResult struct {
-		Model        string   `json:"model"`
-		InputTokens  int      `json:"input_tokens"`
-		OutputTokens int      `json:"output_tokens"`
-		CostUSD      *float64 `json:"cost_usd"`
+		Model         string            `json:"model"`
+		InputTokens   int               `json:"input_tokens"`
+		OutputTokens  int               `json:"output_tokens"`
+		CacheRead     int               `json:"cache_read"`
+		CacheWrite    int               `json:"cache_write"`
+		Reasoning     int               `json:"reasoning"`
+		Arrived       bool              `json:"arrived"`
+		CostUSD       *float64          `json:"cost_usd"`
+		CostMicroUSD  *int64            `json:"cost_micro_usd"`
+		ContextWindow int               `json:"context_window"`
+		ToolCalls     []domain.ToolCall `json:"tool_calls,omitempty"`
+		StopReason    string            `json:"stop_reason,omitempty"`
 	}
 	chatStreamError struct {
 		Error chatStreamFailure `json:"error"`
@@ -268,6 +336,10 @@ func (s *chatStreamOut) Delta(text string) error {
 	return s.frame(chatStreamDelta{Delta: text})
 }
 
+func (s *chatStreamOut) ToolCallDelta(delta app.ToolCallDelta) error {
+	return s.frame(chatStreamToolCall{ToolCall: delta})
+}
+
 func (s *chatStreamOut) Notice(notice app.StreamNotice) error {
 	return s.frame(chatStreamAttempt{Attempt: chatStreamNotice{
 		FailedModel:  notice.FailedModel,
@@ -279,10 +351,18 @@ func (s *chatStreamOut) Notice(notice app.StreamNotice) error {
 func (s *chatStreamOut) Done(done app.StreamDone) {
 	s.ended = true
 	_ = s.frame(chatStreamDone{Done: chatStreamResult{
-		Model:        done.Model,
-		InputTokens:  done.Usage.Input,
-		OutputTokens: done.Usage.Output,
-		CostUSD:      done.CostUSD,
+		Model:         done.Model,
+		InputTokens:   done.Usage.Input,
+		OutputTokens:  done.Usage.Output,
+		CacheRead:     done.Usage.CacheRead,
+		CacheWrite:    done.Usage.CacheWrite,
+		Reasoning:     done.Usage.Reasoning,
+		Arrived:       done.Usage.Arrived,
+		CostUSD:       done.CostUSD,
+		CostMicroUSD:  done.CostMicroUSD,
+		ContextWindow: done.ContextWindow,
+		ToolCalls:     done.ToolCalls,
+		StopReason:    done.StopReason,
 	}})
 }
 

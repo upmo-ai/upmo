@@ -14,6 +14,7 @@ func TestParseCatalog(t *testing.T) {
 					"tool_call": true,
 					"structured_output": true,
 					"modalities": {"input": ["text", "image"]},
+					"limit": {"context": 200000},
 					"cost": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
 				}
 			}
@@ -49,9 +50,15 @@ func TestParseCatalog(t *testing.T) {
 	if claude.Price.InputPerMTok == nil || *claude.Price.InputPerMTok != 3 {
 		t.Fatalf("input price = %v", claude.Price.InputPerMTok)
 	}
+	if claude.ContextWindow != 200000 || claude.Price.ContextWindow != 200000 {
+		t.Fatalf("claude context window = %d / %d, want 200000", claude.ContextWindow, claude.Price.ContextWindow)
+	}
 	embed := rows[1]
 	if embed.Model != "embed-only" || len(embed.Caps) != 0 {
 		t.Fatalf("embed = %+v", embed)
+	}
+	if embed.ContextWindow != DefaultContextWindow || embed.Price.ContextWindow != DefaultContextWindow {
+		t.Fatalf("default context window = %d / %d, want %d", embed.ContextWindow, embed.Price.ContextWindow, DefaultContextWindow)
 	}
 }
 

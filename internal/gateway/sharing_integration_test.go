@@ -395,11 +395,11 @@ func TestOnlyAnAdminSharesAccounts(t *testing.T) {
 	// An admin cannot name a team that does not exist, or none, or a workspace
 	// with teams.
 	for name, b := range map[string]map[string]any{
-		"unknown team":          shared("X1", prov.url(), "", "team", uuid.NewString()),
-		"not a team id":         shared("X2", prov.url(), "", "team", "finance"),
-		"team with none":        shared("X3", prov.url(), "", "team"),
-		"everyone with teams":   shared("X4", prov.url(), "", "everyone", c.financeTeam),
-		"unknown visibility":    shared("X5", prov.url(), "", "workspace"),
+		"unknown team":        shared("X1", prov.url(), "", "team", uuid.NewString()),
+		"not a team id":       shared("X2", prov.url(), "", "team", "finance"),
+		"team with none":      shared("X3", prov.url(), "", "team"),
+		"everyone with teams": shared("X4", prov.url(), "", "everyone", c.financeTeam),
+		"unknown visibility":  shared("X5", prov.url(), "", "workspace"),
 	} {
 		if code, raw := c.add(c.admin, b); code != http.StatusUnprocessableEntity || message(t, raw) == "" {
 			t.Errorf("%s = %d %s", name, code, raw)

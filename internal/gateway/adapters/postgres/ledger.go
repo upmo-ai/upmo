@@ -39,18 +39,19 @@ func numericPtr(n pgtype.Numeric) *float64 {
 // Price looks up one catalog row. Missing is not an error.
 func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, error) {
 	var row struct {
-		Version    string
-		Input      pgtype.Numeric
-		Output     pgtype.Numeric
-		CacheRead  pgtype.Numeric
-		CacheWrite pgtype.Numeric
+		Version       string
+		Input         pgtype.Numeric
+		Output        pgtype.Numeric
+		CacheRead     pgtype.Numeric
+		CacheWrite    pgtype.Numeric
+		ContextWindow int
 	}
 	err := s.Pool.QueryRow(ctx, `
 		SELECT version, input_usd_per_mtok, output_usd_per_mtok,
-			cache_read_usd_per_mtok, cache_write_usd_per_mtok
+			cache_read_usd_per_mtok, cache_write_usd_per_mtok, context_window
 		FROM gateway.prices
 		WHERE model = $1`, model).Scan(
-		&row.Version, &row.Input, &row.Output, &row.CacheRead, &row.CacheWrite,
+		&row.Version, &row.Input, &row.Output, &row.CacheRead, &row.CacheWrite, &row.ContextWindow,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -64,6 +65,7 @@ func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, err
 		OutputPerMTok:  numericPtr(row.Output),
 		CacheReadMTok:  numericPtr(row.CacheRead),
 		CacheWriteMTok: numericPtr(row.CacheWrite),
+		ContextWindow:  row.ContextWindow,
 	}, true, nil
 }
 
