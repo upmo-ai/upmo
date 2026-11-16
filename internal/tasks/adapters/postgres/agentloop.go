@@ -1,0 +1,403 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/upmo-ai/upmo/internal/kernel"
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
+	"github.com/upmo-ai/upmo/internal/tasks/app"
+	"github.com/upmo-ai/upmo/internal/tasks/domain"
+)
+
+// FundMicroUSD sets a root task's micro-USD budget once.
+func (s Store) FundMicroUSD(ctx context.Context, access app.Access, taskID string, budgetMicroUSD int64) error {
+	if err := kernel.CheckRootBudget(budgetMicroUSD, kernel.DefaultMaxBudgetMicroUSD); err != nil {
+		return domain.ErrBudget
+	}
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var isChild bool
+	var legacyBudget int
+	var current int64
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT parent_id IS NOT NULL, budget, budget_micro_usd, status
+		FROM tasks.tasks
+		WHERE id = $1::uuid
+		FOR UPDATE`, taskID).Scan(&isChild, &legacyBudget, &current, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrGone
+	}
+	if err != nil {
+		return fmt.Errorf("tasks: lock fund micro: %w", err)
+	}
+	if isChild || legacyBudget != 0 || current != 0 {
+		return domain.ErrBudget
+	}
+	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {
+		return domain.ErrTerminal
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks.tasks
+		SET budget_micro_usd = $2
+		WHERE id = $1::uuid`, taskID, budgetMicroUSD)
+	if err != nil {
+		return fmt.Errorf("tasks: fund micro: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
+}
+
+// ChargeMicroUSD records actual post-call spend in micro-USD and pauses the task
+// when spent crosses budget_micro_usd while preserving full actual spend.
+func (s Store) ChargeMicroUSD(ctx context.Context, access app.Access, taskID string, amountMicroUSD int64) (int64, bool, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var budget, spent int64
+	var paused bool
+	err = tx.QueryRow(ctx, `
+		SELECT budget_micro_usd, spent_micro_usd, paused
+		FROM tasks.tasks
+		WHERE id = $1::uuid
+		FOR UPDATE`, taskID).Scan(&budget, &spent, &paused)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, app.ErrGone
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("tasks: lock charge micro: %w", err)
+	}
+	nextSpent, nextPaused, chargeErr := domain.ChargeMicroUSD(budget, spent, amountMicroUSD, paused)
+	if chargeErr != nil {
+		return spent, paused, chargeErr
+	}
+	if nextSpent != spent || nextPaused != paused {
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks.tasks
+			SET spent_micro_usd = $2, paused = $3
+			WHERE id = $1::uuid`, taskID, nextSpent, nextPaused)
+		if err != nil {
+			return 0, false, fmt.Errorf("tasks: charge micro: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return 0, false, app.ErrGone
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, err
+	}
+	return nextSpent, nextPaused, nil
+}
+
+// NarrowedTx opens a transaction with single-team RLS narrowing applied for taskID.
+func (s Store) NarrowedTx(ctx context.Context, scope agentloop.AccessScope, fn func(pgx.Tx) error) error {
+	if s.Pool == nil {
+		return fmt.Errorf("tasks: no database")
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := agentloop.ApplyRLSTx(ctx, tx, agentloop.NarrowRLS(scope)); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SaveFinding inserts a row into tasks.findings under narrowed RLS.
+func (s Store) SaveFinding(ctx context.Context, scope agentloop.AccessScope, taskID, runID, kind, title, body, sourceRef string, untrusted bool) (string, error) {
+	if kind == "" {
+		kind = "finding"
+	}
+	var id string
+	err := s.NarrowedTx(ctx, scope, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			INSERT INTO tasks.findings (task_id, run_id, kind, title, body, source_ref, untrusted)
+			VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, $5, $6, $7)
+			RETURNING id::text`,
+			taskID, runID, kind, title, body, sourceRef, untrusted).Scan(&id)
+	})
+	return id, err
+}
+
+// RequestBatchApproval pauses the task and persists a batch hold (calls jsonb[])
+// with deterministic action/preview and untrusted_origin flag.
+func (s Store) RequestBatchApproval(ctx context.Context, access app.Access, taskID, toolName string, batch agentloop.BatchHold) (app.Approval, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return app.Approval{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var owner string
+	err = tx.QueryRow(ctx, `
+		SELECT owner_user_id::text
+		FROM tasks.tasks
+		WHERE id = $1::uuid
+		FOR UPDATE`, taskID).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Approval{}, app.ErrGone
+	}
+	if err != nil {
+		return app.Approval{}, fmt.Errorf("tasks: lock batch approval: %w", err)
+	}
+	if owner != access.UserID {
+		return app.Approval{}, app.ErrAccess
+	}
+	approval, err := insertBatchApprovalTx(ctx, tx, taskID, owner, toolName, batch)
+	if err != nil {
+		return app.Approval{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return app.Approval{}, err
+	}
+	return approval, nil
+}
+
+func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, toolName string, batch agentloop.BatchHold) (app.Approval, error) {
+	calls, err := batch.CallsJSONB()
+	if err != nil {
+		return app.Approval{}, err
+	}
+	if toolName == "" && len(batch.Calls) > 0 {
+		toolName = batch.Calls[0].ToolName
+	}
+	if toolName == "" {
+		toolName = "batch"
+	}
+	if len(toolName) > 64 {
+		toolName = toolName[:64]
+	}
+	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Pause})
+	if err != nil {
+		return app.Approval{}, err
+	}
+	approval := app.Approval{
+		TaskID: taskID,
+		Title:  task.Goal,
+		Action: batch.Action,
+		State:  domain.ApprovalPending,
+	}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO tasks.approvals (task_id, user_id, tool, reason, action, preview, calls, untrusted_origin)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb[], $8)
+		RETURNING id::text`,
+		taskID, ownerID, toolName, batch.Reason, batch.Action, batch.Preview, calls, batch.UntrustedOrigin).Scan(&approval.ID)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+		return app.Approval{}, domain.ErrPending
+	}
+	if err != nil {
+		return app.Approval{}, fmt.Errorf("tasks: batch approval: %w", err)
+	}
+	return approval, nil
+}
+
+// TaskActionLog implements agentloop.ActionLog against tasks.action_logs.
+type TaskActionLog struct {
+	Store Store
+	Scope agentloop.AccessScope
+}
+
+// BeginDial (tx1) inserts (scope_id, call_id) in state="dialing", or returns
+// ErrDuplicateAction if it already exists in dialing, done, or simulated.
+func (l TaskActionLog) BeginDial(ctx context.Context, rec agentloop.ActionRecord) error {
+	scopeID := agentloop.ActionScopeID(rec)
+	if scopeID == "" {
+		return fmt.Errorf("%w: empty action scope_id", agentloop.ErrInvalidConfig)
+	}
+	return l.Store.NarrowedTx(ctx, l.Scope, func(tx pgx.Tx) error {
+		var existing string
+		err := tx.QueryRow(ctx, `
+			SELECT state FROM tasks.action_logs WHERE scope_id = $1::uuid AND call_id = $2 FOR UPDATE`,
+			scopeID, rec.CallID).Scan(&existing)
+		if err == nil {
+			if existing == string(agentloop.ActionStateDialing) ||
+				existing == string(agentloop.ActionStateDone) ||
+				existing == string(agentloop.ActionStateSimulated) {
+				return fmt.Errorf("%w: state=%s", agentloop.ErrDuplicateAction, existing)
+			}
+			_, uerr := tx.Exec(ctx, `
+				UPDATE tasks.action_logs
+				SET state = 'dialing', response_digest = '', error_text = '', completed_at = NULL
+				WHERE scope_id = $1::uuid AND call_id = $2`, scopeID, rec.CallID)
+			return uerr
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("tasks: action_log check: %w", err)
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO tasks.action_logs (
+				scope_id, call_id, task_id, run_id, user_id, tool_name, action, preview,
+				state, untrusted_origin, dry_run, executed_at
+			) VALUES (
+				COALESCE(NULLIF($3, ''), $2)::uuid, $1, $2::uuid, NULLIF($3, '')::uuid, $4::uuid, $5, $6, $7,
+				'dialing', $8, false, $9
+			)`,
+			rec.CallID, rec.ObjectID, rec.RunID, rec.UserID, rec.ToolName,
+			rec.Action, rec.Preview, rec.UntrustedOrigin, rec.ExecutedAt.UTC())
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+			return fmt.Errorf("%w: concurrent insert", agentloop.ErrDuplicateAction)
+		}
+		return err
+	})
+}
+
+// FinishDial (tx2) marks (scope_id, call_id) as done or failed with its response digest.
+func (l TaskActionLog) FinishDial(ctx context.Context, scopeID, callID string, state agentloop.ActionState, responseDigest, errText string, completedAt time.Time) error {
+	if scopeID == "" {
+		scopeID = l.Scope.ObjectID
+	}
+	return l.Store.NarrowedTx(ctx, l.Scope, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks.action_logs
+			SET state = $3, response_digest = $4, error_text = $5, completed_at = $6
+			WHERE scope_id = $1::uuid AND call_id = $2`,
+			scopeID, callID, string(state), responseDigest, errText, completedAt.UTC())
+		if err != nil {
+			return fmt.Errorf("tasks: action_log finish: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return app.ErrGone
+		}
+		return nil
+	})
+}
+
+// RecordSimulated persists a dry_run simulated write in tasks.action_logs.
+func (l TaskActionLog) RecordSimulated(ctx context.Context, rec agentloop.ActionRecord) error {
+	if agentloop.ActionScopeID(rec) == "" {
+		return fmt.Errorf("%w: empty action scope_id", agentloop.ErrInvalidConfig)
+	}
+	return l.Store.NarrowedTx(ctx, l.Scope, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO tasks.action_logs (
+				scope_id, call_id, task_id, run_id, user_id, tool_name, action, preview,
+				state, untrusted_origin, dry_run, executed_at, completed_at
+			) VALUES (
+				COALESCE(NULLIF($3, ''), $2)::uuid, $1, $2::uuid, NULLIF($3, '')::uuid, $4::uuid, $5, $6, $7,
+				'simulated', $8, true, $9, $9
+			)
+			ON CONFLICT (scope_id, call_id) DO NOTHING`,
+			rec.CallID, rec.ObjectID, rec.RunID, rec.UserID, rec.ToolName,
+			rec.Action, rec.Preview, rec.UntrustedOrigin, rec.ExecutedAt.UTC())
+		return err
+	})
+}
+
+// TaskTurnStore implements agentloop.TurnStore against tasks.turns,
+// tasks.tasks, tasks.approvals, and an optional next-turn enqueue callback.
+type TaskTurnStore struct {
+	Store       Store
+	Scope       agentloop.AccessScope
+	EnqueueNext func(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit) error
+}
+
+// CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.
+func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloop.TurnCommit) error {
+	return s.Store.NarrowedTx(ctx, s.Scope, func(tx pgx.Tx) error {
+		if err := InsertTurnRows(ctx, tx, commit); err != nil {
+			return err
+		}
+		var owner string
+		var currentTainted, currentPaused bool
+		var currentSpent int64
+		if err := tx.QueryRow(ctx, `
+			SELECT owner_user_id::text, tainted, paused, spent_micro_usd
+			FROM tasks.tasks
+			WHERE id = $1::uuid
+			FOR UPDATE`, commit.ObjectID).Scan(&owner, &currentTainted, &currentPaused, &currentSpent); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return app.ErrGone
+			}
+			return fmt.Errorf("tasks: lock turn commit: %w", err)
+		}
+		nextTainted := currentTainted || commit.Exposure.Tainted
+		nextPaused := currentPaused || commit.Paused
+		nextSpent := max(currentSpent, commit.SpentMicroUSD)
+		if nextTainted != currentTainted || nextPaused != currentPaused || nextSpent != currentSpent {
+			if _, err := tx.Exec(ctx, `
+				UPDATE tasks.tasks
+				SET spent_micro_usd = $2, paused = $3, tainted = $4, updated_at = now()
+				WHERE id = $1::uuid`,
+				commit.ObjectID, nextSpent, nextPaused, nextTainted); err != nil {
+				return fmt.Errorf("tasks: update turn state: %w", err)
+			}
+		}
+		if commit.Hold != nil {
+			actingUser := commit.UserID
+			if actingUser == "" {
+				actingUser = s.Scope.UserID
+			}
+			if owner != actingUser {
+				return app.ErrAccess
+			}
+			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "", *commit.Hold); err != nil {
+				return err
+			}
+		}
+		if commit.EnqueueNext && s.EnqueueNext != nil {
+			if err := s.EnqueueNext(ctx, tx, commit); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// InsertTurnRows writes turn transcript entries into tasks.turns inside tx.
+func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit) error {
+	seq := commit.SeqStart
+	for _, msg := range commit.Messages {
+		var toolCalls any
+		if len(msg.ToolCalls) > 0 {
+			raw, err := json.Marshal(msg.ToolCalls)
+			if err != nil {
+				return err
+			}
+			toolCalls = raw
+		}
+		var cost *int64
+		if msg.Role == agentloop.RoleAssistant && commit.CostMicroUSD > 0 {
+			c := commit.CostMicroUSD
+			cost = &c
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tasks.turns (
+				task_id, run_id, seq, role, body, tool_calls, tool_name, tool_id,
+				is_error, offloaded, tainted, private_read, model, input_tokens, output_tokens, cost_micro_usd
+			) VALUES (
+				$1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, $7, $8,
+				$9, $10, $11, $12, $13, $14, $15, $16
+			)`,
+			commit.ObjectID, commit.RunID, seq, string(msg.Role), msg.Text, toolCalls,
+			msg.ToolName, msg.ToolID, msg.IsError, msg.Offload,
+			commit.Exposure.Tainted, commit.Exposure.PrivateRead,
+			commit.Model, commit.InputTokens, commit.OutputTokens, cost); err != nil {
+			return fmt.Errorf("tasks: insert turn: %w", err)
+		}
+		seq++
+	}
+	return nil
+}

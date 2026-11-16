@@ -35,10 +35,17 @@ type actorBody struct {
 	AgentID     string `json:"agent_id"`
 	RunID       string `json:"run_id"`
 	ParentRunID string `json:"parent_run_id"`
+	TeamID      string `json:"team_id"`
 }
 
 func (a actorBody) principal() domain.Principal {
-	return domain.Principal{User: a.UserID, Agent: a.AgentID, Run: a.RunID, Parent: a.ParentRunID}
+	return domain.Principal{
+		User:   a.UserID,
+		Agent:  a.AgentID,
+		Run:    a.RunID,
+		Parent: a.ParentRunID,
+		TeamID: a.TeamID,
+	}
 }
 
 type decideBody struct {

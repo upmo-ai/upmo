@@ -44,7 +44,7 @@ func TestSearchMemoryRetrievesCurrentPrivateFacts(t *testing.T) {
 		t.Fatalf("raw memory breaker returned: %q", got.Text)
 	}
 
-	if !got.Exposure.Untrusted || !got.Exposure.Private || got.Exposure.External {
+	if got.Exposure.Untrusted || !got.Exposure.Private || got.Exposure.External {
 		t.Fatalf("exposure = %+v", got.Exposure)
 	}
 	if prefix := app.SystemPrefix("Be brief.", "Ada lives in Dhaka"); strings.Contains(prefix, "oolong") {

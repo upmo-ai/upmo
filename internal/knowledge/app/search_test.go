@@ -98,6 +98,45 @@ func TestSearchRejectsABlankQuery(t *testing.T) {
 	}
 }
 
+func TestSearchPreservesCuratedAndWebProvenance(t *testing.T) {
+	other := "018f3b2c-7a10-7c4a-8e11-dddddddddddd"
+	finder := &searchFinder{
+		lexical: []Lexical{
+			{SourceID: sourceID, Seq: 0, Body: "curated guide", Provenance: ProvenanceCurated},
+			{SourceID: other, Seq: 0, Body: "web clip", Provenance: ProvenanceWeb},
+		},
+	}
+	got, err := Search(context.Background(), finder, nil, nil, allowAll, folderID, "guide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("hits = %+v", got)
+	}
+	if got[0].Provenance != ProvenanceCurated || got[0].Provenance.Untrusted() {
+		t.Fatalf("curated hit = %+v", got[0])
+	}
+	if got[1].Provenance != ProvenanceWeb || !got[1].Provenance.Untrusted() {
+		t.Fatalf("web hit = %+v", got[1])
+	}
+}
+
+func TestSearchTreatsEmptyProvenanceAsUntrusted(t *testing.T) {
+	if !Provenance("").Untrusted() {
+		t.Fatal("empty provenance must fail closed as untrusted")
+	}
+	finder := &searchFinder{
+		lexical: []Lexical{{SourceID: sourceID, Seq: 0, Body: "unknown origin", Provenance: ""}},
+	}
+	got, err := Search(context.Background(), finder, nil, nil, allowAll, folderID, "origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[0].Provenance.Untrusted() {
+		t.Fatalf("expected empty provenance hit to stay untrusted, got %+v", got)
+	}
+}
+
 type searchFinder struct {
 	lexicalCalls int
 	nearCalls    int

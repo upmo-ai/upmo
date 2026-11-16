@@ -316,14 +316,14 @@ func taskSandboxes(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*ru
 	return boxes, nil
 }
 
-// openOwnerPool opens the owner pool with MaxConns=2 and scrubs the URL
+// openOwnerPool opens the owner pool with MaxConns=10 and scrubs the URL
 // from parse or connect errors.
 func openOwnerPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	ownerConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
 	}
-	ownerConfig.MaxConns = 2
+	ownerConfig.MaxConns = 10
 	owner, err := pgxpool.NewWithConfig(ctx, ownerConfig)
 	if err != nil {
 		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
