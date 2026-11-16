@@ -651,7 +651,7 @@ func TestProviderAccountVisibilityUpDownUp(t *testing.T) {
 	}
 	assertBackfill(t, pool, early, later, disabled, absent, personal, teamAccount, workspace, house, []string{teamA, teamB})
 	var version int
-	if err := pool.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 6 {
+	if err := pool.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 7 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
 	}
 }

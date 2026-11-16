@@ -98,7 +98,7 @@ func TestAModelOnlyAgentUsesTheInstallDefaultRoute(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	agent := r.agent(ownerAccess, app.AgentFields{Name: "Fast", ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true	})
+	agent := r.agent(ownerAccess, app.AgentFields{Name: "Fast", ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID})
 

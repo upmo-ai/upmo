@@ -2,6 +2,7 @@ package fake
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ const (
 	ModelSlow          = domain.ScriptedPrefix + "slow"
 	ModelFailRateLimit = domain.ScriptedPrefix + "fail-ratelimit"
 	ModelFailAfterTwo  = domain.ScriptedPrefix + "fail-after-2"
+	ModelToolCall      = domain.ScriptedPrefix + "tool-call"
 )
 
 // scriptedText follows the "<model> says:" opening of every scripted reply.
@@ -28,9 +30,11 @@ const slowDelay = 300 * time.Millisecond
 
 // Adapter is the in-process provider used in tests and local compose.
 type Adapter struct {
-	YesNo  bool
-	Choice string
-	Reply  string
+	YesNo     bool
+	Choice    string
+	Reply     string
+	ToolCalls []domain.ToolCall
+	Usage     domain.Usage
 	// Stream scripting: the words of Reply stream one per StreamDelay tick,
 	// and when StreamFailClass is set the stream fails with it after
 	// StreamFailWords words, zero failing before the first word.
@@ -41,7 +45,7 @@ type Adapter struct {
 
 // script returns the adapter as the model's script asks it to behave, and the
 // adapter itself for an id that has none.
-func (a Adapter) script(model string) Adapter {
+func (a Adapter) script(model string, req domain.Request) Adapter {
 	switch model {
 	case ModelOK:
 		a.Reply = model + " says: " + scriptedText
@@ -54,14 +58,46 @@ func (a Adapter) script(model string) Adapter {
 	case ModelFailAfterTwo:
 		a.Reply = model + " says: " + scriptedText
 		a.StreamFailClass, a.StreamFailWords = domain.ClassTransient, 2
+	case ModelToolCall:
+		if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == domain.RoleTool {
+			last := req.Messages[n-1]
+			prefix := "tool_result: "
+			if last.IsError {
+				prefix = "tool_error: "
+			}
+			a.Reply = prefix + last.Text
+			a.ToolCalls = nil
+			return a
+		}
+		name := "echo"
+		for _, t := range req.Tools {
+			if t.Name != "retrieve_output" && t.Name != "find_tool" {
+				name = t.Name
+				break
+			}
+		}
+		a.Reply = ""
+		a.ToolCalls = []domain.ToolCall{{
+			ID:        "call_fake_1",
+			Name:      name,
+			Arguments: json.RawMessage(`{"input":"hi"}`),
+		}}
 	}
 	return a
 }
 
+func (a Adapter) usageOr(fallback domain.Usage) domain.Usage {
+	if a.Usage.Arrived {
+		return a.Usage
+	}
+	return fallback
+}
+
 func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
+	usage := a.usageOr(domain.Usage{Arrived: true, Input: 1, Output: 1})
 	switch req.Kind {
 	case domain.DecisionYesNo:
-		return domain.DecideResult{YesNo: a.YesNo}, domain.Usage{}, domain.ClassOK, nil
+		return domain.DecideResult{YesNo: a.YesNo}, usage, domain.ClassOK, nil
 	case domain.DecisionChoice:
 		pick := a.Choice
 		if pick == "" && len(req.Options) > 0 {
@@ -71,7 +107,7 @@ func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideReque
 		if err != nil {
 			return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, err
 		}
-		return domain.DecideResult{Choice: got}, domain.Usage{}, domain.ClassOK, nil
+		return domain.DecideResult{Choice: got}, usage, domain.ClassOK, nil
 	default:
 		return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
 	}
@@ -91,44 +127,117 @@ func (a Adapter) Embed(_ context.Context, _ app.Attempt, inputs []string) ([][]f
 	return out, domain.Usage{Arrived: true, Input: len(inputs)}, domain.ClassOK, nil
 }
 
-func (a Adapter) Chat(_ context.Context, _ app.Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
+func (a Adapter) Chat(_ context.Context, attempt app.Attempt, req domain.Request) (domain.ChatResult, domain.FailureClass, error) {
+	a = a.script(attempt.Model, req)
+	usage := a.usageOr(domain.Usage{Arrived: true, Input: 1, Output: 1})
+	if len(a.ToolCalls) > 0 {
+		return domain.ChatResult{
+			Text:       a.Reply,
+			ToolCalls:  cloneToolCalls(a.ToolCalls),
+			StopReason: "tool_calls",
+			Usage:      usage,
+			Model:      attempt.Model,
+		}, domain.ClassOK, nil
+	}
 	if a.Reply != "" {
-		return a.Reply, domain.Usage{}, domain.ClassOK, nil
+		return domain.ChatResult{
+			Text:       a.Reply,
+			StopReason: "stop",
+			Usage:      usage,
+			Model:      attempt.Model,
+		}, domain.ClassOK, nil
 	}
 	if len(req.Messages) == 0 {
-		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: chat prompt is empty")
+		return domain.ChatResult{}, domain.ClassCaller, fmt.Errorf("gateway: chat prompt is empty")
 	}
-	return strings.TrimSpace(req.Messages[len(req.Messages)-1].Text), domain.Usage{}, domain.ClassOK, nil
+	return domain.ChatResult{
+		Text:       strings.TrimSpace(req.Messages[len(req.Messages)-1].Text),
+		StopReason: "stop",
+		Usage:      usage,
+		Model:      attempt.Model,
+	}, domain.ClassOK, nil
 }
 
 // ChatStream streams the words of Reply one at a time, pausing StreamDelay
 // between words. Usage counts the words that were sent, so a failed stream
 // carries its partial usage. A scripted model id sets all of that itself.
-func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
-	a = a.script(attempt.Model)
+func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, req domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	res, class, err := a.ChatStreamTools(ctx, attempt, req, app.StreamEvents{Text: emit})
+	return res.Usage, class, err
+}
+
+// ChatStreamTools streams text words and configured tool calls in order.
+func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req domain.Request, events app.StreamEvents) (domain.ChatResult, domain.FailureClass, error) {
+	a = a.script(attempt.Model, req)
 	words := strings.Fields(a.Reply)
 	part := func(sent int) domain.Usage { return domain.Usage{Arrived: true, Input: 1, Output: sent} }
 	sent := 0
+	var text strings.Builder
 	for _, word := range words {
 		if a.StreamFailClass != "" && sent == a.StreamFailWords {
-			return part(sent), a.StreamFailClass, fmt.Errorf("gateway: fake stream %s", a.StreamFailClass)
+			return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
+				a.StreamFailClass, fmt.Errorf("gateway: fake stream %s", a.StreamFailClass)
 		}
 		if a.StreamDelay > 0 {
 			select {
 			case <-time.After(a.StreamDelay):
 			case <-ctx.Done():
-				return part(sent), domain.ClassCancelled, ctx.Err()
+				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
+					domain.ClassCancelled, ctx.Err()
 			}
 		}
-		if err := emit(word + " "); err != nil {
-			return part(sent), domain.ClassCancelled, err
+		chunk := word + " "
+		if events.Text != nil {
+			if err := events.Text(chunk); err != nil {
+				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
+					domain.ClassCancelled, err
+			}
 		}
+		text.WriteString(chunk)
 		sent++
 	}
 	if a.StreamFailClass != "" && sent == a.StreamFailWords {
-		return part(sent), a.StreamFailClass, fmt.Errorf("gateway: fake stream %s", a.StreamFailClass)
+		return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
+			a.StreamFailClass, fmt.Errorf("gateway: fake stream %s", a.StreamFailClass)
 	}
-	return part(sent), domain.ClassOK, nil
+	calls := cloneToolCalls(a.ToolCalls)
+	for i, tc := range calls {
+		if events.ToolCall != nil {
+			if err := events.ToolCall(app.ToolCallDelta{Index: i, ID: tc.ID, Name: tc.Name}); err != nil {
+				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
+					domain.ClassCancelled, err
+			}
+			args := strings.TrimSpace(string(tc.Arguments))
+			if args == "" {
+				args = "{}"
+			}
+			if err := events.ToolCall(app.ToolCallDelta{Index: i, ArgumentsDelta: args}); err != nil {
+				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
+					domain.ClassCancelled, err
+			}
+		}
+	}
+	usage := a.usageOr(part(sent + len(calls)))
+	stopReason := "stop"
+	if len(calls) > 0 {
+		stopReason = "tool_calls"
+	}
+	return domain.ChatResult{
+		Text:       text.String(),
+		ToolCalls:  calls,
+		StopReason: stopReason,
+		Usage:      usage,
+		Model:      attempt.Model,
+	}, domain.ClassOK, nil
+}
+
+func cloneToolCalls(in []domain.ToolCall) []domain.ToolCall {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]domain.ToolCall, len(in))
+	copy(out, in)
+	return out
 }
 
 // Probe always works: the fake has no network.

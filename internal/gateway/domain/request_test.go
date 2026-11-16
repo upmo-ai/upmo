@@ -64,8 +64,14 @@ func TestMaskTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(req.Tools) != 1 || req.Tools[0].Name != "search" {
+	want := []string{retrieveOutput, findTool, "search"}
+	if len(req.Tools) != len(want) {
 		t.Fatalf("tools = %+v", req.Tools)
+	}
+	for i, name := range want {
+		if req.Tools[i].Name != name {
+			t.Fatalf("tools[%d] = %q, want %q", i, req.Tools[i].Name, name)
+		}
 	}
 }
 
@@ -99,8 +105,138 @@ func TestOffloadLargeToolResults(t *testing.T) {
 	if !req.Messages[2].Offload || req.Messages[2].Text != retrieveOutput || req.Messages[2].ToolID != "2" {
 		t.Fatalf("large tool = %+v", req.Messages[2])
 	}
-	if len(req.Tools) != 1 || req.Tools[0].Name != retrieveOutput {
+	if len(req.Tools) != 2 || req.Tools[0].Name != retrieveOutput || req.Tools[1].Name != findTool {
 		t.Fatalf("tools = %+v", req.Tools)
+	}
+}
+
+func TestStaticCorePrefixUnchangedAcrossOffload(t *testing.T) {
+	tools := []Tool{
+		{Name: retrieveOutput, Description: "custom", Schema: json.RawMessage(`{}`)},
+		{Name: "search", Description: "search docs", Schema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`)},
+	}
+	turn0, err := Build(Input{
+		Tools:    tools,
+		System:   "be brief",
+		Messages: []Message{{Role: RoleUser, Text: "find go docs"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnN, err := Build(Input{
+		Tools:     tools,
+		System:    "be brief",
+		OffloadAt: 5,
+		Messages: []Message{
+			{Role: RoleUser, Text: "find go docs"},
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "search", Arguments: json.RawMessage(`{"q":"go"}`)}}},
+			{Role: RoleTool, ToolID: "c1", ToolName: "search", Text: strings.Repeat("x", 100)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0Tools, err := json.Marshal(turn0.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tnTools, err := json.Marshal(turnN.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(t0Tools) != string(tnTools) {
+		t.Fatalf("tools changed on offload:\nturn0: %s\nturnN: %s", t0Tools, tnTools)
+	}
+	t0Cache, _ := json.Marshal(turn0.Cache)
+	tnCache, _ := json.Marshal(turnN.Cache)
+	if string(t0Cache) != string(tnCache) {
+		t.Fatalf("cache breakpoints changed on offload:\nturn0: %s\nturnN: %s", t0Cache, tnCache)
+	}
+	if len(turn0.Tools) != 3 || turn0.Tools[0].Name != retrieveOutput || turn0.Tools[1].Name != findTool || turn0.Tools[2].Name != "search" {
+		t.Fatalf("unexpected tool prefix: %+v", turn0.Tools)
+	}
+	if !turnN.Messages[2].Offload {
+		t.Fatalf("expected turnN tool result to be offloaded: %+v", turnN.Messages[2])
+	}
+}
+
+func TestCoreToolsOptionWithoutCustomTools(t *testing.T) {
+	turn0, err := Build(Input{
+		CoreTools: true,
+		Messages:  []Message{{Role: RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnN, err := Build(Input{
+		CoreTools: true,
+		OffloadAt: 5,
+		Messages: []Message{
+			{Role: RoleUser, Text: "hi"},
+			{Role: RoleTool, ToolID: "c1", Text: strings.Repeat("y", 60), IsError: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b0, _ := json.Marshal(turn0.Tools)
+	bn, _ := json.Marshal(turnN.Tools)
+	if string(b0) != string(bn) {
+		t.Fatalf("core tools changed: %s vs %s", b0, bn)
+	}
+	if !turnN.Messages[1].IsError || !turnN.Messages[1].Offload {
+		t.Fatalf("expected IsError and Offload preserved: %+v", turnN.Messages[1])
+	}
+}
+
+func TestToolChoiceNormalizationAndOrder(t *testing.T) {
+	var parsed ToolChoice
+	if err := json.Unmarshal([]byte(`"any"`), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Mode != ToolChoiceAny || parsed.Name != "" {
+		t.Fatalf("string tool_choice = %+v", parsed)
+	}
+	if err := json.Unmarshal([]byte(`{"mode":"tool","name":"search"}`), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	req, err := Build(Input{
+		Tools:           []Tool{{Name: "search"}},
+		System:          "s",
+		Messages:        []Message{{Role: RoleUser, Text: "m"}},
+		ToolChoice:      parsed,
+		MaxOutputTokens: 128,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	cacheAt := strings.Index(text, `"cache"`)
+	choiceAt := strings.Index(text, `"tool_choice"`)
+	if cacheAt < 0 || choiceAt < 0 || choiceAt <= cacheAt {
+		t.Fatalf("tool_choice must sit after prefix/cache: %s", text)
+	}
+	if _, err := Build(Input{
+		Messages:   []Message{{Role: RoleUser, Text: "m"}},
+		ToolChoice: ToolChoice{Mode: "bogus"},
+	}); err == nil {
+		t.Fatal("expected error for invalid tool_choice mode")
+	}
+	if _, err := Build(Input{
+		Messages:   []Message{{Role: RoleUser, Text: "m"}},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto, Name: "search"},
+	}); err == nil {
+		t.Fatal("expected error when auto carries a tool name")
+	}
+	if _, err := Build(Input{
+		Messages:   []Message{{Role: RoleUser, Text: "m"}},
+		ToolChoice: ToolChoice{Mode: ToolChoiceTool},
+	}); err == nil {
+		t.Fatal("expected error when tool mode misses tool name")
 	}
 }
 

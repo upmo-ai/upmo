@@ -243,11 +243,11 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			}
 
 			// A plain chat goes to the same path without the stream flags.
-			text, _, class, err := a.Chat(ctx, attempt, domain.Request{
+			res, class, err := a.Chat(ctx, attempt, domain.Request{
 				Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
 			})
-			if err != nil || class != domain.ClassOK || text != "hi" {
-				t.Fatalf("chat: %q class=%s err=%v", text, class, err)
+			if err != nil || class != domain.ClassOK || res.Text != "hi" {
+				t.Fatalf("chat: %+v class=%s err=%v", res, class, err)
 			}
 			if want := v.BaseURL + v.ChatPath; rt.lastAsked() != want {
 				t.Errorf("chat URL = %s, want %s", rt.lastAsked(), want)

@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	_ app.Decider       = Adapter{}
-	_ app.Chatter       = Adapter{}
-	_ app.StreamChatter = Adapter{}
-	_ app.Prober        = Adapter{}
+	_ app.Decider           = Adapter{}
+	_ app.Chatter           = Adapter{}
+	_ app.StreamChatter     = Adapter{}
+	_ app.ToolStreamChatter = Adapter{}
+	_ app.Prober            = Adapter{}
 )
 
 func TestAdapterHasNoEmbed(t *testing.T) {
@@ -120,7 +121,7 @@ func hi() domain.Request {
 func TestChatSendsHeadersAndTheMessagesShape(t *testing.T) {
 	rec := newRecorder(t, jsonReply(fixture(t, "message.json")))
 	a := Adapter{Client: rec.srv.Client()}
-	_, _, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+	_, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
 	if err != nil || class != domain.ClassOK {
 		t.Fatalf("class=%s err=%v", class, err)
 	}
@@ -160,7 +161,7 @@ func TestChatCapComesFromTheRequest(t *testing.T) {
 	a := Adapter{Client: rec.srv.Client()}
 	req := hi()
 	req.MaxOutputTokens = 77
-	if _, _, _, err := a.Chat(context.Background(), attemptFor(rec), req); err != nil {
+	if _, _, err := a.Chat(context.Background(), attemptFor(rec), req); err != nil {
 		t.Fatal(err)
 	}
 	if got := rec.last(t).Body["max_tokens"]; got != float64(77) {
@@ -182,7 +183,7 @@ func TestSystemIsBlocksAndCacheControlSitsOnTheMarkedBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := a.Chat(context.Background(), attemptFor(rec), req); err != nil {
+	if _, _, err := a.Chat(context.Background(), attemptFor(rec), req); err != nil {
 		t.Fatal(err)
 	}
 	body := rec.last(t).Body
@@ -198,22 +199,22 @@ func TestSystemIsBlocksAndCacheControlSitsOnTheMarkedBlocks(t *testing.T) {
 	}
 
 	tools, _ := body["tools"].([]any)
-	if len(tools) != 2 {
+	if len(tools) != 4 {
 		t.Fatalf("tools = %v", body["tools"])
 	}
-	first, _ := tools[0].(map[string]any)
-	last, _ := tools[1].(map[string]any)
-	if first["name"] != "search" || first["description"] != "find" {
-		t.Fatalf("first tool = %v", first)
+	search, _ := tools[2].(map[string]any)
+	last, _ := tools[3].(map[string]any)
+	if search["name"] != "search" || search["description"] != "find" || last["name"] != "fetch" {
+		t.Fatalf("tools = %v", tools)
 	}
-	if _, marked := first["cache_control"]; marked {
-		t.Fatalf("the first tool is marked: %v", first)
+	if _, marked := search["cache_control"]; marked {
+		t.Fatalf("a non-final tool is marked: %v", search)
 	}
 	if cc, _ := last["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
 		t.Fatalf("the last tool is not marked: %v", last)
 	}
-	if schema, _ := first["input_schema"].(map[string]any); schema["type"] != "object" {
-		t.Fatalf("input_schema = %v", first["input_schema"])
+	if schema, _ := search["input_schema"].(map[string]any); schema["type"] != "object" {
+		t.Fatalf("input_schema = %v", search["input_schema"])
 	}
 	// A tool with no schema still carries an object schema, which the API requires.
 	if schema, _ := last["input_schema"].(map[string]any); schema["type"] != "object" {
@@ -290,37 +291,46 @@ func TestRolesMapOntoUserAndAssistant(t *testing.T) {
 		{Role: domain.RoleAssistant, Text: "a"},
 		{Role: domain.RoleTool, Text: "result", ToolName: "search", ToolID: "t1"},
 	}}, false)
-	got := make([]string, 0, len(body.Messages))
-	for _, m := range body.Messages {
-		got = append(got, m.Role+":"+m.Content)
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages = %+v", body.Messages)
 	}
-	if strings.Join(got, ",") != "user:q,assistant:a,user:result" {
-		t.Fatalf("messages = %v", got)
+	if body.Messages[0].Role != "user" || body.Messages[0].Content != "q" {
+		t.Fatalf("msg[0] = %+v", body.Messages[0])
+	}
+	if body.Messages[1].Role != "assistant" || body.Messages[1].Content != "a" {
+		t.Fatalf("msg[1] = %+v", body.Messages[1])
+	}
+	blocks, ok := body.Messages[2].Content.([]toolResultBlock)
+	if body.Messages[2].Role != "user" || !ok || len(blocks) != 1 || blocks[0].ToolUseID != "t1" || blocks[0].Content != "result" || blocks[0].IsError {
+		t.Fatalf("msg[2] = %+v", body.Messages[2])
 	}
 }
 
-func TestChatReadsTextBlocksAndUsageWithCacheTokens(t *testing.T) {
+func TestChatReadsTextBlocksToolCallsAndUsageWithCacheTokens(t *testing.T) {
 	rec := newRecorder(t, jsonReply(fixture(t, "message.json")))
 	a := Adapter{Client: rec.srv.Client()}
-	text, usage, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+	res, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
 	if err != nil || class != domain.ClassOK {
 		t.Fatalf("class=%s err=%v", class, err)
 	}
-	if text != "Hello, world" {
-		t.Fatalf("text = %q", text)
+	if res.Text != "Hello, world" {
+		t.Fatalf("text = %q", res.Text)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "toolu_01" || res.ToolCalls[0].Name != "search" || string(res.ToolCalls[0].Arguments) != `{"q": "x"}` {
+		t.Fatalf("tool_calls = %+v", res.ToolCalls)
 	}
 	want := domain.Usage{Arrived: true, Input: 10, Output: 5, CacheRead: 3, CacheWrite: 2}
-	if usage != want {
-		t.Fatalf("usage = %+v, want %+v", usage, want)
+	if res.Usage != want {
+		t.Fatalf("usage = %+v, want %+v", res.Usage, want)
 	}
 }
 
 func TestChatWithoutUsageBlockLeavesItNotArrived(t *testing.T) {
 	rec := newRecorder(t, jsonReply([]byte(`{"content":[{"type":"text","text":"hi"}]}`)))
 	a := Adapter{Client: rec.srv.Client()}
-	text, usage, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
-	if err != nil || class != domain.ClassOK || text != "hi" || usage.Arrived {
-		t.Fatalf("text=%q usage=%+v class=%s err=%v", text, usage, class, err)
+	res, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+	if err != nil || class != domain.ClassOK || res.Text != "hi" || res.Usage.Arrived {
+		t.Fatalf("res=%+v class=%s err=%v", res, class, err)
 	}
 }
 
@@ -331,9 +341,9 @@ func TestChatAcceptsAnAnswerWithNoTextBlocks(t *testing.T) {
 	} {
 		rec := newRecorder(t, jsonReply([]byte(body)))
 		a := Adapter{Client: rec.srv.Client()}
-		text, usage, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
-		if err != nil || class != domain.ClassOK || text != "" || !usage.Arrived || usage.Input != 3 {
-			t.Errorf("%s: text=%q usage=%+v class=%s err=%v", name, text, usage, class, err)
+		res, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+		if err != nil || class != domain.ClassOK || res.Text != "" || !res.Usage.Arrived || res.Usage.Input != 3 {
+			t.Errorf("%s: res=%+v class=%s err=%v", name, res, class, err)
 		}
 	}
 }
@@ -346,7 +356,7 @@ func TestChatRefusesAnAnswerItCannotRead(t *testing.T) {
 	} {
 		rec := newRecorder(t, jsonReply([]byte(body)))
 		a := Adapter{Client: rec.srv.Client()}
-		_, _, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+		_, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
 		if err == nil || class != domain.ClassCaller {
 			t.Errorf("%s: class=%s err=%v", name, class, err)
 		}
@@ -371,7 +381,7 @@ func TestChatMapsStatusToClass(t *testing.T) {
 	for code, want := range statusCases {
 		rec := newRecorder(t, statusReply(code))
 		a := Adapter{Client: rec.srv.Client()}
-		_, _, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+		_, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
 		if err == nil || class != want {
 			t.Errorf("status %d: class=%s err=%v, want %s", code, class, err, want)
 		}
@@ -425,7 +435,7 @@ func TestEveryCallRefusesAnEmptyBaseURL(t *testing.T) {
 	if class, err := a.Probe(ctx, app.Attempt{}); err == nil || class != domain.ClassCaller {
 		t.Errorf("probe: class=%s err=%v", class, err)
 	}
-	if _, _, class, err := a.Chat(ctx, app.Attempt{}, hi()); err == nil || class != domain.ClassCaller {
+	if _, class, err := a.Chat(ctx, app.Attempt{}, hi()); err == nil || class != domain.ClassCaller {
 		t.Errorf("chat: class=%s err=%v", class, err)
 	}
 	if _, class, err := a.ChatStream(ctx, app.Attempt{}, hi(), func(string) error { return nil }); err == nil || class != domain.ClassCaller {
@@ -728,7 +738,7 @@ func TestDefaultClientDialsByPlan(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	chat := func(plan string) (domain.FailureClass, error) {
-		_, _, class, err := Adapter{}.Chat(context.Background(),
+		_, class, err := Adapter{}.Chat(context.Background(),
 			app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s", PlanKind: plan}, hi())
 		return class, err
 	}
@@ -759,5 +769,115 @@ func TestRedirectIsNotFollowedSoTheKeyStaysPut(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatal("the redirect was followed with the key")
+	}
+}
+
+func TestBuildPayloadSerializesAssistantToolCallsMergedToolResultsAndToolChoice(t *testing.T) {
+	req, err := domain.Build(domain.Input{
+		Tools: []domain.Tool{{Name: "search"}, {Name: "fetch"}},
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Text: "find both"},
+			{
+				Role: domain.RoleAssistant,
+				Text: "calling both",
+				ToolCalls: []domain.ToolCall{
+					{ID: "t1", Name: "search", Arguments: json.RawMessage(`{"q":"a"}`)},
+					{ID: "t2", Name: "fetch", Arguments: json.RawMessage(`{"id":"b"}`)},
+				},
+			},
+			{Role: domain.RoleTool, ToolID: "t1", ToolName: "search", Text: "ok"},
+			{Role: domain.RoleTool, ToolID: "t2", ToolName: "fetch", Text: "boom", IsError: true},
+		},
+		ToolChoice: domain.ToolChoice{Mode: domain.ToolChoiceTool, Name: "search"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(buildPayload("claude-test", req, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		ToolChoice struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"tool_choice"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ToolChoice.Type != "tool" || parsed.ToolChoice.Name != "search" {
+		t.Fatalf("tool_choice = %+v", parsed.ToolChoice)
+	}
+	if len(parsed.Messages) != 3 {
+		t.Fatalf("expected consecutive tool results merged into 3 messages, got %d: %s", len(parsed.Messages), raw)
+	}
+	assistantBlocks, _ := parsed.Messages[1].Content.([]any)
+	if len(assistantBlocks) != 3 {
+		t.Fatalf("assistant blocks = %v", assistantBlocks)
+	}
+	toolBlocks, _ := parsed.Messages[2].Content.([]any)
+	if parsed.Messages[2].Role != "user" || len(toolBlocks) != 2 {
+		t.Fatalf("merged tool_result message = %+v", parsed.Messages[2])
+	}
+	second, _ := toolBlocks[1].(map[string]any)
+	if second["tool_use_id"] != "t2" || second["content"] != "boom" || second["is_error"] != true {
+		t.Fatalf("second tool_result = %v", second)
+	}
+	for mode, want := range map[string]string{
+		domain.ToolChoiceAuto: "auto",
+		domain.ToolChoiceAny:  "any",
+		domain.ToolChoiceNone: "none",
+	} {
+		got := encodeToolChoice(domain.ToolChoice{Mode: mode})
+		if got == nil || got.Type != want {
+			t.Errorf("mode %q = %+v, want %q", mode, got, want)
+		}
+	}
+}
+
+func TestChatStreamToolsReadsToolUseDeltasAndMultiToolCalls(t *testing.T) {
+	rec := newRecorder(t, streamReply(fixture(t, "stream_blocks.sse")))
+	a := Adapter{Client: rec.srv.Client()}
+	var text strings.Builder
+	var deltas []app.ToolCallDelta
+	res, class, err := a.ChatStreamTools(context.Background(), attemptFor(rec), hi(), app.StreamEvents{
+		Text: func(s string) error {
+			text.WriteString(s)
+			return nil
+		},
+		ToolCall: func(d app.ToolCallDelta) error {
+			deltas = append(deltas, d)
+			return nil
+		},
+	})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if text.String() != "Sure" || res.StopReason != "tool_use" {
+		t.Fatalf("text=%q stop=%q", text.String(), res.StopReason)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "toolu_01" || res.ToolCalls[0].Name != "search" || string(res.ToolCalls[0].Arguments) != `{"q": "x"}` {
+		t.Fatalf("tool_calls = %+v", res.ToolCalls)
+	}
+	if len(deltas) != 2 || deltas[0].Index != 0 || deltas[0].ID != "toolu_01" || deltas[1].Index != 0 || deltas[1].ArgumentsDelta != `{"q": "x"}` {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+}
+
+func TestDecideReturnsUsage(t *testing.T) {
+	body := `{"content":[{"type":"text","text":"yes"}],"usage":{"input_tokens":12,"output_tokens":1}}`
+	rec := newRecorder(t, jsonReply([]byte(body)))
+	a := Adapter{Client: rec.srv.Client()}
+	got, usage, class, err := a.Decide(context.Background(), attemptFor(rec), domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"})
+	if err != nil || class != domain.ClassOK || !got.YesNo {
+		t.Fatalf("got=%+v class=%s err=%v", got, class, err)
+	}
+	if !usage.Arrived || usage.Input != 12 || usage.Output != 1 {
+		t.Fatalf("usage = %+v", usage)
 	}
 }

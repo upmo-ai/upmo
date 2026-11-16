@@ -67,3 +67,19 @@ func TestRollupTokens(t *testing.T) {
 		t.Fatalf("tokens = %d", got)
 	}
 }
+
+func TestMicroUSD(t *testing.T) {
+	if MicroUSD(nil) != nil {
+		t.Fatal("expected nil for nil cost")
+	}
+	v := 0.0000015
+	got := MicroUSD(&v)
+	if got == nil || *got != 2 {
+		t.Fatalf("MicroUSD(0.0000015) = %v, want 2", got)
+	}
+	v2 := 1.2345674
+	got2 := MicroUSD(&v2)
+	if got2 == nil || *got2 != 1234567 {
+		t.Fatalf("MicroUSD(1.2345674) = %v, want 1234567", got2)
+	}
+}

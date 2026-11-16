@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -139,8 +140,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 || latest != 6 {
-		t.Fatalf("applied versions = %d latest = %d, want 6 and 6", n, latest)
+	if n != 7 || latest != 7 {
+		t.Fatalf("applied versions = %d latest = %d, want 7 and 7", n, latest)
 	}
 
 	var attempts, priced int
@@ -326,6 +327,150 @@ func TestGatewayToolBundles(t *testing.T) {
 	}
 	if _, err := store.AgentBundle(ctx, "22222222-2222-4222-8222-222222222222"); err == nil {
 		t.Fatal("missing agent bundle")
+	}
+}
+
+func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Store{Pool: owner}
+	rate := 1.0
+	if err := store.ReplaceCatalog(ctx, "v1", []domain.CatalogRow{{
+		Model:         "fake-tool-call",
+		Version:       "v1",
+		Caps:          []string{domain.CapTools},
+		ContextWindow: 200000,
+		Price: domain.Price{
+			Version:        "v1",
+			InputPerMTok:   &rate,
+			OutputPerMTok:  &rate,
+			CacheReadMTok:  &rate,
+			CacheWriteMTok: &rate,
+			ContextWindow:  200000,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('metered-fake', 'fake', 'house', 'metered', true, 'everyone')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.routes (name, capability, decision) VALUES
+			('tool-chat', 'chat', ''),
+			('tool-decide', 'decide', 'yesno')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
+		SELECT id, 1, (SELECT id FROM gateway.provider_accounts WHERE name = 'metered-fake'), 'fake-tool-call'
+		FROM gateway.routes
+	`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
+	master := mustMaster(t)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpserver.Protect(handler))
+	t.Cleanup(srv.Close)
+	derived := mustDerived(t, master)
+
+	// Decide returns full usage including cost_micro_usd and context_window.
+	dec := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{
+		"route": "tool-decide", "kind": "yesno", "prompt": "keep?",
+	})
+	decUsage, _ := dec["usage"].(map[string]any)
+	if decUsage["arrived"] != true || decUsage["context_window"] != float64(200000) || decUsage["cost_micro_usd"] != float64(2) {
+		t.Fatalf("decide usage = %v", decUsage)
+	}
+
+	// Turn 0 Chat returns tool_calls, max_output_tokens respected, full usage + context_window.
+	turn0 := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Chat", map[string]any{
+		"route":             "tool-chat",
+		"prompt":            "search for go",
+		"max_output_tokens": 512,
+		"tool_choice":       "auto",
+		"tools":             []map[string]any{{"name": "search", "description": "search docs"}},
+	})
+	toolCalls, _ := turn0["tool_calls"].([]any)
+	if len(toolCalls) != 1 {
+		t.Fatalf("turn0 tool_calls = %v", turn0)
+	}
+	firstCall, _ := toolCalls[0].(map[string]any)
+	if firstCall["name"] != "search" || turn0["context_window"] != float64(200000) || turn0["cost_micro_usd"] != float64(2) {
+		t.Fatalf("turn0 = %v", turn0)
+	}
+
+	// Turn 1 Chat with assistant tool_calls + error RoleTool message.
+	turn1 := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Chat", map[string]any{
+		"route": "tool-chat",
+		"tools": []map[string]any{{"name": "search"}},
+		"messages": []map[string]any{
+			{"role": "user", "text": "search for go"},
+			{"role": "assistant", "tool_calls": toolCalls},
+			{"role": "tool", "tool_id": firstCall["id"], "tool_name": "search", "text": "timeout", "is_error": true},
+		},
+	})
+	if turn1["text"] != "tool_error: timeout" {
+		t.Fatalf("turn1 = %v", turn1)
+	}
+
+	// ChatStream emits tool_call frames and full done metadata.
+	raw, _ := json.Marshal(map[string]any{
+		"route":  "tool-chat",
+		"prompt": "stream tool call",
+		"tools":  []map[string]any{{"name": "search"}},
+	})
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/upmo.gateway.v1.Gateway/ChatStream", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svcsig.Sign(derived, svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/ChatStream", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", res.StatusCode)
+	}
+	var toolFrames int
+	var doneFrame map[string]any
+	scan := bufio.NewScanner(res.Body)
+	for scan.Scan() {
+		var line map[string]any
+		if err := json.Unmarshal(scan.Bytes(), &line); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := line["tool_call"]; ok {
+			toolFrames++
+		}
+		if d, ok := line["done"].(map[string]any); ok {
+			doneFrame = d
+		}
+	}
+	if toolFrames != 2 || doneFrame == nil {
+		t.Fatalf("toolFrames=%d done=%v", toolFrames, doneFrame)
+	}
+	if doneFrame["context_window"] != float64(200000) || doneFrame["arrived"] != true || doneFrame["cost_micro_usd"] != float64(2) {
+		t.Fatalf("done frame = %v", doneFrame)
+	}
+	if calls, _ := doneFrame["tool_calls"].([]any); len(calls) != 1 {
+		t.Fatalf("done tool_calls = %v", doneFrame)
 	}
 }
 

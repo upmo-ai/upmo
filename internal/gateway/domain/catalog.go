@@ -11,10 +11,11 @@ import (
 
 // CatalogRow is one model after a models.dev refresh.
 type CatalogRow struct {
-	Model   string
-	Version string
-	Caps    []string
-	Price   Price
+	Model         string
+	Version       string
+	Caps          []string
+	Price         Price
+	ContextWindow int
 }
 
 // ParseCatalog reads a models.dev api.json document into catalog rows.
@@ -46,7 +47,11 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 				row.Caps = unionCaps(row.Caps, caps)
 				continue
 			}
-			price := Price{Version: version}
+			ctxWindow := DefaultContextWindow
+			if model.Limit != nil && model.Limit.Context > 0 {
+				ctxWindow = model.Limit.Context
+			}
+			price := Price{Version: version, ContextWindow: ctxWindow}
 			if model.Cost != nil {
 				price.InputPerMTok = floatPtr(model.Cost.Input)
 				price.OutputPerMTok = floatPtr(model.Cost.Output)
@@ -57,7 +62,7 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 					price.CacheWriteMTok = floatPtr(*model.Cost.CacheWrite)
 				}
 			}
-			row := &CatalogRow{Model: id, Version: version, Caps: caps, Price: price}
+			row := &CatalogRow{Model: id, Version: version, Caps: caps, Price: price, ContextWindow: ctxWindow}
 			byModel[id] = row
 			order = append(order, id)
 		}
@@ -77,7 +82,12 @@ type apiModel struct {
 	ToolCall         bool          `json:"tool_call"`
 	StructuredOutput bool          `json:"structured_output"`
 	Cost             *apiCost      `json:"cost"`
+	Limit            *apiLimit     `json:"limit"`
 	Modalities       apiModalities `json:"modalities"`
+}
+
+type apiLimit struct {
+	Context int `json:"context"`
 }
 
 type apiCost struct {
