@@ -203,3 +203,30 @@ func TestCanonicalJSONRFC8785(t *testing.T) {
 		t.Fatalf("compareUTF16(same, same) = %d, want 0", cmp)
 	}
 }
+
+func TestComparePackVersion(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0", "1.0.0", 0},
+		{"v1.0.0", "1.0.0", 0},
+		{"1.0.0", "1.1.0", -1},
+		{"1.1.0", "1.0.9", 1},
+		{"2.0.0", "1.99.99", 1},
+		{"1.0.0-alpha.1", "1.0.0", -1},
+		{"1.0.0-alpha.2", "1.0.0-alpha.1", 1},
+	}
+	for _, tc := range cases {
+		got, err := ComparePackVersion(tc.a, tc.b)
+		if err != nil {
+			t.Fatalf("ComparePackVersion(%q, %q) error = %v", tc.a, tc.b, err)
+		}
+		if got != tc.want {
+			t.Fatalf("ComparePackVersion(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+	if _, err := ComparePackVersion("not-semver", "1.0.0"); err == nil {
+		t.Fatal("expected error for invalid semver")
+	}
+}

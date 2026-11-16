@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -29,6 +30,8 @@ var (
 	ErrUntrustedKey = errors.New("agents: untrusted pack key")
 	// ErrInvalidSignature reports a manifest whose Ed25519 signature does not verify.
 	ErrInvalidSignature = errors.New("agents: invalid pack signature")
+	// ErrPackDowngrade reports an attempt to install an older pack version over a newer one.
+	ErrPackDowngrade = errors.New("agents: pack version cannot downgrade installed version")
 )
 
 var trustKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -96,6 +99,10 @@ func decodeBase64Key(s string, wantLen int) ([]byte, error) {
 }
 
 // Pack is the signed upmo.pack/v1 manifest.
+//
+// Note: Templates, ConnectorRules, and Schedules are validated and covered by
+// the Ed25519 signature, but are reserved and ignored during v1.0.0 pack
+// installation (only Agent and Lessons are applied).
 type Pack struct {
 	Schema         string              `json:"schema"`
 	ID             string              `json:"id"`
@@ -164,6 +171,9 @@ func (p Pack) Validate() error {
 	}
 	if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.Version) == "" || strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("%w: id, version, and name are required", ErrMalformedPack)
+	}
+	if _, err := parseSemver(p.Version); err != nil {
+		return fmt.Errorf("%w: version: %v", ErrMalformedPack, err)
 	}
 	if strings.TrimSpace(p.KeyID) == "" {
 		return fmt.Errorf("%w: key_id is required", ErrMalformedPack)
@@ -307,4 +317,113 @@ func SignPack(p Pack, keyID string, priv ed25519.PrivateKey) ([]byte, error) {
 	sig := ed25519.Sign(priv, canon)
 	p.Ed25519Sig = base64.StdEncoding.EncodeToString(sig)
 	return json.Marshal(p)
+}
+
+type semverParts struct {
+	major int
+	minor int
+	patch int
+	pre   []string
+}
+
+// ComparePackVersion compares two SemVer 2.0.0 pack version strings (with an
+// optional leading "v"), returning -1, 0, or 1.
+func ComparePackVersion(a, b string) (int, error) {
+	va, err := parseSemver(a)
+	if err != nil {
+		return 0, err
+	}
+	vb, err := parseSemver(b)
+	if err != nil {
+		return 0, err
+	}
+	for _, pair := range [][2]int{{va.major, vb.major}, {va.minor, vb.minor}, {va.patch, vb.patch}} {
+		if pair[0] < pair[1] {
+			return -1, nil
+		}
+		if pair[0] > pair[1] {
+			return 1, nil
+		}
+	}
+	switch {
+	case len(va.pre) == 0 && len(vb.pre) == 0:
+		return 0, nil
+	case len(va.pre) == 0:
+		return 1, nil
+	case len(vb.pre) == 0:
+		return -1, nil
+	}
+	for i := 0; i < len(va.pre) && i < len(vb.pre); i++ {
+		if c := comparePreIdent(va.pre[i], vb.pre[i]); c != 0 {
+			return c, nil
+		}
+	}
+	if len(va.pre) < len(vb.pre) {
+		return -1, nil
+	}
+	if len(va.pre) > len(vb.pre) {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func comparePreIdent(a, b string) int {
+	na, errA := strconv.Atoi(a)
+	nb, errB := strconv.Atoi(b)
+	switch {
+	case errA == nil && errB == nil:
+		if na < nb {
+			return -1
+		}
+		if na > nb {
+			return 1
+		}
+		return 0
+	case errA == nil:
+		return -1
+	case errB == nil:
+		return 1
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func parseSemver(raw string) (semverParts, error) {
+	s := strings.TrimPrefix(strings.TrimSpace(raw), "v")
+	if core, _, ok := strings.Cut(s, "+"); ok {
+		s = core
+	}
+	var pre []string
+	if core, preRaw, ok := strings.Cut(s, "-"); ok {
+		s = core
+		if preRaw == "" {
+			return semverParts{}, fmt.Errorf("invalid semver %q", raw)
+		}
+		pre = strings.Split(preRaw, ".")
+		for _, id := range pre {
+			if id == "" {
+				return semverParts{}, fmt.Errorf("invalid semver %q", raw)
+			}
+		}
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 {
+		return semverParts{}, fmt.Errorf("invalid semver %q", raw)
+	}
+	nums := make([]int, 3)
+	for i, p := range parts {
+		if p == "" || (len(p) > 1 && p[0] == '0') {
+			return semverParts{}, fmt.Errorf("invalid semver %q", raw)
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return semverParts{}, fmt.Errorf("invalid semver %q", raw)
+		}
+		nums[i] = n
+	}
+	return semverParts{major: nums[0], minor: nums[1], patch: nums[2], pre: pre}, nil
 }

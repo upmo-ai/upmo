@@ -1,6 +1,6 @@
 //go:build integration
 
-package main
+package brainops
 
 import (
 	"context"
@@ -152,7 +152,7 @@ func TestCheckAppRoleRefusesStrangerLogin(t *testing.T) {
 	}
 }
 
-// enableAppLogin turns the migration's NOLOGIN role into a working login, is
+// EnableAppLogin turns the migration's NOLOGIN role into a working login, is
 // safe to run on every start, and refuses a URL that is not a password login
 // for upmo_app without naming the URL.
 func TestEnableAppLogin(t *testing.T) {
@@ -163,11 +163,11 @@ func TestEnableAppLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	appURL := dbURL(t, owner, url.UserPassword("upmo_app", "upmo-app-test"))
-	if err := enableAppLogin(ctx, owner, appURL); err != nil {
+	if err := EnableAppLogin(ctx, owner, appURL); err != nil {
 		t.Fatal(err)
 	}
-	if err := enableAppLogin(ctx, owner, appURL); err != nil {
-		t.Fatalf("second enableAppLogin: %v", err)
+	if err := EnableAppLogin(ctx, owner, appURL); err != nil {
+		t.Fatalf("second EnableAppLogin: %v", err)
 	}
 	pool, err := pgxpool.New(ctx, appURL)
 	if err != nil {
@@ -182,17 +182,17 @@ func TestEnableAppLogin(t *testing.T) {
 		t.Fatalf("session_user = %s, want upmo_app", session)
 	}
 
-	if err := enableAppLogin(ctx, owner, dbURL(t, owner, url.User("upmo_app"))); err == nil {
+	if err := EnableAppLogin(ctx, owner, dbURL(t, owner, url.User("upmo_app"))); err == nil {
 		t.Fatal("app URL without a password was accepted")
 	}
 	ownerURL := dbURL(t, owner, nil)
-	err = enableAppLogin(ctx, owner, ownerURL)
+	err = EnableAppLogin(ctx, owner, ownerURL)
 	if err == nil || strings.Contains(err.Error(), ownerURL) {
 		t.Fatalf("owner credential as app URL: %v", err)
 	}
 }
 
-// openAppPool is what run starts the request pool with: the owner credential
+// OpenAppPool is what run starts the request pool with: the owner credential
 // in the app URL is refused, in every environment, and the app login serves.
 func TestOpenAppPoolRefusesOwnerCredential(t *testing.T) {
 	owner := pgtest.New(t)
@@ -201,12 +201,12 @@ func TestOpenAppPoolRefusesOwnerCredential(t *testing.T) {
 	// The planted bug: UPMO_DATABASE_APP_URL set to the owner credential.
 	// The pool opens and SET ROLE upmo_app even works, but the check refuses
 	// it, so the brain stops instead of serving as the owner.
-	if pool, err := openAppPool(ctx, owner, dbURL(t, owner, nil)); err == nil {
+	if pool, err := OpenAppPool(ctx, owner, dbURL(t, owner, nil)); err == nil {
 		pool.Close()
 		t.Fatal("request pool on the owner credential was accepted")
 	}
 
-	pool, err := openAppPool(ctx, owner, pgtest.AppLoginURL(t, owner))
+	pool, err := OpenAppPool(ctx, owner, pgtest.AppLoginURL(t, owner))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,15 +227,15 @@ func TestOpenAppPoolFailureOmitsPassword(t *testing.T) {
 	owner := pgtest.New(t)
 	const marker = "open-marker-sesame"
 	bad := "postgres://upmo_app:" + marker + "@127.0.0.1:notaport/upmo"
-	_, err := requestPool(context.Background(), bad)
+	_, err := RequestPool(context.Background(), bad)
 	if err == nil {
 		t.Fatal("malformed app URL was accepted")
 	}
 	if strings.Contains(err.Error(), marker) {
 		t.Fatalf("request pool error names the app URL password: %v", err)
 	}
-	if _, err := openAppPool(context.Background(), owner, bad); err == nil {
-		t.Fatal("malformed app URL was accepted by openAppPool")
+	if _, err := OpenAppPool(context.Background(), owner, bad); err == nil {
+		t.Fatal("malformed app URL was accepted by OpenAppPool")
 	} else if strings.Contains(err.Error(), marker) {
 		t.Fatalf("open app pool error names the app URL password: %v", err)
 	}

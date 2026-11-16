@@ -18,6 +18,9 @@ import (
 // not import the app package.
 type SessionService = app.Service
 
+// Session is an active user session.
+type Session = app.Session
+
 // Sessions builds the session use case on the identity schema.
 func Sessions(pool *pgxpool.Pool, idle, maxAge time.Duration) app.Service {
 	return app.Service{Store: postgres.Sessions{Pool: pool}, Idle: idle, MaxAge: maxAge}

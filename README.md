@@ -25,7 +25,14 @@ Copy `.env.example` to `.env` to override settings. `.env` is never committed.
 
 ## Layout
 
-The Go module is laid out by bounded context under `internal/`, with technical code in `internal/platform` and the import rules checked by `internal/archtest`. The web app lives in `web/`.
+The Go module is laid out by bounded context under `internal/`, with technical code in `internal/platform` and the import rules checked by `internal/archtest`. The public composition entrypoint lives in `pkg/brain`. The web app lives in `web/`.
+
+## Provisioning Configuration
+
+Control-plane provisioning under `/api/v1/provision/*` (see `docs/openapi/provision-v1.yaml`) is disabled (`404`) by default unless `UPMO_PROVISION_KEYS` is configured:
+
+- `UPMO_PROVISION_KEYS`: Comma-separated list of `upmo_svc_*` master keys used to derive HMAC-SHA256 verification keys for `svcsig` (`provision` audience) bearer tokens. Supports multiple keys for zero-downtime key rotation.
+- `UPMO_PACK_TRUST_KEYS`: Optional comma-separated `key_id=<base64-ed25519-pub>` overrides/additions for verifying signed `upmo.pack/v1` manifests on `PUT /api/v1/provision/packs`.
 
 ## Licence and trademark
 

@@ -20,8 +20,9 @@ import (
 
 // Audiences a bearer may name. Each process verifies only its own.
 const (
-	AudienceGateway  = "gateway"
-	AudienceSandboxd = "sandboxd"
+	AudienceGateway   = "gateway"
+	AudienceSandboxd  = "sandboxd"
+	AudienceProvision = "provision"
 )
 
 // Prefix is the env and bearer prefix that must not collide with a
@@ -96,42 +97,48 @@ func Sign(derived []byte, audience, method, path string, now time.Time) (string,
 
 // Verify checks a bearer against any derived key. The first matching key wins.
 func Verify(derived [][]byte, audience, method, path, bearer string, now time.Time) error {
+	_, err := VerifyIndex(derived, audience, method, path, bearer, now)
+	return err
+}
+
+// VerifyIndex checks a bearer against any derived key and returns the index of
+// the matching key on success.
+func VerifyIndex(derived [][]byte, audience, method, path, bearer string, now time.Time) (int, error) {
 	if len(derived) == 0 {
-		return errNoKey
+		return -1, errNoKey
 	}
 	for _, k := range derived {
 		if len(k) != keyBytes {
-			return errNoKey
+			return -1, errNoKey
 		}
 	}
 	if !knownAudience(audience) {
-		return errAudience
+		return -1, errAudience
 	}
 	if method == "" || path == "" {
-		return errMethodPath
+		return -1, errMethodPath
 	}
 	gotAudience, unix, nonceText, gotMAC, err := parseBearer(bearer)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	if gotAudience != audience {
-		return errAudience
+		return -1, errAudience
 	}
-	contentMAC := macOver(derived[0], gotAudience, unix, nonceText, method, path)
-	match := subtle.ConstantTimeCompare(gotMAC, contentMAC) == 1
-	for _, k := range derived[1:] {
-		alt := macOver(k, gotAudience, unix, nonceText, method, path)
-		if subtle.ConstantTimeCompare(gotMAC, alt) == 1 {
-			match = true
+	matched := -1
+	for i, k := range derived {
+		candidate := macOver(k, gotAudience, unix, nonceText, method, path)
+		if subtle.ConstantTimeCompare(gotMAC, candidate) == 1 && matched == -1 {
+			matched = i
 		}
 	}
-	if !match {
-		return errMismatch
+	if matched < 0 {
+		return -1, errMismatch
 	}
 	if d := now.Sub(time.Unix(unix, 0)); d > tolerance || d < -tolerance {
-		return errStale
+		return -1, errStale
 	}
-	return nil
+	return matched, nil
 }
 
 // Transport adds a bearer on every client request. An empty key or unknown
@@ -246,5 +253,5 @@ func macOver(derived []byte, audience string, unix int64, nonce, method, path st
 }
 
 func knownAudience(audience string) bool {
-	return audience == AudienceGateway || audience == AudienceSandboxd
+	return audience == AudienceGateway || audience == AudienceSandboxd || audience == AudienceProvision
 }

@@ -69,7 +69,7 @@ func WithPeriodic(jobs ...*river.PeriodicJob) Option {
 }
 
 // Open builds a River client on pool. It registers the test-only ping worker
-// and the outbox drain worker; product kinds are registered in cmd/brain.
+// and the outbox drain worker; product kinds are registered in pkg/brain.
 func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 	cfg := &openConfig{
 		workers: river.NewWorkers(),

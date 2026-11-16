@@ -100,7 +100,7 @@ func TestEnginePackages(t *testing.T) {
 func TestRoleSwitchStaysInPoolSetup(t *testing.T) {
 	root := "../.."
 	allowSetRole := map[string]bool{
-		"cmd/brain/main.go":                  true,
+		"internal/platform/brainops/pool.go": true,
 		"internal/testutil/pgtest/pgtest.go": true,
 	}
 	revert := []string{"RESET ROLE", "SET ROLE NONE", "SET SESSION AUTHORIZATION"}

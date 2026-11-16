@@ -25,6 +25,7 @@ func identityRoutes() []entry {
 		{pattern: "POST /api/passkeys/sign-in/finish", route: Route{Action: AuthSignIn}},
 		{pattern: "POST /api/passkeys/link/options", route: exempt},
 		{pattern: "POST /api/passkeys/link/finish", route: Route{Action: AuthSignIn}},
+		{pattern: "POST /api/sso/redeem", route: Route{Action: AuthSignIn}},
 		{pattern: "POST /api/passkeys/step-up/options", route: exempt},
 		{pattern: "POST /api/passkeys/step-up/finish", route: Route{Action: AuthStepUp}},
 		{pattern: "POST /api/passkeys/options", route: exempt},

@@ -12,11 +12,11 @@ import (
 	"testing"
 )
 
-// TestRouteTableCoversTheSource parses every non-test Go file under internal
-// and cmd, finds the routes registered with POST, PUT, PATCH or DELETE, and
+// TestRouteTableCoversTheSource parses every non-test Go file under internal,
+// cmd, and pkg, finds the routes registered with POST, PUT, PATCH or DELETE, and
 // fails when the route table and the source disagree.
 func TestRouteTableCoversTheSource(t *testing.T) {
-	registered := scanRegistrations(t, "../..", "../../../cmd")
+	registered := scanRegistrations(t, "../..", "../../../cmd", "../../../pkg")
 	table := Routes()
 	missing, gone := compare(registered, table)
 	for _, pattern := range missing {
@@ -124,7 +124,13 @@ func scanRegistrations(t *testing.T, roots ...string) map[string]bool {
 			if err != nil {
 				return err
 			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			if d.IsDir() {
+				if d.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			for pattern := range registrationsIn(t, path) {

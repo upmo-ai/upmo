@@ -193,6 +193,78 @@ func (p Passkeys) FinishLink(ctx context.Context, cookie, token string, body []b
 	return text, err
 }
 
+// RedeemSSOLink redeems an 'sso' or 'sso_stepup' one-time link without a
+// passkey ceremony. For 'sso_stepup', when activeCookie identifies a live
+// session belonging to the link's user, that session's signed_in_at is
+// refreshed (and sign_in_method set to 'sso') so Fresh() step-up succeeds.
+// Otherwise a new 'sso' session is created and its cookie token is returned.
+func (p Passkeys) RedeemSSOLink(ctx context.Context, token, activeCookie, agent string) (newCookie string, refreshed bool, err error) {
+	raw, err := domain.ParseLinkToken(token)
+	if err != nil {
+		return "", false, ErrInvalidLink
+	}
+	now := p.now()
+	linkHash := domain.Hash(raw)
+	if r, ok := p.Store.(interface {
+		RedeemSSOLink(ctx context.Context, linkHash, activeSessionTokenHash, newSessionTokenHash []byte, now time.Time, idle, maxAge time.Duration, agent string) (bool, error)
+	}); ok {
+		var activeHash []byte
+		if activeCookie != "" {
+			if tok, parseErr := domain.ParseToken(activeCookie); parseErr == nil {
+				activeHash = domain.Hash(tok)
+			}
+		}
+		newToken, newText, err := domain.NewToken()
+		if err != nil {
+			return "", false, err
+		}
+		refreshed, err := r.RedeemSSOLink(ctx, linkHash, activeHash, domain.Hash(newToken), now, p.Sessions.Idle, p.Sessions.MaxAge, agent)
+		if err != nil {
+			return "", false, err
+		}
+		if refreshed {
+			return "", true, nil
+		}
+		return newText, false, nil
+	}
+	user, purpose, ok, err := p.Store.FindLink(ctx, linkHash, now)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || (purpose != "sso" && purpose != "sso_stepup") {
+		return "", false, ErrInvalidLink
+	}
+	if err := checkSSOSignIn(ctx, p.Store, user, true); err != nil {
+		return "", false, err
+	}
+	if err := p.Store.SpendLink(ctx, linkHash, now); err != nil {
+		return "", false, ErrInvalidLink
+	}
+	if err := p.Store.Join(ctx, user, now); err != nil {
+		return "", false, err
+	}
+	if purpose == "sso_stepup" && activeCookie != "" {
+		if sess, lookupErr := p.Sessions.Lookup(ctx, activeCookie); lookupErr == nil && sess.UserID == user {
+			audit.WithActor(ctx, audit.Actor{
+				Type:           "user",
+				ID:             sess.UserID.String(),
+				RoleID:         sess.RoleID,
+				CredentialType: "session",
+				CredentialID:   sess.ID,
+			})
+			if err := p.Sessions.Refresh(ctx, sess.ID, "sso", now); err != nil {
+				return "", false, err
+			}
+			return "", true, nil
+		}
+	}
+	text, _, err := p.Sessions.Start(ctx, user, "sso", agent)
+	if err != nil {
+		return "", false, err
+	}
+	return text, false, nil
+}
+
 func checkSSOSignIn(ctx context.Context, store interface {
 	SignInPolicy(ctx context.Context, user domain.UserID) (bool, string, error)
 }, user domain.UserID, isSSO bool) error {

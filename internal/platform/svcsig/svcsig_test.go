@@ -67,6 +67,8 @@ func TestSignVerify(t *testing.T) {
 		{AudienceGateway, http.MethodGet, "/upmo.gateway.v1.Gateway/Models"},
 		{AudienceSandboxd, http.MethodPost, "/upmo.sandboxd.v1.Runtime/Create"},
 		{AudienceSandboxd, http.MethodGet, "/upmo.sandboxd.v1.Runtime/Wait"},
+		{AudienceProvision, http.MethodPost, "/api/v1/provision/members"},
+		{AudienceProvision, http.MethodGet, "/api/v1/provision/status"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.audience+" "+tc.method+" "+tc.path, func(t *testing.T) {
@@ -296,4 +298,28 @@ func independentMAC(key []byte, audience, method, path, bearer string, now time.
 	h.Write([]byte(version + "." + gotAudience + "." + unixText + "." + nonce + "." + method + "." + path))
 	want := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 	return want, macText == want
+}
+
+func TestVerifyIndexProvisionRotation(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	k1 := mustDerive(bytes32('1'), AudienceProvision)
+	k2 := mustDerive(bytes32('2'), AudienceProvision)
+	keys := [][]byte{k1, k2}
+
+	tok1, err := Sign(k1, AudienceProvision, http.MethodPost, "/api/v1/provision/members", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok2, err := Sign(k2, AudienceProvision, http.MethodPut, "/api/v1/provision/quotas", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := VerifyIndex(keys, AudienceProvision, http.MethodPost, "/api/v1/provision/members", tok1, now)
+	if err != nil || idx != 0 {
+		t.Fatalf("VerifyIndex(k1) = (%d, %v), want (0, nil)", idx, err)
+	}
+	idx, err = VerifyIndex(keys, AudienceProvision, http.MethodPut, "/api/v1/provision/quotas", tok2, now)
+	if err != nil || idx != 1 {
+		t.Fatalf("VerifyIndex(k2) = (%d, %v), want (1, nil)", idx, err)
+	}
 }

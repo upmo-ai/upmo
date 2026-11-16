@@ -38,6 +38,11 @@ func (id Identity) Fresh(session app.Session) bool {
 	return id.Passkeys.Fresh(session)
 }
 
+// RedeemSSOLink redeems an 'sso' or 'sso_stepup' one-time link.
+func (id Identity) RedeemSSOLink(ctx context.Context, token, activeCookie, agent string) (newCookie string, refreshed bool, err error) {
+	return id.Passkeys.RedeemSSOLink(ctx, token, activeCookie, agent)
+}
+
 // Principal is who acts in a request.
 type Principal struct {
 	ID        string
