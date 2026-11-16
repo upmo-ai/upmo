@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -57,7 +59,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +194,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		}
 	}
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
 	owner := pgtest.New(t)
 	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
-	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil)
+	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, nil)
 	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
 		t.Fatalf("routes error = %v", err)
 	}
@@ -262,6 +264,61 @@ func TestGatewayLedgerNullCostCases(t *testing.T) {
 	}
 	if !alert {
 		t.Fatal("expected cache hit alert")
+	}
+}
+
+func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := migrate.SchemaVersions(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
+		return maps.Clone(versions), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := buildinfo.Info()
+
+	for _, path := range []string{"/version", "/api/version"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200", path, rec.Code)
+		}
+		var got buildinfo.Response
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+		if got.Version != info.Version || got.Commit != info.Commit || got.BuildTime != info.BuildTime {
+			t.Fatalf("%s info = %+v, want %+v", path, got, info)
+		}
+		if got.SchemaVersions[gateway.Schema] < 6 {
+			t.Fatalf("%s gateway schema version = %d, want >= 6", path, got.SchemaVersions[gateway.Schema])
+		}
+		if _, hasTasks := got.SchemaVersions["tasks"]; hasTasks {
+			t.Fatalf("%s unexpectedly reported unmigrated tasks schema: %v", path, got.SchemaVersions)
+		}
+	}
+
+	ready := httptest.NewRecorder()
+	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusOK || ready.Body.String() != "ok" {
+		t.Fatalf("readyz = %d %q", ready.Code, ready.Body.String())
+	}
+	if ready.Header().Get("X-Upmo-Version") != info.Version || ready.Header().Get("X-Upmo-Commit") != info.Commit {
+		t.Fatalf("readyz headers = %q %q, want %q %q", ready.Header().Get("X-Upmo-Version"), ready.Header().Get("X-Upmo-Commit"), info.Version, info.Commit)
+	}
+
+	postRec := httptest.NewRecorder()
+	handler.ServeHTTP(postRec, httptest.NewRequest(http.MethodPost, "/version", nil))
+	if postRec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /version without svcsig = %d, want 401", postRec.Code)
 	}
 }
 
