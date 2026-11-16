@@ -52,6 +52,13 @@ type VerifyResult struct {
 	Reason   string
 }
 
+// VerifyQueryer is the subset of pgxpool.Pool and pgx.Tx needed to walk the
+// sealed audit chain.
+type VerifyQueryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // Verify walks the sealed chain's events from position from through to in
 // position order and reports the first break: a missing position is a "gap",
 // a prev_hash that does not link to the event before it or a hash that does
@@ -62,9 +69,18 @@ type VerifyResult struct {
 // retained, and from the chain start when it is not. Only a database failure
 // returns an error.
 func Verify(ctx context.Context, pool *pgxpool.Pool, from, to int64) (VerifyResult, error) {
+	return verify(ctx, pool, from, to)
+}
+
+// VerifyTx walks the sealed chain's events inside an open transaction.
+func VerifyTx(ctx context.Context, tx pgx.Tx, from, to int64) (VerifyResult, error) {
+	return verify(ctx, tx, from, to)
+}
+
+func verify(ctx context.Context, q VerifyQueryer, from, to int64) (VerifyResult, error) {
 	var anchor int64
 	var prevHash []byte
-	err := pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT position, hash FROM audit.anchors ORDER BY position DESC LIMIT 1`,
 	).Scan(&anchor, &prevHash)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -79,7 +95,7 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, from, to int64) (VerifyResu
 		// walk links from. A purge may have taken that event, in which case
 		// the walk covers everything that remains from the chain start.
 		var hash []byte
-		err := pool.QueryRow(ctx,
+		err := q.QueryRow(ctx,
 			`SELECT hash FROM audit.events WHERE position = $1`, from-1,
 		).Scan(&hash)
 		switch {
@@ -94,7 +110,7 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, from, to int64) (VerifyResu
 		from = start
 	}
 	if to <= 0 {
-		if err := pool.QueryRow(ctx,
+		if err := q.QueryRow(ctx,
 			`SELECT position FROM audit.head WHERE one`,
 		).Scan(&to); err != nil {
 			return VerifyResult{}, fmt.Errorf("audit: head: %w", err)
@@ -104,7 +120,7 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, from, to int64) (VerifyResu
 		return VerifyResult{OK: true}, nil
 	}
 
-	rows, err := pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT position, prev_hash, hash,
 		       id::text, occurred_at, service, action, outcome, reason,
 		       actor_type, COALESCE(actor_id::text, ''), COALESCE(actor_role_id::text, ''),
