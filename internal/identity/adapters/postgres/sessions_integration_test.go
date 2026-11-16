@@ -27,8 +27,8 @@ func TestSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool := pgtest.App(t, owner)
-	ada := user(t, ctx, pool, "ada@example.com")
-	lee := user(t, ctx, pool, "lee@example.com")
+	ada := user(t, ctx, owner, "ada@example.com")
+	lee := user(t, ctx, owner, "lee@example.com")
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	svc := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	svc.Now = func() time.Time { return now }
@@ -82,7 +82,7 @@ func TestSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, ada); err != nil {
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, ada); err != nil {
 		t.Fatal(err)
 	}
 	var left int
@@ -96,13 +96,13 @@ func TestSessions(t *testing.T) {
 		t.Fatalf("disabled person resolved: %v", err)
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = NULL WHERE id = $1`, ada); err != nil {
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET disabled_at = NULL WHERE id = $1`, ada); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.Start(ctx, ada, "passkey", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, ada); err != nil {
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, ada); err != nil {
 		t.Fatal(err)
 	}
 	token := mustToken(t)
@@ -115,7 +115,7 @@ func TestSessions(t *testing.T) {
 		t.Fatalf("disabled filter: %v", err)
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = NULL WHERE id = $1`, ada); err != nil {
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET disabled_at = NULL WHERE id = $1`, ada); err != nil {
 		t.Fatal(err)
 	}
 	old := mustToken(t)

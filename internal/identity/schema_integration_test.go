@@ -20,7 +20,7 @@ import (
 )
 
 func TestEmailUniqueIgnoringCase(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	seedOwner(t, pool, ctx, "ada@example.com")
 	_, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('Ada@example.com', 'Other', (SELECT id FROM identity.roles WHERE key = 'member'), now())`)
 	if err == nil {
@@ -41,7 +41,7 @@ func TestEmailUniqueIgnoringCase(t *testing.T) {
 }
 
 func TestLastOwnerCannotBeDemoted(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -56,7 +56,7 @@ func TestLastOwnerCannotBeDemoted(t *testing.T) {
 }
 
 func TestLastOwnerCannotBeRemoved(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestLastOwnerCannotBeRemoved(t *testing.T) {
 }
 
 func TestDeletingTheOnlyOwnerFails(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestDeletingTheOnlyOwnerFails(t *testing.T) {
 }
 
 func TestOwnershipCanBeHandedOver(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	var next string
 	if err := pool.QueryRow(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now()) RETURNING id`).Scan(&next); err != nil {
@@ -130,7 +130,7 @@ func TestOwnershipCanBeHandedOver(t *testing.T) {
 }
 
 func TestPendingOwnerDoesNotCount(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, invited_at) VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestPendingOwnerDoesNotCount(t *testing.T) {
 }
 
 func TestTeamMemberMustHaveJoined(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	seedOwner(t, pool, ctx, "ada@example.com")
 	var team string
 	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Ship') RETURNING id`).Scan(&team); err != nil {
@@ -169,7 +169,7 @@ func TestTeamMemberMustHaveJoined(t *testing.T) {
 }
 
 func TestOneGrantPerGranteePerObject(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	var team string
 	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Ship') RETURNING id`).Scan(&team); err != nil {
@@ -222,7 +222,7 @@ func TestOneGrantPerGranteePerObject(t *testing.T) {
 }
 
 func TestPrincipalShapes(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	if _, err := pool.Exec(ctx, `INSERT INTO identity.principals (kind, user_id) VALUES ('user', $1)`, owner); err != nil {
 		t.Fatal(err)
@@ -245,7 +245,7 @@ func TestPrincipalShapes(t *testing.T) {
 }
 
 func TestUnknownRoleAndLevelRejected(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	if _, err := pool.Exec(ctx, `INSERT INTO identity.roles (key, name) VALUES ('boss', 'Boss')`); err == nil {
 		t.Fatal("role boss was accepted")
@@ -258,7 +258,7 @@ func TestUnknownRoleAndLevelRejected(t *testing.T) {
 }
 
 func TestOwnerIsNotAShareLevel(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	_, err := pool.Exec(ctx, `
 		INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by)
@@ -269,7 +269,7 @@ func TestOwnerIsNotAShareLevel(t *testing.T) {
 }
 
 func TestSystemRolesAndCustomPermissions(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	seedOwner(t, pool, ctx, "ada@example.com")
 	var keys []string
 	rows, err := pool.Query(ctx, `SELECT key FROM identity.roles WHERE key IS NOT NULL ORDER BY key`)
@@ -314,7 +314,7 @@ func TestSystemRolesAndCustomPermissions(t *testing.T) {
 }
 
 func TestDisabledOwnerDoesNotCount(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	owner := seedOwner(t, pool, ctx, "ada@example.com")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -343,7 +343,7 @@ func TestDownRemovesTheIdentitySchema(t *testing.T) {
 }
 
 func TestSchemaChecksMatchTheDomain(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	rows, err := pool.Query(ctx, `
 		SELECT c.conname, pg_get_constraintdef(c.oid)
 		FROM pg_constraint AS c
@@ -402,7 +402,7 @@ func TestSchemaChecksMatchTheDomain(t *testing.T) {
 }
 
 func TestTwoConcurrentDemotionsLeaveOneOwner(t *testing.T) {
-	pool, ctx := up(t)
+	pool, ctx := upOwner(t)
 	first := seedOwner(t, pool, ctx, "ada@example.com")
 	var second string
 	if err := pool.QueryRow(ctx, `
@@ -463,14 +463,14 @@ func TestIdentityMigrationVersions(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 || latest != 2 {
-		t.Fatalf("applied versions = %d latest = %d, want 2 and 2", n, latest)
+	if n != 3 || latest != 3 {
+		t.Fatalf("applied versions = %d latest = %d, want 3 and 3", n, latest)
 	}
 }
 
 func TestPasswordChangeDoesNotFireTheOwnerGuard(t *testing.T) {
-	pool, ctx := up(t)
-	owner := seedOwner(t, pool, ctx, "ada@example.com")
+	ownerPool, pool, ctx := upBoth(t)
+	owner := seedOwner(t, ownerPool, ctx, "ada@example.com")
 	if _, err := pool.Exec(ctx, `UPDATE identity.users SET password_hash = 'stored' WHERE id = $1`, owner); err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestPasswordChangeDoesNotFireTheOwnerGuard(t *testing.T) {
 	if nameCheck != 1 || shares != 1 || links != 1 || throttle != 1 {
 		t.Fatalf("schema pieces name %d shares %d links %d throttle %d", nameCheck, shares, links, throttle)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('empty@example.com', '', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err == nil {
+	if _, err := ownerPool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('empty@example.com', '', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err == nil {
 		t.Fatal("an empty name was accepted")
 	}
 	var id string
@@ -521,6 +521,12 @@ func up(t *testing.T) (*pgxpool.Pool, context.Context) {
 	t.Helper()
 	owner, ctx := upOwner(t)
 	return pgtest.App(t, owner), ctx
+}
+
+func upBoth(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool, context.Context) {
+	t.Helper()
+	owner, ctx := upOwner(t)
+	return owner, pgtest.App(t, owner), ctx
 }
 
 func upOwner(t *testing.T) (*pgxpool.Pool, context.Context) {

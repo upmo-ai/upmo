@@ -4,7 +4,6 @@ package identity_test
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -18,7 +17,7 @@ import (
 
 func TestRolesIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	pool, handler, passkeys, ctx := identityMux(t, now)
+	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
 	mux := handler.(*http.ServeMux)
 	members := identity.Members(pool, "", nil, nil)
 	members.Now = func() time.Time { return now }
@@ -203,8 +202,38 @@ func TestRolesIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = postgres.Passkeys{Pool: pool}.SetMemberRole(ctx, ownerID, memberID, func(string, string, []domain.Permission) error { return nil })
-	if !errors.Is(err, domain.ErrLastOwner) {
-		t.Fatalf("last owner %v", err)
+	ownerSess, err := passkeys.Sessions.Lookup(ctx, ownerCookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondOwnerText string
+	if err := ownerPool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		VALUES ('coowner@example.com', 'Co', (SELECT id FROM identity.roles WHERE key = 'owner'), $1, $1)
+		RETURNING id::text`, now).Scan(&secondOwnerText); err != nil {
+		t.Fatal(err)
+	}
+	secondOwnerID, err := identity.ParseUserID(secondOwnerText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondOwnerSess, err := passkeys.Sessions.Start(ctx, secondOwnerID, "passkey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Passkeys{Pool: pool}
+	tx1, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx1.Rollback(ctx) }()
+	if _, err := tx1.Exec(ctx, `SELECT * FROM identity.member_set_role($1, $2, $3)`, ownerSess.TokenHash, secondOwnerID, memberID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetMemberRole(ctx, secondOwnerSess.TokenHash, ownerID, memberID, nil); err != nil {
+		t.Fatalf("second owner demote first: %v", err)
+	}
+	if err := tx1.Commit(ctx); err == nil || !strings.Contains(err.Error(), "install has no joined owner") {
+		t.Fatalf("overlapping demote commit = %v, want last owner error", err)
 	}
 }

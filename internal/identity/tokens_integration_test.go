@@ -18,7 +18,7 @@ import (
 )
 
 func TestPersonalTokens(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, time.Hour, 24*time.Hour)
 	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", log)
@@ -91,21 +91,21 @@ func TestPersonalTokens(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.roles WHERE key = 'owner'`).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('bea@example.com', 'Bea', $1, now())`, owner); err != nil {
+	if _, err := ownerPool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('bea@example.com', 'Bea', $1, now())`, owner); err != nil {
 		t.Fatal(err)
 	}
 	var narrow string
 	if err := pool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ('Narrow', ARRAY['task:view']) RETURNING id::text`).Scan(&narrow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE lower(email) = 'ada@example.com'`, narrow); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE lower(email) = 'ada@example.com'`, narrow); err != nil {
 		t.Fatal(err)
 	}
 	narrowed := bearer(mux, http.MethodGet, "/api/session", body.Secret)
 	if narrowed.Code != http.StatusOK || strings.Contains(narrowed.Body.String(), "task:edit") || !strings.Contains(narrowed.Body.String(), "task:view") {
 		t.Fatalf("narrowed = %d %s", narrowed.Code, narrowed.Body.String())
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE lower(email) = 'ada@example.com'`, owner); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE lower(email) = 'ada@example.com'`, owner); err != nil {
 		t.Fatal(err)
 	}
 	manage := bearer(mux, http.MethodDelete, "/api/session", body.Secret)
@@ -124,7 +124,7 @@ func TestPersonalTokens(t *testing.T) {
 	if err := json.Unmarshal(second.Body.Bytes(), &other); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.api_tokens SET created_at = now() - interval '2 minutes', expires_at = now() - interval '1 minute' WHERE id = $1`, other.ID); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.api_tokens SET created_at = now() - interval '2 minutes', expires_at = now() - interval '1 minute' WHERE id = $1`, other.ID); err != nil {
 		t.Fatal(err)
 	}
 	expired := bearer(mux, http.MethodGet, "/api/session", other.Secret)
@@ -161,7 +161,7 @@ func TestPersonalTokens(t *testing.T) {
 	if err := json.Unmarshal(kept.Body.Bytes(), &live); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE lower(email) = 'ada@example.com'`); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE lower(email) = 'ada@example.com'`); err != nil {
 		t.Fatal(err)
 	}
 	disabled := bearer(mux, http.MethodGet, "/api/session", live.Secret)

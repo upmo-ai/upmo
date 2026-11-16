@@ -178,7 +178,7 @@ func (p Passkeys) RoleSystem(ctx context.Context, id domain.RoleID) (string, err
 }
 
 // InviteMember inserts a person, or brings a disabled row back, and stores one invite link.
-func (p Passkeys) InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error) {
+func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return domain.Member{}, err
@@ -186,40 +186,13 @@ func (p Passkeys) InviteMember(ctx context.Context, email, name string, role dom
 	defer func() { _ = tx.Rollback(ctx) }()
 	var idText string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, webauthn_handle)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (lower(email)) DO UPDATE
-		SET name = EXCLUDED.name,
-		    role_id = EXCLUDED.role_id,
-		    invited_at = EXCLUDED.invited_at,
-		    joined_at = NULL,
-		    disabled_at = NULL,
-		    webauthn_handle = EXCLUDED.webauthn_handle,
-		    password_hash = NULL,
-		    passkey_offered_at = NULL,
-		    external_id = NULL
-		WHERE identity.users.disabled_at IS NOT NULL
-		RETURNING id::text`, email, name, role, now, handle).Scan(&idText)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Member{}, domain.ErrAlreadyMember
-	}
+		SELECT identity.member_invite($1, $2, $3, $4, $5, $6, $7, $8)::text`,
+		actorTokenHash, email, name, role, handle, hash, now, expires).Scan(&idText)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "23514") {
-			return domain.Member{}, domain.ErrMemberInput
-		}
-		return domain.Member{}, err
+		return domain.Member{}, mapIdentityDefinerError(err)
 	}
 	userID, err := domain.ParseUserID(idText)
 	if err != nil {
-		return domain.Member{}, err
-	}
-	if err := clearMemberAccess(ctx, tx, userID); err != nil {
-		return domain.Member{}, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO identity.sign_in_links (token_hash, user_id, purpose, expires_at)
-		VALUES ($1, $2, 'invite', $3)`, hash, userID, expires); err != nil {
 		return domain.Member{}, err
 	}
 	member, err := memberByID(ctx, tx, userID)
@@ -239,32 +212,29 @@ func (p Passkeys) InviteMember(ctx context.Context, email, name string, role dom
 // RemoveMember disables a person and clears their access, inside one
 // transaction with the member.disable event. The disable trigger ends the
 // person's sessions, which the event reports as sessions_ended.
-func (p Passkeys) RemoveMember(ctx context.Context, id domain.UserID, now time.Time, rule func(system string) error) error {
-	return p.changeMember(ctx, id, func(system string, _ bool) error {
-		return rule(system)
-	}, func(tx pgx.Tx) error {
-		if err := clearMemberAccess(ctx, tx, id); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE identity.users
-			SET disabled_at = $2, password_hash = NULL, webauthn_handle = NULL
-			WHERE id = $1 AND disabled_at IS NULL`, id, now)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() != 1 {
-			return domain.ErrNoSuchMember
-		}
-		return audit.Record(ctx, tx, audit.Event{
-			Action:   audit.MemberDisable,
-			Outcome:  audit.Success,
-			TargetID: id.String(),
-			Changes: audit.Changes{
-				Values: map[string]audit.Change{"sessions_ended": {To: true}},
-			},
-		})
-	})
+func (p Passkeys) RemoveMember(ctx context.Context, actorTokenHash []byte, id domain.UserID, now time.Time, _ func(system string) error) error {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT identity.member_disable($1, $2, $3)`, actorTokenHash, id, now); err != nil {
+		return mapIdentityDefinerError(err)
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.MemberDisable,
+		Outcome:  audit.Success,
+		TargetID: id.String(),
+		Changes: audit.Changes{
+			Values: map[string]audit.Change{"sessions_ended": {To: true}},
+		},
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return mapLastOwner(err)
+	}
+	return nil
 }
 
 // ReplaceMemberLink voids unused links and stores one new link, with the
@@ -327,22 +297,43 @@ func (p Passkeys) changeMember(ctx context.Context, id domain.UserID, rule func(
 	return nil
 }
 
-func clearMemberAccess(ctx context.Context, tx pgx.Tx, id domain.UserID) error {
-	statements := []string{
-		`DELETE FROM identity.passkeys WHERE user_id = $1`,
-		`DELETE FROM identity.sessions WHERE user_id = $1`,
-		`DELETE FROM identity.team_members WHERE user_id = $1`,
-		`DELETE FROM identity.shares WHERE user_id = $1`,
-		`DELETE FROM identity.webauthn_challenges WHERE user_id = $1`,
-		`DELETE FROM identity.sign_in_links WHERE user_id = $1 AND used_at IS NULL`,
-		`DELETE FROM identity.api_tokens WHERE user_id = $1`,
-	}
-	for _, statement := range statements {
-		if _, err := tx.Exec(ctx, statement, id); err != nil {
-			return err
+func mapIdentityDefinerError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Message {
+		case "identity: someone already exists":
+			return app.ErrExists
+		case "identity: invalid actor session":
+			return app.ErrNotSignedIn
+		case "identity: you cannot do this to yourself":
+			return domain.ErrSelf
+		case "identity: no such member":
+			return domain.ErrNoSuchMember
+		case "identity: no such role":
+			return domain.ErrNoSuchRole
+		case "identity: only owners and admins manage members":
+			return domain.ErrNotPermitted
+		case "identity: only an owner can change the owner role":
+			return domain.ErrOwnersOnly
+		case "identity: you cannot grant a permission you do not hold":
+			return domain.ErrBeyondOwn
+		case "identity: already a member":
+			return domain.ErrAlreadyMember
+		case "identity: a person needs an email address, a name and a role":
+			return domain.ErrMemberInput
+		case "identity: a token needs a name":
+			return domain.ErrTokenName
+		case "identity: a token cannot hold that permission":
+			return domain.ErrTokenScope
+		}
+		if pgErr.ConstraintName == "api_tokens_expiry_check" {
+			return domain.ErrTokenDays
+		}
+		if pgErr.Code == "23503" || pgErr.Code == "23514" {
+			return domain.ErrMemberInput
 		}
 	}
-	return nil
+	return mapLastOwner(err)
 }
 
 func memberByID(ctx context.Context, tx pgx.Tx, id domain.UserID) (domain.Member, error) {
