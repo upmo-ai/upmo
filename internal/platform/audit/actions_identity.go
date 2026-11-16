@@ -56,6 +56,7 @@ const (
 	PasskeyRemove    Action = "passkey.remove"
 	PasswordSet      Action = "password.set"
 	PasswordRemove   Action = "password.remove"
+	WorkspaceUpdate  Action = "workspace.update"
 )
 
 // Team membership and connector grant actions are User Access Management events.
@@ -89,6 +90,10 @@ func init() {
 	register(PasskeyRemove, "passkey", classAccountChange, activityDelete)
 	register(PasswordSet, "user", classAccountChange, activityPasswordChange)
 	register(PasswordRemove, "user", classAccountChange, activityUnknown)
+	register(WorkspaceUpdate, "workspace", classAPIActivity, activityUnknown,
+		"time_zone", "locale", "default_route", "default_agent_id",
+		"allow_member_providers", "allow_member_routes",
+		"allow_member_connectors", "allow_member_agents", "sso_required")
 
 	register(TeamCreate, "team", classUserAccessManagement, activityUnknown)
 	register(TeamMemberAdd, "team", classUserAccessManagement, activityUnknown, "user_id")

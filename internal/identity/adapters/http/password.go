@@ -120,6 +120,8 @@ func writePasswordErr(w http.ResponseWriter, retry time.Duration, err error) boo
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 	case errors.Is(err, app.ErrWrong):
 		writeRaw(w, http.StatusUnauthorized, wrongPassword)
+	case errors.Is(err, domain.ErrSSORequired):
+		writeRaw(w, http.StatusForbidden, ssoRequired)
 	case errors.Is(err, app.ErrLimited):
 		secs := int(retry.Round(time.Second) / time.Second)
 		if secs < 1 {

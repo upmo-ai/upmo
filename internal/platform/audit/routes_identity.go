@@ -35,5 +35,6 @@ func identityRoutes() []entry {
 		{pattern: "PUT /api/password", route: Route{Action: PasswordSet}},
 		{pattern: "DELETE /api/password", route: Route{Action: PasswordRemove}},
 		{pattern: "POST /api/session/verify/password", route: Route{Action: AuthStepUp}},
+		{pattern: "PUT /api/workspace", route: Route{Action: WorkspaceUpdate}},
 	}
 }
