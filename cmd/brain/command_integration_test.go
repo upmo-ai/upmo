@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -54,5 +55,32 @@ func TestLinkIssuedLogsCarryNoEmailAddress(t *testing.T) {
 	}
 	if strings.Contains(out, "founder@example.com") {
 		t.Fatalf("log = %s, want no address", out)
+	}
+}
+
+func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
+	owner := pgtest.New(t)
+	u, err := url.Parse(owner.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + owner.Config().ConnConfig.Database
+	t.Setenv("UPMO_DATABASE_URL", u.String())
+	if err := command("migrate", nil); err != nil {
+		t.Fatalf("command(migrate) = %v", err)
+	}
+	var reg *string
+	if err := owner.QueryRow(context.Background(), `SELECT to_regclass('agents.agents')::text`).Scan(&reg); err != nil {
+		t.Fatal(err)
+	}
+	if reg == nil {
+		t.Fatal("agents.agents was not created by migrate")
+	}
+	var gwBundles *string
+	if err := owner.QueryRow(context.Background(), `SELECT to_regclass('gateway.agent_bundles')::text`).Scan(&gwBundles); err != nil {
+		t.Fatal(err)
+	}
+	if gwBundles != nil {
+		t.Fatal("gateway.agent_bundles still exists after migrate")
 	}
 }

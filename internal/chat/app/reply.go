@@ -263,11 +263,19 @@ func (c ReplyConfig) withDefaults() ReplyConfig {
 	return c
 }
 
+// AgentLookup resolves an agent a reply is for, as the person who wrote the
+// line.
+type AgentLookup interface {
+	Agent(ctx context.Context, access Access, id string) (Agent, error)
+}
+
 // ReplyDeps is what the reply worker needs. Access resolves the person who
 // wrote the line, as a request would; false means the person may no longer
-// use chats. Log may be nil.
+// use chats. Agents, when set, overrides Rows.Agent for looking up agents.
+// Log may be nil.
 type ReplyDeps struct {
 	Rows   ReplyRows
+	Agents AgentLookup
 	Model  Model
 	Access func(ctx context.Context, userID string) (Access, bool, error)
 	Config ReplyConfig
@@ -424,7 +432,11 @@ func (w *replyWorker) refresh(ctx context.Context, live *liveAccess, args ReplyJ
 func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobArgs, lines []Line) error {
 	var agent *Agent
 	if args.AgentID != "" {
-		got, err := w.deps.Rows.Agent(ctx, access, args.AgentID)
+		lookup := w.deps.Agents
+		if lookup == nil {
+			lookup = w.deps.Rows
+		}
+		got, err := lookup.Agent(ctx, access, args.AgentID)
 		switch {
 		case errors.Is(err, ErrAgentNotFound):
 			// An agent that is gone, switched off or not theirs is never

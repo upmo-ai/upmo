@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -15,9 +16,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/agents"
+	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
@@ -494,5 +498,176 @@ func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in internal /metrics:\n%s", want, body)
 		}
+	}
+}
+
+func TestAgentsThroughTheBrainRoutes(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	for _, step := range []struct {
+		schema string
+		files  fs.FS
+	}{
+		{audit.Schema, audit.Migrations()},
+		{identity.Schema, identity.Migrations()},
+		{gateway.Schema, gateway.Migrations()},
+		{agents.Schema, agents.Migrations()},
+	} {
+		if err := migrate.Up(ctx, owner, step.schema, step.files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pool := pgtest.App(t, owner)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{
+		SessionIdle:   identity.IdleTimeout,
+		SessionMaxAge: identity.MaxAge,
+		PublicURL:     "http://localhost:5173",
+		WebAuthnRPID:  "localhost",
+	}
+	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
+	var userID string
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	uid, err := identity.ParseUserID(userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := sessions.Start(ctx, uid, "passkey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: "__Host-upmo_session", Value: token, Path: "/", Secure: true, HttpOnly: true}
+	boxes, err := taskSandboxes(cfg, pool, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := jobs.Open(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := httpserver.NewGuarded("127.0.0.1:0", handler).Handler
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agents",
+		strings.NewReader(`{"name":"AP Clerk","instructions":"Check VAT.","plan_approval":"always"}`))
+	createReq.AddCookie(cookie)
+	createRec := httptest.NewRecorder()
+	served.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated || !strings.Contains(createRec.Body.String(), `"slug":"ap-clerk"`) || !strings.Contains(createRec.Body.String(), `"version":1`) {
+		t.Fatalf("create = %d %s", createRec.Code, createRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	listReq.AddCookie(cookie)
+	listRec := httptest.NewRecorder()
+	served.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"AP Clerk"`) {
+		t.Fatalf("list = %d %s", listRec.Code, listRec.Body.String())
+	}
+}
+
+func TestChatAgentLookupIntegration(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	for _, step := range []struct {
+		schema string
+		files  fs.FS
+	}{
+		{audit.Schema, audit.Migrations()},
+		{identity.Schema, identity.Migrations()},
+		{agents.Schema, agents.Migrations()},
+	} {
+		if err := migrate.Up(ctx, owner, step.schema, step.files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pool := pgtest.App(t, owner)
+	store := agents.NewStore(pool)
+	lookup := chatAgentLookup{store: store}
+
+	const (
+		ownerID = "018f3b2c-7a10-7c4a-8e11-111111111111"
+		otherID = "018f3b2c-7a10-7c4a-8e11-222222222222"
+		allow   = "agent:create,agent:view,agent:edit"
+	)
+	ownerAccess := agents.Access{UserID: ownerID, Allow: allow}
+	ownerChat := chat.Access{UserID: ownerID, Allow: allow}
+	otherChat := chat.Access{UserID: otherID, Allow: allow}
+	at := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+
+	active, err := agents.CreateAgent(ctx, store, nil, ownerAccess, agents.AgentFields{
+		Name:                 "Bookkeeper",
+		Description:          "AP specialist",
+		Instructions:         "Check VAT and PO numbers.",
+		DefaultRoute:         "work",
+		DefaultModelProvider: "Anthropic",
+		DefaultModelID:       "claude-sonnet-4-5",
+		Enabled:              true,
+		Visibility:           agents.VisibilityPrivate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agents.SaveLesson(ctx, store, ownerAccess, active.ID, agents.LessonFields{
+		Title:        "EU Reverse Charge",
+		Cue:          "EU supplier invoice",
+		Body:         "Verify VAT ID before booking.",
+		AlwaysInline: true,
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agents.SaveLesson(ctx, store, ownerAccess, active.ID, agents.LessonFields{
+		Title:        "FX Rounding",
+		Cue:          "Multi-currency invoice",
+		Body:         "NON_INLINE_SECRET_BODY",
+		AlwaysInline: false,
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := lookup.Agent(ctx, ownerChat, active.ID)
+	if err != nil {
+		t.Fatalf("lookup.Agent(active) = %v", err)
+	}
+	if got.ID != active.ID || got.Name != "Bookkeeper" || got.Description != "AP specialist" ||
+		got.Route != "work" || got.ModelProvider != "Anthropic" || got.ModelID != "claude-sonnet-4-5" || !got.Enabled {
+		t.Fatalf("got metadata = %+v", got)
+	}
+	if !strings.Contains(got.PromptOverlay, "Check VAT and PO numbers.") ||
+		!strings.Contains(got.PromptOverlay, "## EU Reverse Charge\n\nVerify VAT ID before booking.") ||
+		strings.Contains(got.PromptOverlay, "NON_INLINE_SECRET_BODY") {
+		t.Fatalf("PromptOverlay = %q", got.PromptOverlay)
+	}
+
+	// Unshared private agent is hidden from other users.
+	if _, err := lookup.Agent(ctx, otherChat, active.ID); !errors.Is(err, chat.ErrAgentNotFound) {
+		t.Fatalf("lookup.Agent(unshared) = %v, want ErrAgentNotFound", err)
+	}
+
+	// Missing agent returns ErrAgentNotFound.
+	if _, err := lookup.Agent(ctx, ownerChat, "018f3b2c-7a10-7c4a-8e11-ffffffffffff"); !errors.Is(err, chat.ErrAgentNotFound) {
+		t.Fatalf("lookup.Agent(missing) = %v, want ErrAgentNotFound", err)
+	}
+
+	// Disabled agent returns ErrAgentNotFound even for the owner.
+	disabled, err := agents.CreateAgent(ctx, store, nil, ownerAccess, agents.AgentFields{
+		Name:         "Paused",
+		Instructions: "Disabled.",
+		Enabled:      false,
+		Visibility:   agents.VisibilityPrivate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lookup.Agent(ctx, ownerChat, disabled.ID); !errors.Is(err, chat.ErrAgentNotFound) {
+		t.Fatalf("lookup.Agent(disabled) = %v, want ErrAgentNotFound", err)
 	}
 }
