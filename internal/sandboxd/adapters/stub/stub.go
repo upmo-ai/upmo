@@ -85,6 +85,22 @@ func (d *Driver) Destroy(_ context.Context, id string) error {
 	return nil
 }
 
+// ActiveSeats returns the number of live, unexpired sandboxes held by this driver.
+func (d *Driver) ActiveSeats() int {
+	now := d.now().UTC()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	count := 0
+	for id, b := range d.boxes {
+		if !now.Before(b.expires) {
+			delete(d.boxes, id)
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // Egress returns the allow-list and credentials of a live, unpaused sandbox
 // for the egress proxy.
 func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {

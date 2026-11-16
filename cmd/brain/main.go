@@ -33,6 +33,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/mail"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
@@ -205,10 +206,15 @@ func run() error {
 	if auditPush {
 		periodic = append(periodic, audit.PushPeriodic())
 	}
+	var reg *metrics.Registry
+	if cfg.MetricsAddr != "" {
+		reg = metrics.NewRegistry()
+	}
 	work, err := jobs.Open(pool,
 		jobs.WithWorkers(workers),
 		jobs.WithQueue(chat.ReplyQueue, cfg.ChatWorkers),
 		jobs.WithPeriodic(periodic...),
+		jobs.WithMetrics(reg),
 	)
 	if err != nil {
 		return err
@@ -236,7 +242,7 @@ func run() error {
 	defer chatStreams.Close()
 	handler, err := routes(pool, cfg, log, boxes, work, noticeStore, streams, chatStreams, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(schemaVersions), nil
-	})
+	}, reg)
 	if err != nil {
 		return err
 	}
@@ -245,7 +251,20 @@ func run() error {
 	srv := httpserver.NewGuarded(cfg.ListenAddr, handler)
 	srv.RegisterOnShutdown(streams.Close)
 	srv.RegisterOnShutdown(chatStreams.Close)
-	err = httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
+	if reg != nil {
+		srvCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		errc := make(chan error, 2)
+		for _, s := range []*http.Server{srv, metrics.Server(cfg.MetricsAddr, reg)} {
+			go func() {
+				errc <- httpserver.Run(srvCtx, s, cfg.ShutdownTimeout, log)
+				cancel()
+			}()
+		}
+		err = errors.Join(<-errc, <-errc)
+	} else {
+		err = httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
+	}
 	// Provisioning still running in the background gets the shutdown
 	// timeout to settle its task before the pool closes. Any left after
 	// that is abandoned: its task stays in Preparing and sandboxd reclaims
@@ -397,7 +416,7 @@ func poolURLError(envName, rawURL string) error {
 	return fmt.Errorf("brain: %s could not be opened", envName)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub, schemaVersions func(context.Context) (map[string]int64, error)) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub, schemaVersions func(context.Context) (map[string]int64, error), reg *metrics.Registry) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	httpserver.Version(mux, schemaVersions)
@@ -463,6 +482,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		EditorSigner: editorSigner,
 		Audit:        pool,
 		Stream:       streams,
+		Metrics:      reg,
 		Access: func(r *http.Request) (tasks.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -537,8 +557,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 		chatBook.ReplyRoute = cfg.ChatRoute
 	}
 	chat.Handler{
-		Book:   chatBook,
-		Stream: chatStreams,
+		Book:    chatBook,
+		Stream:  chatStreams,
+		Metrics: reg,
 		Access: func(r *http.Request) (chat.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -745,7 +766,8 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	(&audit.ReadHandler{Pool: pool}).Mount(mux, audit.Guard(auditCallers{sessions: sessions, tokens: tokens, members: members}))
 	// The audit middleware sits outside the cross-origin guard, so a request
 	// Protect refuses is still recorded; the mux resolves the pattern then.
-	return audit.Middleware(audit.Routes(), mux, pool, "brain", cfg.TrustedProxies, log)(httpserver.Protect(mux)), nil
+	h := audit.Middleware(audit.Routes(), mux, pool, "brain", cfg.TrustedProxies, log)(httpserver.Protect(mux))
+	return metrics.MiddlewareWithMux("brain", reg, mux)(h), nil
 }
 
 // agentAccess is what a person may do with agents. It carries their effective

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -22,6 +23,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
@@ -69,16 +71,33 @@ func run() error {
 	info := buildinfo.Info()
 	log.Info("gateway started", "version", info.Version, "commit", info.Commit, "build_time", info.BuildTime)
 
+	var reg *metrics.Registry
+	if cfg.MetricsAddr != "" {
+		reg = metrics.NewRegistry()
+	}
 	handler, err := routes(pool, cfg, log, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(schemaVersions), nil
-	})
+	}, reg)
 	if err != nil {
 		return err
 	}
-	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
+	srv := httpserver.New(cfg.ListenAddr, handler)
+	if reg == nil {
+		return httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
+	}
+	srvCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errc := make(chan error, 2)
+	for _, s := range []*http.Server{srv, metrics.Server(cfg.MetricsAddr, reg)} {
+		go func() {
+			errc <- httpserver.Run(srvCtx, s, cfg.ShutdownTimeout, log)
+			cancel()
+		}()
+	}
+	return errors.Join(<-errc, <-errc)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersions func(context.Context) (map[string]int64, error)) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersions func(context.Context) (map[string]int64, error), reg *metrics.Registry) (http.Handler, error) {
 	master, err := svcsig.ParseKey(cfg.ServiceKey)
 	if err != nil {
 		return nil, err
@@ -105,15 +124,22 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	gateway.Mount(mux, pool, secretBackends(pool, masterKeys), log)
+	gateway.Mount(mux, pool, secretBackends(pool, masterKeys), log, gateway.WithMetrics(reg))
 	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, mux)
 	if err != nil {
 		return nil, err
 	}
-	root := http.NewServeMux()
-	httpserver.Version(root, schemaVersions)
-	root.Handle("/", signed)
-	return root, nil
+	versionMux := http.NewServeMux()
+	httpserver.Version(versionMux, schemaVersions)
+	versionHandler := metrics.MiddlewareWithMux("gateway", reg, versionMux)(versionMux)
+	signedHandler := metrics.MiddlewareWithMux("gateway", reg, mux)(signed)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := versionMux.Handler(r); pattern != "" {
+			versionHandler.ServeHTTP(w, r)
+			return
+		}
+		signedHandler.ServeHTTP(w, r)
+	}), nil
 }
 
 // secretBackends is the order a key is looked for: the environment, then the

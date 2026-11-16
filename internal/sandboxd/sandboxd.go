@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/adapters/docker"
@@ -148,10 +149,32 @@ func Sweep(ctx context.Context, driver Driver, every time.Duration, log *slog.Lo
 	}
 }
 
+// RouteOption configures Routes.
+type RouteOption func(*routeConfig)
+
+type routeConfig struct {
+	metrics *metrics.Registry
+}
+
+// WithMetrics instruments sandboxd HTTP calls and active sandbox seats on reg.
+func WithMetrics(reg *metrics.Registry) RouteOption {
+	return func(c *routeConfig) {
+		c.metrics = reg
+	}
+}
+
+type seatCounter interface {
+	ActiveSeats() int
+}
+
 // Routes serves the SandboxProvider port behind the service HMAC for the
 // sandboxd audience. previousKey is optional, for rotation.
 // /healthz and /readyz stay open for the container healthcheck.
-func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger) (http.Handler, error) {
+func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger, opts ...RouteOption) (http.Handler, error) {
+	var cfg routeConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	keys := make([][]byte, 0, 2)
 	for _, secret := range []string{serviceKey, previousKey} {
 		if secret == "" && len(keys) > 0 {
@@ -170,7 +193,19 @@ func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger) (ht
 	mux := http.NewServeMux()
 	httpserver.Health(mux, nil)
 	httpapi.Handler{Provider: driver, Log: log}.Mount(mux)
-	return svcsig.Handler(keys, svcsig.AudienceSandboxd, mux)
+	h, err := svcsig.Handler(keys, svcsig.AudienceSandboxd, mux)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.metrics != nil {
+		if c, ok := driver.(seatCounter); ok {
+			cfg.metrics.AddCollector(func(context.Context) {
+				cfg.metrics.SetSandboxdActiveSeats(float64(c.ActiveSeats()))
+			})
+		}
+		h = metrics.MiddlewareWithMux("sandboxd", cfg.metrics, mux)(h)
+	}
+	return h, nil
 }
 
 // EditorGate verifies editor JWTs and reverse-proxies to OpenVSCode.

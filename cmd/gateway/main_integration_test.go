@@ -24,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -59,7 +60,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +195,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		}
 	}
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
 	owner := pgtest.New(t)
 	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
-	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, nil)
+	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, nil, nil)
 	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
 		t.Fatalf("routes error = %v", err)
 	}
@@ -279,7 +280,7 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 	}
 	handler, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(versions), nil
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +434,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,6 +529,85 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	}
 	if calls, _ := doneFrame["tool_calls"].([]any); len(calls) != 1 {
 		t.Fatalf("done tool_calls = %v", doneFrame)
+	}
+}
+
+func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (name, provider, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('local', 'fake', 'fake', 'house', 'local', true, 'everyone')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.routes (name, capability, decision) VALUES ('draft', 'chat', '')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
+		SELECT id, 1, (SELECT id FROM gateway.provider_accounts WHERE name = 'local'), 'stub'
+		FROM gateway.routes
+	`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
+	master := mustMaster(t)
+	reg := metrics.NewRegistry()
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := httptest.NewServer(httpserver.Protect(handler))
+	t.Cleanup(public.Close)
+	internal := httptest.NewServer(metrics.Server("127.0.0.1:0", reg).Handler)
+	t.Cleanup(internal.Close)
+
+	// /metrics must not be exposed on the public gateway server.
+	pubRes, err := http.Get(public.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pubRes.Body.Close()
+	if pubRes.StatusCode != http.StatusUnauthorized && pubRes.StatusCode != http.StatusNotFound {
+		t.Fatalf("public GET /metrics = %d, want 401 or 404", pubRes.StatusCode)
+	}
+
+	derived := mustDerived(t, master)
+	chat := postJSON(t, public, derived, "/upmo.gateway.v1.Gateway/Chat", map[string]any{
+		"route": "draft", "prompt": "hello",
+	})
+	if chat["text"] != "ok" {
+		t.Fatalf("chat = %v", chat)
+	}
+
+	res, err := http.Get(internal.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("internal GET /metrics = %d", res.StatusCode)
+	}
+	bodyBytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(bodyBytes)
+	for _, want := range []string{
+		`upmo_http_requests_total{service="gateway",route="POST /upmo.gateway.v1.Gateway/Chat",status="200"} 1`,
+		`upmo_http_requests_total{service="gateway",route="unmatched",status="401"} 1`,
+		`upmo_gateway_calls_total{provider="fake",model="stub",class="ok"} 1`,
+		`upmo_gateway_call_duration_seconds_count{provider="fake",model="stub"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in internal /metrics:\n%s", want, body)
+		}
 	}
 }
 

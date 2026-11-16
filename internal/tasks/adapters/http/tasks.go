@@ -11,6 +11,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
@@ -36,6 +37,8 @@ type Handler struct {
 	// Stream holds the open task event streams. Nil answers an error for the
 	// stream route.
 	Stream *app.StreamHub
+	// Metrics records active SSE stream counts when non-nil.
+	Metrics *metrics.Registry
 	// Renew resolves the access of the person behind r again for an open
 	// stream: the session looked up again, then the person's allow list and
 	// shares. It reports false for a person who has lost access and an error
