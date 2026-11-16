@@ -32,7 +32,7 @@ func command(name string, args []string) error {
 	ctx := context.Background()
 	// Operator commands keep the owner credential: they migrate and write as
 	// the schema owner, and never open a request pool.
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	pool, err := openCommandPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -127,4 +127,14 @@ func recover(ctx context.Context, passkeys identity.PasskeyService, members iden
 	}
 	slog.Info("recover link issued")
 	return nil
+}
+
+// openCommandPool opens the owner pool for operator commands without exposing
+// UPMO_DATABASE_URL in parse or connect errors.
+func openCommandPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	return pool, nil
 }
