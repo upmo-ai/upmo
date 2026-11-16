@@ -1,4 +1,4 @@
-package main
+package brainops
 
 import (
 	"encoding/base64"
@@ -54,7 +54,7 @@ func bytes32(b byte) []byte {
 }
 
 func TestPasswordSealerRoundTrip(t *testing.T) {
-	sealer := passwordSealer{keys: ring(t, "k1", 'a')}
+	sealer := NewPasswordSealer(ring(t, "k1", 'a'))
 	ref := userRef(t, "11111111-1111-4111-8111-111111111111")
 	stored, err := sealer.Seal(ref, phc)
 	if err != nil {
@@ -86,14 +86,14 @@ func TestPasswordSealerRoundTrip(t *testing.T) {
 }
 
 func TestPasswordSealerOpensAfterRotation(t *testing.T) {
-	old := passwordSealer{keys: ring(t, "k1", 'a')}
+	old := NewPasswordSealer(ring(t, "k1", 'a'))
 	ref := userRef(t, "11111111-1111-4111-8111-111111111111")
 	stored, err := old.Seal(ref, phc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	previous := gateway.EnvMasterKeyPrevious + "k1=" + base64.StdEncoding.EncodeToString(bytes32('a'))
-	next := passwordSealer{keys: ringFrom(t, "k2", 'b', []string{previous})}
+	next := NewPasswordSealer(ringFrom(t, "k2", 'b', []string{previous}))
 	opened, err := next.Open(ref, stored)
 	if err != nil {
 		t.Fatal(err)
@@ -112,20 +112,20 @@ func TestPasswordSealerOpensAfterRotation(t *testing.T) {
 }
 
 func TestPasswordSealerWrongKeyFails(t *testing.T) {
-	sealer := passwordSealer{keys: ring(t, "k1", 'a')}
+	sealer := NewPasswordSealer(ring(t, "k1", 'a'))
 	ref := userRef(t, "11111111-1111-4111-8111-111111111111")
 	stored, err := sealer.Seal(ref, phc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := passwordSealer{keys: ring(t, "k1", 'b')}
+	other := NewPasswordSealer(ring(t, "k1", 'b'))
 	if opened, err := other.Open(ref, stored); err == nil {
 		t.Fatalf("opened with the wrong key: %s", opened)
 	}
 }
 
 func TestPasswordSealerBindsTheRef(t *testing.T) {
-	sealer := passwordSealer{keys: ring(t, "k1", 'a')}
+	sealer := NewPasswordSealer(ring(t, "k1", 'a'))
 	ref := userRef(t, "11111111-1111-4111-8111-111111111111")
 	stored, err := sealer.Seal(ref, phc)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestPasswordSealerBindsTheRef(t *testing.T) {
 }
 
 func TestPasswordSealerGarbageFails(t *testing.T) {
-	sealer := passwordSealer{keys: ring(t, "k1", 'a')}
+	sealer := NewPasswordSealer(ring(t, "k1", 'a'))
 	ref := userRef(t, "11111111-1111-4111-8111-111111111111")
 	stored, err := sealer.Seal(ref, phc)
 	if err != nil {

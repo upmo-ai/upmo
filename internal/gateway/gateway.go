@@ -180,6 +180,7 @@ type (
 	ListedRoute  = app.ListedRoute
 	RouteBook    = app.RouteBook
 	RouteService = app.RouteService
+	Providers    = app.Providers
 	Provider     = domain.Provider
 )
 

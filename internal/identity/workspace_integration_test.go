@@ -51,7 +51,7 @@ func TestWorkspaceMigrationAndRLS(t *testing.T) {
 		want bool
 	}{
 		{"SELECT", true},
-		{"UPDATE", true},
+		{"UPDATE", false},
 		{"INSERT", false},
 		{"DELETE", false},
 		{"TRUNCATE", false},
@@ -71,8 +71,20 @@ func TestWorkspaceMigrationAndRLS(t *testing.T) {
 		WHERE grantee = 'upmo_app' AND table_schema = 'identity' AND table_name = 'workspace'`).Scan(&privs); err != nil {
 		t.Fatal(err)
 	}
-	if privs != "SELECT,UPDATE" {
-		t.Fatalf("upmo_app table privileges = %q, want SELECT,UPDATE", privs)
+	if privs != "SELECT" {
+		t.Fatalf("upmo_app table privileges = %q, want SELECT (column-scoped UPDATE only)", privs)
+	}
+	var nameUpdate, ceilingUpdate bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_column_privilege('upmo_app', 'identity.workspace', 'name', 'UPDATE'),
+		       has_column_privilege('upmo_app', 'identity.workspace', 'spend_ceiling_micro_usd', 'UPDATE')`).Scan(&nameUpdate, &ceilingUpdate); err != nil {
+		t.Fatal(err)
+	}
+	if !nameUpdate {
+		t.Fatal("upmo_app lacks UPDATE on identity.workspace.name, want true")
+	}
+	if ceilingUpdate {
+		t.Fatal("upmo_app has UPDATE on identity.workspace.spend_ceiling_micro_usd, want false")
 	}
 
 	// Single-row CHECK rejects inserting a second workspace row even as owner.
@@ -239,8 +251,8 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("version after re-up = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("version after re-up = %d, want 5", version)
 	}
 	var forced bool
 	if err := owner.QueryRow(ctx, `SELECT relforcerowsecurity FROM pg_class WHERE oid = 'identity.workspace'::regclass`).Scan(&forced); err != nil || !forced {

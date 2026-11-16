@@ -14,6 +14,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -35,7 +36,7 @@ func TestLinkIssuedLogsCarryNoEmailAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	members := identity.Members(owner, "http://localhost:5173", linkMail(config.SMTP{}), log)
+	members := identity.Members(owner, "http://localhost:5173", brainops.LinkMail(config.SMTP{}), log)
 
 	logs := &bytes.Buffer{}
 	previous := slog.Default()

@@ -11,6 +11,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/app"
 )
 
+// TeamService is the teams use case.
+type TeamService = app.Teams
+
 // Teams builds the team use case.
 func Teams(pool *pgxpool.Pool, log *slog.Logger) app.Teams {
 	return app.Teams{Store: postgres.Passkeys{Pool: pool}, Log: log}
