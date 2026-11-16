@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 )
 
 // ClientIP returns the client address, trusting forwarded hops only from a
@@ -76,19 +78,66 @@ func Protect(h http.Handler) http.Handler {
 	return http.NewCrossOriginProtection().Handler(h)
 }
 
+type readyResponse struct {
+	Status    string `json:"status"`
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildTime string `json:"build_time"`
+}
+
 // Health registers /healthz and /readyz on mux. ready is the readiness check;
 // a nil check reports ready.
 func Health(mux *http.ServeMux, ready func(context.Context) error) {
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		info := buildinfo.Info()
+		w.Header().Set("X-Upmo-Version", info.Version)
+		w.Header().Set("X-Upmo-Commit", info.Commit)
+		w.Header().Add("Vary", "Accept")
 		if ready != nil {
 			if err := ready(r.Context()); err != nil {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 				return
 			}
 		}
+		if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/json") {
+			WriteJSON(w, http.StatusOK, readyResponse{
+				Status:    "ok",
+				Version:   info.Version,
+				Commit:    info.Commit,
+				BuildTime: info.BuildTime,
+			})
+			return
+		}
 		writeOK(w)
 	})
+}
+
+// Version registers GET /version and GET /api/version on mux. schemas may be
+// nil when the service has no schema version source.
+func Version(mux *http.ServeMux, schemas func(context.Context) (map[string]int64, error)) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		versions := map[string]int64{}
+		if schemas != nil {
+			loaded, err := schemas(r.Context())
+			if err != nil {
+				Fail(w, nil, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if loaded != nil {
+				versions = loaded
+			}
+		}
+		info := buildinfo.Info()
+		WriteJSON(w, http.StatusOK, buildinfo.Response{
+			Version:        info.Version,
+			Commit:         info.Commit,
+			BuildTime:      info.BuildTime,
+			SchemaVersions: versions,
+		})
+	}
+	mux.HandleFunc("GET /version", handler)
+	mux.HandleFunc("GET /api/version", handler)
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
@@ -129,7 +178,8 @@ func Run(ctx context.Context, srv *http.Server, timeout time.Duration, log *slog
 	}
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("http server listening", "addr", ln.Addr().String())
+		info := buildinfo.Info()
+		log.Info("http server listening", "addr", ln.Addr().String(), "version", info.Version, "commit", info.Commit)
 		errc <- srv.Serve(ln)
 	}()
 

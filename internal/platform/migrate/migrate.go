@@ -18,6 +18,77 @@ import (
 // search_path.
 var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
+// KnownSchemas is the fixed allowlist of schemas whose Goose migration heads
+// SchemaVersions reports when present.
+var KnownSchemas = []string{
+	"audit",
+	"identity",
+	"memory",
+	"knowledge",
+	"tasks",
+	"chat",
+	"decisions",
+	"artifacts",
+	"runtime",
+	"gateway",
+	"notices",
+	"agents",
+	"platform",
+}
+
+// SchemaVersions returns the applied head migration version for each schema in
+// KnownSchemas whose goose_db_version table exists.
+func SchemaVersions(ctx context.Context, pool *pgxpool.Pool) (map[string]int64, error) {
+	return schemaVersions(ctx, pool, KnownSchemas)
+}
+
+func schemaVersions(ctx context.Context, pool *pgxpool.Pool, allow []string) (map[string]int64, error) {
+	allowed := make(map[string]bool, len(allow))
+	for _, s := range allow {
+		if !schemaName.MatchString(s) {
+			return nil, fmt.Errorf("migrate: schema name %q", s)
+		}
+		allowed[s] = true
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT table_schema
+		FROM information_schema.tables
+		WHERE table_name = 'goose_db_version'
+		  AND table_schema = ANY($1)
+		ORDER BY table_schema`, allow)
+	if err != nil {
+		return nil, fmt.Errorf("migrate: list version tables: %w", err)
+	}
+	var present []string
+	for rows.Next() {
+		var schema string
+		if err := rows.Scan(&schema); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("migrate: scan schema: %w", err)
+		}
+		if allowed[schema] {
+			present = append(present, schema)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("migrate: list version tables: %w", err)
+	}
+	rows.Close()
+
+	versions := make(map[string]int64, len(present))
+	for _, schema := range present {
+		var version int64
+		// schema is checked against the fixed allowlist and sanitized as an identifier.
+		query := "SELECT COALESCE(max(version_id), 0) FROM " + pgx.Identifier{schema}.Sanitize() + ".goose_db_version WHERE is_applied AND version_id > 0"
+		if err := pool.QueryRow(ctx, query).Scan(&version); err != nil {
+			return nil, fmt.Errorf("migrate: version %s: %w", schema, err)
+		}
+		versions[schema] = version
+	}
+	return versions, nil
+}
+
 // Up creates the schema, then applies that context's migrations and nothing
 // else. The version table is <schema>.goose_db_version.
 func Up(ctx context.Context, pool *pgxpool.Pool, schema string, files fs.FS) error {
