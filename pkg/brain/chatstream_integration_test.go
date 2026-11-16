@@ -1,9 +1,9 @@
 //go:build integration
 
 // These tests run the chat client against the real gateway handler and fake
-// adapters. They live in cmd/brain, the composition root, because the chat
+// adapters. They live in pkg/brain, the composition root, because the chat
 // context must not import the gateway process, tests included.
-package main
+package brain
 
 import (
 	"context"

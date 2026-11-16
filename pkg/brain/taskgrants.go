@@ -1,4 +1,4 @@
-package main
+package brain
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 // taskGrants is the identity side of a task share. The tasks context owns the
-// port and identity owns the rows, so cmd joins them.
+// port and identity owns the rows, so brain joins them.
 type taskGrants struct {
 	members identity.MemberService
 }

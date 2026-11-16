@@ -11,6 +11,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/app"
 )
 
+// RoleService is the roles use case.
+type RoleService = app.Roles
+
 // Roles builds the role use case.
 func Roles(pool *pgxpool.Pool, log *slog.Logger) app.Roles {
 	return app.Roles{Store: postgres.Passkeys{Pool: pool}, Log: log}

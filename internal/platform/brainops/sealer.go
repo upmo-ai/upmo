@@ -1,4 +1,4 @@
-package main
+package brainops
 
 import (
 	"encoding/base64"
@@ -6,7 +6,13 @@ import (
 	"strings"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/identity"
 )
+
+// NewPasswordSealer returns a PasswordSealer backed by keys.
+func NewPasswordSealer(keys gateway.Keyring) identity.PasswordSealer {
+	return passwordSealer{keys: keys}
+}
 
 // errStoredHash is every reason a stored password hash does not open. The text
 // never says which part failed.

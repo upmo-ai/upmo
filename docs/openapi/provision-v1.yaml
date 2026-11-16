@@ -1,0 +1,1060 @@
+openapi: 3.1.0
+info:
+  title: Upmo Brain Provisioning API
+  version: 1.0.0
+  description: |
+    Control-plane provisioning API exposed by Upmo Brain under `/api/v1/provision/*`,
+    plus the browser-facing `POST /api/sso/redeem` endpoint used to redeem minted
+    one-time `sso` and `sso_stepup` links.
+
+    All `/api/v1/provision/*` routes require an
+    `Authorization: Bearer upmo_s2s_v1.<audience>.<unix>.<nonce>.<mac>` token signed
+    with a key from `UPMO_PROVISION_KEYS` for audience `provision`
+    (`svcsig.AudienceProvision`), bound to the exact HTTP method and request path.
+    When `UPMO_PROVISION_KEYS` is empty or unset, all `/api/v1/provision/*` routes return `404`.
+    Note: `svcsig` tokens sign audience, HTTP method, request path, and timestamp (with
+    no request-body digest or nonce replay cache).
+servers:
+  - url: "{baseUrl}"
+    variables:
+      baseUrl:
+        default: http://localhost:8080
+        description: Base URL of the Upmo Brain server
+security:
+  - SvcsigBearer: []
+paths:
+  /api/v1/provision/members:
+    post:
+      operationId: createProvisionMember
+      summary: Create a provisioned member keyed by external_id
+      description: |
+        Creates a member keyed by `external_id`. Input roles `operator` and `member`
+        both map to the `member` role in responses.
+        Reusing an `external_id` belonging to a previously disabled member returns `409 Conflict`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemberRequest"
+      responses:
+        "201":
+          description: Created member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionMember"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/members/{external_id}:
+    parameters:
+      - $ref: "#/components/parameters/ExternalID"
+    put:
+      operationId: updateProvisionMember
+      summary: Update or enable/disable a provisioned member by external_id
+      description: |
+        Updates email, display name, role, active state, and team memberships.
+        Input roles `operator` and `member` both map to `member` in responses.
+        Setting `active: false` immediately ends all active sessions and revokes API tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemberRequest"
+      responses:
+        "200":
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionMember"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      operationId: deleteProvisionMember
+      summary: Disable a provisioned member and revoke sessions and tokens
+      description: |
+        Marks the member disabled, ends all active sessions, and deletes API tokens,
+        passkeys, shares, and any stored password hash. The `external_id` remains
+        reserved (`POST /api/v1/provision/members` returns `409` on reuse); re-enabling
+        the member via `PUT` requires re-enrolment.
+      responses:
+        "204":
+          description: Member disabled and sessions/tokens revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/teams:
+    post:
+      operationId: createProvisionTeam
+      summary: Create a provisioned team keyed by external_id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTeamRequest"
+      responses:
+        "201":
+          description: Created team
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionTeam"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/teams/{external_id}:
+    parameters:
+      - $ref: "#/components/parameters/ExternalID"
+    put:
+      operationId: updateProvisionTeam
+      summary: Update a provisioned team's name and member list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTeamRequest"
+      responses:
+        "200":
+          description: Updated team
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionTeam"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      operationId: deleteProvisionTeam
+      summary: Delete a provisioned team by external_id
+      responses:
+        "204":
+          description: Team deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/sign-in-links:
+    post:
+      operationId: issueProvisionSignInLink
+      summary: Mint a one-time sso or sso_stepup sign-in link
+      description: |
+        Mints a single-use token and returns `url` formatted as
+        `<UPMO_PUBLIC_URL>/login/link#<token>`. The web client extracts `<token>`
+        from the URL fragment and submits it to `POST /api/sso/redeem` (sending
+        any active `__Host-upmo_session` cookie when redeeming an `sso_stepup` link).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignInLinkRequest"
+      responses:
+        "201":
+          description: One-time sign-in link minted
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInLinkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/sso/redeem:
+    post:
+      operationId: redeemSSOLink
+      security: []
+      summary: Redeem a one-time sso or sso_stepup link
+      description: |
+        Browser-facing endpoint that redeems a one-time token minted by
+        `POST /api/v1/provision/sign-in-links` (extracted from `/login/link#<token>`).
+        - For `sso` (or `sso_stepup` without a matching active session cookie),
+          creates a new `'sso'` session and sets the `__Host-upmo_session` cookie.
+        - For `sso_stepup` with a valid active `__Host-upmo_session` cookie for the
+          same user, atomically refreshes `signed_in_at` and sets `sign_in_method = 'sso'`
+          so subsequent `Fresh()` checks succeed without replacing the cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RedeemSSOLinkRequest"
+      responses:
+        "204":
+          description: Link redeemed (sets `__Host-upmo_session` cookie for new sessions)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/providers:
+    put:
+      operationId: upsertProvisionProviders
+      summary: Upsert managed house provider accounts
+      description: |
+        Creates or updates managed house provider accounts (`house: true`,
+        `visibility: everyone`), sealing API keys with the process master keyring.
+        Secrets are never echoed in responses. Omitting `models` replaces the
+        existing model list with an empty set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertProvidersRequest"
+      responses:
+        "200":
+          description: Upserted house provider accounts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpsertProvidersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/quotas:
+    put:
+      operationId: setProvisionQuota
+      summary: Set workspace spend ceiling in micro-USD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetQuotaRequest"
+      responses:
+        "200":
+          description: Updated workspace spend ceiling
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionQuota"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      operationId: clearProvisionQuota
+      summary: Clear workspace spend ceiling
+      responses:
+        "204":
+          description: Workspace spend ceiling cleared
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/packs:
+    put:
+      operationId: installProvisionPack
+      summary: Verify and idempotently install a signed upmo.pack/v1 bundle
+      description: |
+        Verifies the manifest schema and Ed25519 signature against trusted keys,
+        then idempotently creates or updates the installed agent and its lessons.
+        Existing admin-configured `enabled`, `visibility`, and `team_ids` are
+        preserved on updates, and older pack versions cannot downgrade a newer
+        installed version (`409 Conflict`).
+        `templates`, `connector_rules`, and `schedules` are validated and signed,
+        and reserved/ignored during v1.0.0 installation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackManifest"
+      responses:
+        "200":
+          description: Installed or updated pack summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstalledPack"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/provision/status:
+    get:
+      operationId: getProvisionStatus
+      summary: Read build metadata, schema versions, readiness, and spend ceiling
+      responses:
+        "200":
+          description: Workspace provisioning status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/provision/usage:
+    get:
+      operationId: getProvisionUsage
+      summary: Read monthly workspace token and micro-USD cost totals
+      description: |
+        Aggregates `gateway.ledger` by `model` and `kind` (`task` when `parent_run_id`
+        or `run_id` is set, `chat` when `agent_id` is set, otherwise `direct`)
+        for a UTC month. Never returns `user_id` or prompt/response content fields.
+        Rows where `cost_usd` is NULL are counted in `unknown_cost_count`.
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: UTC month formatted as YYYY-MM (defaults to current UTC month)
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: "2026-11"
+      responses:
+        "200":
+          description: Monthly usage summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonthlyUsage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  securitySchemes:
+    SvcsigBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: upmo_s2s_v1
+      description: |
+        Process-to-process HMAC-SHA256 bearer derived from a master `upmo_svc_*` key
+        via HKDF for audience `provision`, bound to method and request URL path.
+
+  parameters:
+    ExternalID:
+      name: external_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  responses:
+    BadRequest:
+      description: Malformed JSON, unexpected fields, or invalid link
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing, malformed, expired, wrong-audience, or invalid svcsig bearer (or disabled user)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Untrusted pack key, invalid Ed25519 pack signature, or SSO required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Provisioning disabled (no keys configured) or resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Duplicate external_id/email/name, non-house/non-installed conflict, pack version downgrade, or last owner constraint
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: Request body exceeds size limit (64 KiB for JSON endpoints, 1 MiB for packs)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: Database or readiness check failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    ProvisionRole:
+      type: string
+      description: |
+        Control-plane role name. `operator` and `member` both map to the `member`
+        system role in responses.
+      enum: [owner, admin, operator, member, viewer]
+
+    CreateMemberRequest:
+      type: object
+      required: [external_id, email, name, role]
+      properties:
+        external_id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          $ref: "#/components/schemas/ProvisionRole"
+        active:
+          type: boolean
+          default: true
+        teams:
+          type: array
+          items:
+            type: string
+
+    UpdateMemberRequest:
+      type: object
+      required: [email, name, role]
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          $ref: "#/components/schemas/ProvisionRole"
+        active:
+          type: boolean
+        teams:
+          type: array
+          items:
+            type: string
+
+    ProvisionMember:
+      type: object
+      required: [id, external_id, email, name, role, active, teams]
+      properties:
+        id:
+          type: string
+          format: uuid
+        external_id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [owner, admin, member, viewer]
+        active:
+          type: boolean
+        teams:
+          type: array
+          items:
+            type: string
+
+    CreateTeamRequest:
+      type: object
+      required: [external_id, name]
+      properties:
+        external_id:
+          type: string
+        name:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+
+    UpdateTeamRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+
+    ProvisionTeam:
+      type: object
+      required: [id, external_id, name, members]
+      properties:
+        id:
+          type: string
+          format: uuid
+        external_id:
+          type: string
+        name:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+
+    SignInLinkRequest:
+      type: object
+      required: [external_id, purpose]
+      properties:
+        external_id:
+          type: string
+        purpose:
+          type: string
+          enum: [sso, sso_stepup]
+
+    SignInLinkResponse:
+      type: object
+      required: [token, url, purpose, expires_at]
+      properties:
+        token:
+          type: string
+        url:
+          type: string
+          format: uri
+        purpose:
+          type: string
+          enum: [sso, sso_stepup]
+        expires_at:
+          type: string
+          format: date-time
+
+    RedeemSSOLinkRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    HouseProviderInput:
+      type: object
+      required: [name, adapter, plan_kind]
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        adapter:
+          type: string
+          enum: [openai_compat, anthropic, fake]
+        plan_kind:
+          type: string
+          enum: [metered, subscription, local]
+        base_url:
+          type: string
+        api_key:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+
+    UpsertProvidersRequest:
+      oneOf:
+        - type: object
+          required: [providers]
+          properties:
+            providers:
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/components/schemas/HouseProviderInput"
+        - $ref: "#/components/schemas/HouseProviderInput"
+
+    HouseProvider:
+      type: object
+      required: [id, name, provider, adapter, plan_kind, status, models, visibility, house, has_key]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        provider:
+          type: string
+        adapter:
+          type: string
+        plan_kind:
+          type: string
+        base_url:
+          type: string
+        status:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        visibility:
+          type: string
+          enum: [everyone]
+        house:
+          type: boolean
+          const: true
+        has_key:
+          type: boolean
+
+    UpsertProvidersResponse:
+      type: object
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/HouseProvider"
+
+    SetQuotaRequest:
+      type: object
+      required: [spend_ceiling_micro_usd]
+      properties:
+        spend_ceiling_micro_usd:
+          type: integer
+          format: int64
+          minimum: 0
+
+    ProvisionQuota:
+      type: object
+      required: [spend_ceiling_micro_usd, updated_at]
+      properties:
+        spend_ceiling_micro_usd:
+          type: ["integer", "null"]
+          format: int64
+        updated_at:
+          type: string
+          format: date-time
+
+    PackManifest:
+      type: object
+      required: [schema, id, version, name, description, agent, key_id, ed25519_sig]
+      properties:
+        schema:
+          type: string
+          const: upmo.pack/v1
+        id:
+          type: string
+        version:
+          type: string
+          description: SemVer 2.0.0 version string (monotonic across updates)
+        name:
+          type: string
+        description:
+          type: string
+        agent:
+          type: object
+          required: [name, slug, instructions]
+          properties:
+            name:
+              type: string
+            slug:
+              type: string
+            role:
+              type: string
+            instructions:
+              type: string
+            default_route:
+              type: string
+            default_model_provider:
+              type: string
+            default_model_id:
+              type: string
+            tool_classes:
+              type: array
+              items:
+                type: string
+            connector_ids:
+              type: array
+              items:
+                type: string
+            plan_approval:
+              type: string
+              enum: [always, risky, never]
+            check_criteria:
+              type: array
+              items:
+                type: object
+        lessons:
+          type: array
+          items:
+            type: object
+            required: [title, cue, body]
+            properties:
+              title:
+                type: string
+              cue:
+                type: string
+              body:
+                type: string
+              always_inline:
+                type: boolean
+        templates:
+          type: array
+          description: Reserved and ignored in v1.0.0 (validated and signed).
+          items:
+            type: object
+            required: [name, goal]
+            properties:
+              name:
+                type: string
+              goal:
+                type: string
+              flow:
+                type: string
+              check_criteria:
+                type: array
+                items:
+                  type: object
+        connector_rules:
+          type: array
+          description: Reserved and ignored in v1.0.0 (validated and signed).
+          items:
+            type: object
+            required: [connector, changes]
+            properties:
+              connector:
+                type: string
+              resource_scope:
+                type: string
+              changes:
+                type: string
+                enum: [allow, ask, block]
+        schedules:
+          type: array
+          description: Reserved and ignored in v1.0.0 (validated and signed).
+          items:
+            type: object
+            required: [cron]
+            properties:
+              name:
+                type: string
+              cron:
+                type: string
+              timezone:
+                type: string
+              prompt:
+                type: string
+        key_id:
+          type: string
+        ed25519_sig:
+          type: string
+
+    InstalledAgentShare:
+      type: object
+      properties:
+        Visibility:
+          type: string
+          enum: [private, team, everyone]
+        TeamIDs:
+          type: array
+          items:
+            type: string
+        TeamNames:
+          type: array
+          items:
+            type: string
+        CanManage:
+          type: boolean
+        CanUse:
+          type: boolean
+
+    InstalledAgent:
+      type: object
+      properties:
+        ID:
+          type: string
+          format: uuid
+        Name:
+          type: string
+        Slug:
+          type: string
+        Role:
+          type: string
+        Description:
+          type: string
+        Instructions:
+          type: string
+        DefaultRoute:
+          type: string
+        DefaultModelProvider:
+          type: string
+        DefaultModelID:
+          type: string
+        ToolClasses:
+          type: array
+          items:
+            type: string
+        ConnectorIDs:
+          type: array
+          items:
+            type: string
+        KnowledgeFolderIDs:
+          type: array
+          items:
+            type: string
+        PlanApproval:
+          type: string
+        CheckCriteria:
+          type: array
+          items:
+            type: object
+        Enabled:
+          type: boolean
+        Installed:
+          type: boolean
+        Version:
+          type: integer
+        Share:
+          $ref: "#/components/schemas/InstalledAgentShare"
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+
+    InstalledPack:
+      type: object
+      required: [pack_id, pack_version, agent, lessons_count]
+      properties:
+        pack_id:
+          type: string
+        pack_version:
+          type: string
+        agent:
+          $ref: "#/components/schemas/InstalledAgent"
+        lessons_count:
+          type: integer
+
+    ProvisionStatus:
+      type: object
+      required: [ready, version, commit, build_time, schema_versions, spend_ceiling_micro_usd]
+      properties:
+        ready:
+          type: boolean
+        version:
+          type: string
+        commit:
+          type: string
+        build_time:
+          type: string
+        schema_versions:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        spend_ceiling_micro_usd:
+          type: ["integer", "null"]
+          format: int64
+
+    UsageMetricSet:
+      type: object
+      required:
+        - input_tokens
+        - output_tokens
+        - cache_read_tokens
+        - cache_write_tokens
+        - reasoning_tokens
+        - total_tokens
+        - cost_micro_usd
+        - unknown_cost_count
+      properties:
+        input_tokens:
+          type: integer
+          format: int64
+        output_tokens:
+          type: integer
+          format: int64
+        cache_read_tokens:
+          type: integer
+          format: int64
+        cache_write_tokens:
+          type: integer
+          format: int64
+        reasoning_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        cost_micro_usd:
+          type: integer
+          format: int64
+        unknown_cost_count:
+          type: integer
+          format: int64
+
+    UsageRow:
+      allOf:
+        - $ref: "#/components/schemas/UsageMetricSet"
+        - type: object
+          required: [model, kind]
+          properties:
+            model:
+              type: string
+            kind:
+              type: string
+              enum: [task, chat, direct]
+
+    MonthlyUsage:
+      type: object
+      required: [month, totals, breakdown]
+      properties:
+        month:
+          type: string
+        totals:
+          $ref: "#/components/schemas/UsageMetricSet"
+        breakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageRow"

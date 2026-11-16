@@ -153,3 +153,152 @@ func (p Passkeys) RedeemLink(ctx context.Context, user domain.UserID, linkHash [
 		},
 	)
 }
+
+// RedeemSSOLink atomically verifies and spends an 'sso' or 'sso_stepup' link,
+// marks the user joined, and either refreshes the matching active session or
+// opens a new 'sso' session in a single database transaction.
+func (p Passkeys) RedeemSSOLink(
+	ctx context.Context,
+	linkHash, activeSessionTokenHash, newSessionTokenHash []byte,
+	now time.Time,
+	idle, maxAge time.Duration,
+	agent string,
+) (bool, error) {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var user domain.UserID
+	var purpose string
+	err = tx.QueryRow(ctx, `
+		SELECT user_id, purpose
+		FROM identity.link_find($1, $2)`, linkHash, now).Scan(&user, &purpose)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, app.ErrInvalidLink
+	}
+	if err != nil {
+		return false, err
+	}
+	if purpose != "sso" && purpose != "sso_stepup" {
+		return false, app.ErrInvalidLink
+	}
+
+	var ssoRequired bool
+	var roleKey string
+	err = tx.QueryRow(ctx, `
+		SELECT sso_required, role_key
+		FROM identity.sso_sign_in_state($1)`, user).Scan(&ssoRequired, &roleKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, app.ErrNotSignedIn
+	}
+	if err != nil {
+		return false, err
+	}
+	breakGlass, err := domain.CheckSSOSignIn(ssoRequired, roleKey, true)
+	if err != nil {
+		audit.Annotate(ctx, audit.Event{Reason: "sso_required", TargetType: "user", TargetID: user.String()})
+		return false, err
+	}
+
+	var spent bool
+	if err := tx.QueryRow(ctx, `SELECT identity.link_spend($1, $2)`, linkHash, now).Scan(&spent); err != nil {
+		return false, err
+	}
+	if !spent {
+		return false, app.ErrInvalidLink
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE identity.users SET joined_at = $2
+		WHERE id = $1 AND joined_at IS NULL`, user, now); err != nil {
+		return false, err
+	}
+
+	if purpose == "sso_stepup" && len(activeSessionTokenHash) > 0 {
+		var row app.Row
+		err = tx.QueryRow(ctx, `
+			SELECT id::text, user_id, created_at, last_seen_at, expires_at,
+			       sign_in_method, signed_in_at, role_id::text
+			FROM identity.session_find($1)`, activeSessionTokenHash).
+			Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn, &row.RoleID)
+		if err == nil && !domain.Ended(row.LastSeen, row.Expires, now, idle) && row.UserID == user {
+			if _, err := tx.Exec(ctx, `
+				UPDATE identity.sessions
+				SET sign_in_method = 'sso', signed_in_at = $2
+				WHERE id = $1`, row.ID, now); err != nil {
+				return false, err
+			}
+			audit.WithActor(ctx, audit.Actor{
+				Type:           "user",
+				ID:             user.String(),
+				RoleID:         row.RoleID,
+				CredentialType: "session",
+				CredentialID:   row.ID,
+			})
+			if err := audit.Record(ctx, tx, audit.Event{
+				Action:   audit.AuthStepUp,
+				Outcome:  audit.Success,
+				TargetID: row.ID,
+				Changes: audit.Changes{
+					Values: map[string]audit.Change{"method": {To: "sso"}},
+				},
+			}); err != nil {
+				return false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM identity.sessions
+		WHERE user_id = $1
+		  AND (expires_at <= $2 OR last_seen_at <= $3)`, user, now, now.Add(-idle)); err != nil {
+		return false, err
+	}
+
+	var roleID string
+	if err := tx.QueryRow(ctx, `SELECT role_id::text FROM identity.users WHERE id = $1`, user).Scan(&roleID); err != nil {
+		return false, err
+	}
+	var sessionID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at, sign_in_method, signed_in_at, user_agent)
+		VALUES ($1, $2, $3, $3, $4, 'sso', $3, $5)
+		RETURNING id::text`, user, newSessionTokenHash, now, now.Add(maxAge), agent).Scan(&sessionID); err != nil {
+		return false, err
+	}
+	audit.WithActor(ctx, audit.Actor{
+		Type:           "user",
+		ID:             user.String(),
+		RoleID:         roleID,
+		CredentialType: "session",
+		CredentialID:   sessionID,
+	})
+	reason := ""
+	if breakGlass {
+		reason = "sso_break_glass"
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AuthSignIn,
+		Outcome:  audit.Success,
+		Reason:   reason,
+		TargetID: sessionID,
+		Changes: audit.Changes{
+			Values: map[string]audit.Change{"method": {To: "sso"}},
+		},
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return false, nil
+}
