@@ -671,10 +671,16 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	}.MountProviders(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
+	routesSvc := gateway.NewRoutes(pool, log)
+	routesSvc.Allow = providers.Allow
+	routesSvc.Teams = providers.Teams
+	routesSvc.Names = providers.Names
 	routeBook := gateway.NewRouteBook(pool)
 	gateway.RoutesHandler{
 		Book:     routeBook,
+		Service:  routesSvc,
 		Accounts: providers,
+		Log:      log,
 		Access: func(r *http.Request) (string, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

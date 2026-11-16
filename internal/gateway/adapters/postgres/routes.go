@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,7 +19,10 @@ type Store struct {
 	Pool *pgxpool.Pool
 }
 
-var _ app.Teams = Store{}
+var (
+	_ app.Teams      = Store{}
+	_ app.UserRoutes = Store{}
+)
 
 // accountTeams is the ids of the teams an account is shared with, as text. It
 // is empty for a private account and for one shared with everyone.
@@ -60,14 +64,18 @@ func (s Store) TeamsOf(ctx context.Context, user string) ([]string, error) {
 	return out, nil
 }
 
-// ByName loads one route and its links in position order.
+// ByName loads one shared or installed route and its links in position order.
+// It never resolves a user's private route.
 func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
+	var routeID, cap, decision string
 	var r domain.Route
-	var cap, decision string
 	err := s.Pool.QueryRow(ctx, `
-		SELECT name, capability, decision
+		SELECT id::text, name, capability, decision
 		FROM gateway.routes
-		WHERE name = $1`, name).Scan(&r.Name, &cap, &decision)
+		WHERE name = $1
+		  AND (installed OR visibility <> 'private')
+		ORDER BY installed DESC, (visibility <> 'private') DESC, id
+		LIMIT 1`, name).Scan(&routeID, &r.Name, &cap, &decision)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Route{}, fmt.Errorf("gateway: no route %q", name)
@@ -76,14 +84,74 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	}
 	r.Capability = domain.Capability(cap)
 	r.Decision = domain.Decision(decision)
+	return s.loadRouteLinks(ctx, routeID, r)
+}
+
+// ByNameFor loads one route by name for the calling principal. System workers
+// (who.User == "") only resolve installed or shared routes; user requests
+// resolve routes the user can use via identity.can_use, narrowed to who.TeamID
+// when set.
+func (s Store) ByNameFor(ctx context.Context, name string, who domain.Principal) (domain.Route, error) {
+	if who.User == "" {
+		return s.ByName(ctx, name)
+	}
+	var routeID, cap, decision string
+	var r domain.Route
+	var err error
+	if _, parseErr := uuid.Parse(who.User); parseErr != nil {
+		// Synthetic test/debug callers (e.g. chatstream_integration_test using
+		// UserID: "u") pass non-UUID user IDs; resolve only installed or
+		// everyone routes rather than failing uuid casts.
+		err = s.Pool.QueryRow(ctx, `
+			SELECT id::text, name, capability, decision
+			FROM gateway.routes
+			WHERE name = $1
+			  AND (installed OR visibility = 'everyone')
+			ORDER BY installed DESC, id
+			LIMIT 1`, name).Scan(&routeID, &r.Name, &cap, &decision)
+	} else {
+		teams, terr := s.TeamsOf(ctx, who.User)
+		if terr != nil {
+			return domain.Route{}, terr
+		}
+		if who.TeamID != "" {
+			if slices.Contains(teams, who.TeamID) {
+				teams = []string{who.TeamID}
+			} else {
+				teams = []string{}
+			}
+		}
+		if teams == nil {
+			teams = []string{}
+		}
+		err = s.Pool.QueryRow(ctx, `
+			SELECT id::text, name, capability, decision
+			FROM gateway.routes
+			WHERE name = $1
+			  AND (installed OR identity.can_use($2::uuid, COALESCE($3::uuid[], '{}'), owner_user_id, visibility, team_ids))
+			ORDER BY installed DESC, (visibility <> 'private') DESC, id
+			LIMIT 1`, name, who.User, teams).Scan(&routeID, &r.Name, &cap, &decision)
+	}
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Route{}, fmt.Errorf("gateway: no route %q", name)
+		}
+		return domain.Route{}, err
+	}
+	r.Capability = domain.Capability(cap)
+	r.Decision = domain.Decision(decision)
+	return s.loadRouteLinks(ctx, routeID, r)
+}
+
+func (s Store) loadRouteLinks(ctx context.Context, routeID string, r domain.Route) (domain.Route, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT link.position, link.model, link.weight, link.retry_budget, link.required_capabilities,
 			account.id::text, COALESCE(NULLIF(account.provider, ''), account.adapter), account.adapter, account.credential_ref, account.plan_kind, account.house, account.base_url,
 			`+accountReach("account")+`
 		FROM gateway.route_links AS link
 		JOIN gateway.provider_accounts AS account ON account.id = link.provider_account_id
-		WHERE link.route_id = (SELECT id FROM gateway.routes WHERE name = $1)
-		ORDER BY link.position`, name)
+		WHERE link.route_id = $1::uuid
+		ORDER BY link.position`, routeID)
 	if err != nil {
 		return domain.Route{}, err
 	}
@@ -162,9 +230,13 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 	return a, true, nil
 }
 
-// Names lists route names for the Models endpoint.
+// Names lists shared and installed route names for the Models endpoint.
 func (s Store) Names(ctx context.Context) ([]string, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT name FROM gateway.routes ORDER BY name`)
+	rows, err := s.Pool.Query(ctx, `
+		SELECT DISTINCT name
+		FROM gateway.routes
+		WHERE installed OR visibility <> 'private'
+		ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -180,17 +252,17 @@ func (s Store) Names(ctx context.Context) ([]string, error) {
 	return names, rows.Err()
 }
 
-// List returns every route with hops in position order. Credential refs stay
-// out; each hop names the account it calls, so the HTTP layer can compute
-// what the calling person can use.
+// List returns routes visible to the caller with hops in position order.
+// Credential refs stay out; each hop names the account it calls, so the HTTP
+// layer can compute what the calling person can use.
 func (s Store) List(ctx context.Context) ([]app.ListedRoute, error) {
 	rows, err := s.Pool.Query(ctx, `
-		SELECT r.name, r.capability, r.decision,
-			l.position, account.adapter, l.model, l.weight, l.retry_budget, account.id::text
+		SELECT r.id::text, r.name, r.capability, r.decision, r.installed, r.visibility,
+			l.position, account.adapter, l.model, l.weight, l.retry_budget, account.id::text, l.required_capabilities
 		FROM gateway.routes AS r
 		LEFT JOIN gateway.route_links AS l ON l.route_id = r.id
 		LEFT JOIN gateway.provider_accounts AS account ON account.id = l.provider_account_id
-		ORDER BY r.name, l.position`)
+		ORDER BY r.name, r.id, l.position`)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: list routes: %w", err)
 	}
@@ -199,27 +271,41 @@ func (s Store) List(ctx context.Context) ([]app.ListedRoute, error) {
 	out := make([]app.ListedRoute, 0)
 	var cur *app.ListedRoute
 	for rows.Next() {
-		var name, capability, decision string
+		var id, name, capability, decision, visibility string
+		var installed bool
 		var position *int
 		var adapter, model, accountID *string
 		var weight, retry *int
-		if err := rows.Scan(&name, &capability, &decision, &position, &adapter, &model, &weight, &retry, &accountID); err != nil {
+		var need []string
+		if err := rows.Scan(&id, &name, &capability, &decision, &installed, &visibility, &position, &adapter, &model, &weight, &retry, &accountID, &need); err != nil {
 			return nil, fmt.Errorf("gateway: list routes: %w", err)
 		}
-		if cur == nil || cur.Name != name {
-			out = append(out, app.ListedRoute{Name: name, Capability: capability, Decision: decision, Hops: []app.ListedHop{}})
+		if cur == nil || cur.ID != id {
+			out = append(out, app.ListedRoute{
+				ID:         id,
+				Name:       name,
+				Capability: capability,
+				Decision:   decision,
+				Hops:       []app.ListedHop{},
+				Installed:  installed,
+				Visibility: visibility,
+				TeamIDs:    []string{},
+				TeamNames:  []string{},
+				CanUse:     installed || visibility == domain.VisibilityEveryone,
+			})
 			cur = &out[len(out)-1]
 		}
 		if position == nil || adapter == nil || model == nil || weight == nil || retry == nil || accountID == nil {
 			continue
 		}
 		cur.Hops = append(cur.Hops, app.ListedHop{
-			Position:  *position,
-			Adapter:   *adapter,
-			Model:     *model,
-			Weight:    *weight,
-			Retry:     *retry,
-			AccountID: *accountID,
+			Position:             *position,
+			Adapter:              *adapter,
+			Model:                *model,
+			Weight:               *weight,
+			Retry:                *retry,
+			AccountID:            *accountID,
+			RequiredCapabilities: need,
 		})
 	}
 	if err := rows.Err(); err != nil {
