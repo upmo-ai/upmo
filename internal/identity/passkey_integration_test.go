@@ -29,7 +29,7 @@ import (
 )
 
 func TestPasskeySignIn(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	var clock time.Time
 	clock = now
@@ -87,7 +87,7 @@ func TestPasskeySignIn(t *testing.T) {
 	}
 
 	var bob string
-	err = pool.QueryRow(ctx, `
+	err = ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())
 		RETURNING id::text`).Scan(&bob)
@@ -102,7 +102,7 @@ func TestPasskeySignIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, bobID); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE id = $1`, bobID); err != nil {
 		t.Fatal(err)
 	}
 	disabled := callJSON(mux, http.MethodPost, "/api/passkeys/link/options", "", map[string]string{"token": bobLink})
@@ -311,9 +311,9 @@ func TestPasskeySignIn(t *testing.T) {
 }
 
 func TestTwoRemovalsCannotBothPass(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	var user string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&user); err != nil {
@@ -362,7 +362,7 @@ func TestTwoRemovalsCannotBothPass(t *testing.T) {
 
 func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
-	pool, mux, passkeys, ctx := identityMux(t, now)
+	ownerPool, pool, mux, passkeys, ctx := identityMuxWithOwner(t, now)
 	token, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 	}
 
 	var lee string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, invited_at)
 		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $1)
 		RETURNING id::text`, now).Scan(&lee); err != nil {
@@ -426,12 +426,12 @@ func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 
 func TestTwoFinishesRedeemOneLink(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
-	pool, mux, passkeys, ctx := identityMux(t, now)
+	ownerPool, pool, mux, passkeys, ctx := identityMuxWithOwner(t, now)
 	if _, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada"); err != nil {
 		t.Fatal(err)
 	}
 	var lee string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $1)
 		RETURNING id::text`, now).Scan(&lee); err != nil {
@@ -486,7 +486,7 @@ func TestTwoFinishesRedeemOneLink(t *testing.T) {
 // an hour ago and a valid one stay.
 func TestChallengeSaveSweepsExpiredLinks(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return now }
 	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -494,7 +494,7 @@ func TestChallengeSaveSweepsExpiredLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	passkeys.Now = sessions.Now
-	ada, err := domain.ParseUserID(seedOwner(t, pool, ctx, "ada@example.com"))
+	ada, err := domain.ParseUserID(seedOwner(t, ownerPool, ctx, "ada@example.com"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,13 @@ func TestIPv6PrefixSharesAThrottleBucket(t *testing.T) {
 
 func identityMux(t *testing.T, now time.Time) (*pgxpool.Pool, http.Handler, app.Passkeys, context.Context) {
 	t.Helper()
-	pool, ctx := up(t)
+	_, pool, mux, passkeys, ctx := identityMuxWithOwner(t, now)
+	return pool, mux, passkeys, ctx
+}
+
+func identityMuxWithOwner(t *testing.T, now time.Time) (*pgxpool.Pool, *pgxpool.Pool, http.Handler, app.Passkeys, context.Context) {
+	t.Helper()
+	owner, pool, ctx := upBoth(t)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return now }
 	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -571,7 +577,7 @@ func identityMux(t *testing.T, now time.Time) (*pgxpool.Pool, http.Handler, app.
 	mux := http.NewServeMux()
 	identity.MountSessions(mux, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	identity.MountPasskeys(mux, passkeys, identity.Passwords(pool, sessions), nil)
-	return pool, mux, passkeys, ctx
+	return owner, pool, mux, passkeys, ctx
 }
 
 type finishResult struct {

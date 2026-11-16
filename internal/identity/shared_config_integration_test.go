@@ -235,8 +235,8 @@ func TestSharedConfigUpDownUp(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("version after re-up = %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("version after re-up = %d, want 3", version)
 	}
 	app := pgtest.App(t, owner)
 	var ok bool

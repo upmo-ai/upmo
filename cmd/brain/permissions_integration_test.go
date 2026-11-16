@@ -32,20 +32,20 @@ func TestRoutePermissionRefusal_UPM243_KeepsSession(t *testing.T) {
 	}
 	pool := pgtest.App(t, owner)
 	var ownerID string
-	if err := pool.QueryRow(ctx, `
+	if err := owner.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		SELECT 'owner@example.com', 'Owner', id, now() FROM identity.roles WHERE key = 'owner'
 		RETURNING id::text`).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	var memberID string
-	if err := pool.QueryRow(ctx, `
+	if err := owner.QueryRow(ctx, `
 		INSERT INTO identity.roles (name, permissions) VALUES ('No permissions', ARRAY[]::text[])
 		RETURNING id::text`).Scan(&memberID); err != nil {
 		t.Fatal(err)
 	}
 	var userID string
-	if err := pool.QueryRow(ctx, `
+	if err := owner.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('member@example.com', 'Member', $1::uuid, now()) RETURNING id::text`, memberID).Scan(&userID); err != nil {
 		t.Fatal(err)

@@ -103,9 +103,9 @@ func TestAppReadsNonSecretColumns(t *testing.T) {
 }
 
 func TestColumnGrantsCoverOnlyNonSecretColumns(t *testing.T) {
-	pool, ctx := up(t)
+	owner, ctx := upOwner(t)
 	for table, secrets := range secretColumns {
-		checkColumnGrants(t, pool, ctx, table, secrets)
+		checkColumnGrants(t, owner, ctx, table, secrets)
 	}
 }
 
@@ -153,14 +153,16 @@ func TestNewTablesGetNoSelectByDefault(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = owner.Exec(context.Background(), `DROP TABLE identity.zz_probe`)
 	})
-	var selectGrant, insertGrant bool
+	var selectGrant, insertGrant, updateGrant, deleteGrant bool
 	if err := pool.QueryRow(ctx, `
 		SELECT has_table_privilege('upmo_app', 'identity.zz_probe', 'SELECT'),
-		       has_table_privilege('upmo_app', 'identity.zz_probe', 'INSERT')`).Scan(&selectGrant, &insertGrant); err != nil {
+		       has_table_privilege('upmo_app', 'identity.zz_probe', 'INSERT'),
+		       has_table_privilege('upmo_app', 'identity.zz_probe', 'UPDATE'),
+		       has_table_privilege('upmo_app', 'identity.zz_probe', 'DELETE')`).Scan(&selectGrant, &insertGrant, &updateGrant, &deleteGrant); err != nil {
 		t.Fatal(err)
 	}
-	if selectGrant || !insertGrant {
-		t.Fatalf("probe select %t insert %t, want false true", selectGrant, insertGrant)
+	if selectGrant || insertGrant || updateGrant || deleteGrant {
+		t.Fatalf("probe privileges select=%t insert=%t update=%t delete=%t, want all false", selectGrant, insertGrant, updateGrant, deleteGrant)
 	}
 }
 
@@ -321,15 +323,24 @@ func TestLookupFunctionsRunAsDefiner(t *testing.T) {
 		"identity.link_find(bytea, timestamptz)",
 		"identity.link_spend(bytea, timestamptz)",
 		"identity.challenge_take(bytea, timestamptz)",
+		"identity.member_set_role(bytea, uuid, uuid)",
+		"identity.member_disable(bytea, uuid, timestamptz)",
+		"identity.member_invite(bytea, text, text, uuid, bytea, bytea, timestamptz, timestamptz)",
+		"identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz)",
 	} {
-		var definer bool
+		var definer, publicExec, appExec bool
 		var config []string
 		if err := pool.QueryRow(ctx, `
-			SELECT prosecdef, proconfig FROM pg_proc WHERE oid = $1::regprocedure`, signature).Scan(&definer, &config); err != nil {
+			SELECT prosecdef,
+			       proconfig,
+			       has_function_privilege('public', oid, 'EXECUTE'),
+			       has_function_privilege('upmo_app', oid, 'EXECUTE')
+			FROM pg_proc
+			WHERE oid = $1::regprocedure`, signature).Scan(&definer, &config, &publicExec, &appExec); err != nil {
 			t.Fatal(err)
 		}
-		if !definer || !slices.Contains(config, "search_path=pg_catalog") {
-			t.Fatalf("%s definer %t config %v", signature, definer, config)
+		if !definer || !slices.Contains(config, "search_path=pg_catalog") || publicExec || !appExec {
+			t.Fatalf("%s definer=%t config=%v publicExec=%t appExec=%t", signature, definer, config, publicExec, appExec)
 		}
 	}
 }

@@ -14,7 +14,7 @@ type RoleStore interface {
 	CreateRole(ctx context.Context, name string, permissions []string) (domain.RoleID, error)
 	ChangeRole(ctx context.Context, id domain.RoleID, name string, permissions []string) error
 	DeleteRole(ctx context.Context, id domain.RoleID) error
-	SetMemberRole(ctx context.Context, user domain.UserID, role domain.RoleID, rule func(current, next string, permissions []domain.Permission) error) error
+	SetMemberRole(ctx context.Context, actorTokenHash []byte, user domain.UserID, role domain.RoleID, rule func(current, next string, permissions []domain.Permission) error) error
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 }
 
@@ -154,7 +154,7 @@ func (r Roles) Set(ctx context.Context, session Session, member domain.UserID, r
 	if err != nil {
 		return r.refuse("member role refused", session, err)
 	}
-	err = r.Store.SetMemberRole(ctx, member, role, func(current, next string, permissions []domain.Permission) error {
+	err = r.Store.SetMemberRole(ctx, session.TokenHash, member, role, func(current, next string, permissions []domain.Permission) error {
 		return domain.MayAssign(actor, current, next, permissions)
 	})
 	if err != nil {

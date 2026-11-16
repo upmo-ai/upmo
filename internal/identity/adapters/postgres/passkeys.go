@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
@@ -277,33 +278,16 @@ func (p Passkeys) Empty(ctx context.Context) (bool, error) {
 }
 
 func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error) {
-	tx, err := p.Pool.Begin(ctx)
-	if err != nil {
-		return domain.UserID{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7480198)`); err != nil {
-		return domain.UserID{}, err
-	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM identity.users)`).Scan(&exists); err != nil {
-		return domain.UserID{}, err
-	}
-	if exists {
-		return domain.UserID{}, app.ErrExists
-	}
 	var user domain.UserID
-	err = tx.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = 'owner'), $3, $3)
-		RETURNING id`, email, name, now).Scan(&user)
+	err := p.Pool.QueryRow(ctx, `
+		SELECT identity.member_invite(NULL, $1, $2, NULL, NULL, $3, $4, $5)`,
+		email, name, hash, now, expires).Scan(&user)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Message == "identity: someone already exists" {
+			return domain.UserID{}, app.ErrExists
+		}
 		return domain.UserID{}, err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO identity.sign_in_links (token_hash, user_id, purpose, expires_at)
-		VALUES ($1, $2, 'bootstrap', $3)`, hash, user, expires); err != nil {
-		return domain.UserID{}, err
-	}
-	return user, tx.Commit(ctx)
+	return user, nil
 }

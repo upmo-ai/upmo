@@ -27,7 +27,7 @@ func TestRecheckFollowsTheSessionWhileARequestStaysOpen(t *testing.T) {
 	}
 	pool := pgtest.App(t, owner)
 	var user string
-	err := pool.QueryRow(ctx, `
+	err := owner.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&user)
