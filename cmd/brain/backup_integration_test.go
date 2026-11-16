@@ -125,9 +125,9 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	}
 	routeID := uuid.New()
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO gateway.routes (id, name, capability, decision)
-		VALUES ($1, 'chat', 'chat', '')`,
-		routeID,
+		INSERT INTO gateway.routes (id, name, capability, decision, owner_user_id, visibility)
+		VALUES ($1, 'chat', 'chat', '', $2, 'private')`,
+		routeID, userID,
 	); err != nil {
 		t.Fatalf("seed gateway.routes: %v", err)
 	}
