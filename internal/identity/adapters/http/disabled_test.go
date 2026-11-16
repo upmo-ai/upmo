@@ -118,6 +118,9 @@ func (disabledPassword) HasPassword(context.Context, domain.UserID) (bool, error
 func (disabledPassword) ClaimOffer(context.Context, domain.UserID, time.Time) (bool, error) {
 	return false, nil
 }
+func (disabledPassword) SignInPolicy(context.Context, domain.UserID) (bool, string, error) {
+	return false, "", nil
+}
 
 type disabledPass struct{}
 
@@ -158,6 +161,9 @@ func (disabledPass) UserByEmail(context.Context, string) (domain.UserID, bool, e
 }
 func (disabledPass) Bootstrap(context.Context, string, string, []byte, time.Time, time.Time) (domain.UserID, error) {
 	return domain.UserID{}, nil
+}
+func (disabledPass) SignInPolicy(context.Context, domain.UserID) (bool, string, error) {
+	return false, "", nil
 }
 func (disabledPass) ListPasskeys(context.Context, domain.UserID) ([]app.PasskeyRecord, error) {
 	return nil, nil

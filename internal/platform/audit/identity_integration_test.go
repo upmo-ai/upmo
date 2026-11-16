@@ -58,6 +58,7 @@ func newKit(t *testing.T) *kit {
 	identity.MountRoles(mux, identity.Roles(appPool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(appPool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(appPool), sessions)
+	identity.MountWorkspace(mux, identity.Workspace(appPool), sessions)
 	return &kit{owner: owner, app: appPool, served: mount(t, mux, appPool), passkeys: passkeys}
 }
 
@@ -1242,5 +1243,233 @@ func noNewEvent(t *testing.T, owner *pgxpool.Pool, position int64) {
 	}
 	if head != position {
 		t.Fatalf("head moved to %d, want %d: a request that changed nothing must not seal an event", head, position)
+	}
+}
+
+func TestWorkspaceUpdateAndSSOSignInAudit(t *testing.T) {
+	k := newKit(t)
+	ownerCookie := k.signInOwner(t, "ada@example.com")
+	ownerSoft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.addPasskey(t, ownerCookie, ownerSoft)
+	lastEvent(t, k.owner)
+
+	ctx := context.Background()
+	ownerID, _ := lookupPerson(t, k.owner, "ada@example.com")
+	ownerUID, err := identity.ParseUserID(ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var memberID string
+	if err := k.owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		RETURNING id::text`).Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+	sessions := identity.Sessions(k.app, identity.IdleTimeout, identity.MaxAge)
+	memberUID, err := identity.ParseUserID(memberID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberCookie, _, err := sessions.Start(ctx, memberUID, "passkey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberSoft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.addPasskey(t, memberCookie, memberSoft)
+	var memberHandle []byte
+	if err := k.owner.QueryRow(ctx, `SELECT webauthn_handle FROM identity.users WHERE id = $1`, memberID).Scan(&memberHandle); err != nil {
+		t.Fatal(err)
+	}
+	lastEvent(t, k.owner)
+
+	// Non-admin PUT /api/workspace is refused (403) and seals denied workspace.update.
+	deniedPut := k.sessionCall(http.MethodPut, "/api/workspace", memberCookie, map[string]any{
+		"name":                    "Nope",
+		"time_zone":               "UTC",
+		"locale":                  "en-GB",
+		"allow_member_providers":  true,
+		"allow_member_routes":     true,
+		"allow_member_connectors": true,
+		"allow_member_agents":     true,
+		"sso_required":            false,
+	})
+	if deniedPut.Code != http.StatusForbidden {
+		t.Fatalf("member PUT /api/workspace = %d %s, want 403", deniedPut.Code, deniedPut.Body.String())
+	}
+	row, _ := lastEvent(t, k.owner)
+	if row.Action != audit.WorkspaceUpdate || row.Outcome != audit.Denied || row.ActorID != memberID {
+		t.Fatalf("denied workspace row = %+v", row)
+	}
+
+	// Owner PUT /api/workspace updates settings and seals workspace.update in the same tx.
+	workspacePayload := map[string]any{
+		"name":                    "Secret Corp",
+		"logo_url":                "",
+		"time_zone":               "America/New_York",
+		"locale":                  "en-US",
+		"default_route":           "",
+		"default_agent_id":        nil,
+		"allow_member_providers":  true,
+		"allow_member_routes":     true,
+		"allow_member_connectors": true,
+		"allow_member_agents":     true,
+		"sso_required":            true,
+	}
+	okPut := k.sessionCall(http.MethodPut, "/api/workspace", ownerCookie, workspacePayload)
+	if okPut.Code != http.StatusOK {
+		t.Fatalf("owner PUT /api/workspace = %d %s", okPut.Code, okPut.Body.String())
+	}
+	row, pos := lastEvent(t, k.owner)
+	if row.Action != audit.WorkspaceUpdate || row.Outcome != audit.Success || row.TargetType != "workspace" || row.TargetID != "workspace" {
+		t.Fatalf("workspace update row = %+v", row)
+	}
+	// Name value must not leak into sealed audit JSON; field name is recorded.
+	freeOf(t, rowDump(t, k.owner, pos), "Secret Corp")
+	if row.Changes.Values["time_zone"].To != "America/New_York" || row.Changes.Values["sso_required"].To != true {
+		t.Fatalf("workspace changes = %+v", row.Changes)
+	}
+
+	// Repeating PUT /api/workspace with identical values seals no new workspace.update event.
+	noopPut := k.sessionCall(http.MethodPut, "/api/workspace", ownerCookie, workspacePayload)
+	if noopPut.Code != http.StatusOK {
+		t.Fatalf("noop PUT /api/workspace = %d %s", noopPut.Code, noopPut.Body.String())
+	}
+	noNewEvent(t, k.owner, pos)
+
+	// Set passwords for owner and member so we can test SSO sign-in audit events.
+	const pw = "correct horse battery"
+	if rec := k.sessionCall(http.MethodPut, "/api/password", ownerCookie, map[string]string{"password": pw}); rec.Code != http.StatusNoContent {
+		t.Fatalf("owner set password = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := k.sessionCall(http.MethodPut, "/api/password", memberCookie, map[string]string{"password": pw}); rec.Code != http.StatusNoContent {
+		t.Fatalf("member set password = %d %s", rec.Code, rec.Body.String())
+	}
+	lastEvent(t, k.owner)
+
+	// Member password sign-in is refused with reason sso_required.
+	memberDenied := k.call(http.MethodPost, "/api/sign-in/password", nil, map[string]string{
+		"email": "lee@example.com", "password": pw,
+	})
+	if memberDenied.Code != http.StatusForbidden {
+		t.Fatalf("member sso sign-in = %d %s, want 403", memberDenied.Code, memberDenied.Body.String())
+	}
+	row, _ = lastEvent(t, k.owner)
+	if row.Action != audit.AuthSignIn || row.Outcome != audit.Denied || row.Reason != "sso_required" || row.TargetID != memberID {
+		t.Fatalf("member sso refusal row = %+v", row)
+	}
+
+	// Owner break-glass password sign-in succeeds with reason sso_break_glass.
+	ownerOK := k.call(http.MethodPost, "/api/sign-in/password", nil, map[string]string{
+		"email": "ada@example.com", "password": pw,
+	})
+	if ownerOK.Code != http.StatusOK {
+		t.Fatalf("owner break-glass = %d %s", ownerOK.Code, ownerOK.Body.String())
+	}
+	row, _ = lastEvent(t, k.owner)
+	if row.Action != audit.AuthSignIn || row.Outcome != audit.Success || row.Reason != "sso_break_glass" {
+		t.Fatalf("owner break-glass row = %+v", row)
+	}
+
+	// Clear throttle bucket between sign-in paths because ThrottleBurst is 10 per IP.
+	if _, err := k.owner.Exec(ctx, `DELETE FROM identity.throttle`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Member passkey sign-in is refused with reason sso_required.
+	opt := k.call(http.MethodPost, "/api/passkeys/sign-in/options", nil, map[string]string{})
+	if opt.Code != http.StatusOK {
+		t.Fatalf("member passkey options = %d %s", opt.Code, opt.Body.String())
+	}
+	memberAssertion, err := memberSoft.Login("localhost", "http://localhost:5173", challengeOf(t, opt.Body.Bytes()), memberHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberPasskeyRes := k.call(http.MethodPost, "/api/passkeys/sign-in/finish",
+		map[string]string{httpapi.ChallengeCookie: cookieValue(t, opt, httpapi.ChallengeCookie)},
+		json.RawMessage(memberAssertion))
+	if memberPasskeyRes.Code != http.StatusForbidden {
+		t.Fatalf("member passkey sso sign-in = %d %s, want 403", memberPasskeyRes.Code, memberPasskeyRes.Body.String())
+	}
+	row, _ = lastEvent(t, k.owner)
+	if row.Action != audit.AuthSignIn || row.Outcome != audit.Denied || row.Reason != "sso_required" || row.TargetID != memberID {
+		t.Fatalf("member passkey sso refusal row = %+v", row)
+	}
+
+	// Owner break-glass passkey sign-in succeeds with reason sso_break_glass.
+	ownerOpt := k.call(http.MethodPost, "/api/passkeys/sign-in/options", nil, map[string]string{})
+	if ownerOpt.Code != http.StatusOK {
+		t.Fatalf("owner passkey options = %d %s", ownerOpt.Code, ownerOpt.Body.String())
+	}
+	ownerAssertion, err := ownerSoft.Login("localhost", "http://localhost:5173", challengeOf(t, ownerOpt.Body.Bytes()), adaHandle(t, k.owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPasskeyRes := k.call(http.MethodPost, "/api/passkeys/sign-in/finish",
+		map[string]string{httpapi.ChallengeCookie: cookieValue(t, ownerOpt, httpapi.ChallengeCookie)},
+		json.RawMessage(ownerAssertion))
+	if ownerPasskeyRes.Code != http.StatusNoContent {
+		t.Fatalf("owner break-glass passkey = %d %s", ownerPasskeyRes.Code, ownerPasskeyRes.Body.String())
+	}
+	row, _ = lastEvent(t, k.owner)
+	if row.Action != audit.AuthSignIn || row.Outcome != audit.Success || row.Reason != "sso_break_glass" {
+		t.Fatalf("owner break-glass passkey row = %+v", row)
+	}
+	if method := row.Changes.Values["method"].To; method != "passkey" {
+		t.Fatalf("owner break-glass passkey method = %v, want passkey", method)
+	}
+
+	if _, err := k.owner.Exec(ctx, `DELETE FROM identity.throttle`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Member non-SSO link sign-in is refused with reason sso_required.
+	memberTok, err := k.passkeys.IssueLink(ctx, memberUID, "recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkOpt := k.call(http.MethodPost, "/api/passkeys/link/options", nil, map[string]string{"token": memberTok})
+	if linkOpt.Code != http.StatusOK {
+		t.Fatalf("member link options = %d %s", linkOpt.Code, linkOpt.Body.String())
+	}
+	memberLinkReg, err := memberSoft.Register("localhost", "http://localhost:5173", challengeOf(t, linkOpt.Body.Bytes()), userHandleOf(t, linkOpt.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberLinkRes := k.call(http.MethodPost, "/api/passkeys/link/finish",
+		map[string]string{httpapi.ChallengeCookie: cookieValue(t, linkOpt, httpapi.ChallengeCookie)},
+		map[string]any{"token": memberTok, "response": json.RawMessage(memberLinkReg)})
+	if memberLinkRes.Code != http.StatusForbidden {
+		t.Fatalf("member link sso sign-in = %d %s, want 403", memberLinkRes.Code, memberLinkRes.Body.String())
+	}
+	row, _ = lastEvent(t, k.owner)
+	if row.Action != audit.AuthSignIn || row.Outcome != audit.Denied || row.Reason != "sso_required" || row.TargetID != memberID {
+		t.Fatalf("member link sso refusal row = %+v", row)
+	}
+
+	// Owner break-glass link sign-in succeeds with reason sso_break_glass.
+	ownerTok, err := k.passkeys.IssueLink(ctx, ownerUID, "recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerLinkSoft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := k.finishLink(t, ownerLinkSoft, ownerTok); c == "" {
+		t.Fatal("owner break-glass link returned empty session")
+	}
+	row, _ = lastEvent(t, k.owner)
+	if row.Action != audit.AuthSignIn || row.Outcome != audit.Success || row.Reason != "sso_break_glass" {
+		t.Fatalf("owner break-glass link row = %+v", row)
+	}
+	if method := row.Changes.Values["method"].To; method != "link" {
+		t.Fatalf("owner break-glass link method = %v, want link", method)
 	}
 }
