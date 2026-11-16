@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	httpapi "github.com/upmo-ai/upmo/internal/sandboxd/adapters/http"
@@ -560,5 +561,63 @@ func TestSweepRunsUntilCancelled(t *testing.T) {
 	case <-stubDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("sweep ran for the stub")
+	}
+}
+
+func TestRoutesWithMetricsTracksActiveSeatsAndHidesMetricsPath(t *testing.T) {
+	key := serviceKey('m')
+	reg := metrics.NewRegistry()
+	h, err := Routes(key, "", Stub(), slog.New(slog.NewTextHandler(io.Discard, nil)), WithMetrics(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// /metrics is never exposed on the RPC mux.
+	res, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /metrics on RPC mux = %d, want 401 or 404", res.StatusCode)
+	}
+
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("metrics status = %d", rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	if body := scrape(); !strings.Contains(body, "upmo_sandboxd_active_seats 0\n") {
+		t.Fatalf("initial active seats != 0:\n%s", body)
+	}
+
+	provider, err := runtime.Open(srv.URL, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	box, err := provider.Create(ctx, spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := scrape()
+	if !strings.Contains(body, "upmo_sandboxd_active_seats 1\n") {
+		t.Fatalf("active seats after Create != 1:\n%s", body)
+	}
+	if !strings.Contains(body, `upmo_http_requests_total{service="sandboxd",route="POST `+pathCreate+`",status="200"} 1`) {
+		t.Fatalf("missing sandboxd create HTTP metric:\n%s", body)
+	}
+
+	if err := provider.Destroy(ctx, box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if body := scrape(); !strings.Contains(body, "upmo_sandboxd_active_seats 0\n") {
+		t.Fatalf("active seats after Destroy != 0:\n%s", body)
 	}
 }

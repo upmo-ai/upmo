@@ -15,6 +15,7 @@ const (
 // names live here so dispatch code never names a provider.
 type Account struct {
 	ID            string
+	Provider      string
 	Adapter       string
 	CredentialRef string
 	PlanKind      string

@@ -90,6 +90,8 @@ func (h Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	reason := "client left"
 	defer func() { sub.Release(reason) }()
+	h.Metrics.IncSSEStream("chat")
+	defer h.Metrics.DecSSEStream("chat")
 
 	header := w.Header()
 	header.Set("Content-Type", "text/event-stream; charset=utf-8")

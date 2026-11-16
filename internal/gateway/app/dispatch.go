@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 )
 
 // Attempt is one provider call after secrets are resolved. It does not
@@ -132,14 +134,51 @@ type Dispatch struct {
 	// Status hears the outcome of every attempt, by credential ref. It must
 	// not block. Nil hears nothing.
 	Status Statuses
+	// Metrics records gateway calls, latency, tokens, cost, and cache hits.
+	Metrics *metrics.Registry
 }
 
-func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) error {
-	if d.Ledger == nil {
-		return nil
+func (d Dispatch) recordAttempt(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, started time.Time) (*float64, int, error) {
+	cost, ctxWindow, err := d.writeCost(ctx, route, link, who, class, usage)
+	if err != nil {
+		return nil, 0, err
 	}
-	_, _, err := d.writeCost(ctx, route, link, who, class, usage)
-	return err
+	d.seen(link.Account.CredentialRef, class, started)
+	d.recordMetrics(link, class, usage, cost, started)
+	return cost, ctxWindow, nil
+}
+
+func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usage domain.Usage, cost *float64, started time.Time) {
+	if d.Metrics == nil {
+		return
+	}
+	provider := link.Account.Provider
+	if provider == "" {
+		provider = link.Account.Adapter
+	}
+	if provider == "" {
+		provider = "unknown"
+	}
+	outcome := string(class)
+	if class == domain.ClassOK {
+		outcome = "ok"
+	}
+	d.Metrics.ObserveGatewayCall(provider, link.Model, outcome, time.Since(started))
+	d.Metrics.AddGatewayTokens(provider, link.Model, "input", usage.Input)
+	d.Metrics.AddGatewayTokens(provider, link.Model, "output", usage.Output)
+	d.Metrics.AddGatewayTokens(provider, link.Model, "cache_read", usage.CacheRead)
+	d.Metrics.AddGatewayTokens(provider, link.Model, "cache_write", usage.CacheWrite)
+	d.Metrics.AddGatewayTokens(provider, link.Model, "reasoning", usage.Reasoning)
+	if cost != nil && *cost > 0 {
+		d.Metrics.AddGatewayCostMicroUSD(provider, link.Model, math.Round(*cost*1e9)/1e3)
+	}
+	if usage.Arrived {
+		if usage.CacheRead > 0 {
+			d.Metrics.IncGatewayCacheHit(provider, link.Model)
+		} else if usage.Input > 0 {
+			d.Metrics.IncGatewayCacheMiss(provider, link.Model)
+		}
+	}
 }
 
 // writeCost prices one attempt, records its ledger row and returns the cost
@@ -217,10 +256,9 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
 				return domain.DecideResult{}, werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			if domain.NextAction(domain.ClassCredential, 0) == domain.ActionNext {
 				last = err
 				continue
@@ -232,11 +270,10 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		for {
 			started := time.Now()
 			result, usage, class, err := decider.Decide(ctx, attempt, req)
-			cost, ctxWindow, werr := d.writeCost(ctx, routeName, link, who, class, usage)
+			cost, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, started)
 			if werr != nil {
 				return domain.DecideResult{}, werr
 			}
-			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				result.Model = link.Model
 				result.Usage = usage
@@ -339,10 +376,9 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
 				return domain.ChatResult{}, werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last = err
 			continue
 		}
@@ -351,11 +387,10 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		for {
 			started := time.Now()
 			res, class, err := chatter.Chat(ctx, attempt, built)
-			cost, ctxWindow, werr := d.writeCost(ctx, routeName, link, who, class, res.Usage)
+			cost, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, started)
 			if werr != nil {
 				return domain.ChatResult{}, werr
 			}
-			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				res.Model = link.Model
 				res.CostUSD = cost
@@ -563,10 +598,9 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
 				return werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last, lastModel, lastClass = err, link.Model, domain.ClassCredential
 			next := ""
 			if i+1 < len(links) {
@@ -602,11 +636,10 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 				},
 				ToolCall: toolEmit,
 			})
-			cost, ctxWindow, werr := d.writeCost(ctx, routeName, link, who, class, res.Usage)
+			cost, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, started)
 			if werr != nil {
 				return werr
 			}
-			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				sink.Done(StreamDone{
 					Model:         link.Model,
@@ -730,10 +763,9 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
+			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
 				return "", nil, werr
 			}
-			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last = err
 			continue
 		}
@@ -749,10 +781,9 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 					vectors = nil
 				}
 			}
-			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
+			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, started); werr != nil {
 				return "", nil, werr
 			}
-			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
 				return link.Model, vectors, nil
 			}

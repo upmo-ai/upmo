@@ -78,7 +78,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	r.Decision = domain.Decision(decision)
 	rows, err := s.Pool.Query(ctx, `
 		SELECT link.position, link.model, link.weight, link.retry_budget, link.required_capabilities,
-			account.id::text, account.adapter, account.credential_ref, account.plan_kind, account.house, account.base_url,
+			account.id::text, COALESCE(NULLIF(account.provider, ''), account.adapter), account.adapter, account.credential_ref, account.plan_kind, account.house, account.base_url,
 			`+accountReach("account")+`
 		FROM gateway.route_links AS link
 		JOIN gateway.provider_accounts AS account ON account.id = link.provider_account_id
@@ -92,7 +92,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 		var link domain.Link
 		if err := rows.Scan(
 			&link.Position, &link.Model, &link.Weight, &link.RetryBudget, &link.Need,
-			&link.Account.ID, &link.Account.Adapter, &link.Account.CredentialRef,
+			&link.Account.ID, &link.Account.Provider, &link.Account.Adapter, &link.Account.CredentialRef,
 			&link.Account.PlanKind, &link.Account.House, &link.Account.BaseURL, &link.Account.OwnerUserID,
 			&link.Account.Visibility, &link.Account.TeamIDs,
 		); err != nil {
@@ -113,10 +113,10 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 func (s Store) PinAccount(ctx context.Context, id, model string) (domain.Account, bool, error) {
 	var a domain.Account
 	err := s.Pool.QueryRow(ctx, `
-		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
+		SELECT a.id::text, COALESCE(NULLIF(a.provider, ''), a.adapter), a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
 		FROM gateway.provider_accounts AS a
 		WHERE a.id = $1::uuid
-		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}
@@ -139,7 +139,7 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 	}
 	var a domain.Account
 	err := s.Pool.QueryRow(ctx, `
-		SELECT a.id::text, a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
+		SELECT a.id::text, COALESCE(NULLIF(a.provider, ''), a.adapter), a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
 		FROM gateway.provider_accounts AS a
 		WHERE lower(COALESCE(NULLIF(a.provider, ''), a.adapter)) = lower($2)
 		  AND identity.can_use($1::uuid, COALESCE($4::uuid[], '{}'), a.owner_user_id, a.visibility, a.team_ids)
@@ -152,7 +152,7 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 				ELSE 3
 			END,
 			a.name
-		LIMIT 1`, user, provider, model, teams).Scan(&a.ID, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
+		LIMIT 1`, user, provider, model, teams).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}

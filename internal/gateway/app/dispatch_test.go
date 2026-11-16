@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 )
 
 type memRoutes struct{ r domain.Route }
@@ -1164,5 +1167,66 @@ func TestDispatchChatStreamDoesNotFailOverAfterToolCallDelta(t *testing.T) {
 	}
 	if solid.invoked != 0 || sink.fail == nil || sink.fail.Class != domain.ClassTransient {
 		t.Fatalf("solid=%d fail=%+v", solid.invoked, sink.fail)
+	}
+}
+
+type usageChatter struct {
+	usages []domain.Usage
+	idx    int
+}
+
+func (u *usageChatter) Chat(context.Context, Attempt, domain.Request) (domain.ChatResult, domain.FailureClass, error) {
+	us := u.usages[u.idx]
+	u.idx++
+	return domain.ChatResult{Text: "ok", Usage: us}, domain.ClassOK, nil
+}
+
+func TestDispatchRecordsMetrics(t *testing.T) {
+	reg := metrics.NewRegistry()
+	rate := 1.0 // $1 per million tokens = 1 micro-USD per token
+	account := domain.Account{ID: "h", Provider: "anthropic", Adapter: "anthropic", CredentialRef: "house", PlanKind: domain.PlanMetered, House: true}
+	route := domain.Route{
+		Name: "chat", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: account, Model: "claude-test"}},
+	}
+	chatter := &usageChatter{usages: []domain.Usage{
+		{Arrived: true, Input: 100, Output: 50, CacheRead: 200, CacheWrite: 25, Reasoning: 10},
+		{Arrived: true, Input: 40, Output: 10},
+	}}
+	disp := Dispatch{
+		Routes:  memRoutes{route},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Prices:  fixedPrices{domain.Price{Version: "v1", InputPerMTok: &rate, OutputPerMTok: &rate, CacheReadMTok: &rate, CacheWriteMTok: &rate}},
+		Ledger:  &memLedger{},
+		Chat:    map[string]Chatter{"anthropic": chatter},
+		Metrics: reg,
+	}
+	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+	for range 2 {
+		if _, err := disp.ChatCall(context.Background(), "chat", "", domain.Principal{}, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	want := []string{
+		`upmo_gateway_calls_total{provider="anthropic",model="claude-test",class="ok"} 2`,
+		`upmo_gateway_call_duration_seconds_count{provider="anthropic",model="claude-test"} 2`,
+		`upmo_gateway_tokens_total{provider="anthropic",model="claude-test",kind="input"} 140`,
+		`upmo_gateway_tokens_total{provider="anthropic",model="claude-test",kind="output"} 60`,
+		`upmo_gateway_tokens_total{provider="anthropic",model="claude-test",kind="cache_read"} 200`,
+		`upmo_gateway_tokens_total{provider="anthropic",model="claude-test",kind="cache_write"} 25`,
+		`upmo_gateway_tokens_total{provider="anthropic",model="claude-test",kind="reasoning"} 10`,
+		`upmo_gateway_cost_micro_usd_total{provider="anthropic",model="claude-test"} 425`,
+		`upmo_gateway_cache_hits_total{provider="anthropic",model="claude-test"} 1`,
+		`upmo_gateway_cache_misses_total{provider="anthropic",model="claude-test"} 1`,
+	}
+	for _, line := range want {
+		if !strings.Contains(body, line) {
+			t.Errorf("missing %q in:\n%s", line, body)
+		}
 	}
 }

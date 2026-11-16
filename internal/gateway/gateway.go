@@ -17,6 +17,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 )
 
 // Schema is the Postgres schema this process owns.
@@ -54,8 +55,26 @@ func adapters() map[string]adapter {
 	}
 }
 
+// MountOption configures Mount.
+type MountOption func(*mountConfig)
+
+type mountConfig struct {
+	metrics *metrics.Registry
+}
+
+// WithMetrics attaches a Prometheus registry to the gateway dispatch handler.
+func WithMetrics(reg *metrics.Registry) MountOption {
+	return func(c *mountConfig) {
+		c.metrics = reg
+	}
+}
+
 // Mount registers the JSON debug routes. cmd/gateway wraps them with HMAC.
-func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slog.Logger) {
+func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slog.Logger, opts ...MountOption) {
+	var cfg mountConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	store := postgres.Store{Pool: pool}
 	decide := map[string]app.Decider{}
 	chat := map[string]app.Chatter{}
@@ -84,6 +103,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 			Embed:   embed,
 			Gates:   app.NewGates(),
 			Status:  app.NewStatusRecorder(store.RecordStatus),
+			Metrics: cfg.metrics,
 			Caps: func(model string) ([]string, bool) {
 				have, ok, err := store.Capabilities(context.Background(), model)
 				if err != nil || !ok {
