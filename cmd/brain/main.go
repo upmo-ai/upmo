@@ -64,12 +64,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	ownerConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	ownerConfig.MaxConns = 2
-	owner, err := pgxpool.NewWithConfig(ctx, ownerConfig)
+	owner, err := openOwnerPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -223,7 +218,7 @@ func run() error {
 	// The stream hub listens on one connection of its own, on the owner
 	// credential only, and closes every open stream when the server
 	// shuts down so a 30 minute stream does not hold the shutdown.
-	listenConn, err := pgx.ParseConfig(cfg.DatabaseURL)
+	listenConn, err := parseListenConfig(cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -329,6 +324,31 @@ func taskSandboxes(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*ru
 	return boxes, nil
 }
 
+// openOwnerPool opens the owner pool with MaxConns=2 and scrubs the URL
+// from parse or connect errors.
+func openOwnerPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	ownerConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	ownerConfig.MaxConns = 2
+	owner, err := pgxpool.NewWithConfig(ctx, ownerConfig)
+	if err != nil {
+		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	return owner, nil
+}
+
+// parseListenConfig parses the owner database URL for stream LISTEN
+// connections and scrubs the URL from parse errors.
+func parseListenConfig(databaseURL string) (*pgx.ConnConfig, error) {
+	listenConn, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	return listenConn, nil
+}
+
 // requestPool opens connections that log in as upmo_app, which owns nothing,
 // and sets that role again on every checkout.
 func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
@@ -352,14 +372,19 @@ func requestPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// appPoolError reports a request pool that did not open. The parse and
-// connect errors name the URL, which holds the password and would reach the
-// brain stopped log, so only the host is kept from it.
+// appPoolError reports a request pool that did not open.
 func appPoolError(appURL string) error {
-	if u, err := url.Parse(appURL); err == nil && u.Host != "" {
-		return fmt.Errorf("brain: UPMO_DATABASE_APP_URL could not be opened (host %s)", u.Host)
+	return poolURLError("UPMO_DATABASE_APP_URL", appURL)
+}
+
+// poolURLError reports a Postgres URL that could not be opened or parsed. The
+// parse and connect errors name the URL, which holds the password and would
+// reach the stopped log, so only the host is kept from it.
+func poolURLError(envName, rawURL string) error {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return fmt.Errorf("brain: %s could not be opened (host %s)", envName, u.Host)
 	}
-	return errors.New("brain: UPMO_DATABASE_APP_URL could not be opened")
+	return fmt.Errorf("brain: %s could not be opened", envName)
 }
 
 func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub) (http.Handler, error) {
