@@ -22,19 +22,36 @@ const (
 	RRFK = 60
 )
 
+// Provenance identifies whether a source chunk came from curated workspace
+// material or an untrusted web-fetched source.
+type Provenance string
+
+const (
+	ProvenanceCurated Provenance = "curated"
+	ProvenanceWeb     Provenance = "web"
+)
+
+// Untrusted reports whether content with this provenance must be treated as
+// untrusted input by the write guard. Unknown or empty provenance fails closed.
+func (p Provenance) Untrusted() bool {
+	return p != ProvenanceCurated
+}
+
 // Hit is evidence: the verbatim chunk. The ranking prefix is not included.
 type Hit struct {
-	SourceID string
-	Seq      int
-	Body     string
+	SourceID   string
+	Seq        int
+	Body       string
+	Provenance Provenance
 }
 
 // Lexical is one candidate chunk. Vector may be absent on FTS rows.
 type Lexical struct {
-	SourceID string
-	Seq      int
-	Body     string
-	Vector   []float32
+	SourceID   string
+	Seq        int
+	Body       string
+	Provenance Provenance
+	Vector     []float32
 }
 
 // Finder runs folder-scoped lexical and dense queries. The folder filter is
@@ -129,8 +146,16 @@ func fuse(lists ...[]Lexical) []Hit {
 			key := match.SourceID + ":" + strconv.Itoa(match.Seq)
 			r, ok := rows[key]
 			if !ok {
-				r = &row{hit: Hit{SourceID: match.SourceID, Seq: match.Seq, Body: match.Body}}
+				r = &row{hit: Hit{
+					SourceID:   match.SourceID,
+					Seq:        match.Seq,
+					Body:       match.Body,
+					Provenance: match.Provenance,
+				}}
 				rows[key] = r
+			}
+			if match.Provenance.Untrusted() {
+				r.hit.Provenance = match.Provenance
 			}
 			r.score += 1 / float64(RRFK+i+1)
 		}
@@ -161,7 +186,12 @@ func fuse(lists ...[]Lexical) []Hit {
 func toHits(matches []Lexical) []Hit {
 	out := make([]Hit, len(matches))
 	for i, match := range matches {
-		out[i] = Hit{SourceID: match.SourceID, Seq: match.Seq, Body: match.Body}
+		out[i] = Hit{
+			SourceID:   match.SourceID,
+			Seq:        match.Seq,
+			Body:       match.Body,
+			Provenance: match.Provenance,
+		}
 	}
 	return out
 }

@@ -33,22 +33,22 @@ func TestSearchMemoryKeepsRetrieveOrder(t *testing.T) {
 	if strings.Count(recall.Text, trustfence.Close(trustfence.TagMemory)) != 2 {
 		t.Fatalf("fences = %q", recall.Text)
 	}
-	if !recall.Exposure.Untrusted || !recall.Exposure.Private || recall.Exposure.External {
+	if recall.Exposure.Untrusted || !recall.Exposure.Private || recall.Exposure.External {
 		t.Fatalf("exposure = %+v", recall.Exposure)
 	}
-	armed := recall.Exposure
-	armed.External = true
-	if writeguard.Write(armed) != writeguard.Ask {
-		t.Fatal("search_memory did not make an external write ask")
+	external := recall.Exposure
+	external.External = true
+	if writeguard.Write(external) != writeguard.Allow {
+		t.Fatal("confirmed memory facts alone falsely armed external write guard")
 	}
 }
 
-func TestSearchMemoryWithNoHitsStillArmsTheGuard(t *testing.T) {
+func TestSearchMemoryWithNoHitsStillMarksPrivate(t *testing.T) {
 	recall, err := SearchMemory(context.Background(), memoryStore(), goodEmbed(), nil, "u1", "tea", retrieveAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recall.Text != "" || !recall.Exposure.Untrusted || !recall.Exposure.Private || recall.Exposure.External {
+	if recall.Text != "" || recall.Exposure.Untrusted || !recall.Exposure.Private || recall.Exposure.External {
 		t.Fatalf("recall = %+v", recall)
 	}
 }

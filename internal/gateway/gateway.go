@@ -170,6 +170,12 @@ type (
 	Request      = domain.Request
 	Role         = domain.Role
 	Breakpoint   = domain.Breakpoint
+	Principal    = domain.Principal
+	Tool         = domain.Tool
+	ToolCall     = domain.ToolCall
+	ToolChoice   = domain.ToolChoice
+	ChatResult   = domain.ChatResult
+	Usage        = domain.Usage
 	ListedHop    = app.ListedHop
 	ListedRoute  = app.ListedRoute
 	RouteBook    = app.RouteBook

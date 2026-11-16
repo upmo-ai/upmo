@@ -1,7 +1,6 @@
 // Package writeguard applies the untrusted-write rule: when a
-// run has read untrusted content, holds private data and has an external
-// write tool, every external write becomes ask. The rule is Go, never a
-// prompt.
+// run has read untrusted content and has an external write tool, every
+// external write becomes ask. The rule is Go, never a prompt.
 package writeguard
 
 // Verdict is allow or ask. This package never blocks; it only downgrades.
@@ -20,12 +19,12 @@ type Exposure struct {
 	External  bool
 }
 
-// Armed reports whether all three arms are present.
+// Armed reports whether untrusted content and an external write are present.
 func Armed(x Exposure) bool {
-	return x.Untrusted && x.Private && x.External
+	return x.Untrusted && x.External
 }
 
-// Write is ask when the trifecta is armed, otherwise allow.
+// Write is ask when untrusted content meets an external write, otherwise allow.
 func Write(x Exposure) Verdict {
 	if Armed(x) {
 		return Ask
@@ -34,7 +33,7 @@ func Write(x Exposure) Verdict {
 }
 
 // Tighten never loosens. Block stays block. Ask stays ask. Allow becomes
-// ask when armed.
+// ask when untrusted content meets an external write.
 func Tighten(current string, x Exposure) string {
 	if current == block {
 		return block

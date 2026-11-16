@@ -47,6 +47,12 @@ type (
 	Finder       = app.Finder
 	Folder       = app.Folder
 	Hit          = app.Hit
+	Provenance   = app.Provenance
+)
+
+const (
+	ProvenanceCurated = app.ProvenanceCurated
+	ProvenanceWeb     = app.ProvenanceWeb
 )
 
 // Adapters for URL and file ingest: the body converter with its optional

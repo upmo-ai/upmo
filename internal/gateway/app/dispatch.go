@@ -355,9 +355,21 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 	if route.Capability != domain.CapChat {
 		return domain.ChatResult{}, fmt.Errorf("gateway: route %q is %s", routeName, route.Capability)
 	}
-	links, err := route.LinksFor(credentialRef)
-	if err != nil {
-		return domain.ChatResult{}, err
+	var links []domain.Link
+	if credentialRef == "" && who.User != "" {
+		teams, err := d.teamsOf(ctx, credentialRef, who)
+		if err != nil {
+			return domain.ChatResult{}, err
+		}
+		links, err = route.LinksForUser(who.User, teams)
+		if err != nil {
+			return domain.ChatResult{}, err
+		}
+	} else {
+		links, err = route.LinksFor(credentialRef)
+		if err != nil {
+			return domain.ChatResult{}, err
+		}
 	}
 	var last error
 	for _, link := range links {
@@ -806,13 +818,26 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 }
 
 // teamsOf looks up the teams the person is on, for a call that is paid by the
-// person (a streamed reply with no credential ref). Every other call has no
-// use for them.
+// person (no credential ref). When who.TeamID is set, the returned slice is
+// narrowed to the intersection of the person's actual teams and {who.TeamID},
+// never granting membership the person does not hold.
 func (d Dispatch) teamsOf(ctx context.Context, credentialRef string, who domain.Principal) ([]string, error) {
 	if d.Teams == nil || credentialRef != "" || who.User == "" {
 		return nil, nil
 	}
-	return d.Teams.TeamsOf(ctx, who.User)
+	teams, err := d.Teams.TeamsOf(ctx, who.User)
+	if err != nil {
+		return nil, err
+	}
+	if who.TeamID == "" {
+		return teams, nil
+	}
+	for _, id := range teams {
+		if id == who.TeamID {
+			return []string{who.TeamID}, nil
+		}
+	}
+	return []string{}, nil
 }
 
 // pinAccount looks up the account a pin names and settles whether the person,

@@ -42,8 +42,9 @@ func SystemPrefix(instructions, profile string) string {
 	return instructions + "\n\n" + block
 }
 
-// Recall is one search_memory result. Calling search sets Private and
-// Untrusted even when nothing matches. The text is fenced and is not trusted.
+// Recall is one search_memory result. Calling search sets Private even when
+// nothing matches. User/admin-confirmed memory facts are fenced for prompt
+// hygiene but do not mark Untrusted.
 type Recall struct {
 	Text     string
 	Exposure writeguard.Exposure
@@ -55,9 +56,9 @@ func Search(query string, claims []string) Recall {
 }
 
 // fenceClaims fences each claim on its own line, in the order given, and
-// sets Private and Untrusted even when there are no claims.
+// sets Private (with Untrusted false) even when there are no claims.
 func fenceClaims(claims []string) Recall {
-	recall := Recall{Exposure: writeguard.Exposure{Untrusted: true, Private: true}}
+	recall := Recall{Exposure: writeguard.Exposure{Untrusted: false, Private: true}}
 	if len(claims) == 0 {
 		return recall
 	}

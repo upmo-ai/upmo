@@ -285,7 +285,7 @@ func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query s
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := tx.Query(ctx, `
-		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text
+		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text, source.provenance
 		FROM knowledge.chunks AS chunk
 		JOIN knowledge.sources AS source
 		  ON source.id = chunk.source_id
@@ -326,7 +326,7 @@ func (s Store) Near(ctx context.Context, access app.Access, folderID string, vec
 		return nil, fmt.Errorf("knowledge: near: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text
+		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text, source.provenance
 		FROM knowledge.chunks AS chunk
 		JOIN knowledge.sources AS source
 		  ON source.id = chunk.source_id
@@ -354,9 +354,11 @@ func scanLexical(rows pgx.Rows) ([]app.Lexical, error) {
 	for rows.Next() {
 		var hit app.Lexical
 		var raw *string
-		if err := rows.Scan(&hit.SourceID, &hit.Seq, &hit.Body, &raw); err != nil {
+		var provenance string
+		if err := rows.Scan(&hit.SourceID, &hit.Seq, &hit.Body, &raw, &provenance); err != nil {
 			return nil, fmt.Errorf("knowledge: search: %w", err)
 		}
+		hit.Provenance = app.Provenance(provenance)
 		if raw != nil {
 			hit.Vector = parseHalfvec(*raw)
 		}
