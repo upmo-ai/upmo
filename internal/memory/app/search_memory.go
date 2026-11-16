@@ -21,8 +21,8 @@ func SearchMemoryTool() (description string, schema json.RawMessage) {
 }
 
 // SearchMemory retrieves facts for one person and fences them in retrieval
-// order. A call that ran sets Private and Untrusted even with no hits. A call
-// that failed returns an empty Recall, so it does not arm the guard.
+// order. A call that ran sets Private (with Untrusted false) even with no hits.
+// A call that failed returns an empty Recall.
 func SearchMemory(ctx context.Context, store RetrievalStore, embedder Embedder, reranker Reranker, userID, query string, asOf time.Time) (Recall, error) {
 	hits, err := Retrieve(ctx, store, embedder, reranker, userID, query, asOf)
 	if err != nil {

@@ -46,6 +46,7 @@ type Request struct {
 	PinProvider     string
 	PinModel        string
 	AgentID         string
+	TeamID          string
 }
 
 // Attempt names the model that failed before any text and the next one.
@@ -128,6 +129,7 @@ func (c Client) ChatStream(ctx context.Context, req Request, onDelta func(string
 		MaxOutputTokens: req.MaxOutputTokens,
 		Pin:             pinOf(req),
 		UserID:          req.UserID,
+		TeamID:          req.TeamID,
 	})
 	if err != nil {
 		return Done{}, err
@@ -172,6 +174,7 @@ type chatTurn struct {
 	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
 	Pin             *pinTurn  `json:"pin,omitempty"`
 	UserID          string    `json:"user_id"`
+	TeamID          string    `json:"team_id,omitempty"`
 }
 
 // pinTurn is the pin as the gateway reads it.
