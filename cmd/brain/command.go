@@ -5,17 +5,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/artifacts"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/decisions"
+	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/memory"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -24,7 +29,41 @@ import (
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
 
+func migrateAll(ctx context.Context, owner *pgxpool.Pool) error {
+	steps := []struct {
+		schema string
+		files  fs.FS
+	}{
+		{audit.Schema, audit.Migrations()},
+		{identity.Schema, identity.Migrations()},
+		{memory.Schema, memory.Migrations()},
+		{knowledge.Schema, knowledge.Migrations()},
+		{tasks.Schema, tasks.Migrations()},
+		{chat.Schema, chat.Migrations()},
+		{decisions.Schema, decisions.Migrations()},
+		{artifacts.Schema, artifacts.Migrations()},
+		{runtime.Schema, runtime.Migrations()},
+		{gateway.Schema, gateway.Migrations()},
+		{agents.Schema, agents.Migrations()},
+	}
+	for _, step := range steps {
+		if err := migrate.Up(ctx, owner, step.schema, step.files); err != nil {
+			return err
+		}
+	}
+	if err := jobs.Up(ctx, owner); err != nil {
+		return err
+	}
+	if err := notices.Up(ctx, owner); err != nil {
+		return err
+	}
+	return audit.Migrated(ctx, owner)
+}
+
 func command(name string, args []string) error {
+	if name == "migrate" {
+		return migrateCommand()
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -37,34 +76,7 @@ func command(name string, args []string) error {
 		return err
 	}
 	defer pool.Close()
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, memory.Schema, memory.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, knowledge.Schema, knowledge.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, tasks.Schema, tasks.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, decisions.Schema, decisions.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, artifacts.Schema, artifacts.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, runtime.Schema, runtime.Migrations()); err != nil {
-		return err
-	}
-	if err := jobs.Up(ctx, pool); err != nil {
-		return err
-	}
-	if err := notices.Up(ctx, pool); err != nil {
+	if err := migrateAll(ctx, pool); err != nil {
 		return err
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -81,6 +93,28 @@ func command(name string, args []string) error {
 	default:
 		return fmt.Errorf("brain: unknown command %q", name)
 	}
+}
+
+func migrateCommand() error {
+	dbURL := strings.TrimSpace(os.Getenv("UPMO_DATABASE_URL"))
+	if dbURL == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		dbURL = cfg.DatabaseURL
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := migrateAll(ctx, pool); err != nil {
+		return err
+	}
+	slog.Info("migrations applied")
+	return nil
 }
 
 func bootstrap(ctx context.Context, passkeys identity.PasskeyService, args []string) error {

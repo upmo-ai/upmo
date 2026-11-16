@@ -30,22 +30,6 @@ func (s Store) Bundle(ctx context.Context, name string) (domain.Bundle, error) {
 	return domain.Bundle{Name: found, Tools: tools}, nil
 }
 
-// AgentBundle loads the bundle assigned to an agent.
-func (s Store) AgentBundle(ctx context.Context, agentID string) (domain.Bundle, error) {
-	if agentID == "" {
-		return domain.Bundle{}, fmt.Errorf("gateway: agent has no tool bundle")
-	}
-	var name string
-	err := s.Pool.QueryRow(ctx, `SELECT bundle FROM gateway.agent_bundles WHERE agent_id = $1`, agentID).Scan(&name)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Bundle{}, fmt.Errorf("gateway: agent has no tool bundle")
-		}
-		return domain.Bundle{}, err
-	}
-	return s.Bundle(ctx, name)
-}
-
 func (s Store) bundleTools(ctx context.Context, name string) ([]string, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT tool_name FROM gateway.tool_bundle_tools

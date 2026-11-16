@@ -184,7 +184,6 @@ func TestDispatchChatUsesBuilder(t *testing.T) {
 
 type memBundles struct {
 	byName map[string]domain.Bundle
-	agent  map[string]string
 }
 
 func (m memBundles) Bundle(_ context.Context, name string) (domain.Bundle, error) {
@@ -195,15 +194,7 @@ func (m memBundles) Bundle(_ context.Context, name string) (domain.Bundle, error
 	return b, nil
 }
 
-func (m memBundles) AgentBundle(ctx context.Context, agentID string) (domain.Bundle, error) {
-	name, ok := m.agent[agentID]
-	if !ok {
-		return domain.Bundle{}, errors.New("gateway: agent has no tool bundle")
-	}
-	return m.Bundle(ctx, name)
-}
-
-func TestDispatchChatMasksToAgentBundle(t *testing.T) {
+func TestDispatchChatMasksToAllowTools(t *testing.T) {
 	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
 	r := domain.Route{
 		Name: "draft", Capability: domain.CapChat,
@@ -213,13 +204,11 @@ func TestDispatchChatMasksToAgentBundle(t *testing.T) {
 	disp := Dispatch{
 		Routes:  memRoutes{r},
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
-		Bundles: memBundles{
-			byName: map[string]domain.Bundle{"core": {Name: "core", Tools: []string{"search"}}},
-			agent:  map[string]string{"11111111-1111-1111-1111-111111111111": "core"},
-		},
-		Chat: map[string]Chatter{"fake": c},
+		Chat:    map[string]Chatter{"fake": c},
 	}
 	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{Agent: "11111111-1111-1111-1111-111111111111"}, domain.Input{
+		AllowTools: []string{"search"},
+		Mask:       true,
 		Tools: []domain.Tool{
 			{Name: "search", Schema: json.RawMessage(`{}`)},
 			{Name: "write", Schema: json.RawMessage(`{}`)},
@@ -357,7 +346,7 @@ func TestDispatchEmbedEmptyInput(t *testing.T) {
 	}
 }
 
-func TestDispatchChatAgentWithoutBundleFailsClosed(t *testing.T) {
+func TestDispatchChatUnknownBundleFailsClosed(t *testing.T) {
 	house := domain.Account{ID: "h", Adapter: "fake", CredentialRef: "house", House: true}
 	r := domain.Route{
 		Name: "draft", Capability: domain.CapChat,
@@ -366,15 +355,16 @@ func TestDispatchChatAgentWithoutBundleFailsClosed(t *testing.T) {
 	disp := Dispatch{
 		Routes:  memRoutes{r},
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
-		Bundles: memBundles{byName: map[string]domain.Bundle{}, agent: map[string]string{}},
+		Bundles: memBundles{byName: map[string]domain.Bundle{}},
 		Chat:    map[string]Chatter{"fake": &scriptChatter{reply: "ok"}},
 	}
 	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{Agent: "11111111-1111-1111-1111-111111111111"}, domain.Input{
+		Bundle:   "missing",
 		Tools:    []domain.Tool{{Name: "search"}},
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
 	})
 	if err == nil {
-		t.Fatal("agent without bundle")
+		t.Fatal("unknown bundle succeeded")
 	}
 }
 

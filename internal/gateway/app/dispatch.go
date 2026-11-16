@@ -75,10 +75,9 @@ type Ledger interface {
 	Record(ctx context.Context, row domain.Entry) error
 }
 
-// Bundles loads a named tool surface, or the one assigned to an agent.
+// Bundles loads a named tool surface.
 type Bundles interface {
 	Bundle(ctx context.Context, name string) (domain.Bundle, error)
-	AgentBundle(ctx context.Context, agentID string) (domain.Bundle, error)
 }
 
 // Routes loads one named route from the gateway schema.
@@ -303,34 +302,18 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 	return domain.DecideResult{}, last
 }
 
-func (d Dispatch) applyBundle(ctx context.Context, who domain.Principal, in domain.Input) (domain.Input, error) {
-	var (
-		names     []string
-		useBundle bool
-	)
-	switch {
-	case in.Bundle != "":
-		if d.Bundles == nil {
-			return in, fmt.Errorf("gateway: no bundle %q", in.Bundle)
-		}
-		b, err := d.Bundles.Bundle(ctx, in.Bundle)
-		if err != nil {
-			return in, err
-		}
-		names, useBundle = b.Tools, true
-	case who.Agent != "":
-		if d.Bundles == nil {
-			return in, fmt.Errorf("gateway: agent has no tool bundle")
-		}
-		b, err := d.Bundles.AgentBundle(ctx, who.Agent)
-		if err != nil {
-			return in, err
-		}
-		names, useBundle = b.Tools, true
-	default:
+func (d Dispatch) applyBundle(ctx context.Context, in domain.Input) (domain.Input, error) {
+	if in.Bundle == "" {
 		return in, nil
 	}
-	allow, err := domain.ResolveAllow(names, in.AllowTools, useBundle)
+	if d.Bundles == nil {
+		return in, fmt.Errorf("gateway: no bundle %q", in.Bundle)
+	}
+	b, err := d.Bundles.Bundle(ctx, in.Bundle)
+	if err != nil {
+		return in, err
+	}
+	allow, err := domain.ResolveAllow(b.Tools, in.AllowTools, true)
 	if err != nil {
 		return in, err
 	}
@@ -340,7 +323,7 @@ func (d Dispatch) applyBundle(ctx context.Context, who domain.Principal, in doma
 }
 
 func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input) (domain.ChatResult, error) {
-	in, err := d.applyBundle(ctx, who, in)
+	in, err := d.applyBundle(ctx, in)
 	if err != nil {
 		return domain.ChatResult{}, err
 	}
@@ -501,7 +484,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	if err != nil {
 		return err
 	}
-	in, err = d.applyBundle(ctx, who, in)
+	in, err = d.applyBundle(ctx, in)
 	if err != nil {
 		return err
 	}
