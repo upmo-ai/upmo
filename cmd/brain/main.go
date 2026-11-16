@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/artifacts"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/decisions"
@@ -71,46 +72,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	err = migrate.Up(ctx, owner, audit.Schema, audit.Migrations())
-	if err == nil {
-		err = migrate.Up(ctx, owner, identity.Schema, identity.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, memory.Schema, memory.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, knowledge.Schema, knowledge.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, tasks.Schema, tasks.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, chat.Schema, chat.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, decisions.Schema, decisions.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, artifacts.Schema, artifacts.Migrations())
-	}
-	if err == nil {
-		err = migrate.Up(ctx, owner, runtime.Schema, runtime.Migrations())
-	}
-	if err == nil {
-		// brain serves the provider settings from the gateway tables, so it
-		// brings that schema up to date too. gateway does the same at its start.
-		err = migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations())
-	}
-	if err == nil {
-		err = jobs.Up(ctx, owner)
-	}
-	if err == nil {
-		err = notices.Up(ctx, owner)
-	}
-	if err == nil {
-		err = audit.Migrated(ctx, owner)
-	}
-	if err != nil {
+	if err := migrateAll(ctx, owner); err != nil {
 		owner.Close()
 		return err
 	}
@@ -185,8 +147,9 @@ func run() error {
 		// A reply runs as the person who wrote the line, with the access a
 		// request of theirs would have, so row security applies to it.
 		chat.AddReplyWorker(workers, chat.ReplyDeps{
-			Rows:  chat.NewStore(pool, nil),
-			Model: chatModel,
+			Rows:   chat.NewStore(pool, nil),
+			Agents: chatAgentLookup{store: agents.NewStore(pool)},
+			Model:  chatModel,
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -724,21 +687,21 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	// The pickers only offer what a person can use, so each agent carries its
 	// usable answer: the install's chat route decides for one that names no
 	// route of its own.
-	chat.AgentsHandler{
-		Agents:       chatBook,
+	agents.Handler{
+		Agents:       agents.NewStore(pool),
 		Teams:        agentTeamLookup{members: members},
 		Log:          log,
 		Routes:       routeBook,
 		Accounts:     providers,
 		DefaultRoute: cfg.ChatRoute,
-		Access: func(r *http.Request) (chat.Access, bool) {
+		Access: func(r *http.Request) (agents.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
-				return chat.Access{}, false
+				return agents.Access{}, false
 			}
 			access, ok, err := agentAccess(r.Context(), members, person.UserID)
 			if err != nil || !ok {
-				return chat.Access{}, false
+				return agents.Access{}, false
 			}
 			return access, true
 		},
@@ -772,20 +735,48 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 
 // agentAccess is what a person may do with agents. It carries their effective
 // permissions and teams, like chatAccess, but needs no chat permission.
-func agentAccess(ctx context.Context, members identity.MemberService, user identity.UserID) (chat.Access, bool, error) {
+func agentAccess(ctx context.Context, members identity.MemberService, user identity.UserID) (agents.Access, bool, error) {
 	allow, err := members.EffectiveAllow(ctx, user)
 	if err != nil {
-		return chat.Access{}, false, err
+		return agents.Access{}, false, err
 	}
 	shares, err := members.ShareAccess(ctx, user, identity.TypeAgent)
 	if err != nil {
-		return chat.Access{}, false, err
+		return agents.Access{}, false, err
 	}
-	return chat.Access{
+	return agents.Access{
 		UserID: user.String(),
 		Allow:  allow,
 		Teams:  shares.Teams,
 	}, true, nil
+}
+
+type chatAgentLookup struct {
+	store agents.Store
+}
+
+func (l chatAgentLookup) Agent(ctx context.Context, access chat.Access, id string) (chat.Agent, error) {
+	a, inline, err := l.store.AgentForUse(ctx, agents.Access{
+		UserID: access.UserID,
+		Allow:  access.Allow,
+		Teams:  access.Teams,
+	}, id)
+	if errors.Is(err, agents.ErrAgentNotFound) {
+		return chat.Agent{}, chat.ErrAgentNotFound
+	}
+	if err != nil {
+		return chat.Agent{}, err
+	}
+	return chat.Agent{
+		ID:            a.ID,
+		Name:          a.Name,
+		Description:   a.Description,
+		PromptOverlay: agents.AppendInlineLessons(a.Instructions, inline),
+		Route:         a.DefaultRoute,
+		ModelProvider: a.DefaultModelProvider,
+		ModelID:       a.DefaultModelID,
+		Enabled:       a.Enabled,
+	}, nil
 }
 
 type agentTeamLookup struct {

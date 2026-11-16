@@ -47,7 +47,11 @@ type (
 type (
 	AgentsHandler = httpapi.AgentsHandler
 	AgentBook     = app.AgentBook
+	Agent         = app.Agent
 )
+
+// ErrAgentNotFound is returned by AgentLookup when an agent is unavailable.
+var ErrAgentNotFound = app.ErrAgentNotFound
 
 // The reply to a chat line streams from a model while it is written.
 type (
