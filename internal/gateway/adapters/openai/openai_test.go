@@ -43,7 +43,7 @@ func TestAdapterMapsStatusToClass(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	a := Adapter{Client: srv.Client()}
-	_, _, class, err := a.Chat(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, domain.Request{
+	_, class, err := a.Chat(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"}, domain.Request{
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
 	})
 	if err == nil || class != domain.ClassCredential {
@@ -174,7 +174,7 @@ func TestProbeWithoutBaseURL(t *testing.T) {
 func TestDefaultClientDialsByPlan(t *testing.T) {
 	srv, hits := provider(t, http.StatusOK)
 	chat := func(plan string) (domain.FailureClass, error) {
-		_, _, class, err := Adapter{}.Chat(context.Background(),
+		_, class, err := Adapter{}.Chat(context.Background(),
 			app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s", PlanKind: plan},
 			domain.Request{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}})
 		return class, err
@@ -605,5 +605,170 @@ func TestChatStreamStopsWhenEmitFails(t *testing.T) {
 	_, class, err := a.ChatStream(context.Background(), attempt, req, func(string) error { return gone })
 	if !errors.Is(err, gone) || class != domain.ClassCancelled {
 		t.Fatalf("class=%s err=%v", class, err)
+	}
+}
+
+func TestChatToolCallsAndSerialization(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "tool_calls",
+				"message": map[string]any{
+					"content": nil,
+					"tool_calls": []map[string]any{
+						{"id": "c1", "type": "function", "function": map[string]string{"name": "search", "arguments": `{"q":"go"}`}},
+						{"id": "c2", "type": "function", "function": map[string]string{"name": "fetch", "arguments": `{"id":"1"}`}},
+					},
+				},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":             12,
+				"completion_tokens":         8,
+				"prompt_tokens_details":     map[string]int{"cached_tokens": 4},
+				"completion_tokens_details": map[string]int{"reasoning_tokens": 3},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	req, err := domain.Build(domain.Input{
+		Tools:           []domain.Tool{{Name: "search"}, {Name: "fetch"}},
+		ToolChoice:      domain.ToolChoice{Mode: domain.ToolChoiceAny},
+		MaxOutputTokens: 200,
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Text: "go"},
+			{Role: domain.RoleAssistant, ToolCalls: []domain.ToolCall{{ID: "prev", Name: "search", Arguments: json.RawMessage(`{"q":"a"}`)}}},
+			{Role: domain.RoleTool, ToolID: "prev", ToolName: "search", Text: "timed out", IsError: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, class, err := Adapter{Client: srv.Client()}.Chat(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, req)
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if res.StopReason != "tool_calls" || len(res.ToolCalls) != 2 || res.ToolCalls[0].Name != "search" || res.ToolCalls[1].ID != "c2" {
+		t.Fatalf("res = %+v", res)
+	}
+	if !res.Usage.Arrived || res.Usage.Input != 12 || res.Usage.Output != 8 || res.Usage.CacheRead != 4 || res.Usage.Reasoning != 3 {
+		t.Fatalf("usage = %+v", res.Usage)
+	}
+	if gotBody["tool_choice"] != "required" || gotBody["max_tokens"] != float64(200) {
+		t.Fatalf("body = %+v", gotBody)
+	}
+	msgs, _ := gotBody["messages"].([]any)
+	assistant, _ := msgs[1].(map[string]any)
+	if _, hasContent := assistant["content"]; hasContent {
+		t.Fatalf("assistant tool-call turn unexpectedly set content: %v", assistant)
+	}
+	toolMsg, _ := msgs[2].(map[string]any)
+	if toolMsg["role"] != "tool" || toolMsg["tool_call_id"] != "prev" || !strings.HasPrefix(toolMsg["content"].(string), "Error: ") {
+		t.Fatalf("tool msg = %v", toolMsg)
+	}
+	if got := encodeToolChoice(domain.ToolChoice{Mode: domain.ToolChoiceTool, Name: "search"}); got == nil {
+		t.Fatal("expected tool choice object")
+	}
+}
+
+func TestChatStreamToolsAndGeminiCompat(t *testing.T) {
+	v, _ := domain.VendorFor("gemini")
+	chunks := []string{
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_g1","type":"function","function":{"name":"search","arguments":""}}],"role":"assistant"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":4}}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"gemini\"}"},"extra_content":{"google":{"thought_signature":"sig-abc"}}},{"index":1,"id":"call_g2","type":"function","function":{"name":"fetch","arguments":"{\"id\":\"42\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":9,"completion_tokens_details":{"reasoning_tokens":3}}}`,
+	}
+	srv := sseServer(t, false, chunks...)
+	defer srv.Close()
+
+	var askedURL string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		askedURL = r.URL.String()
+		moved := r.Clone(r.Context())
+		moved.URL.Scheme = "http"
+		moved.URL.Host = strings.TrimPrefix(srv.URL, "http://")
+		moved.Host = ""
+		return http.DefaultTransport.RoundTrip(moved)
+	})
+	a := Adapter{Client: &http.Client{Transport: rt}}
+	attempt := app.Attempt{BaseURL: v.BaseURL, Model: "gemini-2.5-flash", Secret: "k", PlanKind: domain.PlanMetered}
+	req, err := domain.Build(domain.Input{
+		Tools:    []domain.Tool{{Name: "search"}, {Name: "fetch"}},
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas []app.ToolCallDelta
+	res, class, err := a.ChatStreamTools(context.Background(), attempt, req, app.StreamEvents{
+		ToolCall: func(d app.ToolCallDelta) error {
+			deltas = append(deltas, d)
+			return nil
+		},
+	})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if askedURL != "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" {
+		t.Fatalf("gemini URL = %q", askedURL)
+	}
+	if len(res.ToolCalls) != 2 || res.StopReason != "tool_calls" {
+		t.Fatalf("res = %+v", res)
+	}
+	if res.ToolCalls[0].ID != "call_g1" || res.ToolCalls[0].Name != "search" || string(res.ToolCalls[0].Arguments) != `{"q":"gemini"}` || res.ToolCalls[0].ThoughtSignature != "sig-abc" {
+		t.Fatalf("tool_calls[0] = %+v", res.ToolCalls[0])
+	}
+	if res.ToolCalls[1].ID != "call_g2" || res.ToolCalls[1].Name != "fetch" || string(res.ToolCalls[1].Arguments) != `{"id":"42"}` {
+		t.Fatalf("tool_calls[1] = %+v", res.ToolCalls[1])
+	}
+	if res.Usage != (domain.Usage{Arrived: true, Input: 10, Output: 9, Reasoning: 3}) {
+		t.Fatalf("usage = %+v", res.Usage)
+	}
+	if len(deltas) != 4 {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+
+	// Verify thought_signature replays cleanly on the next turn.
+	next := buildChat("gemini-2.5-flash", domain.Request{
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Text: "hi"},
+			{Role: domain.RoleAssistant, ToolCalls: res.ToolCalls},
+			{Role: domain.RoleTool, ToolID: "call_g1", Text: "err", IsError: true},
+		},
+	})
+	if next.Messages[1].ToolCalls[0].ExtraContent == nil || next.Messages[1].ToolCalls[0].ExtraContent.Google.ThoughtSignature != "sig-abc" {
+		t.Fatalf("replayed thought_signature = %+v", next.Messages[1].ToolCalls[0].ExtraContent)
+	}
+	if *next.Messages[2].Content != "Error: err" {
+		t.Fatalf("tool error content = %q", *next.Messages[2].Content)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestAdapterDecideReturnsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": "yes"}}},
+			"usage":   map[string]int{"prompt_tokens": 7, "completion_tokens": 1},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	got, usage, class, err := Adapter{Client: srv.Client()}.Decide(
+		context.Background(),
+		app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "s"},
+		domain.DecideRequest{Kind: domain.DecisionYesNo, Prompt: "keep?"},
+	)
+	if err != nil || class != domain.ClassOK || !got.YesNo {
+		t.Fatalf("got=%+v class=%s err=%v", got, class, err)
+	}
+	if !usage.Arrived || usage.Input != 7 || usage.Output != 1 {
+		t.Fatalf("usage = %+v", usage)
 	}
 }

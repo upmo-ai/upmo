@@ -1,8 +1,6 @@
 // Package anthropic is the adapter for the Anthropic Messages API. It does
 // chat, streamed chat, decide and the probe. It has no Embed method, so the
-// gateway lists no embed adapter for it (see gateway.Mount), and a tool-use
-// block is not sent or read: tool definitions go out, but tool results travel
-// as plain user text.
+// gateway lists no embed adapter for it (see gateway.Mount).
 package anthropic
 
 import (
@@ -111,58 +109,65 @@ func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.Dec
 	} else {
 		prompt += "\nAnswer with one of: " + strings.Join(req.Options, ", ")
 	}
-	text, _, class, err := a.complete(ctx, attempt, domain.Request{
+	res, class, err := a.complete(ctx, attempt, domain.Request{
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: prompt}},
 	})
 	if err != nil {
-		return domain.DecideResult{}, domain.Usage{}, class, err
+		return domain.DecideResult{}, res.Usage, class, err
 	}
 	switch req.Kind {
 	case domain.DecisionYesNo:
-		yes, err := domain.ParseYesNo(strings.ToLower(strings.TrimSpace(text)))
+		yes, err := domain.ParseYesNo(strings.ToLower(strings.TrimSpace(res.Text)))
 		if err != nil {
-			return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, err
+			return domain.DecideResult{}, res.Usage, domain.ClassCaller, err
 		}
-		return domain.DecideResult{YesNo: yes}, domain.Usage{}, domain.ClassOK, nil
+		return domain.DecideResult{YesNo: yes}, res.Usage, domain.ClassOK, nil
 	case domain.DecisionChoice:
-		got, err := domain.ParseChoice(strings.TrimSpace(text), req.Options)
+		got, err := domain.ParseChoice(strings.TrimSpace(res.Text), req.Options)
 		if err != nil {
-			return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, err
+			return domain.DecideResult{}, res.Usage, domain.ClassCaller, err
 		}
-		return domain.DecideResult{Choice: got}, domain.Usage{}, domain.ClassOK, nil
+		return domain.DecideResult{Choice: got}, res.Usage, domain.ClassOK, nil
 	default:
-		return domain.DecideResult{}, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
+		return domain.DecideResult{}, res.Usage, domain.ClassCaller, fmt.Errorf("gateway: decide kind %q", req.Kind)
 	}
 }
 
-func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
+func (a Adapter) Chat(ctx context.Context, attempt app.Attempt, req domain.Request) (domain.ChatResult, domain.FailureClass, error) {
 	return a.complete(ctx, attempt, req)
 }
 
 // ChatStream streams a chat reply, handing each text delta to emit in order.
 // When emit fails the caller is gone; the read stops and the call returns.
 func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, req domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	res, class, err := a.ChatStreamTools(ctx, attempt, req, app.StreamEvents{Text: emit})
+	return res.Usage, class, err
+}
+
+// ChatStreamTools streams text and tool-call deltas and returns the
+// accumulated ChatResult.
+func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req domain.Request, events app.StreamEvents) (domain.ChatResult, domain.FailureClass, error) {
 	base, paths, ok := target(attempt)
 	if !ok {
-		return domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+		return domain.ChatResult{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	body, err := json.Marshal(buildPayload(attempt.Model, req, true))
 	if err != nil {
-		return domain.Usage{}, domain.ClassCaller, err
+		return domain.ChatResult{}, domain.ClassCaller, err
 	}
 	httpReq, err := request(ctx, attempt, http.MethodPost, base+paths.ChatPath, body)
 	if err != nil {
-		return domain.Usage{}, domain.ClassCaller, err
+		return domain.ChatResult{}, domain.ClassCaller, err
 	}
 	res, err := a.client(attempt).Do(httpReq)
 	if err != nil {
-		return domain.Usage{}, wire.ClassForErr(err), err
+		return domain.ChatResult{}, wire.ClassForErr(err), err
 	}
 	defer func() { _ = res.Body.Close() }()
 	if class, err := statusClass(res.StatusCode); err != nil {
-		return domain.Usage{}, class, err
+		return domain.ChatResult{}, class, err
 	}
-	return readStream(ctx, res.Body, emit)
+	return readStreamTools(ctx, attempt.Model, res.Body, events)
 }
 
 type cacheCtl struct {
@@ -185,21 +190,42 @@ type toolDef struct {
 	CacheControl *cacheCtl       `json:"cache_control,omitempty"`
 }
 
+type toolChoiceBody struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+}
+
+type contentBlock struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
+type toolResultBlock struct {
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
 type message struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 // payload is the Messages request. Field order is tools, system, messages so
-// the cache prefix sits in front of the turn; the cap and the stream flag
-// follow it.
+// the cache prefix sits in front of the turn; the cap, tool_choice and the
+// stream flag follow it.
 type payload struct {
-	Model     string      `json:"model"`
-	Tools     []toolDef   `json:"tools,omitempty"`
-	System    []textBlock `json:"system,omitempty"`
-	Messages  []message   `json:"messages"`
-	MaxTokens int         `json:"max_tokens"`
-	Stream    bool        `json:"stream,omitempty"`
+	Model      string          `json:"model"`
+	Tools      []toolDef       `json:"tools,omitempty"`
+	System     []textBlock     `json:"system,omitempty"`
+	Messages   []message       `json:"messages"`
+	MaxTokens  int             `json:"max_tokens"`
+	ToolChoice *toolChoiceBody `json:"tool_choice,omitempty"`
+	Stream     bool            `json:"stream,omitempty"`
 }
 
 // objectSchema is the input schema of a tool that names none. The API
@@ -208,9 +234,9 @@ const objectSchema = `{"type":"object"}`
 
 // buildPayload maps a built request onto the Messages API. A cache breakpoint
 // on tools marks the last tool, and one on system marks the system block:
-// each caches everything up to and including the block it marks. A tool
-// result message has no tool-use block to answer here, so it is sent as user
-// text.
+// each caches everything up to and including the block it marks. Consecutive
+// RoleTool messages are merged into a single user message of tool_result
+// blocks as required by the Messages API.
 func buildPayload(model string, req domain.Request, stream bool) payload {
 	breakTools, breakSystem := false, false
 	for _, mark := range req.Cache {
@@ -221,7 +247,12 @@ func buildPayload(model string, req domain.Request, stream bool) payload {
 			breakSystem = true
 		}
 	}
-	out := payload{Model: model, MaxTokens: req.MaxOutputTokens, Stream: stream}
+	out := payload{
+		Model:      model,
+		MaxTokens:  req.MaxOutputTokens,
+		ToolChoice: encodeToolChoice(req.ToolChoice),
+		Stream:     stream,
+	}
 	if out.MaxTokens <= 0 {
 		out.MaxTokens = DefaultMaxTokens
 	}
@@ -244,14 +275,70 @@ func buildPayload(model string, req domain.Request, stream bool) payload {
 		out.System = []textBlock{block}
 	}
 	out.Messages = make([]message, 0, len(req.Messages))
+	lastWasToolResult := false
 	for _, msg := range req.Messages {
-		role := "user"
-		if msg.Role == domain.RoleAssistant {
-			role = "assistant"
+		switch msg.Role {
+		case domain.RoleAssistant:
+			lastWasToolResult = false
+			if len(msg.ToolCalls) == 0 {
+				out.Messages = append(out.Messages, message{Role: "assistant", Content: msg.Text})
+				continue
+			}
+			blocks := make([]contentBlock, 0, len(msg.ToolCalls)+1)
+			if msg.Text != "" {
+				blocks = append(blocks, contentBlock{Type: "text", Text: msg.Text})
+			}
+			for _, tc := range msg.ToolCalls {
+				input := tc.Arguments
+				if len(bytes.TrimSpace(input)) == 0 {
+					input = json.RawMessage("{}")
+				}
+				blocks = append(blocks, contentBlock{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Name,
+					Input: input,
+				})
+			}
+			out.Messages = append(out.Messages, message{Role: "assistant", Content: blocks})
+		case domain.RoleTool:
+			block := toolResultBlock{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolID,
+				Content:   msg.Text,
+				IsError:   msg.IsError,
+			}
+			if lastWasToolResult && len(out.Messages) > 0 {
+				prev, _ := out.Messages[len(out.Messages)-1].Content.([]toolResultBlock)
+				out.Messages[len(out.Messages)-1].Content = append(prev, block)
+				continue
+			}
+			out.Messages = append(out.Messages, message{Role: "user", Content: []toolResultBlock{block}})
+			lastWasToolResult = true
+		default:
+			lastWasToolResult = false
+			out.Messages = append(out.Messages, message{Role: "user", Content: msg.Text})
 		}
-		out.Messages = append(out.Messages, message{Role: role, Content: msg.Text})
 	}
 	return out
+}
+
+func encodeToolChoice(tc domain.ToolChoice) *toolChoiceBody {
+	if tc.IsZero() {
+		return nil
+	}
+	switch tc.Mode {
+	case domain.ToolChoiceAuto:
+		return &toolChoiceBody{Type: "auto"}
+	case domain.ToolChoiceAny:
+		return &toolChoiceBody{Type: "any"}
+	case domain.ToolChoiceNone:
+		return &toolChoiceBody{Type: "none"}
+	case domain.ToolChoiceTool:
+		return &toolChoiceBody{Type: "tool", Name: tc.Name}
+	default:
+		return nil
+	}
 }
 
 // usageBlock is the usage object of a Messages answer, in full on the
@@ -282,64 +369,95 @@ func (u usageBlock) into(usage *domain.Usage) {
 	}
 }
 
-func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (string, domain.Usage, domain.FailureClass, error) {
+func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (domain.ChatResult, domain.FailureClass, error) {
 	base, paths, ok := target(attempt)
 	if !ok {
-		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+		return domain.ChatResult{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	body, err := json.Marshal(buildPayload(attempt.Model, built, false))
 	if err != nil {
-		return "", domain.Usage{}, domain.ClassCaller, err
+		return domain.ChatResult{}, domain.ClassCaller, err
 	}
 	req, err := request(ctx, attempt, http.MethodPost, base+paths.ChatPath, body)
 	if err != nil {
-		return "", domain.Usage{}, domain.ClassCaller, err
+		return domain.ChatResult{}, domain.ClassCaller, err
 	}
 	res, err := a.client(attempt).Do(req)
 	if err != nil {
-		return "", domain.Usage{}, wire.ClassForErr(err), err
+		return domain.ChatResult{}, wire.ClassForErr(err), err
 	}
 	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return "", domain.Usage{}, domain.ClassTransient, err
+		return domain.ChatResult{}, domain.ClassTransient, err
 	}
 	if class, err := statusClass(res.StatusCode); err != nil {
-		return "", domain.Usage{}, class, err
+		return domain.ChatResult{}, class, err
 	}
 	var parsed struct {
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
-		Usage *usageBlock `json:"usage"`
+		StopReason string      `json:"stop_reason"`
+		Usage      *usageBlock `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || (len(parsed.Content) == 0 && parsed.Usage == nil) {
-		return "", domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: provider body")
+		return domain.ChatResult{}, domain.ClassCaller, fmt.Errorf("gateway: provider body")
 	}
 	var text strings.Builder
+	var toolCalls []domain.ToolCall
 	for _, block := range parsed.Content {
-		if block.Type == "text" {
+		switch block.Type {
+		case "text":
 			text.WriteString(block.Text)
+		case "tool_use":
+			args := block.Input
+			if len(bytes.TrimSpace(args)) == 0 {
+				args = json.RawMessage("{}")
+			}
+			toolCalls = append(toolCalls, domain.ToolCall{
+				ID:        block.ID,
+				Name:      block.Name,
+				Arguments: args,
+			})
 		}
 	}
 	usage := domain.Usage{}
 	if parsed.Usage != nil {
 		parsed.Usage.into(&usage)
 	}
-	return text.String(), usage, domain.ClassOK, nil
+	return domain.ChatResult{
+		Text:       text.String(),
+		ToolCalls:  toolCalls,
+		StopReason: parsed.StopReason,
+		Usage:      usage,
+		Model:      attempt.Model,
+	}, domain.ClassOK, nil
 }
 
 // streamEvent is one SSE data payload of a streamed Messages answer. Its
 // type says what it is, whatever the event: line before it says.
 type streamEvent struct {
 	Type    string `json:"type"`
+	Index   int    `json:"index"`
 	Message *struct {
 		Usage *usageBlock `json:"usage"`
 	} `json:"message"`
+	ContentBlock *struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	} `json:"content_block"`
 	Delta *struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
+		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 	Usage *usageBlock `json:"usage"`
 	Error *struct {
@@ -347,24 +465,79 @@ type streamEvent struct {
 	} `json:"error"`
 }
 
-// readStream decodes the SSE events of a streamed Messages answer. The data:
+type streamToolAcc struct {
+	id           string
+	name         string
+	initialInput json.RawMessage
+	args         strings.Builder
+}
+
+type streamState struct {
+	model       string
+	usage       domain.Usage
+	text        strings.Builder
+	stopReason  string
+	blockToTool map[int]int
+	tools       []streamToolAcc
+}
+
+func (s *streamState) result() domain.ChatResult {
+	var calls []domain.ToolCall
+	if len(s.tools) > 0 {
+		calls = make([]domain.ToolCall, len(s.tools))
+		for i, acc := range s.tools {
+			raw := strings.TrimSpace(acc.args.String())
+			var args json.RawMessage
+			switch {
+			case raw != "":
+				args = json.RawMessage(raw)
+			case len(bytes.TrimSpace(acc.initialInput)) > 0:
+				args = acc.initialInput
+			default:
+				args = json.RawMessage("{}")
+			}
+			calls[i] = domain.ToolCall{
+				ID:        acc.id,
+				Name:      acc.name,
+				Arguments: args,
+			}
+		}
+	}
+	return domain.ChatResult{
+		Text:       s.text.String(),
+		ToolCalls:  calls,
+		StopReason: s.stopReason,
+		Usage:      s.usage,
+		Model:      s.model,
+	}
+}
+
+func readStream(ctx context.Context, body io.Reader, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	res, class, err := readStreamTools(ctx, "", body, app.StreamEvents{Text: emit})
+	return res.Usage, class, err
+}
+
+// readStreamTools decodes the SSE events of a streamed Messages answer. The data:
 // lines of one event are one JSON object, dispatched at the blank line that
 // ends the event (a pending event at the end of the body dispatches too);
-// comment lines and other fields are ignored. Text deltas go through emit in
-// order, message_start and message_delta bring the usage, and message_stop
-// ends the stream. A ping and an event of a kind not listed here are skipped.
-// An error event ends the stream with the class of its error type. A stream
-// that ends any other way was cut short.
-func readStream(ctx context.Context, body io.Reader, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+// comment lines and other fields are ignored. Text and tool-call deltas go
+// through events in order, message_start and message_delta bring the usage,
+// and message_stop ends the stream. A ping and an event of a kind not listed
+// here are skipped. An error event ends the stream with the class of its error
+// type. A stream that ends any other way was cut short.
+func readStreamTools(ctx context.Context, model string, body io.Reader, events app.StreamEvents) (domain.ChatResult, domain.FailureClass, error) {
 	in := bufio.NewReader(body)
-	usage := domain.Usage{}
+	state := &streamState{
+		model:       model,
+		blockToTool: map[int]int{},
+	}
 	var data []string
 	// event runs the collected data lines as one event. done reports whether
 	// the stream ended there.
 	event := func() (class domain.FailureClass, err error, done bool) {
 		joined := strings.Join(data, "\n")
 		data = nil
-		return oneEvent(joined, &usage, emit)
+		return oneEvent(joined, state, events)
 	}
 	for {
 		line, rerr := in.ReadString('\n')
@@ -374,30 +547,30 @@ func readStream(ctx context.Context, body io.Reader, emit func(string) error) (d
 			}
 		} else if len(data) > 0 {
 			if class, err, done := event(); done {
-				return usage, class, err
+				return state.result(), class, err
 			}
 		}
 		if rerr != nil {
 			if errors.Is(rerr, io.EOF) {
 				if len(data) > 0 {
 					if class, err, done := event(); done {
-						return usage, class, err
+						return state.result(), class, err
 					}
 				}
 				if ctx.Err() != nil {
-					return usage, domain.ClassCancelled, ctx.Err()
+					return state.result(), domain.ClassCancelled, ctx.Err()
 				}
-				return usage, domain.ClassTransient, errors.New("gateway: stream ended without message_stop")
+				return state.result(), domain.ClassTransient, errors.New("gateway: stream ended without message_stop")
 			}
 			if ctx.Err() != nil {
-				return usage, domain.ClassCancelled, rerr
+				return state.result(), domain.ClassCancelled, rerr
 			}
-			return usage, wire.ClassForErr(rerr), rerr
+			return state.result(), wire.ClassForErr(rerr), rerr
 		}
 	}
 }
 
-func oneEvent(joined string, usage *domain.Usage, emit func(string) error) (class domain.FailureClass, err error, done bool) {
+func oneEvent(joined string, state *streamState, events app.StreamEvents) (class domain.FailureClass, err error, done bool) {
 	var ev streamEvent
 	if err := json.Unmarshal([]byte(joined), &ev); err != nil {
 		return domain.ClassCaller, fmt.Errorf("gateway: provider body"), true
@@ -405,17 +578,64 @@ func oneEvent(joined string, usage *domain.Usage, emit func(string) error) (clas
 	switch ev.Type {
 	case "message_start":
 		if ev.Message != nil && ev.Message.Usage != nil {
-			ev.Message.Usage.into(usage)
+			ev.Message.Usage.into(&state.usage)
+		}
+	case "content_block_start":
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			toolIdx := len(state.tools)
+			state.blockToTool[ev.Index] = toolIdx
+			state.tools = append(state.tools, streamToolAcc{
+				id:           ev.ContentBlock.ID,
+				name:         ev.ContentBlock.Name,
+				initialInput: ev.ContentBlock.Input,
+			})
+			if events.ToolCall != nil {
+				if err := events.ToolCall(app.ToolCallDelta{
+					Index: toolIdx,
+					ID:    ev.ContentBlock.ID,
+					Name:  ev.ContentBlock.Name,
+				}); err != nil {
+					return domain.ClassCancelled, err, true
+				}
+			}
 		}
 	case "content_block_delta":
-		if ev.Delta != nil && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
-			if err := emit(ev.Delta.Text); err != nil {
-				return domain.ClassCancelled, err, true
+		if ev.Delta == nil {
+			break
+		}
+		switch ev.Delta.Type {
+		case "text_delta":
+			if ev.Delta.Text != "" {
+				state.text.WriteString(ev.Delta.Text)
+				if events.Text != nil {
+					if err := events.Text(ev.Delta.Text); err != nil {
+						return domain.ClassCancelled, err, true
+					}
+				}
+			}
+		case "input_json_delta":
+			toolIdx, ok := state.blockToTool[ev.Index]
+			if !ok {
+				break
+			}
+			if ev.Delta.PartialJSON != "" {
+				state.tools[toolIdx].args.WriteString(ev.Delta.PartialJSON)
+				if events.ToolCall != nil {
+					if err := events.ToolCall(app.ToolCallDelta{
+						Index:          toolIdx,
+						ArgumentsDelta: ev.Delta.PartialJSON,
+					}); err != nil {
+						return domain.ClassCancelled, err, true
+					}
+				}
 			}
 		}
 	case "message_delta":
+		if ev.Delta != nil && ev.Delta.StopReason != "" {
+			state.stopReason = ev.Delta.StopReason
+		}
 		if ev.Usage != nil {
-			ev.Usage.into(usage)
+			ev.Usage.into(&state.usage)
 		}
 	case "message_stop":
 		return domain.ClassOK, nil, true

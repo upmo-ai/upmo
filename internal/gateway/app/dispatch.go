@@ -27,7 +27,7 @@ type Decider interface {
 
 // Chatter is the chat adapter for one account.adapter value.
 type Chatter interface {
-	Chat(ctx context.Context, attempt Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error)
+	Chat(ctx context.Context, attempt Attempt, req domain.Request) (domain.ChatResult, domain.FailureClass, error)
 }
 
 // StreamChatter is the streaming chat adapter for one account.adapter value,
@@ -35,6 +35,27 @@ type Chatter interface {
 // error the caller is gone and the adapter stops reading.
 type StreamChatter interface {
 	ChatStream(ctx context.Context, attempt Attempt, req domain.Request, emit func(text string) error) (domain.Usage, domain.FailureClass, error)
+}
+
+// ToolCallDelta is one streamed tool-call fragment emitted during a chat stream.
+type ToolCallDelta struct {
+	Index          int    `json:"index"`
+	ID             string `json:"id,omitempty"`
+	Name           string `json:"name,omitempty"`
+	ArgumentsDelta string `json:"arguments_delta,omitempty"`
+}
+
+// StreamEvents carries callbacks for streaming text and tool-call deltas.
+type StreamEvents struct {
+	Text     func(text string) error
+	ToolCall func(delta ToolCallDelta) error
+}
+
+// ToolStreamChatter is an optional extension of StreamChatter for adapters
+// that stream tool-call deltas and final tool calls alongside text.
+type ToolStreamChatter interface {
+	StreamChatter
+	ChatStreamTools(ctx context.Context, attempt Attempt, req domain.Request, events StreamEvents) (domain.ChatResult, domain.FailureClass, error)
 }
 
 // Embedder is the embed adapter for one account.adapter value.
@@ -117,22 +138,23 @@ func (d Dispatch) write(ctx context.Context, route string, link domain.Link, who
 	if d.Ledger == nil {
 		return nil
 	}
-	_, err := d.writeCost(ctx, route, link, who, class, usage)
+	_, _, err := d.writeCost(ctx, route, link, who, class, usage)
 	return err
 }
 
 // writeCost prices one attempt, records its ledger row and returns the cost
-// it priced, so a caller can report the same number the row holds. The row
-// keeps the team the link was reached through (link.ViaTeam), as it was now.
-func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) (*float64, error) {
-	cost, version, err := d.priceCost(ctx, link, usage)
+// it priced and the model's context window, so a caller can report the same
+// numbers the row holds. The row keeps the team the link was reached through
+// (link.ViaTeam), as it was now.
+func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) (*float64, int, error) {
+	cost, version, ctxWindow, err := d.priceCost(ctx, link, usage)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if d.Ledger == nil {
-		return cost, nil
+		return cost, ctxWindow, nil
 	}
-	return cost, d.Ledger.Record(ctx, domain.Entry{
+	return cost, ctxWindow, d.Ledger.Record(ctx, domain.Entry{
 		Route:        route,
 		LinkPosition: link.Position,
 		AccountID:    link.Account.ID,
@@ -147,19 +169,23 @@ func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link,
 	})
 }
 
-// priceCost prices one attempt exactly as its ledger row does: the cost and
-// the catalog version it came from.
-func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage) (*float64, string, error) {
+// priceCost prices one attempt exactly as its ledger row does: the cost, the
+// catalog version it came from, and the model's context window.
+func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage) (*float64, string, int, error) {
 	var price domain.Price
 	found := false
 	if d.Prices != nil {
 		p, ok, err := d.Prices.Price(ctx, link.Model)
 		if err != nil {
-			return nil, "", err
+			return nil, "", 0, err
 		}
 		price, found = p, ok
 	}
-	return domain.CostUSD(link.Account.PlanKind, usage, price, found), price.Version, nil
+	ctxWindow := domain.DefaultContextWindow
+	if found && price.ContextWindow > 0 {
+		ctxWindow = price.ContextWindow
+	}
+	return domain.CostUSD(link.Account.PlanKind, usage, price, found), price.Version, ctxWindow, nil
 }
 
 func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, req domain.DecideRequest) (domain.DecideResult, error) {
@@ -206,11 +232,17 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		for {
 			started := time.Now()
 			result, usage, class, err := decider.Decide(ctx, attempt, req)
-			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
+			cost, ctxWindow, werr := d.writeCost(ctx, routeName, link, who, class, usage)
+			if werr != nil {
 				return domain.DecideResult{}, werr
 			}
 			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
+				result.Model = link.Model
+				result.Usage = usage
+				result.CostUSD = cost
+				result.CostMicroUSD = domain.MicroUSD(cost)
+				result.ContextWindow = ctxWindow
 				return result, nil
 			}
 			last = err
@@ -270,28 +302,28 @@ func (d Dispatch) applyBundle(ctx context.Context, who domain.Principal, in doma
 	return in, nil
 }
 
-func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input) (string, error) {
+func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, in domain.Input) (domain.ChatResult, error) {
 	in, err := d.applyBundle(ctx, who, in)
 	if err != nil {
-		return "", err
+		return domain.ChatResult{}, err
 	}
 	built, err := domain.Build(in)
 	if err != nil {
-		return "", err
+		return domain.ChatResult{}, err
 	}
 	if len(built.Messages) == 0 {
-		return "", fmt.Errorf("gateway: chat prompt is empty")
+		return domain.ChatResult{}, fmt.Errorf("gateway: chat prompt is empty")
 	}
 	route, err := d.Routes.ByName(ctx, routeName)
 	if err != nil {
-		return "", err
+		return domain.ChatResult{}, err
 	}
 	if route.Capability != domain.CapChat {
-		return "", fmt.Errorf("gateway: route %q is %s", routeName, route.Capability)
+		return domain.ChatResult{}, fmt.Errorf("gateway: route %q is %s", routeName, route.Capability)
 	}
 	links, err := route.LinksFor(credentialRef)
 	if err != nil {
-		return "", err
+		return domain.ChatResult{}, err
 	}
 	var last error
 	for _, link := range links {
@@ -308,7 +340,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
 			if werr := d.write(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}); werr != nil {
-				return "", werr
+				return domain.ChatResult{}, werr
 			}
 			d.seen(link.Account.CredentialRef, domain.ClassCredential, started)
 			last = err
@@ -318,13 +350,18 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		retries := link.RetryBudget
 		for {
 			started := time.Now()
-			text, usage, class, err := chatter.Chat(ctx, attempt, built)
-			if werr := d.write(ctx, routeName, link, who, class, usage); werr != nil {
-				return "", werr
+			res, class, err := chatter.Chat(ctx, attempt, built)
+			cost, ctxWindow, werr := d.writeCost(ctx, routeName, link, who, class, res.Usage)
+			if werr != nil {
+				return domain.ChatResult{}, werr
 			}
 			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
-				return text, nil
+				res.Model = link.Model
+				res.CostUSD = cost
+				res.CostMicroUSD = domain.MicroUSD(cost)
+				res.ContextWindow = ctxWindow
+				return res, nil
 			}
 			last = err
 			if last == nil {
@@ -336,7 +373,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 				continue
 			case domain.ActionNext:
 			default:
-				return "", last
+				return domain.ChatResult{}, last
 			}
 			break
 		}
@@ -344,7 +381,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 	if last == nil {
 		last = fmt.Errorf("gateway: route %q exhausted", routeName)
 	}
-	return "", last
+	return domain.ChatResult{}, last
 }
 
 // StreamNotice names the link that failed before its first text and the link
@@ -357,9 +394,13 @@ type StreamNotice struct {
 
 // StreamDone is the successful end of a streamed reply.
 type StreamDone struct {
-	Model   string
-	Usage   domain.Usage
-	CostUSD *float64
+	Model         string
+	Usage         domain.Usage
+	CostUSD       *float64
+	CostMicroUSD  *int64
+	ContextWindow int
+	ToolCalls     []domain.ToolCall
+	StopReason    string
 }
 
 // StreamFail is the failed end of a streamed reply. Model is the model that
@@ -379,6 +420,13 @@ type StreamSink interface {
 	Notice(notice StreamNotice) error
 	Done(done StreamDone)
 	Fail(fail StreamFail)
+}
+
+// ToolStreamSink is an optional extension of StreamSink that receives
+// streaming tool-call deltas.
+type ToolStreamSink interface {
+	StreamSink
+	ToolCallDelta(delta ToolCallDelta) error
 }
 
 // ChatStreamCall walks a chat route streaming the reply to sink. Failover
@@ -429,7 +477,9 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	if len(built.Messages) == 0 {
 		return fmt.Errorf("gateway: chat prompt is empty")
 	}
-	built.MaxOutputTokens = maxOutputTokens
+	if maxOutputTokens > 0 {
+		built.MaxOutputTokens = maxOutputTokens
+	}
 	// ByName checks the route, and a route with no hops is a config error that
 	// a pin does not bypass.
 	route, err := d.Routes.ByName(ctx, routeName)
@@ -531,29 +581,50 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		retries := link.RetryBudget
 		for {
 			started := time.Now()
-			text := false
-			usage, class, err := chatStream(ctx, streamer, attempt, built, func(delta string) error {
-				if err := sink.Delta(delta); err != nil {
-					return err
+			emitted := false
+			var toolEmit func(ToolCallDelta) error
+			if tsink, ok := sink.(ToolStreamSink); ok {
+				toolEmit = func(delta ToolCallDelta) error {
+					if err := tsink.ToolCallDelta(delta); err != nil {
+						return err
+					}
+					emitted = true
+					return nil
 				}
-				text = true
-				return nil
+			}
+			res, class, err := chatStreamTools(ctx, streamer, attempt, built, StreamEvents{
+				Text: func(delta string) error {
+					if err := sink.Delta(delta); err != nil {
+						return err
+					}
+					emitted = true
+					return nil
+				},
+				ToolCall: toolEmit,
 			})
-			cost, werr := d.writeCost(ctx, routeName, link, who, class, usage)
+			cost, ctxWindow, werr := d.writeCost(ctx, routeName, link, who, class, res.Usage)
 			if werr != nil {
 				return werr
 			}
 			d.seen(link.Account.CredentialRef, class, started)
 			if class == domain.ClassOK && err == nil {
-				sink.Done(StreamDone{Model: link.Model, Usage: usage, CostUSD: cost})
+				sink.Done(StreamDone{
+					Model:         link.Model,
+					Usage:         res.Usage,
+					CostUSD:       cost,
+					CostMicroUSD:  domain.MicroUSD(cost),
+					ContextWindow: ctxWindow,
+					ToolCalls:     res.ToolCalls,
+					StopReason:    res.StopReason,
+				})
 				return nil
 			}
 			if err == nil {
 				err = fmt.Errorf("gateway: %s", class)
 			}
 			last, lastModel, lastClass = err, link.Model, class
-			if text {
-				// The caller has text; a failure now ends the call.
+			if emitted {
+				// The caller has partial output; a failure now ends the call.
 				sink.Fail(StreamFail{Model: link.Model, Class: class, Err: err})
 				return nil
 			}
@@ -586,27 +657,45 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	return nil
 }
 
-// chatStream runs one streaming attempt. A panic in the adapter fails that
+// chatStreamTools runs one streaming attempt. A panic in the adapter fails that
 // attempt as internal so the ledger row, the status note and the end of the
 // walk still happen. The panic value stays in the returned error; the wire
 // carries a fixed phrase instead. A panic in emit is the gateway's own and
 // is raised again, not booked against the provider.
-func chatStream(ctx context.Context, streamer StreamChatter, attempt Attempt, req domain.Request, emit func(string) error) (usage domain.Usage, class domain.FailureClass, err error) {
+func chatStreamTools(ctx context.Context, streamer StreamChatter, attempt Attempt, req domain.Request, events StreamEvents) (res domain.ChatResult, class domain.FailureClass, err error) {
 	inEmit := false
 	defer func() {
 		if rec := recover(); rec != nil {
 			if inEmit {
 				panic(rec)
 			}
-			usage, class, err = domain.Usage{}, domain.ClassInternal, fmt.Errorf("gateway: stream adapter panic: %v", rec)
+			res, class, err = domain.ChatResult{}, domain.ClassInternal, fmt.Errorf("gateway: stream adapter panic: %v", rec)
 		}
 	}()
-	return streamer.ChatStream(ctx, attempt, req, func(text string) error {
-		inEmit = true
-		err := emit(text)
-		inEmit = false
-		return err
-	})
+	wrapped := StreamEvents{
+		Text: func(text string) error {
+			if events.Text == nil {
+				return nil
+			}
+			inEmit = true
+			err := events.Text(text)
+			inEmit = false
+			return err
+		},
+	}
+	if events.ToolCall != nil {
+		wrapped.ToolCall = func(delta ToolCallDelta) error {
+			inEmit = true
+			err := events.ToolCall(delta)
+			inEmit = false
+			return err
+		}
+	}
+	if ts, ok := streamer.(ToolStreamChatter); ok {
+		return ts.ChatStreamTools(ctx, attempt, req, wrapped)
+	}
+	usage, class, err := streamer.ChatStream(ctx, attempt, req, wrapped.Text)
+	return domain.ChatResult{Usage: usage, Model: attempt.Model}, class, err
 }
 
 // EmbedCall walks an embed route and returns the link model with one vector

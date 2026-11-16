@@ -137,10 +137,10 @@ type scriptChatter struct {
 	got   domain.Request
 }
 
-func (s *scriptChatter) Chat(_ context.Context, _ Attempt, req domain.Request) (string, domain.Usage, domain.FailureClass, error) {
+func (s *scriptChatter) Chat(_ context.Context, _ Attempt, req domain.Request) (domain.ChatResult, domain.FailureClass, error) {
 	s.calls++
 	s.got = req
-	return s.reply, domain.Usage{}, domain.ClassOK, nil
+	return domain.ChatResult{Text: s.reply, Usage: domain.Usage{Arrived: true, Input: 2, Output: 1}}, domain.ClassOK, nil
 }
 
 func TestDispatchChatUsesBuilder(t *testing.T) {
@@ -156,18 +156,23 @@ func TestDispatchChatUsesBuilder(t *testing.T) {
 		Chat:    map[string]Chatter{"fake": c},
 	}
 	got, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{}, domain.Input{
-		Tools:    []domain.Tool{{Name: "search", Schema: json.RawMessage(`{"b":1,"a":2}`)}},
-		System:   "be brief",
-		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		Tools:           []domain.Tool{{Name: "search", Schema: json.RawMessage(`{"b":1,"a":2}`)}},
+		System:          "be brief",
+		Messages:        []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		MaxOutputTokens: 256,
+		ToolChoice:      domain.ToolChoice{Mode: domain.ToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "ok" || c.calls != 1 {
-		t.Fatalf("got=%q calls=%d", got, c.calls)
+	if got.Text != "ok" || got.Model != "a" || got.ContextWindow != domain.DefaultContextWindow || c.calls != 1 {
+		t.Fatalf("got=%+v calls=%d", got, c.calls)
 	}
-	if string(c.got.Tools[0].Schema) != `{"a":2,"b":1}` {
-		t.Fatalf("schema = %s", c.got.Tools[0].Schema)
+	if len(c.got.Tools) != 3 || c.got.Tools[2].Name != "search" || string(c.got.Tools[2].Schema) != `{"a":2,"b":1}` {
+		t.Fatalf("tools = %+v", c.got.Tools)
+	}
+	if c.got.MaxOutputTokens != 256 || c.got.ToolChoice.Mode != domain.ToolChoiceAuto {
+		t.Fatalf("req = %+v", c.got)
 	}
 	if len(c.got.Cache) != 2 {
 		t.Fatalf("cache = %v", c.got.Cache)
@@ -221,7 +226,7 @@ func TestDispatchChatMasksToAgentBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.got.Tools) != 1 || c.got.Tools[0].Name != "search" {
+	if len(c.got.Tools) != 3 || c.got.Tools[0].Name != "retrieve_output" || c.got.Tools[1].Name != "find_tool" || c.got.Tools[2].Name != "search" {
 		t.Fatalf("tools = %+v", c.got.Tools)
 	}
 }
@@ -1044,5 +1049,120 @@ func TestDispatchPinToATeamsAccountIsForItsMembersAndBooksTheTeam(t *testing.T) 
 	}
 	if strings.Contains(err.Error(), sharedPinID) || strings.Contains(err.Error(), "t1") {
 		t.Fatalf("the refusal names the account or a team: %v", err)
+	}
+}
+
+type toolRecordingSink struct {
+	recordingSink
+	toolDeltas []ToolCallDelta
+}
+
+func (s *toolRecordingSink) ToolCallDelta(d ToolCallDelta) error {
+	s.toolDeltas = append(s.toolDeltas, d)
+	return nil
+}
+
+type scriptToolStream struct {
+	deltas    []ToolCallDelta
+	calls     []domain.ToolCall
+	failAfter int
+	failClass domain.FailureClass
+	invoked   int
+}
+
+func (s *scriptToolStream) ChatStream(context.Context, Attempt, domain.Request, func(string) error) (domain.Usage, domain.FailureClass, error) {
+	return domain.Usage{}, domain.ClassCaller, errors.New("unexpected plain stream call")
+}
+
+func (s *scriptToolStream) ChatStreamTools(_ context.Context, attempt Attempt, _ domain.Request, events StreamEvents) (domain.ChatResult, domain.FailureClass, error) {
+	s.invoked++
+	for i, d := range s.deltas {
+		if s.failClass != "" && i == s.failAfter {
+			return domain.ChatResult{Usage: domain.Usage{Arrived: true, Input: 10, Output: i}, Model: attempt.Model},
+				s.failClass, fmt.Errorf("gateway: scripted %s", s.failClass)
+		}
+		if events.ToolCall != nil {
+			if err := events.ToolCall(d); err != nil {
+				return domain.ChatResult{Usage: domain.Usage{Arrived: true, Input: 10, Output: i}, Model: attempt.Model},
+					domain.ClassCancelled, err
+			}
+		}
+	}
+	return domain.ChatResult{
+		ToolCalls:  s.calls,
+		StopReason: "tool_calls",
+		Usage:      domain.Usage{Arrived: true, Input: 1000, Output: 500, CacheRead: 200, CacheWrite: 100, Reasoning: 50},
+		Model:      attempt.Model,
+	}, domain.ClassOK, nil
+}
+
+type fixedPrices struct {
+	price domain.Price
+}
+
+func (p fixedPrices) Price(context.Context, string) (domain.Price, bool, error) {
+	return p.price, true, nil
+}
+
+func TestDispatchChatStreamToolsPropagatesDeltasAndMetadata(t *testing.T) {
+	rate := 1.0
+	house := domain.Account{ID: "1", Adapter: "tools", CredentialRef: "house", House: true, PlanKind: domain.PlanMetered}
+	route := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: house, Model: "m1", RetryBudget: 0}},
+	}
+	sink := &toolRecordingSink{}
+	stream := &scriptToolStream{
+		deltas: []ToolCallDelta{
+			{Index: 0, ID: "call_1", Name: "search"},
+			{Index: 0, ArgumentsDelta: `{"q":"go"}`},
+		},
+		calls: []domain.ToolCall{{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"go"}`)}},
+	}
+	disp := Dispatch{
+		Routes:  memRoutes{route},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Prices: fixedPrices{price: domain.Price{
+			Version:        "v1",
+			InputPerMTok:   &rate,
+			OutputPerMTok:  &rate,
+			CacheReadMTok:  &rate,
+			CacheWriteMTok: &rate,
+			ContextWindow:  200000,
+		}},
+		Stream: map[string]StreamChatter{"tools": stream},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.toolDeltas) != 2 || sink.done == nil {
+		t.Fatalf("deltas=%+v done=%+v", sink.toolDeltas, sink.done)
+	}
+	if len(sink.done.ToolCalls) != 1 || sink.done.ToolCalls[0].Name != "search" {
+		t.Fatalf("done tool_calls = %+v", sink.done.ToolCalls)
+	}
+	if sink.done.ContextWindow != 200000 || sink.done.CostMicroUSD == nil || *sink.done.CostMicroUSD != 1800 {
+		t.Fatalf("done metadata = %+v", sink.done)
+	}
+}
+
+func TestDispatchChatStreamDoesNotFailOverAfterToolCallDelta(t *testing.T) {
+	flaky := &scriptToolStream{
+		deltas:    []ToolCallDelta{{Index: 0, ID: "call_1", Name: "search"}, {Index: 0, ArgumentsDelta: "{}"}},
+		failAfter: 1,
+		failClass: domain.ClassTransient,
+	}
+	solid := &scriptToolStream{}
+	sink := &toolRecordingSink{}
+	disp := Dispatch{
+		Routes:  memRoutes{streamRoute()},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Stream:  map[string]StreamChatter{"flaky": flaky, "solid": solid},
+	}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if solid.invoked != 0 || sink.fail == nil || sink.fail.Class != domain.ClassTransient {
+		t.Fatalf("solid=%d fail=%+v", solid.invoked, sink.fail)
 	}
 }
