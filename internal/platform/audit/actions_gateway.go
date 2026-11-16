@@ -14,6 +14,15 @@ const (
 	ProviderDelete Action = "provider.delete"
 	// ProviderTest tries one provider account's key with a cheap call.
 	ProviderTest Action = "provider.test"
+
+	// RouteCreate stores one gateway route.
+	RouteCreate Action = "route.create"
+	// RouteUpdate changes one gateway route's fields or hops.
+	RouteUpdate Action = "route.update"
+	// RouteShare changes who a gateway route is for.
+	RouteShare Action = "route.share"
+	// RouteDelete removes one gateway route.
+	RouteDelete Action = "route.delete"
 )
 
 func init() {
@@ -22,4 +31,9 @@ func init() {
 	register(ProviderShare, "provider", classAPIActivity, activityUnknown, "visibility", "team_ids")
 	register(ProviderDelete, "provider", classAPIActivity, activityUnknown)
 	register(ProviderTest, "provider", classAPIActivity, activityUnknown)
+
+	register(RouteCreate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
+	register(RouteUpdate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
+	register(RouteShare, "route", classAPIActivity, activityUnknown, "visibility", "team_ids")
+	register(RouteDelete, "route", classAPIActivity, activityUnknown)
 }

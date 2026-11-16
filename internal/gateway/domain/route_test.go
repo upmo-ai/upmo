@@ -85,3 +85,70 @@ func TestLinksForUserHasTheirOwnAndTheWorkspaceAndNeverAnotherPersons(t *testing
 		t.Fatal("another person was given a personal link")
 	}
 }
+
+func TestCleanRouteValidation(t *testing.T) {
+	acctA := "018f3b2c-7a10-7c4a-8e11-111111111111"
+	acctB := "018f3b2c-7a10-7c4a-8e11-222222222222"
+
+	if got, err := CleanRouteName(" my-route_1.v2 "); err != nil || got != "my-route_1.v2" {
+		t.Fatalf("CleanRouteName valid = %q, %v", got, err)
+	}
+	for _, bad := range []string{"", "   ", "-start", "has space", "a/b"} {
+		if _, err := CleanRouteName(bad); err == nil {
+			t.Errorf("CleanRouteName(%q) accepted", bad)
+		}
+	}
+
+	if c, d, err := CleanRouteCapability("decide", "yesno"); err != nil || c != CapDecide || d != DecisionYesNo {
+		t.Fatalf("CleanRouteCapability decide = %q %q %v", c, d, err)
+	}
+	if _, _, err := CleanRouteCapability("decide", ""); err == nil {
+		t.Fatal("decide without decision accepted")
+	}
+	if _, _, err := CleanRouteCapability("chat", "yesno"); err == nil {
+		t.Fatal("chat with decision accepted")
+	}
+	if _, _, err := CleanRouteCapability("unknown", ""); err == nil {
+		t.Fatal("unknown capability accepted")
+	}
+
+	if _, err := CleanRouteHops(nil); err == nil {
+		t.Fatal("empty hops accepted")
+	}
+	tooMany := []RouteHop{
+		{Position: 1, AccountID: acctA, Model: "m1", Weight: 1, Retry: 1},
+		{Position: 2, AccountID: acctA, Model: "m2", Weight: 1, Retry: 1},
+		{Position: 3, AccountID: acctB, Model: "m1", Weight: 1, Retry: 1},
+		{Position: 4, AccountID: acctB, Model: "m2", Weight: 1, Retry: 1},
+	}
+	if _, err := CleanRouteHops(tooMany); err == nil {
+		t.Fatal("more than MaxRouteHops accepted")
+	}
+	dupPos := []RouteHop{
+		{Position: 1, AccountID: acctA, Model: "m1", Weight: 1, Retry: 1},
+		{Position: 1, AccountID: acctB, Model: "m2", Weight: 1, Retry: 1},
+	}
+	if _, err := CleanRouteHops(dupPos); err == nil {
+		t.Fatal("duplicate position accepted")
+	}
+	cycle := []RouteHop{
+		{Position: 1, AccountID: acctA, Model: "m1", Weight: 1, Retry: 1},
+		{Position: 2, AccountID: acctA, Model: "m1", Weight: 1, Retry: 0},
+	}
+	if _, err := CleanRouteHops(cycle); err == nil {
+		t.Fatal("duplicate (account_id, model) cycle accepted")
+	}
+	hops, err := CleanRouteHops([]RouteHop{
+		{Position: 3, AccountID: acctB, Model: "m2", Weight: 2, Retry: 0, RequiredCapabilities: []string{"vision", "tools", "vision"}},
+		{Position: 1, AccountID: acctA, Model: "m1", Weight: 1, Retry: 1},
+	})
+	if err != nil {
+		t.Fatalf("CleanRouteHops valid: %v", err)
+	}
+	if len(hops) != 2 || hops[0].Position != 1 || hops[1].Position != 3 {
+		t.Fatalf("hops not sorted by position: %+v", hops)
+	}
+	if len(hops[1].RequiredCapabilities) != 2 || hops[1].RequiredCapabilities[0] != "tools" || hops[1].RequiredCapabilities[1] != "vision" {
+		t.Fatalf("required capabilities = %v", hops[1].RequiredCapabilities)
+	}
+}

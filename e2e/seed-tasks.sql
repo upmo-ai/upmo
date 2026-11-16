@@ -118,12 +118,12 @@ INSERT INTO gateway.provider_models (account_id, model, position) VALUES
   ('e2e00000-0000-7000-8000-00000000f002', 'llama3.3:70b', 3),
   ('e2e00000-0000-7000-8000-00000000f002', 'claude-3-5-haiku', 4),
   ('e2e00000-0000-7000-8000-00000000f002', 'gpt-4.1-mini', 5);
-INSERT INTO gateway.routes (id, name, capability, decision) VALUES
-  ('e2e00000-0000-7000-8000-00000000f101', 'e2e-main', 'chat', ''),
-  ('e2e00000-0000-7000-8000-00000000f102', 'e2e-spare', 'chat', ''),
-  ('e2e00000-0000-7000-8000-00000000f103', 'e2e-slow', 'chat', ''),
-  ('e2e00000-0000-7000-8000-00000000f104', 'chat', 'chat', ''),
-  ('e2e00000-0000-7000-8000-00000000f105', 'agent-dispatch', 'decide', 'choice');
+INSERT INTO gateway.routes (id, name, capability, decision, installed) VALUES
+  ('e2e00000-0000-7000-8000-00000000f101', 'e2e-main', 'chat', '', true),
+  ('e2e00000-0000-7000-8000-00000000f102', 'e2e-spare', 'chat', '', true),
+  ('e2e00000-0000-7000-8000-00000000f103', 'e2e-slow', 'chat', '', true),
+  ('e2e00000-0000-7000-8000-00000000f104', 'chat', 'chat', '', true),
+  ('e2e00000-0000-7000-8000-00000000f105', 'agent-dispatch', 'decide', 'choice', true);
 INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES
   ('e2e00000-0000-7000-8000-00000000f101', 1, 'e2e00000-0000-7000-8000-00000000f001', 'plain-1'),
   ('e2e00000-0000-7000-8000-00000000f101', 2, 'e2e00000-0000-7000-8000-00000000f001', 'fake-ok'),
