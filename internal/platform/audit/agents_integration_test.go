@@ -9,10 +9,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/chat"
 	chatapp "github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 const agentOwnerID = "018f3b2c-7a10-7c4a-8e11-555555555555"
@@ -292,4 +296,77 @@ func TestAgentUpdateRefusedForMemberRecordsDenied(t *testing.T) {
 		t.Fatalf("event = %s %s %s, want the refused member denied", rows[0].Action, rows[0].Outcome, rows[0].ActorID)
 	}
 	mustNotContain(t, rows[0], "Renamed")
+}
+
+func TestAgentsContextSealsCreateUpdateShareDelete(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := audit.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, owner, agents.Schema, agents.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	appPool := pgtest.App(t, owner)
+	sealed := newSealer(t, owner)
+	store := agents.NewStore(appPool)
+	team := newTeam(t, owner, "Ops")
+
+	access := agents.Access{
+		UserID: agentOwnerID,
+		Allow:  "agent:create,agent:view,agent:edit,agent:delete,settings:manage",
+	}
+	made, err := agents.CreateAgent(ctx, store, nil, access, agents.AgentFields{
+		Name:                 "Bookkeeper",
+		Description:          "AP agent",
+		Instructions:         "Secret instructions",
+		DefaultRoute:         "work",
+		DefaultModelProvider: "fake",
+		DefaultModelID:       "model-x",
+		Enabled:              true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := sealed()
+	if len(rows) != 1 || rows[0].Action != audit.AgentCreate || rows[0].TargetID != made.ID {
+		t.Fatalf("create events = %+v", rows)
+	}
+	mustNotContain(t, rows[0], "Secret instructions", "Bookkeeper")
+
+	teams := []string{team}
+	if _, err := agents.ChangeAgent(ctx, store, nil, access, made.ID, agents.AgentChange{
+		Instructions: strPtr("Updated secret"),
+		Visibility:   strPtr(agents.VisibilityTeam),
+		TeamIDs:      &teams,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows = sealed()
+	if len(rows) != 2 || rows[0].Action != audit.AgentUpdate || rows[1].Action != audit.AgentShare {
+		t.Fatalf("update/share events = %v", actions(rows))
+	}
+	mustNotContain(t, rows[0], "Updated secret", "Bookkeeper")
+
+	mux := http.NewServeMux()
+	agents.Handler{
+		Agents: store,
+		Access: func(r *http.Request) (agents.Access, bool) {
+			audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: agentOwnerID, CredentialType: "session"})
+			return access, true
+		},
+	}.Mount(mux, nil)
+	served := serveWithAudit(t, mux, appPool)
+	rec := httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/agents/"+made.ID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", rec.Code, rec.Body.String())
+	}
+	rows = sealed()
+	if len(rows) != 1 || rows[0].Action != audit.AgentDelete || rows[0].TargetID != made.ID {
+		t.Fatalf("delete events = %+v", rows)
+	}
 }
