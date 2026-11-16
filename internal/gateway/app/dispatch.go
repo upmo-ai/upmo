@@ -85,6 +85,13 @@ type Routes interface {
 	ByName(ctx context.Context, name string) (domain.Route, error)
 }
 
+// UserRoutes is an optional extension of Routes that resolves a named route
+// according to the caller's principal (system worker vs user, optionally
+// narrowed to a single team).
+type UserRoutes interface {
+	ByNameFor(ctx context.Context, name string, who domain.Principal) (domain.Route, error)
+}
+
 // Teams lists the teams a person is on, by id. The accounts shared with those
 // teams are among the ones the person may use.
 type Teams interface {
@@ -226,11 +233,18 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 	return domain.CostUSD(link.Account.PlanKind, usage, price, found), price.Version, ctxWindow, nil
 }
 
+func (d Dispatch) routeByName(ctx context.Context, name string, who domain.Principal) (domain.Route, error) {
+	if ur, ok := d.Routes.(UserRoutes); ok {
+		return ur.ByNameFor(ctx, name, who)
+	}
+	return d.Routes.ByName(ctx, name)
+}
+
 func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, req domain.DecideRequest) (domain.DecideResult, error) {
 	if err := req.Check(); err != nil {
 		return domain.DecideResult{}, err
 	}
-	route, err := d.Routes.ByName(ctx, routeName)
+	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return domain.DecideResult{}, err
 	}
@@ -334,7 +348,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 	if len(built.Messages) == 0 {
 		return domain.ChatResult{}, fmt.Errorf("gateway: chat prompt is empty")
 	}
-	route, err := d.Routes.ByName(ctx, routeName)
+	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return domain.ChatResult{}, err
 	}
@@ -500,7 +514,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	}
 	// ByName checks the route, and a route with no hops is a config error that
 	// a pin does not bypass.
-	route, err := d.Routes.ByName(ctx, routeName)
+	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return err
 	}
@@ -721,7 +735,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 	if err := domain.CheckEmbedInputs(inputs); err != nil {
 		return "", nil, err
 	}
-	route, err := d.Routes.ByName(ctx, routeName)
+	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return "", nil, err
 	}

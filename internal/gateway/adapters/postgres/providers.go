@@ -341,8 +341,16 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 		return domain.Provider{}, err
 	}
 	// A shared account turned private counts against the owner's personal cap,
-	// under the same lock as a new private account.
+	// under the same lock as a new private account, and cannot still be linked
+	// by a shared or installed route.
 	if visibility == domain.VisibilityPrivate && cur.Share.Visibility != domain.VisibilityPrivate {
+		var sharedUse bool
+		if err := tx.QueryRow(ctx, `SELECT gateway.provider_account_used_by_shared_route($1::uuid)`, a.ID).Scan(&sharedUse); err != nil {
+			return domain.Provider{}, err
+		}
+		if sharedUse {
+			return domain.Provider{}, domain.Invalid("A provider used by a shared route cannot be made private.")
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('gateway.providers:' || $1::text, 0))`, cur.OwnerUserID); err != nil {
 			return domain.Provider{}, err
 		}

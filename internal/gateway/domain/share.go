@@ -49,18 +49,28 @@ type Share struct {
 // none twice. An empty visibility is private. The ids come back in a fixed
 // order.
 func CleanVisibility(visibility string, teamIDs []string) (string, []string, error) {
+	return cleanVisibility("provider", visibility, teamIDs)
+}
+
+// CleanRouteVisibility checks route sharing visibility and team ids, using the
+// same visibility rules as provider accounts.
+func CleanRouteVisibility(visibility string, teamIDs []string) (string, []string, error) {
+	return cleanVisibility("route", visibility, teamIDs)
+}
+
+func cleanVisibility(subject, visibility string, teamIDs []string) (string, []string, error) {
 	if visibility == "" {
 		visibility = VisibilityPrivate
 	}
 	switch visibility {
 	case VisibilityPrivate:
 		if len(teamIDs) > 0 {
-			return "", nil, Invalid("A private provider takes no teams.")
+			return "", nil, Invalid(fmt.Sprintf("A private %s takes no teams.", subject))
 		}
 		return VisibilityPrivate, nil, nil
 	case VisibilityEveryone:
 		if len(teamIDs) > 0 {
-			return "", nil, Invalid("A provider shared with everyone takes no teams.")
+			return "", nil, Invalid(fmt.Sprintf("A %s shared with everyone takes no teams.", subject))
 		}
 		return VisibilityEveryone, nil, nil
 	case VisibilityTeam:

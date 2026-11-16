@@ -11,18 +11,28 @@ type ListedHop struct {
 	Retry    int    `json:"retry"`
 	// AccountID names the account the hop calls, so a person's usable answer
 	// can be computed. Empty on a link with no account.
-	AccountID string `json:"account_id,omitempty"`
+	AccountID            string   `json:"account_id,omitempty"`
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // ListedRoute is one route and its hops for a settings screen.
 type ListedRoute struct {
+	ID         string      `json:"id"`
 	Name       string      `json:"name"`
 	Capability string      `json:"capability"`
 	Decision   string      `json:"decision"`
 	Hops       []ListedHop `json:"hops"`
 	// Usable says whether the calling person can use the route now. It is
 	// filled in per request by MarkUsable.
-	Usable bool `json:"usable"`
+	Usable      bool     `json:"usable"`
+	Installed   bool     `json:"installed"`
+	Visibility  string   `json:"visibility"`
+	TeamIDs     []string `json:"team_ids"`
+	TeamNames   []string `json:"team_names"`
+	CanManage   bool     `json:"can_manage"`
+	CanUse      bool     `json:"can_use"`
+	IsOwner     bool     `json:"is_owner"`
+	OwnerUserID string   `json:"-"`
 }
 
 // RouteBook lists routes without credential material.

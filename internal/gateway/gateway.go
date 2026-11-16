@@ -148,6 +148,15 @@ func NewRouteBook(pool *pgxpool.Pool) app.RouteBook {
 	return postgres.Store{Pool: pool}
 }
 
+// NewRoutes is the use case behind creating, editing, sharing, and deleting
+// gateway routes. Nobody may share a route until the caller sets Allow.
+func NewRoutes(pool *pgxpool.Pool, log *slog.Logger) app.RouteService {
+	return app.RouteService{
+		Store: postgres.Routes{Pool: pool},
+		Log:   log,
+	}
+}
+
 // RoutesHandler serves the routing rows to a signed-in settings manager.
 type RoutesHandler = httpapi.RoutesHandler
 
@@ -156,15 +165,16 @@ type ProvidersHandler = httpapi.ProvidersHandler
 
 // A model request and the input it is built from.
 type (
-	Input       = domain.Input
-	Message     = domain.Message
-	Request     = domain.Request
-	Role        = domain.Role
-	Breakpoint  = domain.Breakpoint
-	ListedHop   = app.ListedHop
-	ListedRoute = app.ListedRoute
-	RouteBook   = app.RouteBook
-	Provider    = domain.Provider
+	Input        = domain.Input
+	Message      = domain.Message
+	Request      = domain.Request
+	Role         = domain.Role
+	Breakpoint   = domain.Breakpoint
+	ListedHop    = app.ListedHop
+	ListedRoute  = app.ListedRoute
+	RouteBook    = app.RouteBook
+	RouteService = app.RouteService
+	Provider     = domain.Provider
 )
 
 // UsableAgent reports whether an agent can be offered to a person now.
