@@ -4,6 +4,7 @@ package agents
 
 import (
 	"context"
+	"crypto/ed25519"
 	"embed"
 	"io/fs"
 	"time"
@@ -50,6 +51,8 @@ type (
 	LessonChange = app.LessonChange
 	Card         = domain.Card
 	Pack         = domain.Pack
+	PackAgent    = domain.PackAgent
+	PackLesson   = domain.PackLesson
 	TrustKeys    = domain.TrustKeys
 )
 
@@ -177,4 +180,9 @@ func PackTrustKeysFromEnv(lookup func(string) (string, bool)) (TrustKeys, error)
 // VerifyPack parses and verifies an upmo.pack/v1 manifest against keys.
 func VerifyPack(raw []byte, keys TrustKeys) (Pack, error) {
 	return domain.VerifyPack(raw, keys)
+}
+
+// SignPack signs an upmo.pack/v1 manifest with priv under keyID.
+func SignPack(p Pack, keyID string, priv ed25519.PrivateKey) ([]byte, error) {
+	return domain.SignPack(p, keyID, priv)
 }

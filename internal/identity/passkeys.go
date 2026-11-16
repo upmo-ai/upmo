@@ -38,6 +38,8 @@ type PasswordSealer = app.PasswordSealer
 var (
 	// ErrNoSealer means no master key is wired, so no password hash can be stored.
 	ErrNoSealer = app.ErrNoSealer
+	// ErrInvalidLink means a sign-in link token was missing, expired, or already used.
+	ErrInvalidLink = app.ErrInvalidLink
 	// PasswordRef is the seal ref of one person's stored password hash.
 	PasswordRef = app.PasswordRef
 )

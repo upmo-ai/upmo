@@ -30,6 +30,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/backup"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -47,8 +48,8 @@ func poolURL(t *testing.T, pool *pgxpool.Pool) string {
 func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
-	if err := migrateAll(ctx, srcOwner); err != nil {
-		t.Fatalf("migrateAll(src): %v", err)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
 	}
 
 	const (
@@ -81,7 +82,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatalf("lookup owner role: %v", err)
 	}
 	userID := uuid.New()
-	sealedPW, err := (passwordSealer{keys: ring1}).Seal(userID.String(), passwordHashText)
+	sealedPW, err := brainops.NewPasswordSealer(ring1).Seal(userID.String(), passwordHashText)
 	if err != nil {
 		t.Fatalf("seal password hash: %v", err)
 	}
@@ -294,7 +295,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 
 	// 2. Negative test: corrupted archive fails BEFORE wiping live DB/files.
 	liveOwner := pgtest.New(t)
-	if err := migrateAll(ctx, liveOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, liveOwner); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
@@ -378,7 +379,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	if gotRoleID != ownerRoleID {
 		t.Fatalf("restored role_id = %s, want %s", gotRoleID, ownerRoleID)
 	}
-	unsealedPW, err := (passwordSealer{keys: ring1}).Open(userID.String(), gotPassword)
+	unsealedPW, err := brainops.NewPasswordSealer(ring1).Open(userID.String(), gotPassword)
 	if err != nil || unsealedPW != passwordHashText {
 		t.Fatalf("unseal restored password hash: got=%q err=%v", unsealedPW, err)
 	}
@@ -462,7 +463,7 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 	oldOwner := pgtest.New(t)
 
 	// Prepare an older migration head (tasks at v3, chat at v6).
-	if err := prepareSchemasAt(ctx, oldOwner, map[string]int64{
+	if err := brainops.PrepareSchemasAt(ctx, oldOwner, map[string]int64{
 		"audit":     2,
 		"identity":  3,
 		"memory":    1,
@@ -562,7 +563,7 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
-	if err := migrateAll(ctx, srcOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
 		t.Fatal(err)
 	}
 	var roleID uuid.UUID
@@ -597,7 +598,7 @@ func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
 
 	// Target DB already has schemas and different data + stale artifact file.
 	dstOwner := pgtest.New(t)
-	if err := migrateAll(ctx, dstOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, dstOwner); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := dstOwner.Exec(ctx, `
@@ -635,7 +636,7 @@ func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
 func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) {
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
-	if err := migrateAll(ctx, srcOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
 		t.Fatal(err)
 	}
 
@@ -722,7 +723,7 @@ func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) 
 	// Target populated DB with wrong master key ID (k2 instead of k1) must fail pre-flight
 	// on meta.KeyIDs BEFORE touching live DB or volumes, even in passphrase mode!
 	liveTarget := pgtest.New(t)
-	if err := migrateAll(ctx, liveTarget); err != nil {
+	if err := brainops.MigrateAll(ctx, liveTarget); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := liveTarget.Exec(ctx, `
@@ -774,7 +775,7 @@ func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) 
 func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
-	if err := migrateAll(ctx, srcOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
 		t.Fatal(err)
 	}
 	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x21}, 32))
@@ -792,7 +793,7 @@ func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 
 	// Live populated DB + volume that MUST NOT be touched by any rejected restore.
 	liveOwner := pgtest.New(t)
-	if err := migrateAll(ctx, liveOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, liveOwner); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
@@ -872,7 +873,7 @@ func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
-	if err := migrateAll(ctx, srcOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
 		t.Fatal(err)
 	}
 	if err := audit.Record(ctx, srcOwner, audit.Event{
@@ -918,7 +919,7 @@ func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 
 	// Populated live target DB at same head (Case A): VerifyTx must roll back tx before commit!
 	liveOwner := pgtest.New(t)
-	if err := migrateAll(ctx, liveOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, liveOwner); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
@@ -954,7 +955,7 @@ func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
-	if err := migrateAll(ctx, srcOwner); err != nil {
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
 		t.Fatal(err)
 	}
 	var roleID uuid.UUID
@@ -985,7 +986,7 @@ func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 
 	// Target DB is populated at an OLDER head (Case C).
 	dstOwner := pgtest.New(t)
-	if err := prepareSchemasAt(ctx, dstOwner, map[string]int64{
+	if err := brainops.PrepareSchemasAt(ctx, dstOwner, map[string]int64{
 		"audit":     2,
 		"identity":  3,
 		"memory":    1,
@@ -1031,7 +1032,7 @@ func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 func TestBackupRestoreRejectsNonBypassRLSRole(t *testing.T) {
 	ctx := context.Background()
 	owner := pgtest.New(t)
-	if err := migrateAll(ctx, owner); err != nil {
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
 

@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// Brain is an alias for Config used by pkg/brain.
+type Brain = Config
+
 // Config holds the settings brain reads at start.
 type Config struct {
 	// DatabaseURL is the Postgres URL (UPMO_DATABASE_URL). It is required.
@@ -43,6 +46,10 @@ type Config struct {
 	ServiceKey string
 	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
 	ServiceKeyPrevious string
+	// ProvisionKeys are the upmo_svc_ keys accepted on /api/v1/provision/*
+	// (UPMO_PROVISION_KEYS, comma-separated for zero-downtime key rotation).
+	// Empty disables all provisioning endpoints (returning 404).
+	ProvisionKeys []string
 	// GatewayURL is the model gateway (UPMO_GATEWAY_URL). Empty until brain calls it.
 	GatewayURL string
 	// EmbedRoute is the gateway embed route name (UPMO_EMBED_ROUTE). Empty skips
@@ -214,6 +221,15 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
 		cfg.ServiceKeyPrevious = v
+	}
+	if v, ok := lookup("UPMO_PROVISION_KEYS"); ok && strings.TrimSpace(v) != "" {
+		for _, item := range strings.Split(v, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			cfg.ProvisionKeys = append(cfg.ProvisionKeys, item)
+		}
 	}
 	if v, ok := lookup("UPMO_GATEWAY_URL"); ok && v != "" {
 		parsed, err := url.Parse(v)

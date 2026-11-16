@@ -1,4 +1,4 @@
-package main
+package brainops
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func TestDatabaseURLErrorScrubsPassword(t *testing.T) {
 			name:    "openOwnerPool",
 			envName: "UPMO_DATABASE_URL",
 			open: func(rawURL string) error {
-				pool, err := openOwnerPool(context.Background(), rawURL)
+				pool, err := OpenOwnerPool(context.Background(), rawURL)
 				if pool != nil {
 					pool.Close()
 				}
@@ -57,7 +57,7 @@ func TestDatabaseURLErrorScrubsPassword(t *testing.T) {
 			name:    "parseListenConfig",
 			envName: "UPMO_DATABASE_URL",
 			open: func(rawURL string) error {
-				_, err := parseListenConfig(rawURL)
+				_, err := ParseListenConfig(rawURL)
 				return err
 			},
 		},
@@ -65,7 +65,7 @@ func TestDatabaseURLErrorScrubsPassword(t *testing.T) {
 			name:    "openCommandPool",
 			envName: "UPMO_DATABASE_URL",
 			open: func(rawURL string) error {
-				pool, err := openCommandPool(context.Background(), rawURL)
+				pool, err := OpenCommandPool(context.Background(), rawURL)
 				if pool != nil {
 					pool.Close()
 				}
@@ -76,7 +76,7 @@ func TestDatabaseURLErrorScrubsPassword(t *testing.T) {
 			name:    "requestPool",
 			envName: "UPMO_DATABASE_APP_URL",
 			open: func(rawURL string) error {
-				pool, err := requestPool(context.Background(), rawURL)
+				pool, err := RequestPool(context.Background(), rawURL)
 				if pool != nil {
 					pool.Close()
 				}
@@ -86,7 +86,7 @@ func TestDatabaseURLErrorScrubsPassword(t *testing.T) {
 		{
 			name:    "appPoolError",
 			envName: "UPMO_DATABASE_APP_URL",
-			open:    appPoolError,
+			open:    AppPoolError,
 		},
 	}
 
@@ -131,12 +131,12 @@ func TestPoolURLErrorKeepsOnlyHostOnClosedPortURL(t *testing.T) {
 	}{
 		{
 			name: "owner",
-			err:  poolURLError("UPMO_DATABASE_URL", closedPortURL),
+			err:  PoolURLError("UPMO_DATABASE_URL", closedPortURL),
 			want: "brain: UPMO_DATABASE_URL could not be opened (host 127.0.0.1:59999)",
 		},
 		{
 			name: "app",
-			err:  appPoolError(closedPortURL),
+			err:  AppPoolError(closedPortURL),
 			want: "brain: UPMO_DATABASE_APP_URL could not be opened (host 127.0.0.1:59999)",
 		},
 	} {

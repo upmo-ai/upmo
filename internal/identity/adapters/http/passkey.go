@@ -40,6 +40,7 @@ func (h Passkeys) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/passkeys/sign-in/finish", h.limited(h.signInFinish))
 	mux.HandleFunc("POST /api/passkeys/link/options", h.limited(h.linkOptions))
 	mux.HandleFunc("POST /api/passkeys/link/finish", h.limited(h.linkFinish))
+	mux.HandleFunc("POST /api/sso/redeem", h.limited(h.redeemSSO))
 	mux.HandleFunc("POST /api/passkeys/step-up/options", h.stepUpOptions)
 	mux.HandleFunc("POST /api/passkeys/step-up/finish", h.stepUpFinish)
 	mux.HandleFunc("GET /api/passkeys", h.list)
@@ -147,6 +148,40 @@ func (h Passkeys) linkFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	clearChallenge(w)
 	SetCookie(w, text, int(h.Pass.Sessions.MaxAge.Seconds()))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h Passkeys) redeemSSO(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Token string `json:"token"`
+	}
+	if json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&input) != nil {
+		writeRaw(w, http.StatusBadRequest, invalidLink)
+		return
+	}
+	var activeCookie string
+	if cookie, err := r.Cookie(CookieName); err == nil {
+		activeCookie = cookie.Value
+	}
+	newCookie, refreshed, err := h.Pass.RedeemSSOLink(r.Context(), input.Token, activeCookie, agent(r))
+	if err != nil {
+		if refuseSignedOut(w, err) {
+			return
+		}
+		if errors.Is(err, domain.ErrSSORequired) {
+			writeRaw(w, http.StatusForbidden, ssoRequired)
+			return
+		}
+		if errors.Is(err, app.ErrInvalidLink) {
+			writeRaw(w, http.StatusBadRequest, invalidLink)
+			return
+		}
+		http.Error(w, "sso redeem", http.StatusInternalServerError)
+		return
+	}
+	if !refreshed && newCookie != "" {
+		SetCookie(w, newCookie, int(h.Pass.Sessions.MaxAge.Seconds()))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

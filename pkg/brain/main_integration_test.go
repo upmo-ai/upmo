@@ -1,6 +1,6 @@
 //go:build integration
 
-package main
+package brain
 
 import (
 	"bytes"
@@ -25,6 +25,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
@@ -310,7 +311,7 @@ func TestRequestPoolReappliesRoleAfterReset(t *testing.T) {
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	pool, err := requestPool(ctx, owner.Config().ConnString())
+	pool, err := brainops.RequestPool(ctx, owner.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

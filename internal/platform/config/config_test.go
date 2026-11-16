@@ -586,3 +586,25 @@ func TestLoadSandboxdMetricsAddr(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadProvisionKeys(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ProvisionKeys) != 0 {
+		t.Fatalf("default ProvisionKeys = %v, want empty", cfg.ProvisionKeys)
+	}
+	base["UPMO_PROVISION_KEYS"] = " upmo_svc_first , , upmo_svc_second "
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ProvisionKeys) != 2 || cfg.ProvisionKeys[0] != "upmo_svc_first" || cfg.ProvisionKeys[1] != "upmo_svc_second" {
+		t.Fatalf("ProvisionKeys = %v", cfg.ProvisionKeys)
+	}
+}
