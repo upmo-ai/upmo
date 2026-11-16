@@ -25,6 +25,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -54,7 +55,7 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil)
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +234,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil)
+		handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +295,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil); err == nil {
+	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil); err == nil {
 		t.Fatal("brain started with a malformed master key")
 	}
 }
@@ -371,7 +372,7 @@ func TestBrainVersionAndReadyzRoutes(t *testing.T) {
 	}
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(versions), nil
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,5 +407,92 @@ func TestBrainVersionAndReadyzRoutes(t *testing.T) {
 	}
 	if ready.Header().Get("X-Upmo-Version") != info.Version || ready.Header().Get("X-Upmo-Commit") != info.Commit {
 		t.Fatalf("readyz headers = %q %q, want %q %q", ready.Header().Get("X-Upmo-Version"), ready.Header().Get("X-Upmo-Commit"), info.Version, info.Commit)
+	}
+}
+
+func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	for schema, files := range map[string]fs.FS{
+		audit.Schema:    audit.Migrations(),
+		identity.Schema: identity.Migrations(),
+	} {
+		if err := migrate.Up(ctx, owner, schema, files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{
+		SessionIdle:   identity.IdleTimeout,
+		SessionMaxAge: identity.MaxAge,
+		PublicURL:     "http://localhost:5173",
+		WebAuthnRPID:  "localhost",
+	}
+	boxes, err := taskSandboxes(cfg, pool, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := metrics.NewRegistry()
+	work, err := jobs.Open(pool, jobs.WithMetrics(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := httptest.NewServer(httpserver.NewGuarded("127.0.0.1:0", handler).Handler)
+	t.Cleanup(public.Close)
+	internal := httptest.NewServer(metrics.Server("127.0.0.1:0", reg).Handler)
+	t.Cleanup(internal.Close)
+
+	// Public mux must never expose /metrics.
+	pubMetrics, err := http.Get(public.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pubMetrics.Body.Close()
+	if pubMetrics.StatusCode != http.StatusNotFound {
+		t.Fatalf("public GET /metrics = %d, want 404", pubMetrics.StatusCode)
+	}
+
+	ready, err := http.Get(public.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ready.Body.Close()
+	if ready.StatusCode != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want 200", ready.StatusCode)
+	}
+
+	res, err := http.Get(internal.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("internal GET /metrics = %d, want 200", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != metrics.ContentType {
+		t.Fatalf("Content-Type = %q, want %q", ct, metrics.ContentType)
+	}
+	bodyBytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(bodyBytes)
+	for _, want := range []string{
+		`upmo_http_requests_total{service="brain",route="GET /readyz",status="200"} 1`,
+		`upmo_http_request_duration_seconds_count{service="brain",route="GET /readyz",status="200"} 1`,
+		`upmo_http_requests_total{service="brain",route="unmatched",status="404"} 1`,
+		`upmo_river_queue_depth{queue="default"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in internal /metrics:\n%s", want, body)
+		}
 	}
 }

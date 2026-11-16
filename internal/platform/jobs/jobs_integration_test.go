@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -416,5 +420,83 @@ func TestStuckJobsAreRescuedAfterTenMinutesAndNotBefore(t *testing.T) {
 	case label := <-seen:
 		t.Fatalf("rescued %q, which had run for five minutes only", label)
 	case <-time.After(time.Second):
+	}
+}
+
+func TestWithMetricsRecordsJobsAndQueueDepth(t *testing.T) {
+	// Not parallel: ping recording is package-global.
+	owner := pgtest.New(t)
+	migrateIdentity(t, owner)
+	ctx := context.Background()
+	if err := jobs.Up(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	reg := metrics.NewRegistry()
+	client, err := jobs.Open(pool, jobs.WithQueue("chat_reply", 1), jobs.WithMetrics(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a scheduled job on chat_reply before starting workers so queue depth is non-zero.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := client.InsertTx(ctx, tx, jobs.PingArgs{Label: "queued"}, &river.InsertOpts{
+		Queue:       "chat_reply",
+		ScheduledAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InsertTx(ctx, tx, jobs.PingArgs{Label: "run"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/metrics status = %d", rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	before := scrape()
+	if !strings.Contains(before, `upmo_river_queue_depth{queue="chat_reply"} 1`) {
+		t.Fatalf("expected chat_reply queue depth 1 before run:\n%s", before)
+	}
+
+	jobs.ResetPing()
+	t.Cleanup(jobs.ResetPing)
+	done := make(chan string, 2)
+	jobs.SetPingHook(func(label string) { done <- label })
+	t.Cleanup(startClient(t, client))
+
+	select {
+	case label := <-done:
+		if label != "run" {
+			t.Fatalf("label = %q, want run", label)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ping job did not run")
+	}
+
+	// Middleware runs immediately around doInner; allow a moment for Work() to return.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		after := scrape()
+		if strings.Contains(after, `upmo_river_jobs_total{kind="platform_ping",outcome="ok"} 1`) &&
+			strings.Contains(after, `upmo_river_job_duration_seconds_count{kind="platform_ping"} 1`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("missing river job metrics after run:\n%s", after)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }

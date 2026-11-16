@@ -11,16 +11,18 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 )
 
 // Handler opens, lists, appends and reads chats through the existing book.
 // Stream, when set, serves the chat stream; Renew then looks a person's access
 // up again for the streams that stay open.
 type Handler struct {
-	Book   app.Book
-	Stream *app.StreamHub
-	Access func(r *http.Request) (app.Access, bool)
-	Renew  func(ctx context.Context, r *http.Request) (app.Access, bool, error)
+	Book    app.Book
+	Stream  *app.StreamHub
+	Metrics *metrics.Registry
+	Access  func(r *http.Request) (app.Access, bool)
+	Renew   func(ctx context.Context, r *http.Request) (app.Access, bool, error)
 }
 
 // Mount registers the chat routes. guard runs first.

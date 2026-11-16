@@ -32,6 +32,9 @@ type Config struct {
 	TrustedProxies []*net.IPNet
 	// ListenAddr is the HTTP listen address (UPMO_LISTEN_ADDR).
 	ListenAddr string
+	// MetricsAddr is the internal HTTP listen address for Prometheus /metrics
+	// (UPMO_METRICS_ADDR). Empty disables the metrics listener.
+	MetricsAddr string
 	// ShutdownTimeout bounds graceful shutdown (UPMO_SHUTDOWN_TIMEOUT).
 	ShutdownTimeout time.Duration
 	// LogLevel is one of debug, info, warn, error (UPMO_LOG_LEVEL).
@@ -187,6 +190,15 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	if v, ok := lookup("UPMO_LISTEN_ADDR"); ok && v != "" {
 		cfg.ListenAddr = v
 	}
+	if v, ok := lookup("UPMO_METRICS_ADDR"); ok && v != "" {
+		if err := checkMetricsAddr(v); err != nil {
+			return Config{}, err
+		}
+		if v == cfg.ListenAddr {
+			return Config{}, fmt.Errorf("config: UPMO_METRICS_ADDR must differ from UPMO_LISTEN_ADDR")
+		}
+		cfg.MetricsAddr = v
+	}
 	if v, ok := lookup("UPMO_SHUTDOWN_TIMEOUT"); ok && v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -316,6 +328,9 @@ type Sandboxd struct {
 	EditorAddr string
 	// EditorBaseURL is the public http origin for editor URLs (UPMO_EDITOR_BASE_URL).
 	EditorBaseURL string
+	// MetricsAddr is the internal HTTP listen address for Prometheus /metrics
+	// (UPMO_METRICS_ADDR). Empty disables the metrics listener.
+	MetricsAddr string
 }
 
 // LoadSandboxd reads the sandboxd configuration from the environment.
@@ -379,6 +394,21 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 	}
 	if cfg.ProxyAddr == cfg.EditorAddr {
 		return Sandboxd{}, fmt.Errorf("config: UPMO_EDITOR_ADDR must differ from UPMO_PROXY_ADDR")
+	}
+	if v, ok := lookup("UPMO_METRICS_ADDR"); ok && v != "" {
+		if err := checkMetricsAddr(v); err != nil {
+			return Sandboxd{}, err
+		}
+		if v == cfg.ListenAddr {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_METRICS_ADDR must differ from UPMO_LISTEN_ADDR")
+		}
+		if v == cfg.ProxyAddr {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_METRICS_ADDR must differ from UPMO_PROXY_ADDR")
+		}
+		if v == cfg.EditorAddr {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_METRICS_ADDR must differ from UPMO_EDITOR_ADDR")
+		}
+		cfg.MetricsAddr = v
 	}
 	if v, ok := lookup("UPMO_SHUTDOWN_TIMEOUT"); ok && v != "" {
 		d, err := time.ParseDuration(v)
@@ -449,4 +479,19 @@ func loadSMTP(lookup func(string) (string, bool)) (SMTP, error) {
 		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_FROM must be an email address")
 	}
 	return s, nil
+}
+
+func checkMetricsAddr(v string) error {
+	host, port, err := net.SplitHostPort(v)
+	if err != nil {
+		return fmt.Errorf("config: UPMO_METRICS_ADDR must be [host]:port with a port from 1 to 65535")
+	}
+	if strings.ContainsAny(host, " \t\r\n") {
+		return fmt.Errorf("config: UPMO_METRICS_ADDR must be [host]:port with a port from 1 to 65535")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("config: UPMO_METRICS_ADDR must be [host]:port with a port from 1 to 65535")
+	}
+	return nil
 }

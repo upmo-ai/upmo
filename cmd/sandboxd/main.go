@@ -19,6 +19,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/sandboxd"
 )
 
@@ -49,7 +50,13 @@ func run() error {
 	if c, ok := driver.(io.Closer); ok {
 		defer func() { _ = c.Close() }()
 	}
-	api, err := sandboxd.Routes(cfg.ServiceKey, cfg.ServiceKeyPrevious, driver, log)
+	var reg *metrics.Registry
+	var routeOpts []sandboxd.RouteOption
+	if cfg.MetricsAddr != "" {
+		reg = metrics.NewRegistry()
+		routeOpts = append(routeOpts, sandboxd.WithMetrics(reg))
+	}
+	api, err := sandboxd.Routes(cfg.ServiceKey, cfg.ServiceKeyPrevious, driver, log, routeOpts...)
 	if err != nil {
 		return err
 	}
@@ -68,12 +75,20 @@ func run() error {
 	proxy.BaseContext = func(net.Listener) context.Context { return ctx }
 	gate.BaseContext = func(net.Listener) context.Context { return ctx }
 	go sandboxd.Sweep(ctx, driver, sweepEvery, log)
-	errc := make(chan error, 3)
-	for _, srv := range []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy, gate} {
+	servers := []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy, gate}
+	if reg != nil {
+		servers = append(servers, metrics.Server(cfg.MetricsAddr, reg))
+	}
+	errc := make(chan error, len(servers))
+	for _, srv := range servers {
 		go func() {
 			errc <- httpserver.Run(ctx, srv, cfg.ShutdownTimeout, log)
 			cancel()
 		}()
 	}
-	return errors.Join(<-errc, <-errc, <-errc)
+	errs := make([]error, len(servers))
+	for i := range servers {
+		errs[i] = <-errc
+	}
+	return errors.Join(errs...)
 }

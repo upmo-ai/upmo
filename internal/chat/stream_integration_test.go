@@ -18,29 +18,32 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 )
 
 // streamRig is the stream route over the rig's store, a hub and a listener.
 // Requests name the person in the X-User header.
 type streamRig struct {
 	*rig
-	hub *chat.StreamHub
-	srv *httptest.Server
-	mu  sync.Mutex
+	hub     *chat.StreamHub
+	srv     *httptest.Server
+	metrics *metrics.Registry
+	mu      sync.Mutex
 	// gone lists the people whose access is lost for good.
 	gone map[string]bool
 }
 
 func newStreamRig(t *testing.T, cfg chat.StreamConfig, reply app.ReplyConfig) *streamRig {
 	t.Helper()
-	r := &streamRig{rig: newRig(t, reply), gone: map[string]bool{}}
+	r := &streamRig{rig: newRig(t, reply), metrics: metrics.NewRegistry(), gone: map[string]bool{}}
 	r.hub = chat.NewStreamHub(r.pool, r.owner.Config().ConnConfig, nil, cfg)
 	r.hub.Start(context.Background())
 
 	mux := http.NewServeMux()
 	chat.Handler{
-		Book:   r.store,
-		Stream: r.hub,
+		Book:    r.store,
+		Stream:  r.hub,
+		Metrics: r.metrics,
 		Access: func(req *http.Request) (chat.Access, bool) {
 			access, ok := r.people[names[req.Header.Get("X-User")]]
 			return access, ok
@@ -414,4 +417,33 @@ func TestStreamWithNoCursorSeesAReplyUnderWayFromItsStartEvenAfterANewerUserLine
 	s.expectDelta(replyID, 2, "going")
 	s.expectLine(second.ID)
 	s.expectQuiet(100 * time.Millisecond)
+}
+
+func TestStreamMetricsGauge(t *testing.T) {
+	r := newStreamRig(t, quiet(), app.ReplyConfig{})
+	chatID := r.open()
+	s := r.stream("owner", chatID, nil, "")
+
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		r.metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		return rec.Body.String()
+	}
+
+	if body := scrape(); !strings.Contains(body, `upmo_sse_streams_active{kind="chat"} 1`) {
+		t.Fatalf("expected active chat stream = 1:\n%s", body)
+	}
+	s.cancel()
+	_ = s.resp.Body.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if strings.Contains(scrape(), `upmo_sse_streams_active{kind="chat"} 0`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected active chat stream = 0 after close:\n%s", scrape())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	"github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
@@ -64,15 +65,16 @@ func (c *countingRows) reads(taskID string) int {
 // rig is the stream route over the real store, hub, listener and database.
 // Requests name the person in the X-User header: owner or other.
 type rig struct {
-	t      *testing.T
-	owner  *pgxpool.Pool
-	store  tasks.Store
-	rows   *countingRows
-	hub    *tasks.StreamHub
-	srv    *httptest.Server
-	mu     sync.Mutex
-	gone   map[string]bool
-	people map[string]app.Access
+	t       *testing.T
+	owner   *pgxpool.Pool
+	store   tasks.Store
+	rows    *countingRows
+	hub     *tasks.StreamHub
+	srv     *httptest.Server
+	metrics *metrics.Registry
+	mu      sync.Mutex
+	gone    map[string]bool
+	people  map[string]app.Access
 }
 
 func newRig(t *testing.T, cfg tasks.StreamConfig) *rig {
@@ -91,12 +93,13 @@ func newRig(t *testing.T, cfg tasks.StreamConfig) *rig {
 	}
 	store := tasks.NewStore(pgtest.App(t, owner), nil)
 	r := &rig{
-		t:      t,
-		owner:  owner,
-		store:  store,
-		rows:   &countingRows{Store: store, tails: map[string]int{}},
-		gone:   map[string]bool{},
-		people: map[string]app.Access{"owner": ownerAccess, "other": otherAccess},
+		t:       t,
+		owner:   owner,
+		store:   store,
+		rows:    &countingRows{Store: store, tails: map[string]int{}},
+		metrics: metrics.NewRegistry(),
+		gone:    map[string]bool{},
+		people:  map[string]app.Access{"owner": ownerAccess, "other": otherAccess},
 	}
 	listener := postgres.Listener{Config: owner.Config().ConnConfig, MinBackoff: 50 * time.Millisecond}
 	r.hub = app.NewStreamHub(r.rows, listener, nil, cfg)
@@ -104,8 +107,9 @@ func newRig(t *testing.T, cfg tasks.StreamConfig) *rig {
 
 	mux := http.NewServeMux()
 	tasks.Handler{
-		View:   store,
-		Stream: r.hub,
+		View:    store,
+		Stream:  r.hub,
+		Metrics: r.metrics,
 		Access: func(req *http.Request) (tasks.Access, bool) {
 			access, ok := r.people[req.Header.Get("X-User")]
 			return access, ok
@@ -1103,4 +1107,26 @@ func TestStreamMigrationGoesDownAndUpAgain(t *testing.T) {
 	if got := triggers(); got != 2 {
 		t.Fatalf("triggers after up again = %d", got)
 	}
+}
+
+func TestStreamMetricsGauge(t *testing.T) {
+	r := newRig(t, quiet())
+	task := r.task("metrics", domain.Working)
+	s := r.open("owner", "/api/tasks/"+task.ID+"/stream", nil)
+	s.expectHello()
+
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		r.metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		return rec.Body.String()
+	}
+
+	if body := scrape(); !strings.Contains(body, `upmo_sse_streams_active{kind="tasks"} 1`) {
+		t.Fatalf("expected active tasks stream = 1:\n%s", body)
+	}
+	s.close()
+
+	eventually(t, "active tasks stream returns to 0", func() bool {
+		return strings.Contains(scrape(), `upmo_sse_streams_active{kind="tasks"} 0`)
+	})
 }

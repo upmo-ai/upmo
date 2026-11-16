@@ -560,6 +560,22 @@ func (d *Driver) forget(id string) {
 	d.mu.Unlock()
 }
 
+// ActiveSeats returns the number of live, unexpired sandboxes held by this driver.
+func (d *Driver) ActiveSeats() int {
+	now := d.now().UTC()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	count := 0
+	for id, b := range d.boxes {
+		if !now.Before(b.expires) {
+			delete(d.boxes, id)
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // remove force-removes the container with its anonymous volumes, then the
 // named scratch volume. Either already gone is not an error.
 func (d *Driver) remove(ctx context.Context, id string) error {
