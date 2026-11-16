@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -39,7 +41,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	pool, err := openPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -105,4 +107,24 @@ func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) gateway.Chain {
 		chain = append(chain, gateway.DBSecrets{Pool: pool, Keys: keys})
 	}
 	return append(chain, fromEnv[1:]...)
+}
+
+// openPool opens the gateway pool without exposing UPMO_DATABASE_URL in parse
+// or connect errors.
+func openPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	return pool, nil
+}
+
+// poolURLError reports a Postgres URL that could not be opened. The parse and
+// connect errors name the URL, which holds the password and would reach the
+// gateway stopped log, so only the host is kept from it.
+func poolURLError(envName, rawURL string) error {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return fmt.Errorf("gateway: %s could not be opened (host %s)", envName, u.Host)
+	}
+	return fmt.Errorf("gateway: %s could not be opened", envName)
 }
