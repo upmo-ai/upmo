@@ -1,14 +1,21 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 )
 
 func TestClientIP(t *testing.T) {
@@ -138,4 +145,153 @@ func TestWriteJSONAndNoContentAndFail(t *testing.T) {
 			t.Fatalf("body = %q", rec.Body.String())
 		}
 	})
+}
+
+func TestReadyIncludesBuildHeadersAndJSON(t *testing.T) {
+	mux := http.NewServeMux()
+	Health(mux, nil)
+	info := buildinfo.Info()
+
+	plain := httptest.NewRecorder()
+	mux.ServeHTTP(plain, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if plain.Code != http.StatusOK || plain.Body.String() != "ok" {
+		t.Fatalf("plain readyz = %d %q", plain.Code, plain.Body.String())
+	}
+	if got := plain.Header().Get("X-Upmo-Version"); got != info.Version {
+		t.Fatalf("X-Upmo-Version = %q, want %q", got, info.Version)
+	}
+	if got := plain.Header().Get("X-Upmo-Commit"); got != info.Commit {
+		t.Fatalf("X-Upmo-Commit = %q, want %q", got, info.Commit)
+	}
+	if got := plain.Header().Get("Vary"); got != "Accept" {
+		t.Fatalf("Vary = %q, want %q", got, "Accept")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req.Header.Set("Accept", "application/json")
+	jsonRec := httptest.NewRecorder()
+	mux.ServeHTTP(jsonRec, req)
+	if jsonRec.Code != http.StatusOK {
+		t.Fatalf("json readyz = %d", jsonRec.Code)
+	}
+	if got := jsonRec.Header().Get("Vary"); got != "Accept" {
+		t.Fatalf("json Vary = %q, want %q", got, "Accept")
+	}
+	if ct := jsonRec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q", ct)
+	}
+	var got readyResponse
+	if err := json.Unmarshal(jsonRec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "ok" || got.Version != info.Version || got.Commit != info.Commit || got.BuildTime != info.BuildTime {
+		t.Fatalf("json readyz = %+v, want info %+v", got, info)
+	}
+}
+
+func TestVersionHandlers(t *testing.T) {
+	info := buildinfo.Info()
+
+	t.Run("with schemas", func(t *testing.T) {
+		mux := http.NewServeMux()
+		Version(mux, func(context.Context) (map[string]int64, error) {
+			return map[string]int64{"audit": 2, "identity": 3}, nil
+		})
+		for _, path := range []string{"/version", "/api/version"} {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200", path, rec.Code)
+			}
+			var got buildinfo.Response
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("%s decode: %v", path, err)
+			}
+			if got.Version != info.Version || got.Commit != info.Commit || got.BuildTime != info.BuildTime {
+				t.Fatalf("%s info = %+v, want %+v", path, got, info)
+			}
+			if got.SchemaVersions["audit"] != 2 || got.SchemaVersions["identity"] != 3 {
+				t.Fatalf("%s schema_versions = %v", path, got.SchemaVersions)
+			}
+		}
+	})
+
+	t.Run("nil schemas returns empty object", func(t *testing.T) {
+		mux := http.NewServeMux()
+		Version(mux, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"schema_versions":{}`) {
+			t.Fatalf("body = %s, want empty schema_versions object", rec.Body.String())
+		}
+	})
+
+	t.Run("error returns 503", func(t *testing.T) {
+		mux := http.NewServeMux()
+		Version(mux, func(context.Context) (map[string]int64, error) {
+			return nil, errors.New("db down")
+		})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+	})
+
+	t.Run("rejects post", func(t *testing.T) {
+		mux := http.NewServeMux()
+		Version(mux, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/version", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rec.Code)
+		}
+	})
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestRunLogsBuildInfo(t *testing.T) {
+	mux := http.NewServeMux()
+	Health(mux, nil)
+	srv := New("127.0.0.1:0", mux)
+	buf := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, srv, time.Second, log) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "http server listening") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "version=") || !strings.Contains(logged, "commit=") {
+		t.Fatalf("listening log missing version/commit: %s", logged)
+	}
 }

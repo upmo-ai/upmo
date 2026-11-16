@@ -25,13 +25,21 @@ TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
 UPMO_DOCKER_SOCKET ?= /var/run/docker.sock
 export UPMO_DOCKER_SOCKET
 
+# Build metadata stamped into internal/platform/buildinfo.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$(VERSION) \
+	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$(COMMIT) \
+	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$(BUILD_TIME)
+
 .PHONY: help build test test-integration test-live test-regression lint fmt up down ci web e2e arch vuln secrets commits docs fuzz canary
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
 
 build: ## Build the Go module and the web app
-	$(GO) go build ./...
+	$(GO) go build -ldflags "$(LDFLAGS)" ./...
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm build"
 
 test: ## Run Go unit tests with the race detector and the web tests

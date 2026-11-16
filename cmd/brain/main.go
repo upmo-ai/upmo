@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -112,6 +114,10 @@ func run() error {
 		return err
 	}
 	defer owner.Close()
+	schemaVersions, err := migrate.SchemaVersions(ctx, owner)
+	if err != nil {
+		return err
+	}
 	if err := enableAppLogin(ctx, owner, cfg.DatabaseAppURL); err != nil {
 		return err
 	}
@@ -228,10 +234,14 @@ func run() error {
 	chatStreams := chat.NewStreamHub(pool, listenConn, log, chat.StreamConfig{})
 	chatStreams.Start(ctx)
 	defer chatStreams.Close()
-	handler, err := routes(pool, cfg, log, boxes, work, noticeStore, streams, chatStreams)
+	handler, err := routes(pool, cfg, log, boxes, work, noticeStore, streams, chatStreams, func(context.Context) (map[string]int64, error) {
+		return maps.Clone(schemaVersions), nil
+	})
 	if err != nil {
 		return err
 	}
+	info := buildinfo.Info()
+	log.Info("brain started", "version", info.Version, "commit", info.Commit, "build_time", info.BuildTime)
 	srv := httpserver.NewGuarded(cfg.ListenAddr, handler)
 	srv.RegisterOnShutdown(streams.Close)
 	srv.RegisterOnShutdown(chatStreams.Close)
@@ -387,9 +397,10 @@ func poolURLError(envName, rawURL string) error {
 	return fmt.Errorf("brain: %s could not be opened", envName)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runtime.TaskSandboxes, work *jobs.Client, noticeStore notices.Store, streams *tasks.StreamHub, chatStreams *chat.StreamHub, schemaVersions func(context.Context) (map[string]int64, error)) (http.Handler, error) {
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
+	httpserver.Version(mux, schemaVersions)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
