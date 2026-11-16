@@ -43,6 +43,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.GatewayURL != "" {
 		t.Errorf("GatewayURL = %q", cfg.GatewayURL)
 	}
+	if cfg.MetricsAddr != "" {
+		t.Errorf("MetricsAddr = %q, want empty", cfg.MetricsAddr)
+	}
 }
 
 func TestLoadGatewayURL(t *testing.T) {
@@ -530,5 +533,56 @@ func TestLoadArtifactsDirMustBeAbsolute(t *testing.T) {
 	_, err := load(lookupFrom(env))
 	if err == nil || !strings.Contains(err.Error(), "UPMO_ARTIFACTS_DIR") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadMetricsAddr(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	for _, valid := range []string{":9090", "127.0.0.1:9090", "[::1]:9090"} {
+		base["UPMO_METRICS_ADDR"] = valid
+		cfg, err := load(lookupFrom(base))
+		if err != nil {
+			t.Fatalf("%q: %v", valid, err)
+		}
+		if cfg.MetricsAddr != valid {
+			t.Fatalf("MetricsAddr = %q, want %q", cfg.MetricsAddr, valid)
+		}
+	}
+	for _, bad := range []string{"9090", "127.0.0.1", "localhost:", ":0", ":65536", ":metrics", " :9090", ":8080"} {
+		base["UPMO_METRICS_ADDR"] = bad
+		if _, err := load(lookupFrom(base)); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestLoadSandboxdMetricsAddr(t *testing.T) {
+	cfg, err := loadSandboxd(lookupFrom(map[string]string{
+		"UPMO_SERVICE_KEY":  "upmo_svc_x",
+		"UPMO_METRICS_ADDR": "127.0.0.1:9093",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsAddr != "127.0.0.1:9093" {
+		t.Fatalf("MetricsAddr = %q", cfg.MetricsAddr)
+	}
+	for name, addr := range map[string]string{
+		"invalid":      "notaport",
+		"same listen":  ":8083",
+		"same proxy":   ":3128",
+		"same editor":  ":8084",
+		"port zero":    ":0",
+		"port too big": ":70000",
+	} {
+		if _, err := loadSandboxd(lookupFrom(map[string]string{
+			"UPMO_SERVICE_KEY":  "upmo_svc_x",
+			"UPMO_METRICS_ADDR": addr,
+		})); err == nil {
+			t.Errorf("%s (%q): want an error", name, addr)
+		}
 	}
 }
