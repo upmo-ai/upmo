@@ -32,6 +32,19 @@ func (s Sessions) Insert(ctx context.Context, user domain.UserID, hash []byte, c
 	if err := tx.QueryRow(ctx, `SELECT role_id::text FROM identity.users WHERE id = $1`, user).Scan(&roleID); err != nil {
 		return "", err
 	}
+	var ssoRequired bool
+	var roleKey string
+	if err := tx.QueryRow(ctx, `SELECT sso_required, role_key FROM identity.sso_sign_in_state($1)`, user).Scan(&ssoRequired, &roleKey); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", app.ErrNotSignedIn
+		}
+		return "", err
+	}
+	breakGlass, err := domain.CheckSSOSignIn(ssoRequired, roleKey, method == "sso")
+	if err != nil {
+		audit.Annotate(ctx, audit.Event{Reason: "sso_required", TargetType: "user", TargetID: user.String()})
+		return "", err
+	}
 	var id string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at, sign_in_method, signed_in_at, user_agent)
@@ -43,9 +56,14 @@ func (s Sessions) Insert(ctx context.Context, user domain.UserID, hash []byte, c
 		Type: "user", ID: user.String(), RoleID: roleID,
 		CredentialType: "session", CredentialID: id,
 	})
+	reason := ""
+	if breakGlass {
+		reason = "sso_break_glass"
+	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.AuthSignIn,
 		Outcome:  audit.Success,
+		Reason:   reason,
 		TargetID: id,
 		Changes: audit.Changes{
 			Values: map[string]audit.Change{"method": {To: method}},

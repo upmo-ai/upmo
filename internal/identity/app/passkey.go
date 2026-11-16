@@ -50,6 +50,7 @@ type PassStore interface {
 	Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
 	Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error)
+	SignInPolicy(ctx context.Context, user domain.UserID) (ssoRequired bool, roleKey string, err error)
 	ListPasskeys(ctx context.Context, user domain.UserID) ([]PasskeyRecord, error)
 	RenamePasskey(ctx context.Context, user domain.UserID, id, name string) error
 	DeletePasskey(ctx context.Context, user domain.UserID, id string) ([]byte, error)
@@ -98,6 +99,9 @@ func (p Passkeys) FinishSignIn(ctx context.Context, cookie string, body []byte, 
 	})
 	if err != nil {
 		p.annotateAttempt(ctx, err)
+		return "", err
+	}
+	if err := checkSSOSignIn(ctx, p.Store, account.ID, false); err != nil {
 		return "", err
 	}
 	p.noteClone(credential)
@@ -149,6 +153,10 @@ func (p Passkeys) FinishLink(ctx context.Context, cookie, token string, body []b
 	if owner != user {
 		return "", ErrInvalidLink
 	}
+	isSSO := purpose == "sso" || purpose == "sso_stepup"
+	if err := checkSSOSignIn(ctx, p.Store, user, isSSO); err != nil {
+		return "", err
+	}
 	account, err := p.account(ctx, user)
 	if err != nil {
 		return "", ErrInvalidLink
@@ -178,11 +186,25 @@ func (p Passkeys) FinishLink(ctx context.Context, cookie, token string, body []b
 		}
 	}
 	method := "link"
-	if purpose == "invite" {
-		method = "link"
+	if isSSO {
+		method = "sso"
 	}
 	text, _, err = p.Sessions.Start(ctx, user, method, agent)
 	return text, err
+}
+
+func checkSSOSignIn(ctx context.Context, store interface {
+	SignInPolicy(ctx context.Context, user domain.UserID) (bool, string, error)
+}, user domain.UserID, isSSO bool) error {
+	ssoRequired, roleKey, err := store.SignInPolicy(ctx, user)
+	if err != nil {
+		return err
+	}
+	if _, err := domain.CheckSSOSignIn(ssoRequired, roleKey, isSSO); err != nil {
+		audit.Annotate(ctx, audit.Event{Reason: "sso_required", TargetType: "user", TargetID: user.String()})
+		return err
+	}
+	return nil
 }
 
 // BeginAdd starts another passkey. The caller has already checked the sign-in is fresh.

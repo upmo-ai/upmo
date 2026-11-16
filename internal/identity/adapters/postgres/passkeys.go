@@ -277,6 +277,21 @@ func (p Passkeys) Empty(ctx context.Context) (bool, error) {
 	return !exists, err
 }
 
+func (p Passkeys) SignInPolicy(ctx context.Context, user domain.UserID) (bool, string, error) {
+	var ssoRequired bool
+	var roleKey string
+	err := p.Pool.QueryRow(ctx, `
+		SELECT sso_required, role_key
+		FROM identity.sso_sign_in_state($1)`, user).Scan(&ssoRequired, &roleKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, "", app.ErrNotSignedIn
+	}
+	if err != nil {
+		return false, "", err
+	}
+	return ssoRequired, roleKey, nil
+}
+
 func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error) {
 	var user domain.UserID
 	err := p.Pool.QueryRow(ctx, `

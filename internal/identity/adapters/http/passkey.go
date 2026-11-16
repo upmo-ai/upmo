@@ -24,6 +24,7 @@ const (
 	signInAgain = `{"error":"sign in again"}` + "\n"
 	lastPasskey = `{"error":"the last way to sign in cannot be removed"}` + "\n"
 	slowDown    = `{"error":"slow down"}` + "\n"
+	ssoRequired = `{"error":"sso required"}` + "\n"
 )
 
 // Passkeys serves passkey sign-in, links, passwords and passkey changes.
@@ -93,6 +94,10 @@ func (h Passkeys) signInFinish(w http.ResponseWriter, r *http.Request) {
 		if refuseSignedOut(w, err) {
 			return
 		}
+		if errors.Is(err, domain.ErrSSORequired) {
+			writeRaw(w, http.StatusForbidden, ssoRequired)
+			return
+		}
 		writeRaw(w, http.StatusUnauthorized, unauthorised)
 		return
 	}
@@ -131,6 +136,10 @@ func (h Passkeys) linkFinish(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		clearChallenge(w)
 		if refuseSignedOut(w, err) {
+			return
+		}
+		if errors.Is(err, domain.ErrSSORequired) {
+			writeRaw(w, http.StatusForbidden, ssoRequired)
 			return
 		}
 		writeRaw(w, http.StatusBadRequest, invalidLink)

@@ -6,8 +6,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
+	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/app"
+	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
@@ -127,4 +131,29 @@ func refuseUnauthorised(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte("{\"error\":\"unauthorised\"}\n"))
+}
+
+// WorkspaceService is the workspace settings use case.
+type WorkspaceService = app.Workspace
+
+// WorkspaceSettings is the single-row workspace configuration.
+type WorkspaceSettings = domain.Workspace
+
+var (
+	// ErrSSORequired refuses non-SSO sign-in for non-owners when the workspace requires SSO.
+	ErrSSORequired = domain.ErrSSORequired
+	// ErrSettingsOnly refuses a person who cannot manage workspace settings.
+	ErrSettingsOnly = domain.ErrSettingsOnly
+	// ErrInvalidWorkspace refuses workspace settings that fail domain validation.
+	ErrInvalidWorkspace = domain.ErrInvalidWorkspace
+)
+
+// Workspace builds the workspace settings use case.
+func Workspace(pool *pgxpool.Pool) app.Workspace {
+	return app.Workspace{Store: postgres.Passkeys{Pool: pool}}
+}
+
+// MountWorkspace registers the workspace settings routes.
+func MountWorkspace(mux *http.ServeMux, workspace app.Workspace, sessions app.Service) {
+	(httpapi.Workspace{Workspace: workspace, Sessions: sessions}).Mount(mux)
 }

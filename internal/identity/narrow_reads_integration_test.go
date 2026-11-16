@@ -327,6 +327,7 @@ func TestLookupFunctionsRunAsDefiner(t *testing.T) {
 		"identity.member_disable(bytea, uuid, timestamptz)",
 		"identity.member_invite(bytea, text, text, uuid, bytea, bytea, timestamptz, timestamptz)",
 		"identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz)",
+		"identity.sso_sign_in_state(uuid)",
 	} {
 		var definer, publicExec, appExec bool
 		var config []string
