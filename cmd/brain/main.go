@@ -402,6 +402,7 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, boxes *runt
 	identity.MountRoles(mux, identity.Roles(pool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(pool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
+	identity.MountWorkspace(mux, identity.Workspace(pool), sessions)
 	taskBook := tasks.NewStore(pool, work)
 	taskBook.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	var editorSigner tasks.EditorSigner

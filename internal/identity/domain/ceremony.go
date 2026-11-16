@@ -44,7 +44,7 @@ func Fresh(signedIn, now time.Time) bool {
 // LinkLifetime is how long a link of that purpose lasts.
 func LinkLifetime(purpose string) (time.Duration, bool) {
 	switch purpose {
-	case "recover", "bootstrap":
+	case "recover", "bootstrap", "sign_in", "step_up", "sso", "sso_stepup":
 		return RecoverLifetime, true
 	case "invite":
 		return InviteLifetime, true

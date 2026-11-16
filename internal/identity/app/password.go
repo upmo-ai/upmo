@@ -43,6 +43,7 @@ type PasswordStore interface {
 	ClearPassword(ctx context.Context, user domain.UserID) error
 	HasPassword(ctx context.Context, user domain.UserID) (bool, error)
 	ClaimOffer(ctx context.Context, user domain.UserID, now time.Time) (bool, error)
+	SignInPolicy(ctx context.Context, user domain.UserID) (ssoRequired bool, roleKey string, err error)
 }
 
 // Passwords is the password sign-in use case.
@@ -93,6 +94,9 @@ func (p Passwords) SignIn(ctx context.Context, email, password, ip, agent string
 	if !ok {
 		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: user.String()})
 		return "", false, 0, ErrWrong
+	}
+	if err := checkSSOSignIn(ctx, p.Store, user, false); err != nil {
+		return "", false, 0, err
 	}
 	if rehash {
 		next, err := domain.HashPassword(password)
