@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
@@ -51,7 +54,7 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil)
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +233,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil)
+		handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -291,7 +294,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil); err == nil {
+	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil); err == nil {
 		t.Fatal("brain started with a malformed master key")
 	}
 }
@@ -328,5 +331,80 @@ func TestRequestPoolReappliesRoleAfterReset(t *testing.T) {
 	}
 	if who != "upmo_app" {
 		t.Fatalf("after checkout current_user = %s", who)
+	}
+}
+
+func TestBrainVersionAndReadyzRoutes(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	for schema, files := range map[string]fs.FS{
+		audit.Schema:    audit.Migrations(),
+		identity.Schema: identity.Migrations(),
+	} {
+		if err := migrate.Up(ctx, owner, schema, files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	versions, err := migrate.SchemaVersions(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := pgtest.App(t, owner)
+	if _, err := pool.Exec(ctx, "SELECT * FROM identity.goose_db_version"); err == nil {
+		t.Fatal("upmo_app read identity.goose_db_version directly")
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{
+		SessionIdle:   identity.IdleTimeout,
+		SessionMaxAge: identity.MaxAge,
+		PublicURL:     "http://localhost:5173",
+		WebAuthnRPID:  "localhost",
+	}
+	boxes, err := taskSandboxes(cfg, pool, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := jobs.Open(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, func(context.Context) (map[string]int64, error) {
+		return maps.Clone(versions), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected := httpserver.NewGuarded("127.0.0.1:0", handler).Handler
+	info := buildinfo.Info()
+
+	for _, path := range []string{"/version", "/api/version"} {
+		rec := httptest.NewRecorder()
+		protected.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200", path, rec.Code)
+		}
+		var got buildinfo.Response
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s decode: %v", path, err)
+		}
+		if got.Version != info.Version || got.Commit != info.Commit || got.BuildTime != info.BuildTime {
+			t.Fatalf("%s info = %+v, want %+v", path, got, info)
+		}
+		if got.SchemaVersions[audit.Schema] == 0 || got.SchemaVersions[identity.Schema] == 0 {
+			t.Fatalf("%s schema_versions = %v, want audit and identity", path, got.SchemaVersions)
+		}
+		if _, hasGateway := got.SchemaVersions[gateway.Schema]; hasGateway {
+			t.Fatalf("%s unexpectedly reported unmigrated gateway schema: %v", path, got.SchemaVersions)
+		}
+	}
+
+	ready := httptest.NewRecorder()
+	protected.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusOK || ready.Body.String() != "ok" {
+		t.Fatalf("readyz = %d %q", ready.Code, ready.Body.String())
+	}
+	if ready.Header().Get("X-Upmo-Version") != info.Version || ready.Header().Get("X-Upmo-Commit") != info.Commit {
+		t.Fatalf("readyz headers = %q %q, want %q %q", ready.Header().Get("X-Upmo-Version"), ready.Header().Get("X-Upmo-Commit"), info.Version, info.Commit)
 	}
 }

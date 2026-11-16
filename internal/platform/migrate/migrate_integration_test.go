@@ -62,6 +62,43 @@ func TestOneProviderAppliesOnlyItsFiles(t *testing.T) {
 	}
 }
 
+func TestSchemaVersionsSkipsMissingAndReadsAppliedHead(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	empty, err := migrate.SchemaVersions(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty versions = %v, want none", empty)
+	}
+
+	one := mustSub(t, oneFiles, "testdata/one")
+	if err := migrate.Up(ctx, pool, "audit", one); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := migrate.SchemaVersions(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions["audit"] != 1 {
+		t.Fatalf("versions = %v, want map[audit:1]", versions)
+	}
+
+	if err := migrate.Down(ctx, pool, "audit", one); err != nil {
+		t.Fatal(err)
+	}
+	afterDown, err := migrate.SchemaVersions(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterDown) != 0 {
+		t.Fatalf("after down versions = %v, want none", afterDown)
+	}
+}
+
 func mustSub(t *testing.T, files embed.FS, dir string) fs.FS {
 	t.Helper()
 	sub, err := fs.Sub(files, dir)

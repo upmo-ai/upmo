@@ -36,7 +36,11 @@ services:
       - knowledge-data:/var/upmo/knowledge
     # Built then exec'd rather than go run, so SIGTERM reaches brain and it shuts
     # down gracefully; go run exits on SIGTERM without passing it on.
-    command: ["sh", "-c", "go build -o /tmp/brain ./cmd/brain && exec /tmp/brain"]
+    command:
+      - sh
+      - -c
+      - >-
+        go build -ldflags "-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$${UPMO_VERSION:-dev} -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$$(git rev-parse HEAD 2>/dev/null || echo unknown) -X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o /tmp/brain ./cmd/brain && exec /tmp/brain
     env_file:
       - path: .env
         required: false
@@ -80,7 +84,11 @@ services:
 
   gateway:
     <<: *go
-    command: ["sh", "-c", "go build -o /tmp/gateway ./cmd/gateway && exec /tmp/gateway"]
+    command:
+      - sh
+      - -c
+      - >-
+        go build -ldflags "-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$${UPMO_VERSION:-dev} -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$$(git rev-parse HEAD 2>/dev/null || echo unknown) -X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o /tmp/gateway ./cmd/gateway && exec /tmp/gateway
     env_file:
       - path: .env
         required: false

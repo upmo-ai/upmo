@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
@@ -59,15 +61,24 @@ func run() error {
 	if err := migrate.Up(ctx, pool, gateway.Schema, gateway.Migrations()); err != nil {
 		return err
 	}
+	schemaVersions, err := migrate.SchemaVersions(ctx, pool)
+	if err != nil {
+		return err
+	}
 
-	handler, err := routes(pool, cfg, log)
+	info := buildinfo.Info()
+	log.Info("gateway started", "version", info.Version, "commit", info.Commit, "build_time", info.BuildTime)
+
+	handler, err := routes(pool, cfg, log, func(context.Context) (map[string]int64, error) {
+		return maps.Clone(schemaVersions), nil
+	})
 	if err != nil {
 		return err
 	}
 	return httpserver.Run(ctx, httpserver.New(cfg.ListenAddr, handler), cfg.ShutdownTimeout, log)
 }
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handler, error) {
+func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersions func(context.Context) (map[string]int64, error)) (http.Handler, error) {
 	master, err := svcsig.ParseKey(cfg.ServiceKey)
 	if err != nil {
 		return nil, err
@@ -95,7 +106,14 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) (http.Handl
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
 	gateway.Mount(mux, pool, secretBackends(pool, masterKeys), log)
-	return svcsig.Handler(keys, svcsig.AudienceGateway, mux)
+	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, mux)
+	if err != nil {
+		return nil, err
+	}
+	root := http.NewServeMux()
+	httpserver.Version(root, schemaVersions)
+	root.Handle("/", signed)
+	return root, nil
 }
 
 // secretBackends is the order a key is looked for: the environment, then the
