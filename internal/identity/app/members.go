@@ -27,8 +27,8 @@ type MemberStore interface {
 	NamesOf(ctx context.Context, persons, teams []string) (personNames, teamNames map[string]string, err error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
-	InviteMember(ctx context.Context, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
-	RemoveMember(ctx context.Context, id domain.UserID, now time.Time, rule func(system string) error) error
+	InviteMember(ctx context.Context, actorTokenHash []byte, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
+	RemoveMember(ctx context.Context, actorTokenHash []byte, id domain.UserID, now time.Time, rule func(system string) error) error
 	ReplaceMemberLink(ctx context.Context, id domain.UserID, purpose string, hash []byte, expires time.Time, rule func(system string, invited bool) error) error
 	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
 }
@@ -94,7 +94,7 @@ func (m Members) Invite(ctx context.Context, session Session, email, name string
 		return domain.Member{}, "", err
 	}
 	now := m.now()
-	member, err := m.Store.InviteMember(ctx, email, name, role, handle, hash, now, now.Add(domain.InviteLifetime))
+	member, err := m.Store.InviteMember(ctx, session.TokenHash, email, name, role, handle, hash, now, now.Add(domain.InviteLifetime))
 	if err != nil {
 		return domain.Member{}, "", err
 	}
@@ -124,7 +124,7 @@ func (m Members) Remove(ctx context.Context, session Session, target domain.User
 	if err != nil {
 		return err
 	}
-	return m.Store.RemoveMember(ctx, target, m.now(), func(system string) error {
+	return m.Store.RemoveMember(ctx, session.TokenHash, target, m.now(), func(system string) error {
 		return domain.MayManage(actor, system)
 	})
 }

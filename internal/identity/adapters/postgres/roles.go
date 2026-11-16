@@ -148,51 +148,21 @@ func (p Passkeys) DeleteRole(ctx context.Context, id domain.RoleID) error {
 	return tx.Commit(ctx)
 }
 
-// SetMemberRole gives a person another role. The rule sees the locked row. The
-// role.change event records the role ids from and to in the same transaction.
-func (p Passkeys) SetMemberRole(ctx context.Context, user domain.UserID, role domain.RoleID, rule func(current, next string, permissions []domain.Permission) error) error {
+// SetMemberRole gives a person another role through the proof-carrying definer
+// function. The role.change event records the role ids from and to in the same
+// transaction.
+func (p Passkeys) SetMemberRole(ctx context.Context, actorTokenHash []byte, user domain.UserID, role domain.RoleID, _ func(current, next string, permissions []domain.Permission) error) error {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var current, from string
+	var from string
 	err = tx.QueryRow(ctx, `
-		SELECT COALESCE(role.key, ''), person.role_id::text
-		FROM identity.users AS person
-		JOIN identity.roles AS role ON role.id = person.role_id
-		WHERE person.id = $1 AND person.disabled_at IS NULL
-		FOR NO KEY UPDATE OF person`, user).Scan(&current, &from)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrNoSuchMember
-	}
+		SELECT old_role_id::text
+		FROM identity.member_set_role($1, $2, $3)`, actorTokenHash, user, role).Scan(&from)
 	if err != nil {
-		return err
-	}
-	var next string
-	var raw []string
-	err = tx.QueryRow(ctx, `SELECT COALESCE(key, ''), permissions FROM identity.roles WHERE id = $1`, role).Scan(&next, &raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrNoSuchRole
-	}
-	if err != nil {
-		return err
-	}
-	permissions, err := rolePermissions(next, raw)
-	if err != nil {
-		return err
-	}
-	if rule != nil {
-		if err := rule(current, next, permissions); err != nil {
-			return err
-		}
-	}
-	tag, err := tx.Exec(ctx, `UPDATE identity.users SET role_id = $2 WHERE id = $1`, user, role)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return domain.ErrNoSuchMember
+		return mapIdentityDefinerError(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.MemberRoleChange,

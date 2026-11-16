@@ -39,7 +39,7 @@ type Bearer struct {
 // TokenStore is the personal token table.
 type TokenStore interface {
 	HeldFor(ctx context.Context, user domain.UserID) (Held, error)
-	SaveToken(ctx context.Context, user domain.UserID, name string, hash []byte, scope []string, created, expires time.Time) (string, error)
+	SaveToken(ctx context.Context, actorTokenHash []byte, user domain.UserID, name string, hash []byte, scope []string, created, expires time.Time) (string, error)
 	ListTokens(ctx context.Context, user domain.UserID) ([]TokenRecord, error)
 	DeleteToken(ctx context.Context, user domain.UserID, id string) error
 	FindToken(ctx context.Context, hash []byte, now time.Time) (TokenRecord, Held, error)
@@ -99,7 +99,7 @@ func (t APITokens) Create(ctx context.Context, session Session, name string, sco
 	if err != nil {
 		return "", "", err
 	}
-	id, err := t.Store.SaveToken(ctx, session.UserID, name, hash, names, created, expiresAt)
+	id, err := t.Store.SaveToken(ctx, session.TokenHash, session.UserID, name, hash, names, created, expiresAt)
 	if err != nil {
 		return "", "", err
 	}

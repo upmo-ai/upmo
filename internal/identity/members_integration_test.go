@@ -23,7 +23,7 @@ import (
 
 func TestMembersIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	pool, handler, passkeys, ctx := identityMux(t, now)
+	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
 	mux := handler.(*http.ServeMux)
 	sent := &sentMail{}
 	members := identity.Members(pool, "https://upmo.test", sent, nil)
@@ -87,7 +87,7 @@ func TestMembersIntegration(t *testing.T) {
 	}
 
 	var viewer string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
 		VALUES ('view@example.com', 'View', (SELECT id FROM identity.roles WHERE key = 'viewer'), $1, $1)
 		RETURNING id::text`, now).Scan(&viewer); err != nil {
@@ -168,6 +168,10 @@ func TestMembersIntegration(t *testing.T) {
 		t.Fatalf("granted shares = %d, want 1", granted)
 	}
 
+	ownerSess, err := passkeys.Sessions.Lookup(ctx, ownerCookie)
+	if err != nil {
+		t.Fatal(err)
+	}
 	roleID, err := identity.ParseRoleID(memberRole)
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +184,7 @@ func TestMembersIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	againMember, err := store.InviteMember(ctx, "bob@example.com", "Robert", roleID, handle, domain.Hash(token), now, now.Add(domain.InviteLifetime))
+	againMember, err := store.InviteMember(ctx, ownerSess.TokenHash, "bob@example.com", "Robert", roleID, handle, domain.Hash(token), now, now.Add(domain.InviteLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,36 +202,65 @@ func TestMembersIntegration(t *testing.T) {
 		t.Fatal("re-invite kept the old access")
 	}
 
-	ownerID, err := identity.ParseUserID(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = store.RemoveMember(ctx, ownerID, now, func(string) error { return nil })
-	if !errors.Is(err, domain.ErrLastOwner) {
-		t.Fatalf("last owner err = %v", err)
-	}
-	var stillEnabled bool
-	if err := pool.QueryRow(ctx, `SELECT disabled_at IS NULL FROM identity.users WHERE id = $1`, owner).Scan(&stillEnabled); err != nil {
-		t.Fatal(err)
-	}
-	if !stillEnabled {
-		t.Fatal("last owner was disabled")
-	}
-
 	var first, second error
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		first = inviteOnce(ctx, store, "twin@example.com", roleID, now)
+		first = inviteOnce(ctx, store, ownerSess.TokenHash, "twin@example.com", roleID, now)
 	}()
 	go func() {
 		defer wg.Done()
-		second = inviteOnce(ctx, store, "twin@example.com", roleID, now)
+		second = inviteOnce(ctx, store, ownerSess.TokenHash, "twin@example.com", roleID, now)
 	}()
 	wg.Wait()
 	if (first == nil) == (second == nil) || (!errors.Is(first, domain.ErrAlreadyMember) && !errors.Is(second, domain.ErrAlreadyMember)) {
 		t.Fatalf("concurrent invite = %v, %v", first, second)
+	}
+
+	ownerID, err := identity.ParseUserID(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondOwnerText string
+	if err := ownerPool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		VALUES ('coowner@example.com', 'Co', (SELECT id FROM identity.roles WHERE key = 'owner'), $1, $1)
+		RETURNING id::text`, now).Scan(&secondOwnerText); err != nil {
+		t.Fatal(err)
+	}
+	secondOwnerID, err := identity.ParseUserID(secondOwnerText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondOwnerSess, err := passkeys.Sessions.Start(ctx, secondOwnerID, "passkey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx1, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx1.Rollback(ctx) }()
+	if _, err := tx1.Exec(ctx, `SELECT identity.member_disable($1, $2, $3)`, ownerSess.TokenHash, secondOwnerID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveMember(ctx, secondOwnerSess.TokenHash, ownerID, now, nil); err != nil {
+		t.Fatalf("second owner remove first: %v", err)
+	}
+	if err := tx1.Commit(ctx); err == nil || !strings.Contains(err.Error(), "install has no joined owner") {
+		t.Fatalf("overlapping remove commit = %v, want last owner error", err)
+	}
+	var ownersLeft int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM identity.users AS person
+		JOIN identity.roles AS role ON role.id = person.role_id
+		WHERE role.key = 'owner' AND person.joined_at IS NOT NULL AND person.disabled_at IS NULL`).Scan(&ownersLeft); err != nil {
+		t.Fatal(err)
+	}
+	if ownersLeft != 1 {
+		t.Fatalf("owners left = %d, want 1", ownersLeft)
 	}
 }
 
@@ -261,7 +294,7 @@ func (s *sentMail) last() string {
 	return s.sent[len(s.sent)-1]
 }
 
-func inviteOnce(ctx context.Context, store postgres.Passkeys, email string, role domain.RoleID, now time.Time) error {
+func inviteOnce(ctx context.Context, store postgres.Passkeys, actorHash []byte, email string, role domain.RoleID, now time.Time) error {
 	handle := make([]byte, 32)
 	if _, err := rand.Read(handle); err != nil {
 		return err
@@ -270,7 +303,7 @@ func inviteOnce(ctx context.Context, store postgres.Passkeys, email string, role
 	if err != nil {
 		return err
 	}
-	_, err = store.InviteMember(ctx, email, "Twin", role, handle, domain.Hash(token), now, now.Add(domain.InviteLifetime))
+	_, err = store.InviteMember(ctx, actorHash, email, "Twin", role, handle, domain.Hash(token), now, now.Add(domain.InviteLifetime))
 	return err
 }
 

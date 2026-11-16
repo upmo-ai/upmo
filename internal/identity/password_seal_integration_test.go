@@ -45,7 +45,7 @@ func newSealKit(t *testing.T) *sealKit {
 func (k *sealKit) seed(t *testing.T, email string) domain.UserID {
 	t.Helper()
 	var id string
-	if err := k.pool.QueryRow(k.ctx, `
+	if err := k.owner.QueryRow(k.ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ($1, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`, email).Scan(&id); err != nil {

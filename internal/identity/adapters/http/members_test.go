@@ -190,13 +190,13 @@ func (f *memberFake) RoleSystem(_ context.Context, id domain.RoleID) (string, er
 func (f *memberFake) UserByEmail(context.Context, string) (domain.UserID, bool, error) {
 	return domain.UserID{}, false, nil
 }
-func (f *memberFake) InviteMember(_ context.Context, email, name string, role domain.RoleID, _, _ []byte, _ time.Time, _ time.Time) (domain.Member, error) {
+func (f *memberFake) InviteMember(_ context.Context, _ []byte, email, name string, role domain.RoleID, _, _ []byte, _ time.Time, _ time.Time) (domain.Member, error) {
 	if email == "taken@example.com" {
 		return domain.Member{}, domain.ErrAlreadyMember
 	}
 	return domain.Member{ID: f.actor, Email: email, Name: name, RoleID: role, RoleName: "Member", System: "member", Invited: true}, nil
 }
-func (f *memberFake) RemoveMember(_ context.Context, _ domain.UserID, _ time.Time, rule func(string) error) error {
+func (f *memberFake) RemoveMember(_ context.Context, _ []byte, _ domain.UserID, _ time.Time, rule func(string) error) error {
 	if err := rule(f.system); err != nil {
 		return err
 	}

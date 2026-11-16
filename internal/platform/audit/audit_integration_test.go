@@ -80,11 +80,11 @@ func lookupPerson(t *testing.T, owner *pgxpool.Pool, email string) (string, stri
 // signOutServer mounts the real sign-out route behind the middleware for a
 // freshly seeded person, and returns the handler, the cookie text and the
 // session id.
-func signOutServer(t *testing.T, app *pgxpool.Pool) (http.Handler, string, string) {
+func signOutServer(t *testing.T, owner, app *pgxpool.Pool) (http.Handler, string, string) {
 	t.Helper()
 	ctx := context.Background()
 	sessions := identity.Sessions(app, identity.IdleTimeout, identity.MaxAge)
-	userID, _ := seedPerson(t, app, "ada@example.com")
+	userID, _ := seedPerson(t, owner, "ada@example.com")
 	uid, err := identity.ParseUserID(userID)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func checkChain(t *testing.T, owner *pgxpool.Pool, last int64) {
 func TestSignOutSealsOneChainedEvent(t *testing.T) {
 	owner, app := setup(t)
 	ctx := context.Background()
-	served, token, sessionID := signOutServer(t, app)
+	served, token, sessionID := signOutServer(t, owner, app)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/session", nil)
 	req.Header.Set("User-Agent", "upmo-audit-test/1")
@@ -243,7 +243,7 @@ func TestSignOutSealsOneChainedEvent(t *testing.T) {
 
 func TestUnauthorisedSignOutRecordsDenied(t *testing.T) {
 	owner, app := setup(t)
-	served, _, _ := signOutServer(t, app)
+	served, _, _ := signOutServer(t, owner, app)
 
 	rec := httptest.NewRecorder()
 	served.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/session", nil))
@@ -270,7 +270,7 @@ func TestUnauthorisedSignOutRecordsDenied(t *testing.T) {
 
 func TestCrossOriginRefusalRecordsDenied(t *testing.T) {
 	owner, app := setup(t)
-	served, token, _ := signOutServer(t, app)
+	served, token, _ := signOutServer(t, owner, app)
 
 	// The cross-origin guard refuses the request before the mux runs, so the
 	// middleware must resolve the pattern itself.
@@ -518,9 +518,7 @@ func TestFailedAuditInsertRollsTheChangeBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('sam@example.com', 'Sam', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO identity.teams (name) VALUES ('Sam')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{Action: "test.unknown"}); err == nil {
@@ -531,7 +529,7 @@ func TestFailedAuditInsertRollsTheChangeBack(t *testing.T) {
 	}
 	var count int
 	if err := owner.QueryRow(ctx,
-		`SELECT count(*) FROM identity.users WHERE email = 'sam@example.com'`,
+		`SELECT count(*) FROM identity.teams WHERE name = 'Sam'`,
 	).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +769,7 @@ func TestStartupEventRecordsSchemaVersions(t *testing.T) {
 		t.Fatalf("values = %v, want versions", got.Values)
 	}
 	versions, ok := version.To.(string)
-	if !ok || !strings.Contains(versions, "audit=2") || !strings.Contains(versions, "identity=2") {
+	if !ok || !strings.Contains(versions, "audit=2") || !strings.Contains(versions, "identity=3") {
 		t.Fatalf("versions = %v", version.To)
 	}
 }
@@ -786,7 +784,7 @@ func TestSealedChangesCarryThePendingValues(t *testing.T) {
 	if err := audit.Migrated(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	served, token, _ := signOutServer(t, app)
+	served, token, _ := signOutServer(t, owner, app)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/session", nil)
 	req.AddCookie(&http.Cookie{Name: cookieName, Value: token, Path: "/", Secure: true, HttpOnly: true})
@@ -882,12 +880,12 @@ func TestBearerTokenRecordsTheHeldRole(t *testing.T) {
 	owner, app := setup(t)
 	ctx := context.Background()
 	sessions := identity.Sessions(app, identity.IdleTimeout, identity.MaxAge)
-	userID, _ := seedPerson(t, app, "ada@example.com")
+	userID, _ := seedPerson(t, owner, "ada@example.com")
 	secret, hash, err := domain.NewAPITokenSecret()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Exec(ctx, `
+	if _, err := owner.Exec(ctx, `
 		INSERT INTO identity.api_tokens (user_id, name, token_hash, scope, created_at, expires_at)
 		VALUES ($1, 'ci', $2, ARRAY['task:view'], now(), now() + interval '30 days')`,
 		userID, hash); err != nil {

@@ -114,7 +114,7 @@ func (rig *readRig) openSession(t *testing.T, email, role string) string {
 	t.Helper()
 	ctx := context.Background()
 	var userID string
-	err := rig.app.QueryRow(ctx, `
+	err := rig.owner.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ($1, 'Ada', (SELECT id FROM identity.roles WHERE key = $2), now())
 		RETURNING id::text`, email, role).Scan(&userID)

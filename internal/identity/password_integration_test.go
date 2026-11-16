@@ -28,7 +28,7 @@ import (
 )
 
 func TestPasswordSignIn(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
 	var clock time.Time
 	clock = now
@@ -47,7 +47,7 @@ func TestPasswordSignIn(t *testing.T) {
 	identity.MountPasskeys(mux, passkeys, passwords, nil)
 
 	var id string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('ada@example.com', 'Ada Lovelace', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&id); err != nil {
@@ -150,12 +150,12 @@ func TestPasswordSignIn(t *testing.T) {
 
 	wrong := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "ada@example.com", "password": "not the password!!"})
 	unknown := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "noone@example.com", "password": password})
-	if _, err := pool.Exec(ctx, `
+	if _, err := ownerPool.Exec(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `
+	if _, err := ownerPool.Exec(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at, disabled_at)
 		VALUES ('gone@example.com', 'Gone', (SELECT id FROM identity.roles WHERE key = 'member'), now(), now())`); err != nil {
 		t.Fatal(err)
@@ -197,9 +197,9 @@ func TestPasswordSignIn(t *testing.T) {
 }
 
 func TestPasswordAndPasskeyRemovalsCannotBothPass(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	var id string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, password_hash, role_id, joined_at)
 		VALUES ('ada@example.com', 'Ada', 'hash', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&id); err != nil {
@@ -247,9 +247,9 @@ func TestPasswordAndPasskeyRemovalsCannotBothPass(t *testing.T) {
 }
 
 func TestPasswordStore(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	var id string
-	if err := pool.QueryRow(ctx, `
+	if err := ownerPool.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&id); err != nil {
@@ -309,13 +309,13 @@ func TestPasswordStore(t *testing.T) {
 // offer is claimed once, the reset makes it available again for the e2e person
 // only, and the throttle starts empty.
 func TestE2EResetMakesTheOfferAvailable(t *testing.T) {
-	pool, ctx := up(t)
+	ownerPool, pool, ctx := upBoth(t)
 	store := postgres.Passkeys{Pool: pool}
 	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	seed := func(email, role string) domain.UserID {
 		t.Helper()
 		var id string
-		if err := pool.QueryRow(ctx, `
+		if err := ownerPool.QueryRow(ctx, `
 			INSERT INTO identity.users (email, name, password_hash, role_id, joined_at)
 			VALUES ($1, 'Person', 'hash', (SELECT id FROM identity.roles WHERE key = $2), now())
 			RETURNING id::text`, email, role).Scan(&id); err != nil {
