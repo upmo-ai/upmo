@@ -146,7 +146,7 @@ func seedPins(t *testing.T, pool *pgxpool.Pool) {
 	} {
 		var id string
 		if err := pool.QueryRow(ctx, `
-			INSERT INTO gateway.routes (name, capability) VALUES ($1, 'chat') RETURNING id::text`, r.name).Scan(&id); err != nil {
+			INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, 'chat', true) RETURNING id::text`, r.name).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		for _, l := range r.links {
@@ -340,7 +340,7 @@ func TestForeignPinIsRefusedBeforeTheRouteIsLoaded(t *testing.T) {
 	// A route that does not exist and a route that is not a chat route would
 	// each fail the call; the pin refusal comes first and their key is unused.
 	w := newPinWorld(t, nil)
-	if _, err := w.pool.Exec(context.Background(), `INSERT INTO gateway.routes (name, capability) VALUES ('pin-embed', 'embed')`); err != nil {
+	if _, err := w.pool.Exec(context.Background(), `INSERT INTO gateway.routes (name, capability, installed) VALUES ('pin-embed', 'embed', true)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, route := range []string{"no-such-route", "pin-embed"} {

@@ -123,7 +123,7 @@ func newShareWorld(t *testing.T, fail map[string]domain.FailureClass) shareWorld
 	w.bothOwn = addAccount("e-mine", w.both, "ref_mine", "m-mine")
 
 	var route string
-	if err := pool.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability) VALUES ('r', 'chat') RETURNING id::text`).Scan(&route); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ('r', 'chat', true) RETURNING id::text`).Scan(&route); err != nil {
 		t.Fatal(err)
 	}
 	for i, l := range []struct{ account, model string }{

@@ -12,12 +12,14 @@ const DefaultContextWindow = 128000
 const tokensPerMillion = 1_000_000
 
 // Principal is the actor triple for a model call, plus an optional parent
-// run used to roll tokens up to a task.
+// run used to roll tokens up to a task and an optional team id for single-team
+// narrowing.
 type Principal struct {
 	User   string
 	Agent  string
 	Run    string
 	Parent string
+	TeamID string
 }
 
 // Usage is the normalised token counts for one attempt. Arrived is false

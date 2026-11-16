@@ -2,8 +2,145 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
+	"sort"
+	"strings"
+	"unicode/utf8"
 )
+
+// Limits on what a person may save on a route.
+const (
+	MaxRouteName = 64
+	MaxRouteHops = 3
+)
+
+var routeNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// RouteHop is one hop to save on a route.
+type RouteHop struct {
+	Position             int
+	AccountID            string
+	Adapter              string
+	Model                string
+	Weight               int
+	Retry                int
+	RequiredCapabilities []string
+}
+
+// CleanRouteName trims name and checks it against the gateway/agent route
+// naming rule (1 to 64 letters, numbers, dots, underscores or hyphens).
+func CleanRouteName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", Invalid("Give the route a name.")
+	}
+	if !routeNamePattern.MatchString(name) {
+		return "", Invalid(fmt.Sprintf("The route name must be 1 to %d letters, numbers, dots, underscores or hyphens.", MaxRouteName))
+	}
+	return name, nil
+}
+
+// CleanRouteCapability checks a route's capability and decision pairing.
+func CleanRouteCapability(capability, decision string) (Capability, Decision, error) {
+	c := Capability(strings.TrimSpace(capability))
+	d := Decision(strings.TrimSpace(decision))
+	if !c.known() {
+		return "", "", Invalid("Choose chat, stream, embed or decide.")
+	}
+	if c == CapDecide {
+		if d != DecisionYesNo && d != DecisionChoice {
+			return "", "", Invalid("A decide route needs choice or yesno.")
+		}
+		return c, d, nil
+	}
+	if d != DecisionNone {
+		return "", "", Invalid("Only a decide route takes a decision.")
+	}
+	return c, d, nil
+}
+
+// CleanRouteHops validates a route's hop chain: 1 to MaxRouteHops hops, unique
+// positive positions, valid account UUIDs and models, non-negative retries,
+// positive weights, known required capabilities, and no duplicate
+// (account_id, model) cycles. Returned hops are sorted by Position.
+func CleanRouteHops(hops []RouteHop) ([]RouteHop, error) {
+	if len(hops) == 0 {
+		return nil, Invalid("Add at least one hop.")
+	}
+	if len(hops) > MaxRouteHops {
+		return nil, Invalid(fmt.Sprintf("Add up to %d hops.", MaxRouteHops))
+	}
+	type hopKey struct {
+		account string
+		model   string
+	}
+	seenPos := make(map[int]bool, len(hops))
+	seenPair := make(map[hopKey]bool, len(hops))
+	out := make([]RouteHop, 0, len(hops))
+	for _, h := range hops {
+		if h.Position < 1 {
+			return nil, Invalid("Each hop position must be at least 1.")
+		}
+		if seenPos[h.Position] {
+			return nil, Invalid("Each hop must have a unique position.")
+		}
+		seenPos[h.Position] = true
+
+		acct := strings.ToLower(strings.TrimSpace(h.AccountID))
+		if !accountID.MatchString(acct) {
+			return nil, Invalid("Choose a provider account for every hop.")
+		}
+
+		model := strings.TrimSpace(h.Model)
+		n := utf8.RuneCountInString(model)
+		if n == 0 || n > MaxModelName || hasControl(model) || !utf8.ValidString(model) {
+			return nil, Invalid(fmt.Sprintf("Each model must be 1 to %d characters.", MaxModelName))
+		}
+
+		if h.Weight < 1 {
+			return nil, Invalid("Each hop weight must be at least 1.")
+		}
+		if h.Retry < 0 {
+			return nil, Invalid("Each hop retry budget cannot be negative.")
+		}
+
+		pair := hopKey{account: acct, model: model}
+		if seenPair[pair] {
+			return nil, Invalid("A route cannot repeat the same provider account and model.")
+		}
+		seenPair[pair] = true
+
+		var need []string
+		if len(h.RequiredCapabilities) > 0 {
+			seenCap := map[string]bool{}
+			need = make([]string, 0, len(h.RequiredCapabilities))
+			for _, c := range h.RequiredCapabilities {
+				c = strings.ToLower(strings.TrimSpace(c))
+				if !knownCap(c) {
+					return nil, Invalid("Unknown required capability.")
+				}
+				if seenCap[c] {
+					continue
+				}
+				seenCap[c] = true
+				need = append(need, c)
+			}
+			sort.Strings(need)
+		}
+
+		out = append(out, RouteHop{
+			Position:             h.Position,
+			AccountID:            acct,
+			Model:                model,
+			Weight:               h.Weight,
+			Retry:                h.Retry,
+			RequiredCapabilities: need,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Position < out[j].Position })
+	return out, nil
+}
 
 const (
 	PlanMetered      = "metered"

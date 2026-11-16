@@ -1020,7 +1020,7 @@ func TestRemoveIsBlockedWhileARouteUsesTheAccount(t *testing.T) {
 	made := r.mustAdd(ada, body("Linked", prov.url(), adaKey))
 	ctx := context.Background()
 	for _, name := range []string{"nightly", "chat-main", "alpha"} {
-		if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.routes (name, capability) VALUES ($1, 'chat')`, name); err != nil {
+		if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, 'chat', true)`, name); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := r.owner.Exec(ctx, `
@@ -1248,7 +1248,7 @@ func chatVia(t *testing.T, mux http.Handler, route, ref string) (int, string) {
 func linkRoute(t *testing.T, r *rig, route, accountID string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.routes (name, capability) VALUES ($1, 'chat')`, route); err != nil {
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, 'chat', true)`, route); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.owner.Exec(ctx, `
@@ -1509,7 +1509,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	ctx := context.Background()
 	migrateWithIdentity(t, owner)
 	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 7 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
 		t.Fatalf("version %d, %v", version, err)
 	}
 	var n int
@@ -1542,7 +1542,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 7 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
 	}
 }

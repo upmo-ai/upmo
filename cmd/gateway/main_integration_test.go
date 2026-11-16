@@ -43,11 +43,11 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.routes (name, capability, decision) VALUES
-			('memory-check', 'decide', 'yesno'),
-			('folder-file', 'decide', 'choice'),
-			('draft', 'chat', ''),
-			('embed', 'embed', '')
+		INSERT INTO gateway.routes (name, capability, decision, installed) VALUES
+			('memory-check', 'decide', 'yesno', true),
+			('folder-file', 'decide', 'choice', true),
+			('draft', 'chat', '', true),
+			('embed', 'embed', '', true)
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 7 || latest != 7 {
-		t.Fatalf("applied versions = %d latest = %d, want 7 and 7", n, latest)
+	if n != 8 || latest != 8 {
+		t.Fatalf("applied versions = %d latest = %d, want 8 and 8", n, latest)
 	}
 
 	var attempts, priced int
@@ -186,7 +186,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		{`INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house, base_url)
 			VALUES ('11111111-1111-4111-8111-111111111111', 'mine', 'openai_compat', $1, 'local', false, $2)`, []any{ref, provider.URL}},
 		{`INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES ($1, $2, $3, $4)`, []any{ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID}},
-		{`INSERT INTO gateway.routes (name, capability) VALUES ('draft', 'chat')`, nil},
+		{`INSERT INTO gateway.routes (name, capability, installed) VALUES ('draft', 'chat', true)`, nil},
 		{`INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
 			SELECT r.id, 1, a.id, 'm' FROM gateway.routes r, gateway.provider_accounts a`, nil},
 	} {
@@ -415,9 +415,9 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.routes (name, capability, decision) VALUES
-			('tool-chat', 'chat', ''),
-			('tool-decide', 'decide', 'yesno')
+		INSERT INTO gateway.routes (name, capability, decision, installed) VALUES
+			('tool-chat', 'chat', '', true),
+			('tool-decide', 'decide', 'yesno', true)
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +541,7 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.routes (name, capability, decision) VALUES ('draft', 'chat', '')
+		INSERT INTO gateway.routes (name, capability, decision, installed) VALUES ('draft', 'chat', '', true)
 	`); err != nil {
 		t.Fatal(err)
 	}
