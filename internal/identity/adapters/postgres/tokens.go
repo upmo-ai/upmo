@@ -12,10 +12,10 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
-// SaveToken stores a new token and records the token.create event, with the
-// scope and the expiry as its safe values, in the same transaction. The secret
-// is never recorded.
-func (p Passkeys) SaveToken(ctx context.Context, user domain.UserID, name string, hash []byte, scope []string, created, expires time.Time) (string, error) {
+// SaveToken stores a new token through the proof-carrying definer function and
+// records the token.create event, with the scope and the expiry as its safe
+// values, in the same transaction. The secret is never recorded.
+func (p Passkeys) SaveToken(ctx context.Context, actorTokenHash []byte, _ domain.UserID, name string, hash []byte, scope []string, created, expires time.Time) (string, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -23,10 +23,9 @@ func (p Passkeys) SaveToken(ctx context.Context, user domain.UserID, name string
 	defer func() { _ = tx.Rollback(ctx) }()
 	var id string
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO identity.api_tokens (user_id, name, token_hash, scope, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id::text`, user, name, hash, scope, created, expires).Scan(&id); err != nil {
-		return "", err
+		SELECT identity.token_create($1, $2, $3, $4, $5, $6)::text`,
+		actorTokenHash, name, hash, scope, created, expires).Scan(&id); err != nil {
+		return "", mapIdentityDefinerError(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.TokenCreate,

@@ -115,10 +115,10 @@ func (f allowFake) RoleSystem(context.Context, domain.RoleID) (string, error) {
 func (f allowFake) UserByEmail(context.Context, string) (domain.UserID, bool, error) {
 	return domain.UserID{}, false, nil
 }
-func (f allowFake) InviteMember(context.Context, string, string, domain.RoleID, []byte, []byte, time.Time, time.Time) (domain.Member, error) {
+func (f allowFake) InviteMember(context.Context, []byte, string, string, domain.RoleID, []byte, []byte, time.Time, time.Time) (domain.Member, error) {
 	return domain.Member{}, nil
 }
-func (f allowFake) RemoveMember(context.Context, domain.UserID, time.Time, func(string) error) error {
+func (f allowFake) RemoveMember(context.Context, []byte, domain.UserID, time.Time, func(string) error) error {
 	return nil
 }
 func (f allowFake) ReplaceMemberLink(context.Context, domain.UserID, string, []byte, time.Time, func(string, bool) error) error {

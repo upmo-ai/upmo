@@ -214,7 +214,7 @@ func (f *mailStore) RoleSystem(context.Context, domain.RoleID) (string, error) {
 func (f *mailStore) UserByEmail(context.Context, string) (domain.UserID, bool, error) {
 	return mailTarget, f.known, nil
 }
-func (f *mailStore) InviteMember(_ context.Context, email, name string, role domain.RoleID, _, _ []byte, _, _ time.Time) (domain.Member, error) {
+func (f *mailStore) InviteMember(_ context.Context, _ []byte, email, name string, role domain.RoleID, _, _ []byte, _, _ time.Time) (domain.Member, error) {
 	return domain.Member{ID: mailTarget, Email: email, Name: name, RoleID: role, Invited: true}, nil
 }
 func (f *mailStore) ReplaceMemberLink(_ context.Context, _ domain.UserID, _ string, _ []byte, _ time.Time, rule func(string, bool) error) error {

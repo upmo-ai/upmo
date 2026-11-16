@@ -21,12 +21,13 @@ var (
 
 // Session is a live server-side session.
 type Session struct {
-	ID       string
-	UserID   domain.UserID
-	Expires  time.Time
-	Method   string
-	SignedIn time.Time
-	RoleID   string
+	ID        string
+	UserID    domain.UserID
+	Expires   time.Time
+	Method    string
+	SignedIn  time.Time
+	RoleID    string
+	TokenHash []byte
 }
 
 // Row is a stored session, including one that has ended.
@@ -90,11 +91,12 @@ func (s Service) Start(ctx context.Context, user domain.UserID, method, agent st
 	if err := s.Store.DeleteEnded(ctx, user, now, s.Idle); err != nil {
 		return "", Session{}, err
 	}
-	id, err := s.Store.Insert(ctx, user, domain.Hash(token), now, now.Add(s.MaxAge), method, agent)
+	hash := domain.Hash(token)
+	id, err := s.Store.Insert(ctx, user, hash, now, now.Add(s.MaxAge), method, agent)
 	if err != nil {
 		return "", Session{}, err
 	}
-	return text, Session{ID: id, UserID: user, Expires: now.Add(s.MaxAge), Method: method, SignedIn: now}, nil
+	return text, Session{ID: id, UserID: user, Expires: now.Add(s.MaxAge), Method: method, SignedIn: now, TokenHash: hash}, nil
 }
 
 // Lookup resolves a cookie value. An ended session is deleted.
@@ -103,7 +105,8 @@ func (s Service) Lookup(ctx context.Context, text string) (Session, error) {
 	if err != nil {
 		return Session{}, ErrMalformed
 	}
-	row, found, err := s.Store.Find(ctx, domain.Hash(token))
+	hash := domain.Hash(token)
+	row, found, err := s.Store.Find(ctx, hash)
 	if err != nil {
 		return Session{}, err
 	}
@@ -122,7 +125,7 @@ func (s Service) Lookup(ctx context.Context, text string) (Session, error) {
 			return Session{}, err
 		}
 	}
-	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn, RoleID: row.RoleID}, nil
+	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn, RoleID: row.RoleID, TokenHash: hash}, nil
 }
 
 // EndOthers ends every session for user except keep.

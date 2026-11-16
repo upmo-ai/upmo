@@ -119,7 +119,7 @@ func TestRequireSessionSeamIntegration(t *testing.T) {
 	}
 	pool := pgtest.App(t, owner)
 	var userID string
-	if err := pool.QueryRow(ctx, `
+	if err := owner.QueryRow(ctx, `
 		INSERT INTO identity.users (email, name, role_id, joined_at)
 		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&userID); err != nil {
@@ -203,7 +203,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 	signIn := func(email, role string) *http.Cookie {
 		t.Helper()
 		var userID string
-		if err := pool.QueryRow(ctx, `
+		if err := owner.QueryRow(ctx, `
 			INSERT INTO identity.users (email, name, role_id, joined_at)
 			VALUES ($1, 'Person', (SELECT id FROM identity.roles WHERE key = $2), now())
 			RETURNING id::text`, email, role).Scan(&userID); err != nil {
