@@ -21,3 +21,11 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Local agent files
+AGENTS.md
+CLAUDE.md
+.claude/
+.cursor/
+.kiro/
+.gemini/
