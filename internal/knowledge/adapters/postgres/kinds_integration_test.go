@@ -320,3 +320,37 @@ func TestSourceKindConstraintRejectsUnknown(t *testing.T) {
 		t.Fatal("expected kind check to refuse sideways")
 	}
 }
+
+func TestSearchReturnsProvenanceFromSource(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	folder, err := app.CreateFolder(ctx, store, ownerAccess, "Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Ingest(ctx, store, ownerAccess, nil, nil, app.Draft{
+		FolderID: folder, Title: "Curated Guide", Body: "oolong curated recipe", Provenance: "curated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Ingest(ctx, store, ownerAccess, nil, nil, app.Draft{
+		FolderID: folder, Title: "Web Clip", Body: "oolong web article", Provenance: "web", Kind: "clip", SourceRef: "https://example.com/oolong",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := app.Search(ctx, store, nil, nil, ownerAccess, folder, "oolong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %+v", hits)
+	}
+	seen := map[app.Provenance]bool{}
+	for _, h := range hits {
+		seen[h.Provenance] = true
+	}
+	if !seen[app.ProvenanceCurated] || !seen[app.ProvenanceWeb] {
+		t.Fatalf("provenances = %+v", hits)
+	}
+}

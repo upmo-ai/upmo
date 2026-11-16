@@ -21,19 +21,20 @@ func (s Store) Fund(ctx context.Context, access app.Access, taskID string, budge
 
 	var isChild bool
 	var current int
+	var microBudget int64
 	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT parent_id IS NOT NULL, budget, status
+		SELECT parent_id IS NOT NULL, budget, budget_micro_usd, status
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&isChild, &current, &status)
+		FOR UPDATE`, taskID).Scan(&isChild, &current, &microBudget, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrGone
 	}
 	if err != nil {
 		return fmt.Errorf("tasks: lock fund: %w", err)
 	}
-	if isChild || current != 0 {
+	if isChild || current != 0 || microBudget != 0 {
 		return domain.ErrBudget
 	}
 	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {

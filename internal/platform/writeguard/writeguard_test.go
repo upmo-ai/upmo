@@ -12,7 +12,7 @@ func TestWriteCombinations(t *testing.T) {
 		{false, true, false, Allow},
 		{false, false, true, Allow},
 		{true, true, false, Allow},
-		{true, false, true, Allow},
+		{true, false, true, Ask},
 		{false, true, true, Allow},
 		{true, true, true, Ask},
 	}
@@ -29,9 +29,14 @@ func TestWriteCombinations(t *testing.T) {
 
 func TestTightenNeverLoosens(t *testing.T) {
 	armed := Exposure{Untrusted: true, Private: true, External: true}
+	untrustedExternal := Exposure{Untrusted: true, Private: false, External: true}
+	untrustedLocal := Exposure{Untrusted: true, Private: true, External: false}
 	clear := Exposure{}
 	if got := Tighten("block", armed); got != "block" {
 		t.Fatalf("block armed = %s", got)
+	}
+	if got := Tighten("block", untrustedExternal); got != "block" {
+		t.Fatalf("block untrusted external = %s", got)
 	}
 	if got := Tighten("block", clear); got != "block" {
 		t.Fatalf("block clear = %s", got)
@@ -45,6 +50,12 @@ func TestTightenNeverLoosens(t *testing.T) {
 	if got := Tighten("allow", armed); got != "ask" {
 		t.Fatalf("allow armed = %s", got)
 	}
+	if got := Tighten("allow", untrustedExternal); got != "ask" {
+		t.Fatalf("allow untrusted external = %s", got)
+	}
+	if got := Tighten("allow", untrustedLocal); got != "allow" {
+		t.Fatalf("allow untrusted local = %s", got)
+	}
 	if got := Tighten("allow", clear); got != "allow" {
 		t.Fatalf("allow clear = %s", got)
 	}
@@ -57,7 +68,7 @@ func FuzzWrite(f *testing.F) {
 	f.Fuzz(func(t *testing.T, untrusted, private, external bool) {
 		x := Exposure{Untrusted: untrusted, Private: private, External: external}
 		got := Write(x)
-		if untrusted && private && external {
+		if untrusted && external {
 			if got != Ask {
 				t.Fatalf("armed write = %s", got)
 			}

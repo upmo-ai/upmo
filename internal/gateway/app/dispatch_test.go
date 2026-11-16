@@ -1220,3 +1220,91 @@ func TestDispatchRecordsMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchNarrowsTeamsToRequestedTeamIDIntersection(t *testing.T) {
+	// User is on teams t1 and t2. teamRoute() has an account shared with [t1, t2]
+	// and a workspace fallback.
+	// Case 1: TeamID=t2 -> allows t2.
+	team, solid := &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	led := &memLedger{}
+	disp := teamDispatch(&memTeams{ids: []string{"t1", "t2"}}, team, solid, led)
+	sink := &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1", TeamID: "t2"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 1 || solid.calls != 0 || len(led.rows) != 1 || led.rows[0].OwnerTeamID != "t2" {
+		t.Fatalf("member intersection: team=%d solid=%d rows=%+v", team.calls, solid.calls, led.rows)
+	}
+
+	// Case 2: TeamID=t9 (user is NOT on t9) -> intersection is empty, never grants t9.
+	team, solid = &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	led = &memLedger{}
+	disp = teamDispatch(&memTeams{ids: []string{"t1", "t2"}}, team, solid, led)
+	sink = &recordingSink{}
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1", TeamID: "t9"}, streamInput(), 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 0 || solid.calls != 1 || len(led.rows) != 1 || led.rows[0].OwnerTeamID != "" {
+		t.Fatalf("non-member intersection: team=%d solid=%d rows=%+v", team.calls, solid.calls, led.rows)
+	}
+
+	// Case 3: TeamID=t3 (user is on t1,t2, NOT t3; account is shared with t1,t2) -> denied t1/t2.
+	team, solid = &scriptStream{reply: "team"}, &scriptStream{reply: "house"}
+	led = &memLedger{}
+	disp = teamDispatch(&memTeams{ids: []string{"t1", "t2"}}, team, solid, led)
+	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{User: "u1", TeamID: "t3"}, streamInput(), 0, &recordingSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if team.calls != 0 || solid.calls != 1 {
+		t.Fatalf("other-team excluded: team=%d solid=%d", team.calls, solid.calls)
+	}
+}
+
+func TestDispatchChatCallTeamNarrowing(t *testing.T) {
+	chatInput := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+	newChatDisp := func(teams Teams, team, solid *scriptChatter, led *memLedger) Dispatch {
+		return Dispatch{
+			Routes:  memRoutes{teamRoute()},
+			Teams:   teams,
+			Secrets: memSecrets{map[string]string{"house": "secret", "shared": "team-secret"}},
+			Ledger:  led,
+			Chat:    map[string]Chatter{"team": team, "solid": solid},
+		}
+	}
+
+	// Case 1: TeamID=t2 -> allows t2.
+	team, solid := &scriptChatter{reply: "team"}, &scriptChatter{reply: "house"}
+	led := &memLedger{}
+	disp := newChatDisp(&memTeams{ids: []string{"t1", "t2"}}, team, solid, led)
+	got, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{User: "u1", TeamID: "t2"}, chatInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "team" || team.calls != 1 || solid.calls != 0 || len(led.rows) != 1 || led.rows[0].OwnerTeamID != "t2" {
+		t.Fatalf("member intersection: got=%+v team=%d solid=%d rows=%+v", got, team.calls, solid.calls, led.rows)
+	}
+
+	// Case 2: TeamID=t9 (user is NOT on t9) -> intersection is empty, never grants t9.
+	team, solid = &scriptChatter{reply: "team"}, &scriptChatter{reply: "house"}
+	led = &memLedger{}
+	disp = newChatDisp(&memTeams{ids: []string{"t1", "t2"}}, team, solid, led)
+	got, err = disp.ChatCall(context.Background(), "draft", "", domain.Principal{User: "u1", TeamID: "t9"}, chatInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "house" || team.calls != 0 || solid.calls != 1 || len(led.rows) != 1 || led.rows[0].OwnerTeamID != "" {
+		t.Fatalf("non-member intersection: got=%+v team=%d solid=%d rows=%+v", got, team.calls, solid.calls, led.rows)
+	}
+
+	// Case 3: TeamID=t3 (user is on t1,t2, NOT t3; account is shared with t1,t2) -> denied t1/t2.
+	team, solid = &scriptChatter{reply: "team"}, &scriptChatter{reply: "house"}
+	led = &memLedger{}
+	disp = newChatDisp(&memTeams{ids: []string{"t1", "t2"}}, team, solid, led)
+	got, err = disp.ChatCall(context.Background(), "draft", "", domain.Principal{User: "u1", TeamID: "t3"}, chatInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "house" || team.calls != 0 || solid.calls != 1 {
+		t.Fatalf("other-team excluded: got=%+v team=%d solid=%d", got, team.calls, solid.calls)
+	}
+}

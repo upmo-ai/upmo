@@ -3,6 +3,8 @@ package domain
 import (
 	"errors"
 	"strings"
+
+	"github.com/upmo-ai/upmo/internal/kernel"
 )
 
 const (
@@ -22,32 +24,51 @@ var ErrTaint = errors.New("tasks: taint")
 // BudgetFits reports whether amount can be reserved from a budget that already
 // holds held. The amount is at least 1 and at most TemplateBudgetMax.
 func BudgetFits(budget, held, amount int) error {
-	if amount < 1 || amount > TemplateBudgetMax {
-		return ErrBudget
-	}
-	if held < 0 || budget < held || amount > budget-held {
+	if err := kernel.BudgetFits(int64(budget), int64(held), int64(amount), int64(TemplateBudgetMax)); err != nil {
 		return ErrBudget
 	}
 	return nil
 }
 
+// BudgetFitsMicroUSD validates a micro-USD reserve against budget - held.
+func BudgetFitsMicroUSD(budget, held, amount int64) error {
+	err := kernel.BudgetFits(budget, held, amount, kernel.DefaultMaxBudgetMicroUSD)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, kernel.ErrBudget):
+		return ErrBudget
+	default:
+		return err
+	}
+}
+
 // Charge applies amount to spent. Landing on the budget pauses. An amount past
 // the budget pauses and leaves spent unchanged. A paused budget refuses.
 func Charge(budget, spent, amount int, paused bool) (int, bool, error) {
-	if amount < 1 {
-		return spent, paused, ErrBudget
+	nextSpent, nextPaused, err := kernel.ChargeCapped(int64(budget), int64(spent), int64(amount), paused)
+	switch {
+	case errors.Is(err, kernel.ErrBudget):
+		return int(nextSpent), nextPaused, ErrBudget
+	case errors.Is(err, kernel.ErrExhausted):
+		return int(nextSpent), nextPaused, ErrExhausted
+	default:
+		return int(nextSpent), nextPaused, err
 	}
-	if paused {
-		return spent, true, ErrExhausted
+}
+
+// ChargeMicroUSD applies actual post-call micro-USD spend, preserving full
+// actual spent and setting paused = true when spent crosses budget.
+func ChargeMicroUSD(budget, spent, amount int64, paused bool) (int64, bool, error) {
+	nextSpent, nextPaused, err := kernel.ChargeActual(budget, spent, amount, paused)
+	switch {
+	case errors.Is(err, kernel.ErrBudget):
+		return nextSpent, nextPaused, ErrBudget
+	case errors.Is(err, kernel.ErrExhausted):
+		return nextSpent, nextPaused, ErrExhausted
+	default:
+		return nextSpent, nextPaused, err
 	}
-	if spent > budget || amount > budget-spent {
-		return spent, true, ErrExhausted
-	}
-	spent += amount
-	if spent == budget {
-		return spent, true, nil
-	}
-	return spent, false, nil
 }
 
 // Intersect keeps the requested names that the parent already has.
