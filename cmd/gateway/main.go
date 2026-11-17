@@ -124,7 +124,11 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	gateway.Mount(mux, pool, secretBackends(pool, masterKeys), log, gateway.WithMetrics(reg))
+	backends, err := secretBackends(pool, masterKeys)
+	if err != nil {
+		return nil, err
+	}
+	gateway.Mount(mux, pool, backends, log, gateway.WithMetrics(reg))
 	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, mux)
 	if err != nil {
 		return nil, err
@@ -144,13 +148,16 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 
 // secretBackends is the order a key is looked for: the environment, then the
 // keys people sealed into the database (when a master key is set), then Vault.
-func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) gateway.Chain {
-	fromEnv := secretchain.FromEnv(os.LookupEnv) // env, then Vault when set
+func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) (gateway.Chain, error) {
+	fromEnv, err := secretchain.FromEnv(os.LookupEnv) // env, then Vault when set
+	if err != nil {
+		return nil, err
+	}
 	chain := gateway.Chain{fromEnv[0]}
 	if keys.Ready() {
 		chain = append(chain, gateway.DBSecrets{Pool: pool, Keys: keys})
 	}
-	return append(chain, fromEnv[1:]...)
+	return append(chain, fromEnv[1:]...), nil
 }
 
 // openPool opens the gateway pool without exposing UPMO_DATABASE_URL in parse
