@@ -108,8 +108,8 @@ func TestVerifyRejects(t *testing.T) {
 		{"audience", [][]byte{sbx}, AudienceSandboxd, http.MethodPost, "/chat", token, now, errAudience},
 		{"method", [][]byte{gw}, AudienceGateway, http.MethodGet, "/chat", token, now, errMismatch},
 		{"path", [][]byte{gw}, AudienceGateway, http.MethodPost, "/embed", token, now, errMismatch},
-		{"stale", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token, now.Add(31 * time.Second), errStale},
-		{"future", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token, now.Add(-31 * time.Second), errStale},
+		{"stale", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token, now.Add(31 * time.Second), ErrStale},
+		{"future", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token, now.Add(-31 * time.Second), ErrStale},
 		{"personal", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", "upmo_pat_" + strings.Repeat("A", 43), now, errBearer},
 		{"truncated", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token[:len(token)-1], now, errBearer},
 		{"empty", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", "", now, errBearer},
@@ -321,5 +321,92 @@ func TestVerifyIndexProvisionRotation(t *testing.T) {
 	idx, err = VerifyIndex(keys, AudienceProvision, http.MethodPut, "/api/v1/provision/quotas", tok2, now)
 	if err != nil || idx != 1 {
 		t.Fatalf("VerifyIndex(k2) = (%d, %v), want (1, nil)", idx, err)
+	}
+}
+
+func TestSignVerifyRequestV2(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	newKey := mustDerive(bytes32('n'), AudienceProvision)
+	oldKey := mustDerive(bytes32('o'), AudienceProvision)
+	keys := [][]byte{newKey, oldKey}
+	body := []byte(`{"external_id":"m-1","email":"ada@example.com"}`)
+
+	sign := func(key []byte, method, path, rawQuery string, b []byte, at time.Time) string {
+		t.Helper()
+		tok, err := SignRequest(key, AudienceProvision, method, path, rawQuery, b, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+
+	token := sign(newKey, http.MethodPost, "/api/v1/provision/members", "", body, now)
+	emptyTok := sign(newKey, http.MethodGet, "/api/v1/provision/status", "", nil, now)
+	queryTok := sign(newKey, http.MethodGet, "/api/v1/provision/usage", "month=2026-11", nil, now)
+	oldTok := sign(oldKey, http.MethodPost, "/api/v1/provision/members", "", body, now)
+	v1Tok, err := Sign(newKey, AudienceProvision, http.MethodPost, "/api/v1/provision/members", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The bearer's third segment is the nonce the verifier must hand back,
+	// so the caller records exactly what was authenticated.
+	wantNonce := strings.Split(strings.TrimPrefix(token, BearerPrefixV2), ".")[2]
+
+	cases := []struct {
+		name     string
+		keys     [][]byte
+		method   string
+		path     string
+		rawQuery string
+		body     []byte
+		bearer   string
+		now      time.Time
+		wantIdx  int
+		wantErr  error
+	}{
+		{"body", keys, http.MethodPost, "/api/v1/provision/members", "", body, token, now, 0, nil},
+		{"empty body", keys, http.MethodGet, "/api/v1/provision/status", "", nil, emptyTok, now, 0, nil},
+		{"query", keys, http.MethodGet, "/api/v1/provision/usage", "month=2026-11", nil, queryTok, now, 0, nil},
+		{"body changed", keys, http.MethodPost, "/api/v1/provision/members", "", []byte(`{"external_id":"m-2"}`), token, now, -1, errMismatch},
+		{"body added to empty", keys, http.MethodGet, "/api/v1/provision/status", "", []byte("{}"), emptyTok, now, -1, errMismatch},
+		{"query changed", keys, http.MethodGet, "/api/v1/provision/usage", "month=2026-10", nil, queryTok, now, -1, errMismatch},
+		{"query dropped", keys, http.MethodGet, "/api/v1/provision/usage", "", nil, queryTok, now, -1, errMismatch},
+		{"method changed", keys, http.MethodPut, "/api/v1/provision/members", "", body, token, now, -1, errMismatch},
+		{"path changed", keys, http.MethodPost, "/api/v1/provision/teams", "", body, token, now, -1, errMismatch},
+		{"rotation second key", keys, http.MethodPost, "/api/v1/provision/members", "", body, oldTok, now, 1, nil},
+		{"rotation dropped key", [][]byte{newKey}, http.MethodPost, "/api/v1/provision/members", "", body, oldTok, now, -1, errMismatch},
+		{"stale", keys, http.MethodPost, "/api/v1/provision/members", "", body, token, now.Add(31 * time.Second), 0, ErrStale},
+		{"future", keys, http.MethodPost, "/api/v1/provision/members", "", body, token, now.Add(-31 * time.Second), 0, ErrStale},
+		{"v1 bearer refused", keys, http.MethodPost, "/api/v1/provision/members", "", body, v1Tok, now, -1, errBearer},
+		{"truncated", keys, http.MethodPost, "/api/v1/provision/members", "", body, token[:len(token)-1], now, -1, errBearer},
+		{"empty bearer", keys, http.MethodPost, "/api/v1/provision/members", "", body, "", now, -1, errBearer},
+		{"no keys", nil, http.MethodPost, "/api/v1/provision/members", "", body, token, now, -1, errNoKey},
+		{"empty method", keys, "", "/api/v1/provision/members", "", body, token, now, -1, errMethodPath},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, nonce, err := VerifyRequestIndex(tc.keys, AudienceProvision, tc.method, tc.path, tc.rawQuery, tc.body, tc.bearer, tc.now)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			if err != nil {
+				if idx != tc.wantIdx || nonce != "" {
+					t.Fatalf("failure returned (%d, %q), want (%d, \"\")", idx, nonce, tc.wantIdx)
+				}
+				return
+			}
+			if idx != tc.wantIdx {
+				t.Fatalf("index = %d, want %d", idx, tc.wantIdx)
+			}
+			if tc.name == "body" && nonce != wantNonce {
+				t.Fatalf("nonce = %q, want the bearer's nonce %q", nonce, wantNonce)
+			}
+		})
+	}
+
+	// The v1 verifier refuses a v2 bearer just as firmly.
+	if _, err := VerifyIndex(keys, AudienceProvision, http.MethodPost, "/api/v1/provision/members", token, now); !errors.Is(err, errBearer) {
+		t.Fatalf("v1 verifier accepted a v2 bearer: %v", err)
 	}
 }

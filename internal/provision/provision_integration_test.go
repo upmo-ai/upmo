@@ -13,11 +13,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/agents"
@@ -36,6 +38,9 @@ type testEnv struct {
 	app       *pgxpool.Pool
 	handler   http.Handler
 	keyring   gateway.Keyring
+	keys      []provision.Key
+	identity  identity.ProvisionStore
+	log       *slog.Logger
 	rawKey1   string
 	rawKey2   string
 	masterKey string
@@ -101,23 +106,27 @@ func newTestEnv(t *testing.T, withKeys bool) *testEnv {
 	}
 
 	now := time.Date(2026, 11, 16, 14, 0, 0, 0, time.UTC)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := &testEnv{
 		owner:     owner,
 		app:       appPool,
 		keyring:   keyring,
+		keys:      keys,
+		identity:  identity.Provision(owner, "http://localhost:5173"),
+		log:       log,
 		rawKey1:   k1,
 		rawKey2:   k2,
 		masterKey: masterKeyB64,
 		now:       now,
 	}
+	env.identity.Now = func() time.Time { return env.now }
 
 	mux := http.NewServeMux()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(appPool, identity.IdleTimeout, identity.MaxAge)
 	identity.MountWorkspace(mux, identity.Workspace(appPool), sessions)
 	provision.Handler{
 		Owner:      owner,
-		Identity:   identity.Provision(owner, "http://localhost:5173"),
+		Identity:   env.identity,
 		MasterKeys: keyring,
 		Keys:       keys,
 		Log:        log,
@@ -126,6 +135,46 @@ func newTestEnv(t *testing.T, withKeys bool) *testEnv {
 
 	env.handler = audit.Middleware(audit.Routes(), mux, appPool, "brain", nil, log)(httpserver.Protect(mux))
 	return env
+}
+
+// sign returns a v2 provision bearer for method, target (path plus raw query
+// string) and body at at.
+func (e *testEnv) sign(t *testing.T, rawKey, method, target string, body []byte, at time.Time) string {
+	t.Helper()
+	master, err := svcsig.ParseKey(rawKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, rawQuery, _ := strings.Cut(target, "?")
+	tok, err := svcsig.SignRequest(derived, svcsig.AudienceProvision, method, path, rawQuery, body, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+// do sends body to target with bearer ("" for none) through the mounted
+// routes.
+func (e *testEnv) do(t *testing.T, method, target, bearer string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req := httptest.NewRequest(method, target, rdr)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	return rec
 }
 
 func (e *testEnv) signedDo(t *testing.T, rawKey, method, path string, body any) *httptest.ResponseRecorder {
@@ -143,32 +192,11 @@ func (e *testEnv) signedDo(t *testing.T, rawKey, method, path string, body any) 
 			}
 		}
 	}
-	req := httptest.NewRequest(method, path, &buf)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	bearer := ""
 	if rawKey != "" {
-		master, err := svcsig.ParseKey(rawKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
-		if err != nil {
-			t.Fatal(err)
-		}
-		urlPath := path
-		if idx := strings.Index(urlPath, "?"); idx >= 0 {
-			urlPath = urlPath[:idx]
-		}
-		tok, err := svcsig.Sign(derived, svcsig.AudienceProvision, method, urlPath, e.now)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Authorization", "Bearer "+tok)
+		bearer = e.sign(t, rawKey, method, path, buf.Bytes(), e.now)
 	}
-	rec := httptest.NewRecorder()
-	e.handler.ServeHTTP(rec, req)
-	return rec
+	return e.do(t, method, path, bearer, buf.Bytes())
 }
 
 func TestProvisionDisabledReturns404Integration(t *testing.T) {
@@ -199,19 +227,9 @@ func TestProvisionMembersTeamsRevocationAndAudit(t *testing.T) {
 	}
 
 	// HTTP-level stale/expired bearer with a configured key returns 401 and seals Denied event.
-	master1, err := svcsig.ParseKey(env.rawKey1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived1, err := svcsig.Derive(master1, svcsig.AudienceProvision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleTok, err := svcsig.Sign(derived1, svcsig.AudienceProvision, http.MethodPost, "/api/v1/provision/teams", env.now.Add(-2*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleReq := httptest.NewRequest(http.MethodPost, "/api/v1/provision/teams", strings.NewReader(`{"external_id":"team-stale","name":"Stale"}`))
+	staleBody := []byte(`{"external_id":"team-stale","name":"Stale"}`)
+	staleTok := env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/teams", staleBody, env.now.Add(-2*time.Minute))
+	staleReq := httptest.NewRequest(http.MethodPost, "/api/v1/provision/teams", bytes.NewReader(staleBody))
 	staleReq.Header.Set("Content-Type", "application/json")
 	staleReq.Header.Set("Authorization", "Bearer "+staleTok)
 	staleRec := httptest.NewRecorder()
@@ -396,17 +414,18 @@ func TestProvisionMembersTeamsRevocationAndAudit(t *testing.T) {
 	if sysServiceCount < 7 {
 		t.Fatalf("provision audit events = %d, want >= 7", sysServiceCount)
 	}
-	var deniedMissing, deniedInvalidSig int
+	// The stale bearer verified under key 1, so its refusal names that key.
+	var deniedMissing, deniedStale int
 	if err := env.owner.QueryRow(ctx, `
 		SELECT
 			count(*) FILTER (WHERE outcome = 'denied' AND reason = 'missing_bearer'),
-			count(*) FILTER (WHERE outcome = 'denied' AND reason = 'invalid_signature')
+			count(*) FILTER (WHERE outcome = 'denied' AND reason = 'stale' AND target_id = $1)
 		FROM audit.events
-		WHERE action = 'provision.team_create'`).Scan(&deniedMissing, &deniedInvalidSig); err != nil {
+		WHERE action = 'provision.team_create'`, env.keys[0].ID).Scan(&deniedMissing, &deniedStale); err != nil {
 		t.Fatal(err)
 	}
-	if deniedMissing != 1 || deniedInvalidSig != 1 {
-		t.Fatalf("denied audit events = (missing=%d, invalid_sig=%d), want (1, 1)", deniedMissing, deniedInvalidSig)
+	if deniedMissing != 1 || deniedStale != 1 {
+		t.Fatalf("denied audit events = (missing=%d, stale=%d), want (1, 1)", deniedMissing, deniedStale)
 	}
 }
 
@@ -806,7 +825,7 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusBody); err != nil {
 		t.Fatal(err)
 	}
-	if !statusBody.Ready || statusBody.SchemaVersions["identity"] != 5 || statusBody.SpendCeilingMicroUSD == nil || *statusBody.SpendCeilingMicroUSD != 12345678 {
+	if !statusBody.Ready || statusBody.SchemaVersions["identity"] != 6 || statusBody.SpendCeilingMicroUSD == nil || *statusBody.SpendCeilingMicroUSD != 12345678 {
 		t.Fatalf("unexpected status = %+v", statusBody)
 	}
 
@@ -884,5 +903,281 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 
 	if badMonth := env.signedDo(t, env.rawKey1, http.MethodGet, "/api/v1/provision/usage?month=not-a-month", nil); badMonth.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid month = %d, want 422", badMonth.Code)
+	}
+}
+
+func TestProvisionV2BindingIntegration(t *testing.T) {
+	env := newTestEnv(t, true)
+	ctx := context.Background()
+
+	// The member every refused request below targets (an owner, because a
+	// fresh install keeps one).
+	if rec := env.signedDo(t, env.rawKey1, http.MethodPost, "/api/v1/provision/members", map[string]any{
+		"external_id": "bind-1", "email": "bind@example.com", "name": "Bind", "role": "owner",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create member = %d %s", rec.Code, rec.Body.String())
+	}
+
+	linkCount := func() int {
+		var n int
+		if err := env.owner.QueryRow(ctx, `SELECT count(*) FROM identity.sign_in_links`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	linkBody := []byte(`{"external_id":"bind-1","purpose":"sso"}`)
+
+	// A valid v2 bearer mints the link.
+	bearer := env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/sign-in-links", linkBody, env.now)
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", bearer, linkBody); rec.Code != http.StatusCreated {
+		t.Fatalf("valid v2 request = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := linkCount(); got != 1 {
+		t.Fatalf("links after valid request = %d, want 1", got)
+	}
+
+	// Sent a second time, the same bearer is a replay.
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", bearer, linkBody); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed bearer = %d, want 401", rec.Code)
+	}
+
+	// A fresh bearer whose body was swapped after signing no longer matches
+	// its MAC.
+	swapped := env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/sign-in-links", linkBody, env.now)
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", swapped, []byte(`{"external_id":"bind-1","purpose":"sso_stepup"}`)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("changed body = %d, want 401", rec.Code)
+	}
+
+	// A v1 bearer no longer names a provision route.
+	master, err := svcsig.ParseKey(env.rawKey1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Tok, err := svcsig.Sign(derived, svcsig.AudienceProvision, http.MethodPost, "/api/v1/provision/sign-in-links", env.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", v1Tok, linkBody); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("v1 bearer = %d, want 401", rec.Code)
+	}
+
+	// A body over the route's cap is refused with the 413 the handlers
+	// themselves returned before the guard took over the read, at both
+	// limits: 64 KiB for JSON routes and 1 MiB for packs.
+	bigJSON := bytes.Repeat([]byte("x"), 64<<10+1)
+	jsonBearer := env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/members", bigJSON, env.now)
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/members", jsonBearer, bigJSON); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized json body = %d, want 413", rec.Code)
+	}
+	bigPack := bytes.Repeat([]byte("p"), 1<<20+1)
+	packBearer := env.sign(t, env.rawKey1, http.MethodPut, "/api/v1/provision/packs", bigPack, env.now)
+	if rec := env.do(t, http.MethodPut, "/api/v1/provision/packs", packBearer, bigPack); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized pack body = %d, want 413", rec.Code)
+	}
+
+	// The query string is signed too. The refused request did not consume
+	// the nonce (an invalid signature never does), so the properly signed
+	// query of the same bearer still verifies.
+	usageBearer := env.sign(t, env.rawKey1, http.MethodGet, "/api/v1/provision/usage?month=2026-11", nil, env.now)
+	if rec := env.do(t, http.MethodGet, "/api/v1/provision/usage?month=2026-10", usageBearer, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("changed query = %d, want 401", rec.Code)
+	}
+	if rec := env.do(t, http.MethodGet, "/api/v1/provision/usage?month=2026-11", usageBearer, nil); rec.Code != http.StatusOK {
+		t.Fatalf("signed query = %d, want 200", rec.Code)
+	}
+
+	// Every refusal wrote nothing: one link, no session.
+	if got := linkCount(); got != 1 {
+		t.Fatalf("links after refusals = %d, want 1", got)
+	}
+	var sessions int
+	if err := env.owner.QueryRow(ctx, `SELECT count(*) FROM identity.sessions`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 0 {
+		t.Fatalf("sessions = %d, want 0", sessions)
+	}
+
+	// The replay is audited against the key that signed it, never the
+	// bearer.
+	if _, err := audit.SealOnce(ctx, env.owner, io.Discard); err != nil {
+		t.Fatalf("audit.SealOnce: %v", err)
+	}
+	var replays int
+	if err := env.owner.QueryRow(ctx, `
+		SELECT count(*) FROM audit.events
+		WHERE outcome = 'denied' AND reason = 'replay' AND target_id = $1`, env.keys[0].ID).Scan(&replays); err != nil {
+		t.Fatal(err)
+	}
+	if replays != 1 {
+		t.Fatalf("replay audit events naming key %s = %d, want 1", env.keys[0].ID, replays)
+	}
+}
+
+func TestProvisionReplayRefusedAcrossInstancesIntegration(t *testing.T) {
+	env := newTestEnv(t, true)
+	ctx := context.Background()
+
+	// A second brain instance: the same keys and database behind its own
+	// Handler, as another replica would have.
+	mux2 := http.NewServeMux()
+	provision.Handler{
+		Owner:      env.owner,
+		Identity:   env.identity,
+		MasterKeys: env.keyring,
+		Keys:       env.keys,
+		Log:        env.log,
+		Now:        func() time.Time { return env.now },
+	}.Mount(mux2)
+
+	body := []byte(`{"external_id":"twins","name":"Twins"}`)
+	bearer := env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/teams", body, env.now)
+	signedReq := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/provision/teams", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		return req
+	}
+
+	rec := httptest.NewRecorder()
+	env.handler.ServeHTTP(rec, signedReq())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first instance = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The identical request bytes reach the second instance: the nonce is
+	// already in the shared table, so it is a replay there.
+	rec2 := httptest.NewRecorder()
+	mux2.ServeHTTP(rec2, signedReq())
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("second instance = %d %s, want 401", rec2.Code, rec2.Body.String())
+	}
+
+	// A third instance lists the same keys in the opposite order, as a
+	// replica mid-rotation might. The nonce is recorded by key id, not by
+	// list position, so the replay is still refused.
+	reversed := []provision.Key{env.keys[1], env.keys[0]}
+	mux3 := http.NewServeMux()
+	provision.Handler{
+		Owner:      env.owner,
+		Identity:   env.identity,
+		MasterKeys: env.keyring,
+		Keys:       reversed,
+		Log:        env.log,
+		Now:        func() time.Time { return env.now },
+	}.Mount(mux3)
+	rec3 := httptest.NewRecorder()
+	mux3.ServeHTTP(rec3, signedReq())
+	if rec3.Code != http.StatusUnauthorized {
+		t.Fatalf("reversed-key instance = %d %s, want 401", rec3.Code, rec3.Body.String())
+	}
+
+	// One team, one nonce row: the refused replays wrote nothing.
+	var teams, nonces int
+	if err := env.owner.QueryRow(ctx, `SELECT count(*) FROM identity.teams`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 1 {
+		t.Fatalf("teams after replay = %d, want 1", teams)
+	}
+	if err := env.owner.QueryRow(ctx, `SELECT count(*) FROM identity.provision_nonces`).Scan(&nonces); err != nil {
+		t.Fatal(err)
+	}
+	if nonces != 1 {
+		t.Fatalf("nonce rows after replay = %d, want 1", nonces)
+	}
+}
+
+func TestProvisionNonceSweepIntegration(t *testing.T) {
+	env := newTestEnv(t, true)
+	ctx := context.Background()
+
+	// Nonces consumed at ages either side of the retention window (twice the
+	// 30s timestamp tolerance): 10s and 45s are inside it, 90s and an hour
+	// are past it. A retention of one tolerance, a second, or "anything
+	// before now" would sweep a nonce whose bearer can still verify.
+	sweepAt := env.now
+	for _, row := range []struct {
+		nonce string
+		age   time.Duration
+	}{
+		{"nonce-10s", 10 * time.Second},
+		{"nonce-45s", 45 * time.Second},
+		{"nonce-90s", 90 * time.Second},
+		{"nonce-1h", time.Hour},
+	} {
+		env.now = sweepAt.Add(-row.age)
+		if err := env.identity.ConsumeNonce(ctx, env.keys[0].ID, row.nonce); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The sweep the periodic job runs, called with the fake clock. A swept
+	// nonce is harmless to forget: its bearer is outside the timestamp
+	// tolerance by then, so the verifier refuses it before the nonce is even
+	// consulted.
+	removed, err := env.identity.SweepProvisionNonces(ctx, sweepAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("swept = %d nonces, want 2", removed)
+	}
+	rows, err := env.owner.Query(ctx, `SELECT nonce FROM identity.provision_nonces ORDER BY nonce`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"nonce-10s", "nonce-45s"}; !slices.Equal(left, want) {
+		t.Fatalf("nonces after sweep = %v, want %v", left, want)
+	}
+}
+
+func TestProvisionNonceStoreFailureIntegration(t *testing.T) {
+	env := newTestEnv(t, true)
+	ctx := context.Background()
+
+	// An instance whose nonce store cannot be reached: a closed pool fails
+	// every query with an error that is not a replay.
+	closed, err := pgxpool.NewWithConfig(ctx, env.owner.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	mux := http.NewServeMux()
+	provision.Handler{
+		Owner:      env.owner,
+		Identity:   identity.Provision(closed, "http://localhost:5173"),
+		MasterKeys: env.keyring,
+		Keys:       env.keys,
+		Log:        env.log,
+		Now:        func() time.Time { return env.now },
+	}.Mount(mux)
+
+	body := []byte(`{"external_id":"unrecorded","name":"Unrecorded"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/provision/teams", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/teams", body, env.now))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("nonce store failure = %d %s, want 500", rec.Code, rec.Body.String())
+	}
+
+	// A nonce that could not be recorded never reaches the handler.
+	var teams int
+	if err := env.owner.QueryRow(ctx, `SELECT count(*) FROM identity.teams`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 0 {
+		t.Fatalf("teams after nonce store failure = %d, want 0", teams)
 	}
 }

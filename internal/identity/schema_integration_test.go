@@ -463,8 +463,8 @@ func TestIdentityMigrationVersions(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 5 || latest != 5 {
-		t.Fatalf("applied versions = %d latest = %d, want 5 and 5", n, latest)
+	if n != 6 || latest != 6 {
+		t.Fatalf("applied versions = %d latest = %d, want 6 and 6", n, latest)
 	}
 }
 

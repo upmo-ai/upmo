@@ -610,6 +610,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	}
 	memoryFacts := memory.NewFacts(pool)
 	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
+	provision.AddNonceSweep(workers, provIdentity)
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
 		embedRoute := cfg.EmbedRoute
 		if embedRoute == "" {
@@ -665,6 +666,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	periodic := []*river.PeriodicJob{
 		chat.SweepPeriodic(), audit.SealPeriodic(),
 		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
+		provision.NonceSweepPeriodic(),
 	}
 	if auditPush {
 		periodic = append(periodic, audit.PushPeriodic())
