@@ -73,33 +73,67 @@ func TestAWSAndVaultStayQuietWhenDisabled(t *testing.T) {
 }
 
 func TestFromEnv(t *testing.T) {
-	empty := FromEnv(func(string) (string, bool) { return "", false })
+	empty, err := FromEnv(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(empty) != 1 {
 		t.Fatalf("no vault vars: %d backends", len(empty))
 	}
 	if _, ok := empty[0].(EnvSecrets); !ok {
 		t.Fatalf("first backend = %T", empty[0])
 	}
-	env := map[string]string{
-		"UPMO_VAULT_ADDR":  "https://vault.example",
-		"UPMO_VAULT_TOKEN": "t",
-		"UPMO_VAULT_PATH":  "secret/data",
+	lookup := func(env map[string]string) func(string) (string, bool) {
+		return func(name string) (string, bool) {
+			v, ok := env[name]
+			return v, ok
+		}
 	}
-	full := FromEnv(func(name string) (string, bool) {
-		v, ok := env[name]
-		return v, ok
-	})
-	if len(full) != 2 {
-		t.Fatalf("vault vars: %d backends", len(full))
+	// A partial pair still skips Vault without an error.
+	for name, env := range map[string]map[string]string{
+		"addr only":   {"UPMO_VAULT_ADDR": "http://vault.example"},
+		"token only":  {"UPMO_VAULT_TOKEN": "t"},
+		"empty token": {"UPMO_VAULT_ADDR": "http://vault.example", "UPMO_VAULT_TOKEN": ""},
+	} {
+		chain, err := FromEnv(lookup(env))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(chain) != 1 {
+			t.Fatalf("%s: %d backends", name, len(chain))
+		}
 	}
-	if _, ok := full[0].(EnvSecrets); !ok {
-		t.Fatalf("first backend = %T", full[0])
+	// A plaintext address off the exempt hosts is refused, IPv6 included.
+	for _, addr := range []string{"http://vault.example", "http://[2001:db8::1]:8200"} {
+		_, err = FromEnv(lookup(map[string]string{
+			"UPMO_VAULT_ADDR":  addr,
+			"UPMO_VAULT_TOKEN": "t",
+		}))
+		if err == nil || !strings.Contains(err.Error(), "UPMO_VAULT_ADDR") {
+			t.Fatalf("%s: err = %v, want it to name UPMO_VAULT_ADDR", addr, err)
+		}
 	}
-	vault, ok := full[1].(VaultSecrets)
-	if !ok {
-		t.Fatalf("second backend = %T", full[1])
-	}
-	if vault.Addr != "https://vault.example" || vault.Token != "t" || vault.Path != "secret/data" || vault.Fetch == nil {
-		t.Fatalf("vault = %+v", vault)
+	for _, addr := range []string{"https://vault.example", "http://127.0.0.1:8200", "http://vault:8200", "http://[::1]:8200"} {
+		chain, err := FromEnv(lookup(map[string]string{
+			"UPMO_VAULT_ADDR":  addr,
+			"UPMO_VAULT_TOKEN": "t",
+			"UPMO_VAULT_PATH":  "secret/data",
+		}))
+		if err != nil {
+			t.Fatalf("%s: %v", addr, err)
+		}
+		if len(chain) != 2 {
+			t.Fatalf("%s: %d backends", addr, len(chain))
+		}
+		if _, ok := chain[0].(EnvSecrets); !ok {
+			t.Fatalf("%s: first backend = %T", addr, chain[0])
+		}
+		vault, ok := chain[1].(VaultSecrets)
+		if !ok {
+			t.Fatalf("%s: second backend = %T", addr, chain[1])
+		}
+		if vault.Addr != addr || vault.Token != "t" || vault.Path != "secret/data" || vault.Fetch == nil {
+			t.Fatalf("%s: vault = %+v", addr, vault)
+		}
 	}
 }

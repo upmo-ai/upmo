@@ -450,6 +450,13 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Built on every start, before any pool opens: a plaintext Vault address
+	// with a token fails brain start however the audit push is configured.
+	secrets, err := secretchain.FromEnv(os.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
+
 	owner := o.owner
 	ownsOwner := false
 	if owner == nil {
@@ -605,7 +612,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		audit.AddPusher(workers, owner, audit.PushConfig{
 			WebhookURL: cfg.AuditWebhookURL,
 			SyslogAddr: cfg.AuditSyslogAddr,
-			Secrets:    secretchain.FromEnv(os.LookupEnv),
+			Secrets:    secrets,
 		})
 	}
 	memoryFacts := memory.NewFacts(pool)
@@ -907,8 +914,8 @@ func buildHandler(
 
 	knowledgeBook := knowledge.NewStore(pool, work)
 	knowledgeConverter := knowledge.Converter{Text: knowledge.PassThroughText{}}
-	if markitdownURL := os.Getenv("UPMO_MARKITDOWN_URL"); markitdownURL != "" {
-		knowledgeConverter.Sidecar = &knowledge.Sidecar{BaseURL: markitdownURL}
+	if cfg.MarkitdownURL != "" {
+		knowledgeConverter.Sidecar = &knowledge.Sidecar{BaseURL: cfg.MarkitdownURL}
 	}
 	var knowledgeEmbedFor func(userID string) knowledge.Embedder
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" && cfg.EmbedRoute != "" {
