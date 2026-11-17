@@ -1068,7 +1068,7 @@ func buildHandler(
 	// The audit middleware sits outside the cross-origin guard, so a request
 	// Protect refuses is still recorded; the mux resolves the pattern then.
 	h := audit.Middleware(audit.Routes(), mux, pool, "brain", cfg.TrustedProxies, log)(httpserver.Protect(mux))
-	return metrics.MiddlewareWithMux("brain", reg, mux)(h), nil
+	return httpserver.SecurityHeaders(metrics.MiddlewareWithMux("brain", reg, mux)(h)), nil
 }
 
 func taskSandboxes(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*runtime.TaskSandboxes, error) {
