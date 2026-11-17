@@ -35,6 +35,7 @@ func routes(
 	chatStreams *chat.StreamHub,
 	schemaVersions func(context.Context) (map[string]int64, error),
 	reg *metrics.Registry,
+	opts ...Option,
 ) (http.Handler, error) {
 	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
@@ -115,5 +116,9 @@ func routes(
 	if buildinfo.Info().Version == "" {
 		ideps.buildRaw = buildinfo.Details{}
 	}
-	return buildHandler(deps, ideps, boxes, work, streams, chatStreams, nil, options{})
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return buildHandler(deps, ideps, boxes, work, streams, chatStreams, nil, o)
 }
