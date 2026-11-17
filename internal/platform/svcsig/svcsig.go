@@ -1,6 +1,8 @@
 // Package svcsig signs and verifies process-to-process HMAC bearers:
 // a short-lived token derived from the install master key,
-// bound to one audience, method and path. Every comparison is constant time.
+// bound to one audience, method and path. A v2 bearer additionally binds the
+// raw query string and the SHA-256 of the body, and carries a nonce the
+// server can refuse to accept twice. Every comparison is constant time.
 package svcsig
 
 import (
@@ -10,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,8 +31,13 @@ const (
 // Prefix is the env and bearer prefix that must not collide with a
 // personal API token.
 const (
-	KeyPrefix    = "upmo_svc_"
+	KeyPrefix = "upmo_svc_"
+	// BearerPrefix starts the v1 bearers, whose MAC covers audience, method
+	// and path only.
 	BearerPrefix = "upmo_s2s_v1." // #nosec G101 -- published prefix, not a credential
+	// BearerPrefixV2 starts the bearers whose MAC also covers the raw query
+	// string and the SHA-256 of the body.
+	BearerPrefixV2 = "upmo_s2s_v2." // #nosec G101 -- published prefix, not a credential
 )
 
 const (
@@ -38,7 +46,17 @@ const (
 	macBytes   = 32
 	tolerance  = 30 * time.Second
 	version    = "v1"
+	version2   = "v2"
+
+	// NonceRetention is how long a consumed v2 nonce must stay recorded
+	// before it may be swept: twice the timestamp tolerance, so a swept
+	// nonce belongs to a bearer that can no longer verify anyway.
+	NonceRetention = 2 * tolerance
 )
+
+// ErrStale is a bearer whose MAC verified but whose timestamp is outside the
+// tolerance.
+var ErrStale = errors.New("svcsig: timestamp outside the tolerance")
 
 var (
 	errNoKey      = errors.New("svcsig: no key")
@@ -46,7 +64,6 @@ var (
 	errAudience   = errors.New("svcsig: unknown audience")
 	errBearer     = errors.New("svcsig: malformed bearer")
 	errMismatch   = errors.New("svcsig: signature does not match")
-	errStale      = errors.New("svcsig: timestamp outside the tolerance")
 	errMethodPath = errors.New("svcsig: method or path is empty")
 )
 
@@ -104,21 +121,10 @@ func Verify(derived [][]byte, audience, method, path, bearer string, now time.Ti
 // VerifyIndex checks a bearer against any derived key and returns the index of
 // the matching key on success.
 func VerifyIndex(derived [][]byte, audience, method, path, bearer string, now time.Time) (int, error) {
-	if len(derived) == 0 {
-		return -1, errNoKey
+	if err := checkVerify(derived, audience, method, path); err != nil {
+		return -1, err
 	}
-	for _, k := range derived {
-		if len(k) != keyBytes {
-			return -1, errNoKey
-		}
-	}
-	if !knownAudience(audience) {
-		return -1, errAudience
-	}
-	if method == "" || path == "" {
-		return -1, errMethodPath
-	}
-	gotAudience, unix, nonceText, gotMAC, err := parseBearer(bearer)
+	gotAudience, unix, nonceText, gotMAC, err := parseBearer(bearer, BearerPrefix)
 	if err != nil {
 		return -1, err
 	}
@@ -136,9 +142,69 @@ func VerifyIndex(derived [][]byte, audience, method, path, bearer string, now ti
 		return -1, errMismatch
 	}
 	if d := now.Sub(time.Unix(unix, 0)); d > tolerance || d < -tolerance {
-		return -1, errStale
+		return -1, ErrStale
 	}
 	return matched, nil
+}
+
+// SignRequest returns a v2 bearer for this audience, method, path, raw query
+// string and body. The MAC covers the hex SHA-256 of the body, so nothing
+// signed can travel with another query or body; an empty body hashes the
+// empty string.
+func SignRequest(derived []byte, audience, method, path, rawQuery string, body []byte, now time.Time) (string, error) {
+	if len(derived) != keyBytes {
+		return "", errNoKey
+	}
+	if !knownAudience(audience) {
+		return "", errAudience
+	}
+	if method == "" || path == "" {
+		return "", errMethodPath
+	}
+	nonce := make([]byte, nonceBytes)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("svcsig: nonce: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	unix := now.Unix()
+	nonceText := base64.RawURLEncoding.EncodeToString(nonce)
+	mac := macOverV2(derived, audience, unix, nonceText, method, path, rawQuery, hex.EncodeToString(sum[:]))
+	return BearerPrefixV2 + audience + "." + strconv.FormatInt(unix, 10) + "." + nonceText + "." + base64.RawURLEncoding.EncodeToString(mac), nil
+}
+
+// VerifyRequestIndex checks a v2 bearer against any derived key and returns
+// the index of the matching key and the bearer's nonce, so the caller can
+// refuse a replay of a nonce it has already recorded. The MAC must cover the
+// raw query string and the SHA-256 of the body. The signature is checked
+// before the timestamp, and an invalid signature never yields a nonce. A
+// stale bearer still returns the matching key's index with ErrStale, so the
+// caller can attribute the refusal to a key.
+func VerifyRequestIndex(derived [][]byte, audience, method, path, rawQuery string, body []byte, bearer string, now time.Time) (int, string, error) {
+	if err := checkVerify(derived, audience, method, path); err != nil {
+		return -1, "", err
+	}
+	gotAudience, unix, nonceText, gotMAC, err := parseBearer(bearer, BearerPrefixV2)
+	if err != nil {
+		return -1, "", err
+	}
+	if gotAudience != audience {
+		return -1, "", errAudience
+	}
+	bodySum := sha256.Sum256(body)
+	matched := -1
+	for i, k := range derived {
+		candidate := macOverV2(k, gotAudience, unix, nonceText, method, path, rawQuery, hex.EncodeToString(bodySum[:]))
+		if subtle.ConstantTimeCompare(gotMAC, candidate) == 1 && matched == -1 {
+			matched = i
+		}
+	}
+	if matched < 0 {
+		return -1, "", errMismatch
+	}
+	if d := now.Sub(time.Unix(unix, 0)); d > tolerance || d < -tolerance {
+		return matched, "", ErrStale
+	}
+	return matched, nonceText, nil
 }
 
 // Transport adds a bearer on every client request. An empty key or unknown
@@ -204,8 +270,27 @@ func (t roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(clone)
 }
 
-func parseBearer(bearer string) (audience string, unix int64, nonce string, mac []byte, err error) {
-	rest, ok := strings.CutPrefix(bearer, BearerPrefix)
+// checkVerify holds the checks every verifier runs before touching a bearer.
+func checkVerify(derived [][]byte, audience, method, path string) error {
+	if len(derived) == 0 {
+		return errNoKey
+	}
+	for _, k := range derived {
+		if len(k) != keyBytes {
+			return errNoKey
+		}
+	}
+	if !knownAudience(audience) {
+		return errAudience
+	}
+	if method == "" || path == "" {
+		return errMethodPath
+	}
+	return nil
+}
+
+func parseBearer(bearer, prefix string) (audience string, unix int64, nonce string, mac []byte, err error) {
+	rest, ok := strings.CutPrefix(bearer, prefix)
 	if !ok {
 		return "", 0, "", nil, errBearer
 	}
@@ -249,6 +334,29 @@ func macOver(derived []byte, audience string, unix int64, nonce, method, path st
 	h.Write([]byte(method))
 	h.Write([]byte{'.'})
 	h.Write([]byte(path))
+	return h.Sum(nil)
+}
+
+// macOverV2 covers everything a v2 bearer binds. Each field is length
+// prefixed, so no two different field lists can produce the same bytes even
+// when a path or query string carries the separator characters other
+// schemes rely on.
+func macOverV2(derived []byte, audience string, unix int64, nonce, method, path, rawQuery, bodySum string) []byte {
+	h := hmac.New(sha256.New, derived)
+	for _, field := range []string{
+		version2,
+		audience,
+		strconv.FormatInt(unix, 10),
+		nonce,
+		method,
+		path,
+		rawQuery,
+		bodySum,
+	} {
+		h.Write([]byte(strconv.Itoa(len(field))))
+		h.Write([]byte{':'})
+		h.Write([]byte(field))
+	}
 	return h.Sum(nil)
 }
 

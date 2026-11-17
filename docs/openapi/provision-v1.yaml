@@ -8,12 +8,23 @@ info:
     one-time `sso` and `sso_stepup` links.
 
     All `/api/v1/provision/*` routes require an
-    `Authorization: Bearer upmo_s2s_v1.<audience>.<unix>.<nonce>.<mac>` token signed
+    `Authorization: Bearer upmo_s2s_v2.<audience>.<unix>.<nonce>.<mac>` token signed
     with a key from `UPMO_PROVISION_KEYS` for audience `provision`
-    (`svcsig.AudienceProvision`), bound to the exact HTTP method and request path.
+    (`svcsig.AudienceProvision`). The HMAC-SHA256 `mac` is computed over the token
+    version (`v2`), audience, unix timestamp, nonce, HTTP method, request path, the
+    raw query string, and the hex SHA-256 of the request body (an empty body hashes
+    the empty string), each field length-prefixed, so a signed request cannot travel
+    with another method, path, query or body. A v1 bearer (no query or body binding)
+    is refused with `401`.
+
+    Every nonce is single-use per key: the first accepted request records the nonce
+    (keyed by the verifying key) in Postgres, and any later request presenting the
+    same bearer — to this instance or any replica sharing the database — is a replay
+    refused with `401`. Recorded nonces older than twice the timestamp tolerance
+    (30s each way) are deleted by a periodic sweep; by then the bearer is stale and
+    refused on its timestamp regardless.
+
     When `UPMO_PROVISION_KEYS` is empty or unset, all `/api/v1/provision/*` routes return `404`.
-    Note: `svcsig` tokens sign audience, HTTP method, request path, and timestamp (with
-    no request-body digest or nonce replay cache).
 servers:
   - url: "{baseUrl}"
     variables:
@@ -458,10 +469,12 @@ components:
     SvcsigBearer:
       type: http
       scheme: bearer
-      bearerFormat: upmo_s2s_v1
+      bearerFormat: upmo_s2s_v2
       description: |
         Process-to-process HMAC-SHA256 bearer derived from a master `upmo_svc_*` key
-        via HKDF for audience `provision`, bound to method and request URL path.
+        via HKDF for audience `provision`, bound to the method, request URL path,
+        raw query string, and the SHA-256 of the body. Each nonce is accepted once
+        per key; a replayed bearer returns `401`.
 
   parameters:
     ExternalID:
@@ -481,7 +494,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     Unauthorized:
-      description: Missing, malformed, expired, wrong-audience, or invalid svcsig bearer (or disabled user)
+      description: Missing, malformed, expired (outside the 30s tolerance), wrong-audience, v1, replayed, or otherwise invalid svcsig bearer (or disabled user)
       content:
         application/json:
           schema:

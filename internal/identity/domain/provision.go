@@ -23,6 +23,8 @@ var (
 	ErrInvalidProvisionInput = errors.New("identity: invalid provisioning input")
 	// ErrInvalidQuota reports an invalid workspace spend ceiling.
 	ErrInvalidQuota = errors.New("identity: spend_ceiling_micro_usd must be >= 0")
+	// ErrNonceReplay reports a provision bearer nonce that was already used.
+	ErrNonceReplay = errors.New("identity: provision nonce already used")
 )
 
 // CleanExternalID trims and validates an external_id string.

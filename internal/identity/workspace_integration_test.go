@@ -251,8 +251,8 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("version after re-up = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("version after re-up = %d, want 6", version)
 	}
 	var forced bool
 	if err := owner.QueryRow(ctx, `SELECT relforcerowsecurity FROM pg_class WHERE oid = 'identity.workspace'::regclass`).Scan(&forced); err != nil || !forced {
