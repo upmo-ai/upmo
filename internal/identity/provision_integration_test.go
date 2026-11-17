@@ -58,6 +58,18 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 		t.Fatalf("version after down = %d, want 4", version)
 	}
 
+	var hasTable bool
+	if err := owner.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'identity' AND table_name = 'provision_nonces'
+		)`).Scan(&hasTable); err != nil {
+		t.Fatal(err)
+	}
+	if hasTable {
+		t.Fatal("identity.provision_nonces still exists after down")
+	}
+
 	var hasCol bool
 	if err := owner.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -86,8 +98,25 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("version after re-up = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("version after re-up = %d, want 6", version)
+	}
+	if err := owner.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'identity' AND table_name = 'provision_nonces'
+		)`).Scan(&hasTable); err != nil {
+		t.Fatal(err)
+	}
+	if !hasTable {
+		t.Fatal("identity.provision_nonces missing after re-up")
+	}
+	var nonceInsert bool
+	if err := owner.QueryRow(ctx, `SELECT has_table_privilege('upmo_app', 'identity.provision_nonces', 'INSERT')`).Scan(&nonceInsert); err != nil {
+		t.Fatal(err)
+	}
+	if nonceInsert {
+		t.Fatal("upmo_app has INSERT on identity.provision_nonces after re-up")
 	}
 	var ceilingUpdate bool
 	if err := owner.QueryRow(ctx, `SELECT has_column_privilege('upmo_app', 'identity.workspace', 'spend_ceiling_micro_usd', 'UPDATE')`).Scan(&ceilingUpdate); err != nil {

@@ -2,6 +2,7 @@
 package provision
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -104,23 +105,28 @@ func (h Handler) now() time.Time {
 // Mount registers all /api/v1/provision/* routes on mux. When Keys is empty,
 // every /api/v1/provision/* route returns 404.
 func (h Handler) Mount(mux *http.ServeMux) {
-	mux.Handle("/api/v1/provision/", h.guard(http.NotFoundHandler()))
-	mux.Handle("POST /api/v1/provision/members", h.guard(http.HandlerFunc(h.createMember)))
-	mux.Handle("PUT /api/v1/provision/members/{external_id}", h.guard(http.HandlerFunc(h.updateMember)))
-	mux.Handle("DELETE /api/v1/provision/members/{external_id}", h.guard(http.HandlerFunc(h.deleteMember)))
-	mux.Handle("POST /api/v1/provision/teams", h.guard(http.HandlerFunc(h.createTeam)))
-	mux.Handle("PUT /api/v1/provision/teams/{external_id}", h.guard(http.HandlerFunc(h.updateTeam)))
-	mux.Handle("DELETE /api/v1/provision/teams/{external_id}", h.guard(http.HandlerFunc(h.deleteTeam)))
-	mux.Handle("POST /api/v1/provision/sign-in-links", h.guard(http.HandlerFunc(h.issueSignInLink)))
-	mux.Handle("PUT /api/v1/provision/providers", h.guard(http.HandlerFunc(h.upsertProviders)))
-	mux.Handle("PUT /api/v1/provision/quotas", h.guard(http.HandlerFunc(h.setQuota)))
-	mux.Handle("DELETE /api/v1/provision/quotas", h.guard(http.HandlerFunc(h.clearQuota)))
-	mux.Handle("PUT /api/v1/provision/packs", h.guard(http.HandlerFunc(h.installPack)))
-	mux.Handle("GET /api/v1/provision/status", h.guard(http.HandlerFunc(h.status)))
-	mux.Handle("GET /api/v1/provision/usage", h.guard(http.HandlerFunc(h.usage)))
+	mux.Handle("/api/v1/provision/", h.guard(maxBodyBytes, http.NotFoundHandler()))
+	mux.Handle("POST /api/v1/provision/members", h.guard(maxBodyBytes, http.HandlerFunc(h.createMember)))
+	mux.Handle("PUT /api/v1/provision/members/{external_id}", h.guard(maxBodyBytes, http.HandlerFunc(h.updateMember)))
+	mux.Handle("DELETE /api/v1/provision/members/{external_id}", h.guard(maxBodyBytes, http.HandlerFunc(h.deleteMember)))
+	mux.Handle("POST /api/v1/provision/teams", h.guard(maxBodyBytes, http.HandlerFunc(h.createTeam)))
+	mux.Handle("PUT /api/v1/provision/teams/{external_id}", h.guard(maxBodyBytes, http.HandlerFunc(h.updateTeam)))
+	mux.Handle("DELETE /api/v1/provision/teams/{external_id}", h.guard(maxBodyBytes, http.HandlerFunc(h.deleteTeam)))
+	mux.Handle("POST /api/v1/provision/sign-in-links", h.guard(maxBodyBytes, http.HandlerFunc(h.issueSignInLink)))
+	mux.Handle("PUT /api/v1/provision/providers", h.guard(maxBodyBytes, http.HandlerFunc(h.upsertProviders)))
+	mux.Handle("PUT /api/v1/provision/quotas", h.guard(maxBodyBytes, http.HandlerFunc(h.setQuota)))
+	mux.Handle("DELETE /api/v1/provision/quotas", h.guard(maxBodyBytes, http.HandlerFunc(h.clearQuota)))
+	mux.Handle("PUT /api/v1/provision/packs", h.guard(maxPackBodyBytes, http.HandlerFunc(h.installPack)))
+	mux.Handle("GET /api/v1/provision/status", h.guard(maxBodyBytes, http.HandlerFunc(h.status)))
+	mux.Handle("GET /api/v1/provision/usage", h.guard(maxBodyBytes, http.HandlerFunc(h.usage)))
 }
 
-func (h Handler) guard(next http.Handler) http.Handler {
+// guard admits only a v2 svcsig bearer whose MAC covers the method, path,
+// raw query string and the body this request carries. The body is read once,
+// capped as the wrapped handler caps it, and handed on unchanged. Each
+// bearer's nonce is recorded before the handler runs, so a replayed bearer is
+// refused no matter which instance of this server sees it.
+func (h Handler) guard(limit int64, next http.Handler) http.Handler {
 	derived := make([][]byte, len(h.Keys))
 	for i, k := range h.Keys {
 		derived[i] = k.Derived
@@ -136,13 +142,39 @@ func (h Handler) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		idx, err := svcsig.VerifyIndex(derived, svcsig.AudienceProvision, r.Method, r.URL.Path, bearer, h.now())
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+		if err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		idx, nonce, err := svcsig.VerifyRequestIndex(derived, svcsig.AudienceProvision, r.Method, r.URL.Path, r.URL.RawQuery, raw, bearer, h.now())
+		if errors.Is(err, svcsig.ErrStale) {
+			audit.Annotate(r.Context(), audit.Event{Reason: "stale", TargetID: h.Keys[idx].ID})
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		if err != nil {
 			audit.Annotate(r.Context(), audit.Event{Reason: "invalid_signature"})
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		kid := h.Keys[idx].ID
+		if err := h.Identity.ConsumeNonce(r.Context(), kid, nonce); err != nil {
+			if errors.Is(err, identity.ErrNonceReplay) {
+				audit.Annotate(r.Context(), audit.Event{Reason: "replay", TargetID: kid})
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			h.logErr("provision nonce consume failed", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 		audit.WithActor(r.Context(), audit.Actor{
 			Type:           "system",
 			CredentialType: audit.CredentialService,
@@ -353,13 +385,8 @@ func (h Handler) clearQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) installPack(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPackBodyBytes))
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return
-		}
 		writeError(w, http.StatusBadRequest, "bad request")
 		return
 	}
@@ -501,15 +528,13 @@ func (h Handler) logErr(msg string, err error) {
 	}
 }
 
+// decodeStrictJSON decodes exactly one JSON object from the request body the
+// guard already capped and hashed. A body over the limit never reaches here;
+// it is refused with the same 413 the guard returns for any route.
 func decodeStrictJSON(w http.ResponseWriter, r *http.Request, into any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return false
-		}
 		writeError(w, http.StatusBadRequest, "bad request")
 		return false
 	}

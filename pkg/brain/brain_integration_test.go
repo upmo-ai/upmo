@@ -91,7 +91,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := svcsig.Sign(derived, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/status", time.Now())
+	tok, err := svcsig.SignRequest(derived, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/status", "", nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,8 +109,27 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.Ready || payload.SchemaVersions["identity"] != 5 {
+	if !payload.Ready || payload.SchemaVersions["identity"] != 6 {
 		t.Fatalf("unexpected status payload: %+v", payload)
+	}
+
+	// The provision nonce sweep is a periodic job that runs on start, and its
+	// worker is registered: a completed job proves both.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var swept int
+		if err := owner.QueryRow(ctx, `
+			SELECT count(*) FROM platform.river_job
+			WHERE kind = 'provision_nonce_sweep' AND state = 'completed'`).Scan(&swept); err != nil {
+			t.Fatal(err)
+		}
+		if swept > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("provision nonce sweep did not complete on the brain app")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// WithProvisioner overrides default provisioning handler.

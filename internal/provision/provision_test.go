@@ -69,7 +69,7 @@ func TestDisabledProvisioningReturns404(t *testing.T) {
 	}
 }
 
-func TestSvcsigAuthAndKeyRotation(t *testing.T) {
+func TestGuardRejectsBadBearers(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	k1Raw := testSvcKey('1')
 	k2Raw := testSvcKey('2')
@@ -84,7 +84,9 @@ func TestSvcsigAuthAndKeyRotation(t *testing.T) {
 		Now:  func() time.Time { return now },
 	}
 	// Mount a dummy guarded route to verify middleware behavior without DB.
-	mux.Handle("GET /api/v1/provision/ping", h.guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Only refusals run here: an accepted bearer consumes a nonce, which
+	// needs Postgres and is proven by the integration tests.
+	mux.Handle("GET /api/v1/provision/ping", h.guard(maxBodyBytes, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(keyIDFrom(r.Context())))
 	})))
@@ -98,7 +100,7 @@ func TestSvcsigAuthAndKeyRotation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tok, err := svcsig.Sign(derived, audience, method, path, at)
+		tok, err := svcsig.SignRequest(derived, audience, method, path, "", nil, at)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,21 +141,24 @@ func TestSvcsigAuthAndKeyRotation(t *testing.T) {
 		t.Fatalf("wrong path bearer = %d, want 401", rec.Code)
 	}
 
-	// Key 1 works and sets keyID
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+sign(k1Raw, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/ping", now))
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || rec.Body.String() != keys[0].ID {
-		t.Fatalf("key 1 = %d %q, want 200 %q", rec.Code, rec.Body.String(), keys[0].ID)
+	// v1 bearer (no query or body binding) -> 401
+	master, err := svcsig.ParseKey(k2Raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Key 2 (rotation) also works and sets key 2's ID
+	derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Tok, err := svcsig.Sign(derived, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/ping", now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+sign(k2Raw, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/ping", now))
+	req.Header.Set("Authorization", "Bearer "+v1Tok)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || rec.Body.String() != keys[1].ID {
-		t.Fatalf("key 2 = %d %q, want 200 %q", rec.Code, rec.Body.String(), keys[1].ID)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("v1 bearer = %d, want 401", rec.Code)
 	}
 }
