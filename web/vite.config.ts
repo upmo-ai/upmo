@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 import { brandKit } from "./plugins/brand-kit";
+import { securityHeaders } from "./plugins/security-headers";
 
 // Vite's proxy server type extends node's EventEmitter, and without node's
 // type declarations installed it arrives without `on`. These are the members
@@ -12,7 +13,11 @@ type StreamProxy = {
 };
 
 export default defineConfig({
-  plugins: [react(), brandKit()],
+  plugins: [securityHeaders(), react(), brandKit()],
+  // Fonts stay emitted files: font-src is 'self' without data:.
+  build: {
+    assetsInlineLimit: 0,
+  },
   server: {
     host: "0.0.0.0",
     port: 5173,
