@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
 // Brain is an alias for Config used by pkg/brain.
@@ -63,6 +65,9 @@ type Config struct {
 	ChatWorkers int
 	// SandboxdURL is the sandbox process (UPMO_SANDBOXD_URL). Empty until brain calls it.
 	SandboxdURL string
+	// MarkitdownURL is the conversion sidecar (UPMO_MARKITDOWN_URL). Empty
+	// skips the sidecar and passes original text through.
+	MarkitdownURL string
 	// KnowledgeDir is the Compose volume root for original knowledge file bytes
 	// (UPMO_KNOWLEDGE_DIR). Empty refuses new file uploads that need storage.
 	KnowledgeDir string
@@ -140,8 +145,14 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	if !ok || v == "" {
 		return Config{}, fmt.Errorf("config: UPMO_DATABASE_URL is required")
 	}
+	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", v); err != nil {
+		return Config{}, err
+	}
 	cfg.DatabaseURL = v
-	if v, ok := lookup("UPMO_DATABASE_APP_URL"); ok {
+	if v, ok := lookup("UPMO_DATABASE_APP_URL"); ok && v != "" {
+		if err := tlscheck.PostgresURL("UPMO_DATABASE_APP_URL", v); err != nil {
+			return Config{}, err
+		}
 		cfg.DatabaseAppURL = v
 	}
 	public, ok := lookup("UPMO_PUBLIC_URL")
@@ -236,6 +247,9 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
 			return Config{}, fmt.Errorf("config: UPMO_GATEWAY_URL must be an absolute http(s) URL")
 		}
+		if err := checkServiceURL("UPMO_GATEWAY_URL", parsed); err != nil {
+			return Config{}, err
+		}
 		cfg.GatewayURL = strings.TrimRight(v, "/")
 	}
 	if v, ok := lookup("UPMO_EMBED_ROUTE"); ok && strings.TrimSpace(v) != "" {
@@ -281,7 +295,20 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
 			return Config{}, fmt.Errorf("config: UPMO_SANDBOXD_URL must be an absolute http(s) URL")
 		}
+		if err := checkServiceURL("UPMO_SANDBOXD_URL", parsed); err != nil {
+			return Config{}, err
+		}
 		cfg.SandboxdURL = strings.TrimRight(v, "/")
+	}
+	if v, ok := lookup("UPMO_MARKITDOWN_URL"); ok && v != "" {
+		parsed, err := url.Parse(v)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return Config{}, fmt.Errorf("config: UPMO_MARKITDOWN_URL must be an absolute http(s) URL")
+		}
+		if err := checkServiceURL("UPMO_MARKITDOWN_URL", parsed); err != nil {
+			return Config{}, err
+		}
+		cfg.MarkitdownURL = strings.TrimRight(v, "/")
 	}
 	if v, ok := lookup("UPMO_SANDBOX_IMAGE"); ok && strings.TrimSpace(v) != "" {
 		v = strings.TrimSpace(v)
@@ -495,6 +522,15 @@ func loadSMTP(lookup func(string) (string, bool)) (SMTP, error) {
 		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_FROM must be an email address")
 	}
 	return s, nil
+}
+
+// checkServiceURL refuses an http service URL whose host is not exempt: the
+// internal services may be plain only on loopback or a Compose service name.
+func checkServiceURL(name string, u *url.URL) error {
+	if u.Scheme == "http" && !tlscheck.ExemptHost(u.Hostname()) {
+		return fmt.Errorf("config: %s must be https unless the host is loopback or one DNS label", name)
+	}
+	return nil
 }
 
 func checkMetricsAddr(v string) error {
