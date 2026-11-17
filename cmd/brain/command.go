@@ -322,7 +322,14 @@ func restoreCommand(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "restore complete: %d tables, %d volume files; audit chain valid (head position %d)\n",
-		res.TablesRestored, res.VolumeFilesRestored, res.AuditHeadPosition)
-	return err
+	if _, err := fmt.Fprintf(stdout, "restore complete: %d tables, %d volume files; audit chain valid (head position %d)\n",
+		res.TablesRestored, res.VolumeFilesRestored, res.AuditHeadPosition); err != nil {
+		return err
+	}
+	for _, name := range res.VolumesUnchanged {
+		if _, err := fmt.Fprintf(stdout, "%s volume left unchanged: archive has no entries for it\n", name); err != nil {
+			return err
+		}
+	}
+	return nil
 }

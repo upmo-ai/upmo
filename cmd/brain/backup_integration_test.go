@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1075,6 +1077,577 @@ func TestBackupRestoreRejectsNonBypassRLSRole(t *testing.T) {
 	err = restoreCommand([]string{"--in", archivePath}, &sink)
 	if err == nil || (!strings.Contains(err.Error(), "SUPERUSER") && !strings.Contains(err.Error(), "BYPASSRLS")) {
 		t.Fatalf("expected restore pre-flight privilege error, got %v", err)
+	}
+}
+
+func TestRestore_UPM375_ArchiveWithoutVolumeLeavesLiveVolumeUnchanged(t *testing.T) {
+	ctx := context.Background()
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x71}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", "")
+	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+
+	// Given: an archive taken while both volume dirs were empty, so it holds no volume entries.
+	emptyVolArchive := filepath.Join(t.TempDir(), "empty-volumes.tar.gz")
+	var backupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", emptyVolArchive}, &backupOut); err != nil {
+		t.Fatalf("backupCommand(empty volumes): %v", err)
+	}
+
+	// Given: a target DB and live volume dirs each holding a keep.txt.
+	dstOwner := pgtest.New(t)
+	dstArt := t.TempDir()
+	dstKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dstArt, "keep.txt"), []byte("keep-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstKnow, "keep.txt"), []byte("keep-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, dstOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", dstArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", dstKnow)
+
+	// When: the restore runs with both dirs configured.
+	var restoreOut bytes.Buffer
+	if err := restoreCommand([]string{"--in", emptyVolArchive}, &restoreOut); err != nil {
+		t.Fatalf("restoreCommand(empty volumes): %v", err)
+	}
+
+	// Then: both live volumes keep their files byte-identical and gain no staging leftovers.
+	if got, err := os.ReadFile(filepath.Join(dstArt, "keep.txt")); err != nil || string(got) != "keep-art" { //nolint:gosec // test temp path
+		t.Fatalf("live artifacts modified: got=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstKnow, "keep.txt")); err != nil || string(got) != "keep-know" { //nolint:gosec // test temp path
+		t.Fatalf("live knowledge modified: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dstArt, []string{"keep.txt"})
+	assertDirEntries(t, dstKnow, []string{"keep.txt"})
+	outStr := restoreOut.String()
+	if !strings.Contains(outStr, "artifacts volume left unchanged: archive has no entries for it\n") || !strings.Contains(outStr, "knowledge volume left unchanged: archive has no entries for it\n") {
+		t.Fatalf("restore stdout missing unchanged-volume lines: %q", outStr)
+	}
+
+	// Mixed case: archive with artifacts entries but no knowledge entries.
+	srcArt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcArt, "archived.txt"), []byte("archived-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	mixedArchive := filepath.Join(t.TempDir(), "mixed.tar.gz")
+	var mixedBackupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", mixedArchive}, &mixedBackupOut); err != nil {
+		t.Fatalf("backupCommand(mixed): %v", err)
+	}
+
+	dst2Owner := pgtest.New(t)
+	dst2Art := t.TempDir()
+	dst2Know := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst2Art, "live-stale.txt"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst2Know, "keep.txt"), []byte("keep-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, dst2Owner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", dst2Art)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", dst2Know)
+
+	// When: the mixed archive restores.
+	var mixedRestoreOut bytes.Buffer
+	if err := restoreCommand([]string{"--in", mixedArchive}, &mixedRestoreOut); err != nil {
+		t.Fatalf("restoreCommand(mixed): %v", err)
+	}
+
+	// Then: artifacts swaps to the archived file and knowledge stays untouched.
+	if got, err := os.ReadFile(filepath.Join(dst2Art, "archived.txt")); err != nil || string(got) != "archived-art" { //nolint:gosec // test temp path
+		t.Fatalf("artifacts volume not swapped: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dst2Art, []string{"archived.txt"})
+	if got, err := os.ReadFile(filepath.Join(dst2Know, "keep.txt")); err != nil || string(got) != "keep-know" { //nolint:gosec // test temp path
+		t.Fatalf("knowledge volume not left unchanged: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dst2Know, []string{"keep.txt"})
+	mixedStr := mixedRestoreOut.String()
+	if !strings.Contains(mixedStr, "knowledge volume left unchanged: archive has no entries for it\n") {
+		t.Fatalf("restore stdout missing knowledge unchanged line: %q", mixedStr)
+	}
+	if strings.Contains(mixedStr, "artifacts volume left unchanged") {
+		t.Fatalf("artifacts reported unchanged despite archive entries: %q", mixedStr)
+	}
+}
+
+func TestRestore_UPM375_FailingForwardMigrationLeavesDatabaseAndVolumesUnchanged(t *testing.T) {
+	ctx := context.Background()
+
+	// Given: an archive from a source with a distinct row and distinct volume files.
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+	var roleID uuid.UUID
+	if err := srcOwner.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'owner'`).Scan(&roleID); err != nil {
+		t.Fatalf("lookup owner role: %v", err)
+	}
+	srcUserID := uuid.New()
+	if _, err := srcOwner.Exec(ctx, `
+		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'src-upm375@example.com', 'Src', $2, now(), now())`,
+		srcUserID, roleID,
+	); err != nil {
+		t.Fatalf("seed source user: %v", err)
+	}
+
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x72}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	srcArt := t.TempDir()
+	srcKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcArt, "src-artifact.txt"), []byte("src-artifact"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcKnow, "src-knowledge.txt"), []byte("src-knowledge"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", srcKnow)
+
+	archivePath := filepath.Join(t.TempDir(), "upm375-migrate.tar.gz")
+	var backupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath}, &backupOut); err != nil {
+		t.Fatalf("backupCommand(src): %v", err)
+	}
+
+	// Given: a same-head target with its own row and live volume files.
+	dstOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, dstOwner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dstOwner.Exec(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		SELECT 'keep@example.com', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		t.Fatalf("seed target user: %v", err)
+	}
+	beforeVersions, err := migrate.SchemaVersions(ctx, dstOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dstArt := t.TempDir()
+	dstKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dstArt, "keep-art.txt"), []byte("keep-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstKnow, "keep-know.txt"), []byte("keep-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: restore runs with a planted failing forward migration.
+	ring, err := loadBackupKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported, err := brainops.SupportedSchemaVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plantedMigrate := func(context.Context, *pgxpool.Pool) error {
+		return errors.New("planted migration failure")
+	}
+	restoreOpts := backup.RestoreOptions{
+		InPath:            archivePath,
+		ArtifactsDir:      dstArt,
+		KnowledgeDir:      dstKnow,
+		Keyring:           ring,
+		SupportedVersions: supported,
+		PrepareSchemas:    brainops.PrepareSchemasAt,
+		MigrateForward:    plantedMigrate,
+	}
+	_, restoreErr := backup.Restore(ctx, dstOwner, restoreOpts)
+
+	// Then: the staging rehearsal caught the failure before anything live changed.
+	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "planted migration failure") {
+		t.Fatalf("expected planted migration failure, got %v", restoreErr)
+	}
+	if !strings.Contains(restoreErr.Error(), "forward migrations") {
+		t.Fatalf("error does not say forward migrations failed: %v", restoreErr)
+	}
+	var keepCount, srcCount int
+	if err := dstOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE email = 'keep@example.com'`).Scan(&keepCount); err != nil || keepCount != 1 {
+		t.Fatalf("live user lost: count=%d err=%v", keepCount, err)
+	}
+	if err := dstOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE email = 'src-upm375@example.com'`).Scan(&srcCount); err != nil || srcCount != 0 {
+		t.Fatalf("source row leaked into live DB: count=%d err=%v", srcCount, err)
+	}
+	afterVersions, err := migrate.SchemaVersions(ctx, dstOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(beforeVersions, afterVersions) {
+		t.Fatalf("schema versions changed: before=%v after=%v", beforeVersions, afterVersions)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstArt, "keep-art.txt")); err != nil || string(got) != "keep-art" { //nolint:gosec // test temp path
+		t.Fatalf("live artifacts modified: got=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstKnow, "keep-know.txt")); err != nil || string(got) != "keep-know" { //nolint:gosec // test temp path
+		t.Fatalf("live knowledge modified: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dstArt, []string{"keep-art.txt"})
+	assertDirEntries(t, dstKnow, []string{"keep-know.txt"})
+
+	// Also: an empty target stays empty and its live volume untouched. TestMain
+	// seeds every database with identity, so drop it to get a truly empty target.
+	emptyOwner := pgtest.New(t)
+	if _, err := emptyOwner.Exec(ctx, `DROP SCHEMA identity CASCADE`); err != nil {
+		t.Fatalf("drop seeded identity schema: %v", err)
+	}
+	emptyArt := t.TempDir()
+	emptyKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(emptyArt, "keep-empty.txt"), []byte("keep-empty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restoreOpts.ArtifactsDir = emptyArt
+	restoreOpts.KnowledgeDir = emptyKnow
+	if _, err := backup.Restore(ctx, emptyOwner, restoreOpts); err == nil || !strings.Contains(err.Error(), "planted migration failure") {
+		t.Fatalf("expected planted migration failure on empty target, got %v", err)
+	}
+	emptyVersions, err := migrate.SchemaVersions(ctx, emptyOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyVersions) != 0 {
+		t.Fatalf("empty target left with schema versions: %v", emptyVersions)
+	}
+	if got, err := os.ReadFile(filepath.Join(emptyArt, "keep-empty.txt")); err != nil || string(got) != "keep-empty" { //nolint:gosec // test temp path
+		t.Fatalf("empty-target live volume modified: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, emptyArt, []string{"keep-empty.txt"})
+	assertDirEntries(t, emptyKnow, nil)
+}
+
+func TestRestore_UPM375_LiveMigrationFailureAfterCommitSwapsVolumesIn(t *testing.T) {
+	ctx := context.Background()
+
+	// Given: an archive from a source with a different user and different volume files.
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+	var roleID uuid.UUID
+	if err := srcOwner.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'owner'`).Scan(&roleID); err != nil {
+		t.Fatalf("lookup owner role: %v", err)
+	}
+	srcUserID := uuid.New()
+	if _, err := srcOwner.Exec(ctx, `
+		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'src-live-mig@example.com', 'Src', $2, now(), now())`,
+		srcUserID, roleID,
+	); err != nil {
+		t.Fatalf("seed source user: %v", err)
+	}
+
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x74}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	srcArt := t.TempDir()
+	srcKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcArt, "src-art.txt"), []byte("src-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcKnow, "src-know.txt"), []byte("src-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", srcKnow)
+
+	archivePath := filepath.Join(t.TempDir(), "upm375-live-migrate.tar.gz")
+	var backupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath}, &backupOut); err != nil {
+		t.Fatalf("backupCommand(src): %v", err)
+	}
+
+	// Given: a same-head target with its own user and live volume files.
+	dstOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, dstOwner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dstOwner.Exec(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		SELECT 'keep@example.com', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		t.Fatalf("seed target user: %v", err)
+	}
+	dstArt := t.TempDir()
+	dstKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dstArt, "live-art.txt"), []byte("live-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstKnow, "live-know.txt"), []byte("live-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: the live forward migration fails after the data committed. The first
+	// call is the staging rehearsal; the second call is the live target.
+	ring, err := loadBackupKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported, err := brainops.SupportedSchemaVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrateCalls := 0
+	_, restoreErr := backup.Restore(ctx, dstOwner, backup.RestoreOptions{
+		InPath:            archivePath,
+		ArtifactsDir:      dstArt,
+		KnowledgeDir:      dstKnow,
+		Keyring:           ring,
+		SupportedVersions: supported,
+		PrepareSchemas:    brainops.PrepareSchemasAt,
+		MigrateForward: func(ctx context.Context, pool *pgxpool.Pool) error {
+			migrateCalls++
+			if migrateCalls == 1 {
+				return brainops.MigrateAll(ctx, pool)
+			}
+			return errors.New("planted live migration failure")
+		},
+	})
+
+	// Then: the error names the failure and says to run brain migrate, the
+	// committed archive data is in the DB, and the staged volumes were swapped in.
+	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "planted live migration failure") {
+		t.Fatalf("expected planted live migration failure, got %v", restoreErr)
+	}
+	if !strings.Contains(restoreErr.Error(), "run `brain migrate`") {
+		t.Fatalf("error does not say to run brain migrate: %v", restoreErr)
+	}
+	var srcCount, keepCount int
+	if err := dstOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE id = $1`, srcUserID).Scan(&srcCount); err != nil || srcCount != 1 {
+		t.Fatalf("source user missing after live commit: count=%d err=%v", srcCount, err)
+	}
+	if err := dstOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE email = 'keep@example.com'`).Scan(&keepCount); err != nil || keepCount != 0 {
+		t.Fatalf("live user survived restore: count=%d err=%v", keepCount, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstArt, "src-art.txt")); err != nil || string(got) != "src-art" { //nolint:gosec // test temp path
+		t.Fatalf("staged artifacts not swapped in: got=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstKnow, "src-know.txt")); err != nil || string(got) != "src-know" { //nolint:gosec // test temp path
+		t.Fatalf("staged knowledge not swapped in: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dstArt, []string{"src-art.txt"})
+	assertDirEntries(t, dstKnow, []string{"src-know.txt"})
+}
+
+func TestRestore_UPM375_LiveFailureOnEmptyTargetReturnsItToEmpty(t *testing.T) {
+	ctx := context.Background()
+
+	// Given: an archive from a migrated source with a volume file.
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x75}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	srcArt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcArt, "src-art.txt"), []byte("src-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+
+	archivePath := filepath.Join(t.TempDir(), "upm375-empty-target.tar.gz")
+	var backupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath}, &backupOut); err != nil {
+		t.Fatalf("backupCommand(src): %v", err)
+	}
+
+	// Given: an empty target and a live volume file. TestMain seeds every
+	// database with identity, so drop it to get a truly empty target.
+	emptyOwner := pgtest.New(t)
+	if _, err := emptyOwner.Exec(ctx, `DROP SCHEMA identity CASCADE`); err != nil {
+		t.Fatalf("drop seeded identity schema: %v", err)
+	}
+	dstArt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dstArt, "keep.txt"), []byte("keep-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: the live forward migration fails after the staging rehearsal passed.
+	// The first call is the staging rehearsal; the second call is the live target.
+	ring, err := loadBackupKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported, err := brainops.SupportedSchemaVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrateCalls := 0
+	_, restoreErr := backup.Restore(ctx, emptyOwner, backup.RestoreOptions{
+		InPath:            archivePath,
+		ArtifactsDir:      dstArt,
+		KnowledgeDir:      t.TempDir(),
+		Keyring:           ring,
+		SupportedVersions: supported,
+		PrepareSchemas:    brainops.PrepareSchemasAt,
+		MigrateForward: func(ctx context.Context, pool *pgxpool.Pool) error {
+			migrateCalls++
+			if migrateCalls == 1 {
+				return brainops.MigrateAll(ctx, pool)
+			}
+			return errors.New("planted live migration failure")
+		},
+	})
+
+	// Then: the target is empty again and the live volume is untouched.
+	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "planted live migration failure") {
+		t.Fatalf("expected planted live migration failure, got %v", restoreErr)
+	}
+	emptyVersions, err := migrate.SchemaVersions(ctx, emptyOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyVersions) != 0 {
+		t.Fatalf("empty target left with schema versions: %v", emptyVersions)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstArt, "keep.txt")); err != nil || string(got) != "keep-art" { //nolint:gosec // test temp path
+		t.Fatalf("live volume modified: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dstArt, []string{"keep.txt"})
+}
+
+func TestRestore_UPM375_CaseCFailureLeavesLiveDatabaseUntouched(t *testing.T) {
+	ctx := context.Background()
+
+	// Given: an archive from a source at the current head.
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+	var roleID uuid.UUID
+	if err := srcOwner.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'owner'`).Scan(&roleID); err != nil {
+		t.Fatalf("lookup owner role: %v", err)
+	}
+	srcUserID := uuid.New()
+	if _, err := srcOwner.Exec(ctx, `
+		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'newhead-upm375@example.com', 'NewHead', $2, now(), now())`,
+		srcUserID, roleID,
+	); err != nil {
+		t.Fatalf("seed source user: %v", err)
+	}
+
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x73}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", "")
+	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+
+	archivePath := filepath.Join(t.TempDir(), "upm375-case-c.tar.gz")
+	var backupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath}, &backupOut); err != nil {
+		t.Fatalf("backupCommand(src): %v", err)
+	}
+
+	// Given: a target populated at an older head with a live artifacts file.
+	dstOwner := pgtest.New(t)
+	if err := brainops.PrepareSchemasAt(ctx, dstOwner, map[string]int64{
+		"audit":     2,
+		"identity":  3,
+		"memory":    1,
+		"knowledge": 5,
+		"tasks":     3,
+		"chat":      6,
+		"decisions": 1,
+		"artifacts": 1,
+		"runtime":   2,
+		"gateway":   7,
+		"notices":   2,
+		"platform":  2,
+	}); err != nil {
+		t.Fatalf("prepareSchemasAt(old): %v", err)
+	}
+	if _, err := dstOwner.Exec(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		SELECT 'stale-old@example.com', 'StaleOld', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		t.Fatalf("seed stale user: %v", err)
+	}
+	beforeVersions, err := migrate.SchemaVersions(ctx, dstOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dstArt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dstArt, "live-case-c.txt"), []byte("live-case-c"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: restore runs with a planted failing forward migration.
+	ring, err := loadBackupKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported, err := brainops.SupportedSchemaVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, restoreErr := backup.Restore(ctx, dstOwner, backup.RestoreOptions{
+		InPath:            archivePath,
+		ArtifactsDir:      dstArt,
+		KnowledgeDir:      t.TempDir(),
+		Keyring:           ring,
+		SupportedVersions: supported,
+		PrepareSchemas:    brainops.PrepareSchemasAt,
+		MigrateForward: func(context.Context, *pgxpool.Pool) error {
+			return errors.New("planted migration failure")
+		},
+	})
+
+	// Then: the live database and volume are untouched.
+	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "planted migration failure") {
+		t.Fatalf("expected planted migration failure, got %v", restoreErr)
+	}
+	var staleCount int
+	if err := dstOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE email = 'stale-old@example.com'`).Scan(&staleCount); err != nil || staleCount != 1 {
+		t.Fatalf("live DB modified: count=%d err=%v", staleCount, err)
+	}
+	afterVersions, err := migrate.SchemaVersions(ctx, dstOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(beforeVersions, afterVersions) {
+		t.Fatalf("schema versions changed: before=%v after=%v", beforeVersions, afterVersions)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstArt, "live-case-c.txt")); err != nil || string(got) != "live-case-c" { //nolint:gosec // test temp path
+		t.Fatalf("live volume modified: got=%q err=%v", got, err)
+	}
+	assertDirEntries(t, dstArt, []string{"live-case-c.txt"})
+}
+
+func assertDirEntries(t *testing.T, dir string, want []string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("dir %s entries = %v, want %v", dir, got, want)
 	}
 }
 
