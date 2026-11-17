@@ -28,6 +28,7 @@ type Config struct {
 	ChatRoute          string
 	ChatWorkers        int
 	SandboxdURL        string
+	MarkitdownURL      string
 	KnowledgeDir       string
 	SandboxImage       string
 	ArtifactsDir       string
@@ -76,6 +77,7 @@ func fromInternalConfig(cfg config.Config) Config {
 		ChatRoute:          cfg.ChatRoute,
 		ChatWorkers:        cfg.ChatWorkers,
 		SandboxdURL:        cfg.SandboxdURL,
+		MarkitdownURL:      cfg.MarkitdownURL,
 		KnowledgeDir:       cfg.KnowledgeDir,
 		SandboxImage:       cfg.SandboxImage,
 		ArtifactsDir:       cfg.ArtifactsDir,
@@ -113,6 +115,7 @@ func toInternalConfig(cfg Config) config.Config {
 		ChatRoute:          cfg.ChatRoute,
 		ChatWorkers:        cfg.ChatWorkers,
 		SandboxdURL:        cfg.SandboxdURL,
+		MarkitdownURL:      cfg.MarkitdownURL,
 		KnowledgeDir:       cfg.KnowledgeDir,
 		SandboxImage:       cfg.SandboxImage,
 		ArtifactsDir:       cfg.ArtifactsDir,

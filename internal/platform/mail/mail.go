@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
 // Sender sends one link email.
@@ -37,8 +39,9 @@ const Timeout = 10 * time.Second
 var ErrAddress = errors.New("mail: not an email address")
 
 // SMTP sends through one relay, upgrading with STARTTLS when the relay offers
-// it. net/smtp refuses to send a password without TLS unless the relay is on
-// localhost.
+// it. A relay that is neither loopback nor one DNS label is refused unless it
+// offers STARTTLS. net/smtp refuses to send a password without TLS unless the
+// relay is on localhost.
 type SMTP struct {
 	Host     string
 	Port     int
@@ -94,6 +97,8 @@ func (s SMTP) send(ctx context.Context, to, subject, body string) error {
 		if err := client.StartTLS(&tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12}); err != nil {
 			return fmt.Errorf("mail: starttls: %w", err)
 		}
+	} else if !tlscheck.ExemptHost(s.Host) {
+		return fmt.Errorf("mail: the relay must offer STARTTLS unless its host is loopback or one DNS label")
 	}
 	if s.User != "" {
 		if err := client.Auth(smtp.PlainAuth("", s.User, s.Password, s.Host)); err != nil {

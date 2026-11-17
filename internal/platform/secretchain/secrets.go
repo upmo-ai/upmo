@@ -6,9 +6,12 @@ package secretchain
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
 var refPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
@@ -103,19 +106,25 @@ func (c Chain) Get(ref string) (string, error) {
 }
 
 // FromEnv builds the standard chain: the environment, then Vault when both
-// UPMO_VAULT_ADDR and UPMO_VAULT_TOKEN are set.
-func FromEnv(lookup func(string) (string, bool)) Chain {
+// UPMO_VAULT_ADDR and UPMO_VAULT_TOKEN are set. A Vault address that is
+// neither https nor on an exempt host is refused.
+func FromEnv(lookup func(string) (string, bool)) (Chain, error) {
 	chain := Chain{EnvSecrets{}}
 	addr, _ := lookup("UPMO_VAULT_ADDR")
 	token, _ := lookup("UPMO_VAULT_TOKEN")
-	if addr != "" && token != "" {
-		path, _ := lookup("UPMO_VAULT_PATH")
-		chain = append(chain, VaultSecrets{
-			Addr:  addr,
-			Token: token,
-			Path:  path,
-			Fetch: VaultHTTP,
-		})
+	if addr == "" || token == "" {
+		return chain, nil
 	}
-	return chain
+	u, err := url.Parse(addr)
+	if err != nil || (u.Scheme != "https" && !tlscheck.ExemptHost(u.Hostname())) {
+		return nil, fmt.Errorf("secretchain: UPMO_VAULT_ADDR must be https unless the host is loopback or one DNS label")
+	}
+	path, _ := lookup("UPMO_VAULT_PATH")
+	chain = append(chain, VaultSecrets{
+		Addr:  addr,
+		Token: token,
+		Path:  path,
+		Fetch: VaultHTTP,
+	})
+	return chain, nil
 }

@@ -182,6 +182,112 @@ func TestLoadDatabaseAppURL(t *testing.T) {
 	}
 }
 
+func TestLoadDatabaseURLRequiresVerifyFullOffLocalhost(t *testing.T) {
+	base := map[string]string{
+		"UPMO_PUBLIC_URL": "http://localhost:5173",
+	}
+	for _, mode := range []string{"", "disable", "allow", "prefer", "require", "verify-ca"} {
+		raw := "postgres://db.example.com/upmo"
+		if mode != "" {
+			raw += "?sslmode=" + mode
+		}
+		base["UPMO_DATABASE_URL"] = raw
+		_, err := load(lookupFrom(base))
+		if err == nil || !strings.Contains(err.Error(), "config: UPMO_DATABASE_URL") {
+			t.Errorf("sslmode=%q: err = %v, want it to name UPMO_DATABASE_URL", mode, err)
+		}
+	}
+	base["UPMO_DATABASE_URL"] = "postgres://db.example.com/upmo?sslmode=verify-full"
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatalf("verify-full: %v", err)
+	}
+	if cfg.DatabaseURL != base["UPMO_DATABASE_URL"] {
+		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+	for _, exempt := range []string{
+		"postgres://postgres:5432/upmo?sslmode=disable",
+		"postgres://upmo@127.0.0.1:5432/upmo?sslmode=disable",
+		"postgres://upmo@localhost/upmo",
+	} {
+		base["UPMO_DATABASE_URL"] = exempt
+		if _, err := load(lookupFrom(base)); err != nil {
+			t.Errorf("%s: %v", exempt, err)
+		}
+	}
+}
+
+func TestLoadDatabaseAppURLRequiresVerifyFullOffLocalhost(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	base["UPMO_DATABASE_APP_URL"] = "postgres://db.example.com/upmo?sslmode=disable"
+	_, err := load(lookupFrom(base))
+	if err == nil || !strings.Contains(err.Error(), "config: UPMO_DATABASE_APP_URL") {
+		t.Fatalf("err = %v, want it to name UPMO_DATABASE_APP_URL", err)
+	}
+	base["UPMO_DATABASE_APP_URL"] = "postgres://db.example.com/upmo?sslmode=verify-full"
+	if _, err := load(lookupFrom(base)); err != nil {
+		t.Fatalf("verify-full: %v", err)
+	}
+}
+
+func TestLoadServiceURLsRequireHTTPSOffLocalhost(t *testing.T) {
+	for _, name := range []string{"UPMO_GATEWAY_URL", "UPMO_SANDBOXD_URL", "UPMO_MARKITDOWN_URL"} {
+		base := map[string]string{
+			"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+			"UPMO_PUBLIC_URL":   "http://localhost:5173",
+			name:                "http://gateway.internal.example",
+		}
+		if _, err := load(lookupFrom(base)); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s over http: err = %v, want it to name %s", name, err, name)
+		}
+		base[name] = "http://gateway:8080"
+		if _, err := load(lookupFrom(base)); err != nil {
+			t.Errorf("%s on one label: %v", name, err)
+		}
+		base[name] = "http://127.0.0.1:8082"
+		if _, err := load(lookupFrom(base)); err != nil {
+			t.Errorf("%s on loopback: %v", name, err)
+		}
+		base[name] = "https://gateway.example.com"
+		if _, err := load(lookupFrom(base)); err != nil {
+			t.Errorf("%s over https: %v", name, err)
+		}
+	}
+}
+
+func TestLoadMarkitdownURLEmptySkipsTheSidecar(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	cfg, err := load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MarkitdownURL != "" {
+		t.Fatalf("unset = %q, want empty", cfg.MarkitdownURL)
+	}
+	base["UPMO_MARKITDOWN_URL"] = ""
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MarkitdownURL != "" {
+		t.Fatalf("empty = %q, want empty", cfg.MarkitdownURL)
+	}
+	base["UPMO_MARKITDOWN_URL"] = "http://markitdown:8000/"
+	cfg, err = load(lookupFrom(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MarkitdownURL != "http://markitdown:8000" {
+		t.Fatalf("MarkitdownURL = %q", cfg.MarkitdownURL)
+	}
+}
+
 func TestLoadRejectsIdleLongerThanMaxAge(t *testing.T) {
 	_, err := load(lookupFrom(map[string]string{
 		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",

@@ -17,6 +17,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/backup"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
+	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
 func command(name string, args []string) error {
@@ -67,6 +68,8 @@ func migrateCommand() error {
 			return err
 		}
 		dbURL = cfg.DatabaseURL
+	} else if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
+		return err
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -137,6 +140,9 @@ func loadBackupEnv() (backupEnv, error) {
 	dbURL := strings.TrimSpace(os.Getenv("UPMO_DATABASE_URL"))
 	if dbURL == "" {
 		return backupEnv{}, errors.New("config: UPMO_DATABASE_URL is required")
+	}
+	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
+		return backupEnv{}, err
 	}
 	artDir := strings.TrimSpace(os.Getenv("UPMO_ARTIFACTS_DIR"))
 	if artDir != "" && (strings.ContainsAny(artDir, "\x00") || !strings.HasPrefix(artDir, "/")) {
