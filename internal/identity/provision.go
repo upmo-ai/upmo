@@ -32,6 +32,7 @@ var (
 	ErrNoSuchTeam              = domain.ErrNoSuchTeam
 	ErrBadTeam                 = domain.ErrBadTeam
 	ErrTeamNameTaken           = domain.ErrTeamNameTaken
+	ErrNonceReplay             = domain.ErrNonceReplay
 )
 
 // Provision builds the control-plane ProvisionStore on the schema owner pool.
