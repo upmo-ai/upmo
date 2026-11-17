@@ -179,17 +179,22 @@ type stagedVolume struct {
 	movedToLive   []string
 }
 
-func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) ([]*stagedVolume, int, error) {
+// stageVolumes stages every configured volume the archive has entries for and
+// returns the archive prefix names of configured volumes left untouched
+// because the archive has no entries for them.
+func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) ([]*stagedVolume, []string, int, error) {
 	specs := []struct {
 		prefix     string
+		name       string
 		rootDir    string
 		hasEntries bool
 	}{
-		{prefix: artifactsVolumePrefix, rootDir: strings.TrimSpace(artDir), hasEntries: hasArt},
-		{prefix: knowledgeVolumePrefix, rootDir: strings.TrimSpace(knowDir), hasEntries: hasKnow},
+		{prefix: artifactsVolumePrefix, name: "artifacts", rootDir: strings.TrimSpace(artDir), hasEntries: hasArt},
+		{prefix: knowledgeVolumePrefix, name: "knowledge", rootDir: strings.TrimSpace(knowDir), hasEntries: hasKnow},
 	}
 
 	var vols []*stagedVolume
+	var unchanged []string
 	cleanupOnErr := true
 	defer func() {
 		if cleanupOnErr {
@@ -200,29 +205,33 @@ func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) 
 	for _, spec := range specs {
 		if spec.rootDir == "" {
 			if spec.hasEntries {
-				return nil, 0, fmt.Errorf("backup: archive contains volume files under %s, but target directory is not configured", spec.prefix)
+				return nil, nil, 0, fmt.Errorf("backup: archive contains volume files under %s, but target directory is not configured", spec.prefix)
 			}
 			continue
 		}
+		if !spec.hasEntries {
+			unchanged = append(unchanged, spec.name)
+			continue
+		}
 		if err := os.MkdirAll(spec.rootDir, 0o750); err != nil {
-			return nil, 0, fmt.Errorf("backup: create volume dir %q: %w", spec.rootDir, err)
+			return nil, nil, 0, fmt.Errorf("backup: create volume dir %q: %w", spec.rootDir, err)
 		}
 		info, err := os.Stat(spec.rootDir)
 		if err != nil {
-			return nil, 0, fmt.Errorf("backup: stat volume dir %q: %w", spec.rootDir, err)
+			return nil, nil, 0, fmt.Errorf("backup: stat volume dir %q: %w", spec.rootDir, err)
 		}
 		if !info.IsDir() {
-			return nil, 0, fmt.Errorf("backup: volume path %q is not a directory", spec.rootDir)
+			return nil, nil, 0, fmt.Errorf("backup: volume path %q is not a directory", spec.rootDir)
 		}
 
 		stagingDir, err := os.MkdirTemp(spec.rootDir, stagingPrefix+"stage-*")
 		if err != nil {
-			return nil, 0, fmt.Errorf("backup: create staging dir in %q: %w", spec.rootDir, err)
+			return nil, nil, 0, fmt.Errorf("backup: create staging dir in %q: %w", spec.rootDir, err)
 		}
 		backupDir, err := os.MkdirTemp(spec.rootDir, stagingPrefix+"old-*")
 		if err != nil {
 			_ = os.RemoveAll(stagingDir)
-			return nil, 0, fmt.Errorf("backup: create backup swap dir in %q: %w", spec.rootDir, err)
+			return nil, nil, 0, fmt.Errorf("backup: create backup swap dir in %q: %w", spec.rootDir, err)
 		}
 		stagingAbs, err := filepath.EvalSymlinks(stagingDir)
 		if err != nil {
@@ -230,7 +239,7 @@ func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) 
 			if err != nil {
 				_ = os.RemoveAll(stagingDir)
 				_ = os.RemoveAll(backupDir)
-				return nil, 0, fmt.Errorf("backup: resolve staging dir: %w", err)
+				return nil, nil, 0, fmt.Errorf("backup: resolve staging dir: %w", err)
 			}
 		}
 
@@ -245,12 +254,12 @@ func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) 
 
 	if len(vols) == 0 {
 		cleanupOnErr = false
-		return nil, 0, nil
+		return nil, unchanged, 0, nil
 	}
 
 	totalFiles, err := extractVolumesToStaging(payloadTarPath, vols)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 
 	// Apply recorded directory permissions bottom-up after all files are written.
@@ -258,13 +267,13 @@ func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) 
 		sort.Slice(v.dirModes, func(i, j int) bool { return len(v.dirModes[i].path) > len(v.dirModes[j].path) })
 		for _, dm := range v.dirModes {
 			if err := os.Chmod(dm.path, dm.mode); err != nil {
-				return nil, 0, fmt.Errorf("backup: chmod volume dir: %w", err)
+				return nil, nil, 0, fmt.Errorf("backup: chmod volume dir: %w", err)
 			}
 		}
 	}
 
 	cleanupOnErr = false
-	return vols, totalFiles, nil
+	return vols, unchanged, totalFiles, nil
 }
 
 func cleanupStagedVolumes(vols []*stagedVolume) {
@@ -350,7 +359,7 @@ func rollbackVolumeSwaps(vols []*stagedVolume, renameFn func(oldpath, newpath st
 }
 
 func restoreVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool, renameFn func(oldpath, newpath string) error) (int, error) {
-	vols, totalFiles, err := stageVolumes(artDir, knowDir, payloadTarPath, hasArt, hasKnow)
+	vols, _, totalFiles, err := stageVolumes(artDir, knowDir, payloadTarPath, hasArt, hasKnow)
 	if err != nil {
 		return 0, err
 	}

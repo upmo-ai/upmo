@@ -637,6 +637,30 @@ type PrepareSchemasFunc func(ctx context.Context, owner *pgxpool.Pool, versions 
 // MigrateForwardFunc runs forward migrations to the binary's current head.
 type MigrateForwardFunc func(ctx context.Context, owner *pgxpool.Pool) error
 
+// errMigrateAfterCommit marks a restore whose data committed on the live target
+// and whose forward migrations then failed; the staged volumes must be swapped
+// in so database and files stay in step.
+var errMigrateAfterCommit = errors.New("backup: database and volumes were restored from the archive, but forward migrations failed on the live database after succeeding in staging; run `brain migrate` before starting brain")
+
+func migrateAfterCommitErr(err error) error {
+	return fmt.Errorf("%w: %w", errMigrateAfterCommit, err)
+}
+
+// emptyTargetFailure returns err after dropping the known schemas, so a failed
+// live restore onto an empty target leaves the target exactly as it was.
+func emptyTargetFailure(ctx context.Context, pool *pgxpool.Pool, err error) error {
+	if dropErr := dropKnownSchemas(ctx, pool); dropErr != nil {
+		return fmt.Errorf("%w (dropping schemas to return target to empty also failed: %v)", err, dropErr)
+	}
+	return err
+}
+
+// afterDropFailure wraps err from a live step that failed after the known
+// schemas were dropped; the old data is gone, so the restore must be re-run.
+func afterDropFailure(err error) error {
+	return fmt.Errorf("backup: live schemas were dropped after the staging rehearsal passed, but the live restore failed; the database holds no restored data, re-run the restore: %w", err)
+}
+
 func restoreDB(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -656,24 +680,31 @@ func restoreDB(
 	}
 	_, hasAudit := manifest.SchemaVersions[audit.Schema]
 
+	// Rehearse the full restore (schema prepare, table load, forward migrations,
+	// audit check) in a throwaway staging database before any live statement.
+	if len(manifest.SchemaVersions) > 0 && prepareSchemas == nil {
+		return 0, 0, errors.New("backup: PrepareSchemas callback is required to rehearse the restore in staging")
+	}
+	if err := verifyRestoreInStagingDB(ctx, pool, meta, manifest, payloadTarPath, tableSizes, prepareSchemas, migrateForward, hasAudit); err != nil {
+		return 0, 0, err
+	}
+
 	switch {
 	case len(currentVersions) == 0:
-		// Empty target DB: prepare schemas at the backup head, load and verify in one tx, then migrate forward.
+		// Empty target DB: prepare schemas at the backup head, load and verify in one tx,
+		// then migrate forward; any live failure returns the target to empty.
 		if len(manifest.SchemaVersions) > 0 {
-			if prepareSchemas == nil {
-				return 0, 0, errors.New("backup: PrepareSchemas callback is required for empty target database")
-			}
 			if err := prepareSchemas(ctx, pool, manifest.SchemaVersions); err != nil {
-				return 0, 0, fmt.Errorf("backup: prepare target schemas: %w", err)
+				return 0, 0, emptyTargetFailure(ctx, pool, fmt.Errorf("backup: prepare target schemas: %w", err))
 			}
 		}
 		headPos, err := restoreTablesTx(ctx, pool, meta, payloadTarPath, tableSizes, hasAudit)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, emptyTargetFailure(ctx, pool, err)
 		}
 		if migrateForward != nil {
 			if err := migrateForward(ctx, pool); err != nil {
-				return 0, 0, fmt.Errorf("backup: forward migrations: %w", err)
+				return 0, 0, emptyTargetFailure(ctx, pool, fmt.Errorf("backup: forward migrations: %w", err))
 			}
 		}
 		return len(meta.Tables), headPos, nil
@@ -686,35 +717,30 @@ func restoreDB(
 		}
 		if migrateForward != nil {
 			if err := migrateForward(ctx, pool); err != nil {
-				return 0, 0, fmt.Errorf("backup: forward migrations: %w", err)
+				return 0, 0, migrateAfterCommitErr(err)
 			}
 		}
 		return len(meta.Tables), headPos, nil
 
 	default:
-		// Populated target at a different schema head: prove full restore end-to-end in a
-		// temporary staging database BEFORE dropping any live schemas.
-		if prepareSchemas == nil {
-			return 0, 0, errors.New("backup: PrepareSchemas callback is required when target schema versions differ")
-		}
-		if err := verifyRestoreInStagingDB(ctx, pool, meta, manifest, payloadTarPath, tableSizes, prepareSchemas, migrateForward, hasAudit); err != nil {
-			return 0, 0, err
-		}
+		// Populated target at a different schema head: drop known schemas, rebuild at
+		// the backup head, then load and migrate forward (already rehearsed above).
+		// A failure past the drop cannot bring the old data back; say so.
 		if err := dropKnownSchemas(ctx, pool); err != nil {
 			return 0, 0, err
 		}
 		if len(manifest.SchemaVersions) > 0 {
 			if err := prepareSchemas(ctx, pool, manifest.SchemaVersions); err != nil {
-				return 0, 0, fmt.Errorf("backup: prepare target schemas: %w", err)
+				return 0, 0, afterDropFailure(fmt.Errorf("prepare target schemas: %w", err))
 			}
 		}
 		headPos, err := restoreTablesTx(ctx, pool, meta, payloadTarPath, tableSizes, hasAudit)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, afterDropFailure(err)
 		}
 		if migrateForward != nil {
 			if err := migrateForward(ctx, pool); err != nil {
-				return 0, 0, fmt.Errorf("backup: forward migrations: %w", err)
+				return 0, 0, migrateAfterCommitErr(err)
 			}
 		}
 		return len(meta.Tables), headPos, nil
