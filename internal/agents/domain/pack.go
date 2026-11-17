@@ -18,9 +18,9 @@ const PackSchemaV1 = "upmo.pack/v1"
 const DefaultMarketplaceKeyID = "upmo-marketplace-v1"
 
 // bundledMarketplaceKeyB64 is the 32-byte Ed25519 public key for DefaultMarketplaceKeyID.
-// TODO: Replace this placeholder public key with the production Upmo marketplace
-// Ed25519 public key before shipping marketplace packs; UPMO_PACK_TRUST_KEYS
-// overrides or extends DefaultPackKeys at runtime.
+// TODO(UPM-373): replace this placeholder public key with the production Upmo
+// marketplace Ed25519 public key before shipping marketplace packs;
+// UPMO_PACK_TRUST_KEYS overrides or extends DefaultPackKeys at runtime.
 const bundledMarketplaceKeyB64 = "M8f2p4x7N5qR8vT1wZ3yB6dF9hJ2kL5mP8sV1xY4zA0="
 
 var (
