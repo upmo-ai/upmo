@@ -110,8 +110,10 @@ function brain(rows: Row[], refuse?: (call: Call) => Response | undefined) {
       }
       if (path === "/api/agents" && method === "GET") return Response.json(agents);
       if (path === "/api/agents" && method === "POST") {
-        const made = {
+        const made: Row = {
           id: "new1",
+          name: "",
+          enabled: true,
           usable: true,
           visibility: "private",
           team_ids: [],
@@ -123,8 +125,8 @@ function brain(rows: Row[], refuse?: (call: Call) => Response | undefined) {
           route: "",
           model_provider: "",
           model_id: "",
-          ...body,
-        } as Row;
+          ...(body as Partial<Row>),
+        };
         agents.push(made);
         return Response.json(made, { status: 201 });
       }

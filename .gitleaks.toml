@@ -48,3 +48,10 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^web/src/features/providers/live-providers\.test\.tsx$''']
 regexes = ['''^sk-live-secret-9d41f7$''']
+
+[[allowlists]]
+description = "placeholder marketplace public key in pack.go, not a secret; UPM-373 replaces it"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/agents/domain/pack\.go$''']
+regexes = ['''^M8f2p4x7N5qR8vT1wZ3yB6dF9hJ2kL5mP8sV1xY4zA0=$''']
