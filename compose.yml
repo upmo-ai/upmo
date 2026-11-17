@@ -1,7 +1,7 @@
 name: upmo
 
 x-go: &go
-  image: golang:1.26.10-bookworm
+  image: golang:1.26.11-bookworm
   working_dir: /src
   volumes:
     - .:/src
