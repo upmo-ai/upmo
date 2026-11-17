@@ -62,9 +62,12 @@ type RestoreOptions struct {
 type RestoreResult struct {
 	TablesRestored      int
 	VolumeFilesRestored int
-	AuditHeadPosition   int64
-	AuditChainValid     bool
-	MasterKeyID         string
+	// VolumesUnchanged holds the archive prefix name of each configured volume
+	// left untouched because the archive has no entries for it.
+	VolumesUnchanged  []string
+	AuditHeadPosition int64
+	AuditChainValid   bool
+	MasterKeyID       string
 }
 
 // Backup exports a consistent read-only Postgres snapshot and the configured
@@ -402,8 +405,16 @@ func writeOuterArchiveAtomic(outPath string, manifestBytes []byte, payloadName, 
 }
 
 // Restore verifies the archive structure, checksums, schema versions, and key
-// compatibility before mutating Postgres or volume directories, then stages
-// both volumes, restores database state, and swaps both volumes atomically.
+// compatibility before mutating Postgres or volume directories, stages both
+// volumes, rehearses the database restore (including forward migrations) in a
+// throwaway staging database, then restores database state and swaps both
+// volumes atomically. Volumes the archive has no entries for are left
+// untouched. A failure in the staging rehearsal or before any live change
+// leaves the database and volumes as they were; a live failure returns an
+// empty target to empty, and leaves a different-head target with no restored
+// data (after its schemas are dropped) and its volumes untouched; after the
+// live data commits, a migration failure swaps the staged volumes in and the
+// error says to run `brain migrate` before starting brain.
 func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (RestoreResult, error) {
 	if pool == nil {
 		return RestoreResult{}, errors.New("backup: database pool is required")
@@ -430,7 +441,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (Rest
 		return RestoreResult{}, errors.New("backup: SupportedVersions map is required for restore")
 	}
 
-	stagedVols, filesRestored, err := stageVolumes(
+	stagedVols, unchanged, filesRestored, err := stageVolumes(
 		opts.ArtifactsDir,
 		opts.KnowledgeDir,
 		verified.payloadTarPath,
@@ -452,6 +463,14 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (Rest
 		opts.MigrateForward,
 	)
 	if err != nil {
+		if errors.Is(err, errMigrateAfterCommit) {
+			// The archive data is committed; database and files must stay in step,
+			// so swap the staged volumes in instead of dropping them.
+			if swapErr := commitVolumeSwaps(stagedVols, nil); swapErr != nil {
+				return RestoreResult{}, fmt.Errorf("backup: %w (swapping restored volumes in also failed: %v)", err, swapErr)
+			}
+			return RestoreResult{}, err
+		}
 		cleanupStagedVolumes(stagedVols)
 		return RestoreResult{}, err
 	}
@@ -463,6 +482,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (Rest
 	return RestoreResult{
 		TablesRestored:      tablesRestored,
 		VolumeFilesRestored: filesRestored,
+		VolumesUnchanged:    unchanged,
 		AuditHeadPosition:   headPos,
 		AuditChainValid:     true,
 		MasterKeyID:         verified.manifest.MasterKeyID,
