@@ -235,3 +235,54 @@ func TestRolesIntegration(t *testing.T) {
 		t.Fatalf("overlapping demote commit = %v, want last owner error", err)
 	}
 }
+
+func TestRoleDeleteRefusedWhenShared(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
+	mux := handler.(*http.ServeMux)
+	roles := identity.Roles(pool, nil)
+	roles.Now = func() time.Time { return now }
+	identity.MountRoles(mux, roles, passkeys.Sessions)
+
+	link, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	soft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCookie := finishLink(t, mux, soft, link)
+
+	created := call(mux, http.MethodPost, "/api/roles", ownerCookie, jsonBody(t, map[string]any{
+		"name": "Shared grantee", "permissions": []string{"task:view"},
+	}))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var role struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &role); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerID := userByEmail(t, pool, ctx, "ada@example.com")
+	if _, err := ownerPool.Exec(ctx, `
+		INSERT INTO identity.shares (object_type, object_id, grantee_role_id, level, granted_by)
+		VALUES ('task', uuidv7(), $1, 'viewer', $2)`, role.ID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := call(mux, http.MethodDelete, "/api/roles/"+role.ID, ownerCookie, nil)
+	if deleted.Code != http.StatusConflict || !strings.Contains(deleted.Body.String(), "role is shared") {
+		t.Fatalf("delete shared role %d %s", deleted.Code, deleted.Body.String())
+	}
+	var stillThere int
+	if err := ownerPool.QueryRow(ctx, `SELECT count(*) FROM identity.roles WHERE id = $1`, role.ID).Scan(&stillThere); err != nil {
+		t.Fatal(err)
+	}
+	if stillThere != 1 {
+		t.Fatal("shared role was deleted")
+	}
+}

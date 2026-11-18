@@ -189,6 +189,8 @@ func roleStatus(err error) (int, string, bool) {
 		return http.StatusConflict, "a system role cannot be changed", true
 	case errors.Is(err, domain.ErrRoleNameTaken):
 		return http.StatusConflict, "a role with that name already exists", true
+	case errors.Is(err, domain.ErrRoleShared):
+		return http.StatusConflict, "role is shared", true
 	case errors.Is(err, domain.ErrSelf):
 		return http.StatusConflict, "you cannot do this to yourself", true
 	case errors.Is(err, domain.ErrLastOwner):
@@ -197,6 +199,8 @@ func roleStatus(err error) (int, string, bool) {
 		return http.StatusBadRequest, "a role needs a name and at least one permission", true
 	case errors.Is(err, domain.ErrNoSuchRole):
 		return http.StatusNotFound, "no such role", true
+	case errors.Is(err, app.ErrNotSignedIn):
+		return http.StatusUnauthorized, "unauthorised", true
 	case errors.Is(err, domain.ErrNoSuchMember):
 		return http.StatusNotFound, "no such member", true
 	default:
