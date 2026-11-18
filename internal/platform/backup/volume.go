@@ -18,6 +18,14 @@ import (
 
 const stagingPrefix = ".upmo-restore-"
 
+// volumeEntry reports whether cleaned archive path clean belongs to the volume
+// archived under prefix. The volume root directory entry itself counts —
+// cleanArchivePath strips its trailing slash — so a backup of a configured but
+// empty volume still marks the volume present.
+func volumeEntry(clean, prefix string) bool {
+	return strings.HasPrefix(clean, prefix) || clean == strings.TrimSuffix(prefix, "/")
+}
+
 func archiveVolume(tw *tar.Writer, entries *[]EntryChecksum, prefix, rootDir string) (int, error) {
 	rootDir = strings.TrimSpace(rootDir)
 	if rootDir == "" {
@@ -44,6 +52,17 @@ func archiveVolume(tw *tar.Writer, entries *[]EntryChecksum, prefix, rootDir str
 	}
 	if !resolvedInfo.IsDir() {
 		return 0, fmt.Errorf("backup: resolved volume %q is not a directory", resolvedRoot)
+	}
+
+	// Record the volume root itself so a configured but empty volume still
+	// marks the volume present in the archive and restores as empty.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     prefix,
+		Typeflag: tar.TypeDir,
+		Mode:     int64(resolvedInfo.Mode().Perm()),
+		ModTime:  resolvedInfo.ModTime().UTC(),
+	}); err != nil {
+		return 0, fmt.Errorf("backup: write volume dir header %s: %w", prefix, err)
 	}
 
 	type item struct {
@@ -398,12 +417,16 @@ func extractVolumesToStaging(payloadTarPath string, vols []*stagedVolume) (int, 
 		}
 		var targetVol *stagedVolume
 		for _, v := range vols {
-			if strings.HasPrefix(clean, v.prefix) {
+			if volumeEntry(clean, v.prefix) {
 				targetVol = v
 				break
 			}
 		}
 		if targetVol == nil {
+			continue
+		}
+		if clean == strings.TrimSuffix(targetVol.prefix, "/") {
+			// The volume root entry stands for the staging dir itself.
 			continue
 		}
 

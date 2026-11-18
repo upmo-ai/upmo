@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -389,6 +390,255 @@ func TestRestoreVolumesRollbackOnSecondVolumeFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stageDir, "new-art.txt")); err != nil {
 		t.Fatalf("staged file was deleted on rename failure: %v", err)
+	}
+}
+
+// writeVolumeTestArchive builds an unencrypted backup archive at path whose
+// payload holds empty-table db metadata plus whatever artDir and knowDir
+// produce, mirroring buildPayloadTarGz. A dir argument of "" leaves that
+// volume out of the archive entirely.
+func writeVolumeTestArchive(t *testing.T, path, artDir, knowDir string) {
+	t.Helper()
+	innerPath := filepath.Join(t.TempDir(), payloadPlainEntryName)
+	f, err := os.Create(innerPath) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+
+	metaBytes, err := json.Marshal(DBMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []EntryChecksum
+	metaSum, metaSize, err := writeBytesToTar(tw, dbMetaEntryName, metaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries = append(entries, EntryChecksum{Path: dbMetaEntryName, SHA256: metaSum, Size: metaSize})
+	if _, err := archiveVolume(tw, &entries, artifactsVolumePrefix, artDir); err != nil {
+		t.Fatalf("archiveVolume(artifacts): %v", err)
+	}
+	if _, err := archiveVolume(tw, &entries, knowledgeVolumePrefix, knowDir); err != nil {
+		t.Fatalf("archiveVolume(knowledge): %v", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	pmBytes, err := json.Marshal(PayloadManifest{Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := writeBytesToTar(tw, payloadManifestEntryName, pmBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	innerRaw, err := os.ReadFile(innerPath) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := json.Marshal(Manifest{
+		FormatVersion: FormatVersion,
+		Entries: []EntryChecksum{{
+			Path:   payloadPlainEntryName,
+			SHA256: sha256Hex(innerRaw),
+			Size:   int64(len(innerRaw)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOuterArchiveAtomic(path, manifestBytes, payloadPlainEntryName, innerPath, int64(len(innerRaw))); err != nil {
+		t.Fatalf("writeOuterArchiveAtomic: %v", err)
+	}
+}
+
+func TestRestoreEmptyConfiguredVolumeClearsTarget(t *testing.T) {
+	tmp := t.TempDir()
+	srcArt := filepath.Join(tmp, "src-art")
+	if err := os.MkdirAll(srcArt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(tmp, "backup.tar.gz")
+	writeVolumeTestArchive(t, archivePath, srcArt, "")
+
+	dstArt := filepath.Join(tmp, "dst-art")
+	if err := os.MkdirAll(dstArt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstArt, "stale.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	verified, err := verifyAndStageArchive(archivePath, t.TempDir(), RestoreOptions{ArtifactsDir: dstArt})
+	if err != nil {
+		t.Fatalf("verifyAndStageArchive: %v", err)
+	}
+	if !verified.hasArtifacts {
+		t.Fatal("volume root entry alone must mark the artifacts volume present")
+	}
+
+	vols, unchanged, _, err := stageVolumes(dstArt, "", verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge)
+	if err != nil {
+		t.Fatalf("stageVolumes: %v", err)
+	}
+	if len(unchanged) != 0 {
+		t.Fatalf("artifacts volume reported unchanged: %v", unchanged)
+	}
+	if err := commitVolumeSwaps(vols, nil); err != nil {
+		t.Fatalf("commitVolumeSwaps: %v", err)
+	}
+
+	got, err := os.ReadDir(dstArt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("target artifacts dir should be empty after restore, still holds %d entries", len(got))
+	}
+}
+
+func TestRestoreLeavesUnconfiguredKnowledgeVolumeUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+	srcArt := filepath.Join(tmp, "src-art")
+	if err := os.MkdirAll(srcArt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(tmp, "backup.tar.gz")
+	writeVolumeTestArchive(t, archivePath, srcArt, "") // knowledge volume not configured
+
+	dstArt := filepath.Join(tmp, "dst-art")
+	dstKnow := filepath.Join(tmp, "dst-know")
+	if err := os.MkdirAll(dstArt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstKnow, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstArt, "stale.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keepFile := filepath.Join(dstKnow, "keep.txt")
+	if err := os.WriteFile(keepFile, []byte("knowledge"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	verified, err := verifyAndStageArchive(archivePath, t.TempDir(), RestoreOptions{ArtifactsDir: dstArt, KnowledgeDir: dstKnow})
+	if err != nil {
+		t.Fatalf("verifyAndStageArchive: %v", err)
+	}
+	if verified.hasKnowledge {
+		t.Fatal("unconfigured knowledge volume must be absent from the archive")
+	}
+
+	vols, unchanged, _, err := stageVolumes(dstArt, dstKnow, verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge)
+	if err != nil {
+		t.Fatalf("stageVolumes: %v", err)
+	}
+	if len(unchanged) != 1 || unchanged[0] != "knowledge" {
+		t.Fatalf("unchanged=%v, want exactly the knowledge volume", unchanged)
+	}
+	if err := commitVolumeSwaps(vols, nil); err != nil {
+		t.Fatalf("commitVolumeSwaps: %v", err)
+	}
+
+	if got, err := os.ReadFile(keepFile); err != nil || string(got) != "knowledge" { //nolint:gosec // test temp path
+		t.Fatalf("knowledge volume modified: got=%q err=%v", got, err)
+	}
+	got, err := os.ReadDir(dstArt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("artifacts dir should be empty after restore, still holds %d entries", len(got))
+	}
+}
+
+func TestRestoreArchiveWithoutVolumeRootEntryLeavesVolumeUntouched(t *testing.T) {
+	tmp := t.TempDir()
+	// Pre-UPM-377 archive of an empty configured volume: no volumes/ entries.
+	metaBytes, err := json.Marshal(DBMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pmBytes, err := json.Marshal(PayloadManifest{Entries: []EntryChecksum{
+		{Path: dbMetaEntryName, SHA256: sha256Hex(metaBytes), Size: int64(len(metaBytes))},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerPath := filepath.Join(tmp, "inner.tar.gz")
+	writeTestTarGz(t, innerPath, []testTarEntry{
+		{name: dbMetaEntryName, body: metaBytes, typeflag: tar.TypeReg},
+		{name: payloadManifestEntryName, body: pmBytes, typeflag: tar.TypeReg},
+	})
+	innerRaw, err := os.ReadFile(innerPath) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := json.Marshal(Manifest{
+		FormatVersion: FormatVersion,
+		Entries: []EntryChecksum{{
+			Path:   payloadPlainEntryName,
+			SHA256: sha256Hex(innerRaw),
+			Size:   int64(len(innerRaw)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(tmp, "backup.tar.gz")
+	if err := writeOuterArchiveAtomic(archivePath, manifestBytes, payloadPlainEntryName, innerPath, int64(len(innerRaw))); err != nil {
+		t.Fatalf("writeOuterArchiveAtomic: %v", err)
+	}
+
+	dstArt := filepath.Join(tmp, "dst-art")
+	dstKnow := filepath.Join(tmp, "dst-know")
+	if err := os.MkdirAll(dstArt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstKnow, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstArt, "keep.txt"), []byte("keep-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstKnow, "keep.txt"), []byte("keep-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	verified, err := verifyAndStageArchive(archivePath, t.TempDir(), RestoreOptions{ArtifactsDir: dstArt, KnowledgeDir: dstKnow})
+	if err != nil {
+		t.Fatalf("verifyAndStageArchive: %v", err)
+	}
+	if verified.hasArtifacts || verified.hasKnowledge {
+		t.Fatal("archive without volume entries must not mark volumes present")
+	}
+
+	vols, unchanged, _, err := stageVolumes(dstArt, dstKnow, verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge)
+	if err != nil {
+		t.Fatalf("stageVolumes: %v", err)
+	}
+	if len(vols) != 0 || len(unchanged) != 2 {
+		t.Fatalf("vols=%d unchanged=%v, want no staged volumes and both unchanged", len(vols), unchanged)
+	}
+	if err := commitVolumeSwaps(vols, nil); err != nil {
+		t.Fatalf("commitVolumeSwaps: %v", err)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(dstArt, "keep.txt")); err != nil || string(got) != "keep-art" { //nolint:gosec // test temp path
+		t.Fatalf("artifacts volume modified: got=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstKnow, "keep.txt")); err != nil || string(got) != "keep-know" { //nolint:gosec // test temp path
+		t.Fatalf("knowledge volume modified: got=%q err=%v", got, err)
 	}
 }
 
