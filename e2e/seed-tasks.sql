@@ -36,7 +36,12 @@
 -- A user line carries no model and no cost, an assistant line names its model,
 -- and each line keeps its own time so the order stays stable.
 
-SELECT id::text AS ada FROM identity.users WHERE lower(email) = 'ada@example.com' \gset
+-- The address is sealed, so the e2e person is found as the single bootstrapped
+-- owner (e2e/reset.sql has already checked there is exactly one).
+SELECT person.id::text AS ada
+FROM identity.users AS person
+JOIN identity.roles AS role ON role.id = person.role_id
+WHERE role.key = 'owner' \gset
 
 -- Delete first. The event tables refuse deletes, so this transaction turns
 -- triggers off (superuser only). Nothing is inserted here.

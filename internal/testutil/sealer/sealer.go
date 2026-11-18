@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 )
 
 // errStored is every reason a stored password hash does not open.
@@ -25,6 +27,19 @@ type Sealer struct {
 // New builds a sealer over one master key, current id "k1".
 func New(t *testing.T) Sealer {
 	t.Helper()
+	return Sealer{keys: ring(t)}
+}
+
+// NewEmail returns a real email sealer for the identity suites: the brainops
+// sealer over one master key, current id "k1".
+func NewEmail(t *testing.T) identity.EmailSealer {
+	t.Helper()
+	return brainops.NewEmailSealer(ring(t))
+}
+
+// ring builds one master keyring over 32 bytes of key material, current id "k1".
+func ring(t *testing.T) gateway.Keyring {
+	t.Helper()
 	keys, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
 		if name == gateway.EnvMasterKey {
 			return base64.StdEncoding.EncodeToString(bytes32('t')), true
@@ -34,7 +49,7 @@ func New(t *testing.T) Sealer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Sealer{keys: keys}
+	return keys
 }
 
 func (s Sealer) Ready() bool { return s.keys.Ready() }

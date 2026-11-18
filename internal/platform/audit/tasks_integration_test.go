@@ -420,7 +420,7 @@ func TestTaskShareWriteSealsTheGrantsBeforeAndAfter(t *testing.T) {
 
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
-	grants := shareGrants{members: identity.Members(appPool, "", nil, nil)}
+	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
 	store := taskShareStore(appPool, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
@@ -486,7 +486,7 @@ func TestTaskShareWriteRollsBackWhenAuditInsertFails(t *testing.T) {
 
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
-	grants := shareGrants{members: identity.Members(appPool, "", nil, nil)}
+	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
 	store := taskShareStore(appPool, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
@@ -556,7 +556,7 @@ func TestTaskShareWriteRollsBackGrantsWhenVisibilityFails(t *testing.T) {
 
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
-	grants := shareGrants{members: identity.Members(appPool, "", nil, nil)}
+	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
 	store := taskShareStore(appPool, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 

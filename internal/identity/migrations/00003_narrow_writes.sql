@@ -255,7 +255,9 @@ GRANT EXECUTE ON FUNCTION identity.member_disable(bytea, uuid, timestamptz) TO u
 -- +goose StatementBegin
 CREATE FUNCTION identity.member_invite(
   actor_token_hash bytea,
-  p_email text,
+  p_email text,              -- sealed value
+  p_email_hashes bytea[],    -- index hashes under every loaded key, current key's first
+  p_email_hash_key_id text,  -- id of the key that made p_email_hashes[1]
   p_name text,
   p_role_id uuid,
   p_handle bytea,
@@ -274,15 +276,26 @@ DECLARE
   v_target_role_key text;
   v_owner_role_id uuid;
   v_user_id uuid;
+  v_disabled boolean;
+  v_matches integer;
 BEGIN
+  -- The address itself is sealed, so only its presence can be checked here;
+  -- the caller has already validated the address.
+  IF p_email IS NULL OR pg_catalog.btrim(p_email) = ''
+     OR p_email_hashes IS NULL OR pg_catalog.cardinality(p_email_hashes) < 1
+     OR pg_catalog.octet_length(p_email_hashes[1]) IS DISTINCT FROM 32
+     OR p_email_hash_key_id IS NULL OR pg_catalog.btrim(p_email_hash_key_id) = '' THEN
+    RAISE EXCEPTION 'identity: a person needs an email address, a name and a role' USING ERRCODE = '23514';
+  END IF;
+
   IF actor_token_hash IS NULL THEN
     PERFORM pg_catalog.pg_advisory_xact_lock(7480198);
     IF EXISTS (SELECT 1 FROM identity.users) THEN
       RAISE EXCEPTION 'identity: someone already exists' USING ERRCODE = '42501';
     END IF;
     SELECT role.id INTO v_owner_role_id FROM identity.roles AS role WHERE role.key = 'owner';
-    INSERT INTO identity.users (email, name, role_id, invited_at, joined_at, webauthn_handle)
-    VALUES (p_email, p_name, v_owner_role_id, p_now, p_now, p_handle)
+    INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at, webauthn_handle)
+    VALUES (p_email, p_email_hashes[1], p_email_hash_key_id, p_name, v_owner_role_id, p_now, p_now, p_handle)
     RETURNING id INTO v_user_id;
 
     INSERT INTO identity.sign_in_links (token_hash, user_id, purpose, expires_at)
@@ -305,8 +318,7 @@ BEGIN
     RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
   END IF;
 
-  IF p_email IS NULL OR pg_catalog.btrim(p_email) = '' OR pg_catalog.strpos(p_email, '@') = 0
-     OR p_name IS NULL OR pg_catalog.btrim(p_name) = '' OR p_role_id IS NULL THEN
+  IF p_name IS NULL OR pg_catalog.btrim(p_name) = '' OR p_role_id IS NULL THEN
     RAISE EXCEPTION 'identity: a person needs an email address, a name and a role' USING ERRCODE = '23514';
   END IF;
 
@@ -327,23 +339,35 @@ BEGIN
     RAISE EXCEPTION 'identity: only an owner can change the owner role' USING ERRCODE = '42501';
   END IF;
 
-  INSERT INTO identity.users (email, name, role_id, invited_at, webauthn_handle)
-  VALUES (p_email, p_name, p_role_id, p_now, p_handle)
-  ON CONFLICT (lower(email)) DO UPDATE
-  SET name = EXCLUDED.name,
-      role_id = EXCLUDED.role_id,
-      invited_at = EXCLUDED.invited_at,
-      joined_at = NULL,
-      disabled_at = NULL,
-      webauthn_handle = EXCLUDED.webauthn_handle,
-      password_hash = NULL,
-      passkey_offered_at = NULL,
-      external_id = NULL
-  WHERE identity.users.disabled_at IS NOT NULL
-  RETURNING id INTO v_user_id;
-
-  IF NOT FOUND THEN
+  -- ON CONFLICT cannot match "any of the hashes", so the row is found first.
+  -- A concurrent insert of the same address loses the race as a unique
+  -- violation on users_email_hash, which the caller maps the same way.
+  -- Rows for the same address under different keys cannot be told apart, so
+  -- more than one match is refused rather than picking one.
+  PERFORM 1 FROM identity.users AS person
+  WHERE person.email_hash = ANY (p_email_hashes)
+  FOR UPDATE;
+  GET DIAGNOSTICS v_matches = ROW_COUNT;
+  IF v_matches > 1 THEN
     RAISE EXCEPTION 'identity: already a member' USING ERRCODE = '23505';
+  END IF;
+
+  SELECT person.id, person.disabled_at IS NOT NULL INTO v_user_id, v_disabled
+  FROM identity.users AS person
+  WHERE person.email_hash = ANY (p_email_hashes)
+  FOR UPDATE;
+  IF FOUND AND NOT v_disabled THEN
+    RAISE EXCEPTION 'identity: already a member' USING ERRCODE = '23505';
+  ELSIF FOUND THEN
+    UPDATE identity.users
+    SET email = p_email, email_hash = p_email_hashes[1], email_hash_key_id = p_email_hash_key_id,
+        name = p_name, role_id = p_role_id, invited_at = p_now, joined_at = NULL, disabled_at = NULL,
+        webauthn_handle = p_handle, password_hash = NULL, passkey_offered_at = NULL, external_id = NULL
+    WHERE id = v_user_id;
+  ELSE
+    INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, webauthn_handle)
+    VALUES (p_email, p_email_hashes[1], p_email_hash_key_id, p_name, p_role_id, p_now, p_handle)
+    RETURNING id INTO v_user_id;
   END IF;
 
   DELETE FROM identity.passkeys WHERE user_id = v_user_id;
@@ -362,8 +386,8 @@ END;
 $$;
 -- +goose StatementEnd
 
-REVOKE ALL ON FUNCTION identity.member_invite(bytea, text, text, uuid, bytea, bytea, timestamptz, timestamptz) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION identity.member_invite(bytea, text, text, uuid, bytea, bytea, timestamptz, timestamptz) TO upmo_app;
+REVOKE ALL ON FUNCTION identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz) TO upmo_app;
 
 -- +goose StatementBegin
 CREATE FUNCTION identity.token_create(
@@ -451,7 +475,7 @@ GRANT EXECUTE ON FUNCTION identity.token_create(bytea, text, bytea, text[], time
 -- +goose Down
 
 DROP FUNCTION IF EXISTS identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz);
-DROP FUNCTION IF EXISTS identity.member_invite(bytea, text, text, uuid, bytea, bytea, timestamptz, timestamptz);
+DROP FUNCTION IF EXISTS identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz);
 DROP FUNCTION IF EXISTS identity.member_disable(bytea, uuid, timestamptz);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);

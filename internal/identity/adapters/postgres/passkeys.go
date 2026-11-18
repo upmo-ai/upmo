@@ -16,7 +16,8 @@ import (
 
 // Passkeys is the passkey, link, challenge and throttle tables.
 type Passkeys struct {
-	Pool *pgxpool.Pool
+	Pool   *pgxpool.Pool
+	Emails app.EmailSealer
 }
 
 func (p Passkeys) SweepChallenges(ctx context.Context, now time.Time) error {
@@ -100,13 +101,19 @@ func (p Passkeys) Handle(ctx context.Context, user domain.UserID, fresh []byte) 
 
 func (p Passkeys) Account(ctx context.Context, user domain.UserID) (domain.Account, error) {
 	var account domain.Account
+	var stored string
+	var hash []byte
 	err := p.Pool.QueryRow(ctx, `
-		SELECT id, webauthn_handle, email, name
+		SELECT id, webauthn_handle, email, email_hash, name
 		FROM identity.users
-		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&account.ID, &account.Handle, &account.Name, &account.Display)
+		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&account.ID, &account.Handle, &stored, &hash, &account.Display)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, app.ErrNotSignedIn
 	}
+	if err != nil {
+		return domain.Account{}, err
+	}
+	account.Name, err = openStoredEmail(p.Emails, stored, hash)
 	if err != nil {
 		return domain.Account{}, err
 	}
@@ -262,9 +269,13 @@ func (p Passkeys) Take(ctx context.Context, key string, now time.Time, burst, pe
 }
 
 func (p Passkeys) UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error) {
+	hashes, err := indexEmailHashes(p.Emails, email)
+	if err != nil {
+		return domain.UserID{}, false, err
+	}
 	var id domain.UserID
-	err := p.Pool.QueryRow(ctx, `
-		SELECT id FROM identity.users WHERE lower(email) = lower($1) AND disabled_at IS NULL`, email).Scan(&id)
+	err = p.Pool.QueryRow(ctx, `
+		SELECT id FROM identity.users WHERE email_hash = ANY($1) AND disabled_at IS NULL`, hashes).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.UserID{}, false, nil
 	}
@@ -293,10 +304,14 @@ func (p Passkeys) SignInPolicy(ctx context.Context, user domain.UserID) (bool, s
 }
 
 func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error) {
+	stored, hashes, keyID, err := sealEmail(p.Emails, email)
+	if err != nil {
+		return domain.UserID{}, err
+	}
 	var user domain.UserID
-	err := p.Pool.QueryRow(ctx, `
-		SELECT identity.member_invite(NULL, $1, $2, NULL, NULL, $3, $4, $5)`,
-		email, name, hash, now, expires).Scan(&user)
+	err = p.Pool.QueryRow(ctx, `
+		SELECT identity.member_invite(NULL, $1, $2, $3, $4, NULL, NULL, $5, $6, $7)`,
+		stored, hashes, keyID, name, hash, now, expires).Scan(&user)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Message == "identity: someone already exists" {

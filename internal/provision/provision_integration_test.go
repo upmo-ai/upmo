@@ -26,6 +26,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
@@ -112,7 +113,7 @@ func newTestEnv(t *testing.T, withKeys bool) *testEnv {
 		app:       appPool,
 		keyring:   keyring,
 		keys:      keys,
-		identity:  identity.Provision(owner, "http://localhost:5173"),
+		identity:  identity.Provision(owner, brainops.NewEmailSealer(keyring), "http://localhost:5173"),
 		log:       log,
 		rawKey1:   k1,
 		rawKey2:   k2,
@@ -1172,7 +1173,7 @@ func TestProvisionNonceStoreFailureIntegration(t *testing.T) {
 	mux := http.NewServeMux()
 	provision.Handler{
 		Owner:      env.owner,
-		Identity:   identity.Provision(closed, "http://localhost:5173"),
+		Identity:   identity.Provision(closed, brainops.NewEmailSealer(env.keyring), "http://localhost:5173"),
 		MasterKeys: env.keyring,
 		Keys:       env.keys,
 		Log:        env.log,

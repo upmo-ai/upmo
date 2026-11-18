@@ -34,10 +34,11 @@ func TestPasswordSignIn(t *testing.T) {
 	clock = now
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	passwords := identity.Passwords(pool, sessions)
+	emails := sealer.NewEmail(t)
+	passwords := identity.Passwords(pool, emails, sessions)
 	passwords.Sealer = sealer.New(t)
 	passwords.Now = sessions.Now
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	passkeys, err := identity.Passkeys(pool, emails, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +49,9 @@ func TestPasswordSignIn(t *testing.T) {
 
 	var id string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada Lovelace', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
-		RETURNING id::text`).Scan(&id); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Ada Lovelace', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`, sealUser(t, emails, "ada@example.com")...).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	user, err := domain.ParseUserID(id)

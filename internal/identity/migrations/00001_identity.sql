@@ -93,6 +93,10 @@ VALUES
 CREATE TABLE identity.users (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   email text NOT NULL,
+  -- The sealed address and its index hash. Both nullable on purpose: a row
+  -- inserted without a sealer cannot be found by address and refuses to open.
+  email_hash bytea,
+  email_hash_key_id text,
   name text NOT NULL,
   external_id text,
   role_id uuid NOT NULL REFERENCES identity.roles (id),
@@ -102,10 +106,12 @@ CREATE TABLE identity.users (
   webauthn_handle bytea,
   password_hash text,
   passkey_offered_at timestamptz,
-  CONSTRAINT users_name_check CHECK (name <> '')
+  CONSTRAINT users_name_check CHECK (name <> ''),
+  CONSTRAINT users_email_hash_len CHECK (email_hash IS NULL OR octet_length(email_hash) = 32),
+  CONSTRAINT users_email_hash_key CHECK ((email_hash IS NULL) = (email_hash_key_id IS NULL))
 );
 
-CREATE UNIQUE INDEX users_email_ci ON identity.users (lower(email));
+CREATE UNIQUE INDEX users_email_hash ON identity.users (email_hash);
 
 CREATE UNIQUE INDEX users_external_id ON identity.users (external_id) WHERE external_id IS NOT NULL;
 

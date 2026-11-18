@@ -3,10 +3,14 @@ package domain
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 )
 
 // MasterKeyLen is the length of a master key in bytes (AES-256).
@@ -41,6 +45,7 @@ type Sealed struct {
 type Keyring struct {
 	current string
 	keys    map[string]cipher.AEAD
+	macs    map[string][]byte
 }
 
 // NewKeyring builds a ring from raw 32-byte keys. current must be one of them.
@@ -51,13 +56,17 @@ func NewKeyring(current string, keys map[string][]byte) (Keyring, error) {
 	if !ValidKeyID(current) {
 		return Keyring{}, fmt.Errorf("gateway: master key id %q", current)
 	}
-	ring := Keyring{current: current, keys: map[string]cipher.AEAD{}}
+	ring := Keyring{current: current, keys: map[string]cipher.AEAD{}, macs: map[string][]byte{}}
 	for id, raw := range keys {
 		if !ValidKeyID(id) {
 			return Keyring{}, fmt.Errorf("gateway: master key id %q", id)
 		}
 		if len(raw) != MasterKeyLen {
 			return Keyring{}, fmt.Errorf("gateway: master key %q is not %d bytes", id, MasterKeyLen)
+		}
+		mac, err := hkdf.Key(sha256.New, raw, []byte("upmo-email-index-v1"), "identity:email_hash", 32)
+		if err != nil {
+			return Keyring{}, fmt.Errorf("gateway: master key %q", id)
 		}
 		block, err := aes.NewCipher(raw)
 		if err != nil {
@@ -68,6 +77,7 @@ func NewKeyring(current string, keys map[string][]byte) (Keyring, error) {
 			return Keyring{}, fmt.Errorf("gateway: master key %q", id)
 		}
 		ring.keys[id] = aead
+		ring.macs[id] = mac
 	}
 	if ring.keys[current] == nil {
 		return Keyring{}, fmt.Errorf("gateway: master key %q is not in the ring", current)
@@ -120,4 +130,43 @@ func (k Keyring) Open(ref string, s Sealed) (string, error) {
 	key := string(plain)
 	clear(plain)
 	return key, nil
+}
+
+// IndexMAC returns HMAC-SHA256 of data under the current key's index key, and
+// that key's id. The zero ring returns ErrNoMasterKey.
+func (k Keyring) IndexMAC(data []byte) (keyID string, mac []byte, err error) {
+	key := k.macs[k.current]
+	if key == nil {
+		return "", nil, ErrNoMasterKey
+	}
+	return k.current, indexMAC(key, data), nil
+}
+
+// IndexMACs returns HMAC-SHA256 of data under every loaded key's index key:
+// the current key first, then the others in key-id order. The zero ring
+// returns nil.
+func (k Keyring) IndexMACs(data []byte) [][]byte {
+	current, mac, err := k.IndexMAC(data)
+	if err != nil {
+		return nil
+	}
+	others := make([]string, 0, len(k.macs)-1)
+	for id := range k.macs {
+		if id != current {
+			others = append(others, id)
+		}
+	}
+	sort.Strings(others)
+	macs := [][]byte{mac}
+	for _, id := range others {
+		macs = append(macs, indexMAC(k.macs[id], data))
+	}
+	return macs
+}
+
+// indexMAC returns HMAC-SHA256 of data under an index key.
+func indexMAC(key, data []byte) []byte {
+	m := hmac.New(sha256.New, key)
+	m.Write(data)
+	return m.Sum(nil)
 }

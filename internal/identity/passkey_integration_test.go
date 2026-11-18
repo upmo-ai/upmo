@@ -26,6 +26,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestPasskeySignIn(t *testing.T) {
@@ -35,7 +36,7 @@ func TestPasskeySignIn(t *testing.T) {
 	clock = now
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +370,7 @@ func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 	}
 	var invited, joined time.Time
 	var expires time.Time
-	if err := pool.QueryRow(ctx, `SELECT invited_at, joined_at FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&invited, &joined); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT invited_at, joined_at FROM identity.users WHERE id = $1`, userByEmail(t, pool, ctx, "ada@example.com")).Scan(&invited, &joined); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT expires_at FROM identity.sign_in_links`).Scan(&expires); err != nil {
@@ -388,9 +389,9 @@ func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 
 	var lee string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at)
-		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $1)
-		RETURNING id::text`, now).Scan(&lee); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at)
+		VALUES ($1, $2, $3, 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $4)
+		RETURNING id::text`, append(sealUser(t, sealer.NewEmail(t), "lee@example.com"), now)...).Scan(&lee); err != nil {
 		t.Fatal(err)
 	}
 	leeID, err := domain.ParseUserID(lee)
@@ -432,9 +433,9 @@ func TestTwoFinishesRedeemOneLink(t *testing.T) {
 	}
 	var lee string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $1)
-		RETURNING id::text`, now).Scan(&lee); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), $4)
+		RETURNING id::text`, append(sealUser(t, sealer.NewEmail(t), "lee@example.com"), now)...).Scan(&lee); err != nil {
 		t.Fatal(err)
 	}
 	leeID, err := domain.ParseUserID(lee)
@@ -489,7 +490,7 @@ func TestChallengeSaveSweepsExpiredLinks(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return now }
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	passkeys, err := identity.Passkeys(pool, nil, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,16 +568,17 @@ func identityMux(t *testing.T, now time.Time) (*pgxpool.Pool, http.Handler, app.
 func identityMuxWithOwner(t *testing.T, now time.Time) (*pgxpool.Pool, *pgxpool.Pool, http.Handler, app.Passkeys, context.Context) {
 	t.Helper()
 	owner, pool, ctx := upBoth(t)
+	emails := sealer.NewEmail(t)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return now }
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	passkeys, err := identity.Passkeys(pool, emails, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	passkeys.Now = sessions.Now
 	mux := http.NewServeMux()
 	identity.MountSessions(mux, sessions, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	identity.MountPasskeys(mux, passkeys, identity.Passwords(pool, sessions), nil)
+	identity.MountPasskeys(mux, passkeys, identity.Passwords(pool, emails, sessions), nil)
 	return owner, pool, mux, passkeys, ctx
 }
 
@@ -738,7 +740,7 @@ func userHandle(t *testing.T, options []byte) []byte {
 func handleOf(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []byte {
 	t.Helper()
 	var handle []byte
-	if err := pool.QueryRow(ctx, `SELECT webauthn_handle FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&handle); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT webauthn_handle FROM identity.users WHERE id = $1`, adaID(t, ctx, pool)).Scan(&handle); err != nil {
 		t.Fatal(err)
 	}
 	return handle
@@ -746,11 +748,7 @@ func handleOf(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []byte {
 
 func adaID(t *testing.T, ctx context.Context, pool *pgxpool.Pool) domain.UserID {
 	t.Helper()
-	var id string
-	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&id); err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := domain.ParseUserID(id)
+	parsed, err := identity.ParseUserID(userByEmail(t, pool, ctx, "ada@example.com"))
 	if err != nil {
 		t.Fatal(err)
 	}
