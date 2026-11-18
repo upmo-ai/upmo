@@ -434,6 +434,20 @@ func resolveBuildInfo() (BuildInfo, buildinfo.Details) {
 func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	cfg = applyConfigDefaults(cfg)
 
+	// Built on every start, before any pool opens: outside development the
+	// known development keys and passwords refuse to start brain. This also
+	// covers callers that build brain.Config directly instead of loading it
+	// from the environment.
+	env, err := config.ParseEnv(cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	internal := toInternalConfig(cfg)
+	internal.Env = env
+	if err := config.CheckConfig(internal, true, os.LookupEnv, os.Environ()); err != nil {
+		return nil, err
+	}
+
 	var o options
 	for _, opt := range opts {
 		if opt != nil {

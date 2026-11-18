@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 
 	provKey := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'p'}, 32))
 	cfg := Config{
+		Env:             "development",
 		SessionIdle:     identity.IdleTimeout,
 		SessionMaxAge:   identity.MaxAge,
 		PublicURL:       "http://localhost:5173",
@@ -151,5 +153,28 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	appCustom.Handler().ServeHTTP(customRec, httptest.NewRequest(http.MethodGet, "/api/v1/provision/status", nil))
 	if customRec.Code != http.StatusTeapot {
 		t.Fatalf("custom provisioner = %d, want 418", customRec.Code)
+	}
+}
+
+// New built directly from a Config runs the same guard as the loaders, so the
+// compose development values refuse brain in production before any pool or
+// database is touched. An empty Env is production, like an unset one.
+func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
+	cfg := Config{
+		DatabaseURL:     "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable",
+		PublicURL:       "http://localhost:5173",
+		WebAuthnRPID:    "localhost",
+		ServiceKey:      "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32)),
+		SessionIdle:     identity.IdleTimeout,
+		SessionMaxAge:   identity.MaxAge,
+		ShutdownTimeout: 2 * time.Second,
+	}
+	_, err := New(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "UPMO_MASTER_KEY uses a development or weak key") {
+		t.Fatalf("New err = %v", err)
+	}
+	if strings.Contains(err.Error(), cfg.DatabaseURL) {
+		t.Fatalf("New err holds a value: %v", err)
 	}
 }

@@ -34,6 +34,11 @@ Control-plane provisioning under `/api/v1/provision/*` (see `docs/openapi/provis
 - `UPMO_PROVISION_KEYS`: Comma-separated list of `upmo_svc_*` master keys used to derive HMAC-SHA256 verification keys for `svcsig` (`provision` audience) bearer tokens. Supports multiple keys for zero-downtime key rotation.
 - `UPMO_PACK_TRUST_KEYS`: Optional comma-separated `key_id=<base64-ed25519-pub>` overrides/additions for verifying signed `upmo.pack/v1` manifests on `PUT /api/v1/provision/packs`.
 
+## Operations
+
+- Data at rest — volume encryption, backup encryption and key handling — is covered in [docs/operations/data-at-rest.md](docs/operations/data-at-rest.md).
+- `UPMO_ENV` selects the environment, `production` (the default) or `development`; production refuses the development keys and passwords `compose.yml` embeds.
+
 ## Licence and trademark
 
 Code and documentation are under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`). The Upmo name, caret mark and wordmark are not; see [TRADEMARK.md](TRADEMARK.md).
