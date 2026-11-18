@@ -13,13 +13,14 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestRolesIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
 	mux := handler.(*http.ServeMux)
-	members := identity.Members(pool, "", nil, nil)
+	members := identity.Members(pool, sealer.NewEmail(t), "", nil, nil)
 	members.Now = func() time.Time { return now }
 	roles := identity.Roles(pool, nil)
 	roles.Now = members.Now
@@ -190,10 +191,7 @@ func TestRolesIntegration(t *testing.T) {
 		t.Fatalf("delete spare %d %s", removed.Code, removed.Body.String())
 	}
 
-	var owner string
-	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&owner); err != nil {
-		t.Fatal(err)
-	}
+	owner := userByEmail(t, pool, ctx, "ada@example.com")
 	ownerID, err := identity.ParseUserID(owner)
 	if err != nil {
 		t.Fatal(err)

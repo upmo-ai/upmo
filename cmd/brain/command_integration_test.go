@@ -18,6 +18,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 // The link-issued events name the event alone: who got the link is already in
@@ -32,11 +33,11 @@ func TestLinkIssuedLogsCarryNoEmailAddress(t *testing.T) {
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(owner, identity.IdleTimeout, identity.MaxAge)
-	passkeys, err := identity.Passkeys(owner, sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(owner, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	members := identity.Members(owner, "http://localhost:5173", brainops.LinkMail(config.SMTP{}), log)
+	members := identity.Members(owner, sealer.NewEmail(t), "http://localhost:5173", brainops.LinkMail(config.SMTP{}), log)
 
 	logs := &bytes.Buffer{}
 	previous := slog.Default()

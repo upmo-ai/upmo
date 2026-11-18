@@ -43,18 +43,18 @@ func newKit(t *testing.T) *kit {
 	owner, appPool := setup(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(appPool, identity.IdleTimeout, identity.MaxAge)
-	passkeys, err := identity.Passkeys(appPool, sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(appPool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	passwords := identity.Passwords(appPool, sessions)
+	passwords := identity.Passwords(appPool, sealer.NewEmail(t), sessions)
 	passwords.Sealer = sealer.New(t)
 	mux := http.NewServeMux()
 	// MountAPITokens registers the session routes and accepts a bearer on
 	// GET /api/session, as brain does; there is no separate MountSessions.
 	identity.MountAPITokens(mux, sessions, identity.APITokens(appPool, log), log, passwords.HasPassword, appPool, nil)
 	identity.MountPasskeys(mux, passkeys, passwords, nil)
-	identity.MountMembers(mux, identity.Members(appPool, "http://localhost:5173", nil, log), sessions)
+	identity.MountMembers(mux, identity.Members(appPool, sealer.NewEmail(t), "http://localhost:5173", nil, log), sessions)
 	identity.MountRoles(mux, identity.Roles(appPool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(appPool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(appPool), sessions)
@@ -280,7 +280,7 @@ func memberIDByEmail(t *testing.T, owner *pgxpool.Pool, email string) string {
 	t.Helper()
 	var id string
 	if err := owner.QueryRow(context.Background(),
-		`SELECT id::text FROM identity.users WHERE lower(email) = lower($1)`, email).Scan(&id); err != nil {
+		`SELECT id::text FROM identity.users WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes(email)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -288,11 +288,15 @@ func memberIDByEmail(t *testing.T, owner *pgxpool.Pool, email string) string {
 
 func seedJoinedMember(t *testing.T, owner *pgxpool.Pool, email, name string) string {
 	t.Helper()
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var id string
 	if err := owner.QueryRow(context.Background(), `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = 'member'), now())
-		RETURNING id::text`, email, name).Scan(&id); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, $4, (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		RETURNING id::text`, stored, hash, keyID, name).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -321,7 +325,7 @@ func adaHandle(t *testing.T, owner *pgxpool.Pool) []byte {
 	t.Helper()
 	var handle []byte
 	if err := owner.QueryRow(context.Background(),
-		`SELECT webauthn_handle FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&handle); err != nil {
+		`SELECT webauthn_handle FROM identity.users WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes("ada@example.com")).Scan(&handle); err != nil {
 		t.Fatal(err)
 	}
 	return handle
@@ -1262,13 +1266,7 @@ func TestWorkspaceUpdateAndSSOSignInAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var memberID string
-	if err := k.owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now())
-		RETURNING id::text`).Scan(&memberID); err != nil {
-		t.Fatal(err)
-	}
+	memberID := seedJoinedMember(t, k.owner, "lee@example.com", "Lee")
 	sessions := identity.Sessions(k.app, identity.IdleTimeout, identity.MaxAge)
 	memberUID, err := identity.ParseUserID(memberID)
 	if err != nil {

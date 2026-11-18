@@ -23,10 +23,11 @@ type (
 	GrantWrite = app.GrantWrite
 )
 
-// Members builds the members use case. Invite and recover links are emailed
-// through sender, which may be nil; publicURL is the origin they open.
-func Members(pool *pgxpool.Pool, publicURL string, sender mail.Sender, log *slog.Logger) app.Members {
-	return app.Members{Store: postgres.Passkeys{Pool: pool}, Mail: sender, PublicURL: publicURL, Log: log}
+// Members builds the members use case. The emails sealer stores addresses;
+// without it invites and address lookups fail. Invite and recover links are
+// emailed through sender, which may be nil; publicURL is the origin they open.
+func Members(pool *pgxpool.Pool, emails EmailSealer, publicURL string, sender mail.Sender, log *slog.Logger) app.Members {
+	return app.Members{Store: postgres.Passkeys{Pool: pool, Emails: emails}, Mail: sender, PublicURL: publicURL, Log: log}
 }
 
 // MountMembers registers the member routes.

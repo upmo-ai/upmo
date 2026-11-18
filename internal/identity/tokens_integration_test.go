@@ -15,13 +15,14 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestPersonalTokens(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, time.Hour, 24*time.Hour)
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,14 +99,14 @@ func TestPersonalTokens(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ('Narrow', ARRAY['task:view']) RETURNING id::text`).Scan(&narrow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE lower(email) = 'ada@example.com'`, narrow); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE email_hash = ANY($2)`, narrow, sealer.NewEmail(t).IndexHashes("ada@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	narrowed := bearer(mux, http.MethodGet, "/api/session", body.Secret)
 	if narrowed.Code != http.StatusOK || strings.Contains(narrowed.Body.String(), "task:edit") || !strings.Contains(narrowed.Body.String(), "task:view") {
 		t.Fatalf("narrowed = %d %s", narrowed.Code, narrowed.Body.String())
 	}
-	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE lower(email) = 'ada@example.com'`, owner); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE email_hash = ANY($2)`, owner, sealer.NewEmail(t).IndexHashes("ada@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	manage := bearer(mux, http.MethodDelete, "/api/session", body.Secret)
@@ -161,7 +162,7 @@ func TestPersonalTokens(t *testing.T) {
 	if err := json.Unmarshal(kept.Body.Bytes(), &live); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE lower(email) = 'ada@example.com'`); err != nil {
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET disabled_at = now() WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes("ada@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	disabled := bearer(mux, http.MethodGet, "/api/session", live.Secret)

@@ -72,7 +72,7 @@ func newRouteVisWorld(t *testing.T) *routeVisWorld {
 	}
 	appPool := pgtest.App(t, pool)
 	keys := masterKeys(t, 'r')
-	members := identity.Members(appPool, "http://example.test", nil, nil)
+	members := identity.Members(appPool, nil, "http://example.test", nil, nil)
 	providers := NewProviders(appPool, keys, nil)
 	providers.LocalPlan = func(context.Context, string) bool { return true }
 	providers.Allow = func(ctx context.Context, user string) (string, error) {

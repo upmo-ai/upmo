@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -49,10 +50,10 @@ func (p Passkeys) ListRoles(ctx context.Context) ([]domain.MemberRole, error) {
 	return out, rows.Err()
 }
 
-// ListMembers returns enabled people with their teams.
+// ListMembers returns enabled people with their teams, ordered by address.
 func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 	rows, err := p.Pool.Query(ctx, `
-		SELECT person.id::text, person.email, person.name,
+		SELECT person.id::text, person.email, person.email_hash, person.name,
 		       role.id::text, role.name, COALESCE(role.key, ''),
 		       person.joined_at IS NULL, COALESCE(team.name, '')
 		FROM identity.users AS person
@@ -60,16 +61,18 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 		LEFT JOIN identity.team_members AS membership ON membership.user_id = person.id
 		LEFT JOIN identity.teams AS team ON team.id = membership.team_id
 		WHERE person.disabled_at IS NULL
-		ORDER BY person.email, team.name`)
+		ORDER BY person.id, team.name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []domain.Member
 	for rows.Next() {
-		var id, email, name, roleID, roleName, system, team string
+		var id, name, roleID, roleName, system, team string
+		var stored string
+		var hash []byte
 		var invited bool
-		if err := rows.Scan(&id, &email, &name, &roleID, &roleName, &system, &invited, &team); err != nil {
+		if err := rows.Scan(&id, &stored, &hash, &name, &roleID, &roleName, &system, &invited, &team); err != nil {
 			return nil, err
 		}
 		userID, err := domain.ParseUserID(id)
@@ -86,6 +89,10 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 			}
 			continue
 		}
+		email, err := openStoredEmail(p.Emails, stored, hash)
+		if err != nil {
+			return nil, err
+		}
 		member := domain.Member{
 			ID: userID, Email: email, Name: name,
 			RoleID: parsedRole, RoleName: roleName, System: system, Invited: invited,
@@ -95,7 +102,18 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 		}
 		out = append(out, member)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The address is sealed, so the database cannot order by it.
+	sort.SliceStable(out, func(i, j int) bool {
+		left, right := strings.ToLower(out[i].Email), strings.ToLower(out[j].Email)
+		if left != right {
+			return left < right
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return out, nil
 }
 
 // MemberActor loads an enabled person for an access check.
@@ -179,6 +197,10 @@ func (p Passkeys) RoleSystem(ctx context.Context, id domain.RoleID) (string, err
 
 // InviteMember inserts a person, or brings a disabled row back, and stores one invite link.
 func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error) {
+	stored, hashes, keyID, err := sealEmail(p.Emails, email)
+	if err != nil {
+		return domain.Member{}, err
+	}
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return domain.Member{}, err
@@ -186,8 +208,8 @@ func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email
 	defer func() { _ = tx.Rollback(ctx) }()
 	var idText string
 	err = tx.QueryRow(ctx, `
-		SELECT identity.member_invite($1, $2, $3, $4, $5, $6, $7, $8)::text`,
-		actorTokenHash, email, name, role, handle, hash, now, expires).Scan(&idText)
+		SELECT identity.member_invite($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)::text`,
+		actorTokenHash, stored, hashes, keyID, name, role, handle, hash, now, expires).Scan(&idText)
 	if err != nil {
 		return domain.Member{}, mapIdentityDefinerError(err)
 	}
@@ -195,7 +217,7 @@ func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email
 	if err != nil {
 		return domain.Member{}, err
 	}
-	member, err := memberByID(ctx, tx, userID)
+	member, err := p.memberByID(ctx, tx, userID)
 	if err != nil {
 		return domain.Member{}, err
 	}
@@ -329,6 +351,10 @@ func mapIdentityDefinerError(err error) error {
 		if pgErr.ConstraintName == "api_tokens_expiry_check" {
 			return domain.ErrTokenDays
 		}
+		// A concurrent invite of the same address loses the race on the index.
+		if pgErr.ConstraintName == "users_email_hash" {
+			return domain.ErrAlreadyMember
+		}
 		if pgErr.Code == "23503" || pgErr.Code == "23514" {
 			return domain.ErrMemberInput
 		}
@@ -336,17 +362,23 @@ func mapIdentityDefinerError(err error) error {
 	return mapLastOwner(err)
 }
 
-func memberByID(ctx context.Context, tx pgx.Tx, id domain.UserID) (domain.Member, error) {
+func (p Passkeys) memberByID(ctx context.Context, tx pgx.Tx, id domain.UserID) (domain.Member, error) {
 	var member domain.Member
 	var idText, roleText string
+	var stored string
+	var hash []byte
 	err := tx.QueryRow(ctx, `
-		SELECT person.id::text, person.email, person.name,
+		SELECT person.id::text, person.email, person.email_hash, person.name,
 		       role.id::text, role.name, COALESCE(role.key, ''),
 		       person.joined_at IS NULL
 		FROM identity.users AS person
 		JOIN identity.roles AS role ON role.id = person.role_id
 		WHERE person.id = $1`, id).Scan(
-		&idText, &member.Email, &member.Name, &roleText, &member.RoleName, &member.System, &member.Invited)
+		&idText, &stored, &hash, &member.Name, &roleText, &member.RoleName, &member.System, &member.Invited)
+	if err != nil {
+		return domain.Member{}, err
+	}
+	member.Email, err = openStoredEmail(p.Emails, stored, hash)
 	if err != nil {
 		return domain.Member{}, err
 	}

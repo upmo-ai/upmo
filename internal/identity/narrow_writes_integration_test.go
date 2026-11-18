@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 var allowedWriteColumns = map[string][]string{
@@ -187,14 +188,14 @@ func TestDefinerWriteFunctionsEnforceSessionAndHierarchy(t *testing.T) {
 	// Initial bootstrap succeeds with NULL actor hash only while users is empty.
 	var firstOwnerID string
 	if err := appPool.QueryRow(ctx, `
-		SELECT identity.member_invite(NULL, 'ada@example.com', 'Ada', NULL, NULL, $1, $2, $3)::text`,
-		[]byte{1, 1, 1}, now, now.Add(time.Hour)).Scan(&firstOwnerID); err != nil {
+		SELECT identity.member_invite(NULL, $1, $2, $3, 'Ada', NULL, NULL, $4, $5, $6)::text`,
+		append(inviteEmail(t, "ada@example.com"), []byte{1, 1, 1}, now, now.Add(time.Hour))...).Scan(&firstOwnerID); err != nil {
 		t.Fatalf("initial bootstrap: %v", err)
 	}
 	// Once at least one user exists, NULL actor hash must fail.
 	_, err := appPool.Exec(ctx, `
-		SELECT identity.member_invite(NULL, 'second@example.com', 'Second', NULL, NULL, $1, $2, $3)`,
-		[]byte{2, 2, 2}, now, now.Add(time.Hour))
+		SELECT identity.member_invite(NULL, $1, $2, $3, 'Second', NULL, NULL, $4, $5, $6)`,
+		append(inviteEmail(t, "second@example.com"), []byte{2, 2, 2}, now, now.Add(time.Hour))...)
 	assertDenied(t, "second bootstrap with NULL hash", err)
 
 	var ownerRoleID, adminRoleID, memberRoleID, viewerRoleID string
@@ -280,8 +281,8 @@ func TestDefinerWriteFunctionsEnforceSessionAndHierarchy(t *testing.T) {
 		_, err = appPool.Exec(ctx, `SELECT identity.member_disable($1, $2, $3)`, badHash, viewerID, now)
 		assertDenied(t, "member_disable "+name, err)
 
-		_, err = appPool.Exec(ctx, `SELECT identity.member_invite($1, 'x@example.com', 'X', $2, $3, $4, $5, $6)`,
-			badHash, memberRoleID, []byte{1}, []byte{2}, now, now.Add(time.Hour))
+		_, err = appPool.Exec(ctx, `SELECT identity.member_invite($1, $2, $3, $4, 'X', $5, $6, $7, $8, $9)`,
+			append(append([]any{badHash}, inviteEmail(t, "x@example.com")...), memberRoleID, []byte{1}, []byte{2}, now, now.Add(time.Hour))...)
 		assertDenied(t, "member_invite "+name, err)
 
 		_, err = appPool.Exec(ctx, `SELECT identity.token_create($1, 'ci', $2, ARRAY['task:view'], $3, $4)`,
@@ -315,12 +316,12 @@ func TestDefinerWriteFunctionsEnforceSessionAndHierarchy(t *testing.T) {
 	}
 
 	// Hierarchy and self checks for member_invite.
-	_, err = appPool.Exec(ctx, `SELECT identity.member_invite($1, 'new@example.com', 'New', $2, $3, $4, $5, $6)`,
-		memberSess, viewerRoleID, []byte{20}, []byte{21}, now, now.Add(time.Hour))
+	_, err = appPool.Exec(ctx, `SELECT identity.member_invite($1, $2, $3, $4, 'New', $5, $6, $7, $8, $9)`,
+		append(append([]any{memberSess}, inviteEmail(t, "new@example.com")...), viewerRoleID, []byte{20}, []byte{21}, now, now.Add(time.Hour))...)
 	assertDenied(t, "member cannot invite", err)
 
-	_, err = appPool.Exec(ctx, `SELECT identity.member_invite($1, 'newowner@example.com', 'NewOwner', $2, $3, $4, $5, $6)`,
-		adminSess, ownerRoleID, []byte{22}, []byte{23}, now, now.Add(time.Hour))
+	_, err = appPool.Exec(ctx, `SELECT identity.member_invite($1, $2, $3, $4, 'NewOwner', $5, $6, $7, $8, $9)`,
+		append(append([]any{adminSess}, inviteEmail(t, "newowner@example.com")...), ownerRoleID, []byte{22}, []byte{23}, now, now.Add(time.Hour))...)
 	assertDenied(t, "admin cannot invite owner", err)
 
 	// Hierarchy and self checks for member_disable.
@@ -370,4 +371,15 @@ func assertDenied(t *testing.T, label string, err error) {
 	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
 		t.Fatalf("%s: err = %v, want SQLSTATE 42501", label, err)
 	}
+}
+
+// inviteEmail returns the sealed address, its index hashes and the hash key id
+// in the order member_invite takes them.
+func inviteEmail(t *testing.T, email string) []any {
+	t.Helper()
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []any{stored, [][]byte{hash}, keyID}
 }

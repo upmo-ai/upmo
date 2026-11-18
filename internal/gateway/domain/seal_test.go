@@ -2,6 +2,8 @@ package domain
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
@@ -115,6 +117,79 @@ func TestZeroKeyringCannotSeal(t *testing.T) {
 	if _, err := k.Seal("r", "x"); !errors.Is(err, ErrNoMasterKey) {
 		t.Fatalf("Seal error = %v", err)
 	}
+	if _, _, err := k.IndexMAC([]byte("ada@example.com")); !errors.Is(err, ErrNoMasterKey) {
+		t.Fatalf("IndexMAC error = %v", err)
+	}
+	if macs := k.IndexMACs([]byte("ada@example.com")); len(macs) != 0 {
+		t.Fatalf("IndexMACs = %d, want none", len(macs))
+	}
+}
+
+func TestIndexMACIsDeterministic(t *testing.T) {
+	k := ring(t, "k1", map[string][]byte{"k1": testKey('a')})
+	id, one, err := k.IndexMAC([]byte("ada@example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "k1" || len(one) != 32 {
+		t.Fatalf("IndexMAC = %q, %d bytes", id, len(one))
+	}
+	_, two, err := k.IndexMAC([]byte("ada@example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(one, two) {
+		t.Fatal("the same data under the same key gave different MACs")
+	}
+}
+
+func TestIndexMACUsesTheDerivedSubkey(t *testing.T) {
+	data := []byte("ada@example.com")
+	underRaw := hmac.New(sha256.New, testKey('a'))
+	underRaw.Write(data)
+	plain := sha256.Sum256(data)
+	one := ring(t, "k1", map[string][]byte{"k1": testKey('a')})
+	two := ring(t, "k1", map[string][]byte{"k1": testKey('b')})
+	_, macOne, err := one.IndexMAC(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, macTwo, err := two.IndexMAC(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(macOne, macTwo) {
+		t.Fatal("different master keys gave the same index MAC")
+	}
+	if bytes.Equal(macOne, plain[:]) {
+		t.Fatal("the index MAC is the plain SHA-256 of the data")
+	}
+	if bytes.Equal(macOne, underRaw.Sum(nil)) {
+		t.Fatal("the index MAC is the HMAC under the raw master key")
+	}
+}
+
+func TestIndexMACsListCurrentFirst(t *testing.T) {
+	data := []byte("ada@example.com")
+	k := ring(t, "k2", map[string][]byte{"k1": testKey('a'), "k2": testKey('b')})
+	_, current, err := k.IndexMAC(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, previous, err := ring(t, "k1", map[string][]byte{"k1": testKey('a')}).IndexMAC(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	macs := k.IndexMACs(data)
+	if len(macs) != 2 {
+		t.Fatalf("IndexMACs = %d, want 2", len(macs))
+	}
+	if !bytes.Equal(macs[0], current) {
+		t.Fatal("the current key's MAC is not first")
+	}
+	if !bytes.Equal(macs[1], previous) {
+		t.Fatal("the second MAC is not the previous key's")
+	}
 }
 
 func TestNewKeyringRefusesBadInput(t *testing.T) {
@@ -149,11 +224,15 @@ func TestNewKeyringErrorNeverCarriesKeyBytes(t *testing.T) {
 
 func TestNewKeyringWipesTheRawKeyBytes(t *testing.T) {
 	raw := testKey('a')
-	if _, err := NewKeyring("k1", map[string][]byte{"k1": raw}); err != nil {
+	k, err := NewKeyring("k1", map[string][]byte{"k1": raw})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(raw, make([]byte, MasterKeyLen)) {
 		t.Fatal("the raw key bytes are not wiped after the ring is built")
+	}
+	if _, mac, err := k.IndexMAC([]byte("ada@example.com")); err != nil || len(mac) != 32 {
+		t.Fatalf("IndexMAC after the wipe = %d bytes, %v", len(mac), err)
 	}
 	// A ring that refuses to build wipes them too.
 	rejected := testKey('b')

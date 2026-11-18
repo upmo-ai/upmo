@@ -26,6 +26,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 const cookieName = "__Host-upmo_session"
@@ -55,11 +56,15 @@ func mount(t *testing.T, mux *http.ServeMux, app *pgxpool.Pool) http.Handler {
 
 func seedPerson(t *testing.T, pool *pgxpool.Pool, email string) (string, string) {
 	t.Helper()
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var userID, roleID string
-	err := pool.QueryRow(context.Background(), `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
-		RETURNING id::text, role_id::text`, email).Scan(&userID, &roleID)
+	err = pool.QueryRow(context.Background(), `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text, role_id::text`, stored, hash, keyID).Scan(&userID, &roleID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +75,7 @@ func lookupPerson(t *testing.T, owner *pgxpool.Pool, email string) (string, stri
 	t.Helper()
 	var userID, roleID string
 	if err := owner.QueryRow(context.Background(), `
-		SELECT id::text, role_id::text FROM identity.users WHERE email = $1`, email,
+		SELECT id::text, role_id::text FROM identity.users WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes(email),
 	).Scan(&userID, &roleID); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +100,7 @@ func signOutServer(t *testing.T, owner, app *pgxpool.Pool) (http.Handler, string
 	}
 	mux := http.NewServeMux()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	identity.MountSessions(mux, sessions, log, identity.Passwords(app, sessions).HasPassword)
+	identity.MountSessions(mux, sessions, log, identity.Passwords(app, nil, sessions).HasPassword)
 	return mount(t, mux, app), text, session.ID
 }
 

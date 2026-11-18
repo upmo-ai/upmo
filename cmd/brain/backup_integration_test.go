@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/url"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/artifacts"
 	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/backup"
@@ -489,11 +491,23 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 	if err := oldOwner.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'owner'`).Scan(&roleID); err != nil {
 		t.Fatal(err)
 	}
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x55}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	ring1, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	emails := brainops.NewEmailSealer(ring1)
+	stored, hash, keyID, err := emails.Seal("old@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	userID := uuid.New()
 	if _, err := oldOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
-		VALUES ($1, 'old@example.com', 'Old User', $2, now(), now())`,
-		userID, roleID,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ($1, $2, $3, $4, 'Old User', $5, now(), now())`,
+		userID, stored, hash, keyID, roleID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -520,10 +534,7 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x55}, 32))
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, oldOwner))
-	t.Setenv(gateway.EnvMasterKey, key1B64)
-	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	t.Setenv("UPMO_ARTIFACTS_DIR", "")
 	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
 
@@ -559,9 +570,139 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 	if err := newOwner.QueryRow(ctx, `SELECT goal FROM tasks.tasks WHERE id = $1`, taskID).Scan(&gotGoal); err != nil || gotGoal != "Older schema task" {
 		t.Fatalf("restored task missing after forward migration: goal=%q err=%v", gotGoal, err)
 	}
+	var gotStored string
+	var gotHash []byte
+	if err := newOwner.QueryRow(ctx, `SELECT email, email_hash FROM identity.users WHERE id = $1`, userID).Scan(&gotStored, &gotHash); err != nil {
+		t.Fatal(err)
+	}
+	if address, err := emails.Open(gotStored, gotHash); err != nil || address != "old@example.com" {
+		t.Fatalf("restored address opens to %q, err=%v", address, err)
+	}
 	// Verify JSON encoding of manifest works cleanly.
 	if _, err := json.Marshal(m); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A person's address is sealed, so no archive entry carries it, and the key it
+// was sealed under is one the restore must have loaded.
+func TestBackupSealsEmailAndRestoreNeedsItsKey(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
+	ctx := context.Background()
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatal(err)
+	}
+
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x61}, 32))
+	key2B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x62}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	ring1, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	passkeys, err := identity.Passkeys(srcOwner, brainops.NewEmailSealer(ring1), identity.Sessions(srcOwner, identity.IdleTimeout, identity.MaxAge), "http://localhost:5173", "localhost", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := passkeys.Bootstrap(ctx, "Ada.Backup@Example.com", "Ada"); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// A plain address beside a hash key id must not be read as a key id.
+	if _, err := srcOwner.Exec(ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at)
+		SELECT 'plain@example.com', $1, 'k1', 'Plain', id, now() FROM identity.roles WHERE key = 'member'`,
+		bytes.Repeat([]byte{0x70}, 32)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The backup runs after a rotation: k2 is current and k1 is previous, so
+	// only the sealed address names k1.
+	t.Setenv(gateway.EnvMasterKey, key2B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k2")
+	t.Setenv(gateway.EnvMasterKeyPrevious+"k1", key1B64)
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+
+	archivePath := filepath.Join(t.TempDir(), "email.tar.gz")
+	var out bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath, "--no-encrypt"}, &out); err != nil {
+		t.Fatalf("backupCommand: %v", err)
+	}
+	entries := archiveEntries(t, archivePath)
+	for name, body := range entries {
+		if bytes.Contains(bytes.ToLower(body), []byte("ada.backup@example.com")) {
+			t.Fatalf("archive entry %s carries the address", name)
+		}
+	}
+	var meta backup.DBMeta
+	if err := json.Unmarshal(entries["payload.tar.gz/db/meta.json"], &meta); err != nil {
+		t.Fatalf("parse db/meta.json: %v", err)
+	}
+	if !slices.Contains(meta.KeyIDs, "k1") {
+		t.Fatalf("db/meta.json key_ids = %v, want the email key k1", meta.KeyIDs)
+	}
+	if slices.Contains(meta.KeyIDs, "plain@example.com") {
+		t.Fatalf("db/meta.json key_ids = %v, carries a plain address", meta.KeyIDs)
+	}
+	if strings.Contains(out.String(), "plain@example.com") {
+		t.Fatalf("backup output carries a plain address: %s", out.String())
+	}
+
+	// Restore with k2 alone refuses before touching the database or volumes.
+	liveOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, liveOwner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := liveOwner.Exec(ctx, `
+		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
+		SELECT 'live@example.com', 'Live User', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		t.Fatal(err)
+	}
+	liveArtDir := t.TempDir()
+	sentinelArt := filepath.Join(liveArtDir, "live-sentinel.txt")
+	if err := os.WriteFile(sentinelArt, []byte("must-survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, liveOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", liveArtDir)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	t.Setenv(gateway.EnvMasterKeyPrevious+"k1", "")
+	var sink bytes.Buffer
+	if err := restoreCommand([]string{"--in", archivePath}, &sink); err == nil || !strings.Contains(err.Error(), "k1") || strings.Contains(err.Error(), "plain@example.com") {
+		t.Fatalf("restore without k1 = %v, want an error naming k1 and no address", err)
+	}
+	var liveUsers int
+	if err := liveOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE email = 'live@example.com'`).Scan(&liveUsers); err != nil || liveUsers != 1 {
+		t.Fatalf("restore without k1 modified live DB: count=%d err=%v", liveUsers, err)
+	}
+	if got, err := os.ReadFile(sentinelArt); err != nil || string(got) != "must-survive" { //nolint:gosec // test temp path
+		t.Fatalf("restore without k1 modified live volume: got=%q err=%v", got, err)
+	}
+
+	// With k1 loaded as a previous key the restored address opens.
+	freshOwner := pgtest.New(t)
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, freshOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	t.Setenv(gateway.EnvMasterKeyPrevious+"k1", key1B64)
+	if err := restoreCommand([]string{"--in", archivePath}, &sink); err != nil {
+		t.Fatalf("restoreCommand(k2, k1): %v", err)
+	}
+	rotated, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	var hash []byte
+	if err := freshOwner.QueryRow(ctx, `SELECT email, email_hash FROM identity.users WHERE email <> 'plain@example.com'`).Scan(&stored, &hash); err != nil {
+		t.Fatal(err)
+	}
+	if address, err := brainops.NewEmailSealer(rotated).Open(stored, hash); err != nil || address != "Ada.Backup@Example.com" {
+		t.Fatalf("restored address opens to %q, err=%v", address, err)
 	}
 }
 
@@ -1880,4 +2021,43 @@ func rewriteManifestInOuterArchive(t *testing.T, srcArchive string, mutate func(
 		t.Fatal(err)
 	}
 	return outPath
+}
+
+// archiveEntries returns every entry of an unencrypted archive by name; the
+// payload's own entries are named "payload.tar.gz/<path>".
+func archiveEntries(t *testing.T, archive string) map[string][]byte {
+	t.Helper()
+	raw, err := os.ReadFile(archive) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[string][]byte)
+	var read func(prefix string, data []byte)
+	read = func(prefix string, data []byte) {
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = gz.Close() }()
+		tr := tar.NewReader(gz)
+		for {
+			hdr, err := tr.Next()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[prefix+hdr.Name] = body
+			if hdr.Name == "payload.tar.gz" {
+				read(hdr.Name+"/", body)
+			}
+		}
+	}
+	read("", raw)
+	return out
 }
