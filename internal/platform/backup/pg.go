@@ -665,7 +665,7 @@ type MigrateForwardFunc func(ctx context.Context, owner *pgxpool.Pool) error
 // errMigrateAfterCommit marks a restore whose data committed on the live target
 // and whose forward migrations then failed; the staged volumes must be swapped
 // in so database and files stay in step.
-var errMigrateAfterCommit = errors.New("backup: database and volumes were restored from the archive, but forward migrations failed on the live database after succeeding in staging; run `brain migrate` before starting brain")
+var errMigrateAfterCommit = errors.New("backup: database and volumes were restored from the archive, but forward migrations failed on the live database after succeeding in staging; run `upmo migrate` before starting brain")
 
 func migrateAfterCommitErr(err error) error {
 	return fmt.Errorf("%w: %w", errMigrateAfterCommit, err)

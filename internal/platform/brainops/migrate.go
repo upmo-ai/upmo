@@ -1,5 +1,5 @@
 // Package brainops provides internal database, migration, mail, and sealing
-// helpers shared between cmd/brain and pkg/brain without exporting internal
+// helpers shared between cmd/upmo and pkg/brain without exporting internal
 // types on pkg/brain's public API.
 package brainops
 
