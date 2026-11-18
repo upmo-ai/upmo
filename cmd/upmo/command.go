@@ -8,7 +8,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
+	"sort"
 	"strings"
+	"syscall"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -54,6 +59,12 @@ func command(name string, args []string) error {
 		return err
 	}
 	switch name {
+	case "keys":
+		// A reseal stops cleanly between batches, so Ctrl-C leaves the
+		// committed batches in place and the command can be run again.
+		keysCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return keysCommand(keysCtx, pool, ring, args, os.Stdout)
 	case "bootstrap":
 		return bootstrap(ctx, passkeys, args)
 	case "recover":
@@ -105,6 +116,68 @@ func migrateCommand() error {
 		return err
 	}
 	slog.Info("migrations applied")
+	return nil
+}
+
+// keysCommand runs the key-management subcommands. reseal moves every sealed
+// row under the current master key; rows whose key is not loaded and rows a
+// loaded key cannot open are left alone and make it fail, so an operator sees
+// them.
+func keysCommand(ctx context.Context, pool *pgxpool.Pool, ring gateway.Keyring, args []string, stdout io.Writer) error {
+	if len(args) == 0 || args[0] != "reseal" {
+		return errors.New("brain: keys needs a subcommand: reseal")
+	}
+	fs := flag.NewFlagSet("keys reseal", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "report what a reseal would change without changing anything")
+	batchSize := fs.Int("batch-size", 200, "rows resealed per batch")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *batchSize < 1 || *batchSize > 10000 {
+		return errors.New("brain: keys reseal --batch-size must be between 1 and 10000")
+	}
+	if !ring.Ready() {
+		return errors.New("brain: keys reseal needs UPMO_MASTER_KEY")
+	}
+	result, err := brainops.Reseal(ctx, pool, ring, brainops.ResealOptions{
+		DryRun:    *dryRun,
+		BatchSize: *batchSize,
+		Out:       stdout,
+	})
+	if err != nil {
+		return err
+	}
+	var resealed, unknown, failed int64
+	ids := map[string]bool{}
+	for _, count := range result.Stores {
+		resealed += count.Resealed
+		unknown += count.Unknown
+		failed += count.Failed
+		for _, id := range count.UnknownKeyIDs {
+			ids[id] = true
+		}
+	}
+	slog.Info("keys reseal finished",
+		"key_id", ring.CurrentID(), "dry_run", *dryRun,
+		"resealed", resealed, "unknown_key", unknown, "failed", failed)
+	if left := unknown + failed; left > 0 {
+		unknownIDs := make([]string, 0, len(ids))
+		for id := range ids {
+			unknownIDs = append(unknownIDs, id)
+		}
+		sort.Strings(unknownIDs)
+		var parts []string
+		if unknown > 0 {
+			parts = append(parts, fmt.Sprintf("%d under key ids that are not loaded (%s)",
+				unknown, strings.Join(unknownIDs, ",")))
+		}
+		if failed > 0 {
+			parts = append(parts, fmt.Sprintf("%d that could not be opened", failed))
+		}
+		return fmt.Errorf("brain: keys reseal left %d rows unchanged: %s",
+			left, strings.Join(parts, ", "))
+	}
 	return nil
 }
 

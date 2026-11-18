@@ -60,6 +60,7 @@ type Registry struct {
 	gatewayCacheHits    *CounterVec
 	gatewayCacheMisses  *CounterVec
 	sandboxdActiveSeats *GaugeVec
+	sealedRowsUnknown   *GaugeVec
 }
 
 // NewRegistry creates a Registry pre-configured with standard Upmo metrics.
@@ -133,6 +134,11 @@ func NewRegistry() *Registry {
 	r.sandboxdActiveSeats = r.GaugeVec(
 		"upmo_sandboxd_active_seats",
 		"Active sandboxes held by sandboxd.",
+	)
+	r.sealedRowsUnknown = r.GaugeVec(
+		"upmo_sealed_rows_unknown_key",
+		"Sealed rows whose master key id is not loaded.",
+		"store",
 	)
 	return r
 }
@@ -295,6 +301,15 @@ func (r *Registry) SetSandboxdActiveSeats(n float64) {
 		return
 	}
 	r.sandboxdActiveSeats.Set(n)
+}
+
+// SetSealedRowsUnknownKey sets the count of sealed rows store holds whose
+// master key id is not loaded.
+func (r *Registry) SetSealedRowsUnknownKey(store string, n float64) {
+	if r == nil {
+		return
+	}
+	r.sealedRowsUnknown.Set(n, store)
 }
 
 // WriteTo runs registered collectors and writes all populated metric families in

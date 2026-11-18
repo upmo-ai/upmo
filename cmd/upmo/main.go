@@ -1,4 +1,4 @@
-// Command brain is the composition root: it hosts every bounded context in
+// Command upmo is the composition root: it hosts every bounded context in
 // one process.
 package main
 

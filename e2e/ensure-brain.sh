@@ -37,7 +37,7 @@ dc up -d --wait postgres
 
 issue() {
   out=$(mktemp)
-  if ! dc run --rm --no-deps brain sh -c "go build -o /tmp/brain ./cmd/brain && /tmp/brain $1" >"$out"; then
+  if ! dc run --rm --no-deps brain sh -c "go build -o /tmp/upmo ./cmd/upmo && /tmp/upmo $1" >"$out"; then
     cat "$out" >&2
     rm -f "$out"
     return 1

@@ -125,6 +125,23 @@ func TestZeroKeyringCannotSeal(t *testing.T) {
 	}
 }
 
+func TestCurrentIDAndHasReportTheLoadedKeys(t *testing.T) {
+	k := ring(t, "k2", map[string][]byte{"k1": testKey('a'), "k2": testKey('b')})
+	if k.CurrentID() != "k2" {
+		t.Fatalf("CurrentID = %q, want k2", k.CurrentID())
+	}
+	if !k.Has("k1") || !k.Has("k2") {
+		t.Fatal("Has denies a loaded key")
+	}
+	if k.Has("k9") {
+		t.Fatal("Has admits a key the ring does not hold")
+	}
+	var zero Keyring
+	if zero.CurrentID() != "" || zero.Has("k1") {
+		t.Fatal("the zero ring reports a current id or holds a key")
+	}
+}
+
 func TestIndexMACIsDeterministic(t *testing.T) {
 	k := ring(t, "k1", map[string][]byte{"k1": testKey('a')})
 	id, one, err := k.IndexMAC([]byte("ada@example.com"))

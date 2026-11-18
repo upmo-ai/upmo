@@ -546,6 +546,19 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Rows sealed with a key the ring does not hold can never open; say so
+	// once per store, without stopping start-up. So does a counting error.
+	if unknown, err := brainops.UnknownKeyRows(ctx, owner, masterKeys); err != nil {
+		log.Warn("counting sealed rows by key failed", "err", err)
+	} else {
+		for _, count := range unknown {
+			if count.Unknown > 0 {
+				log.Warn("sealed rows use a master key that is not loaded",
+					"store", count.Store, "rows", count.Unknown, "key_ids", count.UnknownKeyIDs)
+			}
+		}
+	}
+
 	internalCfg := toInternalConfig(cfg)
 	emails := brainops.NewEmailSealer(masterKeys)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
@@ -602,6 +615,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	var reg *metrics.Registry
 	if cfg.MetricsAddr != "" {
 		reg = metrics.NewRegistry()
+		brainops.RegisterUnknownKeyMetric(reg, owner, masterKeys)
 	}
 
 	pubBuild, rawBuild := resolveBuildInfo()
