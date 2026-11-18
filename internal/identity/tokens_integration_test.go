@@ -96,7 +96,7 @@ func TestPersonalTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	var narrow string
-	if err := pool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ('Narrow', ARRAY['task:view']) RETURNING id::text`).Scan(&narrow); err != nil {
+	if err := ownerPool.QueryRow(ctx, `INSERT INTO identity.roles (name, permissions) VALUES ('Narrow', ARRAY['task:view']) RETURNING id::text`).Scan(&narrow); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = $1 WHERE email_hash = ANY($2)`, narrow, sealer.NewEmail(t).IndexHashes("ada@example.com")); err != nil {

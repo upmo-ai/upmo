@@ -2,8 +2,9 @@
 
 -- Narrow upmo_app write privileges on identity tables.
 -- Secret, role, and disablement columns move behind proof-carrying definer
--- functions; direct INSERT on users and api_tokens and DELETE on users are
--- revoked; future tables receive no default write privileges.
+-- functions; direct INSERT on users and api_tokens, DELETE on users, and
+-- direct INSERT, UPDATE and DELETE on roles are revoked; future tables
+-- receive no default write privileges.
 
 REVOKE UPDATE ON identity.users, identity.sessions, identity.api_tokens FROM upmo_app;
 GRANT UPDATE (password_hash, webauthn_handle, joined_at, passkey_offered_at) ON identity.users TO upmo_app;
@@ -12,6 +13,7 @@ GRANT UPDATE (last_used_at) ON identity.api_tokens TO upmo_app;
 
 REVOKE INSERT ON identity.api_tokens, identity.users FROM upmo_app;
 REVOKE DELETE ON identity.users FROM upmo_app;
+REVOKE INSERT, UPDATE, DELETE ON identity.roles FROM upmo_app;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity REVOKE INSERT, UPDATE, DELETE ON TABLES FROM upmo_app;
 
@@ -472,8 +474,268 @@ $$;
 REVOKE ALL ON FUNCTION identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz) TO upmo_app;
 
+-- +goose StatementBegin
+CREATE FUNCTION identity.role_create(
+  actor_token_hash bytea,
+  p_name text,
+  p_permissions text[]
+)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+  v_actor_role_id uuid;
+  v_actor_perms text[];
+  v_clean text;
+  v_role_id uuid;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id, person.role_id, identity.role_permissions(role.key, role.permissions)
+  INTO v_actor_id, v_actor_role_id, v_actor_perms
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT ('roles:manage' = ANY (v_actor_perms)) THEN
+    RAISE EXCEPTION 'identity: you cannot manage roles' USING ERRCODE = '42501';
+  END IF;
+
+  v_clean := pg_catalog.btrim(COALESCE(p_name, ''));
+  IF v_clean = '' OR pg_catalog.char_length(v_clean) > 64 THEN
+    RAISE EXCEPTION 'identity: a role needs a name and at least one permission' USING ERRCODE = '23514';
+  END IF;
+
+  IF p_permissions IS NULL OR pg_catalog.cardinality(p_permissions) = 0 THEN
+    RAISE EXCEPTION 'identity: a role needs a name and at least one permission' USING ERRCODE = '23514';
+  END IF;
+
+  -- Unknown names, NULL elements and owners:manage are dropped by the
+  -- NULL-key branch, so a cardinality mismatch refuses them; a distinct
+  -- count below the cardinality refuses duplicates.
+  IF pg_catalog.cardinality(identity.role_permissions(NULL, p_permissions)) <> pg_catalog.cardinality(p_permissions)
+     OR (SELECT pg_catalog.count(DISTINCT s) FROM pg_catalog.unnest(p_permissions) AS s)
+        <> pg_catalog.cardinality(p_permissions) THEN
+    RAISE EXCEPTION 'identity: a role needs a name and at least one permission' USING ERRCODE = '23514';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.unnest(p_permissions) AS s
+    WHERE NOT (s = ANY (v_actor_perms))
+  ) THEN
+    RAISE EXCEPTION 'identity: you cannot grant a permission you do not hold' USING ERRCODE = '42501';
+  END IF;
+
+  INSERT INTO identity.roles (name, permissions)
+  VALUES (v_clean, p_permissions)
+  RETURNING id INTO v_role_id;
+
+  RETURN v_role_id;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.role_create(bytea, text, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.role_create(bytea, text, text[]) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.role_change(
+  actor_token_hash bytea,
+  p_role_id uuid,
+  p_name text,
+  p_permissions text[]
+)
+RETURNS text[]
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+  v_actor_role_id uuid;
+  v_actor_perms text[];
+  v_key text;
+  v_stored_perms text[];
+  v_old_perms text[];
+  v_clean text;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id, person.role_id, identity.role_permissions(role.key, role.permissions)
+  INTO v_actor_id, v_actor_role_id, v_actor_perms
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT ('roles:manage' = ANY (v_actor_perms)) THEN
+    RAISE EXCEPTION 'identity: you cannot manage roles' USING ERRCODE = '42501';
+  END IF;
+
+  v_clean := pg_catalog.btrim(COALESCE(p_name, ''));
+  IF v_clean = '' OR pg_catalog.char_length(v_clean) > 64 THEN
+    RAISE EXCEPTION 'identity: a role needs a name and at least one permission' USING ERRCODE = '23514';
+  END IF;
+
+  IF p_permissions IS NULL OR pg_catalog.cardinality(p_permissions) = 0 THEN
+    RAISE EXCEPTION 'identity: a role needs a name and at least one permission' USING ERRCODE = '23514';
+  END IF;
+
+  IF pg_catalog.cardinality(identity.role_permissions(NULL, p_permissions)) <> pg_catalog.cardinality(p_permissions)
+     OR (SELECT pg_catalog.count(DISTINCT s) FROM pg_catalog.unnest(p_permissions) AS s)
+        <> pg_catalog.cardinality(p_permissions) THEN
+    RAISE EXCEPTION 'identity: a role needs a name and at least one permission' USING ERRCODE = '23514';
+  END IF;
+
+  SELECT role.key, role.permissions
+  INTO v_key, v_stored_perms
+  FROM identity.roles AS role
+  WHERE role.id = p_role_id
+  FOR NO KEY UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: no such role' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_key IS NOT NULL THEN
+    RAISE EXCEPTION 'identity: a system role cannot be changed' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_role_id = v_actor_role_id THEN
+    RAISE EXCEPTION 'identity: you cannot do this to yourself' USING ERRCODE = '42501';
+  END IF;
+
+  -- Only added permissions must be held; removing one the actor lacks is fine.
+  v_old_perms := identity.role_permissions(NULL, v_stored_perms);
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.unnest(p_permissions) AS s
+    WHERE NOT (s = ANY (v_actor_perms)) AND NOT (s = ANY (v_old_perms))
+  ) THEN
+    RAISE EXCEPTION 'identity: you cannot grant a permission you do not hold' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE identity.roles
+  SET name = v_clean, permissions = p_permissions
+  WHERE id = p_role_id AND key IS NULL;
+
+  RETURN v_stored_perms;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.role_change(bytea, uuid, text, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.role_change(bytea, uuid, text, text[]) TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.role_delete(
+  actor_token_hash bytea,
+  p_role_id uuid
+)
+RETURNS integer
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+  v_actor_role_id uuid;
+  v_actor_perms text[];
+  v_key text;
+  v_holders bigint;
+  v_shares bigint;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id, person.role_id, identity.role_permissions(role.key, role.permissions)
+  INTO v_actor_id, v_actor_role_id, v_actor_perms
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT ('roles:manage' = ANY (v_actor_perms)) THEN
+    RAISE EXCEPTION 'identity: you cannot manage roles' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT role.key
+  INTO v_key
+  FROM identity.roles AS role
+  WHERE role.id = p_role_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: no such role' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_key IS NOT NULL THEN
+    RAISE EXCEPTION 'identity: a system role cannot be changed' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_role_id = v_actor_role_id THEN
+    RAISE EXCEPTION 'identity: you cannot do this to yourself' USING ERRCODE = '42501';
+  END IF;
+
+  -- Holders are returned, not raised, so the caller can name the count and
+  -- the transaction stays usable.
+  SELECT count(*) INTO v_holders FROM identity.users WHERE role_id = p_role_id;
+  IF v_holders > 0 THEN
+    RETURN v_holders;
+  END IF;
+
+  SELECT count(*) INTO v_shares FROM identity.shares WHERE grantee_role_id = p_role_id;
+  IF v_shares > 0 THEN
+    RAISE EXCEPTION 'identity: a role used by a share cannot be deleted' USING ERRCODE = '23503';
+  END IF;
+
+  DELETE FROM identity.roles WHERE id = p_role_id AND key IS NULL;
+
+  RETURN 0;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.role_delete(bytea, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.role_delete(bytea, uuid) TO upmo_app;
+
 -- +goose Down
 
+DROP FUNCTION IF EXISTS identity.role_delete(bytea, uuid);
+DROP FUNCTION IF EXISTS identity.role_change(bytea, uuid, text, text[]);
+DROP FUNCTION IF EXISTS identity.role_create(bytea, text, text[]);
 DROP FUNCTION IF EXISTS identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz);
 DROP FUNCTION IF EXISTS identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz);
 DROP FUNCTION IF EXISTS identity.member_disable(bytea, uuid, timestamptz);
@@ -484,3 +746,4 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT INSERT, UPDATE, DELETE ON TABL
 GRANT DELETE ON identity.users TO upmo_app;
 GRANT INSERT ON identity.api_tokens, identity.users TO upmo_app;
 GRANT UPDATE ON identity.users, identity.sessions, identity.api_tokens TO upmo_app;
+GRANT INSERT, UPDATE, DELETE ON identity.roles TO upmo_app;

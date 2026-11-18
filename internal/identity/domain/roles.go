@@ -22,6 +22,8 @@ var (
 	ErrNoSuchRole = errors.New("identity: no such role")
 	// ErrRoleInUse refuses deletion of a role a person still holds.
 	ErrRoleInUse = errors.New("identity: role in use")
+	// ErrRoleShared refuses deletion of a role a share still references.
+	ErrRoleShared = errors.New("identity: a role used by a share cannot be deleted")
 )
 
 // RoleHolders is how many people still hold a role.
