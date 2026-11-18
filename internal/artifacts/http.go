@@ -1,11 +1,13 @@
 package artifacts
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Handler lists and serves artifacts through the existing store and volume.
@@ -24,6 +26,9 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 		return guard(next)
 	}
 	mux.Handle("GET /api/tasks/{id}/artifacts", wrap(http.HandlerFunc(h.list)))
+	mux.Handle("GET /api/artifacts/{id}/download", wrap(http.HandlerFunc(h.download)))
+	mux.Handle("GET /api/artifacts/{id}/text", wrap(http.HandlerFunc(h.text)))
+	mux.Handle("GET /api/artifacts/{id}/diff", wrap(http.HandlerFunc(h.diff)))
 	mux.Handle("GET /api/artifacts/{id}", wrap(http.HandlerFunc(h.download)))
 }
 
@@ -36,15 +41,29 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	if refuse(w, err) {
 		return
 	}
-	body := make([]map[string]string, 0, len(items))
+	body := make([]listedArtifact, 0, len(items))
 	for _, item := range items {
-		body = append(body, map[string]string{
-			"id":    item.ID,
-			"name":  item.Name,
-			"store": item.Store,
+		body = append(body, listedArtifact{
+			ID:        item.ID,
+			Name:      item.Name,
+			Kind:      item.Kind,
+			Mime:      item.Mime,
+			Size:      item.Size,
+			CreatedAt: item.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// listedArtifact is one row of GET /api/tasks/{id}/artifacts. Size is a JSON
+// number. CreatedAt is RFC3339 UTC.
+type listedArtifact struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Mime      string `json:"mime"`
+	Size      int64  `json:"size"`
+	CreatedAt string `json:"created_at"`
 }
 
 func (h Handler) download(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +82,44 @@ func (h Handler) download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, body)
+}
+
+func (h Handler) text(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	_, raw, err := OpenForText(r.Context(), h.Catalog, h.Blobs, access, r.PathValue("id"))
+	if errors.Is(err, ErrKind) {
+		writeError(w, http.StatusUnsupportedMediaType, "artifact is not text")
+		return
+	}
+	if refuse(w, err) {
+		return
+	}
+	w.Header().Set(HeaderType, "text/plain; charset=utf-8")
+	w.Header().Set(HeaderSniff, SniffValue)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, bytes.NewReader(raw))
+}
+
+func (h Handler) diff(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	_, diff, err := OpenForDiff(r.Context(), h.Catalog, h.Blobs, access, r.PathValue("id"))
+	if errors.Is(err, ErrKind) {
+		writeError(w, http.StatusUnsupportedMediaType, "artifact is not a diff")
+		return
+	}
+	if refuse(w, err) {
+		return
+	}
+	w.Header().Set(HeaderSniff, SniffValue)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, diff)
 }
 
 func (h Handler) person(w http.ResponseWriter, r *http.Request) (Access, bool) {
@@ -96,6 +153,10 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "unauthorised")
 	case errors.Is(err, ErrGone), errors.Is(err, ErrNoBlob), errors.Is(err, ErrBlob):
 		writeError(w, http.StatusNotFound, "no such artifact")
+	case errors.Is(err, ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "artifact is too large to view")
+	case errors.Is(err, ErrKind):
+		writeError(w, http.StatusUnsupportedMediaType, "artifact is not text")
 	default:
 		writeError(w, http.StatusInternalServerError, "artifact")
 	}
