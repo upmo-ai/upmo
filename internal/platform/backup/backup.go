@@ -732,10 +732,10 @@ func verifyInnerPayload(manifest Manifest, payloadTarPath string, opts RestoreOp
 		if err != nil {
 			return verifiedArchive{}, err
 		}
-		if strings.HasPrefix(clean, artifactsVolumePrefix) {
+		if volumeEntry(clean, artifactsVolumePrefix) {
 			hasArtifacts = true
 		}
-		if strings.HasPrefix(clean, knowledgeVolumePrefix) {
+		if volumeEntry(clean, knowledgeVolumePrefix) {
 			hasKnowledge = true
 		}
 		if hdr.Typeflag == tar.TypeDir {
