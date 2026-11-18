@@ -8,12 +8,13 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
-// RoleStore is the role rows and the member assignment.
+// RoleStore is the role rows and the member assignment. The write methods
+// prove the actor's session; the definer functions refuse a hash without one.
 type RoleStore interface {
 	RoleByID(ctx context.Context, id domain.RoleID) (domain.MemberRole, error)
-	CreateRole(ctx context.Context, name string, permissions []string) (domain.RoleID, error)
-	ChangeRole(ctx context.Context, id domain.RoleID, name string, permissions []string) error
-	DeleteRole(ctx context.Context, id domain.RoleID) error
+	CreateRole(ctx context.Context, actorTokenHash []byte, name string, permissions []string) (domain.RoleID, error)
+	ChangeRole(ctx context.Context, actorTokenHash []byte, id domain.RoleID, name string, permissions []string) error
+	DeleteRole(ctx context.Context, actorTokenHash []byte, id domain.RoleID) error
 	SetMemberRole(ctx context.Context, actorTokenHash []byte, user domain.UserID, role domain.RoleID, rule func(current, next string, permissions []domain.Permission) error) error
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 }
@@ -48,7 +49,7 @@ func (r Roles) Create(ctx context.Context, session Session, name string, names [
 	if err := domain.MayGrant(actor, permissions); err != nil {
 		return domain.RoleID{}, r.refuse("role create refused", session, err)
 	}
-	id, err := r.Store.CreateRole(ctx, clean, permissionNames(permissions))
+	id, err := r.Store.CreateRole(ctx, session.TokenHash, clean, permissionNames(permissions))
 	if err != nil {
 		return domain.RoleID{}, r.refuse("role create refused", session, err)
 	}
@@ -81,7 +82,7 @@ func (r Roles) Change(ctx context.Context, session Session, id domain.RoleID, na
 	if err := domain.MayGrant(actor, domain.Added(role.Permissions, permissions)); err != nil {
 		return r.refuse("role change refused", session, err)
 	}
-	if err := r.Store.ChangeRole(ctx, id, clean, permissionNames(permissions)); err != nil {
+	if err := r.Store.ChangeRole(ctx, session.TokenHash, id, clean, permissionNames(permissions)); err != nil {
 		return r.refuse("role change refused", session, err)
 	}
 	return nil
@@ -107,7 +108,7 @@ func (r Roles) Duplicate(ctx context.Context, session Session, id domain.RoleID,
 	if err := domain.MayGrant(actor, permissions); err != nil {
 		return domain.RoleID{}, r.refuse("role duplicate refused", session, err)
 	}
-	created, err := r.Store.CreateRole(ctx, clean, permissionNames(permissions))
+	created, err := r.Store.CreateRole(ctx, session.TokenHash, clean, permissionNames(permissions))
 	if err != nil {
 		return domain.RoleID{}, r.refuse("role duplicate refused", session, err)
 	}
@@ -136,7 +137,7 @@ func (r Roles) Delete(ctx context.Context, session Session, id domain.RoleID) er
 	if err := domain.MayGrant(actor, nil); err != nil {
 		return r.refuse("role delete refused", session, err)
 	}
-	if err := r.Store.DeleteRole(ctx, id); err != nil {
+	if err := r.Store.DeleteRole(ctx, session.TokenHash, id); err != nil {
 		return r.refuse("role delete refused", session, err)
 	}
 	return nil

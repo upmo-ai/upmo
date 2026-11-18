@@ -37,21 +37,19 @@ func (p Passkeys) RoleByID(ctx context.Context, id domain.RoleID) (domain.Member
 	return role, err
 }
 
-// CreateRole inserts a custom role and records the role.create event in the
-// same transaction. Role duplication uses it too.
-func (p Passkeys) CreateRole(ctx context.Context, name string, permissions []string) (domain.RoleID, error) {
+// CreateRole inserts a custom role through the proof-carrying definer
+// function and records the role.create event in the same transaction. Role
+// duplication uses it too.
+func (p Passkeys) CreateRole(ctx context.Context, actorTokenHash []byte, name string, permissions []string) (domain.RoleID, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return domain.RoleID{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var idText string
-	err = tx.QueryRow(ctx, `
-		INSERT INTO identity.roles (name, permissions)
-		VALUES ($1, $2)
-		RETURNING id::text`, name, permissions).Scan(&idText)
+	err = tx.QueryRow(ctx, `SELECT identity.role_create($1, $2, $3)::text`, actorTokenHash, name, permissions).Scan(&idText)
 	if err != nil {
-		return domain.RoleID{}, mapRoleWrite(err)
+		return domain.RoleID{}, mapRoleDefinerError(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.RoleCreate,
@@ -66,34 +64,20 @@ func (p Passkeys) CreateRole(ctx context.Context, name string, permissions []str
 	return domain.ParseRoleID(idText)
 }
 
-// ChangeRole updates a custom role's name and permissions and records the
-// role.update event, with the permissions from and to, in the same transaction.
-func (p Passkeys) ChangeRole(ctx context.Context, id domain.RoleID, name string, permissions []string) error {
+// ChangeRole updates a custom role's name and permissions through the
+// proof-carrying definer function, which returns the permissions held before,
+// and records the role.update event, with the permissions from and to, in the
+// same transaction.
+func (p Passkeys) ChangeRole(ctx context.Context, actorTokenHash []byte, id domain.RoleID, name string, permissions []string) error {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var system *string
 	var before []string
-	err = tx.QueryRow(ctx, `SELECT key, permissions FROM identity.roles WHERE id = $1 FOR NO KEY UPDATE`, id).Scan(&system, &before)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrNoSuchRole
-	}
+	err = tx.QueryRow(ctx, `SELECT identity.role_change($1, $2, $3, $4)`, actorTokenHash, id, name, permissions).Scan(&before)
 	if err != nil {
-		return err
-	}
-	if system != nil {
-		return domain.ErrSystemRole
-	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE identity.roles SET name = $2, permissions = $3
-		WHERE id = $1 AND key IS NULL`, id, name, permissions)
-	if err != nil {
-		return mapRoleWrite(err)
-	}
-	if tag.RowsAffected() != 1 {
-		return domain.ErrNoSuchRole
+		return mapRoleDefinerError(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.RoleUpdate,
@@ -110,33 +94,21 @@ func (p Passkeys) ChangeRole(ctx context.Context, id domain.RoleID, name string,
 	return tx.Commit(ctx)
 }
 
-// DeleteRole removes a custom role that nobody holds.
-func (p Passkeys) DeleteRole(ctx context.Context, id domain.RoleID) error {
+// DeleteRole removes a custom role that nobody holds, through the
+// proof-carrying definer function. A role with holders reports how many
+// instead of failing, and nothing is deleted.
+func (p Passkeys) DeleteRole(ctx context.Context, actorTokenHash []byte, id domain.RoleID) error {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var system *string
-	err = tx.QueryRow(ctx, `SELECT key FROM identity.roles WHERE id = $1 FOR UPDATE`, id).Scan(&system)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrNoSuchRole
-	}
-	if err != nil {
-		return err
-	}
-	if system != nil {
-		return domain.ErrSystemRole
-	}
 	var holders int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE role_id = $1`, id).Scan(&holders); err != nil {
-		return err
+	if err := tx.QueryRow(ctx, `SELECT identity.role_delete($1, $2)`, actorTokenHash, id).Scan(&holders); err != nil {
+		return mapRoleDefinerError(err)
 	}
 	if holders > 0 {
 		return &domain.RoleHolders{Count: holders}
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM identity.roles WHERE id = $1 AND key IS NULL`, id); err != nil {
-		return mapRoleWrite(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.RoleDelete,
@@ -182,17 +154,28 @@ func (p Passkeys) SetMemberRole(ctx context.Context, actorTokenHash []byte, user
 	return nil
 }
 
-func mapRoleWrite(err error) error {
+// mapRoleDefinerError maps the role definer functions' errors. 23514 and the
+// share refusal are handled here because mapIdentityDefinerError would turn
+// them into member input errors.
+func mapRoleDefinerError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		switch {
-		case pgErr.Code == "23505":
-			return domain.ErrRoleNameTaken
-		case pgErr.Code == "23514":
+		switch pgErr.Code {
+		case "23514":
 			return domain.ErrBadRole
-		case pgErr.Message == "a system role cannot be changed":
+		case "23505":
+			return domain.ErrRoleNameTaken
+		}
+		switch pgErr.Message {
+		case "identity: you cannot manage roles":
+			return domain.ErrRolesOnly
+		case "identity: a system role cannot be changed":
 			return domain.ErrSystemRole
+		case "identity: a role needs a name and at least one permission":
+			return domain.ErrBadRole
+		case "identity: a role used by a share cannot be deleted":
+			return domain.ErrRoleShared
 		}
 	}
-	return mapLastOwner(err)
+	return mapIdentityDefinerError(err)
 }
