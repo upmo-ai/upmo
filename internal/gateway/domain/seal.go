@@ -96,6 +96,14 @@ func wipeKeys(keys map[string][]byte) {
 // Ready reports whether the ring can seal.
 func (k Keyring) Ready() bool { return k.keys[k.current] != nil }
 
+// CurrentID returns the id of the key that seals new values; the zero ring
+// returns "".
+func (k Keyring) CurrentID() string { return k.current }
+
+// Has reports whether a key with that id is loaded, so values it sealed can
+// be opened for a reseal.
+func (k Keyring) Has(id string) bool { return k.keys[id] != nil }
+
 // Seal encrypts plaintext with the current key. The ref is bound as
 // additional authenticated data, so a sealed value only opens under the ref
 // it was sealed for.
