@@ -23,6 +23,11 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// Unwrap lets http.NewResponseController reach the underlying writer to flush.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // onUnrecorded is the hook that turns the missing-event fallback of a test
 // build into a test failure.
 var onUnrecorded func(action Action)
