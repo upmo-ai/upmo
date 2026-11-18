@@ -162,7 +162,9 @@ func TestAgentsPatchSupportsBothFieldNamesAndDelete(t *testing.T) {
 
 type fakeRouteBook struct{ rows []gateway.ListedRoute }
 
-func (f *fakeRouteBook) List(context.Context) ([]gateway.ListedRoute, error) { return f.rows, nil }
+func (f *fakeRouteBook) List(context.Context, string) ([]gateway.ListedRoute, error) {
+	return f.rows, nil
+}
 
 type fakeAccountList struct{ rows []gateway.Provider }
 
@@ -179,7 +181,7 @@ func TestAgentsListCarriesUsableAndEmptySlices(t *testing.T) {
 	Handler{
 		Agents: book,
 		Routes: &fakeRouteBook{rows: []gateway.ListedRoute{{
-			Name: "chat", Capability: "chat",
+			Name: "chat", Capability: "chat", CanUse: true,
 			Hops: []gateway.ListedHop{{Position: 1, Adapter: "fake", Model: "m1", AccountID: "mine"}},
 		}}},
 		Accounts: &fakeAccountList{rows: []gateway.Provider{
@@ -196,5 +198,32 @@ func TestAgentsListCarriesUsableAndEmptySlices(t *testing.T) {
 	}
 	if !got[0].Usable || got[1].Usable {
 		t.Fatalf("usable = %+v", got)
+	}
+}
+
+func TestAgentsOnARouteThePersonOnlyManagesAreNotUsable(t *testing.T) {
+	book := &fakeBook{list: []app.Agent{
+		{ID: agentID, Name: "On team route", Slug: "on-team-route", DefaultRoute: "team", Enabled: true, Version: 1, Share: app.AgentShare{CanUse: true}},
+	}}
+	mux := http.NewServeMux()
+	Handler{
+		Agents: book,
+		Routes: &fakeRouteBook{rows: []gateway.ListedRoute{{
+			Name: "team", Capability: "chat", CanManage: true,
+			Hops: []gateway.ListedHop{{Position: 1, Adapter: "fake", Model: "m1", AccountID: "house"}},
+		}}},
+		Accounts: &fakeAccountList{rows: []gateway.Provider{
+			{ID: "house", Provider: "fake", Status: gateway.StatusConnected, Models: []string{"m1"}},
+		}},
+		Access: func(*http.Request) (app.Access, bool) { return app.Access{UserID: userID, Allow: memberAllow}, true },
+	}.Mount(mux, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
+	var got []agentJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Usable {
+		t.Fatalf("an agent on a route the person cannot use is offered: %+v", got)
 	}
 }
