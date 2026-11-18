@@ -19,6 +19,10 @@ type Brain = Config
 
 // Config holds the settings brain reads at start.
 type Config struct {
+	// Env is the deployment environment (UPMO_ENV): production by default,
+	// development for the local stack. Production refuses the development
+	// keys and passwords compose.yml embeds.
+	Env Env
 	// DatabaseURL is the Postgres URL (UPMO_DATABASE_URL). It is required.
 	DatabaseURL string
 	// DatabaseAppURL is the Postgres URL the request pool logs in with, as
@@ -108,15 +112,32 @@ type SMTP struct {
 	From string
 }
 
-// Load reads the configuration from the environment and applies defaults.
+// Load reads the configuration from the environment and applies defaults,
+// then refuses the development keys and passwords unless UPMO_ENV is
+// development.
 func Load() (Config, error) {
-	return load(os.LookupEnv)
+	cfg, err := load(os.LookupEnv)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := CheckConfig(cfg, false, os.LookupEnv, os.Environ()); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 // LoadBrain reads the brain configuration from the environment. Brain alone
-// opens a request pool, so UPMO_DATABASE_APP_URL is required for it.
+// opens a request pool, so UPMO_DATABASE_APP_URL is required for it, and it
+// needs UPMO_MASTER_KEY outside development.
 func LoadBrain() (Config, error) {
-	return loadBrain(os.LookupEnv)
+	cfg, err := loadBrain(os.LookupEnv)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func loadBrain(lookup func(string) (string, bool)) (Config, error) {
@@ -145,6 +166,12 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	if !ok || v == "" {
 		return Config{}, fmt.Errorf("config: UPMO_DATABASE_URL is required")
 	}
+	envValue, _ := lookup("UPMO_ENV")
+	env, err := ParseEnv(envValue)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Env = env
 	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", v); err != nil {
 		return Config{}, err
 	}
@@ -341,6 +368,10 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 
 // Sandboxd holds the settings sandboxd reads at start. It has no database.
 type Sandboxd struct {
+	// Env is the deployment environment (UPMO_ENV): production by default,
+	// development for the local stack. Production refuses the development
+	// service key compose.yml embeds.
+	Env Env
 	// ListenAddr serves the SandboxProvider port (UPMO_LISTEN_ADDR), :8083 by default.
 	ListenAddr string
 	// ProxyAddr serves the egress proxy to sandboxes (UPMO_PROXY_ADDR), :3128 by default.
@@ -376,9 +407,17 @@ type Sandboxd struct {
 	MetricsAddr string
 }
 
-// LoadSandboxd reads the sandboxd configuration from the environment.
+// LoadSandboxd reads the sandboxd configuration from the environment, then
+// refuses the development service key unless UPMO_ENV is development.
 func LoadSandboxd() (Sandboxd, error) {
-	return loadSandboxd(os.LookupEnv)
+	cfg, err := loadSandboxd(os.LookupEnv)
+	if err != nil {
+		return Sandboxd{}, err
+	}
+	if err := CheckSandboxd(cfg, os.LookupEnv, os.Environ()); err != nil {
+		return Sandboxd{}, err
+	}
+	return cfg, nil
 }
 
 func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
@@ -468,6 +507,12 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		return Sandboxd{}, fmt.Errorf("config: UPMO_SERVICE_KEY is required")
 	}
 	cfg.ServiceKey = v
+	envValue, _ := lookup("UPMO_ENV")
+	env, err := ParseEnv(envValue)
+	if err != nil {
+		return Sandboxd{}, err
+	}
+	cfg.Env = env
 	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
 		cfg.ServiceKeyPrevious = v
 	}

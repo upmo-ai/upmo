@@ -60,6 +60,22 @@ func command(name string, args []string) error {
 	}
 }
 
+// checkEnvGuard refuses the development keys and passwords compose.yml embeds
+// unless UPMO_ENV is development. migrate, backup and restore read
+// UPMO_DATABASE_URL directly instead of through config.Load, so the guard is
+// theirs; it runs after the URL checks and before any pool or keyring opens.
+func checkEnvGuard(dbURL string) error {
+	env, err := config.ParseEnv(os.Getenv("UPMO_ENV"))
+	if err != nil {
+		return err
+	}
+	return config.CheckGuard(config.Guard{
+		Env:          env,
+		PublicURL:    os.Getenv("UPMO_PUBLIC_URL"),
+		DatabaseURLs: []config.Setting{{Name: "UPMO_DATABASE_URL", Value: dbURL}},
+	}, os.LookupEnv, os.Environ())
+}
+
 func migrateCommand() error {
 	dbURL := strings.TrimSpace(os.Getenv("UPMO_DATABASE_URL"))
 	if dbURL == "" {
@@ -68,8 +84,13 @@ func migrateCommand() error {
 			return err
 		}
 		dbURL = cfg.DatabaseURL
-	} else if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
-		return err
+	} else {
+		if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
+			return err
+		}
+		if err := checkEnvGuard(dbURL); err != nil {
+			return err
+		}
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -142,6 +163,9 @@ func loadBackupEnv() (backupEnv, error) {
 		return backupEnv{}, errors.New("config: UPMO_DATABASE_URL is required")
 	}
 	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
+		return backupEnv{}, err
+	}
+	if err := checkEnvGuard(dbURL); err != nil {
 		return backupEnv{}, err
 	}
 	artDir := strings.TrimSpace(os.Getenv("UPMO_ARTIFACTS_DIR"))
@@ -236,13 +260,24 @@ func backupCommand(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	outPath := fs.String("out", "", "path to write the backup archive")
 	passEnv := fs.String("passphrase-env", "", "optional environment variable holding an archive passphrase")
-	noEncrypt := fs.Bool("no-encrypt", false, "write an unencrypted tar.gz archive")
+	noEncrypt := fs.Bool("no-encrypt", false, "write an unencrypted tar.gz archive (development only)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *outPath == "" {
 		return errors.New("brain: backup requires --out")
+	}
+	if *noEncrypt {
+		// Checked before the env guard and before any pool or keyring opens, so
+		// a production backup never stages plaintext and nothing else fails first.
+		env, err := config.ParseEnv(os.Getenv("UPMO_ENV"))
+		if err != nil {
+			return err
+		}
+		if env == config.EnvProduction {
+			return errors.New("brain: backup --no-encrypt is refused when UPMO_ENV=production")
+		}
 	}
 	env, err := loadBackupEnv()
 	if err != nil {

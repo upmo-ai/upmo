@@ -8,11 +8,12 @@ import (
 
 // New builds the secret chain on every start, so a plaintext Vault address
 // with a token fails it even with no audit webhook or syslog configured. The
-// refusal comes before any pool opens, so no database is needed.
+// refusal comes before any pool opens, so no database is needed. Env is
+// development so the guard does not refuse the missing master key first.
 func TestNewRefusesAPlaintextVaultAddressWithoutAuditPush(t *testing.T) {
 	t.Setenv("UPMO_VAULT_ADDR", "http://vault.example")
 	t.Setenv("UPMO_VAULT_TOKEN", "t")
-	_, err := New(context.Background(), Config{PublicURL: "http://localhost:5173"})
+	_, err := New(context.Background(), Config{Env: "development", PublicURL: "http://localhost:5173"})
 	if err == nil || !strings.Contains(err.Error(), "UPMO_VAULT_ADDR") {
 		t.Fatalf("err = %v, want it to name UPMO_VAULT_ADDR", err)
 	}

@@ -16,7 +16,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 type stubKeyring struct {
@@ -856,6 +858,125 @@ func TestTopoSortTablesAndPartitionBounds(t *testing.T) {
 	}
 	if got := validatedPartitionBound("FOR VALUES FROM ('2026-11-01'); DROP TABLE audit.events; --') TO ('2026-12-01')"); got != "" {
 		t.Fatalf("expected SQL injection bound to be rejected, got %q", got)
+	}
+}
+
+func TestCreateBackupStagingSweepsStaleDirs(t *testing.T) {
+	base := t.TempDir()
+
+	// A killed backup: staging dir with a payload and a lock file nobody holds.
+	killed := filepath.Join(base, ".upmo-backup-killed")
+	if err := os.MkdirAll(killed, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(killed, payloadPlainEntryName), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.OpenFile(filepath.Join(killed, stagingLockName), os.O_CREATE|os.O_RDWR, 0o600); err != nil { //nolint:gosec // test temp path
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+
+	// An older build's leftover: no lock file at all, and past the create
+	// grace window.
+	older := filepath.Join(base, ".upmo-backup-older")
+	if err := os.MkdirAll(older, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(older, payloadPlainEntryName), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * stagingCreateGrace)
+	if err := os.Chtimes(older, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// A dir a concurrent backup has just created but not locked yet.
+	fresh := filepath.Join(base, ".upmo-backup-fresh")
+	if err := os.MkdirAll(fresh, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// A restore staging dir shares the base dir but not the prefix.
+	restore := filepath.Join(base, ".upmo-restore-1")
+	if err := os.MkdirAll(restore, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, lock, err := createBackupStaging(filepath.Join(base, "out.tar.gz"), "")
+	if err != nil {
+		t.Fatalf("createBackupStaging: %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(dir), backupStagingPrefix) {
+		t.Fatalf("staging dir %q lacks prefix %q", dir, backupStagingPrefix)
+	}
+	if _, err := os.Stat(filepath.Join(dir, stagingLockName)); err != nil {
+		t.Fatalf("new staging dir has no lock file: %v", err)
+	}
+
+	for _, gone := range []string{killed, older} {
+		if _, err := os.Stat(gone); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale dir %s survived the sweep: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{fresh, restore} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("dir %s must survive the sweep: %v", kept, err)
+		}
+	}
+
+	// The caller's cleanup: closing the lock releases it, the dir goes away.
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateBackupStagingKeepsLockedDir(t *testing.T) {
+	base := t.TempDir()
+	live := filepath.Join(base, ".upmo-backup-live")
+	if err := os.MkdirAll(live, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, payloadPlainEntryName), []byte("live payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.OpenFile(filepath.Join(live, stagingLockName), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, lock, err := createBackupStaging(filepath.Join(base, "out.tar.gz"), "")
+	if err != nil {
+		t.Fatalf("createBackupStaging: %v", err)
+	}
+	defer func() {
+		_ = lock.Close()
+		_ = os.RemoveAll(dir)
+	}()
+	if dir == live {
+		t.Fatal("new staging dir reused the live dir's name")
+	}
+	if _, err := os.Stat(filepath.Join(live, payloadPlainEntryName)); err != nil {
+		t.Fatalf("locked live staging dir was swept: %v", err)
+	}
+
+	// Once the holder closes its lock file, the next sweep removes the dir.
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepBackupStaging(base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(live); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released staging dir survived the sweep: %v", err)
 	}
 }
 
