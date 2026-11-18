@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
@@ -31,9 +32,9 @@ func (r *rig) sayWith(chatID string, picks app.Picks) {
 	}
 }
 
-func (r *rig) agent(access chat.Access, fields app.AgentFields) app.Agent {
+func (r *rig) agent(access chat.Access, fields agents.AgentFields) agents.Agent {
 	r.t.Helper()
-	made, err := r.store.CreateAgent(context.Background(), access, fields)
+	made, err := agents.CreateAgent(context.Background(), r.agents, nil, agentsAccess(access), fields)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -44,9 +45,9 @@ func TestTheAgentsInstructionsRouteAndModelReachTheGateway(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	agent := r.agent(ownerAccess, app.AgentFields{
-		Name: "Research", PromptOverlay: "Answer as a researcher.", Route: "deep",
-		ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true,
+	agent := r.agent(ownerAccess, agents.AgentFields{
+		Name: "Research", Instructions: "Answer as a researcher.", DefaultRoute: "deep",
+		DefaultModelProvider: "OpenAI", DefaultModelID: "gpt-x", Enabled: true,
 	})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID})
@@ -75,9 +76,9 @@ func TestTheComposersRouteAndModelWinOverTheAgents(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	agent := r.agent(ownerAccess, app.AgentFields{
-		Name: "Research", PromptOverlay: "Answer as a researcher.", Route: "deep",
-		ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true,
+	agent := r.agent(ownerAccess, agents.AgentFields{
+		Name: "Research", Instructions: "Answer as a researcher.", DefaultRoute: "deep",
+		DefaultModelProvider: "OpenAI", DefaultModelID: "gpt-x", Enabled: true,
 	})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID, Route: "fast", PinAccount: account, PinModel: "gpt-y"})
@@ -98,7 +99,7 @@ func TestAModelOnlyAgentUsesTheInstallDefaultRoute(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	agent := r.agent(ownerAccess, app.AgentFields{Name: "Fast", ModelProvider: "OpenAI", ModelID: "gpt-x", Enabled: true})
+	agent := r.agent(ownerAccess, agents.AgentFields{Name: "Fast", DefaultModelProvider: "OpenAI", DefaultModelID: "gpt-x", Enabled: true})
 
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID})
 
@@ -112,7 +113,7 @@ func TestAGlobalAgentWorksForAMember(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	house := r.agent(adminAccess, app.AgentFields{Name: "House", PromptOverlay: "House rules.", Enabled: true, Visibility: "everyone"})
+	house := r.agent(adminAccess, agents.AgentFields{Name: "House", Instructions: "House rules.", Enabled: true, Visibility: "everyone"})
 
 	r.sayWith(chatID, app.Picks{AgentID: house.ID})
 
@@ -126,16 +127,16 @@ func TestAReplyWithAnAgentThatIsNotAvailableFailsPlainlyAndAsksNoModel(t *testin
 	r := newRig(t, app.ReplyConfig{})
 	r.answer()
 	chatID := r.open()
-	disabled := r.agent(ownerAccess, app.AgentFields{Name: "Off", Enabled: false})
-	foreign := r.agent(otherAccess, app.AgentFields{Name: "Theirs", Enabled: true})
-	offGlobal := r.agent(adminAccess, app.AgentFields{Name: "Off house", Enabled: false, Visibility: "everyone"})
+	disabled := r.agent(ownerAccess, agents.AgentFields{Name: "Off", Enabled: false})
+	foreign := r.agent(otherAccess, agents.AgentFields{Name: "Theirs", Enabled: true})
+	offGlobal := r.agent(adminAccess, agents.AgentFields{Name: "Off house", Enabled: false, Visibility: "everyone"})
 	var team string
 	if err := r.owner.QueryRow(context.Background(),
 		`INSERT INTO identity.teams (name) VALUES ('Finance') RETURNING id::text`).Scan(&team); err != nil {
 		t.Fatal(err)
 	}
-	teamAgent := r.agent(adminAccess, app.AgentFields{
-		Name: "Finance", Enabled: true, Visibility: domain.VisibilityTeam, TeamIDs: []string{team},
+	teamAgent := r.agent(adminAccess, agents.AgentFields{
+		Name: "Finance", Enabled: true, Visibility: agents.VisibilityTeam, TeamIDs: []string{team},
 	})
 	// The author manages agents, so the team agent is one they can see — but
 	// they are not on its team, so a reply must not run it.

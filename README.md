@@ -27,6 +27,14 @@ Copy `.env.example` to `.env` to override settings. `.env` is never committed.
 
 The Go module is laid out by bounded context under `internal/`, with technical code in `internal/platform` and the import rules checked by `internal/archtest`. The public composition entrypoint lives in `pkg/brain`. The web app lives in `web/`.
 
+## Operations
+
+- `UPMO_METRICS_ADDR` (`[host]:port`, unset by default) starts a separate listener that serves Prometheus metrics at `GET /metrics`, without authentication. Unset, no metrics listener runs. It must differ from `UPMO_LISTEN_ADDR` (and, for `sandboxd`, `UPMO_PROXY_ADDR` and `UPMO_EDITOR_ADDR`); bind it to loopback or an internal network only. `brain`, `gateway` and `sandboxd` each read it.
+- `brain backup --out <file>` writes one archive holding a consistent Postgres snapshot, the artifacts and knowledge volumes (`UPMO_ARTIFACTS_DIR`, `UPMO_KNOWLEDGE_DIR`) and a manifest. The archive is encrypted by default with a key sealed by `UPMO_MASTER_KEY`. `--passphrase-env <VAR>` seals it with the passphrase in that environment variable instead; `--no-encrypt` writes a plain `tar.gz` and is refused unless `UPMO_ENV=development` (see `docs/operations/data-at-rest.md`). It reads `UPMO_DATABASE_URL`.
+- `brain restore --in <file>` verifies the archive, rehearses the restore in a throwaway database, then replaces the database and both volumes, and checks the audit chain. `--passphrase-env <VAR>` supplies the passphrase and `--require-encrypted` refuses a plain archive. An archive older than the schema is migrated forward by restore itself; run `brain migrate` only if restore reports that the forward migration failed after the data was restored.
+- A default archive needs the master key it was sealed with; a `--passphrase-env` archive needs its passphrase instead. Provider keys and password hashes in the database are sealed values, so every archive, including `--no-encrypt`, needs their key ids in the keyring (`UPMO_MASTER_KEY_ID`, default `k1`; after a rotation keep old keys as `UPMO_MASTER_KEY_PREVIOUS_<id>`). Restore refuses an archive whose key id is not in the keyring.
+- `GET /version` and `GET /api/version` need no sign-in. They return JSON with `version`, `commit`, `build_time` and `schema_versions`, a map of each schema to its applied migration version. They report the versions read at startup.
+
 ## Provisioning Configuration
 
 Control-plane provisioning under `/api/v1/provision/*` (see `docs/openapi/provision-v1.yaml`) is disabled (`404`) by default unless `UPMO_PROVISION_KEYS` is configured:

@@ -42,13 +42,8 @@ type (
 	Store   = postgres.Store
 )
 
-// AgentsHandler serves the agents a person can pick in the composer, and
-// AgentBook keeps them.
-type (
-	AgentsHandler = httpapi.AgentsHandler
-	AgentBook     = app.AgentBook
-	Agent         = app.Agent
-)
+// Agent is the profile a reply runs as.
+type Agent = app.Agent
 
 // ErrAgentNotFound is returned by AgentLookup when an agent is unavailable.
 var ErrAgentNotFound = app.ErrAgentNotFound
@@ -82,8 +77,8 @@ func OpenModel(baseURL, serviceKey string) (app.Model, error) {
 }
 
 // AddReplyWorker registers the worker that answers chat lines on workers.
-func AddReplyWorker(workers *river.Workers, deps ReplyDeps) {
-	app.AddReplyWorker(workers, deps)
+func AddReplyWorker(workers *river.Workers, deps ReplyDeps) error {
+	return app.AddReplyWorker(workers, deps)
 }
 
 // AddSweepWorker registers the worker that deletes the deltas of replies that

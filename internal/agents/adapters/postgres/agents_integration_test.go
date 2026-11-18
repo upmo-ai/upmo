@@ -129,6 +129,32 @@ func TestAgentVersioningAndImmutability(t *testing.T) {
 	}
 }
 
+func TestAgentCreateDerivesSlugAndRiskyApprovalAndRenameKeepsSlug(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+
+	made, err := app.CreateAgent(ctx, store, nil, memberAccess, app.AgentFields{Name: "Purchase Invoices", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made.Slug != "purchase-invoices" || made.PlanApproval != domain.PlanApprovalRisky {
+		t.Fatalf("created = %+v", made)
+	}
+
+	name := "AP Clerk"
+	if _, err := app.ChangeAgent(ctx, store, nil, memberAccess, made.ID, app.AgentChange{Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.GetAgent(ctx, store, memberAccess, made.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "AP Clerk" || got.Slug != "purchase-invoices" {
+		t.Fatalf("renamed = %q slug %q, want the slug kept", got.Name, got.Slug)
+	}
+}
+
 func TestTwoTierHouseRulesAndVersioning(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
