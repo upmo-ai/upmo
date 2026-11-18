@@ -178,3 +178,76 @@ func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Fatalf("New err holds a value: %v", err)
 	}
 }
+
+type hookJobArgs struct{}
+
+func (hookJobArgs) Kind() string { return "brain_hook_test" }
+
+type hookJobWorker struct {
+	river.WorkerDefaults[hookJobArgs]
+	done chan struct{}
+}
+
+func (w *hookJobWorker) Work(context.Context, *river.Job[hookJobArgs]) error {
+	w.done <- struct{}{}
+	return nil
+}
+
+func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Env:             "development",
+		SessionIdle:     identity.IdleTimeout,
+		SessionMaxAge:   identity.MaxAge,
+		PublicURL:       "http://localhost:5173",
+		WebAuthnRPID:    "localhost",
+		ShutdownTimeout: 2 * time.Second,
+	}
+
+	var workerJobs, periodicJobs JobClient
+	worker := &hookJobWorker{done: make(chan struct{}, 2)}
+	app, err := New(ctx, cfg,
+		WithPools(owner, pgtest.App(t, owner)),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithExtraWorkers(func(workers *river.Workers, deps Deps) {
+			workerJobs = deps.Jobs
+			river.AddWorker(workers, worker)
+		}),
+		WithExtraPeriodic(func(deps Deps) []*river.PeriodicJob {
+			periodicJobs = deps.Jobs
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("brain.New: %v", err)
+	}
+	defer app.Close()
+
+	if workerJobs == nil || periodicJobs == nil {
+		t.Fatalf("hooks got Jobs %v and %v, want both set", workerJobs, periodicJobs)
+	}
+	for name, jobs := range map[string]JobClient{"worker hook": workerJobs, "periodic hook": periodicJobs} {
+		tx, err := owner.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := jobs.InsertTx(ctx, tx, hookJobArgs{}, nil); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("%s: InsertTx: %v", name, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		select {
+		case <-worker.done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("job inserted through a hook's Jobs never ran")
+		}
+	}
+}

@@ -4,10 +4,12 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/agents"
@@ -309,4 +311,44 @@ func TestAgentAccessMatrixAcrossTables(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestAppRoleCannotMarkAnAgentInstalled(t *testing.T) {
+	w := newAgWorld(t)
+	allow := w.allow("admin")
+	own := w.own["admin"]
+	w.as(agAdmin, allow, "{}", func(tx pgx.Tx) {
+		_, err := w.touched(tx, `UPDATE agents.agents SET installed = true WHERE id = $1::uuid`, own)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+			t.Fatalf("set installed: %v, want permission denied (42501)", err)
+		}
+		n, err := w.touched(tx, `INSERT INTO agents.agents (owner_user_id, name, slug, installed)
+			VALUES ($1::uuid, 'Forged', 'forged', true)`, agAdmin)
+		if agAllowed(n, err) {
+			t.Fatal("app role inserted an installed agent")
+		}
+		if n, err := w.touched(tx, `UPDATE agents.agents SET enabled = false WHERE id = $1::uuid`, own); !agAllowed(n, err) {
+			t.Fatalf("plain edit: %d, %v, want allowed", n, err)
+		}
+	})
+
+	var installed string
+	if err := w.owner.QueryRow(context.Background(), `
+		INSERT INTO agents.agents (owner_user_id, name, slug, enabled, installed)
+		VALUES ($1::uuid, 'Packed', 'packed', true, true) RETURNING id::text`, agAdmin).Scan(&installed); err != nil {
+		t.Fatal(err)
+	}
+	w.as(agAdmin, allow, "{}", func(tx pgx.Tx) {
+		if n, err := w.touched(tx, `UPDATE agents.agents SET enabled = false WHERE id = $1::uuid`, installed); !agAllowed(n, err) {
+			t.Fatalf("edit installed agent: %d, %v, want allowed", n, err)
+		}
+		for _, value := range []string{"false", "true"} {
+			_, err := w.touched(tx, `UPDATE agents.agents SET installed = `+value+` WHERE id = $1::uuid`, installed)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+				t.Fatalf("set installed = %s on installed agent: %v, want permission denied (42501)", value, err)
+			}
+		}
+	})
 }

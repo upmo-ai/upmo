@@ -269,7 +269,8 @@ CREATE POLICY agents_select ON agents.agents
 CREATE POLICY agents_insert ON agents.agents
   FOR INSERT
   WITH CHECK (
-    'agent:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    NOT installed
+    AND 'agent:create' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
     AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
     AND identity.may_manage(owner_user_id, visibility)
   );
@@ -390,7 +391,7 @@ GRANT UPDATE (
   name, slug, role, description, instructions, default_route,
   default_model_provider, default_model_id, tool_classes, connector_ids,
   knowledge_folder_ids, plan_approval, check_criteria, enabled,
-  visibility, team_ids, installed, version, updated_at
+  visibility, team_ids, version, updated_at
 ) ON agents.agents TO upmo_app;
 GRANT SELECT, INSERT ON agents.versions TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON agents.lessons TO upmo_app;
