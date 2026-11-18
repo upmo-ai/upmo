@@ -60,6 +60,7 @@ func TestLinkIssuedLogsCarryNoEmailAddress(t *testing.T) {
 }
 
 func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	owner := pgtest.New(t)
 	u, err := url.Parse(owner.Config().ConnString())
 	if err != nil {

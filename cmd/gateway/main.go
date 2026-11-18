@@ -41,6 +41,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Gateway seals the provider keys people add, so outside development it
+	// also needs UPMO_MASTER_KEY, checked before any pool opens.
+	if err := config.CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
+		return err
+	}
 	log := logging.New(os.Stdout, cfg.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
