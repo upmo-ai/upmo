@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -95,6 +96,22 @@ type JobClient interface {
 	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
 }
 
+// lazyJobs is handed to extension hooks before the job client exists, since
+// opening it needs the workers those hooks register.
+type lazyJobs struct {
+	target atomic.Pointer[JobClient]
+}
+
+func (l *lazyJobs) set(c JobClient) { l.target.Store(&c) }
+
+func (l *lazyJobs) InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error) {
+	c := l.target.Load()
+	if c == nil {
+		return nil, errors.New("brain: job client is not open yet")
+	}
+	return (*c).InsertTx(ctx, tx, args, opts)
+}
+
 // NoticeService inserts user notifications.
 type NoticeService interface {
 	Insert(ctx context.Context, userID uuid.UUID, kind, title string, taskID *uuid.UUID) (uuid.UUID, error)
@@ -115,6 +132,9 @@ type Sealer interface {
 }
 
 // Deps exposes composed services and configuration to extension options.
+// Every field is set when the worker and periodic hooks run. Jobs is a
+// client that enqueues once the job workers are open, so a hook may keep it
+// but must not call InsertTx before brain.New returns.
 type Deps struct {
 	Owner          *pgxpool.Pool
 	App            *pgxpool.Pool
@@ -585,12 +605,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	}
 
 	pubBuild, rawBuild := resolveBuildInfo()
+	lazy := &lazyJobs{}
 	deps := Deps{
 		Owner:          owner,
 		App:            pool,
 		Identity:       identityAdapter{id: idFacade},
 		Members:        memberAdapter{members: members},
 		Notices:        noticeStore,
+		Jobs:           lazy,
 		Sealer:         sealerAdapter{keys: masterKeys},
 		Logger:         log,
 		Config:         cfg,
@@ -721,6 +743,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		cleanupPools()
 		return nil, err
 	}
+	lazy.set(work)
 	deps.Jobs = work
 
 	boxes, err := taskSandboxes(internalCfg, pool, log)
