@@ -21,6 +21,11 @@ type AccountList interface {
 	List(ctx context.Context, user string) ([]gateway.Provider, error)
 }
 
+// RouteList lists the routes a person sees, with the hops they may see.
+type RouteList interface {
+	List(ctx context.Context, user string) ([]gateway.ListedRoute, error)
+}
+
 // AgentTeams validates team ids against the workspace.
 type AgentTeams interface {
 	TeamNames(ctx context.Context, teamIDs []string) (map[string]string, error)
@@ -32,7 +37,7 @@ type Handler struct {
 	Teams        AgentTeams
 	Access       func(r *http.Request) (app.Access, bool)
 	Log          *slog.Logger
-	Routes       gateway.RouteBook
+	Routes       RouteList
 	Accounts     AccountList
 	DefaultRoute string
 }
@@ -185,7 +190,7 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 		accounts []gateway.Provider
 	)
 	if h.Routes != nil && h.Accounts != nil {
-		if routes, err = h.Routes.List(r.Context()); err != nil {
+		if routes, err = h.usableRoutes(r.Context(), access.UserID); err != nil {
 			h.sourceFailed(w, err)
 			return
 		}
@@ -237,11 +242,27 @@ func (h Handler) versions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// usableRoutes is the routes the person may call. The list also holds a shared
+// route an admin sees only to manage it.
+func (h Handler) usableRoutes(ctx context.Context, user string) ([]gateway.ListedRoute, error) {
+	listed, err := h.Routes.List(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	routes := make([]gateway.ListedRoute, 0, len(listed))
+	for _, route := range listed {
+		if route.CanUse {
+			routes = append(routes, route)
+		}
+	}
+	return routes, nil
+}
+
 func (h Handler) usableNow(ctx context.Context, user string, a app.Agent) bool {
 	if h.Routes == nil || h.Accounts == nil {
 		return false
 	}
-	routes, err := h.Routes.List(ctx)
+	routes, err := h.usableRoutes(ctx, user)
 	if err != nil {
 		if h.Log != nil {
 			h.Log.Warn("agents routes failed", "err", err)

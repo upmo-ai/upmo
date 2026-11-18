@@ -653,9 +653,16 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			return nil, fmt.Errorf("brain: chat gateway: %w", err)
 		}
 		chat.AddReplyWorker(workers, chat.ReplyDeps{
-			Rows:   chat.NewStore(pool, nil),
-			Agents: chatAgentLookup{store: agentStore},
-			Model:  chatModel,
+			Rows: chat.NewStore(pool, nil),
+			Agents: chatAgentLookup{store: agentStore, access: func(ctx context.Context, userID string) (agents.Access, error) {
+				person, err := identity.ParseUserID(userID)
+				if err != nil {
+					return agents.Access{}, err
+				}
+				who, _, err := agentAccess(ctx, members, person)
+				return who, err
+			}},
+			Model: chatModel,
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -1016,7 +1023,7 @@ func buildHandler(
 		Agents:       ideps.agents,
 		Teams:        agentTeamLookup{members: members},
 		Log:          log,
-		Routes:       ideps.routeBook,
+		Routes:       ideps.routes,
 		Accounts:     ideps.providers,
 		DefaultRoute: cfg.ChatRoute,
 		Access: func(r *http.Request) (agents.Access, bool) {
@@ -1138,16 +1145,20 @@ func agentAccess(ctx context.Context, members identity.MemberService, user ident
 	}, true, nil
 }
 
+// chatAgentLookup reads an agent for a chat reply. The agent row policy reads
+// agent permissions and agent shares, which chat access does not carry, so the
+// access is looked up again for agents.
 type chatAgentLookup struct {
-	store agents.Store
+	store  agents.Store
+	access func(ctx context.Context, userID string) (agents.Access, error)
 }
 
 func (l chatAgentLookup) Agent(ctx context.Context, access chat.Access, id string) (chat.Agent, error) {
-	a, inline, err := l.store.AgentForUse(ctx, agents.Access{
-		UserID: access.UserID,
-		Allow:  access.Allow,
-		Teams:  access.Teams,
-	}, id)
+	who, err := l.access(ctx, access.UserID)
+	if err != nil {
+		return chat.Agent{}, err
+	}
+	a, inline, err := l.store.AgentForUse(ctx, who, id)
 	if errors.Is(err, agents.ErrAgentNotFound) {
 		return chat.Agent{}, chat.ErrAgentNotFound
 	}

@@ -573,6 +573,72 @@ func TestAgentsThroughTheBrainRoutes(t *testing.T) {
 	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"AP Clerk"`) {
 		t.Fatalf("list = %d %s", listRec.Code, listRec.Body.String())
 	}
+
+	// The brain lists routes on its app-role pool. An agent pinned to an
+	// installed route through a connected house account is usable, so the
+	// picker offers it.
+	const accountID = "e2e00000-0000-7000-8000-00000000f001"
+	const routeID = "e2e00000-0000-7000-8000-00000000f101"
+	for _, stmt := range []string{
+		`INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, visibility, provider, status)
+			VALUES ('` + accountID + `', 'house-fake', 'fake', 'house', 'local', true, 'everyone', 'e2e', 'Connected')`,
+		`INSERT INTO gateway.provider_models (account_id, model, position) VALUES ('` + accountID + `', 'fake-ok', 1)`,
+		`INSERT INTO gateway.routes (id, name, capability, decision, installed) VALUES ('` + routeID + `', 'house-main', 'chat', '', true)`,
+		`INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES ('` + routeID + `', 1, '` + accountID + `', 'fake-ok')`,
+	} {
+		if _, err := owner.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routedReq := httptest.NewRequest(http.MethodPost, "/api/agents",
+		strings.NewReader(`{"name":"Routed Clerk","instructions":"Check VAT.","plan_approval":"always","default_route":"house-main"}`))
+	routedReq.AddCookie(cookie)
+	routedRec := httptest.NewRecorder()
+	served.ServeHTTP(routedRec, routedReq)
+	if routedRec.Code != http.StatusCreated {
+		t.Fatalf("create routed = %d %s", routedRec.Code, routedRec.Body.String())
+	}
+	usableReq := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	usableReq.AddCookie(cookie)
+	usableRec := httptest.NewRecorder()
+	served.ServeHTTP(usableRec, usableReq)
+	var listed []struct {
+		Name   string `json:"name"`
+		Usable bool   `json:"usable"`
+	}
+	if err := json.Unmarshal(usableRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("list = %d %s", usableRec.Code, usableRec.Body.String())
+	}
+	usable := map[string]bool{}
+	for _, a := range listed {
+		usable[a.Name] = a.Usable
+	}
+	if !usable["Routed Clerk"] {
+		t.Fatalf("agent on a route with a connected account is not usable: %s", usableRec.Body.String())
+	}
+
+	var routed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(routedRec.Body.Bytes(), &routed); err != nil {
+		t.Fatal(err)
+	}
+	access, ok, err := chatAccess(ctx, identity.Members(pool, "http://example.test", nil, nil), uid)
+	if err != nil || !ok {
+		t.Fatalf("chat access = %v %v", ok, err)
+	}
+	members := identity.Members(pool, "http://example.test", nil, nil)
+	lookup := chatAgentLookup{store: agents.NewStore(pool), access: func(ctx context.Context, userID string) (agents.Access, error) {
+		person, err := identity.ParseUserID(userID)
+		if err != nil {
+			return agents.Access{}, err
+		}
+		who, _, err := agentAccess(ctx, members, person)
+		return who, err
+	}}
+	if _, err := lookup.Agent(ctx, access, routed.ID); err != nil {
+		t.Fatalf("the reply worker cannot look up the agent the picker offers: %v", err)
+	}
 }
 
 func TestChatAgentLookupIntegration(t *testing.T) {
@@ -592,7 +658,9 @@ func TestChatAgentLookupIntegration(t *testing.T) {
 	}
 	pool := pgtest.App(t, owner)
 	store := agents.NewStore(pool)
-	lookup := chatAgentLookup{store: store}
+	lookup := chatAgentLookup{store: store, access: func(_ context.Context, userID string) (agents.Access, error) {
+		return agents.Access{UserID: userID, Allow: "agent:create,agent:view,agent:edit"}, nil
+	}}
 
 	const (
 		ownerID = "018f3b2c-7a10-7c4a-8e11-111111111111"
