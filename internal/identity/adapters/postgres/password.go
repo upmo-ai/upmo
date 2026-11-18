@@ -13,12 +13,16 @@ import (
 )
 
 func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.UserID, string, string, bool, error) {
+	hashes, err := indexEmailHashes(p.Emails, email)
+	if err != nil {
+		return domain.UserID{}, "", "", false, err
+	}
 	var id domain.UserID
 	var hash *string
 	var name string
-	err := p.Pool.QueryRow(ctx, `
+	err = p.Pool.QueryRow(ctx, `
 		SELECT id, password_hash, name FROM identity.users
-		WHERE lower(email) = lower($1) AND disabled_at IS NULL`, email).Scan(&id, &hash, &name)
+		WHERE email_hash = ANY($1) AND disabled_at IS NULL`, hashes).Scan(&id, &hash, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.UserID{}, "", "", false, nil
 	}
@@ -33,12 +37,16 @@ func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.Use
 }
 
 func (p Passkeys) PersonByEmail(ctx context.Context, email string) (domain.UserID, bool, bool, error) {
+	hashes, err := indexEmailHashes(p.Emails, email)
+	if err != nil {
+		return domain.UserID{}, false, false, err
+	}
 	var id domain.UserID
 	var disabled bool
-	err := p.Pool.QueryRow(ctx, `
+	err = p.Pool.QueryRow(ctx, `
 		SELECT id, disabled_at IS NOT NULL
 		FROM identity.users
-		WHERE lower(email) = lower($1)`, email).Scan(&id, &disabled)
+		WHERE email_hash = ANY($1)`, hashes).Scan(&id, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.UserID{}, false, false, nil
 	}
@@ -49,12 +57,21 @@ func (p Passkeys) PersonByEmail(ctx context.Context, email string) (domain.UserI
 }
 
 func (p Passkeys) Profile(ctx context.Context, user domain.UserID) (string, string, error) {
-	var email, name string
-	err := p.Pool.QueryRow(ctx, `SELECT email, name FROM identity.users WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&email, &name)
+	var stored string
+	var hash []byte
+	var name string
+	err := p.Pool.QueryRow(ctx, `SELECT email, email_hash, name FROM identity.users WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&stored, &hash, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", app.ErrNotSignedIn
 	}
-	return email, name, err
+	if err != nil {
+		return "", "", err
+	}
+	email, err := openStoredEmail(p.Emails, stored, hash)
+	if err != nil {
+		return "", "", err
+	}
+	return email, name, nil
 }
 
 func (p Passkeys) SetPasswordWithKeep(ctx context.Context, user domain.UserID, keep, hash string) error {

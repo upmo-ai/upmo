@@ -42,14 +42,14 @@ func routes(
 		return nil, err
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passwords := identity.Passwords(pool, sessions)
+	passwords := identity.Passwords(pool, brainops.NewEmailSealer(masterKeys), sessions)
 	passwords.Sealer = brainops.NewPasswordSealer(masterKeys)
 	tokens := identity.APITokens(pool, log)
-	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	passkeys, err := identity.Passkeys(pool, brainops.NewEmailSealer(masterKeys), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return nil, err
 	}
-	members := identity.Members(pool, cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log)
+	members := identity.Members(pool, brainops.NewEmailSealer(masterKeys), cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log)
 	providers := gateway.NewProviders(pool, masterKeys, log)
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		id, err := identity.ParseUserID(user)

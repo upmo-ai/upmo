@@ -29,6 +29,7 @@ type sealKit struct {
 	pool      *pgxpool.Pool
 	passwords app.Passwords
 	ring      sealer.Sealer
+	emails    identity.EmailSealer
 	ctx       context.Context
 }
 
@@ -37,18 +38,19 @@ func newSealKit(t *testing.T) *sealKit {
 	owner, ctx := upOwner(t)
 	pool := pgtest.App(t, owner)
 	ring := sealer.New(t)
-	passwords := identity.Passwords(pool, identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge))
+	emails := sealer.NewEmail(t)
+	passwords := identity.Passwords(pool, emails, identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge))
 	passwords.Sealer = ring
-	return &sealKit{owner: owner, pool: pool, passwords: passwords, ring: ring, ctx: ctx}
+	return &sealKit{owner: owner, pool: pool, passwords: passwords, ring: ring, emails: emails, ctx: ctx}
 }
 
 func (k *sealKit) seed(t *testing.T, email string) domain.UserID {
 	t.Helper()
 	var id string
 	if err := k.owner.QueryRow(k.ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
-		RETURNING id::text`, email).Scan(&id); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`, sealUser(t, k.emails, email)...).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	user, err := domain.ParseUserID(id)
@@ -78,7 +80,7 @@ func TestPasswordIsStoredSealed(t *testing.T) {
 	}
 	// PasswordAccount returns what is stored, and the sealer opens it to a
 	// hash that verifies.
-	_, sealed, _, found, err := (postgres.Passkeys{Pool: k.pool}).PasswordAccount(k.ctx, "ada@example.com")
+	_, sealed, _, found, err := (postgres.Passkeys{Pool: k.pool, Emails: k.emails}).PasswordAccount(k.ctx, "ada@example.com")
 	if err != nil || !found || sealed != stored {
 		t.Fatalf("account %v %v %q, want the stored value", found, err, sealed)
 	}

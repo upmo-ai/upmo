@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -16,6 +17,43 @@ import (
 // Store is the identity schema database adapter.
 type Store struct {
 	Pool *pgxpool.Pool
+}
+
+// indexEmailHashes returns the index hashes of address under every loaded key,
+// current key first. Without a ready sealer it fails before any lookup runs.
+func indexEmailHashes(emails app.EmailSealer, address string) ([][]byte, error) {
+	if emails == nil || !emails.Ready() {
+		return nil, app.ErrNoEmailSealer
+	}
+	return emails.IndexHashes(address), nil
+}
+
+// openStoredEmail returns the address of stored, which was sealed for hash. A
+// value that does not open is ErrStoredEmail; the text never carries the value.
+func openStoredEmail(emails app.EmailSealer, stored string, hash []byte) (string, error) {
+	if emails == nil || !emails.Ready() {
+		return "", app.ErrNoEmailSealer
+	}
+	return emails.Open(stored, hash)
+}
+
+// sealEmail returns the stored form of address and its index hashes under
+// every loaded key, the current key's hash first, without duplicates.
+func sealEmail(emails app.EmailSealer, address string) (stored string, hashes [][]byte, hashKeyID string, err error) {
+	if emails == nil || !emails.Ready() {
+		return "", nil, "", app.ErrNoEmailSealer
+	}
+	stored, hash, hashKeyID, err := emails.Seal(address)
+	if err != nil {
+		return "", nil, "", err
+	}
+	hashes = [][]byte{hash}
+	for _, other := range emails.IndexHashes(address) {
+		if !bytes.Equal(other, hash) {
+			hashes = append(hashes, other)
+		}
+	}
+	return stored, hashes, hashKeyID, nil
 }
 
 // ChangeCredentials executes one credentials change inside a transaction:

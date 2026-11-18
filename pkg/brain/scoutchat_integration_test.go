@@ -34,7 +34,7 @@ func TestScoutChatReadsASharedChatForItsSharedPeopleOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool := pgtest.App(t, owner)
-	members := identity.Members(pool, "", nil, nil)
+	members := identity.Members(pool, nil, "", nil, nil)
 	store := chat.NewStore(pool, nil)
 
 	person := func(name, role string) uuid.UUID {

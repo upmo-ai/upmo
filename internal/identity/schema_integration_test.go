@@ -17,12 +17,22 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestEmailUniqueIgnoringCase(t *testing.T) {
 	pool, ctx := upOwner(t)
-	seedOwner(t, pool, ctx, "ada@example.com")
-	_, err := pool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('Ada@example.com', 'Other', (SELECT id FROM identity.roles WHERE key = 'member'), now())`)
+	emails := sealer.NewEmail(t)
+	seedSealedOwner(t, pool, ctx, emails, "ada@example.com")
+	// The index hash is computed over the trimmed lower-case address, so the
+	// same address in a different casing still conflicts.
+	stored, hash, keyID, err := emails.Seal("Ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Other', (SELECT id FROM identity.roles WHERE key = 'member'), now())`, stored, hash, keyID)
 	if err == nil {
 		t.Fatal("email with a different case was accepted")
 	}
@@ -554,6 +564,43 @@ func seedOwner(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email stri
 		t.Fatal(err)
 	}
 	return owner
+}
+
+// sealUser returns the stored form of address and its hash columns, as an
+// SQL seed of a sealed person needs them.
+func sealUser(t *testing.T, emails identity.EmailSealer, email string) []any {
+	t.Helper()
+	stored, hash, keyID, err := emails.Seal(email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []any{stored, hash, keyID}
+}
+
+// seedSealedOwner inserts a joined owner whose address is sealed the way the
+// brain stores one, so lookups and reads through the app find them.
+func seedSealedOwner(t *testing.T, pool *pgxpool.Pool, ctx context.Context, emails identity.EmailSealer, email string) string {
+	t.Helper()
+	var owner string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now()) RETURNING id`,
+		sealUser(t, emails, email)...).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+// userByEmail finds a person's id through the index hashes, as the app does.
+func userByEmail(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(ctx, `
+		SELECT id::text FROM identity.users WHERE email_hash = ANY($1)`,
+		sealer.NewEmail(t).IndexHashes(email)).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 func values[T ~string](items []T) []string {

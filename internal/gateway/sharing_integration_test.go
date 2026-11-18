@@ -120,7 +120,7 @@ type crowd struct {
 func newCrowd(t *testing.T) *crowd {
 	t.Helper()
 	r := newRig(t, masterKeys(t, 'a'))
-	members := identity.Members(r.app, "", nil, nil)
+	members := identity.Members(r.app, nil, "", nil, nil)
 	// Sharing is for the roles that hold settings:manage, as brain wires it.
 	r.svc.Allow = func(ctx context.Context, user string) (string, error) {
 		person, err := identity.ParseUserID(user)

@@ -36,6 +36,7 @@ var (
 )
 
 // Provision builds the control-plane ProvisionStore on the schema owner pool.
-func Provision(ownerPool *pgxpool.Pool, publicURL string) ProvisionStore {
-	return postgres.ProvisionStore{Pool: ownerPool, PublicURL: publicURL}
+// The emails sealer stores addresses; without it member writes fail.
+func Provision(ownerPool *pgxpool.Pool, emails EmailSealer, publicURL string) ProvisionStore {
+	return postgres.ProvisionStore{Pool: ownerPool, Emails: emails, PublicURL: publicURL}
 }

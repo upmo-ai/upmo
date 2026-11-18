@@ -22,6 +22,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestStoreInsertListRLS(t *testing.T) {
@@ -84,8 +85,8 @@ func TestHTTPNotificationsSession(t *testing.T) {
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passwords := identity.Passwords(pool, sessions)
-	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	passwords := identity.Passwords(pool, sealer.NewEmail(t), sessions)
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		t.Fatal(err)
 	}

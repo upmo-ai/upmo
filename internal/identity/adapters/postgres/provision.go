@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
@@ -21,6 +22,7 @@ import (
 // ProvisionStore runs control-plane identity mutations on the schema owner pool.
 type ProvisionStore struct {
 	Pool      *pgxpool.Pool
+	Emails    app.EmailSealer
 	PublicURL string
 	Now       func() time.Time
 }
@@ -140,6 +142,11 @@ func (s ProvisionStore) CreateMember(ctx context.Context, in ProvisionMemberInpu
 		active = *in.Active
 	}
 
+	stored, hashes, keyID, err := sealEmail(s.Emails, email)
+	if err != nil {
+		return ProvisionMember{}, err
+	}
+
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return ProvisionMember{}, err
@@ -153,7 +160,7 @@ func (s ProvisionStore) CreateMember(ctx context.Context, in ProvisionMemberInpu
 	if exists {
 		return ProvisionMember{}, domain.ErrExternalIDConflict
 	}
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM identity.users WHERE lower(email) = lower($1))`, email).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM identity.users WHERE email_hash = ANY($1))`, hashes).Scan(&exists); err != nil {
 		return ProvisionMember{}, err
 	}
 	if exists {
@@ -174,14 +181,14 @@ func (s ProvisionStore) CreateMember(ctx context.Context, in ProvisionMemberInpu
 	var userID string
 	if active {
 		err = tx.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, external_id, role_id, invited_at, joined_at)
-			VALUES ($1, $2, $3, $4::uuid, $5, $5)
-			RETURNING id::text`, email, name, extID, roleID, now).Scan(&userID)
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, external_id, role_id, invited_at, joined_at)
+			VALUES ($1, $2, $3, $4, $5, $6::uuid, $7, $7)
+			RETURNING id::text`, stored, hashes[0], keyID, name, extID, roleID, now).Scan(&userID)
 	} else {
 		err = tx.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, external_id, role_id, invited_at, disabled_at)
-			VALUES ($1, $2, $3, $4::uuid, $5, $5)
-			RETURNING id::text`, email, name, extID, roleID, now).Scan(&userID)
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, external_id, role_id, invited_at, disabled_at)
+			VALUES ($1, $2, $3, $4, $5, $6::uuid, $7, $7)
+			RETURNING id::text`, stored, hashes[0], keyID, name, extID, roleID, now).Scan(&userID)
 	}
 	if err != nil {
 		return ProvisionMember{}, mapProvisionUserErr(err)
@@ -249,6 +256,11 @@ func (s ProvisionStore) UpdateMember(ctx context.Context, externalID string, in 
 		return ProvisionMember{}, err
 	}
 
+	stored, hashes, keyID, err := sealEmail(s.Emails, email)
+	if err != nil {
+		return ProvisionMember{}, err
+	}
+
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return ProvisionMember{}, err
@@ -277,8 +289,8 @@ func (s ProvisionStore) UpdateMember(ctx context.Context, externalID string, in 
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM identity.users
-			WHERE lower(email) = lower($1) AND id <> $2::uuid
-		)`, email, userID).Scan(&emailTaken); err != nil {
+			WHERE email_hash = ANY($1) AND id <> $2::uuid
+		)`, hashes, userID).Scan(&emailTaken); err != nil {
 		return ProvisionMember{}, err
 	}
 	if emailTaken {
@@ -311,12 +323,14 @@ func (s ProvisionStore) UpdateMember(ctx context.Context, externalID string, in 
 		if _, err := tx.Exec(ctx, `
 			UPDATE identity.users
 			SET email = $2,
-			    name = $3,
-			    role_id = $4::uuid,
+			    email_hash = $3,
+			    email_hash_key_id = $4,
+			    name = $5,
+			    role_id = $6::uuid,
 			    disabled_at = NULL,
-			    invited_at = COALESCE(invited_at, $5),
-			    joined_at = COALESCE(joined_at, $5)
-			WHERE id = $1::uuid`, userID, email, name, roleID, now); err != nil {
+			    invited_at = COALESCE(invited_at, $7),
+			    joined_at = COALESCE(joined_at, $7)
+			WHERE id = $1::uuid`, userID, stored, hashes[0], keyID, name, roleID, now); err != nil {
 			return ProvisionMember{}, mapProvisionUserErr(err)
 		}
 		if in.Teams != nil {
@@ -338,12 +352,14 @@ func (s ProvisionStore) UpdateMember(ctx context.Context, externalID string, in 
 		if _, err := tx.Exec(ctx, `
 			UPDATE identity.users
 			SET email = $2,
-			    name = $3,
-			    role_id = $4::uuid,
-			    disabled_at = COALESCE(disabled_at, $5),
+			    email_hash = $3,
+			    email_hash_key_id = $4,
+			    name = $5,
+			    role_id = $6::uuid,
+			    disabled_at = COALESCE(disabled_at, $7),
 			    password_hash = NULL,
 			    webauthn_handle = NULL
-			WHERE id = $1::uuid`, userID, email, name, roleID, now); err != nil {
+			WHERE id = $1::uuid`, userID, stored, hashes[0], keyID, name, roleID, now); err != nil {
 			return ProvisionMember{}, mapProvisionUserErr(err)
 		}
 		sessionsEnded, tokensRevoked, err = revokeMemberAccessTx(ctx, tx, userID)
@@ -993,7 +1009,7 @@ func mapProvisionUserErr(err error) error {
 		switch pgErr.ConstraintName {
 		case "users_external_id":
 			return domain.ErrExternalIDConflict
-		case "users_email_ci":
+		case "users_email_hash":
 			return domain.ErrEmailConflict
 		}
 	}

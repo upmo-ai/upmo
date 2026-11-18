@@ -24,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestProvisionMigrationDownUp(t *testing.T) {
@@ -141,14 +142,14 @@ func TestSSOStepUpRefreshesSessionAndFreshSucceeds(t *testing.T) {
 
 	sessions := identity.Sessions(appPool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	passkeys, err := identity.Passkeys(appPool, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	passkeys, err := identity.Passkeys(appPool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	passkeys.Now = sessions.Now
-	idFacade := identity.New(sessions, passkeys, identity.Passwords(appPool, sessions))
+	idFacade := identity.New(sessions, passkeys, identity.Passwords(appPool, sealer.NewEmail(t), sessions))
 
-	prov := identity.Provision(owner, "http://localhost:5173")
+	prov := identity.Provision(owner, sealer.NewEmail(t), "http://localhost:5173")
 	member, err := prov.CreateMember(ctx, identity.ProvisionMemberInput{
 		ExternalID: "sso-user-1",
 		Email:      "sso@example.com",
@@ -241,19 +242,19 @@ func TestSSORedeemHTTPAndFreshIntegration(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(appPool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	passkeys, err := identity.Passkeys(appPool, sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(appPool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
 	passkeys.Now = sessions.Now
-	passwords := identity.Passwords(appPool, sessions)
+	passwords := identity.Passwords(appPool, sealer.NewEmail(t), sessions)
 
 	mux := http.NewServeMux()
 	identity.MountPasskeys(mux, passkeys, passwords, nil)
 	identity.MountSessions(mux, sessions, log, passwords.HasPassword)
 	handler := audit.Middleware(audit.Routes(), mux, appPool, "brain", nil, log)(httpserver.Protect(mux))
 
-	prov := identity.Provision(owner, "http://localhost:5173")
+	prov := identity.Provision(owner, sealer.NewEmail(t), "http://localhost:5173")
 	member, err := prov.CreateMember(ctx, identity.ProvisionMemberInput{
 		ExternalID: "http-sso-user",
 		Email:      "httpsso@example.com",

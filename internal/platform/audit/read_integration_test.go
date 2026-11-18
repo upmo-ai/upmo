@@ -28,6 +28,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 // readRig is the events endpoint on one mux behind the audit middleware, with
@@ -54,14 +55,14 @@ func newReadRig(t *testing.T) *readRig {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(appPool, identity.IdleTimeout, identity.MaxAge)
 	tokens := identity.APITokens(appPool, log)
-	members := identity.Members(appPool, "http://localhost:5173", nil, log)
+	members := identity.Members(appPool, nil, "http://localhost:5173", nil, log)
 	rig := &readRig{owner: owner, app: appPool, sessions: sessions, now: time.Now()}
 	events := &audit.ReadHandler{Pool: appPool, Now: func() time.Time { return rig.now }}
 
 	mux := http.NewServeMux()
 	// The real session and token routes, so a test creates its tokens the way
 	// an operator does.
-	identity.MountAPITokens(mux, sessions, tokens, log, identity.Passwords(appPool, sessions).HasPassword, appPool, nil)
+	identity.MountAPITokens(mux, sessions, tokens, log, identity.Passwords(appPool, nil, sessions).HasPassword, appPool, nil)
 	events.Mount(mux, audit.Guard(auditCallers{sessions: sessions, tokens: tokens, members: members}))
 	rig.served = mount(t, mux, appPool)
 	return rig
@@ -113,11 +114,15 @@ func (c auditCallers) Session(ctx context.Context, r *http.Request) (audit.Reade
 func (rig *readRig) openSession(t *testing.T, email, role string) string {
 	t.Helper()
 	ctx := context.Background()
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var userID string
-	err := rig.owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, 'Ada', (SELECT id FROM identity.roles WHERE key = $2), now())
-		RETURNING id::text`, email, role).Scan(&userID)
+	err = rig.owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Ada', (SELECT id FROM identity.roles WHERE key = $4), now())
+		RETURNING id::text`, stored, hash, keyID, role).Scan(&userID)
 	if err != nil {
 		t.Fatal(err)
 	}

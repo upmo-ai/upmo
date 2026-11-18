@@ -121,7 +121,7 @@ func (w *agWorld) allow(role string) string {
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	got, err := identity.Members(w.owner, "", nil, nil).EffectiveAllow(context.Background(), id)
+	got, err := identity.Members(w.owner, nil, "", nil, nil).EffectiveAllow(context.Background(), id)
 	if err != nil {
 		w.t.Fatal(err)
 	}
