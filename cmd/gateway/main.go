@@ -166,11 +166,17 @@ func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) (gateway.Chain, er
 }
 
 // openPool opens the gateway pool without exposing UPMO_DATABASE_URL in parse
-// or connect errors.
+// or connect errors. It dials once, so an unreachable database fails here
+// instead of in the first migration. pgx names the user and host in a connect
+// error, so that error is replaced, not wrapped.
 func openPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, errors.New("gateway: UPMO_DATABASE_URL could not be opened")
 	}
 	return pool, nil
 }
