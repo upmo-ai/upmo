@@ -20,7 +20,12 @@ const (
 	ModelFailRateLimit = domain.ScriptedPrefix + "fail-ratelimit"
 	ModelFailAfterTwo  = domain.ScriptedPrefix + "fail-after-2"
 	ModelToolCall      = domain.ScriptedPrefix + "tool-call"
+	ModelUsage         = domain.ScriptedPrefix + "usage"
 )
+
+// UsageScript is what ModelUsage reports, so a test can tell every counter
+// apart on its way to the caller and the ledger.
+var UsageScript = domain.Usage{Arrived: true, Input: 100, Output: 50, CacheRead: 25, CacheWrite: 10, Reasoning: 5}
 
 // scriptedText follows the "<model> says:" opening of every scripted reply.
 const scriptedText = "this reply is scripted so the browser checks can read it whole."
@@ -58,6 +63,9 @@ func (a Adapter) script(model string, req domain.Request) Adapter {
 	case ModelFailAfterTwo:
 		a.Reply = model + " says: " + scriptedText
 		a.StreamFailClass, a.StreamFailWords = domain.ClassTransient, 2
+	case ModelUsage:
+		a.Reply = fmt.Sprintf("max_output_tokens=%d tool_choice=%s:%s", req.MaxOutputTokens, req.ToolChoice.Mode, req.ToolChoice.Name)
+		a.Usage = UsageScript
 	case ModelToolCall:
 		if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == domain.RoleTool {
 			last := req.Messages[n-1]
@@ -93,7 +101,8 @@ func (a Adapter) usageOr(fallback domain.Usage) domain.Usage {
 	return fallback
 }
 
-func (a Adapter) Decide(_ context.Context, _ app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
+func (a Adapter) Decide(_ context.Context, attempt app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {
+	a = a.script(attempt.Model, domain.Request{})
 	usage := a.usageOr(domain.Usage{Arrived: true, Input: 1, Output: 1})
 	switch req.Kind {
 	case domain.DecisionYesNo:

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
@@ -66,99 +65,5 @@ func TestDisabledProvisioningReturns404(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s %s = %d, want 404 when provisioning keys unset", tc.method, tc.path, rec.Code)
 		}
-	}
-}
-
-func TestGuardRejectsBadBearers(t *testing.T) {
-	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	k1Raw := testSvcKey('1')
-	k2Raw := testSvcKey('2')
-	keys, err := ParseKeys([]string{k1Raw, k2Raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	mux := http.NewServeMux()
-	h := Handler{
-		Keys: keys,
-		Now:  func() time.Time { return now },
-	}
-	// Mount a dummy guarded route to verify middleware behavior without DB.
-	// Only refusals run here: an accepted bearer consumes a nonce, which
-	// needs Postgres and is proven by the integration tests.
-	mux.Handle("GET /api/v1/provision/ping", h.guard(maxBodyBytes, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(keyIDFrom(r.Context())))
-	})))
-
-	sign := func(rawKey, audience, method, path string, at time.Time) string {
-		master, err := svcsig.ParseKey(rawKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		derived, err := svcsig.Derive(master, audience)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tok, err := svcsig.SignRequest(derived, audience, method, path, "", nil, at)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return tok
-	}
-
-	// Missing bearer -> 401
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing bearer = %d, want 401", rec.Code)
-	}
-
-	// Wrong audience -> 401
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+sign(k1Raw, svcsig.AudienceGateway, http.MethodGet, "/api/v1/provision/ping", now))
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong audience = %d, want 401", rec.Code)
-	}
-
-	// Expired token -> 401
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+sign(k1Raw, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/ping", now.Add(-time.Minute)))
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expired bearer = %d, want 401", rec.Code)
-	}
-
-	// Signed for different path -> 401
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+sign(k1Raw, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/other", now))
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong path bearer = %d, want 401", rec.Code)
-	}
-
-	// v1 bearer (no query or body binding) -> 401
-	master, err := svcsig.ParseKey(k2Raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v1Tok, err := svcsig.Sign(derived, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/ping", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/provision/ping", nil)
-	req.Header.Set("Authorization", "Bearer "+v1Tok)
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("v1 bearer = %d, want 401", rec.Code)
 	}
 }

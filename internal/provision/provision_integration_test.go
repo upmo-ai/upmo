@@ -966,6 +966,23 @@ func TestProvisionV2BindingIntegration(t *testing.T) {
 		t.Fatalf("v1 bearer = %d, want 401", rec.Code)
 	}
 
+	// A bearer signed for another audience, or for another path, is refused.
+	gwDerived, err := svcsig.Derive(master, svcsig.AudienceGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongAudience, err := svcsig.SignRequest(gwDerived, svcsig.AudienceGateway, http.MethodPost, "/api/v1/provision/sign-in-links", "", linkBody, env.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", wrongAudience, linkBody); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong audience = %d, want 401", rec.Code)
+	}
+	wrongPath := env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/members", linkBody, env.now)
+	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", wrongPath, linkBody); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bearer signed for another path = %d, want 401", rec.Code)
+	}
+
 	// A body over the route's cap is refused with the 413 the handlers
 	// themselves returned before the guard took over the read, at both
 	// limits: 64 KiB for JSON routes and 1 MiB for packs.
