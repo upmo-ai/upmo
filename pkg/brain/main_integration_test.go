@@ -34,6 +34,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestReadyAndSession(t *testing.T) {
@@ -146,8 +147,8 @@ func TestRequireSessionSeamIntegration(t *testing.T) {
 		WebAuthnRPID:  "localhost",
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passwords := identity.Passwords(pool, sessions)
-	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	passwords := identity.Passwords(pool, sealer.NewEmail(t), sessions)
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,11 +639,11 @@ func TestAgentsThroughTheBrainRoutes(t *testing.T) {
 	if err := json.Unmarshal(routedRec.Body.Bytes(), &routed); err != nil {
 		t.Fatal(err)
 	}
-	access, ok, err := chatAccess(ctx, identity.Members(pool, "http://example.test", nil, nil), uid)
+	access, ok, err := chatAccess(ctx, identity.Members(pool, nil, "http://example.test", nil, nil), uid)
 	if err != nil || !ok {
 		t.Fatalf("chat access = %v %v", ok, err)
 	}
-	members := identity.Members(pool, "http://example.test", nil, nil)
+	members := identity.Members(pool, nil, "http://example.test", nil, nil)
 	lookup := chatAgentLookup{store: agents.NewStore(pool), access: func(ctx context.Context, userID string) (agents.Access, error) {
 		person, err := identity.ParseUserID(userID)
 		if err != nil {

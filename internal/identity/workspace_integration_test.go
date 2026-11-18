@@ -430,10 +430,10 @@ func TestSSOEnforcement(t *testing.T) {
 	nowFn := func() time.Time { return clock }
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = nowFn
-	passwords := identity.Passwords(pool, sessions)
+	passwords := identity.Passwords(pool, sealer.NewEmail(t), sessions)
 	passwords.Sealer = sealer.New(t)
 	passwords.Now = nowFn
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,9 +623,9 @@ func seedUserWithRole(t *testing.T, pool *pgxpool.Pool, ctx context.Context, ema
 	t.Helper()
 	var id string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = $3), now())
-		RETURNING id::text`, email, name, roleKey).Scan(&id); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, $4, (SELECT id FROM identity.roles WHERE key = $5), now())
+		RETURNING id::text`, append(sealUser(t, sealer.NewEmail(t), email), name, roleKey)...).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	parsed, err := domain.ParseUserID(id)

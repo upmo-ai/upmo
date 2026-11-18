@@ -16,13 +16,14 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestConnectorGrants(t *testing.T) {
 	pool, ctx := up(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, time.Hour, 24*time.Hour)
-	passkeys, err := identity.Passkeys(pool, sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,10 +58,7 @@ func TestConnectorGrants(t *testing.T) {
 	}
 
 	grants := identity.ConnectorGrants(pool)
-	var userID string
-	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&userID); err != nil {
-		t.Fatal(err)
-	}
+	userID := userByEmail(t, pool, ctx, "ada@example.com")
 	uid, err := identity.ParseUserID(userID)
 	if err != nil {
 		t.Fatal(err)

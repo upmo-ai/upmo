@@ -527,20 +527,21 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	}
 
 	internalCfg := toInternalConfig(cfg)
+	emails := brainops.NewEmailSealer(masterKeys)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passwords := identity.Passwords(pool, sessions)
+	passwords := identity.Passwords(pool, emails, sessions)
 	passwords.Sealer = brainops.NewPasswordSealer(masterKeys)
 	tokens := identity.APITokens(pool, log)
-	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	passkeys, err := identity.Passkeys(pool, emails, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		cleanupPools()
 		return nil, err
 	}
-	members := identity.Members(pool, cfg.PublicURL, brainops.LinkMail(internalCfg.SMTP), log)
+	members := identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(internalCfg.SMTP), log)
 	roles := identity.Roles(pool, log)
 	teams := identity.Teams(pool, log)
 	workspace := identity.Workspace(pool)
-	provIdentity := identity.Provision(owner, cfg.PublicURL)
+	provIdentity := identity.Provision(owner, emails, cfg.PublicURL)
 	idFacade := identity.New(sessions, passkeys, passwords)
 
 	providers := gateway.NewProviders(pool, masterKeys, log)

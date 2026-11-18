@@ -19,6 +19,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
 func TestMembersIntegration(t *testing.T) {
@@ -26,10 +27,11 @@ func TestMembersIntegration(t *testing.T) {
 	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
 	mux := handler.(*http.ServeMux)
 	sent := &sentMail{}
-	members := identity.Members(pool, "https://upmo.test", sent, nil)
+	emails := sealer.NewEmail(t)
+	members := identity.Members(pool, emails, "https://upmo.test", sent, nil)
 	members.Now = func() time.Time { return now }
 	identity.MountMembers(mux, members, passkeys.Sessions)
-	store := postgres.Passkeys{Pool: pool}
+	store := postgres.Passkeys{Pool: pool, Emails: emails}
 
 	link, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
 	if err != nil {
@@ -40,10 +42,7 @@ func TestMembersIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	ownerCookie := finishLink(t, mux, soft, link)
-	var owner string
-	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.users WHERE lower(email) = 'ada@example.com'`).Scan(&owner); err != nil {
-		t.Fatal(err)
-	}
+	owner := userByEmail(t, pool, ctx, "ada@example.com")
 	var memberRole string
 	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.roles WHERE key = 'member'`).Scan(&memberRole); err != nil {
 		t.Fatal(err)

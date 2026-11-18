@@ -42,9 +42,14 @@ func command(name string, args []string) error {
 	if err := brainops.MigrateAll(ctx, pool); err != nil {
 		return err
 	}
+	ring, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		return err
+	}
+	emails := brainops.NewEmailSealer(ring)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	passkeys, err := identity.Passkeys(pool, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	passkeys, err := identity.Passkeys(pool, emails, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return err
 	}
@@ -52,7 +57,7 @@ func command(name string, args []string) error {
 	case "bootstrap":
 		return bootstrap(ctx, passkeys, args)
 	case "recover":
-		return recover(ctx, passkeys, identity.Members(pool, cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log), args)
+		return recover(ctx, passkeys, identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log), args)
 	default:
 		return fmt.Errorf("brain: unknown command %q", name)
 	}

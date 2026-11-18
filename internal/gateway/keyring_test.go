@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -77,6 +78,21 @@ func TestKeyringFromEnv(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestKeyringIndexMACsFromEnv(t *testing.T) {
+	env := map[string]string{EnvMasterKey: b64('b'), EnvMasterKeyID: "k2"}
+	k, err := KeyringFromEnv(lookup(env), []string{EnvMasterKeyPrevious + "k1=" + b64('a')})
+	if err != nil {
+		t.Fatal(err)
+	}
+	macs := k.IndexMACs([]byte("ada@example.com"))
+	if len(macs) != 2 {
+		t.Fatalf("index MACs = %d, want 2", len(macs))
+	}
+	if id, mac, err := k.IndexMAC([]byte("ada@example.com")); err != nil || id != "k2" || !bytes.Equal(macs[0], mac) {
+		t.Fatalf("IndexMAC = %q, %v; current MAC is not first", id, err)
 	}
 }
 
