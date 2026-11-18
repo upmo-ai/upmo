@@ -102,10 +102,10 @@ DELETE FROM gateway.provider_models
 WHERE account_id IN (SELECT id FROM gateway.provider_accounts WHERE owner_user_id IS NULL AND name IN ('e2e-house', 'e2e-sample'));
 DELETE FROM gateway.provider_accounts WHERE owner_user_id IS NULL AND name IN ('e2e-house', 'e2e-sample');
 
-INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, provider, status) VALUES
-  ('e2e00000-0000-7000-8000-00000000f001', 'e2e-house', 'fake', 'house', 'local', true, 'e2e', 'Connected');
-INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, provider, status) VALUES
-  ('e2e00000-0000-7000-8000-00000000f002', 'e2e-sample', 'anthropic', 'sample', 'metered', false, 'anthropic', 'Connected');
+INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, visibility, provider, status) VALUES
+  ('e2e00000-0000-7000-8000-00000000f001', 'e2e-house', 'fake', 'house', 'local', true, 'everyone', 'e2e', 'Connected');
+INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, visibility, provider, status) VALUES
+  ('e2e00000-0000-7000-8000-00000000f002', 'e2e-sample', 'e2e-sample', 'sample', 'metered', true, 'everyone', 'anthropic', 'Connected');
 INSERT INTO gateway.provider_models (account_id, model, position) VALUES
   ('e2e00000-0000-7000-8000-00000000f001', 'fake-ok', 1),
   ('e2e00000-0000-7000-8000-00000000f001', 'fake-slow', 2),

@@ -53,6 +53,13 @@ func securityHeadersHandler(t *testing.T) http.Handler {
 			w.Header().Set("Cache-Control", "no-cache, no-store")
 			_, _ = w.Write([]byte(": ok\n\n"))
 		})
+		// Flushes one event, then holds the stream open until the client leaves.
+		mux.HandleFunc("GET /api/test-flush", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: x\n\n"))
+			_ = http.NewResponseController(w).Flush()
+			<-r.Context().Done()
+		})
 	})
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil, stream)
 	if err != nil {
