@@ -1186,6 +1186,58 @@ func TestRestore_UPM375_ArchiveWithoutVolumeLeavesLiveVolumeUnchanged(t *testing
 	}
 }
 
+func TestRestore_UPM377_EmptyConfiguredVolumeRestoresAsEmpty(t *testing.T) {
+	ctx := context.Background()
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+
+	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x72}, 32))
+	t.Setenv(gateway.EnvMasterKey, key1B64)
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	// Given: a backup taken with a configured but empty artifacts dir and no knowledge dir.
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	archive := filepath.Join(t.TempDir(), "empty-artifacts.tar.gz")
+	var backupOut bytes.Buffer
+	if err := backupCommand([]string{"--out", archive}, &backupOut); err != nil {
+		t.Fatalf("backupCommand: %v", err)
+	}
+
+	// Given: a target whose artifacts and knowledge dirs both hold files.
+	dstOwner := pgtest.New(t)
+	dstArt := t.TempDir()
+	dstKnow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dstArt, "stale.txt"), []byte("stale-art"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstKnow, "keep.txt"), []byte("keep-know"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, dstOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", dstArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", dstKnow)
+
+	// When: the restore runs.
+	var restoreOut bytes.Buffer
+	if err := restoreCommand([]string{"--in", archive}, &restoreOut); err != nil {
+		t.Fatalf("restoreCommand: %v", err)
+	}
+
+	// Then: artifacts is emptied and not reported unchanged; knowledge keeps its file and is reported unchanged.
+	assertDirEntries(t, dstArt, []string{})
+	assertDirEntries(t, dstKnow, []string{"keep.txt"})
+	out := restoreOut.String()
+	if strings.Contains(out, "artifacts volume left unchanged") {
+		t.Fatalf("artifacts reported unchanged despite its archived root: %q", out)
+	}
+	if !strings.Contains(out, "knowledge volume left unchanged: archive has no entries for it\n") {
+		t.Fatalf("restore stdout missing knowledge unchanged line: %q", out)
+	}
+}
+
 func TestRestore_UPM375_FailingForwardMigrationLeavesDatabaseAndVolumesUnchanged(t *testing.T) {
 	ctx := context.Background()
 
