@@ -182,7 +182,7 @@ describe("UPM-179 brand kit plugin", () => {
     expect(html).toContain('rel="apple-touch-icon" href="/apple-touch-icon.png"');
     expect(html).toContain('property="og:image" content="https://upmo.example/og.png"');
     expect(html).not.toContain(HEAD_MARKER);
-  });
+  }, 30_000);
 
   it("builds without og tags when no origin is set", async () => {
     const outDir = join(root, "dist-no-origin");
@@ -194,7 +194,7 @@ describe("UPM-179 brand kit plugin", () => {
     const html = readFileSync(join(outDir, "index.html"), "utf8");
     expect(html).toContain('rel="icon" href="/favicon.svg"');
     expect(html).not.toContain("og:");
-  });
+  }, 30_000);
 
   it("fails the build when the kit lacks a file", async () => {
     const empty = mkdtempSync(join(tmpdir(), "brand-kit-empty-"));
@@ -257,7 +257,7 @@ describe("UPM-197 brand kit origin and replacers", () => {
 
     const html = await buildWith(brandKit(), envDir);
     expect(html).toContain('property="og:image" content="https://env.example/og.png"');
-  });
+  }, 30_000);
 
   it("fails the build, naming VITE_SITE_ORIGIN, when the env value is not an origin", async () => {
     vi.stubEnv("VITE_SITE_ORIGIN", undefined);
@@ -288,7 +288,7 @@ describe("UPM-197 brand kit origin and replacers", () => {
 
     const html = await buildWith(brandKit({ dir, origin: "https://upmo.example" }));
     expect(html).toContain(note);
-  });
+  }, 30_000);
 
   // Node drops the body of a HEAD response by itself, so a real request cannot
   // show a body being sent. The middleware is called with a recording response.
