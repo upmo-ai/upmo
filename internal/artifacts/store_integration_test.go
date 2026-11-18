@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/artifacts"
@@ -23,7 +25,7 @@ func TestPutOutlivesTheSandbox(t *testing.T) {
 	ctx := context.Background()
 
 	create := artifacts.Access{UserID: ownerUser, Allow: "artifact:create,artifact:view"}
-	id, err := store.Put(ctx, create, ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf")
+	id, err := store.Put(ctx, create, kept(ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,12 +50,12 @@ func TestEraseRemovesOnlyTheOwner(t *testing.T) {
 	ctx := context.Background()
 
 	mine, err := store.Put(ctx, artifacts.Access{UserID: ownerUser, Allow: "artifact:create,artifact:view"},
-		ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf")
+		kept(ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	theirs, err := store.Put(ctx, artifacts.Access{UserID: otherUser, Allow: "artifact:create,artifact:view"},
-		otherUser, taskID, "notes.txt", artifacts.StoreObject, "task/notes.txt")
+		kept(otherUser, taskID, "notes.txt", artifacts.StoreObject, "task/notes.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +82,7 @@ func TestPutRefusesABadKey(t *testing.T) {
 	create := artifacts.Access{UserID: ownerUser, Allow: "artifact:create"}
 
 	for _, key := range []string{"/etc/passwd", "../secret"} {
-		id, err := store.Put(ctx, create, ownerUser, taskID, "secret", artifacts.StoreVolume, key)
+		id, err := store.Put(ctx, create, kept(ownerUser, taskID, "secret", artifacts.StoreVolume, key))
 		if !errors.Is(err, artifacts.ErrArtifact) {
 			t.Fatalf("key %q: error = %v", key, err)
 		}
@@ -128,6 +130,10 @@ func rows(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int {
 	return n
 }
 
+func kept(owner, task, name, store, key string) artifacts.KeepRecord {
+	return artifacts.KeepRecord{Owner: owner, Task: task, Name: name, Store: store, Key: key}
+}
+
 func up(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool := pgtest.New(t)
@@ -147,7 +153,7 @@ func TestListByTaskAndGet(t *testing.T) {
 	store := artifacts.Store{Pool: app}
 	ctx := context.Background()
 	create := artifacts.Access{UserID: ownerUser, Allow: "artifact:create,artifact:view"}
-	id, err := store.Put(ctx, create, ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf")
+	id, err := store.Put(ctx, create, kept(ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +173,115 @@ func TestListByTaskAndGet(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, other, id); !errors.Is(err, artifacts.ErrGone) {
 		t.Fatalf("other get = %v", err)
+	}
+}
+
+func TestArtifacts_UPM222_MetadataAndOldestFirst(t *testing.T) {
+	owner := up(t)
+	app := pgtest.App(t, owner)
+	store := artifacts.Store{Pool: app}
+	ctx := context.Background()
+	create := artifacts.Access{UserID: ownerUser, Allow: "artifact:create,artifact:view"}
+
+	// Names sort the other way: a.md before b.txt. Oldest-first must not.
+	first, err := store.Put(ctx, create, artifacts.KeepRecord{
+		Owner: ownerUser, Task: taskID, Name: "b.txt", Store: artifacts.StoreVolume, Key: "b.txt", Size: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Put(ctx, create, artifacts.KeepRecord{
+		Owner: ownerUser, Task: taskID, Name: "a.md", Store: artifacts.StoreVolume, Key: "a.md",
+		Kind: "markdown", Mime: " Text/Markdown ; charset=UTF-8 ", Size: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view := artifacts.Access{UserID: ownerUser, Allow: "artifact:view"}
+	listed, err := store.ListByTask(ctx, view, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 || listed[0].ID != first || listed[1].ID != second {
+		t.Fatalf("order = %#v", listed)
+	}
+	if listed[0].Kind != "text" || listed[0].Mime != "text/plain" || listed[0].Size != 4 || listed[0].CreatedAt.IsZero() {
+		t.Fatalf("first = %#v", listed[0])
+	}
+	if listed[1].Kind != "markdown" || listed[1].Mime != "text/markdown" || listed[1].Size != 2 {
+		t.Fatalf("second = %#v", listed[1])
+	}
+	if listed[0].CreatedAt.After(listed[1].CreatedAt) {
+		t.Fatalf("created_at out of order: %s then %s", listed[0].CreatedAt, listed[1].CreatedAt)
+	}
+	got, err := store.Get(ctx, view, first)
+	if err != nil || got.Kind != "text" || got.Mime != "text/plain" || got.Size != 4 {
+		t.Fatalf("get = %#v err %v", got, err)
+	}
+
+	other := artifacts.Access{UserID: otherUser, Allow: "artifact:view"}
+	listed, err = store.ListByTask(ctx, other, taskID)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("other list = %#v err %v", listed, err)
+	}
+	if _, err := store.Get(ctx, other, first); !errors.Is(err, artifacts.ErrGone) {
+		t.Fatalf("other get = %v", err)
+	}
+}
+
+func TestArtifacts_UPM222_ImmutableObjectKeyAndStore(t *testing.T) {
+	owner := up(t)
+	app := pgtest.App(t, owner)
+	store := artifacts.Store{Pool: app}
+	ctx := context.Background()
+	id, err := store.Put(ctx, artifacts.Access{UserID: ownerUser, Allow: "artifact:create,artifact:view"},
+		kept(ownerUser, taskID, "report.pdf", artifacts.StoreVolume, "task/report.pdf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`UPDATE artifacts.artifacts SET object_key = 'evil' WHERE id = $1::uuid`,
+		`UPDATE artifacts.artifacts SET store = 'object' WHERE id = $1::uuid`,
+	} {
+		tx, err := app.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(ctx, `
+			SELECT set_config('upmo.user_id', $1, true),
+			       set_config('upmo.allow', 'artifact:edit,artifact:view', true),
+			       set_config('upmo.teams', '{}', true),
+			       set_config('upmo.shared_view', '{}', true),
+			       set_config('upmo.shared_edit', '{}', true)`, ownerUser)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(ctx, stmt, id)
+		_ = tx.Rollback(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" || !strings.Contains(pgErr.Message, "permission denied") {
+			t.Fatalf("%s: err = %v, want SQLSTATE 42501 permission denied", stmt, err)
+		}
+	}
+}
+
+func TestArtifacts_UPM222_MigrationRejectsInvalidKindOrNegativeSize(t *testing.T) {
+	pool := up(t)
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO artifacts.artifacts (owner_user_id, visibility, task_id, name, store, object_key, kind)
+		VALUES ($1::uuid, 'private', $2::uuid, 'x', 'volume', 'k', 'nope')`, ownerUser, taskID)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("kind: err = %v, want SQLSTATE 23514", err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO artifacts.artifacts (owner_user_id, visibility, task_id, name, store, object_key, size_bytes)
+		VALUES ($1::uuid, 'private', $2::uuid, 'x', 'volume', 'k', -1)`, ownerUser, taskID)
+	pgErr = nil
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("size: err = %v, want SQLSTATE 23514", err)
 	}
 }

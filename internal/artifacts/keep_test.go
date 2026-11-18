@@ -61,7 +61,8 @@ func TestKeepKeyLimits(t *testing.T) {
 		"task/report.pdf",
 		"task/..report",
 		"task/report..pdf",
-		"./task/report.pdf",
+		"..foo",
+		"task/..foo",
 	} {
 		if _, err := artifacts.Keep(ownerUser, taskID, "report.pdf", artifacts.StoreVolume, key); err != nil {
 			t.Fatalf("key %q: %v", key, err)
@@ -91,6 +92,9 @@ func TestKeepRefuses(t *testing.T) {
 		{"leading parent", ownerUser, taskID, "n", "volume", "../secret"},
 		{"inner parent", ownerUser, taskID, "n", "volume", "task/../secret"},
 		{"trailing parent", ownerUser, taskID, "n", "volume", "task/.."},
+		{"dot key", ownerUser, taskID, "n", "volume", "."},
+		{"dot segment", ownerUser, taskID, "n", "volume", "./task/report.pdf"},
+		{"empty segment", ownerUser, taskID, "n", "volume", "a//b"},
 	}
 	for _, c := range cases {
 		got, err := artifacts.Keep(c.owner, c.task, c.name, c.store, c.key)
@@ -100,6 +104,53 @@ func TestKeepRefuses(t *testing.T) {
 		if got != (artifacts.Artifact{}) {
 			t.Fatalf("%s: artifact = %#v", c.label, got)
 		}
+	}
+}
+
+func TestCheckRecord_UPM222(t *testing.T) {
+	got, err := artifacts.CheckRecord(artifacts.KeepRecord{
+		Owner: " " + ownerUser + " ",
+		Task:  taskID,
+		Name:  " Icon.SVG ",
+		Store: " volume ",
+		Key:   " task/icon.svg ",
+		Mime:  " Image/SVG+XML ; charset=utf-8 ",
+		Size:  12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "code" || got.Mime != "image/svg+xml" || got.Size != 12 || got.Name != "Icon.SVG" {
+		t.Fatalf("record = %#v", got)
+	}
+
+	derived, err := artifacts.CheckRecord(artifacts.KeepRecord{
+		Owner: ownerUser, Task: taskID, Name: "app.ts", Store: artifacts.StoreVolume, Key: "app.ts",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived.Kind != "code" || derived.Mime != "text/typescript" || derived.Mime == "video/mp2t" {
+		t.Fatalf("derived = %#v", derived)
+	}
+
+	if _, err := artifacts.CheckRecord(artifacts.KeepRecord{
+		Owner: ownerUser, Task: taskID, Name: "a.txt", Store: artifacts.StoreVolume, Key: "a.txt",
+		Kind: "video",
+	}); !errors.Is(err, artifacts.ErrKind) {
+		t.Fatalf("kind error = %v", err)
+	}
+	if _, err := artifacts.CheckRecord(artifacts.KeepRecord{
+		Owner: ownerUser, Task: taskID, Name: "a.txt", Store: artifacts.StoreVolume, Key: "a.txt",
+		Size: -1,
+	}); !errors.Is(err, artifacts.ErrArtifact) {
+		t.Fatalf("size error = %v", err)
+	}
+	if _, err := artifacts.CheckRecord(artifacts.KeepRecord{
+		Owner: ownerUser, Task: taskID, Name: "a.txt", Store: artifacts.StoreVolume, Key: "a.txt",
+		Mime: "text/plain\r\nX-Evil: 1",
+	}); !errors.Is(err, artifacts.ErrArtifact) {
+		t.Fatalf("mime error = %v", err)
 	}
 }
 

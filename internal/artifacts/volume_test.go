@@ -40,8 +40,80 @@ func TestVolumeRefusesObjectStoreAndTraversal(t *testing.T) {
 	if _, err := v.Open(context.Background(), artifacts.StoreVolume, "../secret"); !errors.Is(err, artifacts.ErrBlob) {
 		t.Fatalf("traversal: %v", err)
 	}
+	if _, err := v.Open(context.Background(), artifacts.StoreVolume, "."); !errors.Is(err, artifacts.ErrBlob) {
+		t.Fatalf("dot: %v", err)
+	}
+	if _, err := v.Open(context.Background(), artifacts.StoreVolume, "..foo"); !errors.Is(err, artifacts.ErrNoBlob) {
+		t.Fatalf("dotdot-foo: %v", err)
+	}
 	if _, err := v.Open(context.Background(), artifacts.StoreVolume, "missing"); !errors.Is(err, artifacts.ErrNoBlob) {
 		t.Fatalf("missing: %v", err)
+	}
+}
+
+func TestVolume_UPM222_PutOpenRemove(t *testing.T) {
+	root := t.TempDir()
+	v := artifacts.Volume{Root: root}
+	ctx := context.Background()
+	const key = "task/report.pdf"
+	if err := v.Put(ctx, key, []byte("pdf")); err != nil {
+		t.Fatal(err)
+	}
+	full := filepath.Join(root, "task", "report.pdf")
+	info, err := os.Stat(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	if _, err := os.Stat(full + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp left behind: %v", err)
+	}
+	body, err := v.Open(ctx, artifacts.StoreVolume, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(body)
+	_ = body.Close()
+	if err != nil || string(got) != "pdf" {
+		t.Fatalf("body = %q err %v", got, err)
+	}
+	if err := v.Remove(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Open(ctx, artifacts.StoreVolume, key); !errors.Is(err, artifacts.ErrNoBlob) {
+		t.Fatalf("after remove: %v", err)
+	}
+	if err := v.Remove(ctx, key); err != nil {
+		t.Fatalf("missing remove: %v", err)
+	}
+	if err := v.Remove(ctx, "  "); err != nil {
+		t.Fatalf("empty remove: %v", err)
+	}
+	if err := v.Put(ctx, ".", []byte("x")); !errors.Is(err, artifacts.ErrBlob) {
+		t.Fatalf("put dot: %v", err)
+	}
+	if err := v.Put(ctx, "..foo", []byte("ok")); err != nil {
+		t.Fatalf("put ..foo: %v", err)
+	}
+	dotFoo, err := v.Open(ctx, artifacts.StoreVolume, "..foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotFoo, err := io.ReadAll(dotFoo)
+	_ = dotFoo.Close()
+	if err != nil || string(gotFoo) != "ok" {
+		t.Fatalf("..foo body = %q err %v", gotFoo, err)
+	}
+	if err := v.Put(ctx, "../secret", []byte("x")); !errors.Is(err, artifacts.ErrBlob) {
+		t.Fatalf("put traversal: %v", err)
+	}
+	if err := v.Remove(ctx, "../secret"); !errors.Is(err, artifacts.ErrBlob) {
+		t.Fatalf("remove traversal: %v", err)
+	}
+	if _, err := v.Open(ctx, artifacts.StoreObject, key); !errors.Is(err, artifacts.ErrBlob) {
+		t.Fatalf("object store: %v", err)
 	}
 }
 
