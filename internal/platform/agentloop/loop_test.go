@@ -338,6 +338,89 @@ func TestSingleTeamRLSNarrowingIntersection(t *testing.T) {
 	}
 }
 
+func TestNarrowRLSClearsOtherSharesForEveryVisibility(t *testing.T) {
+	cases := []struct {
+		name      string
+		scope     AccessScope
+		wantTeams []string
+		wantView  string
+		wantEdit  string
+	}{
+		{
+			name: "private keeps only active object",
+			scope: AccessScope{
+				UserID:           "u1",
+				Allow:            "task:view,task:edit",
+				UserTeams:        []string{"t1", "t2"},
+				ObjectID:         "obj-1",
+				ObjectVisibility: VisibilityPrivate,
+				SharedView:       "{obj-1,obj-other}",
+				SharedEdit:       "{obj-1,obj-other}",
+			},
+			wantTeams: []string{"t1", "t2"},
+			wantView:  "{obj-1}",
+			wantEdit:  "{obj-1}",
+		},
+		{
+			name: "everyone keeps only active object",
+			scope: AccessScope{
+				UserID:           "u1",
+				Allow:            "task:view,task:edit",
+				UserTeams:        []string{"t1", "t2"},
+				ObjectID:         "obj-1",
+				ObjectVisibility: VisibilityEveryone,
+				SharedView:       "{obj-1,obj-other}",
+				SharedEdit:       "{obj-other}",
+			},
+			wantTeams: []string{"t1", "t2"},
+			wantView:  "{obj-1}",
+			wantEdit:  "",
+		},
+		{
+			name: "team narrows teams and shares",
+			scope: AccessScope{
+				UserID:           "u1",
+				Allow:            "task:view,task:edit",
+				UserTeams:        []string{"t1", "t2"},
+				ObjectID:         "obj-1",
+				ObjectVisibility: VisibilityTeam,
+				VisibilityTeamID: "t1",
+				SharedView:       "{obj-1,obj-other}",
+				SharedEdit:       "{obj-other}",
+			},
+			wantTeams: []string{"t1"},
+			wantView:  "{obj-1}",
+			wantEdit:  "",
+		},
+		{
+			name: "private without active object clears everything",
+			scope: AccessScope{
+				UserID:           "u1",
+				Allow:            "task:view,task:edit",
+				UserTeams:        []string{"t1", "t2"},
+				ObjectVisibility: VisibilityPrivate,
+				SharedView:       "{obj-1,obj-other}",
+				SharedEdit:       "{obj-1,obj-other}",
+			},
+			wantTeams: []string{"t1", "t2"},
+			wantView:  "",
+			wantEdit:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			narrowed := NarrowRLS(tc.scope)
+			if !slices.Equal(narrowed.Teams, tc.wantTeams) {
+				t.Fatalf("teams = %v, want %v", narrowed.Teams, tc.wantTeams)
+			}
+			if narrowed.SharedView != tc.wantView || narrowed.SharedEdit != tc.wantEdit {
+				t.Fatalf("shares not narrowed: view=%q want %q, edit=%q want %q",
+					narrowed.SharedView, tc.wantView, narrowed.SharedEdit, tc.wantEdit)
+			}
+		})
+	}
+}
+
 func TestWriteGuardMemoryCleanVsWebKnowledgeTaintAndBatchHolds(t *testing.T) {
 	var executedCalls int
 	catalog := NewToolCatalog([]ToolDef{

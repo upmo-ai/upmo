@@ -47,13 +47,14 @@ type TxExecer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// NarrowRLS computes single-team RLS narrowing when ObjectVisibility is
-// VisibilityTeam:
-//   - upmo.teams is set to actual_user_teams ∩ {visibility_team_id}, never
-//     granting team membership if a shared editor is not in visibility_team_id.
-//   - upmo.shared_view / upmo.shared_edit for other objects are cleared ("").
-//   - GatewayTeamID is set to VisibilityTeamID so gateway filters
-//     identity.teams_of(user_id) to TeamID.
+// NarrowRLS computes RLS narrowing for the active object:
+//   - upmo.shared_view / upmo.shared_edit keep only the active object for
+//     every visibility; shares of other objects are cleared ("").
+//   - When ObjectVisibility is VisibilityTeam, upmo.teams is set to
+//     actual_user_teams ∩ {visibility_team_id}, never granting team
+//     membership if a shared editor is not in visibility_team_id.
+//   - GatewayTeamID is set to VisibilityTeamID (team objects only) so
+//     gateway filters identity.teams_of(user_id) to TeamID.
 func NarrowRLS(scope AccessScope) NarrowedRLS {
 	if scope.ObjectVisibility != VisibilityTeam {
 		teams := cleanUUIDList(scope.UserTeams)
@@ -62,8 +63,8 @@ func NarrowRLS(scope AccessScope) NarrowedRLS {
 			Allow:        scope.Allow,
 			Teams:        teams,
 			TeamsPGArray: pgUUIDArray(teams),
-			SharedView:   scope.SharedView,
-			SharedEdit:   scope.SharedEdit,
+			SharedView:   keepOnlyObject(scope.SharedView, scope.ObjectID),
+			SharedEdit:   keepOnlyObject(scope.SharedEdit, scope.ObjectID),
 		}
 	}
 
