@@ -53,11 +53,15 @@ func TestListReturnsArtifacts(t *testing.T) {
 	if rec.Code != http.StatusOK || cat.lists != 1 {
 		t.Fatalf("status %d lists %d body %s", rec.Code, cat.lists, rec.Body.String())
 	}
-	var got []map[string]string
+	var got []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0]["id"] != artID || got[0]["name"] != "report.pdf" {
+	if len(got) != 1 || got[0].ID != artID || got[0].Name != "report.pdf" {
 		t.Fatalf("body = %#v", got)
 	}
 }

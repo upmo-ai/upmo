@@ -49,8 +49,8 @@ export interface ArtifactsApi {
   /** GET /api/tasks/{id}/artifacts, oldest first. An empty list when the task made none. */
   list(taskId: string): Promise<ArtifactRecord[]>;
   /**
-   * The body of GET /api/artifacts/{id}/download, read as UTF-8 text. Rejects
-   * when the file is missing (404) or cannot be read.
+   * GET /api/artifacts/{id}/text, read as UTF-8 text. Rejects when the file
+   * is missing (404) or cannot be read.
    */
   text(id: string): Promise<string>;
   /**

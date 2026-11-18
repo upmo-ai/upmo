@@ -1,13 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { BrainError, createStubApi } from "./api";
 import {
   causeSentence,
+  createBrainApi,
   providerAddBody,
   providerChangeBody,
   providerTestBody,
   shareBody,
   toAgent,
   toApproval,
+  toArtifactDiff,
+  toArtifactRecord,
   toChat,
   toChatLine,
   toChatSummary,
@@ -542,5 +546,159 @@ describe("toAgent", () => {
     expect(() => toAgent({ ...sent, usable: undefined })).toThrow("The brain sent no usable.");
     expect(() => toAgent({ ...sent, can_manage: undefined })).toThrow("no can_manage");
     expect(() => toAgent({ ...sent, name: 5 })).toThrow("The brain sent no name.");
+  });
+});
+
+describe("toArtifactRecord", () => {
+  const sent = {
+    id: "018f3b2c-7a10-7c4a-8e11-444444444444",
+    name: "run-notes.txt",
+    kind: "text",
+    mime: "text/plain",
+    size: 128,
+    created_at: "2026-11-18T10:00:00Z",
+  };
+
+  it("reads an artifact as the brain sends it", () => {
+    expect(toArtifactRecord(sent)).toEqual(sent);
+    expect(toArtifactRecord({ ...sent, size: 0, kind: "diff" })).toMatchObject({ size: 0, kind: "diff" });
+  });
+
+  it("reads a kind the web does not know as a plain file", () => {
+    expect(toArtifactRecord({ ...sent, kind: "video" }).kind).toBe("binary");
+    expect(toArtifactRecord({ ...sent, kind: "" }).kind).toBe("binary");
+  });
+
+  it("refuses an artifact that is not one", () => {
+    expect(() => toArtifactRecord(null)).toThrow("no artifact");
+    expect(() => toArtifactRecord([])).toThrow("no artifact");
+    expect(() => toArtifactRecord({ ...sent, id: 1 })).toThrow("no id");
+    expect(() => toArtifactRecord({ ...sent, name: 1 })).toThrow("no name");
+    expect(() => toArtifactRecord({ ...sent, kind: 1 })).toThrow("no kind");
+    expect(() => toArtifactRecord({ ...sent, mime: 1 })).toThrow("no mime");
+    expect(() => toArtifactRecord({ ...sent, size: "128" })).toThrow("no size");
+    expect(() => toArtifactRecord({ ...sent, size: -1 })).toThrow("no size");
+    expect(() => toArtifactRecord({ ...sent, size: 1.5 })).toThrow("no size");
+    expect(() => toArtifactRecord({ ...sent, created_at: 1 })).toThrow("no created_at");
+  });
+});
+
+describe("toArtifactDiff", () => {
+  const sent = {
+    files: [
+      { path: "triage.py", before: "old", after: "new" },
+      { path: "rules/receipts.yaml", before: null, after: "added" },
+      { path: "rules/legacy.yaml", before: "gone", after: null },
+    ],
+  };
+
+  it("reads a diff, including one with no changes", () => {
+    expect(toArtifactDiff(sent)).toEqual(sent);
+    expect(toArtifactDiff({ files: [] })).toEqual({ files: [] });
+  });
+
+  it("refuses a diff that is not one", () => {
+    expect(() => toArtifactDiff(null)).toThrow("no diff");
+    expect(() => toArtifactDiff({ files: null })).toThrow("no files");
+    expect(() => toArtifactDiff({})).toThrow("no files");
+    expect(() => toArtifactDiff({ files: [null] })).toThrow("no file");
+    expect(() => toArtifactDiff({ files: [{ before: "a", after: "b" }] })).toThrow("no path");
+    expect(() => toArtifactDiff({ files: [{ path: "  ", before: "a", after: "b" }] })).toThrow("no path");
+    expect(() => toArtifactDiff({ files: [{ path: "a.py", after: "b" }] })).toThrow("no before");
+    expect(() => toArtifactDiff({ files: [{ path: "a.py", before: 1, after: "b" }] })).toThrow("no before");
+    expect(() => toArtifactDiff({ files: [{ path: "a.py", before: null, after: null }] })).toThrow("no change");
+  });
+});
+
+const taskId = "01990000-0000-7000-8000-000000000001";
+const artifactId = "018f3b2c-7a10-7c4a-8e11-444444444444";
+
+describe("createBrainApi artifacts", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the live routes once the brain answers, and maps an unknown kind to a file", async () => {
+    const record = {
+      id: artifactId,
+      name: "run-notes.txt",
+      kind: "text",
+      mime: "text/plain",
+      size: 128,
+      created_at: "2026-11-18T10:00:00Z",
+    };
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        calls.push(`${init?.method ?? "GET"} ${path}`);
+        expect(init?.credentials).toBe("include");
+        if (path === "/api/tasks") return Response.json([]);
+        if (path === `/api/tasks/${taskId}/artifacts`) {
+          return Response.json([record, { ...record, id: "other", name: "clip.mov", kind: "video" }]);
+        }
+        if (path === `/api/tasks/empty/artifacts`) return Response.json([]);
+        if (path === `/api/artifacts/${artifactId}/text`) {
+          return new Response("Run 14", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
+        if (path === `/api/artifacts/${artifactId}/diff`) {
+          return Response.json({ files: [{ path: "a.py", before: null, after: "x" }] });
+        }
+        return Response.json({ error: "no such artifact" }, { status: 404 });
+      }),
+    );
+
+    const stub = createStubApi();
+    const api = createBrainApi(stub);
+    expect(api.artifacts.downloadUrl("run-notes")).toBe(stub.artifacts.downloadUrl("run-notes"));
+
+    const listed = await api.artifacts.list(taskId);
+    expect(listed[0]).toEqual(record);
+    expect(listed[1]).toMatchObject({ id: "other", kind: "binary" });
+    expect(await api.artifacts.list("empty")).toEqual([]);
+    expect(await api.artifacts.text(artifactId)).toBe("Run 14");
+    expect(await api.artifacts.diff(artifactId)).toEqual({ files: [{ path: "a.py", before: null, after: "x" }] });
+    expect(api.artifacts.downloadUrl(artifactId)).toBe(`/api/artifacts/${artifactId}/download`);
+    expect(api.artifacts.downloadUrl("a/b")).toBe("/api/artifacts/a%2Fb/download");
+    expect(calls).toEqual([
+      "GET /api/tasks",
+      `GET /api/tasks/${taskId}/artifacts`,
+      "GET /api/tasks/empty/artifacts",
+      `GET /api/artifacts/${artifactId}/text`,
+      `GET /api/artifacts/${artifactId}/diff`,
+    ]);
+  });
+
+  it("reports a text or diff the brain refuses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path === "/api/tasks") return Response.json([]);
+        if (path.endsWith("/text")) return Response.json({ error: "artifact is not text" }, { status: 415 });
+        if (path.endsWith("/diff")) return Response.json({ error: "artifact is not a diff" }, { status: 415 });
+        return Response.json({ error: "no such artifact" }, { status: 404 });
+      }),
+    );
+    const api = createBrainApi();
+    await expect(api.artifacts.text(artifactId)).rejects.toBeInstanceOf(BrainError);
+    await expect(api.artifacts.text(artifactId)).rejects.toMatchObject({ status: 415, error: "artifact is not text" });
+    await expect(api.artifacts.diff(artifactId)).rejects.toMatchObject({ status: 415, error: "artifact is not a diff" });
+  });
+
+  it("stays on the stub before the probe settles and when GET /api/tasks is 404", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ error: "missing" }, { status: 404 }));
+    vi.stubGlobal("fetch", fetcher);
+    const stub = createStubApi();
+    const api = createBrainApi(stub);
+
+    expect(api.artifacts.downloadUrl("run-notes")).toBe(stub.artifacts.downloadUrl("run-notes"));
+    expect(await api.artifacts.list("aster-digest")).toEqual(await stub.artifacts.list("aster-digest"));
+    expect(await api.artifacts.text("run-notes")).toBe(await stub.artifacts.text("run-notes"));
+    expect(await api.artifacts.diff("triage-changes")).toEqual(await stub.artifacts.diff("triage-changes"));
+    expect(api.artifacts.downloadUrl("run-notes")).toBe(stub.artifacts.downloadUrl("run-notes"));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("/api/tasks");
   });
 });
