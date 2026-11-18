@@ -19,9 +19,13 @@ const (
 const keyBytes = 1024
 
 // ErrArtifact is returned for any artifact or owner that breaks the rules.
+// ErrTooLarge is a text or diff body over MaxViewBytes.
+// ErrKind is a kind the view cannot read, or a diff body that is not a diff.
 var (
 	ErrArtifact = errors.New("artifacts: artifact")
 	ErrGone     = errors.New("artifacts: gone")
+	ErrTooLarge = errors.New("artifacts: too large")
+	ErrKind     = errors.New("artifacts: kind")
 )
 
 // Artifact is one file a task produced, held apart from the sandbox.
@@ -31,6 +35,19 @@ type Artifact struct {
 	Name  string
 	Store string
 	Key   string
+}
+
+// KeepRecord is an artifact plus the metadata stored with it. Kind and Mime
+// may be empty; CheckRecord fills them from the name.
+type KeepRecord struct {
+	Owner string
+	Task  string
+	Name  string
+	Store string
+	Key   string
+	Kind  string // optional; derived via KindFor(Name) when empty
+	Mime  string // optional; derived via Media(Name) when empty
+	Size  int64  // >= 0
 }
 
 // Keep checks and normalises an artifact. Owner and task come back in
@@ -57,6 +74,59 @@ func Keep(owner, task, name, store, key string) (Artifact, error) {
 		return Artifact{}, ErrArtifact
 	}
 	return Artifact{Owner: owner, Task: task, Name: name, Store: store, Key: key}, nil
+}
+
+// CheckRecord validates and normalises a record before it is stored.
+// Owner, task, name, store and key go through Keep. An empty kind comes from
+// KindFor and an empty mime from Media. A bad kind is ErrKind. A bad mime or
+// a negative size is ErrArtifact.
+func CheckRecord(in KeepRecord) (KeepRecord, error) {
+	a, err := Keep(in.Owner, in.Task, in.Name, in.Store, in.Key)
+	if err != nil {
+		return KeepRecord{}, err
+	}
+	media, err := recordMime(in.Mime, a.Name)
+	if err != nil {
+		return KeepRecord{}, err
+	}
+	kind := strings.TrimSpace(in.Kind)
+	if kind == "" {
+		kind = KindFor(a.Name)
+	}
+	if !ValidKind(kind) {
+		return KeepRecord{}, ErrKind
+	}
+	if in.Size < 0 {
+		return KeepRecord{}, ErrArtifact
+	}
+	return KeepRecord{
+		Owner: a.Owner,
+		Task:  a.Task,
+		Name:  a.Name,
+		Store: a.Store,
+		Key:   a.Key,
+		Kind:  kind,
+		Mime:  media,
+		Size:  in.Size,
+	}, nil
+}
+
+// recordMime trims, lowercases and strips parameters. An empty value takes
+// Media(name). The result must be a well-formed type of 1 to 200 characters
+// with no CR or LF.
+func recordMime(media, name string) (string, error) {
+	media = strings.TrimSpace(media)
+	if media == "" {
+		media = Media(name)
+	}
+	if strings.ContainsAny(media, "\r\n") {
+		return "", ErrArtifact
+	}
+	media = normalise(media)
+	if n := utf8.RuneCountInString(media); n < 1 || n > 200 || !wellFormed(media) {
+		return "", ErrArtifact
+	}
+	return media, nil
 }
 
 // Release is what happens to an artifact when its sandbox goes away: nothing.
@@ -101,7 +171,7 @@ func validKey(key string) bool {
 		return false
 	}
 	for _, segment := range strings.Split(key, "/") {
-		if segment == ".." {
+		if segment == "" || segment == "." || segment == ".." {
 			return false
 		}
 	}

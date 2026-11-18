@@ -43,6 +43,12 @@ import {
   type Team,
   type WorkspaceRole,
 } from "../features/identity/types";
+import {
+  artifactKinds,
+  type ArtifactDiff,
+  type ArtifactKind,
+  type ArtifactRecord,
+} from "../features/artifacts/types";
 import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteDecision, type RouteHop } from "../features/models/types";
 import { adapterKey } from "../features/providers/rules";
@@ -89,6 +95,14 @@ function record(value: unknown, what: string): Json {
 
 function text(source: Json, key: string): string {
   const value = source[key];
+  if (typeof value !== "string") throw new Error(`The brain sent no ${key}.`);
+  return value;
+}
+
+/** A string, or null when the brain sends null. Anything else is refused. */
+function textOrNull(source: Json, key: string): string | null {
+  const value = source[key];
+  if (value === null) return null;
   if (typeof value !== "string") throw new Error(`The brain sent no ${key}.`);
   return value;
 }
@@ -467,6 +481,56 @@ export function toAgent(value: unknown): AgentProfile {
   };
 }
 
+/** A kind the web knows. Any other string is a file with no viewer. */
+function artifactKind(value: unknown): ArtifactKind {
+  if (typeof value !== "string") throw new Error("The brain sent no kind.");
+  return (artifactKinds as readonly string[]).includes(value) ? (value as ArtifactKind) : "binary";
+}
+
+/** Size in bytes: a whole number, never negative. */
+function sizeBytes(source: Json): number {
+  const value = source.size;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error("The brain sent no size.");
+  }
+  return value;
+}
+
+/**
+ * An artifact as GET /api/tasks/{id}/artifacts sends it. A kind this web does
+ * not know reads as a plain file, so a newer server still lists the row.
+ */
+export function toArtifactRecord(value: unknown): ArtifactRecord {
+  const source = record(value, "artifact");
+  return {
+    id: text(source, "id"),
+    name: text(source, "name"),
+    kind: artifactKind(source.kind),
+    mime: text(source, "mime"),
+    size: sizeBytes(source),
+    created_at: text(source, "created_at"),
+  };
+}
+
+/**
+ * A diff as GET /api/artifacts/{id}/diff sends it. An empty files list is a
+ * diff with no changes. A file needs a path and at least one side.
+ */
+export function toArtifactDiff(value: unknown): ArtifactDiff {
+  const source = record(value, "diff");
+  return {
+    files: list(source.files, "files").map((item) => {
+      const file = record(item, "file");
+      const path = text(file, "path");
+      if (path.trim() === "") throw new Error("The brain sent no path.");
+      const before = textOrNull(file, "before");
+      const after = textOrNull(file, "after");
+      if (before === null && after === null) throw new Error("The brain sent no change.");
+      return { path, before, after };
+    }),
+  };
+}
+
 /** The answer of POST /api/providers/test: ok, and a plain sentence when it is not. */
 export function toTestResult(value: unknown): TestResult {
   const source = record(value, "test result");
@@ -568,6 +632,22 @@ async function call(path: string, init?: { method: "POST" | "PUT" | "PATCH" | "D
   return body;
 }
 
+/** GET a route whose body is text, not JSON. A refusal still carries the JSON error the brain sends. */
+async function callText(path: string): Promise<string> {
+  const response = await fetch(path, { credentials: "include" });
+  if (!response.ok) {
+    let message: string | undefined;
+    try {
+      const body: unknown = await response.json();
+      if (isRecord(body) && typeof body.error === "string") message = body.error;
+    } catch {
+      // A refusal can come with no JSON body.
+    }
+    throw new BrainError(response.status, message);
+  }
+  return response.text();
+}
+
 function taskPath(taskId: string) {
   return `/api/tasks/${encodeURIComponent(taskId)}`;
 }
@@ -596,13 +676,17 @@ function agentPath(id: string) {
   return `/api/agents/${encodeURIComponent(id)}`;
 }
 
+function artifactPath(id: string) {
+  return `/api/artifacts/${encodeURIComponent(id)}`;
+}
+
 type Source = "brain" | "stub";
 
 /**
  * The stub client with its task methods (list, get, advance, create, message),
  * its approvals, its notifications, its member list, its task shares, its
- * chats, its provider accounts and its agents answered by the brain instead. Everything
- * else stays on the stub.
+ * chats, its provider accounts, its agents and its artifacts answered by the
+ * brain instead. Everything else stays on the stub.
  *
  * The first task call asks GET /api/tasks. When that fails the way a missing
  * brain does (no network, or 404), every task method uses the stub for the rest
@@ -787,6 +871,26 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async retry(id, lineId, picks) {
         if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, picks);
         await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: { ...picks } });
+      },
+    },
+    artifacts: {
+      async list(taskId) {
+        if ((await chosen()) === "stub") return stub.artifacts.list(taskId);
+        return list(await call(`${taskPath(taskId)}/artifacts`), "artifacts").map(toArtifactRecord);
+      },
+      async text(id) {
+        if ((await chosen()) === "stub") return stub.artifacts.text(id);
+        return callText(`${artifactPath(id)}/text`);
+      },
+      async diff(id) {
+        if ((await chosen()) === "stub") return stub.artifacts.diff(id);
+        return toArtifactDiff(await call(`${artifactPath(id)}/diff`));
+      },
+      // Synchronous, so it can only use the probe once it has answered. Before
+      // that, and whenever the session stayed on the stub, the sample URL stands.
+      downloadUrl(id) {
+        if (settled === "brain") return `${artifactPath(id)}/download`;
+        return stub.artifacts.downloadUrl(id);
       },
     },
   };

@@ -28,8 +28,8 @@ type Access struct {
 // so the record stays after the sandbox that produced it has gone.
 // The caller needs artifact:view as well as artifact:create, because the
 // returned id is read back under row security.
-func (s Store) Put(ctx context.Context, access Access, owner, task, name, store, key string) (string, error) {
-	a, err := Keep(owner, task, name, store, key)
+func (s Store) Put(ctx context.Context, access Access, in KeepRecord) (string, error) {
+	a, err := CheckRecord(in)
 	if err != nil {
 		return "", err
 	}
@@ -46,9 +46,11 @@ func (s Store) Put(ctx context.Context, access Access, owner, task, name, store,
 
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO artifacts.artifacts (object_type, owner_user_id, task_id, name, store, object_key, visibility)
-		VALUES ('artifact', $1::uuid, $2::uuid, $3, $4, $5, 'private')
-		RETURNING id::text`, a.Owner, a.Task, a.Name, a.Store, a.Key).Scan(&id)
+		INSERT INTO artifacts.artifacts (
+			object_type, owner_user_id, task_id, name, store, object_key, visibility, kind, mime, size_bytes)
+		VALUES ('artifact', $1::uuid, $2::uuid, $3, $4, $5, 'private', $6, $7, $8)
+		RETURNING id::text`,
+		a.Owner, a.Task, a.Name, a.Store, a.Key, a.Kind, a.Mime, a.Size).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("artifacts: put: %w", err)
 	}
@@ -155,10 +157,10 @@ func (s Store) ListByTask(ctx context.Context, access Access, taskID string) ([]
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, task_id::text, name, store, object_key
+		SELECT id::text, task_id::text, name, store, object_key, kind, mime, size_bytes, created_at
 		FROM artifacts.artifacts
 		WHERE task_id = $1::uuid
-		ORDER BY name`, taskID)
+		ORDER BY created_at ASC, id ASC`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: list: %w", err)
 	}
@@ -167,7 +169,7 @@ func (s Store) ListByTask(ctx context.Context, access Access, taskID string) ([]
 	out := make([]Record, 0)
 	for rows.Next() {
 		var rec Record
-		if err := rows.Scan(&rec.ID, &rec.Task, &rec.Name, &rec.Store, &rec.Key); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.Task, &rec.Name, &rec.Store, &rec.Key, &rec.Kind, &rec.Mime, &rec.Size, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("artifacts: list: %w", err)
 		}
 		out = append(out, rec)
@@ -200,9 +202,10 @@ func (s Store) Get(ctx context.Context, access Access, id string) (Record, error
 
 	var rec Record
 	err = tx.QueryRow(ctx, `
-		SELECT id::text, task_id::text, name, store, object_key
+		SELECT id::text, task_id::text, name, store, object_key, kind, mime, size_bytes, created_at
 		FROM artifacts.artifacts
-		WHERE id = $1::uuid`, id).Scan(&rec.ID, &rec.Task, &rec.Name, &rec.Store, &rec.Key)
+		WHERE id = $1::uuid`, id).Scan(
+		&rec.ID, &rec.Task, &rec.Name, &rec.Store, &rec.Key, &rec.Kind, &rec.Mime, &rec.Size, &rec.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrGone
 	}
