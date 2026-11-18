@@ -10,8 +10,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/backup"
@@ -93,7 +91,7 @@ func migrateCommand() error {
 		}
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dbURL)
+	pool, err := brainops.OpenCommandPool(ctx, dbURL)
 	if err != nil {
 		return err
 	}
