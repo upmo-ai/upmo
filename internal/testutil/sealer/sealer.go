@@ -1,5 +1,6 @@
 // Package sealer gives integration tests a real password sealer: AES-256-GCM
-// through the gateway master keyring, stored the way cmd/brain stores one.
+// through the gateway master keyring, stored the way brainops.NewPasswordSealer
+// stores one (key id, nonce and ciphertext joined by colons).
 package sealer
 
 import (

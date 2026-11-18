@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/fake"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
@@ -525,6 +526,143 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	}
 	if calls, _ := doneFrame["tool_calls"].([]any); len(calls) != 1 {
 		t.Fatalf("done tool_calls = %v", doneFrame)
+	}
+}
+
+func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	rate := 1.0
+	if err := (postgres.Store{Pool: owner}).ReplaceCatalog(ctx, "v1", []domain.CatalogRow{{
+		Model:         fake.ModelUsage,
+		Version:       "v1",
+		ContextWindow: 200000,
+		Price: domain.Price{
+			Version: "v1", InputPerMTok: &rate, OutputPerMTok: &rate,
+			CacheReadMTok: &rate, CacheWriteMTok: &rate, ContextWindow: 200000,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('metered-fake', 'fake', 'house', 'metered', true, 'everyone')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO gateway.routes (name, capability, decision, installed) VALUES ('usage-chat', 'chat', '', true), ('usage-decide', 'decide', 'yesno', true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
+		SELECT id, 1, (SELECT id FROM gateway.provider_accounts WHERE name = 'metered-fake'), $1
+		FROM gateway.routes
+	`, fake.ModelUsage); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
+	master := mustMaster(t)
+	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpserver.Protect(handler))
+	t.Cleanup(srv.Close)
+	derived := mustDerived(t, master)
+	body := map[string]any{
+		"route": "usage-chat", "prompt": "hello", "max_output_tokens": 512,
+		"tool_choice": map[string]any{"mode": "tool", "name": "search"},
+		"tools":       []map[string]any{{"name": "search", "schema": map[string]any{"type": "object"}}},
+	}
+	const asked = "max_output_tokens=512 tool_choice=tool:search"
+
+	chat := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Chat", body)
+	if chat["text"] != asked {
+		t.Fatalf("adapter was not asked for 512 output tokens: %v", chat)
+	}
+	u, _ := chat["usage"].(map[string]any)
+	if u["input_tokens"] != float64(100) || u["output_tokens"] != float64(50) || u["cache_read"] != float64(25) ||
+		u["cache_write"] != float64(10) || u["reasoning"] != float64(5) || u["arrived"] != true {
+		t.Fatalf("chat usage = %v", u)
+	}
+	if chat["cost_micro_usd"] != float64(185) || chat["context_window"] != float64(200000) || chat["model"] != fake.ModelUsage {
+		t.Fatalf("chat metadata = %v", chat)
+	}
+
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/upmo.gateway.v1.Gateway/ChatStream", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := svcsig.Sign(derived, svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/ChatStream", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var streamed strings.Builder
+	var done map[string]any
+	scan := bufio.NewScanner(res.Body)
+	for scan.Scan() {
+		var line map[string]any
+		if err := json.Unmarshal(scan.Bytes(), &line); err != nil {
+			t.Fatal(err)
+		}
+		if d, ok := line["delta"].(string); ok {
+			streamed.WriteString(d)
+		}
+		if d, ok := line["done"].(map[string]any); ok {
+			done = d
+		}
+	}
+	if strings.TrimSpace(streamed.String()) != asked {
+		t.Fatalf("stream was not asked for 512 output tokens: %q", streamed.String())
+	}
+	if done["input_tokens"] != float64(100) || done["output_tokens"] != float64(50) || done["cache_read"] != float64(25) ||
+		done["cache_write"] != float64(10) || done["reasoning"] != float64(5) || done["arrived"] != true {
+		t.Fatalf("done frame = %v", done)
+	}
+	if done["cost_micro_usd"] != float64(185) || done["context_window"] != float64(200000) {
+		t.Fatalf("done metadata = %v", done)
+	}
+
+	dec := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{"route": "usage-decide", "kind": "yesno", "prompt": "ok?"})
+	du, _ := dec["usage"].(map[string]any)
+	if du["cache_read"] != float64(25) || du["cache_write"] != float64(10) || du["reasoning"] != float64(5) ||
+		du["cost_micro_usd"] != float64(185) || du["context_window"] != float64(200000) || du["arrived"] != true {
+		t.Fatalf("decide usage = %v", du)
+	}
+
+	// Every call is in the ledger with every counter stored.
+	rows, err := owner.Query(ctx, `
+		SELECT input_tokens, output_tokens, cache_read, cache_write, reasoning, usage_arrived
+		FROM gateway.ledger WHERE route IN ('usage-chat', 'usage-decide')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var in, out, cr, cw, rs int
+		var arrived bool
+		if err := rows.Scan(&in, &out, &cr, &cw, &rs, &arrived); err != nil {
+			t.Fatal(err)
+		}
+		if in != 100 || out != 50 || cr != 25 || cw != 10 || rs != 5 || !arrived {
+			t.Fatalf("ledger row = %d %d %d %d %d %v", in, out, cr, cw, rs, arrived)
+		}
+		n++
+	}
+	if n != 3 {
+		t.Fatalf("ledger rows = %d, want 3 (chat, stream, decide)", n)
 	}
 }
 

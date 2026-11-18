@@ -502,7 +502,16 @@ func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
 	}
 }
 
-func TestAgentsThroughTheBrainRoutes(t *testing.T) {
+// agentsRig is the brain mounted on a fresh database with one signed-in owner.
+type agentsRig struct {
+	owner  *pgxpool.Pool
+	pool   *pgxpool.Pool
+	served http.Handler
+	cookie *http.Cookie
+	uid    identity.UserID
+}
+
+func newAgentsRig(t *testing.T) agentsRig {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	for _, step := range []struct {
@@ -556,7 +565,13 @@ func TestAgentsThroughTheBrainRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	served := httpserver.NewGuarded("127.0.0.1:0", handler).Handler
+	return agentsRig{owner: owner, pool: pool, served: served, cookie: cookie, uid: uid}
+}
 
+func TestAgentsThroughTheBrainRoutes(t *testing.T) {
+	rig := newAgentsRig(t)
+	owner, pool, served, cookie, uid := rig.owner, rig.pool, rig.served, rig.cookie, rig.uid
+	ctx := context.Background()
 	createReq := httptest.NewRequest(http.MethodPost, "/api/agents",
 		strings.NewReader(`{"name":"AP Clerk","instructions":"Check VAT.","plan_approval":"always"}`))
 	createReq.AddCookie(cookie)
@@ -638,6 +653,200 @@ func TestAgentsThroughTheBrainRoutes(t *testing.T) {
 	}}
 	if _, err := lookup.Agent(ctx, access, routed.ID); err != nil {
 		t.Fatalf("the reply worker cannot look up the agent the picker offers: %v", err)
+	}
+}
+
+func (r agentsRig) call(method, path, body string) *httptest.ResponseRecorder {
+	var req *http.Request
+	if body == "" {
+		req = httptest.NewRequest(method, path, nil)
+	} else {
+		req = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	req.AddCookie(r.cookie)
+	rec := httptest.NewRecorder()
+	r.served.ServeHTTP(rec, req)
+	return rec
+}
+
+type agentRow struct {
+	Instructions, Route, Provider, Model string
+}
+
+func (r agentsRig) row(t *testing.T, id string) agentRow {
+	t.Helper()
+	var row agentRow
+	if err := r.owner.QueryRow(context.Background(), `
+		SELECT instructions, coalesce(default_route, ''), coalesce(default_model_provider, ''), coalesce(default_model_id, '')
+		FROM agents.agents WHERE id = $1::uuid`, id).Scan(&row.Instructions, &row.Route, &row.Provider, &row.Model); err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
+func TestAgentsAcceptLegacyAndNewFieldNamesAndDeleteThroughTheBrainRoutes(t *testing.T) {
+	rig := newAgentsRig(t)
+
+	rec := rig.call(http.MethodPost, "/api/agents",
+		`{"name":"Research","description":"d","prompt_overlay":"p","route":"fast","model_provider":"OpenAI","model_id":"gpt-x","tool_classes":["web"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create legacy = %d %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["prompt_overlay"] != "p" || raw["instructions"] != "p" || raw["route"] != "fast" || raw["default_route"] != "fast" ||
+		raw["model_provider"] != "OpenAI" || raw["default_model_provider"] != "OpenAI" ||
+		raw["model_id"] != "gpt-x" || raw["default_model_id"] != "gpt-x" || raw["slug"] != "research" || raw["version"] != float64(1) {
+		t.Fatalf("create legacy response = %v", raw)
+	}
+	if classes, _ := raw["tool_classes"].([]any); len(classes) != 1 || classes[0] != "web" {
+		t.Fatalf("create legacy tool_classes = %v", raw["tool_classes"])
+	}
+	id, _ := raw["id"].(string)
+	var storedClasses []string
+	if err := rig.owner.QueryRow(context.Background(), `SELECT tool_classes FROM agents.agents WHERE id = $1::uuid`, id).Scan(&storedClasses); err != nil ||
+		len(storedClasses) != 1 || storedClasses[0] != "web" {
+		t.Fatalf("legacy create stored tool_classes %v %v", storedClasses, err)
+	}
+	if got := rig.row(t, id); got != (agentRow{"p", "fast", "OpenAI", "gpt-x"}) {
+		t.Fatalf("legacy create stored %+v", got)
+	}
+
+	// The new names store the same way.
+	rec = rig.call(http.MethodPost, "/api/agents",
+		`{"name":"Bookkeeper","slug":"ap-clerk","instructions":"Check VAT.","default_route":"work","default_model_provider":"Anthropic","default_model_id":"m","plan_approval":"always"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create new = %d %s", rec.Code, rec.Body.String())
+	}
+	var second map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	secondID, _ := second["id"].(string)
+	if second["slug"] != "ap-clerk" || second["plan_approval"] != "always" {
+		t.Fatalf("create new response = %v", second)
+	}
+	if got := rig.row(t, secondID); got != (agentRow{"Check VAT.", "work", "Anthropic", "m"}) {
+		t.Fatalf("new create stored %+v", got)
+	}
+
+	// PATCH takes the legacy names and the agent reads back with them.
+	rec = rig.call(http.MethodPatch, "/api/agents/"+id, `{"route":"deep","prompt_overlay":"New overlay","model_provider":"Anthropic","model_id":"claude-x"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch legacy = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = rig.call(http.MethodGet, "/api/agents/"+id, "")
+	var back map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back["default_route"] != "deep" || back["instructions"] != "New overlay" || back["prompt_overlay"] != "New overlay" ||
+		back["default_model_provider"] != "Anthropic" || back["default_model_id"] != "claude-x" || back["version"] != float64(2) {
+		t.Fatalf("read back after legacy patch = %v", back)
+	}
+	if classes, _ := back["tool_classes"].([]any); len(classes) != 1 || classes[0] != "web" {
+		t.Fatalf("read back tool_classes = %v", back["tool_classes"])
+	}
+	if got := rig.row(t, id); got != (agentRow{"New overlay", "deep", "Anthropic", "claude-x"}) {
+		t.Fatalf("legacy patch stored %+v", got)
+	}
+
+	// PATCH takes the new names too.
+	if rec = rig.call(http.MethodPatch, "/api/agents/"+id, `{"default_route":"fast","instructions":"Newer"}`); rec.Code != http.StatusOK {
+		t.Fatalf("patch new = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rig.row(t, id); got != (agentRow{"Newer", "fast", "Anthropic", "claude-x"}) {
+		t.Fatalf("new patch stored %+v", got)
+	}
+
+	if rec = rig.call(http.MethodDelete, "/api/agents/"+id, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = rig.call(http.MethodGet, "/api/agents/"+id, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted agent read = %d", rec.Code)
+	}
+	var left int
+	if err := rig.owner.QueryRow(context.Background(), `SELECT count(*) FROM agents.agents WHERE id = $1::uuid`, id).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("deleted agent rows = %d %v", left, err)
+	}
+}
+
+func TestAgentsListCarriesUsableAndEmptySlicesThroughTheBrainRoutes(t *testing.T) {
+	rig := newAgentsRig(t)
+	const accountID = "e2e00000-0000-7000-8000-00000000f001"
+	for _, stmt := range []string{
+		`INSERT INTO gateway.provider_accounts (id, name, adapter, credential_ref, plan_kind, house, visibility, provider, status)
+			VALUES ('` + accountID + `', 'house-fake', 'fake', 'house', 'local', true, 'everyone', 'e2e', 'Connected')`,
+		`INSERT INTO gateway.provider_models (account_id, model, position) VALUES ('` + accountID + `', 'fake-ok', 1)`,
+		`INSERT INTO identity.teams (id, name) VALUES ('e2e00000-0000-7000-8000-00000000f201', 'Elsewhere')`,
+		`INSERT INTO gateway.routes (id, name, capability, decision, installed) VALUES
+			('e2e00000-0000-7000-8000-00000000f101', 'house-main', 'chat', '', true)`,
+		`INSERT INTO gateway.routes (id, name, capability, decision, installed, owner_user_id, visibility, team_ids) VALUES
+			('e2e00000-0000-7000-8000-00000000f102', 'managed-only', 'chat', '', false,
+			 'e2e00000-0000-7000-8000-00000000f301', 'team', '{e2e00000-0000-7000-8000-00000000f201}')`,
+		`INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES
+			('e2e00000-0000-7000-8000-00000000f101', 1, '` + accountID + `', 'fake-ok'),
+			('e2e00000-0000-7000-8000-00000000f102', 1, '` + accountID + `', 'fake-ok')`,
+	} {
+		if _, err := rig.owner.Exec(context.Background(), stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, body := range []string{
+		`{"name":"On route","default_route":"house-main"}`,
+		`{"name":"By model","default_model_provider":"e2e","default_model_id":"fake-ok"}`,
+		`{"name":"Off","default_route":"house-main","enabled":false}`,
+		`{"name":"On managed only","default_route":"managed-only"}`,
+	} {
+		if rec := rig.call(http.MethodPost, "/api/agents", body); rec.Code != http.StatusCreated {
+			t.Fatalf("create %s = %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The route exists and the person manages it, but may not call it.
+	rec := rig.call(http.MethodGet, "/api/gateway/routes", "")
+	var listedRoutes []struct {
+		Name      string `json:"name"`
+		CanUse    bool   `json:"can_use"`
+		CanManage bool   `json:"can_manage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listedRoutes); err != nil {
+		t.Fatalf("routes = %d %s", rec.Code, rec.Body.String())
+	}
+	var sawManaged bool
+	for _, r := range listedRoutes {
+		if r.Name == "managed-only" {
+			sawManaged = true
+			if r.CanUse || !r.CanManage {
+				t.Fatalf("managed-only route = %+v, want manage without use", r)
+			}
+		}
+	}
+	if !sawManaged {
+		t.Fatalf("managed-only route not listed: %s", rec.Body.String())
+	}
+
+	rec = rig.call(http.MethodGet, "/api/agents", "")
+	var listed []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("list = %d %s", rec.Code, rec.Body.String())
+	}
+	usable := map[string]bool{}
+	for _, a := range listed {
+		usable[a["name"].(string)], _ = a["usable"].(bool)
+		for _, key := range []string{"tool_classes", "connector_ids", "knowledge_folder_ids", "check_criteria", "team_ids", "team_names"} {
+			if got, ok := a[key].([]any); !ok || got == nil {
+				t.Fatalf("%s of %v is %v, want an empty list", key, a["name"], a[key])
+			}
+		}
+	}
+	want := map[string]bool{"On route": true, "By model": true, "Off": false, "On managed only": false}
+	for name, ok := range want {
+		if got, found := usable[name]; !found || got != ok {
+			t.Fatalf("usable = %v, want %v", usable, want)
+		}
 	}
 }
 

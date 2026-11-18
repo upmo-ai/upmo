@@ -14,9 +14,6 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
-// Brain is an alias for Config used by pkg/brain.
-type Brain = Config
-
 // Config holds the settings brain reads at start.
 type Config struct {
 	// Env is the deployment environment (UPMO_ENV): production by default,
