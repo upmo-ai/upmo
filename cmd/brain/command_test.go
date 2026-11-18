@@ -75,3 +75,23 @@ func TestMigrateBackupRestoreRefuseDevelopmentValuesInProduction(t *testing.T) {
 		}
 	})
 }
+
+// pgxpool.New echoes the URL in its parse error (userinfo and query string,
+// with only the password masked). pool_max_conns is read by pgxpool alone, so
+// the URL passes the plaintext check and must still reach the terminal as the
+// scrubbed message.
+func TestMigrateErrorDoesNotEchoDatabaseURL(t *testing.T) {
+	const marker = "s3cret-pw"
+	t.Setenv("UPMO_DATABASE_URL", "postgres://opuser:"+marker+"@127.0.0.1:1/x?pool_max_conns=abc")
+	err := command("migrate", nil)
+	if err == nil {
+		t.Fatal("migrate err = nil, want an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, marker) || strings.Contains(msg, "opuser") {
+		t.Fatalf("migrate error leaked the URL credentials: %q", msg)
+	}
+	if want := "brain: UPMO_DATABASE_URL could not be opened"; !strings.Contains(msg, want) {
+		t.Fatalf("migrate err = %q, want %q", msg, want)
+	}
+}
