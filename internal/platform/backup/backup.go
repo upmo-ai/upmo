@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -91,11 +92,16 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, opts BackupOptions) (Backup
 		return BackupResult{}, err
 	}
 
-	tmpDir, err := createBackupTempDir(outPath, opts.TempDir)
+	tmpDir, lockFile, err := createBackupStaging(outPath, opts.TempDir)
 	if err != nil {
 		return BackupResult{}, err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	// Closing the lock file releases its flock; a killed backup leaves the
+	// staging dir behind for the next backup's sweep.
+	defer func() {
+		_ = lockFile.Close()
+		_ = os.RemoveAll(tmpDir)
+	}()
 
 	payloadPlainPath := filepath.Join(tmpDir, payloadPlainEntryName)
 	meta, versions, innerCount, plainPayloadSHA, err := buildPayloadTarGz(ctx, pool, opts, tmpDir, payloadPlainPath)
@@ -175,19 +181,86 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, opts BackupOptions) (Backup
 	}, nil
 }
 
-func createBackupTempDir(outPath, configuredTempDir string) (string, error) {
+const (
+	// backupStagingPrefix names a backup's plaintext staging dir inside the
+	// base dir.
+	backupStagingPrefix = ".upmo-backup-"
+	// stagingLockName is the staging dir file whose exclusive flock marks the
+	// dir live for the life of one backup.
+	stagingLockName = ".lock"
+	// stagingCreateGrace is how long a staging dir without a lock file is left
+	// alone, so a concurrent backup that has just created its dir but not yet
+	// its lock file is never swept.
+	stagingCreateGrace = time.Minute
+)
+
+// createBackupStaging sweeps stale staging dirs killed backups left in the
+// base dir, then creates a new staging dir whose lock file is held under an
+// exclusive flock for the life of the backup, so a concurrent backup's sweep
+// leaves it alone. The caller closes the lock file and removes the dir when
+// the backup ends.
+func createBackupStaging(outPath, configuredTempDir string) (dir string, lockFile *os.File, err error) {
 	base := strings.TrimSpace(configuredTempDir)
 	if base == "" {
 		base = filepath.Dir(outPath)
 	}
 	if err := os.MkdirAll(base, 0o750); err != nil {
-		return "", fmt.Errorf("backup: create temp base dir %q: %w", base, err)
+		return "", nil, fmt.Errorf("backup: create temp base dir %q: %w", base, err)
 	}
-	tmpDir, err := os.MkdirTemp(base, ".upmo-backup-*")
+	if err := sweepBackupStaging(base); err != nil {
+		return "", nil, err
+	}
+	tmpDir, err := os.MkdirTemp(base, backupStagingPrefix+"*")
 	if err != nil {
-		return "", fmt.Errorf("backup: create temp dir: %w", err)
+		return "", nil, fmt.Errorf("backup: create temp dir: %w", err)
 	}
-	return tmpDir, nil
+	lock, err := os.OpenFile(filepath.Join(tmpDir, stagingLockName), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // lock file created in private staging dir
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", nil, fmt.Errorf("backup: create staging lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		_ = os.RemoveAll(tmpDir)
+		return "", nil, fmt.Errorf("backup: lock staging dir: %w", err)
+	}
+	return tmpDir, lock, nil
+}
+
+// sweepBackupStaging removes the staging dirs killed backups left in base. A
+// dir is stale once its lock file can be locked here — a running backup holds
+// that lock — and a dir with no lock file was left by an older build, so it
+// is stale once it is past the create grace window.
+func sweepBackupStaging(base string) error {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return fmt.Errorf("backup: read temp base dir %q: %w", base, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), backupStagingPrefix) {
+			continue
+		}
+		dir := filepath.Join(base, entry.Name())
+		lock, err := os.OpenFile(filepath.Join(dir, stagingLockName), os.O_RDWR, 0o600) //nolint:gosec // sweep only opens lock files inside the base dir
+		if errors.Is(err, os.ErrNotExist) {
+			info, statErr := entry.Info()
+			if statErr != nil || time.Since(info.ModTime()) < stagingCreateGrace {
+				continue
+			}
+			_ = os.RemoveAll(dir)
+			continue
+		}
+		if err != nil {
+			continue // an unreadable lock is left for the operator
+		}
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = lock.Close() // a live backup holds the lock
+			continue
+		}
+		_ = lock.Close() // closing releases the lock just taken
+		_ = os.RemoveAll(dir)
+	}
+	return nil
 }
 
 func createRestoreTempDir(inPath, configuredTempDir string) (string, error) {

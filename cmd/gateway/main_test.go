@@ -1,10 +1,95 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
+
+// run() reads the real environment, so its guard runs on t.Setenv values. An
+// empty UPMO_ENV is production, like an unset one, and every refusal lands
+// before any pool is opened.
+func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
+	freshKey := func(t *testing.T) string {
+		t.Helper()
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			t.Fatal(err)
+		}
+		return base64.StdEncoding.EncodeToString(raw)
+	}
+	freshDBURL := func(t *testing.T) string {
+		t.Helper()
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			t.Fatal(err)
+		}
+		return "postgres://upmo:" + hex.EncodeToString(raw) + "@postgres:5432/upmo?sslmode=disable"
+	}
+	base := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("UPMO_ENV", "")
+		t.Setenv("UPMO_DATABASE_URL", freshDBURL(t))
+		t.Setenv("UPMO_PUBLIC_URL", "http://127.0.0.1:8082")
+	}
+	for _, tc := range []struct {
+		name, key, value, want string
+	}{
+		{
+			name:  "master key",
+			key:   "UPMO_MASTER_KEY",
+			value: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)),
+			want:  "UPMO_MASTER_KEY uses a development or weak key",
+		},
+		{
+			name:  "service key",
+			key:   "UPMO_SERVICE_KEY",
+			value: "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32)),
+			want:  "UPMO_SERVICE_KEY uses a development or weak key",
+		},
+		{
+			name:  "credential",
+			key:   "UPMO_CREDENTIAL_house",
+			value: "local-dev-not-a-provider-key",
+			want:  "UPMO_CREDENTIAL_house uses a development value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base(t)
+			t.Setenv(tc.key, tc.value)
+			err := run()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run err = %v, want it to say %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), tc.value) {
+				t.Fatalf("run err holds the value: %v", err)
+			}
+		})
+	}
+	t.Run("database url", func(t *testing.T) {
+		base(t)
+		t.Setenv("UPMO_DATABASE_URL", "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable")
+		err := run()
+		if err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_URL uses a development or empty password") {
+			t.Fatalf("run err = %v", err)
+		}
+		if strings.Contains(err.Error(), "upmo:upmo") {
+			t.Fatalf("run err holds the credentials: %v", err)
+		}
+	})
+	t.Run("master key required", func(t *testing.T) {
+		base(t)
+		t.Setenv("UPMO_SERVICE_KEY", "upmo_svc_"+freshKey(t))
+		err := run()
+		if err == nil || !strings.Contains(err.Error(), "UPMO_MASTER_KEY is required in production") {
+			t.Fatalf("run err = %v", err)
+		}
+	})
+}
 
 func TestOpenPoolScrubsPassword(t *testing.T) {
 	const marker = "owner-secret-marker"

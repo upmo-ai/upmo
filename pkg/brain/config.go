@@ -9,6 +9,7 @@ import (
 
 // Config holds the settings brain reads at startup.
 type Config struct {
+	Env                string
 	DatabaseURL        string
 	DatabaseAppURL     string
 	SessionIdle        time.Duration
@@ -58,6 +59,7 @@ func LoadConfig() (Config, error) {
 
 func fromInternalConfig(cfg config.Config) Config {
 	return Config{
+		Env:                string(cfg.Env),
 		DatabaseURL:        cfg.DatabaseURL,
 		DatabaseAppURL:     cfg.DatabaseAppURL,
 		SessionIdle:        cfg.SessionIdle,
@@ -96,6 +98,7 @@ func fromInternalConfig(cfg config.Config) Config {
 
 func toInternalConfig(cfg Config) config.Config {
 	return config.Config{
+		Env:                config.Env(cfg.Env),
 		DatabaseURL:        cfg.DatabaseURL,
 		DatabaseAppURL:     cfg.DatabaseAppURL,
 		SessionIdle:        cfg.SessionIdle,

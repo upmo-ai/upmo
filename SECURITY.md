@@ -35,6 +35,10 @@ In scope: the code in this repository, the web build and the scripts in this rep
 
 Out of scope: problems in a dependency that do not depend on how Upmo uses it (report those upstream), and findings that need a compromised host or administrator access to begin with.
 
+## Running Upmo securely
+
+Operational hardening — volume encryption, backup encryption and key handling — is covered in [docs/operations/data-at-rest.md](docs/operations/data-at-rest.md).
+
 ## Safe harbour
 
 We will not take legal action against research done in good faith under this policy: you avoid harm to users and their data, stop testing once you have proof, do not access more data than you need, and give us a reasonable time to fix the problem before you disclose it.

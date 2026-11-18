@@ -50,6 +50,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # The local stack runs with the development-only keys and passwords
+      # embedded below, so it says so.
+      UPMO_ENV: development
       UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
       # Dev only. Never reuse outside the local compose stack. The request
       # pool logs in as the app role, which owns nothing.
@@ -101,6 +104,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # The local stack runs with the development-only keys and passwords
+      # embedded below, so it says so.
+      UPMO_ENV: development
       UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
       UPMO_PUBLIC_URL: http://127.0.0.1:8082
       UPMO_LISTEN_ADDR: ":8082"
@@ -145,6 +151,9 @@ services:
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - ${UPMO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
     environment:
+      # The local stack runs with the development-only service key embedded
+      # below, so it says so.
+      UPMO_ENV: development
       UPMO_LISTEN_ADDR: ":8083"
       UPMO_PROXY_ADDR: ":3128"
       # auto uses Docker when the socket answers and the stub otherwise.

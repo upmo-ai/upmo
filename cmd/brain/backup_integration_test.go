@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -48,6 +49,7 @@ func poolURL(t *testing.T, pool *pgxpool.Pool) string {
 }
 
 func TestBackupRestoreFullRoundTrip(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -461,6 +463,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 }
 
 func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	oldOwner := pgtest.New(t)
 
@@ -563,6 +566,7 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 }
 
 func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -636,6 +640,7 @@ func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
 }
 
 func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -774,7 +779,96 @@ func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) 
 	}
 }
 
+func TestBackupNoEncryptRefusedInProductionWorksInDevelopment(t *testing.T) {
+	ctx := context.Background()
+
+	// Production (UPMO_ENV unset or empty): the refusal is checked before the
+	// env guard and before any pool or keyring opens, so it is what surfaces
+	// even though the pgtest URL's password is one the guard refuses in
+	// production.
+	t.Setenv("UPMO_ENV", "")
+	freshKey := make([]byte, 32)
+	if _, err := rand.Read(freshKey); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(freshKey))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	srcOwner := pgtest.New(t)
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+
+	refusedPath := filepath.Join(t.TempDir(), "refused.tar.gz")
+	var sink bytes.Buffer
+	err := backupCommand([]string{"--out", refusedPath, "--no-encrypt"}, &sink)
+	if err == nil || !strings.Contains(err.Error(), "brain: backup --no-encrypt is refused when UPMO_ENV=production") {
+		t.Fatalf("expected production --no-encrypt refusal, got %v", err)
+	}
+	if _, statErr := os.Stat(refusedPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("refused backup wrote an archive: %v", statErr)
+	}
+
+	// Development: --no-encrypt works and restores without
+	// --require-encrypted, which refuses the same archive.
+	t.Setenv("UPMO_ENV", "development")
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("brainops.MigrateAll(src): %v", err)
+	}
+	plainArchive := filepath.Join(t.TempDir(), "plain.tar.gz")
+	var out bytes.Buffer
+	if err := backupCommand([]string{"--out", plainArchive, "--no-encrypt"}, &out); err != nil {
+		t.Fatalf("backupCommand(--no-encrypt): %v", err)
+	}
+	mPlain, err := backup.Inspect(plainArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mPlain.Encrypted {
+		t.Fatal("expected encrypted=false for --no-encrypt backup")
+	}
+
+	dstPlain := pgtest.New(t)
+	dstPlainArt := t.TempDir()
+	dstPlainKnow := t.TempDir()
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, dstPlain))
+	t.Setenv("UPMO_ARTIFACTS_DIR", dstPlainArt)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", dstPlainKnow)
+	var restoreOut bytes.Buffer
+	if err := restoreCommand([]string{"--in", plainArchive, "--require-encrypted"}, &restoreOut); err == nil {
+		t.Fatal("expected --require-encrypted to reject unencrypted archive")
+	}
+	if err := restoreCommand([]string{"--in", plainArchive}, &restoreOut); err != nil {
+		t.Fatalf("restoreCommand(--no-encrypt): %v", err)
+	}
+
+	// An encrypted backup with the same key still round-trips.
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	encArchive := filepath.Join(t.TempDir(), "enc.tar.gz")
+	out.Reset()
+	if err := backupCommand([]string{"--out", encArchive}, &out); err != nil {
+		t.Fatalf("backupCommand(encrypted): %v", err)
+	}
+	mEnc, err := backup.Inspect(encArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mEnc.Encrypted || mEnc.MasterKeyID != "k1" {
+		t.Fatalf("encrypted manifest: encrypted=%t master_key_id=%q", mEnc.Encrypted, mEnc.MasterKeyID)
+	}
+	dstEnc := pgtest.New(t)
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, dstEnc))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	restoreOut.Reset()
+	if err := restoreCommand([]string{"--in", encArchive}, &restoreOut); err != nil {
+		t.Fatalf("restoreCommand(encrypted): %v", err)
+	}
+}
+
 func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -873,6 +967,7 @@ func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 }
 
 func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -955,6 +1050,7 @@ func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 }
 
 func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -1032,6 +1128,7 @@ func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 }
 
 func TestBackupRestoreRejectsNonBypassRLSRole(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	owner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -1081,6 +1178,7 @@ func TestBackupRestoreRejectsNonBypassRLSRole(t *testing.T) {
 }
 
 func TestRestore_UPM375_ArchiveWithoutVolumeLeavesLiveVolumeUnchanged(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -1187,6 +1285,7 @@ func TestRestore_UPM375_ArchiveWithoutVolumeLeavesLiveVolumeUnchanged(t *testing
 }
 
 func TestRestore_UPM377_EmptyConfiguredVolumeRestoresAsEmpty(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 	srcOwner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
@@ -1239,6 +1338,7 @@ func TestRestore_UPM377_EmptyConfiguredVolumeRestoresAsEmpty(t *testing.T) {
 }
 
 func TestRestore_UPM375_FailingForwardMigrationLeavesDatabaseAndVolumesUnchanged(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 
 	// Given: an archive from a source with a distinct row and distinct volume files.
@@ -1387,6 +1487,7 @@ func TestRestore_UPM375_FailingForwardMigrationLeavesDatabaseAndVolumesUnchanged
 }
 
 func TestRestore_UPM375_LiveMigrationFailureAfterCommitSwapsVolumesIn(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 
 	// Given: an archive from a source with a different user and different volume files.
@@ -1500,6 +1601,7 @@ func TestRestore_UPM375_LiveMigrationFailureAfterCommitSwapsVolumesIn(t *testing
 }
 
 func TestRestore_UPM375_LiveFailureOnEmptyTargetReturnsItToEmpty(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 
 	// Given: an archive from a migrated source with a volume file.
@@ -1580,6 +1682,7 @@ func TestRestore_UPM375_LiveFailureOnEmptyTargetReturnsItToEmpty(t *testing.T) {
 }
 
 func TestRestore_UPM375_CaseCFailureLeavesLiveDatabaseUntouched(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
 
 	// Given: an archive from a source at the current head.
