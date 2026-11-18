@@ -19,6 +19,9 @@ if [ "$project" = "-" ]; then
   dc_args=
 else
   dc_args="-p $project -f compose.yml -f e2e/web.override.yml"
+  if [ "${E2E_WEB:-}" = "preview" ]; then
+    dc_args="$dc_args -f e2e/web.preview.yml"
+  fi
 fi
 
 dc() {

@@ -1,0 +1,5 @@
+# E2E_WEB=preview: serve the production build instead of the dev server, so the
+# browser sees the production Content-Security-Policy.
+services:
+  web:
+    command: ["sh", "-c", "pnpm build && exec pnpm exec vite preview --host 0.0.0.0 --port 5173 --strictPort"]
