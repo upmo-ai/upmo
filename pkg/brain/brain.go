@@ -666,7 +666,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			cleanupPools()
 			return nil, fmt.Errorf("brain: chat gateway: %w", err)
 		}
-		chat.AddReplyWorker(workers, chat.ReplyDeps{
+		if err := chat.AddReplyWorker(workers, chat.ReplyDeps{
 			Rows: chat.NewStore(pool, nil),
 			Agents: chatAgentLookup{store: agentStore, access: func(ctx context.Context, userID string) (agents.Access, error) {
 				person, err := identity.ParseUserID(userID)
@@ -685,7 +685,10 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 				return chatAccess(ctx, members, person)
 			},
 			Log: log,
-		})
+		}); err != nil {
+			cleanupPools()
+			return nil, fmt.Errorf("brain: chat reply worker: %w", err)
+		}
 	}
 	for _, fn := range o.extraWorkers {
 		fn(workers, deps)

@@ -1,8 +1,11 @@
 package app
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/riverqueue/river"
 
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 )
@@ -62,7 +65,7 @@ func TestTruncateCutsOnRunes(t *testing.T) {
 }
 
 func TestAReplyAsksWithTheRouteTheModelAndTheSystemTextTheAgentLeavesOpen(t *testing.T) {
-	w := NewReplyWorker(ReplyDeps{}).(*replyWorker)
+	w := &replyWorker{cfg: ReplyConfig{}.withDefaults()}
 	agent := &Agent{Name: "Research", PromptOverlay: "Be brief.", Route: "deep", ModelProvider: "OpenAI", ModelID: "gpt-x"}
 
 	// The composer picked no route: the line carries the install's default.
@@ -89,5 +92,14 @@ func TestAReplyAsksWithTheRouteTheModelAndTheSystemTextTheAgentLeavesOpen(t *tes
 	got = w.request(ReplyJobArgs{UserID: "u", Route: "chat"}, nil)
 	if want := (ModelRequest{Route: "chat", UserID: "u", MaxOutputTokens: DefaultMaxOutputTokens}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("request = %+v, want %+v", got, want)
+	}
+}
+
+func TestTheReplyWorkerRefusesToBeBuiltWithoutAnAgentLookup(t *testing.T) {
+	if _, err := NewReplyWorker(ReplyDeps{}); !errors.Is(err, ErrNoAgents) {
+		t.Fatalf("NewReplyWorker without Agents = %v, want ErrNoAgents", err)
+	}
+	if err := AddReplyWorker(river.NewWorkers(), ReplyDeps{}); !errors.Is(err, ErrNoAgents) {
+		t.Fatalf("AddReplyWorker without Agents = %v, want ErrNoAgents", err)
 	}
 }

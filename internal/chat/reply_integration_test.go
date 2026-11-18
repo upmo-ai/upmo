@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
@@ -1028,7 +1029,10 @@ func TestAFailedDeltaWriteEndsInAFailedLineWithTheTextSoFar(t *testing.T) {
 	// "abc" is written; "def" cannot be, and the text of that batch is kept.
 	deps := r.deps
 	deps.Rows = &failingRows{ReplyRows: r.store, from: 2}
-	r.worker = app.NewReplyWorker(deps)
+	var err error
+	if r.worker, err = app.NewReplyWorker(deps); err != nil {
+		t.Fatal(err)
+	}
 	r.stub.reply(func(_ int, s *frames) { s.delta("abc"); s.delta("def"); s.delta("ghi"); s.done("m1", 1, 1, nil) })
 	chatID := r.open()
 	r.say(chatID, "hi", "")
@@ -1213,11 +1217,7 @@ func TestThePinGoesFromTheLineToTheGatewayAndARetryReusesItUnlessOverridden(t *t
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
 	ctx := context.Background()
-	made, err := r.store.CreateAgent(ctx, ownerAccess, app.AgentFields{Name: "Research", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := made.ID
+	agent := r.agent(ownerAccess, agents.AgentFields{Name: "Research", Enabled: true}).ID
 	pin := func(call stubCall) string {
 		if call.Pin == nil {
 			return ""
