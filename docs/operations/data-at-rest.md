@@ -16,7 +16,7 @@ Encrypted, or off.
 
 ## File permissions
 
-Env files holding keys and passwords: `0600`. Backup archives are written `0600` by `brain backup`.
+Env files holding keys and passwords: `0600`. Backup archives are written `0600` by `upmo backup`.
 
 ## What is sealed in the database
 
@@ -24,7 +24,7 @@ Password hashes (`identity.users.password_hash`), stored provider credentials (`
 
 ## Backups
 
-Backups are encrypted by default: AES-256-GCM under a random archive key, wrapped by `UPMO_MASTER_KEY` or by a passphrase passed with `--passphrase-env`. `--no-encrypt` only works with `UPMO_ENV=development`. `brain restore --require-encrypted` refuses an unencrypted archive.
+Backups are encrypted by default: AES-256-GCM under a random archive key, wrapped by `UPMO_MASTER_KEY` or by a passphrase passed with `--passphrase-env`. `--no-encrypt` only works with `UPMO_ENV=development`. `upmo restore --require-encrypted` refuses an unencrypted archive.
 
 A killed backup can leave a plaintext staging directory (`.upmo-backup-*`) next to the output archive; the next backup in that directory removes it. Keep backup output on an encrypted volume all the same.
 
@@ -33,7 +33,7 @@ A killed backup can leave a plaintext staging directory (`.upmo-backup-*`) next 
 An archive wrapped by the master key cannot be restored without that key. A passphrase archive still needs every master key id listed in its `db/meta.json` to open sealed rows, so never retire a previous master key (`UPMO_MASTER_KEY_PREVIOUS_<id>`) while sealed rows still use it. To retire a key:
 
 1. Set the new key as `UPMO_MASTER_KEY` with a new `UPMO_MASTER_KEY_ID`, keep the old one as `UPMO_MASTER_KEY_PREVIOUS_<old id>`, restart brain and gateway.
-2. `brain keys reseal --dry-run` to see the counts; then `brain keys reseal`. It re-seals provider keys and connector credentials (`gateway.credentials`), password hashes and email addresses (and their index hashes) under the current key in batches, records `keys.reseal` audit events, and can be stopped and run again.
+2. `upmo keys reseal --dry-run` to see the counts; then `upmo keys reseal`. It re-seals provider keys and connector credentials (`gateway.credentials`), password hashes and email addresses (and their index hashes) under the current key in batches, records `keys.reseal` audit events, and can be stopped and run again.
 3. Rows sealed with a key that is not loaded are left alone and make the command exit non-zero; the brain also warns at start-up and exports `upmo_sealed_rows_unknown_key{store}`.
 4. When it exits 0, take a fresh backup, then remove `UPMO_MASTER_KEY_PREVIOUS_<old id>` and restart. Archives wrapped by or listing the old key still need it to restore: keep the old key with those archives.
 

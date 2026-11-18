@@ -1716,13 +1716,13 @@ func TestRestore_UPM375_LiveMigrationFailureAfterCommitSwapsVolumesIn(t *testing
 		},
 	})
 
-	// Then: the error names the failure and says to run brain migrate, the
+	// Then: the error names the failure and says to run upmo migrate, the
 	// committed archive data is in the DB, and the staged volumes were swapped in.
 	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "planted live migration failure") {
 		t.Fatalf("expected planted live migration failure, got %v", restoreErr)
 	}
-	if !strings.Contains(restoreErr.Error(), "run `brain migrate`") {
-		t.Fatalf("error does not say to run brain migrate: %v", restoreErr)
+	if !strings.Contains(restoreErr.Error(), "run `upmo migrate`") {
+		t.Fatalf("error does not say to run upmo migrate: %v", restoreErr)
 	}
 	var srcCount, keepCount int
 	if err := dstOwner.QueryRow(ctx, `SELECT count(*) FROM identity.users WHERE id = $1`, srcUserID).Scan(&srcCount); err != nil || srcCount != 1 {

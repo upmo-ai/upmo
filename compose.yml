@@ -40,7 +40,7 @@ services:
       - sh
       - -c
       - >-
-        go build -ldflags "-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$${UPMO_VERSION:-dev} -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$$(git rev-parse HEAD 2>/dev/null || echo unknown) -X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o /tmp/brain ./cmd/brain && exec /tmp/brain
+        go build -ldflags "-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$${UPMO_VERSION:-dev} -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$$(git rev-parse HEAD 2>/dev/null || echo unknown) -X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o /tmp/upmo ./cmd/upmo && exec /tmp/upmo
     env_file:
       - path: .env
         required: false
@@ -82,7 +82,7 @@ services:
       # UPMO_PROVISION_KEYS: ""
       # Dev only. Never reuse outside the local compose stack. Seals the provider
       # keys people add (base64 of 32 bytes). brain and gateway need the same value.
-      # Default `brain backup` archives are sealed with this key; restore needs
+      # Default `upmo backup` archives are sealed with this key; restore needs
       # it (or UPMO_MASTER_KEY_PREVIOUS_<id> for the same id). Sealed values in
       # any archive still need their key id here, even with --passphrase-env.
       UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
