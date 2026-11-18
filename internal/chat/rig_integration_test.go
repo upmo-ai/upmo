@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -16,9 +17,11 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
@@ -50,6 +53,7 @@ type rig struct {
 	pool   *pgxpool.Pool
 	work   *jobs.Client
 	store  chat.Store
+	agents agents.Store
 	stub   *stubGateway
 	worker river.Worker[app.ReplyJobArgs]
 	deps   app.ReplyDeps
@@ -94,6 +98,16 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 	if err := migrate.Up(ctx, owner, chat.Schema, chat.Migrations()); err != nil {
 		t.Fatal(err)
 	}
+	// The agents migration copies from the gateway, memory and chat schemas.
+	if err := migrate.Up(ctx, owner, memory.Schema, memory.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, owner, agents.Schema, agents.Migrations()); err != nil {
+		t.Fatal(err)
+	}
 	if err := jobs.Up(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
@@ -132,11 +146,50 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 	}
 	r.store = chat.NewStore(pool, r.work)
 	r.store.ReplyRoute = "chat"
+	r.agents = agents.NewStore(pool)
 	deps.Rows = r.store
-	chat.AddReplyWorker(workers, deps)
+	deps.Agents = agentLookup{store: r.agents}
+	if err := chat.AddReplyWorker(workers, deps); err != nil {
+		t.Fatal(err)
+	}
 	r.deps = deps
-	r.worker = app.NewReplyWorker(deps)
+	r.worker, err = app.NewReplyWorker(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return r
+}
+
+// agentLookup is how production reads an agent for a reply: through the agents
+// context, as the person who wrote the line.
+type agentLookup struct{ store agents.Store }
+
+func (l agentLookup) Agent(ctx context.Context, access chat.Access, id string) (chat.Agent, error) {
+	a, inline, err := l.store.AgentForUse(ctx, agentsAccess(access), id)
+	if errors.Is(err, agents.ErrAgentNotFound) {
+		return chat.Agent{}, chat.ErrAgentNotFound
+	}
+	if err != nil {
+		return chat.Agent{}, err
+	}
+	return chat.Agent{
+		ID:            a.ID,
+		Name:          a.Name,
+		Description:   a.Description,
+		PromptOverlay: agents.AppendInlineLessons(a.Instructions, inline),
+		Route:         a.DefaultRoute,
+		ModelProvider: a.DefaultModelProvider,
+		ModelID:       a.DefaultModelID,
+		Enabled:       a.Enabled,
+	}, nil
+}
+
+func agentsAccess(access chat.Access) agents.Access {
+	teams := access.Teams
+	if teams == "" {
+		teams = "{}"
+	}
+	return agents.Access{UserID: access.UserID, Allow: access.Allow, Teams: teams}
 }
 
 // open starts a chat for the owner and returns its id.

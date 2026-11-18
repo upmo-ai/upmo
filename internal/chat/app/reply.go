@@ -166,10 +166,6 @@ type ReplyRows interface {
 	// CanWrite reports ErrGone or ErrSay when the person can no longer write
 	// to the chat.
 	CanWrite(ctx context.Context, access Access, chatID string) error
-	// Agent returns the agent a reply is for, as the person who wrote the
-	// line: one they can use that is switched on. Anything else is
-	// ErrAgentNotFound.
-	Agent(ctx context.Context, access Access, id string) (Agent, error)
 }
 
 // ModelMessage is one turn sent to the model.
@@ -263,15 +259,40 @@ func (c ReplyConfig) withDefaults() ReplyConfig {
 	return c
 }
 
+// ErrAgentNotFound is returned by AgentLookup when an agent is unavailable.
+var ErrAgentNotFound = errors.New("chat: no such agent")
+
+// ErrNoAgents is returned when the reply worker is built without an agent
+// lookup.
+var ErrNoAgents = errors.New("chat: reply worker needs an agent lookup")
+
+// Agent is the saved profile a reply runs as.
+type Agent struct {
+	ID            string
+	Name          string
+	Description   string
+	PromptOverlay string
+	Route         string
+	ModelProvider string
+	ModelID       string
+	Enabled       bool
+}
+
+// Defaults are what the agent contributes to the choice of route and model.
+func (a Agent) Defaults() domain.Defaults {
+	return domain.Defaults{Route: a.Route, ModelProvider: a.ModelProvider, ModelID: a.ModelID}
+}
+
 // AgentLookup resolves an agent a reply is for, as the person who wrote the
-// line.
+// line: one they can use that is switched on. Anything else is
+// ErrAgentNotFound.
 type AgentLookup interface {
 	Agent(ctx context.Context, access Access, id string) (Agent, error)
 }
 
 // ReplyDeps is what the reply worker needs. Access resolves the person who
 // wrote the line, as a request would; false means the person may no longer
-// use chats. Agents, when set, overrides Rows.Agent for looking up agents.
+// use chats. Agents is required: building the worker without it is an error.
 // Log may be nil.
 type ReplyDeps struct {
 	Rows   ReplyRows
@@ -290,17 +311,26 @@ type replyWorker struct {
 }
 
 // AddReplyWorker registers the chat reply worker on workers.
-func AddReplyWorker(workers *river.Workers, deps ReplyDeps) {
-	river.AddWorker(workers, NewReplyWorker(deps))
+func AddReplyWorker(workers *river.Workers, deps ReplyDeps) error {
+	w, err := NewReplyWorker(deps)
+	if err != nil {
+		return err
+	}
+	river.AddWorker(workers, w)
+	return nil
 }
 
-// NewReplyWorker returns the chat reply worker.
-func NewReplyWorker(deps ReplyDeps) river.Worker[ReplyJobArgs] {
+// NewReplyWorker returns the chat reply worker, or ErrNoAgents when deps has
+// no agent lookup.
+func NewReplyWorker(deps ReplyDeps) (river.Worker[ReplyJobArgs], error) {
+	if deps.Agents == nil {
+		return nil, ErrNoAgents
+	}
 	log := deps.Log
 	if log == nil {
 		log = slog.Default()
 	}
-	return &replyWorker{deps: deps, cfg: deps.Config.withDefaults(), log: log}
+	return &replyWorker{deps: deps, cfg: deps.Config.withDefaults(), log: log}, nil
 }
 
 func (w *replyWorker) Timeout(*river.Job[ReplyJobArgs]) time.Duration { return w.cfg.Timeout }
@@ -432,11 +462,7 @@ func (w *replyWorker) refresh(ctx context.Context, live *liveAccess, args ReplyJ
 func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobArgs, lines []Line) error {
 	var agent *Agent
 	if args.AgentID != "" {
-		lookup := w.deps.Agents
-		if lookup == nil {
-			lookup = w.deps.Rows
-		}
-		got, err := lookup.Agent(ctx, access, args.AgentID)
+		got, err := w.deps.Agents.Agent(ctx, access, args.AgentID)
 		switch {
 		case errors.Is(err, ErrAgentNotFound):
 			// An agent that is gone, switched off or not theirs is never
