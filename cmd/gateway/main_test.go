@@ -165,3 +165,24 @@ func TestPoolURLErrorKeepsOnlyHostOnClosedPortURL(t *testing.T) {
 		t.Fatalf("error = %q, want %q", msg, want)
 	}
 }
+
+func TestOpenPoolScrubsUserAndHostOnConnectFailure(t *testing.T) {
+	const user = "connect-user-marker"
+	pool, err := openPool(context.Background(), "postgres://"+user+":pw-marker@127.0.0.1:1/upmo?connect_timeout=2")
+	if pool != nil {
+		pool.Close()
+	}
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	for _, leak := range []string{user, "pw-marker", "127.0.0.1"} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("error leaked %q: %q", leak, msg)
+		}
+	}
+	const want = "gateway: UPMO_DATABASE_URL could not be opened"
+	if msg != want {
+		t.Fatalf("error = %q, want %q", msg, want)
+	}
+}

@@ -95,3 +95,44 @@ func TestMigrateErrorDoesNotEchoDatabaseURL(t *testing.T) {
 		t.Fatalf("migrate err = %q, want %q", msg, want)
 	}
 }
+
+// A URL that parses and passes the plaintext check but cannot connect fails at
+// the first dial, where pgx names the user and host. Every operator command
+// must still report only the scrubbed message.
+func TestOperatorCommandsDoNotEchoUserOrHostOnConnectFailure(t *testing.T) {
+	const (
+		marker = "s3cret-pw"
+		user   = "opuser"
+		host   = "127.0.0.1"
+	)
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv("UPMO_DATABASE_URL", "postgres://"+user+":"+marker+"@"+host+":1/x?sslmode=require")
+	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:8080")
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+
+	for name, run := range map[string]func() error{
+		"migrate":   func() error { return command("migrate", nil) },
+		"bootstrap": func() error { return command("bootstrap", []string{"--email", "a@example.com", "--name", "A"}) },
+		"recover":   func() error { return command("recover", []string{"--email", "a@example.com"}) },
+		"backup": func() error {
+			return backupCommand([]string{"--out", archive, "--no-encrypt"}, io.Discard)
+		},
+		"restore": func() error { return restoreCommand([]string{"--in", archive}, io.Discard) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := run()
+			if err == nil {
+				t.Fatal("err = nil, want an error")
+			}
+			msg := err.Error()
+			for _, leak := range []string{marker, user, host} {
+				if strings.Contains(msg, leak) {
+					t.Fatalf("error leaked %q: %q", leak, msg)
+				}
+			}
+			if want := "brain: UPMO_DATABASE_URL could not be opened"; !strings.Contains(msg, want) {
+				t.Fatalf("err = %q, want %q", msg, want)
+			}
+		})
+	}
+}

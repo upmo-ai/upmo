@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// OpenOwnerPool opens the owner pool with MaxConns=10 and scrubs the URL
-// from parse or connect errors.
+// OpenOwnerPool opens the owner pool with MaxConns=10, dials it once, and
+// scrubs the URL from parse or connect errors.
 func OpenOwnerPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	ownerConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -22,15 +22,27 @@ func OpenOwnerPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, erro
 	if err != nil {
 		return nil, PoolURLError("UPMO_DATABASE_URL", databaseURL)
 	}
-	return owner, nil
+	return pingOwner(ctx, owner)
 }
 
 // OpenCommandPool opens the owner pool for operator commands without exposing
-// UPMO_DATABASE_URL in parse or connect errors.
+// UPMO_DATABASE_URL in parse or connect errors. It dials once, so an
+// unreachable database fails here.
 func OpenCommandPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, PoolURLError("UPMO_DATABASE_URL", databaseURL)
+	}
+	return pingOwner(ctx, pool)
+}
+
+// pingOwner dials the pool once so a URL that parses but cannot connect fails
+// here. pgx names the user and host in a connect error, so the error is
+// replaced, not wrapped.
+func pingOwner(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Pool, error) {
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, errors.New("brain: UPMO_DATABASE_URL could not be opened")
 	}
 	return pool, nil
 }
