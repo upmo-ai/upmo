@@ -487,7 +487,7 @@ func writeOuterArchiveAtomic(outPath string, manifestBytes []byte, payloadName, 
 // empty target to empty, and leaves a different-head target with no restored
 // data (after its schemas are dropped) and its volumes untouched; after the
 // live data commits, a migration failure swaps the staged volumes in and the
-// error says to run `brain migrate` before starting brain.
+// error says to run `upmo migrate` before starting brain.
 func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (RestoreResult, error) {
 	if pool == nil {
 		return RestoreResult{}, errors.New("backup: database pool is required")
