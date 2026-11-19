@@ -696,8 +696,8 @@ type shiftingPrices struct{ calls int }
 
 func (p *shiftingPrices) Price(context.Context, string) (domain.Price, bool, error) {
 	p.calls++
-	rate := float64(p.calls)
-	return domain.Price{Version: fmt.Sprintf("v%d", p.calls), InputPerMTok: &rate, OutputPerMTok: &rate}, true, nil
+	rate := int64(p.calls) * 1_000_000
+	return domain.Price{Version: fmt.Sprintf("v%d", p.calls), InputMicroUSDPerMTok: &rate, OutputMicroUSDPerMTok: &rate}, true, nil
 }
 
 func TestDispatchChatStreamDoneCostMatchesTheLedgerRow(t *testing.T) {
@@ -719,11 +719,11 @@ func TestDispatchChatStreamDoneCostMatchesTheLedgerRow(t *testing.T) {
 	if err := disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, streamInput(), 0, sink); err != nil {
 		t.Fatal(err)
 	}
-	if sink.done == nil || sink.done.CostUSD == nil || len(led.rows) != 1 || led.rows[0].CostUSD == nil {
+	if sink.done == nil || sink.done.CostMicroUSD == nil || len(led.rows) != 1 || led.rows[0].CostMicroUSD == nil {
 		t.Fatalf("done = %+v rows = %+v", sink.done, led.rows)
 	}
-	if *sink.done.CostUSD != *led.rows[0].CostUSD {
-		t.Fatalf("done cost = %v, ledger cost = %v", *sink.done.CostUSD, *led.rows[0].CostUSD)
+	if *sink.done.CostMicroUSD != *led.rows[0].CostMicroUSD {
+		t.Fatalf("done cost = %v, ledger cost = %v", *sink.done.CostMicroUSD, *led.rows[0].CostMicroUSD)
 	}
 	if prices.calls != 1 {
 		t.Fatalf("price calls = %d", prices.calls)
@@ -1098,7 +1098,7 @@ func (p fixedPrices) Price(context.Context, string) (domain.Price, bool, error) 
 }
 
 func TestDispatchChatStreamToolsPropagatesDeltasAndMetadata(t *testing.T) {
-	rate := 1.0
+	rate := int64(1_000_000)
 	house := domain.Account{ID: "1", Adapter: "tools", CredentialRef: "house", House: true, PlanKind: domain.PlanMetered}
 	route := domain.Route{
 		Name: "draft", Capability: domain.CapChat,
@@ -1116,12 +1116,12 @@ func TestDispatchChatStreamToolsPropagatesDeltasAndMetadata(t *testing.T) {
 		Routes:  memRoutes{route},
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
 		Prices: fixedPrices{price: domain.Price{
-			Version:        "v1",
-			InputPerMTok:   &rate,
-			OutputPerMTok:  &rate,
-			CacheReadMTok:  &rate,
-			CacheWriteMTok: &rate,
-			ContextWindow:  200000,
+			Version:                   "v1",
+			InputMicroUSDPerMTok:      &rate,
+			OutputMicroUSDPerMTok:     &rate,
+			CacheReadMicroUSDPerMTok:  &rate,
+			CacheWriteMicroUSDPerMTok: &rate,
+			ContextWindow:             200000,
 		}},
 		Stream: map[string]StreamChatter{"tools": stream},
 	}
@@ -1173,7 +1173,7 @@ func (u *usageChatter) Chat(context.Context, Attempt, domain.Request) (domain.Ch
 
 func TestDispatchRecordsMetrics(t *testing.T) {
 	reg := metrics.NewRegistry()
-	rate := 1.0 // $1 per million tokens = 1 micro-USD per token
+	rate := int64(1_000_000) // $1 per million tokens = 1 micro-USD per token
 	account := domain.Account{ID: "h", Provider: "anthropic", Adapter: "anthropic", CredentialRef: "house", PlanKind: domain.PlanMetered, House: true}
 	route := domain.Route{
 		Name: "chat", Capability: domain.CapChat,
@@ -1186,7 +1186,7 @@ func TestDispatchRecordsMetrics(t *testing.T) {
 	disp := Dispatch{
 		Routes:  memRoutes{route},
 		Secrets: memSecrets{map[string]string{"house": "secret"}},
-		Prices:  fixedPrices{domain.Price{Version: "v1", InputPerMTok: &rate, OutputPerMTok: &rate, CacheReadMTok: &rate, CacheWriteMTok: &rate}},
+		Prices:  fixedPrices{domain.Price{Version: "v1", InputMicroUSDPerMTok: &rate, OutputMicroUSDPerMTok: &rate, CacheReadMicroUSDPerMTok: &rate, CacheWriteMicroUSDPerMTok: &rate}},
 		Ledger:  &memLedger{},
 		Chat:    map[string]Chatter{"anthropic": chatter},
 		Metrics: reg,

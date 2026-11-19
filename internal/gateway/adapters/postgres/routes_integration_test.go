@@ -241,7 +241,7 @@ func TestStoreByNameForWorkerUserAndTeamIsolation(t *testing.T) {
 		t.Fatal("Dispatch allowed system worker to call private route")
 	}
 	sink := &pinSink{}
-	if err := disp.ChatStreamPinned(ctx, "shared-priv-name", "", domain.Principal{User: alice}, in, domain.Pin{}, 0, sink); err != nil {
+	if err := disp.ChatStreamPinned(ctx, "shared-priv-name", "", domain.Principal{User: alice, Source: "system"}, in, domain.Pin{}, 0, sink); err != nil {
 		t.Fatalf("Dispatch failed for Alice's private route: %v", err)
 	}
 	if sink.done == nil || sink.done.Model != "m-alice" {

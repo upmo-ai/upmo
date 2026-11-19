@@ -1,45 +1,98 @@
 package domain
 
-import "testing"
+import (
+	"testing"
 
-func rate(v float64) *float64 { return &v }
+	"github.com/upmo-ai/upmo/internal/kernel"
+)
 
-func TestCostUSDNullCases(t *testing.T) {
-	price := Price{Version: "v1", InputPerMTok: rate(1), OutputPerMTok: rate(2)}
+func microRate(v int64) *int64 { return &v }
+
+func TestMeteredCostNullCases(t *testing.T) {
+	price := Price{Version: "v1", InputMicroUSDPerMTok: microRate(kernel.MicroUSDPerDollar), OutputMicroUSDPerMTok: microRate(2 * kernel.MicroUSDPerDollar)}
 	usage := Usage{Arrived: true, Input: 1_000_000, Output: 1_000_000}
 
-	if got := CostUSD(PlanSubscription, usage, price, true); got != nil {
-		t.Fatalf("subscription = %v", *got)
+	for _, plan := range []string{PlanSubscription, PlanLocal} {
+		if got, estimated, source := MeteredCost(plan, usage, price, true, 0, 0, 0, false); got != nil || estimated || source != "" {
+			t.Fatalf("%s = %v %t %q", plan, got, estimated, source)
+		}
 	}
-	if got := CostUSD(PlanLocal, usage, price, true); got != nil {
-		t.Fatalf("local = %v", *got)
-	}
-	if got := CostUSD(PlanMetered, Usage{}, price, true); got != nil {
-		t.Fatalf("no usage = %v", *got)
-	}
-	if got := CostUSD(PlanMetered, usage, Price{}, false); got != nil {
-		t.Fatalf("no catalog = %v", *got)
-	}
-	if got := CostUSD(PlanMetered, Usage{Arrived: true, Input: 10}, Price{Version: "v1"}, true); got != nil {
-		t.Fatalf("missing dimension = %v", *got)
+	if got, estimated, source := MeteredCost(PlanMetered, Usage{}, price, true, 0, 0, 0, true); got == nil || *got != 0 || estimated || source != "not_billed" {
+		t.Fatalf("known zero = %v %t %q", got, estimated, source)
 	}
 }
 
-func TestCostUSDMetersWhenPriced(t *testing.T) {
+func TestMeteredCostUsesIntegerMicroUSD(t *testing.T) {
 	price := Price{
-		Version:        "v1",
-		InputPerMTok:   rate(1),
-		OutputPerMTok:  rate(2),
-		CacheReadMTok:  rate(0.1),
-		CacheWriteMTok: rate(0.5),
+		Version:                   "v1",
+		InputMicroUSDPerMTok:      microRate(1_000_000),
+		OutputMicroUSDPerMTok:     microRate(2_000_000),
+		CacheReadMicroUSDPerMTok:  microRate(100_000),
+		CacheWriteMicroUSDPerMTok: microRate(500_000),
 	}
-	got := CostUSD(PlanMetered, Usage{Arrived: true, Input: 1_000_000, Output: 500_000, CacheRead: 1_000_000, CacheWrite: 2_000_000}, price, true)
-	if got == nil {
-		t.Fatal("cost")
+	got, estimated, source := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 1_000_000, Output: 500_000, CacheRead: 1_000_000, CacheWrite: 2_000_000}, price, true, 0, 0, 0, false)
+	if got == nil || *got != 3_100_000 || estimated || source != "models_dev" {
+		t.Fatalf("cost = %v %t %q", got, estimated, source)
 	}
-	want := 1 + 1 + 0.1 + 1
-	if *got != want {
-		t.Fatalf("cost = %v want %v", *got, want)
+
+	halfUp := Price{Version: "v1", InputMicroUSDPerMTok: microRate(1_500_000)}
+	if got, estimated, source := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 1}, halfUp, true, 0, 0, 0, false); got == nil || *got != 2 || estimated || source != "models_dev" {
+		t.Fatalf("half-up 1.5 = %v %t %q, want 2", got, estimated, source)
+	}
+	belowHalf := Price{Version: "v1", InputMicroUSDPerMTok: microRate(1_499_999)}
+	if got, estimated, source := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 1}, belowHalf, true, 0, 0, 0, false); got == nil || *got != 1 || estimated || source != "models_dev" {
+		t.Fatalf("half-up 1.499999 = %v %t %q, want 1", got, estimated, source)
+	}
+}
+
+func TestNeedsEstimate(t *testing.T) {
+	price := Price{Version: "v1", InputMicroUSDPerMTok: microRate(1_000_000)}
+	arrived := Usage{Arrived: true, Input: 10}
+	if NeedsEstimate(PlanSubscription, Usage{}, price, false, false) {
+		t.Fatal("subscription should not estimate")
+	}
+	if NeedsEstimate(PlanLocal, Usage{}, price, false, false) {
+		t.Fatal("local should not estimate")
+	}
+	if NeedsEstimate(PlanMetered, Usage{}, price, false, true) {
+		t.Fatal("knownZero should not estimate")
+	}
+	if NeedsEstimate(PlanMetered, arrived, price, true, false) {
+		t.Fatal("fully priced call should not estimate")
+	}
+	if !NeedsEstimate(PlanMetered, arrived, Price{}, false, false) {
+		t.Fatal("unpriced model should estimate")
+	}
+	if !NeedsEstimate(PlanMetered, Usage{Input: 10}, price, true, false) {
+		t.Fatal("missing usage should estimate")
+	}
+	if !NeedsEstimate(PlanMetered, Usage{Arrived: true, Input: 10, Output: 5}, price, true, false) {
+		t.Fatal("missing output rate should estimate")
+	}
+}
+
+func TestFeature_UPM353_UnpricedMeteredCostIsAPositiveEstimate(t *testing.T) {
+	cost, estimated, source := MeteredCost(PlanMetered, Usage{}, Price{}, false, EstimatedMicroUSDPerMTok, 17, 0, false)
+	if cost == nil || *cost <= 0 || !estimated || source != "estimate" {
+		t.Fatalf("unpriced metered cost = %v %t %q", cost, estimated, source)
+	}
+	if *cost != 375 {
+		t.Fatalf("estimate = %d, want 375", *cost)
+	}
+
+	withOutputBytes, estimated, source := MeteredCost(PlanMetered, Usage{}, Price{}, false, EstimatedMicroUSDPerMTok, 5, 8, false)
+	if withOutputBytes == nil || !estimated || source != "estimate" || *withOutputBytes != 300 {
+		t.Fatalf("estimate with output bytes = %v %t %q, want 300", withOutputBytes, estimated, source)
+	}
+
+	withOutputTokens, estimated, source := MeteredCost(PlanMetered, Usage{Output: 2}, Price{}, false, EstimatedMicroUSDPerMTok, 5, 8, false)
+	if withOutputTokens == nil || !estimated || source != "estimate" || *withOutputTokens != 450 {
+		t.Fatalf("estimate with output bytes and tokens = %v %t %q, want 450", withOutputTokens, estimated, source)
+	}
+
+	arrivedUnpriced, estimated, source := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 10, Output: 5}, Price{}, false, EstimatedMicroUSDPerMTok, 5, 100, false)
+	if arrivedUnpriced == nil || !estimated || source != "estimate" || *arrivedUnpriced != 1125 {
+		t.Fatalf("arrived unpriced estimate = %v %t %q, want 1125", arrivedUnpriced, estimated, source)
 	}
 }
 
@@ -68,18 +121,13 @@ func TestRollupTokens(t *testing.T) {
 	}
 }
 
-func TestMicroUSD(t *testing.T) {
-	if MicroUSD(nil) != nil {
+func TestUSDFromMicro(t *testing.T) {
+	if USDFromMicro(nil) != nil {
 		t.Fatal("expected nil for nil cost")
 	}
-	v := 0.0000015
-	got := MicroUSD(&v)
-	if got == nil || *got != 2 {
-		t.Fatalf("MicroUSD(0.0000015) = %v, want 2", got)
-	}
-	v2 := 1.2345674
-	got2 := MicroUSD(&v2)
-	if got2 == nil || *got2 != 1234567 {
-		t.Fatalf("MicroUSD(1.2345674) = %v, want 1234567", got2)
+	v := int64(1_234_567)
+	got := USDFromMicro(&v)
+	if got == nil || *got != 1.234567 {
+		t.Fatalf("USDFromMicro(%d) = %v", v, got)
 	}
 }

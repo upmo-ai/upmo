@@ -23,6 +23,17 @@ import (
 // Schema is the Postgres schema this process owns.
 const Schema = "gateway"
 
+// Ledger source constants are exposed through the gateway facade for callers
+// in other contexts; validation and persistence use the domain values.
+const (
+	SourceChat       = domain.SourceChat
+	SourceTask       = domain.SourceTask
+	SourceAutomation = domain.SourceAutomation
+	SourceKnowledge  = domain.SourceKnowledge
+	SourceMemory     = domain.SourceMemory
+	SourceSystem     = domain.SourceSystem
+)
+
 //go:embed migrations/*.sql
 var migrations embed.FS
 

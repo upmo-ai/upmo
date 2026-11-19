@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
@@ -68,6 +67,12 @@ type Embedder interface {
 // Prices looks up a catalog row. Missing is not an error.
 type Prices interface {
 	Price(ctx context.Context, model string) (domain.Price, bool, error)
+}
+
+// ProviderPrices supplies the highest catalog rate for an account provider.
+// It is optional so dispatch remains usable with lightweight price readers.
+type ProviderPrices interface {
+	HighestRate(ctx context.Context, provider string) (int64, bool, error)
 }
 
 // Ledger stores one row per attempt.
@@ -144,17 +149,22 @@ type Dispatch struct {
 	Metrics *metrics.Registry
 }
 
-func (d Dispatch) recordAttempt(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, started time.Time) (*float64, int, error) {
-	cost, ctxWindow, err := d.writeCost(ctx, route, link, who, class, usage)
+func (d Dispatch) recordAttempt(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, started time.Time, reached, producedOutput bool) (*float64, *int64, int, error) {
+	var latencyMS *int
+	if reached {
+		ms := int(time.Since(started).Milliseconds())
+		latencyMS = &ms
+	}
+	cost, micro, ctxWindow, err := d.writeCost(ctx, route, link, who, class, usage, inputBytes, outputBytes, latencyMS, producedOutput)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	d.seen(link.Account.CredentialRef, class, started)
-	d.recordMetrics(link, class, usage, cost, started)
-	return cost, ctxWindow, nil
+	d.recordMetrics(link, class, usage, micro, started)
+	return cost, micro, ctxWindow, nil
 }
 
-func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usage domain.Usage, cost *float64, started time.Time) {
+func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usage domain.Usage, costMicroUSD *int64, started time.Time) {
 	if d.Metrics == nil {
 		return
 	}
@@ -175,8 +185,8 @@ func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usa
 	d.Metrics.AddGatewayTokens(provider, link.Model, "cache_read", usage.CacheRead)
 	d.Metrics.AddGatewayTokens(provider, link.Model, "cache_write", usage.CacheWrite)
 	d.Metrics.AddGatewayTokens(provider, link.Model, "reasoning", usage.Reasoning)
-	if cost != nil && *cost > 0 {
-		d.Metrics.AddGatewayCostMicroUSD(provider, link.Model, math.Round(*cost*1e9)/1e3)
+	if costMicroUSD != nil && *costMicroUSD > 0 {
+		d.Metrics.AddGatewayCostMicroUSD(provider, link.Model, float64(*costMicroUSD))
 	}
 	if usage.Arrived {
 		if usage.CacheRead > 0 {
@@ -191,38 +201,47 @@ func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usa
 // it priced and the model's context window, so a caller can report the same
 // numbers the row holds. The row keeps the team the link was reached through
 // (link.ViaTeam), as it was now.
-func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage) (*float64, int, error) {
-	cost, version, ctxWindow, err := d.priceCost(ctx, link, usage)
+func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, latencyMS *int, producedOutput bool) (*float64, *int64, int, error) {
+	knownZero := class != domain.ClassOK && !usage.Arrived && !producedOutput
+	micro, estimated, priceSource, version, ctxWindow, err := d.priceCost(ctx, link, usage, inputBytes, outputBytes, knownZero)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
+	cost := domain.USDFromMicro(micro)
 	if d.Ledger == nil {
-		return cost, ctxWindow, nil
+		return cost, micro, ctxWindow, nil
 	}
-	return cost, ctxWindow, d.Ledger.Record(ctx, domain.Entry{
-		Route:        route,
-		LinkPosition: link.Position,
-		AccountID:    link.Account.ID,
-		Model:        link.Model,
-		PlanKind:     link.Account.PlanKind,
-		Class:        class,
-		Principal:    who,
-		Usage:        usage,
-		CostUSD:      cost,
-		PriceVersion: version,
-		OwnerTeamID:  link.ViaTeam,
+	charged := !knownZero && link.Account.PlanKind == domain.PlanMetered &&
+		(link.Account.House || link.Account.Visibility == domain.VisibilityTeam || link.Account.Visibility == domain.VisibilityEveryone)
+	return cost, micro, ctxWindow, d.Ledger.Record(ctx, domain.Entry{
+		Route:          route,
+		LinkPosition:   link.Position,
+		AccountID:      link.Account.ID,
+		Model:          link.Model,
+		PlanKind:       link.Account.PlanKind,
+		Class:          class,
+		Principal:      who,
+		Usage:          usage,
+		CostMicroUSD:   micro,
+		Estimated:      estimated,
+		LatencyMS:      latencyMS,
+		ChargedToLimit: charged,
+		PriceSource:    priceSource,
+		PriceVersion:   version,
+		OwnerTeamID:    link.ViaTeam,
 	})
 }
 
-// priceCost prices one attempt exactly as its ledger row does: the cost, the
-// catalog version it came from, and the model's context window.
-func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage) (*float64, string, int, error) {
+// priceCost prices one attempt exactly as its ledger row does: the cost in
+// micro-USD, whether it is estimated, the price source, the catalog version it
+// came from, and the model's context window.
+func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage, inputBytes, outputBytes int, knownZero bool) (*int64, bool, string, string, int, error) {
 	var price domain.Price
 	found := false
 	if d.Prices != nil {
 		p, ok, err := d.Prices.Price(ctx, link.Model)
 		if err != nil {
-			return nil, "", 0, err
+			return nil, false, "", "", 0, err
 		}
 		price, found = p, ok
 	}
@@ -230,7 +249,20 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 	if found && price.ContextWindow > 0 {
 		ctxWindow = price.ContextWindow
 	}
-	return domain.CostUSD(link.Account.PlanKind, usage, price, found), price.Version, ctxWindow, nil
+	estimateRate := domain.EstimatedMicroUSDPerMTok
+	if domain.NeedsEstimate(link.Account.PlanKind, usage, price, found, knownZero) {
+		if prices, ok := d.Prices.(ProviderPrices); ok {
+			rate, hasRate, err := prices.HighestRate(ctx, link.Account.Provider)
+			if err != nil {
+				return nil, false, "", "", 0, err
+			}
+			if hasRate {
+				estimateRate = rate
+			}
+		}
+	}
+	micro, estimated, source := domain.MeteredCost(link.Account.PlanKind, usage, price, found, estimateRate, inputBytes, outputBytes, knownZero)
+	return micro, estimated, source, price.Version, ctxWindow, nil
 }
 
 func (d Dispatch) routeByName(ctx context.Context, name string, who domain.Principal) (domain.Route, error) {
@@ -240,10 +272,41 @@ func (d Dispatch) routeByName(ctx context.Context, name string, who domain.Princ
 	return d.Routes.ByName(ctx, name)
 }
 
+func decideInputBytes(req domain.DecideRequest) int {
+	n := len(req.Prompt)
+	for _, option := range req.Options {
+		n += len(option)
+	}
+	return n
+}
+
+func requestInputBytes(req domain.Request) int {
+	n := len(req.System)
+	for _, tool := range req.Tools {
+		n += len(tool.Name) + len(tool.Description) + len(tool.Schema)
+	}
+	for _, message := range req.Messages {
+		n += len(message.Text)
+		for _, tc := range message.ToolCalls {
+			n += len(tc.Name) + len(tc.Arguments)
+		}
+	}
+	return n
+}
+
+func embedInputBytes(inputs []string) int {
+	n := 0
+	for _, input := range inputs {
+		n += len(input)
+	}
+	return n
+}
+
 func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef string, who domain.Principal, req domain.DecideRequest) (domain.DecideResult, error) {
 	if err := req.Check(); err != nil {
 		return domain.DecideResult{}, err
 	}
+	inputBytes := decideInputBytes(req)
 	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return domain.DecideResult{}, err
@@ -269,7 +332,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
 				return domain.DecideResult{}, werr
 			}
 			if domain.NextAction(domain.ClassCredential, 0) == domain.ActionNext {
@@ -283,7 +346,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		for {
 			started := time.Now()
 			result, usage, class, err := decider.Decide(ctx, attempt, req)
-			cost, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, started)
+			cost, micro, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, inputBytes, 0, started, true, usage.Output > 0)
 			if werr != nil {
 				return domain.DecideResult{}, werr
 			}
@@ -291,7 +354,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 				result.Model = link.Model
 				result.Usage = usage
 				result.CostUSD = cost
-				result.CostMicroUSD = domain.MicroUSD(cost)
+				result.CostMicroUSD = micro
 				result.ContextWindow = ctxWindow
 				return result, nil
 			}
@@ -348,6 +411,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 	if len(built.Messages) == 0 {
 		return domain.ChatResult{}, fmt.Errorf("gateway: chat prompt is empty")
 	}
+	inputBytes := requestInputBytes(built)
 	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return domain.ChatResult{}, err
@@ -385,7 +449,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
 				return domain.ChatResult{}, werr
 			}
 			last = err
@@ -396,14 +460,14 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		for {
 			started := time.Now()
 			res, class, err := chatter.Chat(ctx, attempt, built)
-			cost, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, started)
+			cost, micro, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, inputBytes, 0, started, true, res.Usage.Output > 0)
 			if werr != nil {
 				return domain.ChatResult{}, werr
 			}
 			if class == domain.ClassOK && err == nil {
 				res.Model = link.Model
 				res.CostUSD = cost
-				res.CostMicroUSD = domain.MicroUSD(cost)
+				res.CostMicroUSD = micro
 				res.ContextWindow = ctxWindow
 				return res, nil
 			}
@@ -524,6 +588,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	if maxOutputTokens > 0 {
 		built.MaxOutputTokens = maxOutputTokens
 	}
+	inputBytes := requestInputBytes(built)
 	// ByName checks the route, and a route with no hops is a config error that
 	// a pin does not bypass.
 	route, err := d.routeByName(ctx, routeName, who)
@@ -607,7 +672,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
 				return werr
 			}
 			last, lastModel, lastClass = err, link.Model, domain.ClassCredential
@@ -625,6 +690,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		for {
 			started := time.Now()
 			emitted := false
+			outputBytes := 0
 			var toolEmit func(ToolCallDelta) error
 			if tsink, ok := sink.(ToolStreamSink); ok {
 				toolEmit = func(delta ToolCallDelta) error {
@@ -632,6 +698,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 						return err
 					}
 					emitted = true
+					outputBytes += len(delta.Name) + len(delta.ArgumentsDelta)
 					return nil
 				}
 			}
@@ -641,11 +708,12 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 						return err
 					}
 					emitted = true
+					outputBytes += len(delta)
 					return nil
 				},
 				ToolCall: toolEmit,
 			})
-			cost, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, started)
+			cost, micro, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, inputBytes, outputBytes, started, true, emitted || res.Usage.Output > 0)
 			if werr != nil {
 				return werr
 			}
@@ -654,7 +722,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 					Model:         link.Model,
 					Usage:         res.Usage,
 					CostUSD:       cost,
-					CostMicroUSD:  domain.MicroUSD(cost),
+					CostMicroUSD:  micro,
 					ContextWindow: ctxWindow,
 					ToolCalls:     res.ToolCalls,
 					StopReason:    res.StopReason,
@@ -747,6 +815,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 	if err := domain.CheckEmbedInputs(inputs); err != nil {
 		return "", nil, err
 	}
+	inputBytes := embedInputBytes(inputs)
 	route, err := d.routeByName(ctx, routeName, who)
 	if err != nil {
 		return "", nil, err
@@ -772,7 +841,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, started); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
 				return "", nil, werr
 			}
 			last = err
@@ -790,7 +859,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 					vectors = nil
 				}
 			}
-			if _, _, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, started); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, inputBytes, 0, started, true, usage.Output > 0); werr != nil {
 				return "", nil, werr
 			}
 			if class == domain.ClassOK && err == nil {
