@@ -8,9 +8,8 @@ import "strings"
 // enabled and its model, or its route, resolves to something usable. These
 // rules are pure: the HTTP layers read the rows and call them.
 
-// UsableModel reports whether one model of an account can be used now: the
-// account is Connected and lists the model.
-func UsableModel(p Provider, model string) bool {
+// accountHasModel reports whether p is Connected and lists model.
+func accountHasModel(p Provider, model string) bool {
 	if p.Status != StatusConnected {
 		return false
 	}
@@ -22,9 +21,27 @@ func UsableModel(p Provider, model string) bool {
 	return false
 }
 
-// UsableModels lists the account's models that can be used now, in stored
-// order. The result is never nil, so a JSON answer carries an empty list
-// rather than null.
+// kindOf returns the model's catalogue kind on p. A model with no catalogue row
+// counts as chat with text input.
+func (p Provider) kindOf(model string) ModelKind {
+	if p.ModelKinds != nil {
+		if k, ok := p.ModelKinds[model]; ok && k != "" {
+			return k
+		}
+	}
+	return KindChat
+}
+
+// UsableModel reports whether one model of an account can be used in a chat,
+// agent, or route picker now: the account is Connected, lists the model, and
+// the model's kind is chat. A model with no catalogue row counts as chat with
+// text input.
+func UsableModel(p Provider, model string) bool {
+	return accountHasModel(p, model) && p.kindOf(model) == KindChat
+}
+
+// UsableModels lists the account's chat-usable models in stored order. The
+// result is never nil, so a JSON answer carries an empty list rather than null.
 func UsableModels(p Provider) []string {
 	out := []string{}
 	for _, model := range p.Models {
@@ -52,12 +69,26 @@ type UsableRouteView struct {
 // UsableRoute reports whether the route can carry a call: at least one hop
 // names an account the person can use — one of the accounts given, their own
 // and the workspace's — whose status is Connected and which lists the hop's
-// model. A hop naming an account outside the list is one of another person's,
-// and never counts.
+// model. Embed routes accept embedding models (and uncatalogued models); all
+// other routes require a chat model (where no catalogue row counts as chat). A
+// hop naming an account outside the list is one of another person's, and never
+// counts.
 func UsableRoute(r UsableRouteView, accounts []Provider) bool {
 	for _, hop := range r.Hops {
 		for _, a := range accounts {
-			if a.ID == hop.AccountID && UsableModel(a, hop.Model) {
+			if a.ID != hop.AccountID {
+				continue
+			}
+			if r.Capability == CapEmbed {
+				if accountHasModel(a, hop.Model) {
+					kind, hasRow := a.ModelKinds[hop.Model]
+					if !hasRow || kind == "" || kind == KindEmbedding {
+						return true
+					}
+				}
+				continue
+			}
+			if UsableModel(a, hop.Model) {
 				return true
 			}
 		}

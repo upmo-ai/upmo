@@ -1,0 +1,161 @@
+{
+  "amazon-bedrock": {
+    "id": "amazon-bedrock",
+    "name": "Amazon Bedrock",
+    "models": {
+      "bedrock-only-model": {
+        "id": "bedrock-only-model",
+        "name": "Bedrock Only",
+        "tool_call": true,
+        "modalities": {
+          "input": ["text"],
+          "output": ["text"]
+        },
+        "limit": {
+          "context": 128000,
+          "output": 4096
+        },
+        "cost": {
+          "input": 2.0,
+          "output": 8.0
+        }
+      }
+    }
+  },
+  "anthropic": {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "models": {
+      "claude-sonnet-4": {
+        "id": "claude-sonnet-4",
+        "name": "Claude Sonnet 4",
+        "reasoning": true,
+        "tool_call": true,
+        "structured_output": true,
+        "status": "active",
+        "modalities": {
+          "input": ["text", "image", "pdf"],
+          "output": ["text"]
+        },
+        "limit": {
+          "context": 200000,
+          "output": 64000
+        },
+        "cost": {
+          "input": 3.0,
+          "output": 15.0,
+          "cache_read": 0.3,
+          "cache_write": 3.75
+        }
+      }
+    }
+  },
+  "google": {
+    "id": "google",
+    "name": "Google",
+    "models": {
+      "gemini-2.5-flash": {
+        "id": "gemini-2.5-flash",
+        "name": "Gemini 2.5 Flash",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {
+          "input": ["text", "image", "audio", "pdf"],
+          "output": ["text"]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.6
+        }
+      }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-4o": {
+        "id": "gpt-4o",
+        "name": "GPT-4o",
+        "tool_call": true,
+        "structured_output": true,
+        "modalities": {
+          "input": ["text", "image"],
+          "output": ["text"]
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "cost": {
+          "input": 2.5,
+          "output": 10.0,
+          "cache_read": 1.25
+        }
+      },
+      "gpt-3.5-turbo": {
+        "id": "gpt-3.5-turbo",
+        "name": "GPT-3.5 Turbo",
+        "tool_call": true,
+        "status": "deprecated",
+        "retires_at": "2026-12-31",
+        "modalities": {
+          "input": ["text"],
+          "output": ["text"]
+        },
+        "limit": {
+          "context": 16385,
+          "output": 4096
+        },
+        "cost": {
+          "input": 0.5,
+          "output": 1.5
+        }
+      },
+      "text-embedding-3-small": {
+        "id": "text-embedding-3-small",
+        "name": "Text Embedding 3 Small",
+        "type": "embedding",
+        "modalities": {
+          "input": ["text"],
+          "output": []
+        },
+        "limit": {
+          "context": 8191
+        },
+        "cost": {
+          "input": 0.02,
+          "output": 0
+        }
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "models": {
+      "gpt-4o": {
+        "id": "gpt-4o",
+        "name": "OpenAI: GPT-4o",
+        "tool_call": true,
+        "structured_output": true,
+        "modalities": {
+          "input": ["text", "image"],
+          "output": ["text"]
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "cost": {
+          "input": 2.75,
+          "output": 11.0
+        }
+      }
+    }
+  }
+}

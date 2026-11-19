@@ -38,11 +38,12 @@ func intOrNil(v *int) any {
 	return *v
 }
 
-// Price looks up one catalog row. Missing is not an error.
-func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, error) {
+// Price looks up one catalog row for vendor and model, falling back to the
+// model-only row (empty vendor). Missing is not an error.
+func (s Store) Price(ctx context.Context, vendor, model string) (domain.Price, bool, error) {
+	vendor = domain.VendorKey(vendor)
 	var row struct {
 		Version       string
-		Provider      string
 		Input         *int64
 		Output        *int64
 		CacheRead     *int64
@@ -50,15 +51,18 @@ func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, err
 		ContextWindow int
 	}
 	err := s.Pool.QueryRow(ctx, `
-		SELECT version, provider,
-			round(input_usd_per_mtok * $2)::bigint,
-			round(output_usd_per_mtok * $2)::bigint,
-			round(cache_read_usd_per_mtok * $2)::bigint,
-			round(cache_write_usd_per_mtok * $2)::bigint,
+		SELECT version,
+			round(input_usd_per_mtok * $3)::bigint,
+			round(output_usd_per_mtok * $3)::bigint,
+			round(cache_read_usd_per_mtok * $3)::bigint,
+			round(cache_write_usd_per_mtok * $3)::bigint,
 			context_window
 		FROM gateway.prices
-		WHERE model = $1`, model, kernel.MicroUSDPerDollar).Scan(
-		&row.Version, &row.Provider, &row.Input, &row.Output, &row.CacheRead, &row.CacheWrite, &row.ContextWindow,
+		WHERE model = $2
+		  AND vendor IN ($1, '')
+		ORDER BY (vendor = $1) DESC
+		LIMIT 1`, vendor, model, kernel.MicroUSDPerDollar).Scan(
+		&row.Version, &row.Input, &row.Output, &row.CacheRead, &row.CacheWrite, &row.ContextWindow,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -68,7 +72,6 @@ func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, err
 	}
 	return domain.Price{
 		Version:                   row.Version,
-		Provider:                  row.Provider,
 		InputMicroUSDPerMTok:      row.Input,
 		OutputMicroUSDPerMTok:     row.Output,
 		CacheReadMicroUSDPerMTok:  row.CacheRead,
@@ -77,8 +80,13 @@ func (s Store) Price(ctx context.Context, model string) (domain.Price, bool, err
 	}, true, nil
 }
 
-// HighestRate returns the largest per-million-token catalog rate for provider.
-func (s Store) HighestRate(ctx context.Context, provider string) (int64, bool, error) {
+// HighestRate returns the largest per-million-token catalog rate over vendor's
+// own rows, never the empty-vendor fallback rows.
+func (s Store) HighestRate(ctx context.Context, vendor string) (int64, bool, error) {
+	vendor = domain.VendorKey(vendor)
+	if vendor == "" {
+		return 0, false, nil
+	}
 	var rate *int64
 	err := s.Pool.QueryRow(ctx, `
 		SELECT max(rate) FROM (
@@ -88,8 +96,9 @@ func (s Store) HighestRate(ctx context.Context, provider string) (int64, bool, e
 				COALESCE(round(cache_read_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_write_usd_per_mtok * $2)::bigint, 0)
 			) AS rate
-			FROM gateway.prices WHERE provider = $1
-		) AS rates WHERE rate > 0`, provider, kernel.MicroUSDPerDollar).Scan(&rate)
+			FROM gateway.prices
+			WHERE vendor <> '' AND lower(vendor) = lower($1)
+		) AS rates WHERE rate > 0`, vendor, kernel.MicroUSDPerDollar).Scan(&rate)
 	if err != nil {
 		return 0, false, err
 	}

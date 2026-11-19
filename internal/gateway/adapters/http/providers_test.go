@@ -260,3 +260,89 @@ func TestListProvidersCarriesTheUsableAnswer(t *testing.T) {
 		t.Fatalf("the Not connected account read %v with %v", got[1].Usable, got[1].UsableModels)
 	}
 }
+
+type fakeCatalogReader struct {
+	rows map[string][]domain.CatalogRow
+}
+
+func (f fakeCatalogReader) VendorCatalog(_ context.Context, vendor string) ([]domain.CatalogRow, error) {
+	return f.rows[vendor], nil
+}
+
+func (f fakeCatalogReader) CatalogModel(context.Context, string, string) (domain.CatalogRow, bool, error) {
+	return domain.CatalogRow{}, false, nil
+}
+
+func (f fakeCatalogReader) ModelKinds(context.Context, []domain.VendorModel) (map[domain.VendorModel]domain.ModelKind, error) {
+	return nil, nil
+}
+
+func TestVendorAndCatalogRoutesRequireSessionAndReturnData(t *testing.T) {
+	svc := providersService(t, &recordedAccounts{}, true)
+	inRate := 2.5
+	outRate := 10.0
+	svc.Catalog = fakeCatalogReader{rows: map[string][]domain.CatalogRow{
+		"openai": {{
+			Vendor:        "openai",
+			Model:         "gpt-4o",
+			Version:       "v1",
+			Kind:          domain.KindChat,
+			Inputs:        []string{domain.InputText, domain.InputImage},
+			Outputs:       []string{domain.OutputText},
+			Caps:          []string{domain.CapTools, domain.CapStructured},
+			ContextWindow: 128000,
+			MaxOutput:     16384,
+			Price:         domain.Price{Version: "v1", InputPerMTok: &inRate, OutputPerMTok: &outRate},
+		}},
+	}}
+
+	mux := http.NewServeMux()
+	ProvidersHandler{
+		Service: svc,
+		Access: func(r *http.Request) (string, bool) {
+			u := r.Header.Get("X-User")
+			return u, u != ""
+		},
+	}.MountProviders(mux, nil)
+
+	// Signed-out caller gets 401.
+	for _, path := range []string{"/api/providers/vendors", "/api/providers/catalog?vendor=openai"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s signed-out = %d", path, rec.Code)
+		}
+	}
+
+	// Vendors route returns the domain vendor table.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/vendors", nil)
+	req.Header.Set("X-User", "u1")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vendors status %d body %s", rec.Code, rec.Body.String())
+	}
+	var vendors []vendorJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &vendors); err != nil || len(vendors) != len(domain.Vendors()) {
+		t.Fatalf("vendors = %+v, err=%v", vendors, err)
+	}
+	if vendors[0].Key != "anthropic" || vendors[0].Name != "Anthropic" || vendors[0].SuggestedPlan != domain.PlanMetered {
+		t.Fatalf("first vendor = %+v", vendors[0])
+	}
+
+	// Catalog route returns that vendor's rows.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/providers/catalog?vendor=OpenAI", nil)
+	req.Header.Set("X-User", "u1")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("catalog status %d body %s", rec.Code, rec.Body.String())
+	}
+	var rows []catalogRowJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil || len(rows) != 1 {
+		t.Fatalf("catalog = %s, err=%v", rec.Body.String(), err)
+	}
+	if rows[0].Model != "gpt-4o" || rows[0].Kind != "chat" || !rows[0].Tools || *rows[0].InputPerMTok != 2.5 || *rows[0].MaxOutput != 16384 {
+		t.Fatalf("catalog row = %+v", rows[0])
+	}
+}

@@ -694,10 +694,10 @@ func TestFeature_UPM353_SeededTotalsMatchUSDPricing(t *testing.T) {
 	store := postgres.Store{Pool: w.pool}
 	inRate, outRate, cacheReadRate, cacheWriteRate := 1.5, 3.7, 0.31, 2.13
 	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
+		Vendor:  "fake",
 		Model:   "m1",
 		Version: "v1",
 		Price: domain.Price{
-			Provider:       "fake",
 			InputPerMTok:   &inRate,
 			OutputPerMTok:  &outRate,
 			CacheReadMTok:  &cacheReadRate,
@@ -738,7 +738,7 @@ func TestFeature_UPM353_UnpricedCallUsesProviderCatalogEstimate(t *testing.T) {
 	store := postgres.Store{Pool: w.pool}
 	rate := 10.0
 	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
-		Model: "priced-other", Version: "v1", Price: domain.Price{Provider: "fake", InputPerMTok: &rate, OutputPerMTok: &rate},
+		Vendor: "fake", Model: "priced-other", Version: "v1", Price: domain.Price{InputPerMTok: &rate, OutputPerMTok: &rate},
 	}}); err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
@@ -36,6 +37,8 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 		return guard(next)
 	}
 	mux.Handle("GET /api/providers", wrap(h.list))
+	mux.Handle("GET /api/providers/vendors", wrap(h.vendors))
+	mux.Handle("GET /api/providers/catalog", wrap(h.catalog))
 	mux.Handle("GET /api/providers/sharing", wrap(h.sharing))
 	mux.Handle("GET /api/providers/{id}/models", wrap(h.models))
 	mux.Handle("POST /api/providers", wrap(h.add))
@@ -171,6 +174,105 @@ func (h ProvidersHandler) list(w http.ResponseWriter, r *http.Request) {
 	out := make([]providerJSON, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, providerBody(row))
+	}
+	writeRouteJSON(w, http.StatusOK, out)
+}
+
+type vendorJSON struct {
+	Key            string `json:"key"`
+	Name           string `json:"name"`
+	Adapter        string `json:"adapter"`
+	DefaultBaseURL string `json:"default_base_url"`
+	SuggestedPlan  string `json:"suggested_plan,omitempty"`
+}
+
+type catalogRowJSON struct {
+	Vendor         string   `json:"vendor"`
+	Model          string   `json:"model"`
+	Version        string   `json:"version"`
+	Kind           string   `json:"kind"`
+	Inputs         []string `json:"inputs"`
+	Outputs        []string `json:"outputs"`
+	Tools          bool     `json:"tools"`
+	Structured     bool     `json:"structured"`
+	Reasoning      bool     `json:"reasoning"`
+	ContextWindow  int      `json:"context_window"`
+	MaxOutput      *int     `json:"max_output,omitempty"`
+	Lifecycle      string   `json:"lifecycle,omitempty"`
+	RetiresAt      string   `json:"retires_at,omitempty"`
+	InputPerMTok   *float64 `json:"input_usd_per_mtok"`
+	OutputPerMTok  *float64 `json:"output_usd_per_mtok"`
+	CacheReadMTok  *float64 `json:"cache_read_usd_per_mtok"`
+	CacheWriteMTok *float64 `json:"cache_write_usd_per_mtok"`
+}
+
+// vendors returns the picker vendor table for a signed-in person.
+func (h ProvidersHandler) vendors(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.person(w, r); !ok {
+		return
+	}
+	list := domain.Vendors()
+	out := make([]vendorJSON, 0, len(list))
+	for _, v := range list {
+		out = append(out, vendorJSON{
+			Key:            v.Key,
+			Name:           v.Name,
+			Adapter:        v.Adapter,
+			DefaultBaseURL: v.BaseURL,
+			SuggestedPlan:  v.SuggestedPlan,
+		})
+	}
+	writeRouteJSON(w, http.StatusOK, out)
+}
+
+// catalog returns the stored catalogue rows for the requested vendor.
+func (h ProvidersHandler) catalog(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.person(w, r); !ok {
+		return
+	}
+	rows, err := h.Service.VendorCatalog(r.Context(), r.URL.Query().Get("vendor"))
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	out := make([]catalogRowJSON, 0, len(rows))
+	for _, row := range rows {
+		inputs := row.Inputs
+		if inputs == nil {
+			inputs = []string{}
+		}
+		outputs := row.Outputs
+		if outputs == nil {
+			outputs = []string{}
+		}
+		var maxOut *int
+		if row.MaxOutput > 0 {
+			v := row.MaxOutput
+			maxOut = &v
+		}
+		var retires string
+		if row.RetiresAt != nil {
+			retires = row.RetiresAt.UTC().Format("2006-01-02")
+		}
+		out = append(out, catalogRowJSON{
+			Vendor:         row.Vendor,
+			Model:          row.Model,
+			Version:        row.Version,
+			Kind:           string(row.Kind),
+			Inputs:         inputs,
+			Outputs:        outputs,
+			Tools:          slices.Contains(row.Caps, domain.CapTools),
+			Structured:     slices.Contains(row.Caps, domain.CapStructured),
+			Reasoning:      row.Reasoning,
+			ContextWindow:  row.ContextWindow,
+			MaxOutput:      maxOut,
+			Lifecycle:      row.Lifecycle,
+			RetiresAt:      retires,
+			InputPerMTok:   row.Price.InputPerMTok,
+			OutputPerMTok:  row.Price.OutputPerMTok,
+			CacheReadMTok:  row.Price.CacheReadMTok,
+			CacheWriteMTok: row.Price.CacheWriteMTok,
+		})
 	}
 	writeRouteJSON(w, http.StatusOK, out)
 }

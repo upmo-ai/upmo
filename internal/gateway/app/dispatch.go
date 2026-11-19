@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
@@ -64,15 +65,24 @@ type Embedder interface {
 	Embed(ctx context.Context, attempt Attempt, inputs []string) ([][]float32, domain.Usage, domain.FailureClass, error)
 }
 
-// Prices looks up a catalog row. Missing is not an error.
+// Prices looks up a catalog row for a vendor and model, falling back to the
+// model-only row. Missing is not an error.
 type Prices interface {
-	Price(ctx context.Context, model string) (domain.Price, bool, error)
+	Price(ctx context.Context, vendor, model string) (domain.Price, bool, error)
 }
 
-// ProviderPrices supplies the highest catalog rate for an account provider.
+// InputSupport is an optional extension of Prices that checks which input
+// modalities (image, audio, file) a model accepts and suggests a usable chat
+// model on the same account that accepts a missing modality.
+type InputSupport interface {
+	ModelInputs(ctx context.Context, accountID, vendor, model string) (inputs []string, ok bool, err error)
+	SuggestModelForInput(ctx context.Context, accountID, vendor, needInput string) (model string, ok bool, err error)
+}
+
+// ProviderPrices supplies the highest catalog rate for a picker vendor.
 // It is optional so dispatch remains usable with lightweight price readers.
 type ProviderPrices interface {
-	HighestRate(ctx context.Context, provider string) (int64, bool, error)
+	HighestRate(ctx context.Context, vendor string) (int64, bool, error)
 }
 
 // Ledger stores one row per attempt.
@@ -236,10 +246,11 @@ func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link,
 // micro-USD, whether it is estimated, the price source, the catalog version it
 // came from, and the model's context window.
 func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage, inputBytes, outputBytes int, knownZero bool) (*int64, bool, string, string, int, error) {
+	vendor := domain.VendorKey(link.Account.Provider)
 	var price domain.Price
 	found := false
 	if d.Prices != nil {
-		p, ok, err := d.Prices.Price(ctx, link.Model)
+		p, ok, err := d.Prices.Price(ctx, vendor, link.Model)
 		if err != nil {
 			return nil, false, "", "", 0, err
 		}
@@ -252,7 +263,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 	estimateRate := domain.EstimatedMicroUSDPerMTok
 	if domain.NeedsEstimate(link.Account.PlanKind, usage, price, found, knownZero) {
 		if prices, ok := d.Prices.(ProviderPrices); ok {
-			rate, hasRate, err := prices.HighestRate(ctx, link.Account.Provider)
+			rate, hasRate, err := prices.HighestRate(ctx, vendor)
 			if err != nil {
 				return nil, false, "", "", 0, err
 			}
@@ -434,6 +445,9 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		if err != nil {
 			return domain.ChatResult{}, err
 		}
+	}
+	if links, err = d.filterSupportedInputs(ctx, links, built.RequiredInputs(), false); err != nil {
+		return domain.ChatResult{}, err
 	}
 	var last error
 	for _, link := range links {
@@ -628,6 +642,10 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 			if err != nil {
 				return err
 			}
+			var ferr error
+			if links, ferr = d.filterSupportedInputs(ctx, links, built.RequiredInputs(), false); ferr != nil {
+				return ferr
+			}
 			next := ""
 			if len(links) > 0 {
 				next = links[0].Model
@@ -640,6 +658,11 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 	}
 	if err != nil {
 		return err
+	}
+	if pin.IsZero() || pinFirst {
+		if links, err = d.filterSupportedInputs(ctx, links, built.RequiredInputs(), pinFirst); err != nil {
+			return err
+		}
 	}
 	// skipped hears of a pinned link that is passed over before any call: the
 	// person is told, like for a pin that cannot be used at all.
@@ -970,4 +993,67 @@ func (d Dispatch) seen(ref string, class domain.FailureClass, started time.Time)
 	if d.Status != nil {
 		d.Status.Note(ref, class, started)
 	}
+}
+
+func (d Dispatch) filterSupportedInputs(ctx context.Context, links []domain.Link, required []string, pinFirst bool) ([]domain.Link, error) {
+	if len(required) == 0 || len(links) == 0 {
+		return links, nil
+	}
+	supported := make([]domain.Link, 0, len(links))
+	var firstUnsupported domain.Link
+	var firstMissing string
+	for i, link := range links {
+		missing, err := d.missingInput(ctx, link, required)
+		if err != nil {
+			return nil, err
+		}
+		if missing == "" {
+			supported = append(supported, link)
+			continue
+		}
+		if pinFirst && i == 0 {
+			return nil, d.unsupportedInputError(ctx, link, missing)
+		}
+		if firstMissing == "" {
+			firstUnsupported = link
+			firstMissing = missing
+		}
+	}
+	if len(supported) == 0 {
+		return nil, d.unsupportedInputError(ctx, firstUnsupported, firstMissing)
+	}
+	return supported, nil
+}
+
+func (d Dispatch) missingInput(ctx context.Context, link domain.Link, required []string) (string, error) {
+	// A model with no catalogue row counts as chat with text input only.
+	var inputs []string
+	if checker, ok := d.Prices.(InputSupport); ok {
+		have, found, err := checker.ModelInputs(ctx, link.Account.ID, domain.VendorKey(link.Account.Provider), link.Model)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			inputs = have
+		}
+	}
+	if len(inputs) == 0 {
+		inputs = []string{domain.InputText}
+	}
+	for _, need := range required {
+		if !slices.Contains(inputs, need) {
+			return need, nil
+		}
+	}
+	return "", nil
+}
+
+func (d Dispatch) unsupportedInputError(ctx context.Context, link domain.Link, need string) error {
+	suggestion := ""
+	if checker, ok := d.Prices.(InputSupport); ok {
+		if m, found, err := checker.SuggestModelForInput(ctx, link.Account.ID, domain.VendorKey(link.Account.Provider), need); err == nil && found {
+			suggestion = m
+		}
+	}
+	return domain.UnsupportedInputError{Model: link.Model, Input: need, Suggestion: suggestion}
 }

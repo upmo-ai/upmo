@@ -265,3 +265,35 @@ func TestRequestJSONHasOnlyPrefixThenMessages(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestPartsAndUnsupportedInputError(t *testing.T) {
+	req, err := Build(Input{
+		Messages: []Message{{
+			Role: RoleUser,
+			Parts: []Part{
+				{Kind: " TEXT ", Text: "look"},
+				{Kind: "Image", MIMEType: "image/png", Data: "abc"},
+				{Kind: "file", Name: "doc.pdf"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.RequiredInputs(); len(got) != 2 || got[0] != InputImage || got[1] != InputFile {
+		t.Fatalf("RequiredInputs = %v", got)
+	}
+	if _, err := Build(Input{
+		Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: "video"}}}},
+	}); err == nil {
+		t.Fatal("expected error for unknown part kind")
+	}
+	withSuggestion := UnsupportedInputError{Model: "gpt-3.5-turbo", Input: InputImage, Suggestion: "gpt-4o"}
+	if got := withSuggestion.Error(); !strings.Contains(got, "gpt-3.5-turbo") || !strings.Contains(got, "image") || !strings.Contains(got, "gpt-4o") {
+		t.Fatalf("UnsupportedInputError = %q", got)
+	}
+	noSuggestion := UnsupportedInputError{Model: "gpt-3.5-turbo", Input: InputAudio}
+	if got := noSuggestion.Error(); !strings.Contains(got, "gpt-3.5-turbo") || !strings.Contains(got, "audio") {
+		t.Fatalf("UnsupportedInputError = %q", got)
+	}
+}

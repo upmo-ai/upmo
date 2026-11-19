@@ -67,16 +67,33 @@ CREATE TABLE gateway.agent_bundles (
   bundle text NOT NULL REFERENCES gateway.tool_bundles (name)
 );
 
+-- vendor is the picker vendor key (e.g. 'anthropic', 'openai'). An empty
+-- vendor ('') is the model-only fallback row used for vendors models.dev
+-- does not know.
 CREATE TABLE gateway.prices (
-  model text PRIMARY KEY,
-  provider text NOT NULL DEFAULT '',
+  vendor text NOT NULL DEFAULT '',
+  model text NOT NULL,
   version text NOT NULL,
+  kind text NOT NULL DEFAULT 'chat',
+  inputs text[] NOT NULL DEFAULT '{text}',
+  outputs text[] NOT NULL DEFAULT '{text}',
   input_usd_per_mtok numeric,
   output_usd_per_mtok numeric,
   cache_read_usd_per_mtok numeric,
   cache_write_usd_per_mtok numeric,
+  max_output int,
+  reasoning boolean NOT NULL DEFAULT false,
+  lifecycle text NOT NULL DEFAULT '',
+  retires_at date,
   capabilities text[] NOT NULL DEFAULT '{}',
-  CONSTRAINT prices_version_check CHECK (version <> '')
+  PRIMARY KEY (vendor, model),
+  CONSTRAINT prices_model_check CHECK (model <> ''),
+  CONSTRAINT prices_version_check CHECK (version <> ''),
+  CONSTRAINT prices_kind_check CHECK (kind IN ('chat', 'embedding', 'image', 'rerank')),
+  CONSTRAINT prices_inputs_check CHECK (inputs <@ ARRAY['text', 'image', 'audio', 'file']::text[]),
+  CONSTRAINT prices_outputs_check CHECK (outputs <@ ARRAY['text', 'image', 'audio']::text[]),
+  CONSTRAINT prices_max_output_check CHECK (max_output IS NULL OR max_output > 0),
+  CONSTRAINT prices_lifecycle_check CHECK (lifecycle IN ('', 'active', 'alpha', 'beta', 'deprecated', 'retired'))
 );
 
 CREATE TABLE gateway.catalog_meta (
