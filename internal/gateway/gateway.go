@@ -140,8 +140,10 @@ func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Provid
 		probes[name] = a
 	}
 	accounts := postgres.Providers{Pool: pool}
+	catalog := postgres.Store{Pool: pool}
 	return app.Providers{
 		Accounts: accounts,
+		Catalog:  catalog,
 		SealTest: accounts.SealTest,
 		Keys:     keys,
 		Known: func(name string) bool {
@@ -176,23 +178,28 @@ type ProvidersHandler = httpapi.ProvidersHandler
 
 // A model request and the input it is built from.
 type (
-	Input        = domain.Input
-	Message      = domain.Message
-	Request      = domain.Request
-	Role         = domain.Role
-	Breakpoint   = domain.Breakpoint
-	Principal    = domain.Principal
-	Tool         = domain.Tool
-	ToolCall     = domain.ToolCall
-	ToolChoice   = domain.ToolChoice
-	ChatResult   = domain.ChatResult
-	Usage        = domain.Usage
-	ListedHop    = app.ListedHop
-	ListedRoute  = app.ListedRoute
-	RouteBook    = app.RouteBook
-	RouteService = app.RouteService
-	Providers    = app.Providers
-	Provider     = domain.Provider
+	Input                 = domain.Input
+	Message               = domain.Message
+	Part                  = domain.Part
+	UnsupportedInputError = domain.UnsupportedInputError
+	Request               = domain.Request
+	Role                  = domain.Role
+	Breakpoint            = domain.Breakpoint
+	Principal             = domain.Principal
+	Tool                  = domain.Tool
+	ToolCall              = domain.ToolCall
+	ToolChoice            = domain.ToolChoice
+	ChatResult            = domain.ChatResult
+	Usage                 = domain.Usage
+	ListedHop             = app.ListedHop
+	ListedRoute           = app.ListedRoute
+	RouteBook             = app.RouteBook
+	RouteService          = app.RouteService
+	Providers             = app.Providers
+	Provider              = domain.Provider
+	ModelKind             = domain.ModelKind
+	ModelOverride         = domain.ModelOverride
+	MergedModel           = domain.MergedModel
 )
 
 // UsableAgent reports whether an agent can be offered to a person now.
@@ -200,9 +207,17 @@ func UsableAgent(enabled bool, route, modelProvider, modelID string, routes []Li
 	return app.UsableAgent(enabled, route, modelProvider, modelID, routes, accounts, defaultRoute)
 }
 
-// Message roles and cache breakpoints.
+// Message roles, input modalities, model kinds, and cache breakpoints.
 const (
 	RoleUser           = domain.RoleUser
+	InputText          = domain.InputText
+	InputImage         = domain.InputImage
+	InputAudio         = domain.InputAudio
+	InputFile          = domain.InputFile
+	KindChat           = domain.KindChat
+	KindEmbedding      = domain.KindEmbedding
+	KindImage          = domain.KindImage
+	KindRerank         = domain.KindRerank
 	BreakSystem        = domain.BreakSystem
 	StatusConnected    = domain.StatusConnected
 	StatusNotConnected = domain.StatusNotConnected

@@ -68,7 +68,6 @@ func (u Usage) Tokens() int {
 // has no price.
 type Price struct {
 	Version                   string
-	Provider                  string
 	InputPerMTok              *float64
 	OutputPerMTok             *float64
 	CacheReadMTok             *float64

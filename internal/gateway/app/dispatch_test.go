@@ -694,7 +694,7 @@ func TestDispatchChatStreamSkipsLinkWithoutStreamAdapter(t *testing.T) {
 // for the done frame would disagree with the ledger row.
 type shiftingPrices struct{ calls int }
 
-func (p *shiftingPrices) Price(context.Context, string) (domain.Price, bool, error) {
+func (p *shiftingPrices) Price(context.Context, string, string) (domain.Price, bool, error) {
 	p.calls++
 	rate := int64(p.calls) * 1_000_000
 	return domain.Price{Version: fmt.Sprintf("v%d", p.calls), InputMicroUSDPerMTok: &rate, OutputMicroUSDPerMTok: &rate}, true, nil
@@ -1093,7 +1093,7 @@ type fixedPrices struct {
 	price domain.Price
 }
 
-func (p fixedPrices) Price(context.Context, string) (domain.Price, bool, error) {
+func (p fixedPrices) Price(context.Context, string, string) (domain.Price, bool, error) {
 	return p.price, true, nil
 }
 
@@ -1306,5 +1306,63 @@ func TestDispatchChatCallTeamNarrowing(t *testing.T) {
 	}
 	if got.Text != "house" || team.calls != 0 || solid.calls != 1 {
 		t.Fatalf("other-team excluded: got=%+v team=%d solid=%d", got, team.calls, solid.calls)
+	}
+}
+
+type inputPrices struct {
+	inputs     map[string][]string
+	suggestion string
+}
+
+func (p inputPrices) Price(context.Context, string, string) (domain.Price, bool, error) {
+	return domain.Price{}, false, nil
+}
+
+func (p inputPrices) ModelInputs(_ context.Context, _, _, model string) ([]string, bool, error) {
+	in, ok := p.inputs[model]
+	return in, ok, nil
+}
+
+func (p inputPrices) SuggestModelForInput(context.Context, string, string, string) (string, bool, error) {
+	return p.suggestion, p.suggestion != "", nil
+}
+
+func TestDispatchRefusesUnsupportedInputBeforeProviderCall(t *testing.T) {
+	account := domain.Account{ID: "acc-1", Provider: "openai", Adapter: "solid", CredentialRef: "house", House: true}
+	route := domain.Route{
+		Name: "draft", Capability: domain.CapChat,
+		Links: []domain.Link{{Position: 1, Account: account, Model: "gpt-3.5-turbo", RetryBudget: 0}},
+	}
+	chatter := &scriptChatter{reply: "never"}
+	streamer := &scriptStream{reply: "never"}
+	disp := Dispatch{
+		Routes:  memRoutes{route},
+		Secrets: memSecrets{map[string]string{"house": "secret"}},
+		Prices:  inputPrices{inputs: map[string][]string{"gpt-3.5-turbo": {domain.InputText}}, suggestion: "gpt-4o"},
+		Chat:    map[string]Chatter{"solid": chatter},
+		Stream:  map[string]StreamChatter{"solid": streamer},
+	}
+	in := domain.Input{
+		Messages: []domain.Message{{
+			Role:  domain.RoleUser,
+			Parts: []domain.Part{{Kind: domain.InputImage, MIMEType: "image/png", Data: "abc"}},
+		}},
+	}
+	_, err := disp.ChatCall(context.Background(), "draft", "", domain.Principal{}, in)
+	var unsupported domain.UnsupportedInputError
+	if !errors.As(err, &unsupported) || unsupported.Model != "gpt-3.5-turbo" || unsupported.Input != domain.InputImage || unsupported.Suggestion != "gpt-4o" {
+		t.Fatalf("ChatCall err = %v", err)
+	}
+	if chatter.calls != 0 {
+		t.Fatalf("provider chatter was called %d times", chatter.calls)
+	}
+
+	sink := &recordingSink{}
+	err = disp.ChatStreamCall(context.Background(), "draft", "", domain.Principal{}, in, 0, sink)
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("ChatStreamCall err = %v", err)
+	}
+	if streamer.calls != 0 || sink.deltas != 0 || sink.done != nil || sink.fail != nil {
+		t.Fatalf("stream touched provider or sink: calls=%d sink=%+v", streamer.calls, sink)
 	}
 }

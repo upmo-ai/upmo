@@ -154,3 +154,36 @@ func TestCompatPathsKnowEveryHostedCompatibleVendor(t *testing.T) {
 		}
 	}
 }
+
+func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
+	for _, v := range Vendors() {
+		if v.Name == "" {
+			t.Errorf("%s: empty vendor Name", v.Key)
+		}
+		if v.Local && v.SuggestedPlan != PlanLocal {
+			t.Errorf("%s: local vendor suggested plan = %q", v.Key, v.SuggestedPlan)
+		}
+		if !v.Local && v.SuggestedPlan != PlanMetered {
+			t.Errorf("%s: hosted vendor suggested plan = %q", v.Key, v.SuggestedPlan)
+		}
+	}
+	cases := map[string]string{
+		"anthropic":    "anthropic",
+		"openai":       "openai",
+		"google":       "gemini",
+		"togetherai":   "together",
+		"fireworks-ai": "fireworks",
+		"openrouter":   "openrouter",
+	}
+	for md, want := range cases {
+		got, ok := VendorForModelsDev(md)
+		if !ok || got != want {
+			t.Errorf("VendorForModelsDev(%q) = (%q, %v), want (%q, true)", md, got, ok, want)
+		}
+	}
+	for _, unmapped := range []string{"amazon-bedrock", "gemini", "together", "fireworks"} {
+		if got, ok := VendorForModelsDev(unmapped); ok || got != "" {
+			t.Fatalf("unmapped models.dev provider %q mapped to (%q, %v)", unmapped, got, ok)
+		}
+	}
+}

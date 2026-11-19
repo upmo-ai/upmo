@@ -179,3 +179,40 @@ func TestUsableAgentResolvesTheModelTheRouteOrTheDefault(t *testing.T) {
 		t.Fatal("a broken model was covered by the default route")
 	}
 }
+
+func TestUsableListsOnlyChatModelsAndCountsUncataloguedAsChat(t *testing.T) {
+	mixed := Provider{
+		ID:       "acc-mix",
+		Provider: "OpenAI",
+		Adapter:  AdapterOpenAI,
+		Status:   StatusConnected,
+		Models:   []string{"gpt-4o", "text-embedding-3-small", "dall-e-3", "rerank-1", "custom-uncatalogued"},
+		ModelKinds: map[string]ModelKind{
+			"gpt-4o":                 KindChat,
+			"text-embedding-3-small": KindEmbedding,
+			"dall-e-3":               KindImage,
+			"rerank-1":               KindRerank,
+		},
+	}
+
+	got := UsableModels(mixed)
+	want := []string{"gpt-4o", "custom-uncatalogued"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("UsableModels = %v, want %v", got, want)
+	}
+	if UsableModel(mixed, "text-embedding-3-small") || UsableModel(mixed, "dall-e-3") || UsableModel(mixed, "rerank-1") {
+		t.Fatal("non-chat model was marked usable for chat")
+	}
+	if !UsableModel(mixed, "custom-uncatalogued") {
+		t.Fatal("uncatalogued model should count as chat")
+	}
+	if UsableAgentModel("OpenAI", "text-embedding-3-small", []Provider{mixed}) {
+		t.Fatal("embedding model was usable for an agent")
+	}
+	if UsableRoute(UsableRouteView{Name: "chat", Capability: CapChat, Hops: []UsableHop{{AccountID: mixed.ID, Model: "text-embedding-3-small"}}}, []Provider{mixed}) {
+		t.Fatal("chat route accepted an embedding model")
+	}
+	if !UsableRoute(UsableRouteView{Name: "embed", Capability: CapEmbed, Hops: []UsableHop{{AccountID: mixed.ID, Model: "text-embedding-3-small"}}}, []Provider{mixed}) {
+		t.Fatal("embed route rejected an embedding model")
+	}
+}

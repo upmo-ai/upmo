@@ -83,7 +83,10 @@ type Provider struct {
 	Status        string
 	Models        []string
 	EnabledModels []EnabledModel
-	Own           bool
+	// ModelKinds holds the catalogue kind for Models when known. A model
+	// absent from ModelKinds counts as KindChat with text input.
+	ModelKinds map[string]ModelKind
+	Own        bool
 	// OwnerUserID is the account's owner. It is empty for a house account.
 	OwnerUserID   string
 	CredentialRef string

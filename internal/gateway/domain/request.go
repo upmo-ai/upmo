@@ -96,10 +96,46 @@ const (
 	RoleTool      Role = "tool"
 )
 
+// Input modalities a model may accept and a message Part may carry.
+const (
+	InputText  = "text"
+	InputImage = "image"
+	InputAudio = "audio"
+	InputFile  = "file"
+)
+
+// Part is one typed content part of a message.
+type Part struct {
+	Kind     string `json:"kind"`
+	Text     string `json:"text,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     string `json:"data,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Name     string `json:"name,omitempty"`
+}
+
+// UnsupportedInputError is returned before a provider call when a message
+// carries an input part (image, audio or file) that the target model does not
+// accept. Suggestion names one usable model on the same account that accepts
+// it, if any.
+type UnsupportedInputError struct {
+	Model      string
+	Input      string
+	Suggestion string
+}
+
+func (e UnsupportedInputError) Error() string {
+	if e.Suggestion != "" {
+		return fmt.Sprintf("Model %s does not accept %s input. Try %s instead.", e.Model, e.Input, e.Suggestion)
+	}
+	return fmt.Sprintf("Model %s does not accept %s input.", e.Model, e.Input)
+}
+
 // Message is one turn after the prefix. Tool results may be offloaded.
 type Message struct {
 	Role      Role       `json:"role"`
 	Text      string     `json:"text,omitempty"`
+	Parts     []Part     `json:"parts,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	ToolName  string     `json:"tool_name,omitempty"`
 	ToolID    string     `json:"tool_id,omitempty"`
@@ -190,6 +226,20 @@ func Build(in Input) (Request, error) {
 		}
 		if msg.Role != RoleUser && msg.Role != RoleAssistant && msg.Role != RoleTool {
 			return Request{}, fmt.Errorf("gateway: message role %q", msg.Role)
+		}
+		if len(msg.Parts) > 0 {
+			parts := make([]Part, len(msg.Parts))
+			for i, p := range msg.Parts {
+				kind := strings.ToLower(strings.TrimSpace(p.Kind))
+				switch kind {
+				case InputText, InputImage, InputAudio, InputFile:
+					p.Kind = kind
+					parts[i] = p
+				default:
+					return Request{}, fmt.Errorf("gateway: message part kind %q", p.Kind)
+				}
+			}
+			msg.Parts = parts
 		}
 		if msg.Role == RoleTool && TokenEstimate(msg.Text) > limit {
 			msg.Text = retrieveOutput
@@ -372,3 +422,24 @@ func TokenEstimate(s string) int {
 // OffloadSentinel is the tool result body after offload. Adapters may send
 // this name as a retrieve_output tool the model can call.
 func OffloadSentinel() string { return retrieveOutput }
+
+// RequiredInputs returns the distinct non-text input modalities (image, audio,
+// file) carried in r.Messages, in canonical order.
+func (r Request) RequiredInputs() []string {
+	seen := map[string]bool{}
+	for _, msg := range r.Messages {
+		for _, p := range msg.Parts {
+			switch p.Kind {
+			case InputImage, InputAudio, InputFile:
+				seen[p.Kind] = true
+			}
+		}
+	}
+	var out []string
+	for _, k := range []string{InputImage, InputAudio, InputFile} {
+		if seen[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}

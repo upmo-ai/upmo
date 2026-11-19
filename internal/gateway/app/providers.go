@@ -159,6 +159,8 @@ type Prober interface {
 // Providers is the use case behind a person's provider settings.
 type Providers struct {
 	Accounts Accounts
+	// Catalog reads model kinds and vendor catalogue rows from gateway.prices.
+	Catalog CatalogReader
 	// Keys seals and opens the keys a person adds.
 	Keys domain.Keyring
 	// Known reports whether the gateway has an adapter by that key.
@@ -280,6 +282,9 @@ func (s Providers) List(ctx context.Context, user string) ([]domain.Provider, er
 	for i := range out {
 		s.note(&out[i], who)
 	}
+	if err := s.annotateKinds(ctx, out); err != nil {
+		return nil, fmt.Errorf("gateway: list providers catalog: %w", err)
+	}
 	return out, nil
 }
 
@@ -368,6 +373,9 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		return domain.Provider{}, err
 	}
 	s.note(&made, who)
+	if err := s.annotateOneKind(ctx, &made); err != nil {
+		return domain.Provider{}, err
+	}
 	s.log("provider added", made.ID, user)
 	return made, nil
 }
@@ -477,6 +485,9 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 		return domain.Provider{}, err
 	}
 	s.note(&made, who)
+	if err := s.annotateOneKind(ctx, &made); err != nil {
+		return domain.Provider{}, err
+	}
 	s.log("provider updated", made.ID, user)
 	return made, nil
 }
@@ -607,6 +618,112 @@ func (s Providers) SeenModels(ctx context.Context, user, id string) ([]domain.Se
 		return nil, err
 	}
 	return s.Accounts.SeenModels(ctx, who, id)
+}
+
+// VendorCatalog returns the catalogue rows stored for vendor. Unknown or empty
+// vendors return an empty slice.
+func (s Providers) VendorCatalog(ctx context.Context, vendor string) ([]domain.CatalogRow, error) {
+	if s.Catalog == nil {
+		return []domain.CatalogRow{}, nil
+	}
+	rows, err := s.Catalog.VendorCatalog(ctx, domain.VendorKey(vendor))
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		return []domain.CatalogRow{}, nil
+	}
+	return rows, nil
+}
+
+// MergedModel resolves the merged model view for one account model across
+// optional override, stored provider discovery (account_models_seen), and the
+// models.dev catalogue.
+func (s Providers) MergedModel(ctx context.Context, user, accountID, model string, override *domain.ModelOverride) (domain.MergedModel, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return domain.MergedModel{}, err
+	}
+	account, err := s.Accounts.Get(ctx, who, accountID)
+	if err != nil {
+		return domain.MergedModel{}, err
+	}
+	seenList, err := s.Accounts.SeenModels(ctx, who, accountID)
+	if err != nil {
+		return domain.MergedModel{}, err
+	}
+	var seen *domain.SeenModel
+	for i := range seenList {
+		if seenList[i].ID == model {
+			seen = &seenList[i]
+			break
+		}
+	}
+	var catalog *domain.CatalogRow
+	if s.Catalog != nil {
+		row, ok, err := s.Catalog.CatalogModel(ctx, domain.VendorKey(account.Provider), model)
+		if err != nil {
+			return domain.MergedModel{}, err
+		}
+		if ok {
+			catalog = &row
+		}
+	}
+	return domain.MergeModel(model, override, seen, catalog), nil
+}
+
+func (s Providers) annotateOneKind(ctx context.Context, p *domain.Provider) error {
+	if s.Catalog == nil || len(p.Models) == 0 {
+		return nil
+	}
+	tmp := []domain.Provider{*p}
+	if err := s.annotateKinds(ctx, tmp); err != nil {
+		return err
+	}
+	p.ModelKinds = tmp[0].ModelKinds
+	return nil
+}
+
+func (s Providers) annotateKinds(ctx context.Context, accounts []domain.Provider) error {
+	if s.Catalog == nil || len(accounts) == 0 {
+		return nil
+	}
+	seenPairs := map[domain.VendorModel]bool{}
+	var pairs []domain.VendorModel
+	for _, a := range accounts {
+		vendor := domain.VendorKey(a.Provider)
+		for _, m := range a.Models {
+			k := domain.VendorModel{Vendor: vendor, Model: m}
+			if !seenPairs[k] {
+				seenPairs[k] = true
+				pairs = append(pairs, k)
+			}
+		}
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	kinds, err := s.Catalog.ModelKinds(ctx, pairs)
+	if err != nil {
+		return err
+	}
+	if len(kinds) == 0 {
+		return nil
+	}
+	for i := 0; i < len(accounts); i++ {
+		vendor := domain.VendorKey(accounts[i].Provider)
+		var mk map[string]domain.ModelKind
+		for _, m := range accounts[i].Models {
+			if k, ok := kinds[domain.VendorModel{Vendor: vendor, Model: m}]; ok {
+				if mk == nil {
+					mk = make(map[string]domain.ModelKind, len(accounts[i].Models))
+				}
+				mk[m] = k
+			}
+		}
+		accounts[i].ModelKinds = mk
+	}
+	return nil
 }
 
 // mayLocal asks LocalPlan whether this person may add or test a local-plan

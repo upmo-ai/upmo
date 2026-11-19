@@ -13,12 +13,14 @@ import (
 type Vendor struct {
 	// Key is the picker id.
 	Key     string
+	Name    string
 	Adapter string
 	// BaseURL is the vendor's root without a trailing slash. A path below the
 	// host that every call needs (such as /v1beta/openai) is part of it.
-	BaseURL    string
-	ChatPath   string
-	ModelsPath string
+	BaseURL       string
+	SuggestedPlan string
+	ChatPath      string
+	ModelsPath    string
 	// EmbedPath is empty for a vendor on a native adapter.
 	EmbedPath string
 	// Local marks a runtime on the person's own machine. Its BaseURL is only
@@ -27,22 +29,61 @@ type Vendor struct {
 }
 
 var vendors = []Vendor{
-	{Key: "anthropic", Adapter: AdapterAnthropic, BaseURL: "https://api.anthropic.com", ChatPath: "/v1/messages", ModelsPath: "/v1/models"},
-	{Key: "openai", Adapter: AdapterOpenAI, BaseURL: "https://api.openai.com", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "gemini", Adapter: AdapterOpenAI, BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
-	{Key: "nebius", Adapter: AdapterOpenAI, BaseURL: "https://api.studio.nebius.ai", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "ollama", Adapter: AdapterOpenAI, BaseURL: "http://localhost:11434", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings", Local: true},
-	{Key: "deepseek", Adapter: AdapterOpenAI, BaseURL: "https://api.deepseek.com", ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
-	{Key: "groq", Adapter: AdapterOpenAI, BaseURL: "https://api.groq.com/openai", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "xai", Adapter: AdapterOpenAI, BaseURL: "https://api.x.ai", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "openrouter", Adapter: AdapterOpenAI, BaseURL: "https://openrouter.ai/api", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "mistral", Adapter: AdapterOpenAI, BaseURL: "https://api.mistral.ai", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "together", Adapter: AdapterOpenAI, BaseURL: "https://api.together.xyz", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "cerebras", Adapter: AdapterOpenAI, BaseURL: "https://api.cerebras.ai", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "fireworks", Adapter: AdapterOpenAI, BaseURL: "https://api.fireworks.ai/inference", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
-	{Key: "perplexity", Adapter: AdapterOpenAI, BaseURL: "https://api.perplexity.ai", ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
-	{Key: "cohere", Adapter: AdapterOpenAI, BaseURL: "https://api.cohere.ai/compatibility/v1", ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
-	{Key: "lmstudio", Adapter: AdapterOpenAI, BaseURL: "http://localhost:1234", ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings", Local: true},
+	{Key: "anthropic", Name: "Anthropic", Adapter: AdapterAnthropic, BaseURL: "https://api.anthropic.com", SuggestedPlan: PlanMetered, ChatPath: "/v1/messages", ModelsPath: "/v1/models"},
+	{Key: "openai", Name: "OpenAI", Adapter: AdapterOpenAI, BaseURL: "https://api.openai.com", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "gemini", Name: "Google Gemini", Adapter: AdapterOpenAI, BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
+	{Key: "nebius", Name: "Nebius", Adapter: AdapterOpenAI, BaseURL: "https://api.studio.nebius.ai", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "ollama", Name: "Ollama", Adapter: AdapterOpenAI, BaseURL: "http://localhost:11434", SuggestedPlan: PlanLocal, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings", Local: true},
+	{Key: "deepseek", Name: "DeepSeek", Adapter: AdapterOpenAI, BaseURL: "https://api.deepseek.com", SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
+	{Key: "groq", Name: "Groq", Adapter: AdapterOpenAI, BaseURL: "https://api.groq.com/openai", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "xai", Name: "xAI", Adapter: AdapterOpenAI, BaseURL: "https://api.x.ai", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "openrouter", Name: "OpenRouter", Adapter: AdapterOpenAI, BaseURL: "https://openrouter.ai/api", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "mistral", Name: "Mistral", Adapter: AdapterOpenAI, BaseURL: "https://api.mistral.ai", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "together", Name: "Together AI", Adapter: AdapterOpenAI, BaseURL: "https://api.together.xyz", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "cerebras", Name: "Cerebras", Adapter: AdapterOpenAI, BaseURL: "https://api.cerebras.ai", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "fireworks", Name: "Fireworks AI", Adapter: AdapterOpenAI, BaseURL: "https://api.fireworks.ai/inference", SuggestedPlan: PlanMetered, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings"},
+	{Key: "perplexity", Name: "Perplexity", Adapter: AdapterOpenAI, BaseURL: "https://api.perplexity.ai", SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
+	{Key: "cohere", Name: "Cohere", Adapter: AdapterOpenAI, BaseURL: "https://api.cohere.ai/compatibility/v1", SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
+	{Key: "lmstudio", Name: "LM Studio", Adapter: AdapterOpenAI, BaseURL: "http://localhost:1234", SuggestedPlan: PlanLocal, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings", Local: true},
+}
+
+// modelsDevVendors maps models.dev top-level provider ids to picker vendor
+// keys. Providers not in this table contribute only to the model-only fallback
+// row in the catalogue.
+var modelsDevVendors = map[string]string{
+	"anthropic":    "anthropic",
+	"openai":       "openai",
+	"google":       "gemini",
+	"nebius":       "nebius",
+	"ollama":       "ollama",
+	"deepseek":     "deepseek",
+	"groq":         "groq",
+	"xai":          "xai",
+	"openrouter":   "openrouter",
+	"mistral":      "mistral",
+	"togetherai":   "together",
+	"cerebras":     "cerebras",
+	"fireworks-ai": "fireworks",
+	"perplexity":   "perplexity",
+	"cohere":       "cohere",
+	"lmstudio":     "lmstudio",
+}
+
+// VendorForModelsDev maps a models.dev provider id to its picker vendor key.
+// Unknown providers return ("", false).
+func VendorForModelsDev(providerID string) (string, bool) {
+	id := strings.ToLower(strings.TrimSpace(providerID))
+	key, ok := modelsDevVendors[id]
+	return key, ok
+}
+
+// VendorKey normalises a provider label into a canonical vendor key.
+func VendorKey(raw string) string {
+	key := strings.ToLower(strings.TrimSpace(raw))
+	if v, ok := VendorFor(key); ok {
+		return v.Key
+	}
+	return key
 }
 
 // legacyPaths are the paths every OpenAI-compatible account used before

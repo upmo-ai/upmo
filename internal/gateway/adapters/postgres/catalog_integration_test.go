@@ -49,7 +49,7 @@ func TestPricesContextWindowMigrationAndCatalogRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok, err := store.Price(ctx, "claude-sonnet")
+	got, ok, err := store.Price(ctx, "", "claude-sonnet")
 	if err != nil || !ok {
 		t.Fatalf("Price(claude-sonnet) ok=%v err=%v", ok, err)
 	}
@@ -57,7 +57,7 @@ func TestPricesContextWindowMigrationAndCatalogRoundTrip(t *testing.T) {
 		t.Fatalf("claude-sonnet ContextWindow = %d, want 200000", got.ContextWindow)
 	}
 
-	def, ok, err := store.Price(ctx, "fallback-window")
+	def, ok, err := store.Price(ctx, "", "fallback-window")
 	if err != nil || !ok {
 		t.Fatalf("Price(fallback-window) ok=%v err=%v", ok, err)
 	}
