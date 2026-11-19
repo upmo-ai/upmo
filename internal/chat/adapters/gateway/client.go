@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 
+	gatewayapi "github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
@@ -36,6 +37,7 @@ type Message struct {
 // and not sent: the gateway reads an agent id as a tool bundle to look up.
 type Request struct {
 	Route           string
+	ChatID          string
 	CredentialRef   string
 	UserID          string
 	Prompt          string
@@ -117,7 +119,7 @@ func (c Client) ChatStream(ctx context.Context, req Request, onDelta func(string
 	if req.Route == "" {
 		return Done{}, fmt.Errorf("chat: gateway route")
 	}
-	if req.UserID == "" || (req.Prompt == "" && len(req.Messages) == 0) {
+	if req.UserID == "" || req.ChatID == "" || (req.Prompt == "" && len(req.Messages) == 0) {
 		return Done{}, fmt.Errorf("chat: gateway stream input")
 	}
 	raw, err := json.Marshal(chatTurn{
@@ -129,6 +131,8 @@ func (c Client) ChatStream(ctx context.Context, req Request, onDelta func(string
 		MaxOutputTokens: req.MaxOutputTokens,
 		Pin:             pinOf(req),
 		UserID:          req.UserID,
+		Source:          gatewayapi.SourceChat,
+		SourceID:        req.ChatID,
 		TeamID:          req.TeamID,
 	})
 	if err != nil {
@@ -174,6 +178,8 @@ type chatTurn struct {
 	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
 	Pin             *pinTurn  `json:"pin,omitempty"`
 	UserID          string    `json:"user_id"`
+	Source          string    `json:"source"`
+	SourceID        string    `json:"source_id,omitempty"`
 	TeamID          string    `json:"team_id,omitempty"`
 }
 

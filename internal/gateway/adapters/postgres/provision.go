@@ -346,8 +346,8 @@ func QueryMonthlyUsage(ctx context.Context, owner *pgxpool.Pool, month string, s
 			COALESCE(SUM(cache_read), 0)::bigint AS cache_read_tokens,
 			COALESCE(SUM(cache_write), 0)::bigint AS cache_write_tokens,
 			COALESCE(SUM(reasoning), 0)::bigint AS reasoning_tokens,
-			COALESCE(ROUND(SUM(COALESCE(cost_usd, 0)) * 1000000), 0)::bigint AS cost_micro_usd,
-			COUNT(*) FILTER (WHERE cost_usd IS NULL)::bigint AS unknown_cost_count
+			COALESCE(SUM(COALESCE(cost_micro_usd, 0)), 0)::bigint AS cost_micro_usd,
+			COUNT(*) FILTER (WHERE estimated)::bigint AS unknown_cost_count
 		FROM gateway.ledger
 		WHERE at >= $1 AND at < $2
 		GROUP BY 1, 2

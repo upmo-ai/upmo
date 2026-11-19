@@ -690,7 +690,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 				members: members,
 			},
 			Propose: func(_ context.Context, userID uuid.UUID) tasks.Proposer {
-				return scoutProposer{inner: gw.For(userID.String())}
+				return scoutProposer{inner: gw.ForTask(userID.String())}
 			},
 			Notices: noticeStore,
 		})

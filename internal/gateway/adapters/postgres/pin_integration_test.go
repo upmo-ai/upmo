@@ -4,9 +4,13 @@ package postgres_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,11 +19,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	chatgateway "github.com/upmo-ai/upmo/internal/chat/adapters/gateway"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	knowledgegateway "github.com/upmo-ai/upmo/internal/knowledge/adapters/gateway"
+	memorygateway "github.com/upmo-ai/upmo/internal/memory/adapters/gateway"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -59,19 +66,66 @@ type pinCall struct{ Model, Key string }
 // pinAdapter answers every model except the ones in fail, which fail with the
 // class given. It records each call.
 type pinAdapter struct {
-	calls []pinCall
-	fail  map[string]domain.FailureClass
+	calls            []pinCall
+	fail             map[string]domain.FailureClass
+	streamBeforeFail map[string]string
+	usages           []domain.Usage
+	delay            time.Duration
+}
+
+func (a *pinAdapter) popUsage(fallback domain.Usage) domain.Usage {
+	if len(a.usages) == 0 {
+		return fallback
+	}
+	u := a.usages[0]
+	a.usages = a.usages[1:]
+	return u
+}
+
+func (a *pinAdapter) Chat(_ context.Context, attempt app.Attempt, _ domain.Request) (domain.ChatResult, domain.FailureClass, error) {
+	if a.delay > 0 {
+		time.Sleep(a.delay)
+	}
+	a.calls = append(a.calls, pinCall{Model: attempt.Model, Key: attempt.Secret})
+	if class, bad := a.fail[attempt.Model]; bad {
+		return domain.ChatResult{Usage: a.popUsage(domain.Usage{})}, class, fmt.Errorf("pin test: %s", class)
+	}
+	return domain.ChatResult{Text: "from " + attempt.Model, Usage: a.popUsage(domain.Usage{})}, domain.ClassOK, nil
+}
+
+func (a *pinAdapter) Embed(_ context.Context, attempt app.Attempt, inputs []string) ([][]float32, domain.Usage, domain.FailureClass, error) {
+	if a.delay > 0 {
+		time.Sleep(a.delay)
+	}
+	a.calls = append(a.calls, pinCall{Model: attempt.Model, Key: attempt.Secret})
+	if class, bad := a.fail[attempt.Model]; bad {
+		return nil, domain.Usage{}, class, fmt.Errorf("pin test: %s", class)
+	}
+	vectors := make([][]float32, len(inputs))
+	for i := range vectors {
+		vectors[i] = make([]float32, domain.EmbedDim)
+		vectors[i][0] = 1
+	}
+	return vectors, domain.Usage{Arrived: true, Input: 1}, domain.ClassOK, nil
 }
 
 func (a *pinAdapter) ChatStream(_ context.Context, attempt app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	if a.delay > 0 {
+		time.Sleep(a.delay)
+	}
 	a.calls = append(a.calls, pinCall{Model: attempt.Model, Key: attempt.Secret})
 	if class, bad := a.fail[attempt.Model]; bad {
-		return domain.Usage{}, class, fmt.Errorf("pin test: %s", class)
+		if text, ok := a.streamBeforeFail[attempt.Model]; ok {
+			if err := emit(text); err != nil {
+				return domain.Usage{}, domain.ClassCancelled, err
+			}
+		}
+		return a.popUsage(domain.Usage{}), class, fmt.Errorf("pin test: %s", class)
 	}
 	if err := emit("from " + attempt.Model); err != nil {
 		return domain.Usage{}, domain.ClassCancelled, err
 	}
-	return domain.Usage{Arrived: true, Input: 1, Output: 1}, domain.ClassOK, nil
+	return a.popUsage(domain.Usage{Arrived: true, Input: 1, Output: 1}), domain.ClassOK, nil
 }
 
 func (a *pinAdapter) models() string {
@@ -136,17 +190,19 @@ func seedPins(t *testing.T, pool *pgxpool.Pool) {
 	// is served by their own link alone, anyone else by the house one.
 	// pin-house is two house links. Every link has no retry budget.
 	for _, r := range []struct {
-		name  string
-		links [][3]string // account, model, position
+		name       string
+		capability string
+		links      [][3]string // account, model, position
 	}{
-		{"pin-mixed", [][3]string{{pinMine, "m-mine", "1"}, {pinHouse, "m-house", "2"}}},
-		{"pin-house", [][3]string{{pinHouse, "m1", "1"}, {pinHouse, "m2", "2"}}},
-		{"pin-vision", [][3]string{{pinHouse, "m-vis", "1"}, {pinHouse, "m1", "2"}}},
-		{"pin-others", [][3]string{{pinTheirs, "m-theirs", "1"}}},
+		{"pin-mixed", "chat", [][3]string{{pinMine, "m-mine", "1"}, {pinHouse, "m-house", "2"}}},
+		{"pin-house", "chat", [][3]string{{pinHouse, "m1", "1"}, {pinHouse, "m2", "2"}}},
+		{"pin-vision", "chat", [][3]string{{pinHouse, "m-vis", "1"}, {pinHouse, "m1", "2"}}},
+		{"pin-others", "chat", [][3]string{{pinTheirs, "m-theirs", "1"}}},
+		{"pin-ledger-embed", "embed", [][3]string{{pinHouse, "m1", "1"}}},
 	} {
 		var id string
 		if err := pool.QueryRow(ctx, `
-			INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, 'chat', true) RETURNING id::text`, r.name).Scan(&id); err != nil {
+			INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, $2, true) RETURNING id::text`, r.name, r.capability).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		for _, l := range r.links {
@@ -195,7 +251,9 @@ func newPinWorld(t *testing.T, fail map[string]domain.FailureClass) pinWorld {
 			Ledger:  store,
 			Secrets: pinSecrets(pinKeys),
 			Caps:    func(string) ([]string, bool) { return []string{"tools"}, true },
+			Chat:    map[string]app.Chatter{domain.AdapterFake: adapter},
 			Stream:  map[string]app.StreamChatter{domain.AdapterFake: adapter},
+			Embed:   map[string]app.Embedder{domain.AdapterFake: adapter},
 		},
 	}
 }
@@ -204,7 +262,7 @@ func (w pinWorld) stream(t *testing.T, route, user string, pin domain.Pin) (*pin
 	t.Helper()
 	sink := &pinSink{}
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
-	err := w.disp.ChatStreamPinned(context.Background(), route, "", domain.Principal{User: user}, in, pin, 0, sink)
+	err := w.disp.ChatStreamPinned(context.Background(), route, "", domain.Principal{User: user, Source: "system"}, in, pin, 0, sink)
 	return sink, err
 }
 
@@ -523,10 +581,393 @@ func (w pinWorld) post(t *testing.T, body string) (int, []string) {
 	return res.StatusCode, lines
 }
 
+func TestFeature_UPM353_EachSourceWritesItsSourceAndPayer(t *testing.T) {
+	w := newPinWorld(t, nil)
+	mux := http.NewServeMux()
+	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	serviceKey := "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+
+	chat, err := chatgateway.Open(srv.URL, serviceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatID := "018f3b2c-7a10-7c4a-8e11-cccccccccccc"
+	if _, err := chat.ChatStream(context.Background(), chatgateway.Request{
+		Route: "pin-house", ChatID: chatID, UserID: pinAuthor, Prompt: "chat",
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	memory, err := memorygateway.Open(srv.URL, serviceKey, "pin-house", "pin-ledger-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.For(pinAuthor).Propose(context.Background(), "memory"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.ForTask(pinAuthor).Propose(context.Background(), "task"); err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := knowledgegateway.Open(srv.URL, serviceKey, "pin-ledger-embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := knowledge.For(pinAuthor).Embed(context.Background(), []string{"knowledge"}); err != nil {
+		t.Fatal(err)
+	}
+	call := func(path, body string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if status := call(httpapi.PathChat, `{"route":"pin-house","prompt":"system","source":"system"}`); status != http.StatusOK {
+		t.Fatalf("system = %d", status)
+	}
+	adapterCalls := len(w.adapter.calls)
+	for _, test := range []struct{ path, body string }{
+		{httpapi.PathChat, `{"route":"pin-house","prompt":"missing source","user_id":"` + pinAuthor + `"}`},
+		{httpapi.PathChat, `{"route":"pin-house","prompt":"missing payer","source":"task"}`},
+		{httpapi.PathChat, `{"route":"pin-house","prompt":"bad user","user_id":"not-a-uuid","source":"chat"}`},
+		{httpapi.PathChatStream, `{"route":"pin-house","prompt":"bad source","user_id":"` + pinAuthor + `","source":"chat","source_id":"not-a-uuid"}`},
+		{httpapi.PathDecide, `{"route":"pin-house","kind":"yesno","prompt":"bad automation","user_id":"` + pinAuthor + `","source":"automation","automation_id":"not-a-uuid"}`},
+		{httpapi.PathEmbed, `{"route":"pin-ledger-embed","inputs":["bad"],"user_id":"` + pinAuthor + `","source":"knowledge","source_id":"not-a-uuid"}`},
+	} {
+		if status := call(test.path, test.body); status != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want %d", test.body, status, http.StatusBadRequest)
+		}
+	}
+	if len(w.adapter.calls) != adapterCalls {
+		t.Fatalf("invalid requests reached adapter: %d -> %d", adapterCalls, len(w.adapter.calls))
+	}
+
+	rows, err := w.pool.Query(context.Background(), `
+		SELECT source, COALESCE(user_id::text, ''), COALESCE(source_id::text, ''),
+			estimated, COALESCE(price_source, ''), latency_ms
+		FROM gateway.ledger
+		ORDER BY source`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := map[string]struct{ payer, sourceID string }{
+		domain.SourceChat:      {pinAuthor, chatID},
+		domain.SourceTask:      {pinAuthor, ""},
+		domain.SourceKnowledge: {pinAuthor, ""},
+		domain.SourceMemory:    {pinAuthor, ""},
+		domain.SourceSystem:    {"", ""},
+	}
+	got := map[string]struct{ payer, sourceID string }{}
+	var estimated bool
+	var priceSource string
+	var latencyMS *int
+	for rows.Next() {
+		var source, userID, sourceID string
+		if err := rows.Scan(&source, &userID, &sourceID, &estimated, &priceSource, &latencyMS); err != nil {
+			t.Fatal(err)
+		}
+		got[source] = struct{ payer, sourceID string }{userID, sourceID}
+		if !estimated || priceSource != "estimate" {
+			t.Fatalf("%s estimate = %t %q", source, estimated, priceSource)
+		}
+		if latencyMS == nil || *latencyMS < 0 {
+			t.Fatalf("%s latency = %v", source, latencyMS)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ledger rows = %v", got)
+	}
+	for source, attribution := range want {
+		if got[source] != attribution {
+			t.Errorf("%s attribution = %+v, want %+v", source, got[source], attribution)
+		}
+	}
+}
+
+func TestFeature_UPM353_SeededTotalsMatchUSDPricing(t *testing.T) {
+	w := newPinWorld(t, nil)
+	store := postgres.Store{Pool: w.pool}
+	inRate, outRate, cacheReadRate, cacheWriteRate := 1.5, 3.7, 0.31, 2.13
+	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
+		Model:   "m1",
+		Version: "v1",
+		Price: domain.Price{
+			Provider:       "fake",
+			InputPerMTok:   &inRate,
+			OutputPerMTok:  &outRate,
+			CacheReadMTok:  &cacheReadRate,
+			CacheWriteMTok: &cacheWriteRate,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	w.disp.Prices = store
+	usages := []domain.Usage{
+		{Arrived: true, Input: 1},
+		{Arrived: true, Input: 2, Output: 1, CacheRead: 1, CacheWrite: 1},
+		{Arrived: true, Input: 7, Output: 3, CacheRead: 5, CacheWrite: 2},
+		{Arrived: true, Input: 11, Output: 5, CacheRead: 13, CacheWrite: 7},
+	}
+	w.adapter.usages = append([]domain.Usage(nil), usages...)
+	for range usages {
+		if _, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got int64
+	if err := w.pool.QueryRow(context.Background(), `SELECT SUM(cost_micro_usd) FROM gateway.ledger`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	var want int64
+	for _, u := range usages {
+		usd := (float64(u.Input)*inRate + float64(u.Output)*outRate + float64(u.CacheRead)*cacheReadRate + float64(u.CacheWrite)*cacheWriteRate) / 1_000_000
+		want += int64(math.Round(usd * 1_000_000))
+	}
+	if got != want {
+		t.Fatalf("ledger micro-USD = %d, hand-priced USD gives %d", got, want)
+	}
+}
+
+func TestFeature_UPM353_UnpricedCallUsesProviderCatalogEstimate(t *testing.T) {
+	w := newPinWorld(t, nil)
+	store := postgres.Store{Pool: w.pool}
+	rate := 10.0
+	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
+		Model: "priced-other", Version: "v1", Price: domain.Price{Provider: "fake", InputPerMTok: &rate, OutputPerMTok: &rate},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	w.disp.Prices = store
+	if _, err := w.disp.ChatCall(context.Background(), "pin-house", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, domain.Input{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "12345678"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.disp.ChatCall(context.Background(), "pin-house", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, domain.Input{
+		Tools: []domain.Tool{{Name: "lookup", Description: "find docs", Schema: json.RawMessage(`{"type":"object"}`)}},
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Text: "12345678"},
+			{Role: domain.RoleAssistant, ToolCalls: []domain.ToolCall{{ID: "tc-1", Name: "lookup", Arguments: json.RawMessage(`{"query":"abcdefgh12345678"}`)}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := w.pool.Query(context.Background(), `SELECT cost_micro_usd, estimated, price_source FROM gateway.ledger ORDER BY at, id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var costs []int64
+	for rows.Next() {
+		var cost int64
+		var estimated bool
+		var source string
+		if err := rows.Scan(&cost, &estimated, &source); err != nil {
+			t.Fatal(err)
+		}
+		if !estimated || source != "estimate" {
+			t.Fatalf("estimate = %d %t %q", cost, estimated, source)
+		}
+		costs = append(costs, cost)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(costs) != 2 || costs[0] != 20 || costs[1] != 820 {
+		t.Fatalf("estimate costs = %v, want [20, 820]", costs)
+	}
+}
+
+func TestFeature_UPM353_FailedAttemptIsKnownZero(t *testing.T) {
+	w := newPinWorld(t, nil)
+	w.disp.Secrets = pinSecrets{}
+	_, err := w.disp.ChatCall(context.Background(), "pin-house", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, domain.Input{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("credential failure succeeded")
+	}
+	var cost int64
+	var estimated, charged bool
+	var source string
+	var latencyMS *int
+	if err := w.pool.QueryRow(context.Background(), `SELECT cost_micro_usd, estimated, charged_to_limit, price_source, latency_ms FROM gateway.ledger`).Scan(&cost, &estimated, &charged, &source, &latencyMS); err != nil {
+		t.Fatal(err)
+	}
+	if cost != 0 || estimated || charged || source != "not_billed" || latencyMS != nil {
+		t.Fatalf("failed attempt = %d %t %t %q latency=%v", cost, estimated, charged, source, latencyMS)
+	}
+}
+
+func TestFeature_UPM353_FailedAttemptWithOutputIsEstimated(t *testing.T) {
+	w := newPinWorld(t, map[string]domain.FailureClass{"m1": domain.ClassCancelled})
+	w.adapter.streamBeforeFail = map[string]string{"m1": "partial "}
+	sink := &pinSink{}
+	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}}}
+	if err := w.disp.ChatStreamPinned(context.Background(), "pin-house", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, in, domain.Pin{}, 0, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sink.text.String() != "partial " || sink.done != nil || sink.fail == nil || sink.fail.Class != domain.ClassCancelled {
+		t.Fatalf("sink text=%q done=%+v fail=%+v", sink.text.String(), sink.done, sink.fail)
+	}
+	rows, err := w.pool.Query(context.Background(), `SELECT cost_micro_usd, estimated, price_source FROM gateway.ledger`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type row struct {
+		cost      int64
+		estimated bool
+		source    string
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.cost, &r.estimated, &r.source); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// 5 input bytes ("hello") + 8 streamed bytes ("partial ") = 13 bytes ->
+	// ceil(13/4) = 4 tokens at EstimatedMicroUSDPerMTok (75 micro-USD/token) = 300;
+	// without the streamed bytes ceil(5/4) = 2 tokens = 150.
+	if len(got) != 1 || got[0].cost != 300 || !got[0].estimated || got[0].source != "estimate" {
+		t.Fatalf("failed attempt with output = %+v, want cost=300", got)
+	}
+}
+
+func TestFeature_UPM353_ChargedLimitAndLatencyRules(t *testing.T) {
+	w := newPinWorld(t, nil)
+	ctx := context.Background()
+	for _, person := range []struct{ id, email, role string }{
+		{pinOther, "other@example.com", "owner"},
+		{pinAuthor, "author@example.com", "member"},
+	} {
+		if _, err := w.pool.Exec(ctx, `
+			INSERT INTO identity.users (id, email, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3), now())`,
+			person.id, person.email, person.role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var teamID string
+	if err := w.pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Engineering') RETURNING id::text`).Scan(&teamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1::uuid, $2::uuid)`, teamID, pinAuthor); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		pinTeam     = "018f3b2c-7a10-7c4a-8e11-000000000011"
+		pinEveryone = "018f3b2c-7a10-7c4a-8e11-000000000012"
+		pinSub      = "018f3b2c-7a10-7c4a-8e11-000000000013"
+	)
+	for _, acc := range []struct {
+		id, owner, name, ref, plan, vis, model string
+		house                                  bool
+		teams                                  []string
+	}{
+		{pinTeam, pinOther, "pin-team", "pin_team", domain.PlanMetered, domain.VisibilityTeam, "m-team", false, []string{teamID}},
+		{pinEveryone, pinOther, "pin-everyone", "pin_everyone", domain.PlanMetered, domain.VisibilityEveryone, "m-everyone", false, []string{}},
+		{pinSub, "", "pin-sub", "pin_sub", domain.PlanSubscription, domain.VisibilityEveryone, "m-sub", true, []string{}},
+	} {
+		if _, err := w.pool.Exec(ctx, `
+			INSERT INTO gateway.provider_accounts
+				(id, owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, visibility, team_ids)
+			VALUES ($1::uuid, NULLIF($2, '')::uuid, 'fake', $3, 'fake', $4, $5, $6, '', $7, $8::uuid[])`,
+			acc.id, acc.owner, acc.name, acc.ref, acc.plan, acc.house, acc.vis, acc.teams); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.pool.Exec(ctx, `
+			INSERT INTO gateway.provider_models (account_id, model, position)
+			VALUES ($1::uuid, $2, 1)`, acc.id, acc.model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secrets := pinSecrets{}
+	for k, v := range pinKeys {
+		secrets[k] = v
+	}
+	secrets["pin_team"] = "key-team"
+	secrets["pin_everyone"] = "key-everyone"
+	secrets["pin_sub"] = "key-sub"
+	w.disp.Secrets = secrets
+	w.disp.Teams = postgres.Store{Pool: w.pool}
+	w.adapter.delay = 30 * time.Millisecond
+
+	cases := []struct {
+		name      string
+		accountID string
+		model     string
+		charged   bool
+	}{
+		{"house", pinHouse, "m1", true},
+		{"team", pinTeam, "m-team", true},
+		{"everyone", pinEveryone, "m-everyone", true},
+		{"private", pinMine, "m-mine", false},
+		{"subscription", pinSub, "m-sub", false},
+	}
+	for _, tc := range cases {
+		sink, err := w.stream(t, "pin-house", pinAuthor, domain.Pin{AccountID: tc.accountID, Model: tc.model})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(sink.notices) != 0 || sink.done == nil || sink.done.Model != tc.model {
+			t.Fatalf("%s: notices=%+v done=%+v", tc.name, sink.notices, sink.done)
+		}
+	}
+
+	rows, err := w.pool.Query(ctx, `SELECT model, charged_to_limit, latency_ms FROM gateway.ledger`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type ledgerRow struct {
+		charged bool
+		latency *int
+	}
+	got := map[string]ledgerRow{}
+	for rows.Next() {
+		var model string
+		var charged bool
+		var latency *int
+		if err := rows.Scan(&model, &charged, &latency); err != nil {
+			t.Fatal(err)
+		}
+		got[model] = ledgerRow{charged: charged, latency: latency}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(cases) {
+		t.Fatalf("ledger rows = %v, want %d", got, len(cases))
+	}
+	for _, tc := range cases {
+		row, ok := got[tc.model]
+		if !ok {
+			t.Fatalf("missing ledger row for %s (%s)", tc.name, tc.model)
+		}
+		if row.charged != tc.charged {
+			t.Errorf("%s (%s) charged_to_limit = %t, want %t", tc.name, tc.model, row.charged, tc.charged)
+		}
+		if row.latency == nil || *row.latency < 30 {
+			t.Errorf("%s (%s) latency_ms = %v, want >= 30", tc.name, tc.model, row.latency)
+		}
+	}
+}
+
 func TestChatStreamOverHTTPCarriesThePin(t *testing.T) {
 	w := newPinWorld(t, map[string]domain.FailureClass{"m2": domain.ClassRateLimit})
 	status, lines := w.post(t, fmt.Sprintf(
-		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"model":"m2"}}`, pinAuthor, pinHouse))
+		`{"route":"pin-house","user_id":%q,"source":"chat","prompt":"hi","pin":{"account_id":%q,"model":"m2"}}`, pinAuthor, pinHouse))
 	if status != http.StatusOK || w.adapter.models() != "m2,m1" {
 		t.Fatalf("status = %d models = %s lines = %v", status, w.adapter.models(), lines)
 	}
@@ -535,7 +976,7 @@ func TestChatStreamOverHTTPCarriesThePin(t *testing.T) {
 	}
 
 	status, lines = w.post(t, fmt.Sprintf(
-		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"model":"m1"}}`, pinAuthor, pinTheirs))
+		`{"route":"pin-house","user_id":%q,"source":"chat","prompt":"hi","pin":{"account_id":%q,"model":"m1"}}`, pinAuthor, pinTheirs))
 	if status != http.StatusBadRequest || len(lines) != 1 || strings.Contains(lines[0], pinTheirs) {
 		t.Fatalf("foreign pin: status = %d lines = %v", status, lines)
 	}
@@ -619,13 +1060,13 @@ func TestChatStreamOverHTTPCarriesAProviderPinAndRefusesAnAmbiguousOne(t *testin
 	w := newPinWorld(t, nil)
 	w.listModels(t, pinHouse, "h-pinned")
 	status, lines := w.post(t, fmt.Sprintf(
-		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"provider":"fake","model":"h-pinned"}}`, pinAuthor))
+		`{"route":"pin-house","user_id":%q,"source":"chat","prompt":"hi","pin":{"provider":"fake","model":"h-pinned"}}`, pinAuthor))
 	if status != http.StatusOK || w.adapter.models() != "h-pinned" || len(lines) < 2 {
 		t.Fatalf("status = %d models = %s lines = %v", status, w.adapter.models(), lines)
 	}
 	w.adapter.calls = nil
 	status, lines = w.post(t, fmt.Sprintf(
-		`{"route":"pin-house","user_id":%q,"prompt":"hi","pin":{"account_id":%q,"provider":"fake","model":"h-pinned"}}`, pinAuthor, pinHouse))
+		`{"route":"pin-house","user_id":%q,"source":"chat","prompt":"hi","pin":{"account_id":%q,"provider":"fake","model":"h-pinned"}}`, pinAuthor, pinHouse))
 	if status != http.StatusBadRequest || len(w.adapter.calls) != 0 {
 		t.Fatalf("both account and provider: status = %d calls = %+v lines = %v", status, w.adapter.calls, lines)
 	}

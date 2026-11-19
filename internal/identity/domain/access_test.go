@@ -50,6 +50,21 @@ func TestSystemPermissionsCoverTheCatalog(t *testing.T) {
 	}
 }
 
+func TestFeature_UPM353_UsageViewDefaultsOnlyToOwnerAndAdmin(t *testing.T) {
+	for _, role := range []Role{RoleOwner, RoleAdmin} {
+		permissions, err := SystemPermissions(role)
+		if err != nil || !has(permissions, PermUsageView) {
+			t.Fatalf("%s permissions = %v, %v", role, permissions, err)
+		}
+	}
+	for _, role := range []Role{RoleMember, RoleViewer} {
+		permissions, err := SystemPermissions(role)
+		if err != nil || has(permissions, PermUsageView) {
+			t.Fatalf("%s permissions = %v, %v", role, permissions, err)
+		}
+	}
+}
+
 func TestAccessMatrix(t *testing.T) {
 	for _, role := range Roles() {
 		permissions, err := SystemPermissions(role)

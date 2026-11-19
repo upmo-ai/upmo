@@ -1237,7 +1237,7 @@ func TestADatabaseDownIsAPlainError(t *testing.T) {
 // chatVia calls the gateway's chat route the way brain does.
 func chatVia(t *testing.T, mux http.Handler, route, ref string) (int, string) {
 	t.Helper()
-	raw, _ := json.Marshal(map[string]any{"route": route, "prompt": "hi", "credential_ref": ref})
+	raw, _ := json.Marshal(map[string]any{"route": route, "prompt": "hi", "credential_ref": ref, "source": "system"})
 	req := httptest.NewRequest(http.MethodPost, "/upmo.gateway.v1.Gateway/Chat", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
