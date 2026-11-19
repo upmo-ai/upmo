@@ -12,13 +12,14 @@ import (
 	"net/url"
 	"strings"
 
+	gatewayapi "github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/knowledge/app"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
 const pathEmbed = "/upmo.gateway.v1.Gateway/Embed"
 
-// Client calls the install embed route for knowledge ingest and search.
+// Client calls the install embed route for knowledge work.
 type Client struct {
 	base       string
 	http       *http.Client
@@ -78,6 +79,7 @@ func (c Call) Embed(ctx context.Context, texts []string) (string, [][]float32, e
 		"route":   c.client.embedRoute,
 		"inputs":  texts,
 		"user_id": c.userID,
+		"source":  gatewayapi.SourceKnowledge,
 	}, &out); err != nil {
 		return "", nil, err
 	}

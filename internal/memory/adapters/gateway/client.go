@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 
+	gatewayapi "github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/memory/app"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
@@ -33,10 +34,11 @@ type Client struct {
 type Call struct {
 	client Client
 	userID string
+	source string
 }
 
 // Open builds a client. baseURL and serviceKey are the install settings.
-// proposeRoute is the chat route for extraction. embedRoute is the embed route.
+// proposeRoute is the chat route for memory work. embedRoute is the embed route.
 func Open(baseURL, serviceKey, proposeRoute, embedRoute string) (Client, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -67,7 +69,12 @@ func Open(baseURL, serviceKey, proposeRoute, embedRoute string) (Client, error) 
 
 // For binds the client to one person. The gateway ledger records that id.
 func (c Client) For(userID string) Call {
-	return Call{client: c, userID: userID}
+	return Call{client: c, userID: userID, source: gatewayapi.SourceMemory}
+}
+
+// ForTask binds the client to a task's proposer.
+func (c Client) ForTask(userID string) Call {
+	return Call{client: c, userID: userID, source: gatewayapi.SourceTask}
 }
 
 func (c Call) Propose(ctx context.Context, prompt string) (string, error) {
@@ -81,6 +88,7 @@ func (c Call) Propose(ctx context.Context, prompt string) (string, error) {
 		"route":   c.client.proposeRoute,
 		"prompt":  prompt,
 		"user_id": c.userID,
+		"source":  c.source,
 	}, &out); err != nil {
 		return "", err
 	}
@@ -99,6 +107,7 @@ func (c Call) Embed(ctx context.Context, texts []string) (string, [][]float32, e
 		"route":   c.client.embedRoute,
 		"inputs":  texts,
 		"user_id": c.userID,
+		"source":  c.source,
 	}, &out); err != nil {
 		return "", nil, err
 	}

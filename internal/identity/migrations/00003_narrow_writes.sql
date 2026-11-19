@@ -34,7 +34,7 @@ AS $$
       'agent:create', 'agent:view', 'agent:edit', 'agent:share', 'agent:delete',
       'artifact:create', 'artifact:view', 'artifact:edit', 'artifact:share', 'artifact:delete',
       'members:manage', 'teams:manage', 'roles:manage', 'settings:manage',
-      'connectors:manage', 'owners:manage', 'audit:view'
+      'connectors:manage', 'owners:manage', 'audit:view', 'usage:view'
     ]::text[]
     WHEN role_key = 'admin' THEN ARRAY[
       'task:create', 'task:view', 'task:edit', 'task:share', 'task:delete',
@@ -44,7 +44,7 @@ AS $$
       'agent:create', 'agent:view', 'agent:edit', 'agent:share', 'agent:delete',
       'artifact:create', 'artifact:view', 'artifact:edit', 'artifact:share', 'artifact:delete',
       'members:manage', 'teams:manage', 'roles:manage', 'settings:manage',
-      'connectors:manage', 'audit:view'
+      'connectors:manage', 'audit:view', 'usage:view'
     ]::text[]
     WHEN role_key = 'member' THEN ARRAY[
       'task:create', 'task:view', 'task:edit', 'task:share', 'task:delete',
@@ -69,7 +69,7 @@ AS $$
           'agent:create', 'agent:view', 'agent:edit', 'agent:share', 'agent:delete',
           'artifact:create', 'artifact:view', 'artifact:edit', 'artifact:share', 'artifact:delete',
           'members:manage', 'teams:manage', 'roles:manage', 'settings:manage',
-          'connectors:manage', 'audit:view'
+          'connectors:manage', 'audit:view', 'usage:view'
         ]::text[])
       ),
       '{}'::text[]

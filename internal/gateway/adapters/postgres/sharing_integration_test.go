@@ -150,7 +150,7 @@ func (w shareWorld) stream(t *testing.T, user string, pin domain.Pin) (*pinSink,
 	t.Helper()
 	sink := &pinSink{}
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
-	err := w.disp.ChatStreamPinned(context.Background(), "r", "", domain.Principal{User: user}, in, pin, 0, sink)
+	err := w.disp.ChatStreamPinned(context.Background(), "r", "", domain.Principal{User: user, Source: "system"}, in, pin, 0, sink)
 	return sink, err
 }
 

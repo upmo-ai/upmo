@@ -100,6 +100,23 @@ ALTER TABLE gateway.routes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gateway.routes FORCE ROW LEVEL SECURITY;
 ALTER TABLE gateway.route_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gateway.route_links FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.ledger FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY ledger_service ON gateway.ledger
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+CREATE POLICY ledger_select ON gateway.ledger
+  FOR SELECT TO upmo_app
+  USING (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    OR 'usage:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+GRANT SELECT ON gateway.ledger TO upmo_app;
+REVOKE INSERT, UPDATE, DELETE ON gateway.ledger FROM upmo_app;
 
 CREATE POLICY routes_service ON gateway.routes
   FOR ALL
@@ -181,6 +198,12 @@ GRANT UPDATE (name, capability, decision, visibility, team_ids, updated_at) ON g
 GRANT INSERT, UPDATE, DELETE ON gateway.route_links TO upmo_app;
 
 -- +goose Down
+
+REVOKE ALL ON gateway.ledger FROM upmo_app;
+DROP POLICY IF EXISTS ledger_select ON gateway.ledger;
+DROP POLICY IF EXISTS ledger_service ON gateway.ledger;
+ALTER TABLE gateway.ledger NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.ledger DISABLE ROW LEVEL SECURITY;
 
 REVOKE INSERT, UPDATE, DELETE ON gateway.route_links FROM upmo_app;
 REVOKE INSERT, UPDATE, DELETE ON gateway.routes FROM upmo_app;

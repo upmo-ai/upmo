@@ -38,10 +38,10 @@ func (s Store) ReplaceCatalog(ctx context.Context, version string, rows []domain
 		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO gateway.prices (
-				model, version, input_usd_per_mtok, output_usd_per_mtok,
+					model, provider, version, input_usd_per_mtok, output_usd_per_mtok,
 				cache_read_usd_per_mtok, cache_write_usd_per_mtok, capabilities, context_window
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			row.Model, row.Version,
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			row.Model, row.Price.Provider, row.Version,
 			numericOrNil(row.Price.InputPerMTok),
 			numericOrNil(row.Price.OutputPerMTok),
 			numericOrNil(row.Price.CacheReadMTok),

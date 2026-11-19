@@ -55,6 +55,7 @@ const (
 	PermConnectorsManage Permission = "connectors:manage"
 	PermOwnersManage     Permission = "owners:manage"
 	PermAuditView        Permission = "audit:view"
+	PermUsageView        Permission = "usage:view"
 )
 
 // Permissions is the whole catalog.
@@ -146,6 +147,7 @@ func installPermissions() []Permission {
 		PermConnectorsManage,
 		PermOwnersManage,
 		PermAuditView,
+		PermUsageView,
 	}
 }
 

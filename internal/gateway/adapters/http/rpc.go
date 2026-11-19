@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
@@ -31,21 +33,47 @@ type Handler struct {
 }
 
 type actorBody struct {
-	UserID      string `json:"user_id"`
-	AgentID     string `json:"agent_id"`
-	RunID       string `json:"run_id"`
-	ParentRunID string `json:"parent_run_id"`
-	TeamID      string `json:"team_id"`
+	UserID       string `json:"user_id"`
+	AgentID      string `json:"agent_id"`
+	RunID        string `json:"run_id"`
+	ParentRunID  string `json:"parent_run_id"`
+	TeamID       string `json:"team_id"`
+	Source       string `json:"source"`
+	SourceID     string `json:"source_id"`
+	AutomationID string `json:"automation_id"`
 }
 
 func (a actorBody) principal() domain.Principal {
 	return domain.Principal{
-		User:   a.UserID,
-		Agent:  a.AgentID,
-		Run:    a.RunID,
-		Parent: a.ParentRunID,
-		TeamID: a.TeamID,
+		User:         a.UserID,
+		Agent:        a.AgentID,
+		Run:          a.RunID,
+		Parent:       a.ParentRunID,
+		TeamID:       a.TeamID,
+		Source:       a.Source,
+		SourceID:     a.SourceID,
+		AutomationID: a.AutomationID,
 	}
+}
+
+func (a actorBody) check() error {
+	if a.Source == "" || (a.UserID == "" && a.Source != domain.SourceSystem) {
+		return domain.Invalid("A source and payer are required unless the source is system.")
+	}
+	if !domain.ValidSource(a.Source) {
+		return domain.Invalid("Choose a valid source.")
+	}
+	for _, id := range []string{a.UserID, a.SourceID, a.AutomationID} {
+		if id != "" {
+			if _, err := uuid.Parse(id); err != nil {
+				return domain.Invalid("Use valid IDs for the payer and source.")
+			}
+		}
+	}
+	if a.Source == domain.SourceAutomation && a.AutomationID == "" {
+		return domain.Invalid("An automation source needs an automation ID.")
+	}
+	return nil
 }
 
 type decideBody struct {
@@ -170,6 +198,10 @@ func (h Handler) decide(w http.ResponseWriter, r *http.Request) {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
 		return
 	}
+	if err := body.check(); err != nil {
+		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+		return
+	}
 	result, err := h.Dispatch.DecideCall(r.Context(), body.Route, body.CredentialRef, body.principal(), domain.DecideRequest{
 		Kind:    domain.Decision(body.Kind),
 		Prompt:  body.Prompt,
@@ -190,6 +222,10 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 	var body chatBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
+		return
+	}
+	if err := body.check(); err != nil {
+		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return
 	}
 	res, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, body.principal(), chatInput(body))
@@ -231,6 +267,10 @@ func (h Handler) chatStream(w http.ResponseWriter, r *http.Request) {
 	var body chatBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
+		return
+	}
+	if err := body.check(); err != nil {
+		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return
 	}
 	in := chatInput(body)
@@ -431,6 +471,10 @@ func (h Handler) embed(w http.ResponseWriter, r *http.Request) {
 	var body embedBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpserver.Fail(w, nil, "bad request", http.StatusBadRequest, err)
+		return
+	}
+	if err := body.check(); err != nil {
+		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
 		return
 	}
 	model, vectors, err := h.Dispatch.EmbedCall(r.Context(), body.Route, body.CredentialRef, body.principal(), body.Inputs)

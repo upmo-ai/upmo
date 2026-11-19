@@ -51,7 +51,7 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 			if model.Limit != nil && model.Limit.Context > 0 {
 				ctxWindow = model.Limit.Context
 			}
-			price := Price{Version: version, ContextWindow: ctxWindow}
+			price := Price{Version: version, Provider: name, ContextWindow: ctxWindow}
 			if model.Cost != nil {
 				price.InputPerMTok = floatPtr(model.Cost.Input)
 				price.OutputPerMTok = floatPtr(model.Cost.Output)

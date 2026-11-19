@@ -4,13 +4,16 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -802,6 +805,182 @@ func assertDown(t *testing.T, pool *pgxpool.Pool, personal, teamAccount, workspa
 		SELECT count(*) FROM pg_indexes
 		WHERE schemaname = 'gateway' AND indexname = 'provider_accounts_owner_name'`).Scan(&index); err != nil || index != 1 {
 		t.Fatalf("owner name index = %d, %v", index, err)
+	}
+}
+
+func TestFeature_UPM353_LedgerReadAndWritePolicies(t *testing.T) {
+	w := newVisWorld(t)
+	ctx := context.Background()
+	var memberRow, otherRow, systemRow string
+	if err := w.owner.QueryRow(ctx, `
+		INSERT INTO gateway.ledger (
+			route, link_position, model, plan_kind, failure_class, user_id,
+			cost_micro_usd, source, price_source
+		) VALUES ('ledger', 1, 'model', 'metered', '', $1::uuid, 25, 'chat', 'models_dev')
+		RETURNING id::text`, visMember).Scan(&memberRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.owner.QueryRow(ctx, `
+		INSERT INTO gateway.ledger (
+			route, link_position, model, plan_kind, failure_class, user_id,
+			cost_micro_usd, source, price_source
+		) VALUES ('ledger', 1, 'model', 'metered', '', $1::uuid, 25, 'chat', 'models_dev')
+		RETURNING id::text`, visOwner).Scan(&otherRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.owner.QueryRow(ctx, `
+		INSERT INTO gateway.ledger (
+			route, link_position, model, plan_kind, failure_class,
+			cost_micro_usd, source, price_source
+		) VALUES ('ledger', 1, 'model', 'metered', '', 25, 'system', 'models_dev')
+		RETURNING id::text`).Scan(&systemRow); err != nil {
+		t.Fatal(err)
+	}
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		t.Fatal(err)
+	}
+	svcRole := pgx.Identifier{"ledger_svc_" + hex.EncodeToString(buf[:])}.Sanitize()
+	svcTx, err := w.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svcTx.Rollback(ctx) }()
+	for _, stmt := range []string{
+		`CREATE ROLE ` + svcRole + ` NOSUPERUSER NOBYPASSRLS`,
+		`GRANT USAGE ON SCHEMA gateway TO ` + svcRole,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.ledger TO ` + svcRole,
+	} {
+		if _, err := svcTx.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if _, err := svcTx.Exec(ctx, `SAVEPOINT not_serving`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svcTx.Exec(ctx, `SET LOCAL ROLE `+svcRole); err != nil {
+		t.Fatal(err)
+	}
+	var serving bool
+	if err := svcTx.QueryRow(ctx, `SELECT gateway.serving()`).Scan(&serving); err != nil || serving {
+		t.Fatalf("non-serving role gateway.serving = %t, %v", serving, err)
+	}
+	var count, sum int64
+	if err := svcTx.QueryRow(ctx, `
+		SELECT COUNT(*)::bigint, COALESCE(SUM(COALESCE(cost_micro_usd, 0)), 0)::bigint
+		FROM gateway.ledger
+		WHERE at >= now() - interval '1 hour' AND at < now() + interval '1 hour'`).Scan(&count, &sum); err != nil || count != 0 || sum != 0 {
+		t.Fatalf("not serving ledger read = %d, %d, %v", count, sum, err)
+	}
+	_, err = svcTx.Exec(ctx, `
+		INSERT INTO gateway.ledger (
+			route, link_position, model, plan_kind, failure_class,
+			cost_micro_usd, source, price_source
+		) VALUES ('ledger', 1, 'model', 'metered', '', 25, 'system', 'models_dev')`)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Fatalf("non-serving role insert = %v, want SQLSTATE 42501", err)
+	}
+	if _, err := svcTx.Exec(ctx, `ROLLBACK TO SAVEPOINT not_serving`); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE gateway.provider_accounts OWNER TO ` + svcRole,
+		`ALTER TABLE gateway.ledger OWNER TO ` + svcRole,
+		`SET LOCAL ROLE ` + svcRole,
+	} {
+		if _, err := svcTx.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := svcTx.QueryRow(ctx, `SELECT gateway.serving()`).Scan(&serving); err != nil || !serving {
+		t.Fatalf("serving role gateway.serving = %t, %v", serving, err)
+	}
+	if _, err := svcTx.Exec(ctx, `
+		INSERT INTO gateway.ledger (
+			route, link_position, model, plan_kind, failure_class,
+			cost_micro_usd, source, price_source
+		) VALUES ('ledger', 1, 'model', 'metered', '', 25, 'system', 'models_dev')`); err != nil {
+		t.Fatalf("serving role insert: %v", err)
+	}
+	if err := svcTx.QueryRow(ctx, `
+		SELECT COUNT(*)::bigint, COALESCE(SUM(COALESCE(cost_micro_usd, 0)), 0)::bigint
+		FROM gateway.ledger
+		WHERE at >= now() - interval '1 hour' AND at < now() + interval '1 hour'`).Scan(&count, &sum); err != nil || count != 4 || sum != 100 {
+		t.Fatalf("serving ledger read = %d, %d, %v, want 4 rows and 100", count, sum, err)
+	}
+	if err := svcTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	w.as(visMember, "", "{}", func(tx pgx.Tx) {
+		var ids []string
+		rows, err := tx.Query(ctx, `SELECT id::text FROM gateway.ledger ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil || len(ids) != 1 || ids[0] != memberRow {
+			t.Fatalf("member ledger rows = %v, %v", ids, err)
+		}
+	})
+	w.as(visCustom, "usage:view", "{}", func(tx pgx.Tx) {
+		var count int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger WHERE id = ANY($1::uuid[])`, []string{memberRow, otherRow, systemRow}).Scan(&count); err != nil || count != 3 {
+			t.Fatalf("usage:view ledger rows = %d, %v", count, err)
+		}
+		if _, err := w.touched(tx, `UPDATE gateway.ledger SET model = 'changed' WHERE id = $1::uuid`, memberRow); err == nil {
+			t.Fatal("application role updated a ledger row")
+		}
+		if _, err := w.touched(tx, `DELETE FROM gateway.ledger WHERE id = $1::uuid`, memberRow); err == nil {
+			t.Fatal("application role deleted a ledger row")
+		}
+		if _, err := w.touched(tx, `INSERT INTO gateway.ledger (route, link_position, model, plan_kind, failure_class, user_id, cost_micro_usd, source, price_source) VALUES ('forged', 1, 'model', 'metered', '', $1::uuid, 1, 'chat', 'models_dev')`, visCustom); err == nil {
+			t.Fatal("application role inserted a ledger row")
+		}
+	})
+}
+
+func TestFeature_UPM353_UsageViewDefaultsOnlyToOwnerAndAdmin(t *testing.T) {
+	w := newVisWorld(t)
+	ctx := context.Background()
+	members := identity.Members(w.app, nil, "", nil, nil)
+	for _, test := range []struct {
+		role string
+		user string
+		want bool
+	}{
+		{"owner", visOwner, true},
+		{"admin", visAdmin, true},
+		{"member", visMember, false},
+		{"viewer", visViewer, false},
+		{"Desk", visCustom, false},
+	} {
+		var holds bool
+		err := w.owner.QueryRow(ctx, `
+			SELECT 'usage:view' = ANY(identity.role_permissions(key, permissions))
+			FROM identity.roles WHERE key = $1 OR (key IS NULL AND name = $1)`, test.role).Scan(&holds)
+		if err != nil || holds != test.want {
+			t.Fatalf("%s usage:view = %t, %v", test.role, holds, err)
+		}
+		userID, err := identity.ParseUserID(test.user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allow, err := members.EffectiveAllow(ctx, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(strings.Split(allow, ","), "usage:view") != test.want {
+			t.Fatalf("%s EffectiveAllow = %q, want usage:view=%t", test.role, allow, test.want)
+		}
 	}
 }
 

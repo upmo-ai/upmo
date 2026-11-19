@@ -179,6 +179,7 @@ type ModelMessage struct {
 // resolves for the person (PinProvider), never both.
 type ModelRequest struct {
 	Route           string
+	ChatID          string
 	CredentialRef   string
 	UserID          string
 	System          string
@@ -591,6 +592,7 @@ func (w *replyWorker) request(args ReplyJobArgs, agent *Agent) ModelRequest {
 	resolved := domain.Resolve(picked, defaults, install)
 	return ModelRequest{
 		Route:           resolved.Route,
+		ChatID:          args.ChatID,
 		UserID:          args.UserID,
 		System:          system,
 		MaxOutputTokens: w.cfg.MaxOutputTokens,

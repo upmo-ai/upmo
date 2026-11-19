@@ -21,6 +21,7 @@ func (m Model) Stream(ctx context.Context, req app.ModelRequest, onDelta func(st
 	}
 	done, err := m.Client.ChatStream(ctx, Request{
 		Route:           req.Route,
+		ChatID:          req.ChatID,
 		CredentialRef:   req.CredentialRef,
 		UserID:          req.UserID,
 		System:          req.System,

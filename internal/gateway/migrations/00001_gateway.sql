@@ -69,6 +69,7 @@ CREATE TABLE gateway.agent_bundles (
 
 CREATE TABLE gateway.prices (
   model text PRIMARY KEY,
+  provider text NOT NULL DEFAULT '',
   version text NOT NULL,
   input_usd_per_mtok numeric,
   output_usd_per_mtok numeric,
@@ -103,7 +104,14 @@ CREATE TABLE gateway.ledger (
   cache_write int NOT NULL DEFAULT 0,
   reasoning int NOT NULL DEFAULT 0,
   usage_arrived boolean NOT NULL DEFAULT false,
-  cost_usd numeric,
+  cost_micro_usd bigint,
+  estimated boolean NOT NULL DEFAULT false,
+  source text NOT NULL,
+  source_id uuid,
+  automation_id uuid,
+  latency_ms int,
+  charged_to_limit boolean NOT NULL DEFAULT false,
+  price_source text,
   price_version text,
   CONSTRAINT ledger_route_check CHECK (route <> ''),
   CONSTRAINT ledger_model_check CHECK (model <> ''),
@@ -113,12 +121,34 @@ CREATE TABLE gateway.ledger (
     input_tokens >= 0 AND output_tokens >= 0 AND cache_read >= 0
     AND cache_write >= 0 AND reasoning >= 0
   ),
-  CONSTRAINT ledger_cost_unknown CHECK (cost_usd IS NULL OR cost_usd >= 0)
+  CONSTRAINT ledger_cost_nonneg CHECK (cost_micro_usd IS NULL OR cost_micro_usd >= 0),
+  CONSTRAINT ledger_source_check CHECK (source IN ('chat', 'task', 'automation', 'knowledge', 'memory', 'system')),
+  CONSTRAINT ledger_payer_check CHECK (user_id IS NOT NULL OR source = 'system'),
+  CONSTRAINT ledger_latency_check CHECK (latency_ms IS NULL OR latency_ms >= 0),
+  CONSTRAINT ledger_cost_plan_check CHECK (
+    (plan_kind = 'metered' AND cost_micro_usd IS NOT NULL)
+    OR (plan_kind IN ('subscription', 'local') AND cost_micro_usd IS NULL)
+  ),
+  CONSTRAINT ledger_price_source_check CHECK (
+    (cost_micro_usd IS NULL AND price_source IS NULL)
+    OR (cost_micro_usd IS NOT NULL AND price_source IN ('override', 'provider', 'provider_list', 'models_dev', 'estimate', 'not_billed'))
+  ),
+  CONSTRAINT ledger_estimate_check CHECK (
+    (estimated AND cost_micro_usd IS NOT NULL AND price_source = 'estimate')
+    OR (NOT estimated AND COALESCE(price_source, '') <> 'estimate')
+  ),
+  CONSTRAINT ledger_automation_check CHECK (
+    source <> 'automation' OR automation_id IS NOT NULL
+  ),
+  CONSTRAINT ledger_charged_to_limit_check CHECK (
+    NOT charged_to_limit OR plan_kind = 'metered'
+  )
 );
 
 CREATE INDEX ledger_run ON gateway.ledger (run_id);
 CREATE INDEX ledger_parent ON gateway.ledger (parent_run_id);
 CREATE INDEX ledger_at ON gateway.ledger (at);
+CREATE INDEX ledger_user_at ON gateway.ledger (user_id, at);
 
 CREATE VIEW gateway.task_tokens AS
 SELECT coalesce(parent_run_id, run_id) AS task_id,
