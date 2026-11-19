@@ -844,28 +844,33 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	costOct := 9.99
 
 	for _, row := range []struct {
-		at      time.Time
-		route   string
-		model   string
-		userID  string
-		agentID any
-		runID   any
-		inTok   int
-		outTok  int
-		cost    *float64
+		at        time.Time
+		route     string
+		model     string
+		userID    string
+		agentID   any
+		runID     any
+		inTok     int
+		outTok    int
+		cost      int64
+		estimated bool
 	}{
-		{nov, "work", "gpt-4o", userA, nil, runID, 1000, 500, &cost1},
-		{nov, "custom-route", "gpt-4o", userB, agentID, nil, 200, 100, &cost2},
-		{nov, "chat", "gpt-4o-mini", userA, nil, nil, 50, 25, &cost3}, // direct even if route happens to be named "chat"
-		{nov, "memory-extract", "gpt-4o-mini", userA, nil, nil, 10, 5, nil},
-		{oct, "chat", "gpt-4o", userA, agentID, nil, 9999, 9999, &costOct}, // different month
+		{nov, "work", "gpt-4o", userA, nil, runID, 1000, 500, int64(cost1 * 1e6), false},
+		{nov, "custom-route", "gpt-4o", userB, agentID, nil, 200, 100, int64(cost2 * 1e6), false},
+		{nov, "chat", "gpt-4o-mini", userA, nil, nil, 50, 25, int64(cost3 * 1e6), false}, // direct even if route happens to be named "chat"
+		{nov, "memory-extract", "gpt-4o-mini", userA, nil, nil, 10, 5, 1, true},
+		{oct, "chat", "gpt-4o", userA, agentID, nil, 9999, 9999, int64(costOct * 1e6), false}, // different month
 	} {
 		if _, err := env.owner.Exec(ctx, `
 			INSERT INTO gateway.ledger (
 				at, route, link_position, model, plan_kind, failure_class,
-				user_id, agent_id, run_id, input_tokens, output_tokens, usage_arrived, cost_usd
-			) VALUES ($1, $2, 1, $3, 'metered', '', $4::uuid, $5::uuid, $6::uuid, $7, $8, true, $9)`,
-			row.at, row.route, row.model, row.userID, row.agentID, row.runID, row.inTok, row.outTok, row.cost); err != nil {
+				user_id, agent_id, run_id, input_tokens, output_tokens, usage_arrived,
+				cost_micro_usd, estimated, source, price_source
+			) VALUES (
+				$1, $2, 1, $3, 'metered', '', $4::uuid, $5::uuid, $6::uuid, $7, $8, true,
+				$9, $10, 'chat', CASE WHEN $10 THEN 'estimate' ELSE 'models_dev' END
+			)`,
+			row.at, row.route, row.model, row.userID, row.agentID, row.runID, row.inTok, row.outTok, row.cost, row.estimated); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -882,7 +887,7 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	if err := json.Unmarshal(usageRec.Body.Bytes(), &usage); err != nil {
 		t.Fatal(err)
 	}
-	if usage.Month != "2026-11" || usage.Totals.InputTokens != 1260 || usage.Totals.OutputTokens != 630 || usage.Totals.TotalTokens != 1890 || usage.Totals.CostMicroUSD != 16000 || usage.Totals.UnknownCostCount != 1 {
+	if usage.Month != "2026-11" || usage.Totals.InputTokens != 1260 || usage.Totals.OutputTokens != 630 || usage.Totals.TotalTokens != 1890 || usage.Totals.CostMicroUSD != 16001 || usage.Totals.UnknownCostCount != 1 {
 		t.Fatalf("unexpected usage totals = %+v", usage)
 	}
 	if len(usage.Breakdown) != 3 {

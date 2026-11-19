@@ -70,25 +70,25 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 
 	derived := mustDerived(t, master)
 	yes := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{
-		"route": "memory-check", "kind": "yesno", "prompt": "keep this fact?",
+		"route": "memory-check", "kind": "yesno", "prompt": "keep this fact?", "source": "system",
 	})
 	if yes["yes"] != true {
 		t.Fatalf("yesno = %v", yes)
 	}
 	choice := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{
-		"route": "folder-file", "kind": "choice", "prompt": "where", "options": []string{"a", "b"},
+		"route": "folder-file", "kind": "choice", "prompt": "where", "options": []string{"a", "b"}, "source": "system",
 	})
 	if choice["choice"] != "a" {
 		t.Fatalf("choice = %v", choice)
 	}
 	chat := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Chat", map[string]any{
-		"route": "draft", "prompt": "hello",
+		"route": "draft", "prompt": "hello", "source": "system",
 	})
 	if chat["text"] != "ok" {
 		t.Fatalf("chat = %v", chat)
 	}
 	embedded := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Embed", map[string]any{
-		"route": "embed", "inputs": []string{"ada prefers tea"},
+		"route": "embed", "inputs": []string{"ada prefers tea"}, "source": "system",
 	})
 	if embedded["model"] != "stub" {
 		t.Fatalf("model = %v", embedded["model"])
@@ -149,7 +149,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 
 	var attempts, priced int
-	if err := owner.QueryRow(ctx, `SELECT count(*), count(cost_usd) FROM gateway.ledger`).Scan(&attempts, &priced); err != nil {
+	if err := owner.QueryRow(ctx, `SELECT count(*), count(cost_micro_usd) FROM gateway.ledger`).Scan(&attempts, &priced); err != nil {
 		t.Fatal(err)
 	}
 	if attempts != 4 || priced != 0 {
@@ -204,6 +204,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 	t.Cleanup(srv.Close)
 	out := postJSON(t, srv, mustDerived(t, master), "/upmo.gateway.v1.Gateway/Chat", map[string]any{
 		"route": "draft", "prompt": "hello", "credential_ref": ref,
+		"user_id": "11111111-1111-4111-8111-111111111111", "source": "chat",
 	})
 	if out["text"] != "from the person's provider" {
 		t.Fatalf("chat = %v", out)
@@ -230,7 +231,7 @@ func TestGatewayLedgerNullCostCases(t *testing.T) {
 	}
 	store := postgres.Store{Pool: owner}
 	usage := domain.Usage{Arrived: true, Input: 1000, Output: 1000}
-	price := domain.Price{Version: "v1", InputPerMTok: ptr(1), OutputPerMTok: ptr(2)}
+	price := domain.Price{Version: "v1", InputMicroUSDPerMTok: microPtr(1_000_000), OutputMicroUSDPerMTok: microPtr(2_000_000)}
 	cases := []struct {
 		plan  string
 		usage domain.Usage
@@ -241,24 +242,25 @@ func TestGatewayLedgerNullCostCases(t *testing.T) {
 		{plan: domain.PlanMetered, usage: usage, found: false},
 	}
 	for i, tc := range cases {
+		micro, estimated, priceSource := domain.MeteredCost(tc.plan, tc.usage, price, tc.found, domain.EstimatedMicroUSDPerMTok, 8, 0, false)
 		row := domain.Entry{
 			Route: "draft", LinkPosition: 1, Model: "stub", PlanKind: tc.plan,
-			Class: domain.ClassOK, Usage: tc.usage,
-			CostUSD: domain.CostUSD(tc.plan, tc.usage, price, tc.found),
+			Class: domain.ClassOK, Usage: tc.usage, Principal: domain.Principal{Source: domain.SourceSystem},
+			CostMicroUSD: micro, Estimated: estimated, PriceSource: priceSource,
 		}
-		if row.CostUSD != nil {
-			t.Fatalf("case %d cost = %v", i, *row.CostUSD)
+		if tc.plan == domain.PlanMetered && row.CostMicroUSD == nil {
+			t.Fatalf("case %d has no metered cost", i)
 		}
 		if err := store.Record(ctx, row); err != nil {
 			t.Fatalf("case %d: %v", i, err)
 		}
 	}
-	var priced int
-	if err := owner.QueryRow(ctx, `SELECT count(cost_usd) FROM gateway.ledger`).Scan(&priced); err != nil {
+	var priced, estimated int
+	if err := owner.QueryRow(ctx, `SELECT count(cost_micro_usd), count(*) FILTER (WHERE estimated) FROM gateway.ledger`).Scan(&priced, &estimated); err != nil {
 		t.Fatal(err)
 	}
-	if priced != 0 {
-		t.Fatalf("priced = %d", priced)
+	if priced != 2 || estimated != 2 {
+		t.Fatalf("priced = %d, estimated = %d", priced, estimated)
 	}
 	var alert bool
 	if err := owner.QueryRow(ctx, `SELECT gateway.cache_hit_alert(40, 60)`).Scan(&alert); err != nil {
@@ -325,6 +327,8 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 }
 
 func ptr(v float64) *float64 { return &v }
+
+func microPtr(v int64) *int64 { return &v }
 
 func postJSON(t *testing.T, srv *httptest.Server, derived []byte, path string, body map[string]any) map[string]any {
 	t.Helper()
@@ -441,7 +445,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 
 	// Decide returns full usage including cost_micro_usd and context_window.
 	dec := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{
-		"route": "tool-decide", "kind": "yesno", "prompt": "keep?",
+		"route": "tool-decide", "kind": "yesno", "prompt": "keep?", "source": "system",
 	})
 	decUsage, _ := dec["usage"].(map[string]any)
 	if decUsage["arrived"] != true || decUsage["context_window"] != float64(200000) || decUsage["cost_micro_usd"] != float64(2) {
@@ -455,6 +459,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 		"max_output_tokens": 512,
 		"tool_choice":       "auto",
 		"tools":             []map[string]any{{"name": "search", "description": "search docs"}},
+		"source":            "system",
 	})
 	toolCalls, _ := turn0["tool_calls"].([]any)
 	if len(toolCalls) != 1 {
@@ -474,6 +479,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 			{"role": "assistant", "tool_calls": toolCalls},
 			{"role": "tool", "tool_id": firstCall["id"], "tool_name": "search", "text": "timeout", "is_error": true},
 		},
+		"source": "system",
 	})
 	if turn1["text"] != "tool_error: timeout" {
 		t.Fatalf("turn1 = %v", turn1)
@@ -484,6 +490,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 		"route":  "tool-chat",
 		"prompt": "stream tool call",
 		"tools":  []map[string]any{{"name": "search"}},
+		"source": "system",
 	})
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/upmo.gateway.v1.Gateway/ChatStream", bytes.NewReader(raw))
 	if err != nil {
@@ -576,6 +583,7 @@ func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
 		"route": "usage-chat", "prompt": "hello", "max_output_tokens": 512,
 		"tool_choice": map[string]any{"mode": "tool", "name": "search"},
 		"tools":       []map[string]any{{"name": "search", "schema": map[string]any{"type": "object"}}},
+		"source":      "system",
 	}
 	const asked = "max_output_tokens=512 tool_choice=tool:search"
 
@@ -634,7 +642,7 @@ func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
 		t.Fatalf("done metadata = %v", done)
 	}
 
-	dec := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{"route": "usage-decide", "kind": "yesno", "prompt": "ok?"})
+	dec := postJSON(t, srv, derived, "/upmo.gateway.v1.Gateway/Decide", map[string]any{"route": "usage-decide", "kind": "yesno", "prompt": "ok?", "source": "system"})
 	du, _ := dec["usage"].(map[string]any)
 	if du["cache_read"] != float64(25) || du["cache_write"] != float64(10) || du["reasoning"] != float64(5) ||
 		du["cost_micro_usd"] != float64(185) || du["context_window"] != float64(200000) || du["arrived"] != true {
@@ -714,7 +722,7 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 
 	derived := mustDerived(t, master)
 	chat := postJSON(t, public, derived, "/upmo.gateway.v1.Gateway/Chat", map[string]any{
-		"route": "draft", "prompt": "hello",
+		"route": "draft", "prompt": "hello", "source": "system",
 	})
 	if chat["text"] != "ok" {
 		t.Fatalf("chat = %v", chat)

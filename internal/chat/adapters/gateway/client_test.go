@@ -46,6 +46,7 @@ func TestChatStreamParsesAttemptDeltaAndDoneFrames(t *testing.T) {
 	var attempts []Attempt
 	done, err := client.ChatStream(t.Context(), Request{
 		Route:         "draft",
+		ChatID:        "chat-1",
 		CredentialRef: "house",
 		UserID:        "u",
 		Prompt:        "hi",
@@ -94,9 +95,9 @@ func TestChatStreamSendsTheSystemTextAndAPinByAccountOrByProvider(t *testing.T) 
 	}
 	const account = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01"
 	for _, req := range []Request{
-		{Route: "r", UserID: "u", Prompt: "hi", System: "# Agent: A\n\nBe brief.", PinProvider: "OpenAI", PinModel: "gpt-x"},
-		{Route: "r", UserID: "u", Prompt: "hi", PinAccount: account, PinModel: "gpt-y"},
-		{Route: "r", UserID: "u", Prompt: "hi"},
+		{Route: "r", ChatID: "chat-1", UserID: "u", Prompt: "hi", System: "# Agent: A\n\nBe brief.", PinProvider: "OpenAI", PinModel: "gpt-x"},
+		{Route: "r", ChatID: "chat-2", UserID: "u", Prompt: "hi", PinAccount: account, PinModel: "gpt-y"},
+		{Route: "r", ChatID: "chat-3", UserID: "u", Prompt: "hi"},
 	} {
 		if _, err := client.ChatStream(t.Context(), req, nil, nil); err != nil {
 			t.Fatal(err)
@@ -144,7 +145,7 @@ func TestChatStreamHandsADeltaOverBeforeTheFinalFrame(t *testing.T) {
 	out := make(chan result, 1)
 	go func() {
 		var text strings.Builder
-		done, err := client.ChatStream(t.Context(), Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+		done, err := client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(delta string) {
 			text.WriteString(delta)
 			select {
 			case first <- delta:
@@ -193,7 +194,7 @@ func TestChatStreamErrorFrameIsAFailure(t *testing.T) {
 	}
 
 	var text strings.Builder
-	done, err := client.ChatStream(t.Context(), Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+	done, err := client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(delta string) {
 		text.WriteString(delta)
 	}, nil)
 	var failure *Failure
@@ -221,7 +222,7 @@ func TestChatStreamCutWithoutAFinalFrame(t *testing.T) {
 	}
 
 	deltas := 0
-	_, err = client.ChatStream(t.Context(), Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(string) {
+	_, err = client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(string) {
 		deltas++
 	}, nil)
 	if !errors.Is(err, ErrCut) || deltas != 1 {
@@ -240,7 +241,7 @@ func TestChatStreamRefusalBeforeTheStreamIsAPlainError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.ChatStream(t.Context(), Request{Route: "draft", UserID: "u", Prompt: "hi"}, nil, nil)
+	_, err = client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, nil, nil)
 	var failure *Failure
 	if err == nil || errors.Is(err, ErrCut) || errors.As(err, &failure) {
 		t.Fatalf("err = %v", err)
@@ -266,7 +267,7 @@ func TestChatStreamStopsOnCancelledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	deltas := 0
-	_, err = client.ChatStream(ctx, Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(string) {
+	_, err = client.ChatStream(ctx, Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(string) {
 		deltas++
 		cancel()
 	}, nil)

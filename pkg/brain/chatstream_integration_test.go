@@ -26,6 +26,11 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
+const (
+	rigUserID = "018f3b2c-7a10-7c4a-8e11-111111111111"
+	rigChatID = "018f3b2c-7a10-7c4a-8e11-222222222222"
+)
+
 // mustGateway wraps inner with the gateway service signature check.
 func mustGateway(t *testing.T, secret string, inner http.Handler) http.Handler {
 	t.Helper()
@@ -143,7 +148,7 @@ func TestChatStreamFramesArriveIncrementally(t *testing.T) {
 	out := make(chan result, 1)
 	go func() {
 		var text strings.Builder
-		done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+		done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(delta string) {
 			text.WriteString(delta)
 			select {
 			case first <- delta:
@@ -191,7 +196,7 @@ func TestChatStreamAttemptNoticeThenText(t *testing.T) {
 	var mu sync.Mutex
 	var order []string
 	var attempts []chatgateway.Attempt
-	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(delta string) {
 		mu.Lock()
 		defer mu.Unlock()
 		order = append(order, "delta")
@@ -224,7 +229,7 @@ func TestChatStreamErrorFrameCarriesClassAndModel(t *testing.T) {
 	client := rigClient(t, srv)
 
 	var text strings.Builder
-	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(delta string) {
 		text.WriteString(delta)
 	}, nil)
 	var failure *chatgateway.Failure
@@ -244,7 +249,7 @@ func TestChatStreamRefusalBeforeTheStreamStaysPlainHTTP(t *testing.T) {
 		fake.Adapter{Reply: "hello"},
 		fake.Adapter{Reply: "unused"})
 	client := rigClient(t, srv)
-	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "no-such-route", UserID: "u", Prompt: "hi"}, nil, nil)
+	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "no-such-route", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, nil, nil)
 	var failure *chatgateway.Failure
 	if err == nil || errors.Is(err, chatgateway.ErrCut) || errors.As(err, &failure) {
 		t.Fatalf("err = %v", err)
@@ -260,7 +265,7 @@ func TestChatStreamSurvivesTheServerWriteTimeout(t *testing.T) {
 	client := rigClient(t, srv)
 
 	deltas := 0
-	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(string) {
+	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(string) {
 		deltas++
 	}, nil)
 	if err != nil {
@@ -279,7 +284,7 @@ func TestChatStreamClientCancelStopsTheProvider(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	deltas := 0
-	_, err := client.ChatStream(ctx, chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(string) {
+	_, err := client.ChatStream(ctx, chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(string) {
 		deltas++
 		if deltas == 1 {
 			cancel()
@@ -312,7 +317,7 @@ func TestChatStreamCutWithoutAFinalFrame(t *testing.T) {
 	client := rigClient(t, srv)
 
 	deltas := 0
-	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(string) {
+	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(string) {
 		deltas++
 	}, nil)
 	if !errors.Is(err, chatgateway.ErrCut) || deltas != 1 {
@@ -330,7 +335,7 @@ func TestChatStreamFirstFrameAfterTheServerWriteTimeout(t *testing.T) {
 	client := rigClient(t, srv)
 
 	deltas := 0
-	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(string) {
+	done, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(string) {
 		deltas++
 	}, nil)
 	if err != nil {
@@ -356,7 +361,7 @@ func TestChatStreamErrorFrameCarriesNoProviderDetail(t *testing.T) {
 	client := rigClient(t, srv)
 
 	var text strings.Builder
-	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(delta string) {
 		text.WriteString(delta)
 	}, nil)
 	var failure *chatgateway.Failure
@@ -387,7 +392,7 @@ func TestChatStreamPanicAfterAFrameEndsWithOneErrorFrame(t *testing.T) {
 	client := rigClient(t, srv)
 
 	var text strings.Builder
-	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", UserID: "u", Prompt: "hi"}, func(delta string) {
+	_, err := client.ChatStream(t.Context(), chatgateway.Request{Route: "draft", ChatID: rigChatID, UserID: rigUserID, Prompt: "hi"}, func(delta string) {
 		text.WriteString(delta)
 	}, nil)
 	var failure *chatgateway.Failure
