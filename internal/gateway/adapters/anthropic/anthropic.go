@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/wire"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
@@ -83,23 +84,91 @@ func request(ctx context.Context, attempt app.Attempt, method, endpoint string, 
 }
 
 // Probe asks for the model list, the cheapest call that needs the key. It
-// returns the failure class of the answer.
-func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) (domain.FailureClass, error) {
+// returns the discovered models and the failure class of the answer. A
+// malformed or oversized list keeps ClassOK when the auth call succeeded and
+// returns nil for the models.
+func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) ([]domain.SeenModel, domain.FailureClass, error) {
 	base, paths, ok := target(attempt)
 	if !ok {
-		return domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+		return nil, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	req, err := request(ctx, attempt, http.MethodGet, base+paths.ModelsPath, nil)
 	if err != nil {
-		return domain.ClassCaller, err
+		return nil, domain.ClassCaller, err
 	}
 	res, err := a.client(attempt).Do(req)
 	if err != nil {
-		return wire.ClassForErr(err), err
+		return nil, wire.ClassForErr(err), err
 	}
 	defer func() { _ = res.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
-	return statusClass(res.StatusCode)
+	if class, err := statusClass(res.StatusCode); err != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+		return nil, class, err
+	}
+	raw, err := wire.ReadModelList(res.Body)
+	if err != nil {
+		return nil, domain.ClassOK, nil
+	}
+	models, err := parseModels(raw)
+	if err != nil {
+		return nil, domain.ClassOK, nil
+	}
+	return models, domain.ClassOK, nil
+}
+
+type anthropicModelItem struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func parseModels(raw []byte) ([]domain.SeenModel, error) {
+	var parsed struct {
+		Data []anthropicModelItem `json:"data"`
+	}
+	if err := wire.DecodeStrictObject(raw, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Data == nil {
+		return nil, fmt.Errorf("gateway: missing model data")
+	}
+	// Refuse lists exceeding MaxSeenModels rather than truncating so callers
+	// never store a partial model list.
+	if len(parsed.Data) > domain.MaxSeenModels {
+		return nil, fmt.Errorf("gateway: too many models")
+	}
+	out := make([]domain.SeenModel, 0, len(parsed.Data))
+	seen := make(map[string]bool, len(parsed.Data))
+	for _, item := range parsed.Data {
+		if item.Type != "" && item.Type != "model" {
+			return nil, fmt.Errorf("gateway: unexpected model entry type")
+		}
+		id, err := domain.CleanModelID(item.ID)
+		if err != nil {
+			return nil, err
+		}
+		displayName := strings.TrimSpace(item.DisplayName)
+		if displayName != "" && !domain.ValidModelText(displayName) {
+			return nil, fmt.Errorf("gateway: invalid display name")
+		}
+		created := strings.TrimSpace(item.CreatedAt)
+		if created != "" {
+			if _, err := time.Parse(time.RFC3339Nano, created); err != nil {
+				return nil, fmt.Errorf("gateway: invalid created_at")
+			}
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, domain.SeenModel{
+			ID:          id,
+			DisplayName: displayName,
+			Created:     created,
+		})
+	}
+	return out, nil
 }
 
 func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {

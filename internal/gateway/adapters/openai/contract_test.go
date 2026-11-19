@@ -257,7 +257,7 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			}
 
 			// The probe asks for the model list with the key.
-			class, err = a.Probe(ctx, attempt)
+			_, class, err = a.Probe(ctx, attempt)
 			if err != nil || class != domain.ClassOK {
 				t.Fatalf("probe: class=%s err=%v", class, err)
 			}

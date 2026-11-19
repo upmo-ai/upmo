@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -84,6 +85,7 @@ func scanAccount(row pgx.Row) (domain.Provider, error) {
 	}
 	a.Own = a.Share.Visibility == domain.VisibilityPrivate
 	a.Models = []string{}
+	a.EnabledModels = []domain.EnabledModel{}
 	a.Share.TeamIDs = []string{}
 	a.Share.TeamNames = []string{}
 	return a, err
@@ -128,12 +130,13 @@ func (p Providers) List(ctx context.Context, who app.Caller) ([]domain.Provider,
 		return nil, err
 	}
 	if len(ids) > 0 {
-		models, err := modelsOf(ctx, tx, ids)
+		entries, err := modelEntriesOf(ctx, tx, ids)
 		if err != nil {
 			return nil, err
 		}
-		for id, list := range models {
-			out[byID[id]].Models = list
+		for id, list := range entries {
+			out[byID[id]].EnabledModels = list
+			out[byID[id]].Models = modelNames(list)
 		}
 		teams, err := teamsOf(ctx, tx, ids)
 		if err != nil {
@@ -174,12 +177,13 @@ func getAccount(ctx context.Context, q querier, id string) (domain.Provider, err
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	models, err := modelsOf(ctx, q, []string{a.ID})
+	entries, err := modelEntriesOf(ctx, q, []string{a.ID})
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	if list := models[a.ID]; list != nil {
-		a.Models = list
+	if list := entries[a.ID]; list != nil {
+		a.EnabledModels = list
+		a.Models = modelNames(list)
 	}
 	teams, err := teamsOf(ctx, q, []string{a.ID})
 	if err != nil {
@@ -191,9 +195,9 @@ func getAccount(ctx context.Context, q querier, id string) (domain.Provider, err
 	return a, nil
 }
 
-func modelsOf(ctx context.Context, q querier, ids []string) (map[string][]string, error) {
+func modelEntriesOf(ctx context.Context, q querier, ids []string) (map[string][]domain.EnabledModel, error) {
 	rows, err := q.Query(ctx, `
-		SELECT account_id::text, model
+		SELECT account_id::text, model, listed
 		FROM gateway.provider_models
 		WHERE account_id = ANY($1::uuid[])
 		ORDER BY account_id, position`, ids)
@@ -201,15 +205,36 @@ func modelsOf(ctx context.Context, q querier, ids []string) (map[string][]string
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string][]string{}
+	out := map[string][]domain.EnabledModel{}
 	for rows.Next() {
 		var id, model string
-		if err := rows.Scan(&id, &model); err != nil {
+		var listed bool
+		if err := rows.Scan(&id, &model, &listed); err != nil {
 			return nil, err
 		}
-		out[id] = append(out[id], model)
+		out[id] = append(out[id], domain.EnabledModel{ID: model, Listed: listed})
 	}
 	return out, rows.Err()
+}
+
+func modelNames(entries []domain.EnabledModel) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.ID
+	}
+	return out
+}
+
+func modelsOf(ctx context.Context, q querier, ids []string) (map[string][]string, error) {
+	entries, err := modelEntriesOf(ctx, q, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(entries))
+	for id, list := range entries {
+		out[id] = modelNames(list)
+	}
+	return out, nil
 }
 
 // sharedWith is the teams one account is shared with, by name.
@@ -473,6 +498,9 @@ func (p Providers) Remove(ctx context.Context, who app.Caller, id string) error 
 		return app.InUseError{Routes: names}
 	}
 	// Models and the key go first: their row security looks the account up.
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway.account_models_seen WHERE account_id = $1::uuid`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, id); err != nil {
 		return err
 	}
@@ -540,11 +568,192 @@ func (p Providers) Note(ctx context.Context, who app.Caller, id, status string) 
 	return tx.Commit(ctx)
 }
 
+// PutSeenModels replaces the discovered models stored for an account.
+// Lists exceeding domain.MaxSeenModels (2,000) are refused rather than
+// truncated so callers never store a partial list.
+func (p Providers) PutSeenModels(ctx context.Context, who app.Caller, id string, models []domain.SeenModel) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return app.ErrNotFound
+	}
+	if len(models) > domain.MaxSeenModels {
+		return domain.Invalid(fmt.Sprintf("At most %d discovered models may be stored per account.", domain.MaxSeenModels))
+	}
+	tx, err := p.begin(ctx, who)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var ok int
+	err = tx.QueryRow(ctx, `
+		SELECT 1 FROM gateway.provider_accounts
+		WHERE id = $1::uuid AND `+changeable+`
+		FOR UPDATE`, id).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway.account_models_seen WHERE account_id = $1::uuid`, id); err != nil {
+		return err
+	}
+	seenSet := make(map[string]bool, len(models))
+	if len(models) > 0 {
+		batch := &pgx.Batch{}
+		for i, m := range models {
+			seenSet[m.ID] = true
+			var ctxLen *int
+			if m.ContextLength > 0 {
+				v := m.ContextLength
+				ctxLen = &v
+			}
+			var pricingJSON []byte
+			if len(m.Pricing) > 0 {
+				if pricingJSON, err = json.Marshal(m.Pricing); err != nil {
+					return err
+				}
+			}
+			var modJSON []byte
+			if m.Modalities != nil && (len(m.Modalities.Input) > 0 || len(m.Modalities.Output) > 0) {
+				if modJSON, err = json.Marshal(m.Modalities); err != nil {
+					return err
+				}
+			}
+			batch.Queue(`
+				INSERT INTO gateway.account_models_seen
+					(account_id, model_id, position, display_name, created, context_length, pricing, modalities)
+				VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+				id, m.ID, i+1, m.DisplayName, m.Created, ctxLen, nullableJSON(pricingJSON), nullableJSON(modJSON))
+		}
+		br := tx.SendBatch(ctx, batch)
+		for range models {
+			if _, err := br.Exec(); err != nil {
+				_ = br.Close()
+				return err
+			}
+		}
+		if err := br.Close(); err != nil {
+			return err
+		}
+	}
+	// Keep existing enabled models' listed flags aligned with the newly seen list.
+	entries, err := modelEntriesOf(ctx, tx, []string{id})
+	if err != nil {
+		return err
+	}
+	if list := entries[id]; len(list) > 0 {
+		changed := false
+		names := make([]string, len(list))
+		for i, e := range list {
+			names[i] = e.ID
+			if e.Listed != seenSet[e.ID] {
+				changed = true
+			}
+		}
+		if changed {
+			if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, id); err != nil {
+				return err
+			}
+			if err := putModels(ctx, tx, id, names); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func nullableJSON(b []byte) *string {
+	if len(b) == 0 {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
+// SeenModels returns the discovered models stored for an account the person
+// can see, or app.ErrNotFound.
+func (p Providers) SeenModels(ctx context.Context, who app.Caller, id string) ([]domain.SeenModel, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, app.ErrNotFound
+	}
+	tx, err := p.begin(ctx, who)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var ok int
+	err = tx.QueryRow(ctx, `
+		SELECT 1 FROM gateway.provider_accounts AS a
+		WHERE a.id = $1::uuid AND `+visibleTo(), id).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, app.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT model_id, display_name, created, context_length, pricing, modalities, seen_at
+		FROM gateway.account_models_seen
+		WHERE account_id = $1::uuid
+		ORDER BY position`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.SeenModel{}
+	for rows.Next() {
+		var m domain.SeenModel
+		var ctxLen *int
+		var pricingRaw, modRaw []byte
+		var seenAt time.Time
+		if err := rows.Scan(&m.ID, &m.DisplayName, &m.Created, &ctxLen, &pricingRaw, &modRaw, &seenAt); err != nil {
+			return nil, err
+		}
+		if ctxLen != nil {
+			m.ContextLength = *ctxLen
+		}
+		if len(pricingRaw) > 0 {
+			if err := json.Unmarshal(pricingRaw, &m.Pricing); err != nil {
+				return nil, err
+			}
+		}
+		if len(modRaw) > 0 {
+			var mod domain.ModelModalities
+			if err := json.Unmarshal(modRaw, &mod); err != nil {
+				return nil, err
+			}
+			m.Modalities = &mod
+		}
+		at := seenAt.UTC()
+		m.SeenAt = &at
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ProviderModelsRead,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
+}
+
 func putModels(ctx context.Context, tx pgx.Tx, id string, models []string) error {
 	for i, model := range models {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO gateway.provider_models (account_id, model, position)
-			VALUES ($1::uuid, $2, $3)`, id, model, i+1); err != nil {
+			INSERT INTO gateway.provider_models (account_id, model, position, listed)
+			VALUES (
+				$1::uuid,
+				$2,
+				$3,
+				EXISTS (
+					SELECT 1 FROM gateway.account_models_seen AS s
+					WHERE s.account_id = $1::uuid AND s.model_id = $2
+				)
+			)`, id, model, i+1); err != nil {
 			return err
 		}
 	}

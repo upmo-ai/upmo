@@ -89,7 +89,8 @@ func TestRouteScanResolvesRouteLoop(t *testing.T) {
 // tracks changing methods, and these reads are guarded and audited like
 // changes.
 var sensitiveReads = map[string]bool{
-	"GET /api/audit/events": true,
+	"GET /api/audit/events":          true,
+	"GET /api/providers/{id}/models": true,
 }
 
 // compare returns the source patterns the table lacks, and the table entries

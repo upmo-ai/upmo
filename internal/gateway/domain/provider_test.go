@@ -177,8 +177,8 @@ func TestCleanModels(t *testing.T) {
 	}{
 		{"none", nil, 0, false},
 		{"some", []string{"a", " b "}, 2, false},
-		{"forty", many(40), 40, false},
-		{"forty one", many(41), 0, true},
+		{"hundred", many(100), 100, false},
+		{"hundred and one", many(101), 0, true},
 		{"longest", []string{strings.Repeat("a", 120)}, 1, false},
 		{"too long", []string{strings.Repeat("a", 121)}, 0, true},
 		{"empty", []string{""}, 0, true},

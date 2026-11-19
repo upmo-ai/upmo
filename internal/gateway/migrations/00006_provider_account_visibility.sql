@@ -187,14 +187,77 @@ CREATE POLICY credentials_manage ON gateway.credentials
       AND identity.may_manage(a.owner_user_id, a.visibility)
   ));
 
+-- Discovered models from the latest successful probe of a provider account.
+-- At most 2,000 rows are stored per account (lists beyond that are refused).
+CREATE TABLE gateway.account_models_seen (
+  account_id uuid NOT NULL REFERENCES gateway.provider_accounts (id) ON DELETE CASCADE,
+  model_id text NOT NULL,
+  position int NOT NULL,
+  display_name text NOT NULL DEFAULT '',
+  created text NOT NULL DEFAULT '',
+  context_length int,
+  pricing jsonb,
+  modalities jsonb,
+  seen_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, model_id),
+  CONSTRAINT account_models_seen_model_id_check CHECK (char_length(model_id) BETWEEN 1 AND 120),
+  CONSTRAINT account_models_seen_position_check CHECK (position > 0 AND position <= 2000),
+  CONSTRAINT account_models_seen_context_length_check CHECK (context_length IS NULL OR context_length >= 0)
+);
+
+CREATE UNIQUE INDEX account_models_seen_position ON gateway.account_models_seen (account_id, position);
+
+ALTER TABLE gateway.account_models_seen ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.account_models_seen FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY account_models_seen_service ON gateway.account_models_seen
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+-- Seen models follow the account: readable where the account is visible
+-- (usable or manageable), writable where the account may be managed.
+CREATE POLICY account_models_seen_select ON gateway.account_models_seen
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM gateway.provider_accounts AS a
+    WHERE a.id = account_id
+  ));
+
+CREATE POLICY account_models_seen_insert ON gateway.account_models_seen
+  FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM gateway.provider_accounts AS a
+    WHERE a.id = account_id
+      AND identity.may_manage(a.owner_user_id, a.visibility)
+  ));
+
+CREATE POLICY account_models_seen_delete ON gateway.account_models_seen
+  FOR DELETE
+  USING (EXISTS (
+    SELECT 1 FROM gateway.provider_accounts AS a
+    WHERE a.id = account_id
+      AND identity.may_manage(a.owner_user_id, a.visibility)
+  ));
+
 DROP FUNCTION gateway.team_shared(uuid);
 DROP FUNCTION gateway.my_teams();
 DROP FUNCTION gateway.may_share();
 DROP TABLE gateway.provider_account_teams;
 
 GRANT UPDATE (visibility, team_ids) ON gateway.provider_accounts TO upmo_app;
+GRANT SELECT, INSERT, DELETE ON gateway.account_models_seen TO upmo_app;
 
 -- +goose Down
+
+REVOKE SELECT, INSERT, DELETE ON gateway.account_models_seen FROM upmo_app;
+DROP POLICY IF EXISTS account_models_seen_delete ON gateway.account_models_seen;
+DROP POLICY IF EXISTS account_models_seen_insert ON gateway.account_models_seen;
+DROP POLICY IF EXISTS account_models_seen_select ON gateway.account_models_seen;
+DROP POLICY IF EXISTS account_models_seen_service ON gateway.account_models_seen;
+ALTER TABLE gateway.account_models_seen NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.account_models_seen DISABLE ROW LEVEL SECURITY;
+DROP TABLE IF EXISTS gateway.account_models_seen;
 
 DROP POLICY IF EXISTS credentials_manage ON gateway.credentials;
 DROP POLICY IF EXISTS provider_models_delete ON gateway.provider_models;

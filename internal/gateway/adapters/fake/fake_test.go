@@ -127,3 +127,15 @@ func TestFakeToolCallsAndErrorToolResult(t *testing.T) {
 		t.Fatalf("configured chat = %+v class=%s err=%v", cres, class, err)
 	}
 }
+
+func TestFakeProbeReturnsModels(t *testing.T) {
+	models, class, err := (Adapter{}).Probe(context.Background(), app.Attempt{})
+	if err != nil || class != domain.ClassOK || len(models) == 0 {
+		t.Fatalf("default probe = %+v class=%s err=%v", models, class, err)
+	}
+	custom := Adapter{Models: []domain.SeenModel{{ID: "custom-1", DisplayName: "Custom 1"}}}
+	models, class, err = custom.Probe(context.Background(), app.Attempt{})
+	if err != nil || class != domain.ClassOK || len(models) != 1 || models[0].ID != "custom-1" {
+		t.Fatalf("custom probe = %+v class=%s err=%v", models, class, err)
+	}
+}
