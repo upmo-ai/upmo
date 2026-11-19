@@ -293,6 +293,7 @@ func (s Store) SuggestModelForInput(ctx context.Context, accountID, vendor, need
 		WHERE a.id = $1::uuid
 		  AND a.status = $2
 		  AND a.enabled
+		  AND NOT pm.retired
 		ORDER BY pm.position`, accountID, domain.StatusConnected)
 	if err != nil {
 		return "", false, err

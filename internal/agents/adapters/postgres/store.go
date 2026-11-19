@@ -197,6 +197,33 @@ func (s Store) ProviderUses(ctx context.Context, access app.Access, provider str
 	return out, nil
 }
 
+// SystemProviderModelUses returns which models of provider are named by any
+// agent in agents.agents, read on the owner pool for background checks.
+func SystemProviderModelUses(ctx context.Context, owner *pgxpool.Pool, provider string, models []string) ([]string, error) {
+	if owner == nil || provider == "" || len(models) == 0 {
+		return []string{}, nil
+	}
+	rows, err := owner.Query(ctx, `
+		SELECT DISTINCT default_model_id
+		FROM agents.agents
+		WHERE lower(COALESCE(default_model_provider, '')) = lower($1)
+		  AND default_model_id = ANY($2::text[])
+		ORDER BY default_model_id`, provider, models)
+	if err != nil {
+		return nil, fmt.Errorf("agents: system provider model uses: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, fmt.Errorf("agents: system provider model uses: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s Store) GetAgent(ctx context.Context, access app.Access, id string) (app.Agent, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {

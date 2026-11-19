@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -699,6 +700,34 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	gateway.AddSpendChecker(workers, owner, func(ctx context.Context) (string, error) {
 		return identity.WorkspaceTimeZone(ctx, owner)
 	}, reg, log)
+	checkSecrets := append(slices.Clone(secrets), gateway.DBSecrets{Pool: owner, Keys: masterKeys})
+	gateway.AddProviderChecker(workers, gateway.ProviderCheckDeps{
+		Owner:    owner,
+		App:      pool,
+		Enqueuer: lazy,
+		Secrets:  checkSecrets,
+		AgentModelUses: func(ctx context.Context, provider string, models []string) ([]string, error) {
+			return agents.SystemProviderModelUses(ctx, owner, provider, models)
+		},
+		AutomationModelUses: func(context.Context, string, []string) ([]string, error) {
+			return nil, nil
+		},
+		ActiveUser: func(ctx context.Context, userID string) (bool, error) {
+			return identity.ActiveUser(ctx, owner, userID)
+		},
+		SettingsManagers: func(ctx context.Context) ([]string, error) {
+			return identity.SettingsManagers(ctx, owner)
+		},
+		Notify: func(ctx context.Context, tx pgx.Tx, userID, title string) error {
+			uid, err := uuid.Parse(userID)
+			if err != nil {
+				return err
+			}
+			_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
+			return err
+		},
+		Log: log,
+	})
 	auditPush := cfg.AuditWebhookURL != "" || cfg.AuditSyslogAddr != ""
 	if auditPush {
 		audit.AddPusher(workers, owner, audit.PushConfig{
@@ -776,6 +805,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		chat.SweepPeriodic(), audit.SealPeriodic(),
 		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
 		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
+		gateway.ProviderCheckPeriodic(),
 	}
 	if auditPush {
 		periodic = append(periodic, audit.PushPeriodic())

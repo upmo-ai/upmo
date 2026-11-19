@@ -167,3 +167,13 @@ func MountWorkspace(mux *http.ServeMux, workspace app.Workspace, sessions app.Se
 func WorkspaceTimeZone(ctx context.Context, owner *pgxpool.Pool) (string, error) {
 	return postgres.WorkspaceTimeZone(ctx, owner)
 }
+
+// SettingsManagers returns the IDs of all active users holding settings:manage.
+func SettingsManagers(ctx context.Context, owner *pgxpool.Pool) ([]string, error) {
+	return postgres.SettingsManagers(ctx, owner)
+}
+
+// ActiveUser reports whether userID is a joined, non-disabled user.
+func ActiveUser(ctx context.Context, owner *pgxpool.Pool, userID string) (bool, error) {
+	return postgres.ActiveUser(ctx, owner, userID)
+}

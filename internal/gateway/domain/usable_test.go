@@ -216,3 +216,40 @@ func TestUsableListsOnlyChatModelsAndCountsUncataloguedAsChat(t *testing.T) {
 		t.Fatal("embed route rejected an embedding model")
 	}
 }
+
+func TestRetiredModelIsExcludedFromUsableChecks(t *testing.T) {
+	acct := Provider{
+		ID:       "acc-ret",
+		Provider: "OpenAI",
+		Adapter:  AdapterOpenAI,
+		Status:   StatusConnected,
+		Models:   []string{"gpt-old", "gpt-new"},
+		EnabledModels: []EnabledModel{
+			{ID: "gpt-old", Listed: false, Retired: true},
+			{ID: "gpt-new", Listed: true, Retired: false},
+		},
+		Own: true,
+	}
+
+	if UsableModel(acct, "gpt-old") {
+		t.Fatal("retired model was marked usable")
+	}
+	if !UsableModel(acct, "gpt-new") {
+		t.Fatal("active model was marked unusable")
+	}
+	if got := UsableModels(acct); !slices.Equal(got, []string{"gpt-new"}) {
+		t.Fatalf("UsableModels = %v, want [gpt-new]", got)
+	}
+	if UsableAgentModel("OpenAI", "gpt-old", []Provider{acct}) {
+		t.Fatal("UsableAgentModel accepted a retired model")
+	}
+	if UsableRoute(UsableRouteView{Name: "chat", Capability: CapChat, Hops: []UsableHop{{AccountID: acct.ID, Model: "gpt-old"}}}, []Provider{acct}) {
+		t.Fatal("UsableRoute accepted a retired hop")
+	}
+	if UsableAgent(AgentView{Enabled: true, ModelProvider: "OpenAI", ModelID: "gpt-old"}, nil, []Provider{acct}, "") {
+		t.Fatal("UsableAgent accepted a retired model")
+	}
+	if !UsableAgent(AgentView{Enabled: true, ModelProvider: "OpenAI", ModelID: "gpt-new"}, nil, []Provider{acct}, "") {
+		t.Fatal("UsableAgent rejected an active model")
+	}
+}

@@ -57,17 +57,25 @@ type Store struct {
 	Pool *pgxpool.Pool
 }
 
-// Insert adds one notice for userID.
-func (s Store) Insert(ctx context.Context, userID uuid.UUID, kind, title string, taskID *uuid.UUID) (uuid.UUID, error) {
+func validateInsert(kind, title string, taskID *uuid.UUID) (string, error) {
 	title = strings.TrimSpace(title)
 	if _, ok := allowedKinds[kind]; !ok {
-		return uuid.Nil, ErrKind
+		return "", ErrKind
 	}
 	if title == "" {
-		return uuid.Nil, ErrTitle
+		return "", ErrTitle
 	}
 	if kind == KindProposal && taskID != nil {
-		return uuid.Nil, ErrProposalTask
+		return "", ErrProposalTask
+	}
+	return title, nil
+}
+
+// Insert adds one notice for userID.
+func (s Store) Insert(ctx context.Context, userID uuid.UUID, kind, title string, taskID *uuid.UUID) (uuid.UUID, error) {
+	cleanTitle, err := validateInsert(kind, title, taskID)
+	if err != nil {
+		return uuid.Nil, err
 	}
 	if s.Pool == nil {
 		return uuid.Nil, fmt.Errorf("notices: no database")
@@ -77,6 +85,25 @@ func (s Store) Insert(ctx context.Context, userID uuid.UUID, kind, title string,
 		return uuid.Nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	id, err := InsertTx(ctx, tx, userID, kind, cleanTitle, taskID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
+// InsertTx adds one notice for userID within an existing transaction.
+func InsertTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind, title string, taskID *uuid.UUID) (uuid.UUID, error) {
+	cleanTitle, err := validateInsert(kind, title, taskID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if tx == nil {
+		return uuid.Nil, fmt.Errorf("notices: no transaction")
+	}
 	if err := setUser(ctx, tx, userID); err != nil {
 		return uuid.Nil, err
 	}
@@ -84,12 +111,9 @@ func (s Store) Insert(ctx context.Context, userID uuid.UUID, kind, title string,
 	err = tx.QueryRow(ctx, `
 		INSERT INTO notices.notifications (user_id, kind, title, task_id)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id`, userID, kind, title, taskID).Scan(&id)
+		RETURNING id`, userID, kind, cleanTitle, taskID).Scan(&id)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("notices: insert: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, err
 	}
 	return id, nil
 }

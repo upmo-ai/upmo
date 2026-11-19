@@ -200,7 +200,7 @@ func getAccount(ctx context.Context, q querier, id string) (domain.Provider, err
 
 func modelEntriesOf(ctx context.Context, q querier, ids []string) (map[string][]domain.EnabledModel, error) {
 	rows, err := q.Query(ctx, `
-		SELECT account_id::text, model, listed
+		SELECT account_id::text, model, listed, retired
 		FROM gateway.provider_models
 		WHERE account_id = ANY($1::uuid[])
 		ORDER BY account_id, position`, ids)
@@ -211,11 +211,37 @@ func modelEntriesOf(ctx context.Context, q querier, ids []string) (map[string][]
 	out := map[string][]domain.EnabledModel{}
 	for rows.Next() {
 		var id, model string
-		var listed bool
-		if err := rows.Scan(&id, &model, &listed); err != nil {
+		var listed, retired bool
+		if err := rows.Scan(&id, &model, &listed, &retired); err != nil {
 			return nil, err
 		}
-		out[id] = append(out[id], domain.EnabledModel{ID: model, Listed: listed})
+		out[id] = append(out[id], domain.EnabledModel{ID: model, Listed: listed, Retired: retired})
+	}
+	return out, rows.Err()
+}
+
+type modelMissState struct {
+	misses  int
+	retired bool
+}
+
+func modelMissStatesOf(ctx context.Context, q querier, id string) (map[string]modelMissState, error) {
+	rows, err := q.Query(ctx, `
+		SELECT model, misses, retired
+		FROM gateway.provider_models
+		WHERE account_id = $1::uuid`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]modelMissState{}
+	for rows.Next() {
+		var model string
+		var state modelMissState
+		if err := rows.Scan(&model, &state.misses, &state.retired); err != nil {
+			return nil, err
+		}
+		out[model] = state
 	}
 	return out, rows.Err()
 }
@@ -361,7 +387,8 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 		       COALESCE((SELECT array_agg(tid::text ORDER BY tid) FROM unnest(team_ids) AS tid), '{}'),
 		       COALESCE(owner_user_id::text, '')
 		FROM gateway.provider_accounts
-		WHERE id = $1::uuid AND `+changeable, a.ID).
+		WHERE id = $1::uuid AND `+changeable+`
+		FOR UPDATE`, a.ID).
 		Scan(&cur.Name, &cur.PlanKind, &cur.BaseURL, &cur.Status, &cur.Enabled, &cur.Share.Visibility, &curTeams, &cur.OwnerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Provider{}, app.ErrNotFound
@@ -397,6 +424,10 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	if err != nil {
 		return domain.Provider{}, err
 	}
+	prevStates, err := modelMissStatesOf(ctx, tx, a.ID)
+	if err != nil {
+		return domain.Provider{}, err
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE gateway.provider_accounts
 		SET name = $2, plan_kind = $3, base_url = $4, enabled = $5, updated_at = now(),
@@ -417,7 +448,7 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, a.ID); err != nil {
 		return domain.Provider{}, err
 	}
-	if err := putModels(ctx, tx, a.ID, a.Models); err != nil {
+	if err := putModelsWithState(ctx, tx, a.ID, a.Models, prevStates); err != nil {
 		return domain.Provider{}, err
 	}
 	if sealed != nil {
@@ -665,47 +696,9 @@ func (p Providers) PutSeenModels(ctx context.Context, who app.Caller, id string,
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM gateway.account_models_seen WHERE account_id = $1::uuid`, id); err != nil {
+	seenSet, err := replaceSeenModels(ctx, tx, id, models)
+	if err != nil {
 		return err
-	}
-	seenSet := make(map[string]bool, len(models))
-	if len(models) > 0 {
-		batch := &pgx.Batch{}
-		for i, m := range models {
-			seenSet[m.ID] = true
-			var ctxLen *int
-			if m.ContextLength > 0 {
-				v := m.ContextLength
-				ctxLen = &v
-			}
-			var pricingJSON []byte
-			if len(m.Pricing) > 0 {
-				if pricingJSON, err = json.Marshal(m.Pricing); err != nil {
-					return err
-				}
-			}
-			var modJSON []byte
-			if m.Modalities != nil && (len(m.Modalities.Input) > 0 || len(m.Modalities.Output) > 0) {
-				if modJSON, err = json.Marshal(m.Modalities); err != nil {
-					return err
-				}
-			}
-			batch.Queue(`
-				INSERT INTO gateway.account_models_seen
-					(account_id, model_id, position, display_name, created, context_length, pricing, modalities)
-				VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
-				id, m.ID, i+1, m.DisplayName, m.Created, ctxLen, nullableJSON(pricingJSON), nullableJSON(modJSON))
-		}
-		br := tx.SendBatch(ctx, batch)
-		for range models {
-			if _, err := br.Exec(); err != nil {
-				_ = br.Close()
-				return err
-			}
-		}
-		if err := br.Close(); err != nil {
-			return err
-		}
 	}
 	// Keep existing enabled models' listed flags aligned with the newly seen list.
 	entries, err := modelEntriesOf(ctx, tx, []string{id})
@@ -722,15 +715,67 @@ func (p Providers) PutSeenModels(ctx context.Context, who app.Caller, id string,
 			}
 		}
 		if changed {
+			prevStates, err := modelMissStatesOf(ctx, tx, id)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, id); err != nil {
 				return err
 			}
-			if err := putModels(ctx, tx, id, names); err != nil {
+			if err := putModelsWithState(ctx, tx, id, names, prevStates); err != nil {
 				return err
 			}
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func replaceSeenModels(ctx context.Context, tx pgx.Tx, id string, models []domain.SeenModel) (map[string]bool, error) {
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway.account_models_seen WHERE account_id = $1::uuid`, id); err != nil {
+		return nil, err
+	}
+	seenSet := make(map[string]bool, len(models))
+	if len(models) == 0 {
+		return seenSet, nil
+	}
+	batch := &pgx.Batch{}
+	for i, m := range models {
+		seenSet[m.ID] = true
+		var ctxLen *int
+		if m.ContextLength > 0 {
+			v := m.ContextLength
+			ctxLen = &v
+		}
+		var pricingJSON []byte
+		var err error
+		if len(m.Pricing) > 0 {
+			if pricingJSON, err = json.Marshal(m.Pricing); err != nil {
+				return nil, err
+			}
+		}
+		var modJSON []byte
+		if m.Modalities != nil && (len(m.Modalities.Input) > 0 || len(m.Modalities.Output) > 0) {
+			if modJSON, err = json.Marshal(m.Modalities); err != nil {
+				return nil, err
+			}
+		}
+		batch.Queue(`
+			INSERT INTO gateway.account_models_seen
+				(account_id, model_id, position, display_name, created, context_length, pricing, modalities)
+			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+			id, m.ID, i+1, m.DisplayName, m.Created, ctxLen, nullableJSON(pricingJSON), nullableJSON(modJSON))
+	}
+	br := tx.SendBatch(ctx, batch)
+	for range models {
+		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
+			return nil, err
+		}
+	}
+	if err := br.Close(); err != nil {
+		return nil, err
+	}
+	return seenSet, nil
 }
 
 func nullableJSON(b []byte) *string {
@@ -813,9 +858,14 @@ func (p Providers) SeenModels(ctx context.Context, who app.Caller, id string) ([
 }
 
 func putModels(ctx context.Context, tx pgx.Tx, id string, models []string) error {
+	return putModelsWithState(ctx, tx, id, models, nil)
+}
+
+func putModelsWithState(ctx context.Context, tx pgx.Tx, id string, models []string, prev map[string]modelMissState) error {
 	for i, model := range models {
+		state := prev[model]
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO gateway.provider_models (account_id, model, position, listed)
+			INSERT INTO gateway.provider_models (account_id, model, position, listed, misses, retired)
 			VALUES (
 				$1::uuid,
 				$2,
@@ -823,8 +873,10 @@ func putModels(ctx context.Context, tx pgx.Tx, id string, models []string) error
 				EXISTS (
 					SELECT 1 FROM gateway.account_models_seen AS s
 					WHERE s.account_id = $1::uuid AND s.model_id = $2
-				)
-			)`, id, model, i+1); err != nil {
+				),
+				$4,
+				$5
+			)`, id, model, i+1, state.misses, state.retired); err != nil {
 			return err
 		}
 	}

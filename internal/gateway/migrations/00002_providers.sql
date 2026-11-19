@@ -47,9 +47,12 @@ CREATE TABLE gateway.provider_models (
   model text NOT NULL,
   position int NOT NULL,
   listed boolean NOT NULL DEFAULT true,
+  misses int NOT NULL DEFAULT 0,
+  retired boolean NOT NULL DEFAULT false,
   PRIMARY KEY (account_id, model),
   CONSTRAINT provider_models_model_check CHECK (char_length(model) BETWEEN 1 AND 120),
-  CONSTRAINT provider_models_position_check CHECK (position > 0)
+  CONSTRAINT provider_models_position_check CHECK (position > 0),
+  CONSTRAINT provider_models_misses_check CHECK (misses >= 0)
 );
 
 CREATE UNIQUE INDEX provider_models_position ON gateway.provider_models (account_id, position);

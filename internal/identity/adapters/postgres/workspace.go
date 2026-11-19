@@ -48,6 +48,56 @@ func WorkspaceTimeZone(ctx context.Context, owner *pgxpool.Pool) (string, error)
 	return tz, nil
 }
 
+// SettingsManagers returns the IDs of all active (joined, non-disabled) users
+// holding settings:manage, read on the owner pool.
+func SettingsManagers(ctx context.Context, owner *pgxpool.Pool) ([]string, error) {
+	if owner == nil {
+		return nil, nil
+	}
+	rows, err := owner.Query(ctx, `
+		SELECT u.id::text
+		FROM identity.users AS u
+		JOIN identity.roles AS r ON r.id = u.role_id
+		WHERE u.joined_at IS NOT NULL
+		  AND u.disabled_at IS NULL
+		  AND 'settings:manage' = ANY (identity.role_permissions(r.key, r.permissions))
+		ORDER BY u.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ActiveUser reports whether userID is a joined, non-disabled user, read on the
+// owner pool.
+func ActiveUser(ctx context.Context, owner *pgxpool.Pool, userID string) (bool, error) {
+	if owner == nil {
+		return false, nil
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		return false, nil
+	}
+	var active bool
+	err := owner.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM identity.users AS u
+			WHERE u.id = $1::uuid
+			  AND u.joined_at IS NOT NULL
+			  AND u.disabled_at IS NULL
+		)`, userID).Scan(&active)
+	return active, err
+}
+
 // GetWorkspace reads the single-row workspace settings under row security for actor.
 func (p Passkeys) GetWorkspace(ctx context.Context, actor domain.UserID) (domain.Workspace, error) {
 	tx, err := p.Pool.Begin(ctx)

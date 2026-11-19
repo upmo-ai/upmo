@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -66,10 +67,36 @@ type SeenModel struct {
 }
 
 // EnabledModel is one model enabled on an account, with whether it was present
-// in the provider's discovered model list when saved.
+// in the provider's discovered model list when saved and whether two missed
+// daily checks have retired it.
 type EnabledModel struct {
-	ID     string `json:"id"`
-	Listed bool   `json:"listed"`
+	ID      string `json:"id"`
+	Listed  bool   `json:"listed"`
+	Retired bool   `json:"retired,omitempty"`
+}
+
+// RetireMissThreshold is the number of consecutive daily checks a model must
+// be absent from discovery before it is marked retired.
+const RetireMissThreshold = 2
+
+// NextModelMissState returns the updated consecutive-miss count and retired flag
+// after a successful discovery probe. A model present in discovery resets to
+// zero misses and is no longer retired; an absent model increments misses and
+// retires once misses reaches RetireMissThreshold.
+func NextModelMissState(misses int, present bool) (int, bool) {
+	if present {
+		return 0, false
+	}
+	next := misses + 1
+	return next, next >= RetireMissThreshold
+}
+
+// AccountCheckOffset returns a deterministic delay in [0, 24h) for accountID so
+// daily provider checks spread across the day without a thundering herd.
+func AccountCheckOffset(accountID string) time.Duration {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(accountID))
+	return time.Duration(h.Sum64() % uint64(24*time.Hour))
 }
 
 // Provider is one account as a person sees it. CredentialRef names its sealed

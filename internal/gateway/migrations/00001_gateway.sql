@@ -8,6 +8,7 @@ CREATE TABLE gateway.provider_accounts (
   plan_kind text NOT NULL,
   house boolean NOT NULL,
   base_url text NOT NULL DEFAULT '',
+  notified_causes text[] NOT NULL DEFAULT '{}',
   CONSTRAINT provider_accounts_adapter_check CHECK (adapter <> ''),
   CONSTRAINT provider_accounts_ref_check CHECK (credential_ref <> ''),
   CONSTRAINT provider_accounts_plan_check CHECK (plan_kind IN ('metered', 'subscription', 'local'))

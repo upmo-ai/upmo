@@ -8,10 +8,15 @@ import "strings"
 // enabled and its model, or its route, resolves to something usable. These
 // rules are pure: the HTTP layers read the rows and call them.
 
-// accountHasModel reports whether p is Connected and lists model.
+// accountHasModel reports whether p is Connected and lists model as non-retired.
 func accountHasModel(p Provider, model string) bool {
 	if p.Disabled || p.Status != StatusConnected {
 		return false
+	}
+	for _, entry := range p.EnabledModels {
+		if entry.ID == model {
+			return !entry.Retired
+		}
 	}
 	for _, have := range p.Models {
 		if have == model {

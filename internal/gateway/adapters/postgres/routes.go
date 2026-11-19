@@ -167,6 +167,12 @@ func (s Store) loadRouteLinks(ctx context.Context, routeID string, r domain.Rout
 		FROM gateway.route_links AS link
 		JOIN gateway.provider_accounts AS account ON account.id = link.provider_account_id
 		WHERE link.route_id = $1::uuid
+		  AND NOT EXISTS (
+			SELECT 1 FROM gateway.provider_models AS pm
+			WHERE pm.account_id = link.provider_account_id
+			  AND pm.model = link.model
+			  AND pm.retired
+		  )
 		ORDER BY link.position`, args...)
 	if err != nil {
 		return domain.Route{}, err
@@ -219,7 +225,7 @@ func (s Store) PinAccount(ctx context.Context, user, id, model string) (domain.A
 		WHERE a.id = $1::uuid
 		  AND a.enabled
 		  AND (a.visibility <> 'private' OR a.owner_user_id <> $3::uuid OR identity.member_providers_allowed())
-		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model, user).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.Disabled, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2 AND NOT m.retired)`, id, model, user).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.Disabled, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}
@@ -262,7 +268,7 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 		  AND a.enabled
 		  AND identity.can_use($1::uuid, COALESCE($4::uuid[], '{}'), a.owner_user_id, a.visibility, a.team_ids)
 		  AND (a.visibility <> 'private' OR identity.member_providers_allowed())
-		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $3)
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $3 AND NOT m.retired)
 		ORDER BY
 			CASE
 				WHEN a.visibility = 'private' THEN 0

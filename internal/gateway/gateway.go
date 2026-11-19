@@ -144,15 +144,20 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 	}.Mount(mux)
 }
 
-// NewProviders is the use case behind the provider settings. It seals the
-// keys a person adds with keys; a zero Keyring leaves it unable to save one.
-// Nobody may share an account until the caller sets Allow.
-func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Providers {
+func defaultProbes() map[string]app.Prober {
 	table := adapters()
 	probes := make(map[string]app.Prober, len(table))
 	for name, a := range table {
 		probes[name] = a
 	}
+	return probes
+}
+
+// NewProviders is the use case behind the provider settings. It seals the
+// keys a person adds with keys; a zero Keyring leaves it unable to save one.
+// Nobody may share an account until the caller sets Allow.
+func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Providers {
+	table := adapters()
 	accounts := postgres.Providers{Pool: pool}
 	catalog := postgres.Store{Pool: pool}
 	return app.Providers{
@@ -164,7 +169,7 @@ func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Provid
 			_, ok := table[name]
 			return ok
 		},
-		Probes:  probes,
+		Probes:  defaultProbes(),
 		Limiter: app.NewTestLimiter(10, time.Minute),
 		Log:     log,
 	}

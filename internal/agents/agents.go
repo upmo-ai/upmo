@@ -97,6 +97,11 @@ func NewStore(pool *pgxpool.Pool) Store {
 	return postgres.Store{Pool: pool}
 }
 
+// SystemProviderModelUses returns which models of provider are named by any agent.
+func SystemProviderModelUses(ctx context.Context, owner *pgxpool.Pool, provider string, models []string) ([]string, error) {
+	return postgres.SystemProviderModelUses(ctx, owner, provider, models)
+}
+
 // CreateAgent validates, stores, and versions a new agent.
 func CreateAgent(ctx context.Context, store Store, teams app.TeamNames, access Access, in AgentFields) (Agent, error) {
 	return app.CreateAgent(ctx, store, teams, access, in)
