@@ -30,6 +30,9 @@ const (
 	RouteShare Action = "route.share"
 	// RouteDelete removes one gateway route.
 	RouteDelete Action = "route.delete"
+
+	// UsageLimitUpdate sets, changes, or removes one monthly spend limit.
+	UsageLimitUpdate Action = "usage_limit.update"
 )
 
 func init() {
@@ -47,4 +50,6 @@ func init() {
 	register(RouteUpdate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
 	register(RouteShare, "route", classAPIActivity, activityUnknown, "visibility", "team_ids")
 	register(RouteDelete, "route", classAPIActivity, activityUnknown)
+
+	register(UsageLimitUpdate, "usage_limit", classAPIActivity, activityUnknown, "kind", "subject_id", "amount_micro_usd")
 }

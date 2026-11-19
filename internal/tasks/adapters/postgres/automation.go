@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
@@ -290,4 +292,18 @@ func automationWriteErr(err error) error {
 	default:
 		return fmt.Errorf("tasks: automation: %w", err)
 	}
+}
+
+// AutomationExists reports whether id is an existing automation, via
+// tasks.automation_exists on the app pool.
+func AutomationExists(ctx context.Context, pool *pgxpool.Pool, id string) (bool, error) {
+	if pool == nil {
+		return false, fmt.Errorf("tasks: no database")
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return false, nil
+	}
+	var exists bool
+	err := pool.QueryRow(ctx, `SELECT tasks.automation_exists($1::uuid)`, id).Scan(&exists)
+	return exists, err
 }

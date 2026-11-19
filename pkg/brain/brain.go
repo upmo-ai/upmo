@@ -234,21 +234,22 @@ func (a sealerAdapter) Open(ref string, sealed Sealed) (string, error) {
 }
 
 type internalDeps struct {
-	identity  identity.Identity
-	members   identity.MemberService
-	roles     identity.RoleService
-	teams     identity.TeamService
-	tokens    identity.TokenService
-	workspace identity.WorkspaceService
-	provision identity.ProvisionStore
-	providers gateway.Providers
-	routes    gateway.RouteService
-	routeBook gateway.RouteBook
-	keyring   gateway.Keyring
-	agents    agents.Store
-	notices   notices.Store
-	metrics   *metrics.Registry
-	buildRaw  buildinfo.Details
+	identity    identity.Identity
+	members     identity.MemberService
+	roles       identity.RoleService
+	teams       identity.TeamService
+	tokens      identity.TokenService
+	workspace   identity.WorkspaceService
+	provision   identity.ProvisionStore
+	providers   gateway.Providers
+	routes      gateway.RouteService
+	routeBook   gateway.RouteBook
+	usageLimits gateway.UsageLimits
+	keyring     gateway.Keyring
+	agents      agents.Store
+	notices     notices.Store
+	metrics     *metrics.Registry
+	buildRaw    buildinfo.Details
 }
 
 type options struct {
@@ -632,6 +633,27 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	routesSvc.Teams = providers.Teams
 	routesSvc.Names = providers.Names
 	routeBook := gateway.NewRouteBook(pool)
+	usageLimits := gateway.NewUsageLimits(pool, log)
+	usageLimits.Allow = func(ctx context.Context, user string) (string, error) {
+		person, err := identity.ParseUserID(user)
+		if err != nil {
+			return "", err
+		}
+		return members.EffectiveAllow(ctx, person)
+	}
+	usageLimits.TimeZone = func(ctx context.Context) (string, error) {
+		return identity.WorkspaceTimeZone(ctx, owner)
+	}
+	usageLimits.PersonExists = func(ctx context.Context, id string) (bool, error) {
+		names, _, err := members.NamesOf(ctx, []string{id}, nil)
+		if err != nil {
+			return false, err
+		}
+		return names[id] != "", nil
+	}
+	usageLimits.AutomationExists = func(ctx context.Context, id string) (bool, error) {
+		return tasks.AutomationExists(ctx, pool, id)
+	}
 	agentStore := agents.NewStore(pool)
 	providers.AgentUses = func(ctx context.Context, who gateway.ProviderCaller, provider string, models []string) ([]string, error) {
 		person, err := identity.ParseUserID(who.User)
@@ -673,21 +695,22 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		SchemaVersions: schemaLookup,
 	}
 	ideps := internalDeps{
-		identity:  idFacade,
-		members:   members,
-		roles:     roles,
-		teams:     teams,
-		tokens:    tokens,
-		workspace: workspace,
-		provision: provIdentity,
-		providers: providers,
-		routes:    routesSvc,
-		routeBook: routeBook,
-		keyring:   masterKeys,
-		agents:    agentStore,
-		notices:   noticeStore,
-		metrics:   reg,
-		buildRaw:  rawBuild,
+		identity:    idFacade,
+		members:     members,
+		roles:       roles,
+		teams:       teams,
+		tokens:      tokens,
+		workspace:   workspace,
+		provision:   provIdentity,
+		providers:   providers,
+		routes:      routesSvc,
+		routeBook:   routeBook,
+		usageLimits: usageLimits,
+		keyring:     masterKeys,
+		agents:      agentStore,
+		notices:     noticeStore,
+		metrics:     reg,
+		buildRaw:    rawBuild,
 	}
 
 	workers := river.NewWorkers()
@@ -1142,6 +1165,20 @@ func buildHandler(
 			return person.UserID.String(), true
 		},
 	}.MountRoutes(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+
+	gateway.UsageLimitsHandler{
+		Service: ideps.usageLimits,
+		Log:     log,
+		Access: func(r *http.Request) (string, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return "", false
+			}
+			return person.UserID.String(), true
+		},
+	}.MountLimits(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
 

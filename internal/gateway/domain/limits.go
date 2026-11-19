@@ -1,9 +1,19 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// UsageViewPermission lets a caller inspect every workspace spend limit and
+// spend counter across all people and automations.
+const UsageViewPermission = "usage:view"
+
+// ErrCeilingLimit reports an attempt from inside the workspace to change the
+// control-plane ceiling.
+var ErrCeilingLimit = errors.New("gateway: workspace ceiling cannot be changed")
 
 // Limit kinds stored in gateway.usage_limits and gateway.usage_spend.
 const (
@@ -114,4 +124,35 @@ func CheckLimit(kind string, limit *int64, spent, held, estimate int64) error {
 		}
 	}
 	return nil
+}
+
+// CleanLimitInput validates and normalizes a workspace usage limit write.
+// Kind "ceiling" is refused with ErrCeilingLimit; other invalid inputs return
+// Invalid. A nil amount removes the limit.
+func CleanLimitInput(kind, subjectID string, amount *int64) (string, string, *int64, error) {
+	kind = strings.TrimSpace(kind)
+	subjectID = strings.TrimSpace(subjectID)
+	switch kind {
+	case LimitCeiling:
+		return "", "", nil, ErrCeilingLimit
+	case LimitWorkspace, LimitPersonDefault:
+		if subjectID != "" {
+			return "", "", nil, Invalid("Workspace and default person limits do not take a subject_id.")
+		}
+	case LimitPerson, LimitAutomation:
+		subjectID = strings.ToLower(subjectID)
+		if !accountID.MatchString(subjectID) {
+			return "", "", nil, Invalid("Choose a valid subject_id.")
+		}
+	default:
+		return "", "", nil, Invalid("Choose workspace, person_default, person or automation.")
+	}
+	if amount == nil {
+		return kind, subjectID, nil, nil
+	}
+	if *amount < 0 {
+		return "", "", nil, Invalid("Spend limit cannot be negative.")
+	}
+	v := *amount
+	return kind, subjectID, &v, nil
 }

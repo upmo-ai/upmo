@@ -205,10 +205,14 @@ func (d Dispatch) now() time.Time {
 }
 
 func (d Dispatch) periodStart(ctx context.Context, at time.Time) (time.Time, error) {
+	return resolvePeriodStart(ctx, d.TimeZone, at)
+}
+
+func resolvePeriodStart(ctx context.Context, timeZone func(context.Context) (string, error), at time.Time) (time.Time, error) {
 	tz := "UTC"
-	if d.TimeZone != nil {
+	if timeZone != nil {
 		var err error
-		tz, err = d.TimeZone(ctx)
+		tz, err = timeZone(ctx)
 		if err != nil {
 			return time.Time{}, err
 		}

@@ -121,3 +121,37 @@ func TestCheckLimit(t *testing.T) {
 		t.Fatalf("overshot spent = %v, want LimitReached workspace", err)
 	}
 }
+
+func TestCleanLimitInput(t *testing.T) {
+	p := func(v int64) *int64 { return &v }
+	uid := "018F3B2C-7A10-7C4A-8E11-111111111111"
+
+	k, s, a, err := CleanLimitInput("workspace", "", p(0))
+	if err != nil || k != LimitWorkspace || s != "" || a == nil || *a != 0 {
+		t.Fatalf("workspace zero = (%q, %q, %v, %v)", k, s, a, err)
+	}
+	k, s, a, err = CleanLimitInput("person", " "+uid+" ", nil)
+	if err != nil || k != LimitPerson || s != strings.ToLower(uid) || a != nil {
+		t.Fatalf("person remove = (%q, %q, %v, %v)", k, s, a, err)
+	}
+	if _, _, _, err := CleanLimitInput(LimitCeiling, "", p(100)); !errors.Is(err, ErrCeilingLimit) {
+		t.Fatalf("ceiling err = %v, want ErrCeilingLimit", err)
+	}
+	for _, bad := range []struct {
+		name, kind, subject string
+		amount              *int64
+	}{
+		{"unknown kind", "team", "", p(10)},
+		{"workspace with subject", "workspace", uid, p(10)},
+		{"person_default with subject", "person_default", uid, p(10)},
+		{"person without subject", "person", "", p(10)},
+		{"automation bad uuid", "automation", "not-a-uuid", p(10)},
+		{"negative amount", "workspace", "", p(-1)},
+	} {
+		if _, _, _, err := CleanLimitInput(bad.kind, bad.subject, bad.amount); err == nil {
+			t.Errorf("%s: expected error", bad.name)
+		} else if _, ok := err.(Invalid); !ok {
+			t.Errorf("%s: err = %T (%v), want Invalid", bad.name, err, err)
+		}
+	}
+}

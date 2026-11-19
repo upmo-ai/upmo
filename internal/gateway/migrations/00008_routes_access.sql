@@ -130,14 +130,123 @@ CREATE POLICY usage_limits_service ON gateway.usage_limits
   USING (gateway.serving())
   WITH CHECK (gateway.serving());
 
+-- A signed-in person sees workspace, person_default, ceiling (for computing
+-- EffectiveWorkspaceLimit), and their own person row. usage:view sees every
+-- row. upmo_app has no direct write grants or policies on usage_limits;
+-- settings:manage writes go through gateway.usage_limit_set, which locks and
+-- mutates non-ceiling rows and returns the previous amount.
+CREATE POLICY usage_limits_select ON gateway.usage_limits
+  FOR SELECT TO upmo_app
+  USING (
+    NULLIF(current_setting('upmo.user_id', true), '')::uuid IS NOT NULL
+    AND (
+      kind IN ('workspace', 'person_default', 'ceiling')
+      OR (kind = 'person' AND subject_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
+      OR 'usage:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    )
+  );
+
 REVOKE ALL ON gateway.usage_limits FROM upmo_app;
+GRANT SELECT (kind, subject_id, amount_micro_usd, updated_at) ON gateway.usage_limits TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION gateway.usage_limit_set(p_kind text, p_subject uuid, p_amount bigint)
+RETURNS bigint
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_old_amount bigint;
+  v_found boolean;
+BEGIN
+  IF NULLIF(pg_catalog.current_setting('upmo.user_id', true), '')::uuid IS NULL THEN
+    RAISE EXCEPTION 'gateway: user_id is required' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT COALESCE(
+    'settings:manage' = ANY (pg_catalog.string_to_array(NULLIF(pg_catalog.current_setting('upmo.allow', true), ''), ',')),
+    false
+  ) THEN
+    RAISE EXCEPTION 'gateway: changing spend limits needs settings:manage' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_kind IS NULL OR p_kind NOT IN ('workspace', 'person_default', 'person', 'automation') THEN
+    RAISE EXCEPTION 'gateway: limit kind % is not allowed', COALESCE(p_kind, '<null>') USING ERRCODE = '42501';
+  END IF;
+
+  IF p_kind IN ('workspace', 'person_default') AND p_subject IS NOT NULL THEN
+    RAISE EXCEPTION 'gateway: limit kind % must not have a subject_id', p_kind USING ERRCODE = '42501';
+  END IF;
+
+  IF p_kind IN ('person', 'automation') AND p_subject IS NULL THEN
+    RAISE EXCEPTION 'gateway: limit kind % requires a subject_id', p_kind USING ERRCODE = '42501';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtext('gateway.usage_limits:' || p_kind || ':' || COALESCE(p_subject::text, ''))
+  );
+
+  SELECT amount_micro_usd
+  INTO v_old_amount
+  FROM gateway.usage_limits
+  WHERE kind = p_kind
+    AND subject_id IS NOT DISTINCT FROM p_subject
+  FOR UPDATE;
+
+  v_found := FOUND;
+
+  IF NOT v_found AND p_amount IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  IF v_found AND v_old_amount = p_amount THEN
+    RETURN v_old_amount;
+  END IF;
+
+  IF p_amount IS NULL THEN
+    DELETE FROM gateway.usage_limits
+    WHERE kind = p_kind
+      AND subject_id IS NOT DISTINCT FROM p_subject;
+  ELSIF NOT v_found THEN
+    INSERT INTO gateway.usage_limits (kind, subject_id, amount_micro_usd)
+    VALUES (p_kind, p_subject, p_amount);
+  ELSE
+    UPDATE gateway.usage_limits
+    SET amount_micro_usd = p_amount,
+        updated_at = pg_catalog.now()
+    WHERE kind = p_kind
+      AND subject_id IS NOT DISTINCT FROM p_subject;
+  END IF;
+
+  RETURN v_old_amount;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION gateway.usage_limit_set(text, uuid, bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gateway.usage_limit_set(text, uuid, bigint) TO upmo_app;
 
 CREATE POLICY usage_spend_service ON gateway.usage_spend
   FOR ALL
   USING (gateway.serving())
   WITH CHECK (gateway.serving());
 
+-- A signed-in person sees only their own spend row; usage:view sees all rows.
+-- upmo_app never writes usage_spend.
+CREATE POLICY usage_spend_select ON gateway.usage_spend
+  FOR SELECT TO upmo_app
+  USING (
+    NULLIF(current_setting('upmo.user_id', true), '')::uuid IS NOT NULL
+    AND (
+      (kind = 'person' AND subject_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
+      OR 'usage:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    )
+  );
+
 REVOKE ALL ON gateway.usage_spend FROM upmo_app;
+GRANT SELECT (kind, subject_id, period_start, spent_micro_usd, held_micro_usd) ON gateway.usage_spend TO upmo_app;
 
 CREATE POLICY usage_holds_service ON gateway.usage_holds
   FOR ALL
@@ -231,9 +340,14 @@ REVOKE ALL ON gateway.ledger FROM upmo_app;
 DROP POLICY IF EXISTS usage_holds_service ON gateway.usage_holds;
 ALTER TABLE gateway.usage_holds NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE gateway.usage_holds DISABLE ROW LEVEL SECURITY;
+REVOKE ALL ON gateway.usage_spend FROM upmo_app;
+DROP POLICY IF EXISTS usage_spend_select ON gateway.usage_spend;
 DROP POLICY IF EXISTS usage_spend_service ON gateway.usage_spend;
 ALTER TABLE gateway.usage_spend NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE gateway.usage_spend DISABLE ROW LEVEL SECURITY;
+DROP FUNCTION IF EXISTS gateway.usage_limit_set(text, uuid, bigint);
+REVOKE ALL ON gateway.usage_limits FROM upmo_app;
+DROP POLICY IF EXISTS usage_limits_select ON gateway.usage_limits;
 DROP POLICY IF EXISTS usage_limits_service ON gateway.usage_limits;
 ALTER TABLE gateway.usage_limits NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE gateway.usage_limits DISABLE ROW LEVEL SECURITY;

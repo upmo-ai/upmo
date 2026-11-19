@@ -417,3 +417,112 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 		t.Fatalf("POST /api/providers with policy off = %d %s, want 403", blockedRec.Code, blockedRec.Body.String())
 	}
 }
+
+func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	appPool := pgtest.App(t, owner)
+
+	cfg := Config{
+		Env:             "development",
+		SessionIdle:     identity.IdleTimeout,
+		SessionMaxAge:   identity.MaxAge,
+		PublicURL:       "http://localhost:5173",
+		WebAuthnRPID:    "localhost",
+		ShutdownTimeout: 2 * time.Second,
+	}
+	app, err := New(ctx, cfg,
+		WithPools(owner, appPool),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+	)
+	if err != nil {
+		t.Fatalf("brain.New: %v", err)
+	}
+	defer app.Close()
+
+	var ownerID, memberID string
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('owner@example.com', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('member@example.com', 'Member', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		RETURNING id::text`).Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+
+	var tplID, autoID string
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO tasks.templates (owner_user_id, goal, agent_id, budget)
+		VALUES ($1::uuid, 'Daily report', '40000000-0000-7000-8000-000000000099'::uuid, 100)
+		RETURNING id::text`, memberID).Scan(&tplID); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO tasks.automations (owner_user_id, template_id, kind, spec)
+		VALUES ($1::uuid, $2::uuid, 'cron', '0 8 * * *')
+		RETURNING id::text`, memberID, tplID).Scan(&autoID); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions := identity.Sessions(appPool, cfg.SessionIdle, cfg.SessionMaxAge)
+	startCookie := func(userID string) *http.Cookie {
+		uid, err := identity.ParseUserID(userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, _, err := sessions.Start(ctx, uid, "passkey", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Cookie{Name: "__Host-upmo_session", Value: tok, Path: "/", Secure: true, HttpOnly: true}
+	}
+	ownerCookie := startCookie(ownerID)
+	memberCookie := startCookie(memberID)
+
+	// Owner sets an automation limit (owned by memberID) through brain.
+	putReq := httptest.NewRequest(http.MethodPut, "/api/usage/limits", strings.NewReader(`{"kind":"automation","subject_id":"`+autoID+`","amount_micro_usd":4200}`))
+	putReq.AddCookie(ownerCookie)
+	putRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("owner PUT automation limit = %d %s", putRec.Code, putRec.Body.String())
+	}
+
+	// Owner GET sees the automation row; member GET omits rows.
+	ownerGet := httptest.NewRequest(http.MethodGet, "/api/usage/limits", nil)
+	ownerGet.AddCookie(ownerCookie)
+	ownerGetRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(ownerGetRec, ownerGet)
+	if ownerGetRec.Code != http.StatusOK {
+		t.Fatalf("owner GET = %d %s", ownerGetRec.Code, ownerGetRec.Body.String())
+	}
+	var ownerView gateway.UsageLimitsView
+	if err := json.Unmarshal(ownerGetRec.Body.Bytes(), &ownerView); err != nil {
+		t.Fatal(err)
+	}
+	if ownerView.Rows == nil || len(*ownerView.Rows) != 1 || (*ownerView.Rows)[0].SubjectID != autoID {
+		t.Fatalf("owner view rows = %+v, want automation %s", ownerView.Rows, autoID)
+	}
+
+	memberGet := httptest.NewRequest(http.MethodGet, "/api/usage/limits", nil)
+	memberGet.AddCookie(memberCookie)
+	memberGetRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(memberGetRec, memberGet)
+	if memberGetRec.Code != http.StatusOK {
+		t.Fatalf("member GET = %d %s", memberGetRec.Code, memberGetRec.Body.String())
+	}
+	var memberView gateway.UsageLimitsView
+	if err := json.Unmarshal(memberGetRec.Body.Bytes(), &memberView); err != nil {
+		t.Fatal(err)
+	}
+	if memberView.Rows != nil {
+		t.Fatalf("member view rows = %+v, want nil", *memberView.Rows)
+	}
+}

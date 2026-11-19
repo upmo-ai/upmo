@@ -58,14 +58,23 @@ type Caller struct {
 	MemberProvidersAllowed bool
 }
 
-// mayShare reports whether Allow holds settings:manage.
-func (c Caller) mayShare() bool {
+func (c Caller) hasAllow(perm string) bool {
 	for _, name := range strings.Split(c.Allow, ",") {
-		if strings.TrimSpace(name) == domain.SharePermission {
+		if strings.TrimSpace(name) == perm {
 			return true
 		}
 	}
 	return false
+}
+
+// mayShare reports whether Allow holds settings:manage.
+func (c Caller) mayShare() bool {
+	return c.hasAllow(domain.SharePermission)
+}
+
+// mayViewUsage reports whether Allow holds usage:view.
+func (c Caller) mayViewUsage() bool {
+	return c.hasAllow(domain.UsageViewPermission)
 }
 
 // manages reports whether the caller may change or remove p: a private

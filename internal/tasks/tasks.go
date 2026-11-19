@@ -4,6 +4,7 @@
 package tasks
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"log/slog"
@@ -92,3 +93,8 @@ func NewEditorTokens(current, previous string) (EditorTokens, error) {
 
 // AddScoutWorker registers the proposal scout worker on workers.
 func AddScoutWorker(workers *river.Workers, deps ScoutDeps) { app.AddScoutWorker(workers, deps) }
+
+// AutomationExists reports whether id names an existing automation.
+func AutomationExists(ctx context.Context, pool *pgxpool.Pool, id string) (bool, error) {
+	return postgres.AutomationExists(ctx, pool, id)
+}

@@ -189,11 +189,23 @@ func NewRoutes(pool *pgxpool.Pool, log *slog.Logger) app.RouteService {
 	}
 }
 
+// NewUsageLimits is the use case behind reading and managing monthly spend
+// limits.
+func NewUsageLimits(pool *pgxpool.Pool, log *slog.Logger) app.UsageLimits {
+	return app.UsageLimits{
+		Store: postgres.UsageLimits{Pool: pool},
+		Log:   log,
+	}
+}
+
 // RoutesHandler serves the routing rows to a signed-in settings manager.
 type RoutesHandler = httpapi.RoutesHandler
 
 // ProvidersHandler serves a signed-in person's provider accounts.
 type ProvidersHandler = httpapi.ProvidersHandler
+
+// UsageLimitsHandler serves monthly spend limits to a signed-in person.
+type UsageLimitsHandler = httpapi.UsageLimitsHandler
 
 // A model request and the input it is built from.
 type (
@@ -214,6 +226,12 @@ type (
 	ListedRoute           = app.ListedRoute
 	RouteBook             = app.RouteBook
 	RouteService          = app.RouteService
+	UsageLimits           = app.UsageLimits
+	UsageLimitsView       = app.UsageLimitsView
+	UsageLimitRow         = app.UsageLimitRow
+	OwnUsageLimits        = app.OwnUsageLimits
+	SetUsageLimit         = app.SetUsageLimit
+	UpdatedUsageLimit     = app.UpdatedUsageLimit
 	Providers             = app.Providers
 	Provider              = domain.Provider
 	ModelKind             = domain.ModelKind

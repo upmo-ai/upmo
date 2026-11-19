@@ -18,6 +18,7 @@ func gatewayRoutes() []entry {
 		{pattern: "PATCH /api/gateway/routes/{id}", route: Route{Action: RouteUpdate}},
 		{pattern: "DELETE /api/gateway/routes/{id}", route: Route{Action: RouteDelete}},
 		{pattern: "PUT /api/gateway/routes/{id}/share", route: Route{Action: RouteShare}},
+		{pattern: "PUT /api/usage/limits", route: Route{Action: UsageLimitUpdate}},
 		{pattern: "POST /upmo.gateway.v1.Gateway/Chat", route: exempt},
 		{pattern: "POST /upmo.gateway.v1.Gateway/ChatStream", route: exempt},
 		{pattern: "POST /upmo.gateway.v1.Gateway/Decide", route: exempt},
