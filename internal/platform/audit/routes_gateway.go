@@ -10,6 +10,7 @@ func gatewayRoutes() []entry {
 	return []entry{
 		{pattern: "POST /api/providers", route: Route{Action: ProviderCreate}},
 		{pattern: "POST /api/providers/test", route: Route{Action: ProviderTest}},
+		{pattern: "GET /api/providers/{id}/models", route: Route{Action: ProviderModelsRead}},
 		{pattern: "PUT /api/providers/{id}", route: Route{Action: ProviderUpdate}},
 		{pattern: "DELETE /api/providers/{id}", route: Route{Action: ProviderDelete}},
 		{pattern: "POST /api/gateway/routes", route: Route{Action: RouteCreate}},

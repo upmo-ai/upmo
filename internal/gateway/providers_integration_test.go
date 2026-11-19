@@ -17,6 +17,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,9 +201,10 @@ type account struct {
 	Adapter      string   `json:"adapter"`
 	PlanKind     string   `json:"plan_kind"`
 	BaseURL      string   `json:"base_url"`
-	Status       string   `json:"status"`
-	Models       []string `json:"models"`
-	Visibility   string   `json:"visibility"`
+	Status        string                `json:"status"`
+	Models        []string              `json:"models"`
+	EnabledModels []domain.EnabledModel `json:"enabled_models"`
+	Visibility    string                `json:"visibility"`
 	CanUse       bool     `json:"can_use"`
 	Usable       bool     `json:"usable"`
 	UsableModels []string `json:"usable_models"`
@@ -689,7 +693,7 @@ func TestValidation(t *testing.T) {
 		{"4097 byte key", func(b map[string]any) { b["api_key"] = strings.Repeat("k", 4097) }, http.StatusUnprocessableEntity},
 		{"key with newline inside", func(b map[string]any) { b["api_key"] = "sk-a\nb" }, http.StatusUnprocessableEntity},
 		{"key with nul", func(b map[string]any) { b["api_key"] = "sk-a\x00b" }, http.StatusUnprocessableEntity},
-		{"41 models", func(b map[string]any) { b["models"] = many(41, 3) }, http.StatusUnprocessableEntity},
+		{"101 models", func(b map[string]any) { b["models"] = many(101, 3) }, http.StatusUnprocessableEntity},
 		{"121 char model", func(b map[string]any) { b["models"] = []string{strings.Repeat("m", 121)} }, http.StatusUnprocessableEntity},
 		{"empty model", func(b map[string]any) { b["models"] = []string{"a", ""} }, http.StatusUnprocessableEntity},
 		{"duplicate model", func(b map[string]any) { b["models"] = []string{"a", "b", "a"} }, http.StatusUnprocessableEntity},
@@ -734,7 +738,7 @@ func TestValidation(t *testing.T) {
 		"blank name":               {"name": " "},
 		"http for metered":         {"plan_kind": "metered", "api_key": "k", "base_url": "http://api.example.com"},
 		"metadata":                 {"base_url": "http://169.254.169.254"},
-		"41 models":                {"models": many(41, 3)},
+		"101 models":               {"models": many(101, 3)},
 		"duplicate models":         {"models": []string{"a", "a"}},
 		"key too long":             {"api_key": strings.Repeat("k", 4097)},
 		"key with control":         {"api_key": "a\nb"},
@@ -1544,5 +1548,581 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	}
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
+	}
+}
+
+func TestFeature_UPM362_ProbeStoresRecordedModels(t *testing.T) {
+	// Given recorded model-list responses for Anthropic, Gemini, OpenRouter,
+	// and plain OpenAI-compatible providers.
+	r := newRig(t, masterKeys(t, 'a'))
+	readFixture := func(parts ...string) []byte {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(parts...)) //nolint:gosec // static testdata path
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	cases := []struct {
+		name     string
+		provider string
+		adapter  string
+		fixture  []byte
+		want     []domain.SeenModel
+	}{
+		{
+			name:     "anthropic",
+			provider: "anthropic",
+			adapter:  domain.AdapterAnthropic,
+			fixture:  readFixture("adapters", "anthropic", "testdata", "models.json"),
+			want: []domain.SeenModel{
+				{ID: "claude-sonnet-4-20250514", DisplayName: "Claude Sonnet 4", Created: "2025-05-14T00:00:00Z"},
+				{ID: "claude-3-5-haiku-20241022", DisplayName: "Claude 3.5 Haiku", Created: "2024-10-22T00:00:00Z"},
+			},
+		},
+		{
+			name:     "gemini",
+			provider: "gemini",
+			adapter:  domain.AdapterOpenAI,
+			fixture:  readFixture("adapters", "openai", "testdata", "recorded", "gemini_models.json"),
+			want: []domain.SeenModel{
+				{ID: "gemini-2.5-flash"},
+				{ID: "gemini-2.5-pro"},
+			},
+		},
+		{
+			name:     "openrouter",
+			provider: "openrouter",
+			adapter:  domain.AdapterOpenAI,
+			fixture:  readFixture("adapters", "openai", "testdata", "recorded", "openrouter_models.json"),
+			want: []domain.SeenModel{
+				{
+					ID:            "anthropic/claude-sonnet-4",
+					ContextLength: 200000,
+					Pricing: map[string]string{
+						"prompt":            "0.000003",
+						"completion":        "0.000015",
+						"request":           "0",
+						"image":             "0.0048",
+						"input_cache_read":  "0.0000003",
+						"input_cache_write": "0.00000375",
+					},
+					Modalities: &domain.ModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}},
+				},
+				{
+					ID:            "openai/gpt-4o-mini",
+					ContextLength: 128000,
+					Pricing:       map[string]string{"prompt": "0.00000015", "completion": "0.0000006"},
+					Modalities:    &domain.ModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}},
+				},
+			},
+		},
+		{
+			name:     "openai_compat",
+			provider: "openai",
+			adapter:  domain.AdapterOpenAI,
+			fixture:  readFixture("adapters", "openai", "testdata", "recorded", "openai_models.json"),
+			want: []domain.SeenModel{
+				{ID: "gpt-4o"},
+				{ID: "gpt-4o-mini"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path != "/v1/models" {
+					t.Fatalf("unexpected path %s", req.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(tc.fixture)
+			}))
+			t.Cleanup(srv.Close)
+
+			made := r.mustAdd(ada, map[string]any{
+				"provider":  tc.provider,
+				"name":      "Account " + tc.name,
+				"adapter":   tc.adapter,
+				"plan_kind": domain.PlanLocal,
+				"base_url":  srv.URL,
+				"api_key":   adaKey,
+			})
+
+			// When Ada tests the saved account.
+			code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+			if code != http.StatusOK {
+				t.Fatalf("test = %d %s", code, raw)
+			}
+			res := decode[app.TestResult](t, raw)
+			if !res.OK || !reflect.DeepEqual(res.Models, tc.want) {
+				t.Fatalf("test result = %+v, want OK with %+v", res, tc.want)
+			}
+
+			// Then GET /api/providers/{id}/models and Postgres hold the expected rows.
+			code, raw = r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/models", nil)
+			if code != http.StatusOK {
+				t.Fatalf("get models = %d %s", code, raw)
+			}
+			stored := decode[[]domain.SeenModel](t, raw)
+			if len(stored) != len(tc.want) {
+				t.Fatalf("stored len = %d, want %d: %+v", len(stored), len(tc.want), stored)
+			}
+			for i := range stored {
+				if stored[i].SeenAt == nil || stored[i].SeenAt.IsZero() {
+					t.Fatalf("stored[%d] missing seen_at", i)
+				}
+				stored[i].SeenAt = nil
+			}
+			if !reflect.DeepEqual(stored, tc.want) {
+				t.Fatalf("stored = %+v, want %+v", stored, tc.want)
+			}
+			if got := r.count(`SELECT count(*) FROM gateway.account_models_seen WHERE account_id = $1::uuid`, made.ID); got != len(tc.want) {
+				t.Fatalf("db row count = %d, want %d", got, len(tc.want))
+			}
+		})
+	}
+	r.assertNoSecrets(adaKey)
+}
+
+func TestFeature_UPM362_MalformedOrOversizedListStoresNothingAndKeyWorks(t *testing.T) {
+	// Given a provider account whose endpoint returns 200 OK with bad or oversized lists.
+	r := newRig(t, masterKeys(t, 'a'))
+	var payload atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload.Load().([]byte))
+	}))
+	t.Cleanup(srv.Close)
+
+	made := r.mustAdd(ada, map[string]any{
+		"provider":  "openai",
+		"name":      "Flaky List",
+		"adapter":   domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal,
+		"base_url":  srv.URL,
+		"api_key":   adaKey,
+	})
+
+	tooManyItems := make([]map[string]string, domain.MaxSeenModels+1)
+	for i := range tooManyItems {
+		tooManyItems[i] = map[string]string{"id": fmt.Sprintf("m-%d", i)}
+	}
+	tooMany, _ := json.Marshal(map[string]any{"object": "list", "data": tooManyItems})
+
+	badPayloads := []struct {
+		name string
+		body []byte
+	}{
+		{"malformed json", []byte("{not-json")},
+		{"unknown shape", []byte(`{"models":["gpt-4o"]}`)},
+		{"oversized body", append([]byte(`{"data":[{"id":"gpt-x"}]`), append(bytes.Repeat([]byte{' '}, 4<<20), '}')...)},
+		{"over 2000 models", tooMany},
+	}
+
+	for _, tc := range badPayloads {
+		t.Run(tc.name, func(t *testing.T) {
+			payload.Store(tc.body)
+
+			// When Ada tests the account.
+			code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+			if code != http.StatusOK {
+				t.Fatalf("test = %d %s", code, raw)
+			}
+			res := decode[app.TestResult](t, raw)
+
+			// Then the test reports the key as working, returns no models, and stores nothing.
+			if !res.OK || res.Error != "" || len(res.Models) != 0 {
+				t.Fatalf("test result = %+v, want OK with no error or models", res)
+			}
+			if got := r.list(ada)[0].Status; got != domain.StatusConnected {
+				t.Fatalf("account status = %q, want Connected", got)
+			}
+			if got := r.count(`SELECT count(*) FROM gateway.account_models_seen WHERE account_id = $1::uuid`, made.ID); got != 0 {
+				t.Fatalf("db row count = %d, want 0", got)
+			}
+			code, raw = r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/models", nil)
+			if code != http.StatusOK || len(decode[[]domain.SeenModel](t, raw)) != 0 {
+				t.Fatalf("get models = %d %s, want []", code, raw)
+			}
+		})
+	}
+}
+
+func TestFeature_UPM362_UnauthorisedPersonCannotReadStoredModels(t *testing.T) {
+	// Given Ada's private account and an admin's Finance-team account, both with stored models.
+	r := newRig(t, masterKeys(t, 'a'))
+	ctx := context.Background()
+	var financeTeam, opsTeam string
+	if err := r.owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Finance') RETURNING id::text`).Scan(&financeTeam); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Ops') RETURNING id::text`).Scan(&opsTeam); err != nil {
+		t.Fatal(err)
+	}
+	teams := map[string][]string{
+		ada: {},
+		bob: {financeTeam}, // Bob is on Finance.
+		eve: {opsTeam},     // Eve is on Ops, not Finance.
+	}
+	r.svc.Allow = func(_ context.Context, user string) (string, error) {
+		if user == ada {
+			return domain.SharePermission, nil
+		}
+		return "", nil
+	}
+	r.svc.Teams = func(_ context.Context, user string) ([]string, error) {
+		return teams[user], nil
+	}
+	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-4o"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	privateAcct := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Ada Private", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal, "base_url": srv.URL, "api_key": adaKey,
+	})
+	teamAcct := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Finance Shared", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal, "base_url": srv.URL, "api_key": newKey,
+		"visibility": domain.VisibilityTeam, "team_ids": []string{financeTeam},
+	})
+	for _, id := range []string{privateAcct.ID, teamAcct.ID} {
+		if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": id}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+			t.Fatalf("seed probe %s = %d %s", id, code, raw)
+		}
+	}
+
+	// When Bob (not Ada) reads Ada's private account, and Eve (not on Finance) reads the Finance account.
+	// Then both are refused with 404, while Bob (on Finance) can read the Finance account's list.
+	if code, _ := r.call(bob, http.MethodGet, "/api/providers/"+privateAcct.ID+"/models", nil); code != http.StatusNotFound {
+		t.Fatalf("bob reading private models = %d, want 404", code)
+	}
+	if code, _ := r.call(eve, http.MethodGet, "/api/providers/"+teamAcct.ID+"/models", nil); code != http.StatusNotFound {
+		t.Fatalf("eve reading finance models = %d, want 404", code)
+	}
+	code, raw := r.call(bob, http.MethodGet, "/api/providers/"+teamAcct.ID+"/models", nil)
+	if code != http.StatusOK || len(decode[[]domain.SeenModel](t, raw)) != 1 {
+		t.Fatalf("bob reading finance models = %d %s, want 1 model", code, raw)
+	}
+
+	// And Postgres row-level security enforces the same boundary under upmo_app.
+	seenRows := func(user, allow, teamCSV string) int {
+		tx, err := r.app.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `
+			SELECT set_config('upmo.user_id', $1, true),
+				set_config('upmo.allow', $2, true),
+				set_config('upmo.teams', $3, true)`, user, allow, teamCSV); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM gateway.account_models_seen`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if got := seenRows(eve, "", "{"+opsTeam+"}"); got != 0 {
+		t.Fatalf("eve sees %d rows via RLS, want 0", got)
+	}
+	if got := seenRows("", "", "{}"); got != 0 {
+		t.Fatalf("anonymous sees %d rows via RLS, want 0", got)
+	}
+	if got := seenRows(bob, "", "{"+financeTeam+"}"); got != 1 {
+		t.Fatalf("bob sees %d rows via RLS, want 1", got)
+	}
+	if got := seenRows(ada, domain.SharePermission, "{}"); got != 2 {
+		t.Fatalf("ada sees %d rows via RLS, want 2", got)
+	}
+	// A team member who may read a team account's seen models still cannot
+	// insert into its table.
+	tx, err := r.app.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		SELECT set_config('upmo.user_id', $1, true),
+			set_config('upmo.allow', '', true),
+			set_config('upmo.teams', $2, true)`, bob, "{"+financeTeam+"}"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO gateway.account_models_seen (account_id, model_id, position)
+		VALUES ($1::uuid, 'tamper', 99)`, teamAcct.ID); err == nil {
+		t.Fatal("bob without settings:manage inserted into account_models_seen")
+	}
+}
+
+func TestFeature_UPM362_ModelLimitAndUnlistedFlag(t *testing.T) {
+	// Given an account tested against a discovered list of ["gpt-4o", "gpt-4o-mini"].
+	r := newRig(t, masterKeys(t, 'a'))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	made := r.mustAdd(ada, map[string]any{
+		"provider":  "openai",
+		"name":      "Model Limits",
+		"adapter":   domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal,
+		"base_url":  srv.URL,
+		"api_key":   adaKey,
+	})
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+		t.Fatalf("probe = %d %s", code, raw)
+	}
+
+	makeModels := func(n int) []string {
+		out := make([]string, n)
+		for i := range n {
+			out[i] = fmt.Sprintf("model-%03d", i+1)
+		}
+		return out
+	}
+
+	// When saving 101 enabled models -> refused on both create and update.
+	if code, raw := r.add(ada, map[string]any{
+		"provider": "openai", "name": "Too Many", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal, "base_url": srv.URL, "api_key": adaKey,
+		"models": makeModels(101),
+	}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("create 101 models = %d %s, want 422", code, raw)
+	}
+	if code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"models": makeModels(101)}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("update 101 models = %d %s, want 422", code, raw)
+	}
+
+	// When saving 100 enabled models -> accepted.
+	if code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"models": makeModels(100)}); code != http.StatusOK {
+		t.Fatalf("100 models = %d %s, want 200", code, raw)
+	}
+
+	// When saving a listed id alongside an unlisted id -> both saved, unlisted flagged listed: false.
+	code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{
+		"models": []string{"gpt-4o", "custom-unlisted"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("save unlisted = %d %s", code, raw)
+	}
+	updated := decode[account](t, raw)
+	wantEntries := []domain.EnabledModel{
+		{ID: "gpt-4o", Listed: true},
+		{ID: "custom-unlisted", Listed: false},
+	}
+	if !reflect.DeepEqual(updated.EnabledModels, wantEntries) {
+		t.Fatalf("enabled_models = %+v, want %+v", updated.EnabledModels, wantEntries)
+	}
+	var listedMap = map[string]bool{}
+	rows, err := r.owner.Query(context.Background(), `SELECT model, listed FROM gateway.provider_models WHERE account_id = $1::uuid`, made.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		var listed bool
+		if err := rows.Scan(&m, &listed); err != nil {
+			t.Fatal(err)
+		}
+		listedMap[m] = listed
+	}
+	if !listedMap["gpt-4o"] || listedMap["custom-unlisted"] || len(listedMap) != 2 {
+		t.Fatalf("db provider_models listed flags = %v", listedMap)
+	}
+}
+
+func TestFeature_UPM362_FailedRefreshKeepsOlderList(t *testing.T) {
+	// Given an account with an already stored valid discovery list.
+	r := newRig(t, masterKeys(t, 'a'))
+	var payload atomic.Value
+	payload.Store([]byte(`{"object":"list","data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload.Load().([]byte))
+	}))
+	t.Cleanup(srv.Close)
+
+	made := r.mustAdd(ada, map[string]any{
+		"provider":  "openai",
+		"name":      "Refresh Preserve",
+		"adapter":   domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal,
+		"base_url":  srv.URL,
+		"api_key":   adaKey,
+	})
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+		t.Fatalf("seed probe = %d %s", code, raw)
+	}
+	code, raw := r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/models", nil)
+	if code != http.StatusOK {
+		t.Fatalf("get initial models = %d %s", code, raw)
+	}
+	initial := decode[[]domain.SeenModel](t, raw)
+	if len(initial) != 2 || initial[0].ID != "gpt-4o" || initial[1].ID != "gpt-4o-mini" {
+		t.Fatalf("initial stored models = %+v", initial)
+	}
+
+	tooManyItems := make([]map[string]string, domain.MaxSeenModels+1)
+	for i := range tooManyItems {
+		tooManyItems[i] = map[string]string{"id": fmt.Sprintf("m-%d", i)}
+	}
+	tooMany, _ := json.Marshal(map[string]any{"object": "list", "data": tooManyItems})
+
+	badPayloads := []struct {
+		name string
+		body []byte
+	}{
+		{"malformed json", []byte("{not-json")},
+		{"oversized body", append([]byte(`{"data":[{"id":"gpt-x"}]`), append(bytes.Repeat([]byte{' '}, 4<<20), '}')...)},
+		{"over 2000 models", tooMany},
+	}
+
+	for _, tc := range badPayloads {
+		t.Run(tc.name, func(t *testing.T) {
+			// When a refresh returns a malformed or oversized list.
+			payload.Store(tc.body)
+			code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+			if code != http.StatusOK {
+				t.Fatalf("test = %d %s", code, raw)
+			}
+			res := decode[app.TestResult](t, raw)
+
+			// Then the key still reports working, and the earlier rows remain unchanged.
+			if !res.OK || res.Error != "" || len(res.Models) != 0 {
+				t.Fatalf("test result = %+v, want OK with no error or models", res)
+			}
+			if got := r.list(ada)[0].Status; got != domain.StatusConnected {
+				t.Fatalf("account status = %q, want Connected", got)
+			}
+			code, raw = r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/models", nil)
+			if code != http.StatusOK {
+				t.Fatalf("get models after failed refresh = %d %s", code, raw)
+			}
+			after := decode[[]domain.SeenModel](t, raw)
+			if !reflect.DeepEqual(after, initial) {
+				t.Fatalf("stored models changed after failed refresh: got %+v, want %+v", after, initial)
+			}
+		})
+	}
+}
+
+func TestFeature_UPM362_ListedFlagFollowsReplacedList(t *testing.T) {
+	// Given an account whose initial discovered list contains only "gpt-4o".
+	r := newRig(t, masterKeys(t, 'a'))
+	var payload atomic.Value
+	payload.Store([]byte(`{"object":"list","data":[{"id":"gpt-4o"}]}`))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload.Load().([]byte))
+	}))
+	t.Cleanup(srv.Close)
+
+	made := r.mustAdd(ada, map[string]any{
+		"provider":  "openai",
+		"name":      "Listed Sync",
+		"adapter":   domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal,
+		"base_url":  srv.URL,
+		"api_key":   adaKey,
+	})
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+		t.Fatalf("initial probe = %d %s", code, raw)
+	}
+
+	// Enable a listed model and an unlisted one.
+	code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{
+		"models": []string{"gpt-4o", "custom-model"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("enable models = %d %s", code, raw)
+	}
+	wantInitial := []domain.EnabledModel{
+		{ID: "gpt-4o", Listed: true},
+		{ID: "custom-model", Listed: false},
+	}
+	if got := decode[account](t, raw).EnabledModels; !reflect.DeepEqual(got, wantInitial) {
+		t.Fatalf("initial enabled_models = %+v, want %+v", got, wantInitial)
+	}
+
+	// When a new list is stored containing "custom-model", it becomes listed: true.
+	payload.Store([]byte(`{"object":"list","data":[{"id":"gpt-4o"},{"id":"custom-model"}]}`))
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+		t.Fatalf("second probe = %d %s", code, raw)
+	}
+	wantBoth := []domain.EnabledModel{
+		{ID: "gpt-4o", Listed: true},
+		{ID: "custom-model", Listed: true},
+	}
+	if got := r.list(ada)[0].EnabledModels; !reflect.DeepEqual(got, wantBoth) {
+		t.Fatalf("after adding to seen list: enabled_models = %+v, want %+v", got, wantBoth)
+	}
+
+	// When a new list is stored without "gpt-4o", it becomes listed: false.
+	payload.Store([]byte(`{"object":"list","data":[{"id":"custom-model"}]}`))
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+		t.Fatalf("third probe = %d %s", code, raw)
+	}
+	wantDropped := []domain.EnabledModel{
+		{ID: "gpt-4o", Listed: false},
+		{ID: "custom-model", Listed: true},
+	}
+	if got := r.list(ada)[0].EnabledModels; !reflect.DeepEqual(got, wantDropped) {
+		t.Fatalf("after dropping from seen list: enabled_models = %+v, want %+v", got, wantDropped)
+	}
+}
+
+func TestFeature_UPM362_GetModelsRouteReturnsStoredListOrNotFound(t *testing.T) {
+	// Given an account owned by Ada with no stored models yet.
+	r := newRig(t, masterKeys(t, 'a'))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-4o"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	made := r.mustAdd(ada, map[string]any{
+		"provider":  "openai",
+		"name":      "Route Models",
+		"adapter":   domain.AdapterOpenAI,
+		"plan_kind": domain.PlanLocal,
+		"base_url":  srv.URL,
+		"api_key":   adaKey,
+	})
+
+	// Before any probe, GET returns an empty JSON array.
+	if code, raw := r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/models", nil); code != http.StatusOK || strings.TrimSpace(string(raw)) != "[]" {
+		t.Fatalf("empty models = %d %s, want 200 []", code, raw)
+	}
+
+	// After probing, GET returns the stored list.
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusOK || !decode[app.TestResult](t, raw).OK {
+		t.Fatalf("probe = %d %s", code, raw)
+	}
+	code, raw := r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/models", nil)
+	if code != http.StatusOK {
+		t.Fatalf("stored models = %d %s", code, raw)
+	}
+	stored := decode[[]domain.SeenModel](t, raw)
+	if len(stored) != 1 || stored[0].ID != "gpt-4o" {
+		t.Fatalf("stored models = %+v, want [gpt-4o]", stored)
+	}
+
+	// Unknown UUID, invalid UUID, and invisible account all return 404.
+	for _, tc := range []struct {
+		name string
+		user string
+		id   string
+	}{
+		{"unknown uuid", ada, "018f3b2c-7a10-7c4a-8e11-0000000000ff"},
+		{"invalid uuid", ada, "not-a-uuid"},
+		{"invisible account", bob, made.ID},
+	} {
+		if code, body := r.call(tc.user, http.MethodGet, "/api/providers/"+tc.id+"/models", nil); code != http.StatusNotFound {
+			t.Fatalf("%s = %d %s, want 404", tc.name, code, body)
+		}
 	}
 }

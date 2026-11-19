@@ -41,6 +41,7 @@ CREATE TABLE gateway.provider_models (
   account_id uuid NOT NULL REFERENCES gateway.provider_accounts (id) ON DELETE CASCADE,
   model text NOT NULL,
   position int NOT NULL,
+  listed boolean NOT NULL DEFAULT true,
   PRIMARY KEY (account_id, model),
   CONSTRAINT provider_models_model_check CHECK (char_length(model) BETWEEN 1 AND 120),
   CONSTRAINT provider_models_position_check CHECK (position > 0)

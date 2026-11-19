@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -27,7 +28,8 @@ const ScriptedPrefix = "fake-"
 const (
 	MaxProviderName  = 60
 	MaxProviderLabel = 60
-	MaxModels        = 40
+	MaxModels        = 100
+	MaxSeenModels    = 2000
 	MaxModelName     = 120
 	MaxOwnAccounts   = 20
 	MaxAPIKeyBytes   = 4096
@@ -43,18 +45,45 @@ const (
 	StatusOffline      = "Offline"
 )
 
+// ModelModalities describes the input and output modalities a provider
+// advertises for a discovered model.
+type ModelModalities struct {
+	Input  []string `json:"input,omitempty"`
+	Output []string `json:"output,omitempty"`
+}
+
+// SeenModel is one model discovered from a provider's model-list endpoint.
+// Extra fields are populated when the provider returns them.
+type SeenModel struct {
+	ID            string            `json:"id"`
+	DisplayName   string            `json:"display_name,omitempty"`
+	Created       string            `json:"created,omitempty"`
+	ContextLength int               `json:"context_length,omitempty"`
+	Pricing       map[string]string `json:"pricing,omitempty"`
+	Modalities    *ModelModalities  `json:"modalities,omitempty"`
+	SeenAt        *time.Time        `json:"seen_at,omitempty"`
+}
+
+// EnabledModel is one model enabled on an account, with whether it was present
+// in the provider's discovered model list when saved.
+type EnabledModel struct {
+	ID     string `json:"id"`
+	Listed bool   `json:"listed"`
+}
+
 // Provider is one account as a person sees it. CredentialRef names its sealed
 // key and never leaves the backend.
 type Provider struct {
-	ID       string
-	Provider string
-	Name     string
-	Adapter  string
-	PlanKind string
-	BaseURL  string
-	Status   string
-	Models   []string
-	Own      bool
+	ID            string
+	Provider      string
+	Name          string
+	Adapter       string
+	PlanKind      string
+	BaseURL       string
+	Status        string
+	Models        []string
+	EnabledModels []EnabledModel
+	Own           bool
 	// OwnerUserID is the account's owner. It is empty for a house account.
 	OwnerUserID   string
 	CredentialRef string
@@ -103,7 +132,23 @@ func CleanPlan(plan string) (string, error) {
 	return "", Invalid("Choose metered, subscription or local.")
 }
 
-// CleanModels trims each model and checks the list: up to 40 models, each 1
+// CleanModelID trims a model id and checks it: 1 to MaxModelName characters,
+// valid UTF-8, and no control characters.
+func CleanModelID(raw string) (string, error) {
+	m := strings.TrimSpace(raw)
+	n := utf8.RuneCountInString(m)
+	if n == 0 || n > MaxModelName || hasControl(m) || !utf8.ValidString(m) {
+		return "", Invalid(fmt.Sprintf("Each model must be 1 to %d characters.", MaxModelName))
+	}
+	return m, nil
+}
+
+// CleanText reports whether s is valid UTF-8 without control characters.
+func ValidModelText(s string) bool {
+	return utf8.ValidString(s) && !hasControl(s)
+}
+
+// CleanModels trims each model and checks the list: up to 100 models, each 1
 // to 120 characters, none twice.
 func CleanModels(models []string) ([]string, error) {
 	if len(models) > MaxModels {
@@ -111,11 +156,10 @@ func CleanModels(models []string) ([]string, error) {
 	}
 	out := make([]string, 0, len(models))
 	seen := make(map[string]bool, len(models))
-	for _, m := range models {
-		m = strings.TrimSpace(m)
-		n := utf8.RuneCountInString(m)
-		if n == 0 || n > MaxModelName || hasControl(m) || !utf8.ValidString(m) {
-			return nil, Invalid(fmt.Sprintf("Each model must be 1 to %d characters.", MaxModelName))
+	for _, raw := range models {
+		m, err := CleanModelID(raw)
+		if err != nil {
+			return nil, err
 		}
 		if seen[m] {
 			return nil, Invalid("A model is listed twice.")
