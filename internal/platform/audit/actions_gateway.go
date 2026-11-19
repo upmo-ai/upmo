@@ -14,6 +14,8 @@ const (
 	ProviderDelete Action = "provider.delete"
 	// ProviderTest tries one provider account's key with a cheap call.
 	ProviderTest Action = "provider.test"
+	// ProviderModelsRead reads the discovered model list stored for an account.
+	ProviderModelsRead Action = "provider.models.read"
 
 	// RouteCreate stores one gateway route.
 	RouteCreate Action = "route.create"
@@ -31,6 +33,7 @@ func init() {
 	register(ProviderShare, "provider", classAPIActivity, activityUnknown, "visibility", "team_ids")
 	register(ProviderDelete, "provider", classAPIActivity, activityUnknown)
 	register(ProviderTest, "provider", classAPIActivity, activityUnknown)
+	register(ProviderModelsRead, "provider", classAPIActivity, activityUnknown)
 
 	register(RouteCreate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
 	register(RouteUpdate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")

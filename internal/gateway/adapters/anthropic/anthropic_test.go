@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -402,9 +403,9 @@ func TestChatStreamMapsStatusBeforeTheFirstEvent(t *testing.T) {
 func TestProbeAsksForTheModelListWithTheKey(t *testing.T) {
 	rec := newRecorder(t, jsonReply([]byte(`{"data":[],"has_more":false}`)))
 	a := Adapter{Client: rec.srv.Client()}
-	class, err := a.Probe(context.Background(), attemptFor(rec))
-	if err != nil || class != domain.ClassOK {
-		t.Fatalf("class=%s err=%v", class, err)
+	models, class, err := a.Probe(context.Background(), attemptFor(rec))
+	if err != nil || class != domain.ClassOK || models == nil || len(models) != 0 {
+		t.Fatalf("models=%+v class=%s err=%v", models, class, err)
 	}
 	call := rec.last(t)
 	if call.Method != http.MethodGet || call.Path != "/v1/models" {
@@ -415,6 +416,59 @@ func TestProbeAsksForTheModelListWithTheKey(t *testing.T) {
 	}
 }
 
+func TestProbeParsesRecordedModelsAndRejectsBadLists(t *testing.T) {
+	rec := newRecorder(t, jsonReply(fixture(t, "models.json")))
+	a := Adapter{Client: rec.srv.Client()}
+	models, class, err := a.Probe(context.Background(), attemptFor(rec))
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models len = %d, want 2: %+v", len(models), models)
+	}
+	if models[0].ID != "claude-sonnet-4-20250514" || models[0].DisplayName != "Claude Sonnet 4" || models[0].Created != "2025-05-14T00:00:00Z" {
+		t.Fatalf("first model = %+v", models[0])
+	}
+	if models[1].ID != "claude-3-5-haiku-20241022" || models[1].DisplayName != "Claude 3.5 Haiku" || models[1].Created != "2024-10-22T00:00:00Z" {
+		t.Fatalf("second model = %+v", models[1])
+	}
+
+	tooMany, _ := json.Marshal(map[string]any{
+		"data": func() []map[string]string {
+			items := make([]map[string]string, domain.MaxSeenModels+1)
+			for i := range items {
+				items[i] = map[string]string{"type": "model", "id": "m-" + string(rune('a'+i%26)) + "-" + strings.Repeat("x", i/26)}
+			}
+			return items
+		}(),
+	})
+	badCases := []struct {
+		name string
+		body []byte
+	}{
+		{"empty body", nil},
+		{"malformed json", []byte("{bad")},
+		{"missing data field", []byte(`{"models":[]}`)},
+		{"null data", []byte(`{"data":null}`)},
+		{"array top level", []byte(`[{"id":"m"}]`)},
+		{"trailing garbage", []byte(`{"data":[]}garbage`)},
+		{"unexpected type", []byte(`{"data":[{"type":"other","id":"m"}]}`)},
+		{"empty id", []byte(`{"data":[{"type":"model","id":""}]}`)},
+		{"bad created_at", []byte(`{"data":[{"type":"model","id":"m","created_at":"not-a-date"}]}`)},
+		{"oversized body", append([]byte(`{"data":[{"type":"model","id":"claude-x"}]`), append(bytes.Repeat([]byte{' '}, 4<<20), '}')...)},
+		{"too many entries", tooMany},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			badRec := newRecorder(t, jsonReply(tc.body))
+			got, c, e := Adapter{Client: badRec.srv.Client()}.Probe(context.Background(), attemptFor(badRec))
+			if e != nil || c != domain.ClassOK || got != nil {
+				t.Fatalf("got=%+v class=%s err=%v, want nil models with ClassOK", got, c, e)
+			}
+		})
+	}
+}
+
 func TestProbeMapsStatusToClass(t *testing.T) {
 	cases := map[int]domain.FailureClass{200: domain.ClassOK}
 	for code, class := range statusCases {
@@ -422,7 +476,7 @@ func TestProbeMapsStatusToClass(t *testing.T) {
 	}
 	for code, want := range cases {
 		rec := newRecorder(t, statusReply(code))
-		class, err := Adapter{Client: rec.srv.Client()}.Probe(context.Background(), attemptFor(rec))
+		_, class, err := Adapter{Client: rec.srv.Client()}.Probe(context.Background(), attemptFor(rec))
 		if class != want || (class == domain.ClassOK) != (err == nil) {
 			t.Errorf("status %d: class=%s err=%v, want %s", code, class, err, want)
 		}
@@ -432,7 +486,7 @@ func TestProbeMapsStatusToClass(t *testing.T) {
 func TestEveryCallRefusesAnEmptyBaseURL(t *testing.T) {
 	a := Adapter{}
 	ctx := context.Background()
-	if class, err := a.Probe(ctx, app.Attempt{}); err == nil || class != domain.ClassCaller {
+	if _, class, err := a.Probe(ctx, app.Attempt{}); err == nil || class != domain.ClassCaller {
 		t.Errorf("probe: class=%s err=%v", class, err)
 	}
 	if _, class, err := a.Chat(ctx, app.Attempt{}, hi()); err == nil || class != domain.ClassCaller {
@@ -763,7 +817,7 @@ func TestRedirectIsNotFollowedSoTheKeyStaysPut(t *testing.T) {
 		http.Redirect(w, r, target.URL+"/v1/models", http.StatusFound)
 	}))
 	t.Cleanup(front.Close)
-	class, err := Adapter{}.Probe(context.Background(), app.Attempt{BaseURL: front.URL, Secret: "s", PlanKind: domain.PlanLocal})
+	_, class, err := Adapter{}.Probe(context.Background(), app.Attempt{BaseURL: front.URL, Secret: "s", PlanKind: domain.PlanLocal})
 	if err == nil || class == domain.ClassOK {
 		t.Fatalf("class=%q err=%v", class, err)
 	}

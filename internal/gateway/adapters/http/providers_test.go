@@ -73,6 +73,14 @@ func (a *recordedAccounts) Sealed(context.Context, app.Caller, string) (domain.S
 
 func (a *recordedAccounts) Note(context.Context, app.Caller, string, string) error { return nil }
 
+func (a *recordedAccounts) PutSeenModels(context.Context, app.Caller, string, []domain.SeenModel) error {
+	return nil
+}
+
+func (a *recordedAccounts) SeenModels(context.Context, app.Caller, string) ([]domain.SeenModel, error) {
+	return nil, app.ErrNotFound
+}
+
 // providersService is the use case the tests drive. gate says who may use
 // the local plan, as the brain wires it to the settings managers.
 func providersService(t *testing.T, accounts app.Accounts, gate bool) app.Providers {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,8 @@ type Adapter struct {
 	StreamDelay     time.Duration
 	StreamFailWords int
 	StreamFailClass domain.FailureClass
+	// Models overrides the model list returned by Probe when non-nil.
+	Models []domain.SeenModel
 }
 
 // script returns the adapter as the model's script asks it to behave, and the
@@ -250,6 +253,14 @@ func cloneToolCalls(in []domain.ToolCall) []domain.ToolCall {
 }
 
 // Probe always works: the fake has no network.
-func (a Adapter) Probe(context.Context, app.Attempt) (domain.FailureClass, error) {
-	return domain.ClassOK, nil
+func (a Adapter) Probe(context.Context, app.Attempt) ([]domain.SeenModel, domain.FailureClass, error) {
+	if a.Models != nil {
+		return slices.Clone(a.Models), domain.ClassOK, nil
+	}
+	return []domain.SeenModel{
+		{ID: ModelOK, DisplayName: "Fake OK"},
+		{ID: ModelSlow, DisplayName: "Fake Slow"},
+		{ID: ModelToolCall, DisplayName: "Fake Tool Call"},
+		{ID: ModelUsage, DisplayName: "Fake Usage"},
+	}, domain.ClassOK, nil
 }

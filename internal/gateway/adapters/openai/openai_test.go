@@ -1,13 +1,18 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -153,7 +158,7 @@ func TestProbeMapsStatusAndSendsTheKey(t *testing.T) {
 			w.WriteHeader(code)
 		}))
 		a := Adapter{}
-		class, err := a.Probe(context.Background(), app.Attempt{BaseURL: stub.URL, Secret: "sk-test", PlanKind: domain.PlanLocal})
+		_, class, err := a.Probe(context.Background(), app.Attempt{BaseURL: stub.URL, Secret: "sk-test", PlanKind: domain.PlanLocal})
 		stub.Close()
 		if class != want || (class == domain.ClassOK) != (err == nil) {
 			t.Errorf("status %d: class %q, err %v; want %q", code, class, err, want)
@@ -165,7 +170,7 @@ func TestProbeMapsStatusAndSendsTheKey(t *testing.T) {
 }
 
 func TestProbeWithoutBaseURL(t *testing.T) {
-	class, err := Adapter{}.Probe(context.Background(), app.Attempt{})
+	_, class, err := Adapter{}.Probe(context.Background(), app.Attempt{})
 	if err == nil || class != domain.ClassCaller {
 		t.Fatalf("class %q, err %v", class, err)
 	}
@@ -209,7 +214,7 @@ func TestNameRepointedAfterSavingIsRefusedAtCallTime(t *testing.T) {
 		return app.Attempt{BaseURL: "http://provider.test:" + port, PlanKind: plan, Secret: "sk-test"}
 	}
 	probe := func(plan string) error {
-		class, err := a.Probe(context.Background(), attempt(plan))
+		_, class, err := a.Probe(context.Background(), attempt(plan))
 		if err == nil && class != domain.ClassOK {
 			t.Fatalf("class %q without error", class)
 		}
@@ -260,7 +265,7 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 		http.Redirect(w, r, target.URL+"/v1/models", http.StatusFound)
 	}))
 	t.Cleanup(front.Close)
-	class, err := Adapter{}.Probe(context.Background(), app.Attempt{BaseURL: front.URL, Secret: "sk-test", PlanKind: domain.PlanLocal})
+	_, class, err := Adapter{}.Probe(context.Background(), app.Attempt{BaseURL: front.URL, Secret: "sk-test", PlanKind: domain.PlanLocal})
 	if err == nil || class == domain.ClassOK {
 		t.Fatalf("class %q, err %v", class, err)
 	}
@@ -770,5 +775,126 @@ func TestAdapterDecideReturnsUsage(t *testing.T) {
 	}
 	if !usage.Arrived || usage.Input != 7 || usage.Output != 1 {
 		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
+	readFixture := func(name string) []byte {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("testdata", "recorded", name)) //nolint:gosec // static testdata path
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	recordedCases := []struct {
+		name string
+		file string
+		want []domain.SeenModel
+	}{
+		{
+			name: "plain openai-compat",
+			file: "openai_models.json",
+			want: []domain.SeenModel{
+				{ID: "gpt-4o"},
+				{ID: "gpt-4o-mini"},
+			},
+		},
+		{
+			name: "gemini strips models prefix",
+			file: "gemini_models.json",
+			want: []domain.SeenModel{
+				{ID: "gemini-2.5-flash"},
+				{ID: "gemini-2.5-pro"},
+			},
+		},
+		{
+			name: "openrouter keeps context pricing and modalities",
+			file: "openrouter_models.json",
+			want: []domain.SeenModel{
+				{
+					ID:            "anthropic/claude-sonnet-4",
+					ContextLength: 200000,
+					Pricing: map[string]string{
+						"prompt":            "0.000003",
+						"completion":        "0.000015",
+						"request":           "0",
+						"image":             "0.0048",
+						"input_cache_read":  "0.0000003",
+						"input_cache_write": "0.00000375",
+					},
+					Modalities: &domain.ModelModalities{
+						Input:  []string{"text", "image"},
+						Output: []string{"text"},
+					},
+				},
+				{
+					ID:            "openai/gpt-4o-mini",
+					ContextLength: 128000,
+					Pricing: map[string]string{
+						"prompt":     "0.00000015",
+						"completion": "0.0000006",
+					},
+					Modalities: &domain.ModelModalities{
+						Input:  []string{"text", "image"},
+						Output: []string{"text"},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range recordedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := readFixture(tc.file)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(raw)
+			}))
+			t.Cleanup(srv.Close)
+			got, class, err := (Adapter{Client: srv.Client()}).Probe(context.Background(), app.Attempt{BaseURL: srv.URL, Secret: "sk-test"})
+			if err != nil || class != domain.ClassOK {
+				t.Fatalf("class=%s err=%v", class, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+
+	tooManyItems := make([]map[string]string, domain.MaxSeenModels+1)
+	for i := range tooManyItems {
+		tooManyItems[i] = map[string]string{"id": fmt.Sprintf("m-%d", i)}
+	}
+	tooMany, _ := json.Marshal(map[string]any{"object": "list", "data": tooManyItems})
+
+	badCases := []struct {
+		name string
+		body []byte
+	}{
+		{"empty body", nil},
+		{"malformed json", []byte("{not-json")},
+		{"missing data", []byte(`{"object":"list","models":[]}`)},
+		{"null data", []byte(`{"object":"list","data":null}`)},
+		{"array top level", []byte(`[{"id":"gpt-4o"}]`)},
+		{"unexpected list object", []byte(`{"object":"error","data":[]}`)},
+		{"unexpected entry object", []byte(`{"object":"list","data":[{"id":"gpt-4o","object":"file"}]}`)},
+		{"empty id", []byte(`{"data":[{"id":""}]}`)},
+		{"empty after prefix strip", []byte(`{"data":[{"id":"models/"}]}`)},
+		{"trailing garbage", []byte(`{"data":[]}extra`)},
+		{"non-string pricing", []byte(`{"data":[{"id":"m","pricing":{"prompt":1.5}}]}`)},
+		{"negative context length", []byte(`{"data":[{"id":"m","context_length":-1}]}`)},
+		{"oversized body", append([]byte(`{"data":[{"id":"gpt-x"}]`), append(bytes.Repeat([]byte{' '}, 4<<20), '}')...)},
+		{"too many entries", tooMany},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(tc.body)
+			}))
+			t.Cleanup(srv.Close)
+			got, class, err := (Adapter{Client: srv.Client()}).Probe(context.Background(), app.Attempt{BaseURL: srv.URL, Secret: "sk-test"})
+			if err != nil || class != domain.ClassOK || got != nil {
+				t.Fatalf("got=%+v class=%s err=%v, want nil models with ClassOK", got, class, err)
+			}
+		})
 	}
 }
