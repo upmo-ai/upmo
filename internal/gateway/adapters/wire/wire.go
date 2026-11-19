@@ -4,9 +4,12 @@
 package wire
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -75,6 +78,41 @@ func StatusClass(code int) (domain.FailureClass, error) {
 	default:
 		return domain.ClassOK, nil
 	}
+}
+
+// MaxModelListBytes caps how many bytes Probe reads from a provider's model
+// list endpoint. Responses beyond this cap are refused as oversized.
+const MaxModelListBytes = 4 << 20
+
+// ReadModelList reads a bounded model-list response body. Empty or oversized
+// bodies return an error.
+func ReadModelList(r io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, MaxModelListBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || len(raw) > MaxModelListBytes {
+		return nil, fmt.Errorf("gateway: model list size")
+	}
+	return raw, nil
+}
+
+// DecodeStrictObject decodes a single JSON object into dst and refuses arrays,
+// primitives, null, or trailing tokens.
+func DecodeStrictObject(raw []byte, dst any) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("gateway: model list shape")
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("gateway: model list trailing data")
+	}
+	return nil
 }
 
 // ClassForErr maps a transport error to the failure class of the call.

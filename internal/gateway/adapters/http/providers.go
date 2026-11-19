@@ -13,7 +13,7 @@ import (
 )
 
 // maxProviderBody bounds a provider request. A key is at most 4 KiB and a
-// model list under 5 KiB, so this is generous.
+// 100-model list is up to ~12 KiB, so 64 KiB is generous.
 const maxProviderBody = 64 << 10
 
 // ProvidersHandler serves a signed-in person's own provider accounts and the
@@ -37,6 +37,7 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 	}
 	mux.Handle("GET /api/providers", wrap(h.list))
 	mux.Handle("GET /api/providers/sharing", wrap(h.sharing))
+	mux.Handle("GET /api/providers/{id}/models", wrap(h.models))
 	mux.Handle("POST /api/providers", wrap(h.add))
 	mux.Handle("POST /api/providers/test", wrap(h.test))
 	mux.Handle("PUT /api/providers/{id}", wrap(h.change))
@@ -44,14 +45,15 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 }
 
 type providerJSON struct {
-	ID       string   `json:"id"`
-	Provider string   `json:"provider"`
-	Name     string   `json:"name"`
-	Adapter  string   `json:"adapter"`
-	PlanKind string   `json:"plan_kind"`
-	BaseURL  string   `json:"base_url,omitempty"`
-	Status   string   `json:"status"`
-	Models   []string `json:"models"`
+	ID            string                `json:"id"`
+	Provider      string                `json:"provider"`
+	Name          string                `json:"name"`
+	Adapter       string                `json:"adapter"`
+	PlanKind      string                `json:"plan_kind"`
+	BaseURL       string                `json:"base_url,omitempty"`
+	Status        string                `json:"status"`
+	Models        []string              `json:"models"`
+	EnabledModels []domain.EnabledModel `json:"enabled_models"`
 	// Usable says whether the person can use the account now, and
 	// UsableModels lists the models of theirs that count: the rule is
 	// domain's, computed per account here.
@@ -84,6 +86,13 @@ func providerBody(p domain.Provider) providerJSON {
 	if models == nil {
 		models = []string{}
 	}
+	enabled := p.EnabledModels
+	if enabled == nil {
+		enabled = make([]domain.EnabledModel, 0, len(models))
+		for _, m := range models {
+			enabled = append(enabled, domain.EnabledModel{ID: m, Listed: true})
+		}
+	}
 	teamIDs, teamNames := p.Share.TeamIDs, p.Share.TeamNames
 	if teamIDs == nil {
 		teamIDs = []string{}
@@ -96,22 +105,23 @@ func providerBody(p domain.Provider) providerJSON {
 		usable = domain.UsableModels(p)
 	}
 	return providerJSON{
-		ID:           p.ID,
-		Provider:     p.Provider,
-		Name:         p.Name,
-		Adapter:      p.Adapter,
-		PlanKind:     p.PlanKind,
-		BaseURL:      p.BaseURL,
-		Status:       p.Status,
-		Models:       models,
-		Usable:       len(usable) > 0,
-		UsableModels: usable,
-		Visibility:   visibility,
-		TeamIDs:      teamIDs,
-		TeamNames:    teamNames,
-		CanManage:    p.Share.CanManage,
-		CanUse:       p.Share.CanUse,
-		IsOwner:      p.Share.IsOwner,
+		ID:            p.ID,
+		Provider:      p.Provider,
+		Name:          p.Name,
+		Adapter:       p.Adapter,
+		PlanKind:      p.PlanKind,
+		BaseURL:       p.BaseURL,
+		Status:        p.Status,
+		Models:        models,
+		EnabledModels: enabled,
+		Usable:        len(usable) > 0,
+		UsableModels:  usable,
+		Visibility:    visibility,
+		TeamIDs:       teamIDs,
+		TeamNames:     teamNames,
+		CanManage:     p.Share.CanManage,
+		CanUse:        p.Share.CanUse,
+		IsOwner:       p.Share.IsOwner,
 	}
 }
 
@@ -178,6 +188,24 @@ func (h ProvidersHandler) sharing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeRouteJSON(w, http.StatusOK, map[string]bool{"can_share": can})
+}
+
+// models returns the discovered model list stored for an account the person
+// may see.
+func (h ProvidersHandler) models(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.Service.SeenModels(r.Context(), user, r.PathValue("id"))
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	if rows == nil {
+		rows = []domain.SeenModel{}
+	}
+	writeRouteJSON(w, http.StatusOK, rows)
 }
 
 func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {

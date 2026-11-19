@@ -141,12 +141,19 @@ type Accounts interface {
 	Sealed(ctx context.Context, who Caller, ref string) (domain.Sealed, error)
 	// Note stores the status a test found for an account.
 	Note(ctx context.Context, who Caller, id, status string) error
+	// PutSeenModels replaces the discovered model list stored for an account.
+	PutSeenModels(ctx context.Context, who Caller, id string, models []domain.SeenModel) error
+	// SeenModels returns the discovered models stored for an account the person
+	// can see, or ErrNotFound.
+	SeenModels(ctx context.Context, who Caller, id string) ([]domain.SeenModel, error)
 }
 
 // Prober makes one cheap call through an adapter to see whether an account
-// works. It returns the failure class of that call.
+// works, and returns the models the provider lists alongside the failure class.
+// A malformed or oversized model list returns nil while keeping ClassOK when
+// the auth call succeeded.
 type Prober interface {
-	Probe(ctx context.Context, attempt Attempt) (domain.FailureClass, error)
+	Probe(ctx context.Context, attempt Attempt) ([]domain.SeenModel, domain.FailureClass, error)
 }
 
 // Providers is the use case behind a person's provider settings.
@@ -224,9 +231,12 @@ type TestRequest struct {
 }
 
 // TestResult is the answer to a test. Error is a fixed plain message.
+// Models carries the discovered models when the auth call worked and the list
+// parsed cleanly.
 type TestResult struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	OK     bool               `json:"ok"`
+	Error  string             `json:"error,omitempty"`
+	Models []domain.SeenModel `json:"models,omitempty"`
 }
 
 // caller names the person, the permissions they hold, and the teams they are on.
@@ -571,8 +581,8 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 
 	callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
 	defer cancel()
-	class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
-	result := TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class)}
+	models, class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
+	result := TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}
 	if err := s.sealTest(ctx, in.ID, result.OK); err != nil {
 		return TestResult{}, err
 	}
@@ -580,8 +590,23 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		if err := s.Accounts.Note(ctx, who, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
 			s.Log.Warn("provider status not stored", "account", in.ID, "owner", user)
 		}
+		if result.OK && models != nil {
+			if err := s.Accounts.PutSeenModels(ctx, who, in.ID, models); err != nil && s.Log != nil {
+				s.Log.Warn("provider models not stored", "account", in.ID, "owner", user)
+			}
+		}
 	}
 	return result, nil
+}
+
+// SeenModels returns the discovered models stored for an account the person
+// may see, or ErrNotFound.
+func (s Providers) SeenModels(ctx context.Context, user, id string) ([]domain.SeenModel, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	return s.Accounts.SeenModels(ctx, who, id)
 }
 
 // mayLocal asks LocalPlan whether this person may add or test a local-plan

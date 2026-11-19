@@ -47,26 +47,180 @@ func target(attempt app.Attempt) (base string, paths domain.Vendor, ok bool) {
 }
 
 // Probe asks for the model list, the cheapest call that needs the key. It
-// returns the failure class of the answer.
-func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) (domain.FailureClass, error) {
+// returns the discovered models and the failure class of the answer. A
+// malformed or oversized list keeps ClassOK when the auth call succeeded and
+// returns nil for the models.
+func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) ([]domain.SeenModel, domain.FailureClass, error) {
 	base, paths, ok := target(attempt)
 	if !ok {
-		return domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
+		return nil, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+paths.ModelsPath, nil)
 	if err != nil {
-		return domain.ClassCaller, err
+		return nil, domain.ClassCaller, err
 	}
 	if attempt.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
 	}
 	res, err := a.client(attempt).Do(req)
 	if err != nil {
-		return classForErr(err), err
+		return nil, classForErr(err), err
 	}
 	defer func() { _ = res.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
-	return statusClass(res.StatusCode)
+	if class, err := statusClass(res.StatusCode); err != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+		return nil, class, err
+	}
+	raw, err := wire.ReadModelList(res.Body)
+	if err != nil {
+		return nil, domain.ClassOK, nil
+	}
+	models, err := parseModels(raw)
+	if err != nil {
+		return nil, domain.ClassOK, nil
+	}
+	return models, domain.ClassOK, nil
+}
+
+type openAIArchitecture struct {
+	Modality         string   `json:"modality"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
+}
+
+type openAIModelItem struct {
+	Object        string              `json:"object"`
+	ID            string              `json:"id"`
+	ContextLength *int                `json:"context_length"`
+	Architecture  *openAIArchitecture `json:"architecture"`
+	Pricing       map[string]*string  `json:"pricing"`
+}
+
+func parseModels(raw []byte) ([]domain.SeenModel, error) {
+	var parsed struct {
+		Object string            `json:"object"`
+		Data   []openAIModelItem `json:"data"`
+	}
+	if err := wire.DecodeStrictObject(raw, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Object != "" && parsed.Object != "list" {
+		return nil, fmt.Errorf("gateway: unexpected model list object")
+	}
+	if parsed.Data == nil {
+		return nil, fmt.Errorf("gateway: missing model data")
+	}
+	// Refuse lists exceeding MaxSeenModels rather than truncating so callers
+	// never store a partial model list.
+	if len(parsed.Data) > domain.MaxSeenModels {
+		return nil, fmt.Errorf("gateway: too many models")
+	}
+	out := make([]domain.SeenModel, 0, len(parsed.Data))
+	seen := make(map[string]bool, len(parsed.Data))
+	for _, item := range parsed.Data {
+		if item.Object != "" && item.Object != "model" {
+			return nil, fmt.Errorf("gateway: unexpected model entry object")
+		}
+		// Gemini's OpenAI-compatible list prefixes model ids with "models/".
+		rawID := strings.TrimPrefix(strings.TrimSpace(item.ID), "models/")
+		id, err := domain.CleanModelID(rawID)
+		if err != nil {
+			return nil, err
+		}
+		var ctxLen int
+		if item.ContextLength != nil {
+			if *item.ContextLength < 0 {
+				return nil, fmt.Errorf("gateway: invalid context length")
+			}
+			ctxLen = *item.ContextLength
+		}
+		pricing, err := cleanPricing(item.Pricing)
+		if err != nil {
+			return nil, err
+		}
+		modalities, err := cleanModalities(item.Architecture)
+		if err != nil {
+			return nil, err
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, domain.SeenModel{
+			ID:            id,
+			ContextLength: ctxLen,
+			Pricing:       pricing,
+			Modalities:    modalities,
+		})
+	}
+	return out, nil
+}
+
+func cleanPricing(in map[string]*string) (map[string]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if v == nil {
+			continue
+		}
+		key := strings.TrimSpace(k)
+		val := strings.TrimSpace(*v)
+		if key == "" || !domain.ValidModelText(key) || !domain.ValidModelText(val) {
+			return nil, fmt.Errorf("gateway: invalid pricing")
+		}
+		out[key] = val
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func cleanModalities(arch *openAIArchitecture) (*domain.ModelModalities, error) {
+	if arch == nil {
+		return nil, nil
+	}
+	cleanList := func(items []string) ([]string, error) {
+		if len(items) == 0 {
+			return nil, nil
+		}
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			s := strings.TrimSpace(item)
+			if s == "" || !domain.ValidModelText(s) {
+				return nil, fmt.Errorf("gateway: invalid modality")
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	in, err := cleanList(arch.InputModalities)
+	if err != nil {
+		return nil, err
+	}
+	out, err := cleanList(arch.OutputModalities)
+	if err != nil {
+		return nil, err
+	}
+	if len(in) == 0 && len(out) == 0 && strings.TrimSpace(arch.Modality) != "" {
+		if !domain.ValidModelText(arch.Modality) {
+			return nil, fmt.Errorf("gateway: invalid modality")
+		}
+		if lhs, rhs, ok := strings.Cut(arch.Modality, "->"); ok {
+			if in, err = cleanList(strings.Split(lhs, "+")); err != nil {
+				return nil, err
+			}
+			if out, err = cleanList(strings.Split(rhs, "+")); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(in) == 0 && len(out) == 0 {
+		return nil, nil
+	}
+	return &domain.ModelModalities{Input: in, Output: out}, nil
 }
 
 func (a Adapter) Decide(ctx context.Context, attempt app.Attempt, req domain.DecideRequest) (domain.DecideResult, domain.Usage, domain.FailureClass, error) {

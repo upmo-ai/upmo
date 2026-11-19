@@ -111,8 +111,8 @@ func strPtr(v string) *string { return &v }
 // failingProbe never reaches a provider: every test fails on the key.
 type failingProbe struct{}
 
-func (failingProbe) Probe(context.Context, gatewayapp.Attempt) (domain.FailureClass, error) {
-	return domain.ClassCredential, nil
+func (failingProbe) Probe(context.Context, gatewayapp.Attempt) ([]domain.SeenModel, domain.FailureClass, error) {
+	return nil, domain.ClassCredential, nil
 }
 
 func addedAccount(t *testing.T, svc gatewayapp.Providers) domain.Provider {
@@ -412,4 +412,65 @@ func TestProviderUpdateRefusedForMemberRecordsDenied(t *testing.T) {
 		t.Fatalf("event = %s %s %s, want the refused member denied", rows[0].Action, rows[0].Outcome, rows[0].ActorID)
 	}
 	mustNotContain(t, rows[0], "Renamed")
+}
+
+func TestProviderModelsReadSealsAndRefusesInvisibleAccount(t *testing.T) {
+	owner, appPool := providerRig(t)
+	sealed := newSealer(t, owner)
+	svc := providerService(t, appPool, "", nil)
+	ctx := context.Background()
+
+	made := addedAccount(t, svc)
+	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID}); err != nil || !result.OK {
+		t.Fatalf("test = %+v %v, want a working test", result, err)
+	}
+	sealed()
+
+	mountAs := func(user string) http.Handler {
+		mux := http.NewServeMux()
+		gateway.ProvidersHandler{
+			Service: providerService(t, appPool, "", nil),
+			Access: func(r *http.Request) (string, bool) {
+				audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: user, CredentialType: "session"})
+				return user, true
+			},
+		}.MountProviders(mux, nil)
+		return serveWithAudit(t, mux, appPool)
+	}
+
+	// An authorised read succeeds and seals one provider.models.read event.
+	rec := httptest.NewRecorder()
+	mountAs(providerOwnerID).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers/"+made.ID+"/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner read models = %d %s", rec.Code, rec.Body.String())
+	}
+	var got []domain.SeenModel
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) == 0 {
+		t.Fatalf("owner models = %s, err = %v, want non-empty list", rec.Body.String(), err)
+	}
+	rows := sealed()
+	if len(rows) != 1 || rows[0].Action != audit.ProviderModelsRead {
+		t.Fatalf("events = %v, want one provider.models.read", actions(rows))
+	}
+	row := rows[0]
+	if row.Outcome != audit.Success || row.TargetType != "provider" || row.TargetID != made.ID || row.Reason != "" {
+		t.Fatalf("event = %s %s %s %q, want the store's own read event", row.Outcome, row.TargetType, row.TargetID, row.Reason)
+	}
+	if row.ActorType != "user" || row.ActorID != providerOwnerID || row.CredentialType != "session" {
+		t.Fatalf("actor = %s %s %s", row.ActorType, row.ActorID, row.CredentialType)
+	}
+	mustNotContain(t, row, "sk-own-key", "https://own.example", "Own Account")
+
+	// A person who may not see the account is refused with 404 and sees no rows.
+	rec = httptest.NewRecorder()
+	mountAs(providerMemberID).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers/"+made.ID+"/models", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("stranger read models = %d %s, want 404", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), got[0].ID) || strings.Contains(rec.Body.String(), "sk-own-key") {
+		t.Fatalf("refused response leaked rows or secret: %s", rec.Body.String())
+	}
+	if rows := sealed(); len(rows) != 0 {
+		t.Fatalf("refused read recorded %v, want 0 events", actions(rows))
+	}
 }
