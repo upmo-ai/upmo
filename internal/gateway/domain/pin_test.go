@@ -109,6 +109,8 @@ func TestOwnLinksAreTheOwnersAloneAndMayBeNone(t *testing.T) {
 		// Owned, but shared: it is not a private key, so a pin to a private
 		// account does not fall back through it.
 		{Position: 4, Account: Account{ID: "s", OwnerUserID: "u1", Visibility: VisibilityTeam, TeamIDs: []string{"t1"}}, Model: "ms"},
+		// Disabled own private account: omitted from fallback.
+		{Position: 5, Account: Account{ID: "d", OwnerUserID: "u1", Visibility: VisibilityPrivate, Disabled: true}, Model: "md"},
 	}}
 	if got := route.OwnLinks("u1"); len(got) != 1 || got[0].Model != "mo" {
 		t.Fatalf("own links = %+v", got)

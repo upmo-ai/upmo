@@ -71,7 +71,7 @@ const PinPosition = 0
 func (r Route) OwnLinks(userID string) []Link {
 	var own []Link
 	for _, link := range r.Links {
-		if userID == "" || link.Account.House || link.Account.Visibility != VisibilityPrivate {
+		if link.Account.Disabled || userID == "" || link.Account.House || link.Account.Visibility != VisibilityPrivate {
 			continue
 		}
 		if link.Account.OwnerUserID == userID {

@@ -64,9 +64,11 @@ func (p Providers) begin(ctx context.Context, who app.Caller) (pgx.Tx, error) {
 // shown only for an account the person may manage, and never for a house key
 // or to someone who can only use a shared account.
 const accountColumns = `a.id::text, a.provider, a.name, a.adapter, a.plan_kind, a.base_url, a.status,
+	a.enabled,
 	a.visibility, COALESCE(a.owner_user_id::text, ''),
-	CASE WHEN NOT a.house AND identity.may_manage(a.owner_user_id, a.visibility) THEN a.credential_ref ELSE '' END,
+	CASE WHEN NOT a.house AND identity.may_manage_provider(a.owner_user_id, a.visibility) THEN a.credential_ref ELSE '' END,
 	EXISTS (SELECT 1 FROM gateway.credentials AS c WHERE c.ref = a.credential_ref),
+	a.key_hint, a.key_changed_at, COALESCE(a.key_changed_by::text, ''),
 	a.house`
 
 // visibleTo is the accounts a person is shown: one they can use, and a shared
@@ -78,12 +80,13 @@ func visibleTo() string {
 
 func scanAccount(row pgx.Row) (domain.Provider, error) {
 	var a domain.Provider
-	err := row.Scan(&a.ID, &a.Provider, &a.Name, &a.Adapter, &a.PlanKind, &a.BaseURL, &a.Status,
-		&a.Share.Visibility, &a.OwnerUserID, &a.CredentialRef, &a.HasKey, &a.Share.House)
+	err := row.Scan(&a.ID, &a.Provider, &a.Name, &a.Adapter, &a.PlanKind, &a.BaseURL, &a.Status, &a.Enabled,
+		&a.Share.Visibility, &a.OwnerUserID, &a.CredentialRef, &a.HasKey, &a.KeyHint, &a.KeyChangedAt, &a.KeyChangedBy, &a.Share.House)
 	if a.Provider == "" {
 		a.Provider = a.Adapter
 	}
 	a.Own = a.Share.Visibility == domain.VisibilityPrivate
+	a.Disabled = !a.Enabled
 	a.Models = []string{}
 	a.EnabledModels = []domain.EnabledModel{}
 	a.Share.TeamIDs = []string{}
@@ -296,10 +299,11 @@ func (p Providers) Create(ctx context.Context, who app.Caller, a domain.Provider
 	var id string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO gateway.provider_accounts
-			(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, status, visibility, team_ids)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, false, $7, $8, $9, $10::uuid[])
+			(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, status, visibility, team_ids, key_hint, key_changed_at, key_changed_by)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, false, $7, $8, $9, $10::uuid[], $11,
+			CASE WHEN $12 THEN now() ELSE NULL END, CASE WHEN $12 THEN $1::uuid ELSE NULL END)
 		RETURNING id::text`,
-		who.User, a.Provider, a.Name, a.Adapter, a.CredentialRef, a.PlanKind, a.BaseURL, domain.StatusNotConnected, visibility, teamIDs).Scan(&id)
+		who.User, a.Provider, a.Name, a.Adapter, a.CredentialRef, a.PlanKind, a.BaseURL, domain.StatusNotConnected, visibility, teamIDs, a.KeyHint, sealed != nil).Scan(&id)
 	if err != nil {
 		return domain.Provider{}, mapWrite(err)
 	}
@@ -335,7 +339,7 @@ func (p Providers) Create(ctx context.Context, who app.Caller, a domain.Provider
 }
 
 // changeable is an account the person may manage, and not a house account.
-const changeable = `(NOT house AND identity.may_manage(owner_user_id, visibility))`
+const changeable = `(NOT house AND identity.may_manage_provider(owner_user_id, visibility))`
 
 // Update writes an account's fields, replaces its models and, for a shared
 // account, the teams it is shared with and, when sealed is set, replaces its
@@ -353,12 +357,12 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	var cur domain.Provider
 	var curTeams []string
 	err = tx.QueryRow(ctx, `
-		SELECT name, plan_kind, base_url, status, visibility,
+		SELECT name, plan_kind, base_url, status, enabled, visibility,
 		       COALESCE((SELECT array_agg(tid::text ORDER BY tid) FROM unnest(team_ids) AS tid), '{}'),
 		       COALESCE(owner_user_id::text, '')
 		FROM gateway.provider_accounts
 		WHERE id = $1::uuid AND `+changeable, a.ID).
-		Scan(&cur.Name, &cur.PlanKind, &cur.BaseURL, &cur.Status, &cur.Share.Visibility, &curTeams, &cur.OwnerUserID)
+		Scan(&cur.Name, &cur.PlanKind, &cur.BaseURL, &cur.Status, &cur.Enabled, &cur.Share.Visibility, &curTeams, &cur.OwnerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Provider{}, app.ErrNotFound
 	}
@@ -395,12 +399,15 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE gateway.provider_accounts
-		SET name = $2, plan_kind = $3, base_url = $4, updated_at = now(),
-			status = CASE WHEN $5 THEN 'Not connected' ELSE status END,
-			checked_at = CASE WHEN $5 THEN NULL ELSE checked_at END,
-			visibility = $6, team_ids = $7::uuid[]
+		SET name = $2, plan_kind = $3, base_url = $4, enabled = $5, updated_at = now(),
+			status = CASE WHEN $6 THEN 'Not connected' ELSE status END,
+			checked_at = CASE WHEN $6 THEN NULL ELSE checked_at END,
+			visibility = $7, team_ids = $8::uuid[],
+			key_hint = CASE WHEN $9 THEN $10 ELSE key_hint END,
+			key_changed_at = CASE WHEN $9 THEN now() ELSE key_changed_at END,
+			key_changed_by = CASE WHEN $9 THEN $11::uuid ELSE key_changed_by END
 		WHERE id = $1::uuid AND `+changeable,
-		a.ID, a.Name, a.PlanKind, a.BaseURL, reset, visibility, teamIDs)
+		a.ID, a.Name, a.PlanKind, a.BaseURL, a.Enabled, reset, visibility, teamIDs, sealed != nil, a.KeyHint, who.User)
 	if err != nil {
 		return domain.Provider{}, mapWrite(err)
 	}
@@ -443,7 +450,21 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 			return domain.Provider{}, err
 		}
 	}
-	if changes.Fields == nil && share.Fields == nil {
+	if cur.Enabled != made.Enabled {
+		action := audit.ProviderDisable
+		if made.Enabled {
+			action = audit.ProviderEnable
+		}
+		if err := audit.Record(ctx, tx, audit.Event{
+			Action: action, Outcome: audit.Success, TargetID: a.ID,
+			Changes: audit.Changes{Fields: []string{"enabled"}, Values: map[string]audit.Change{
+				"enabled": {From: cur.Enabled, To: made.Enabled},
+			}},
+		}); err != nil {
+			return domain.Provider{}, err
+		}
+	}
+	if changes.Fields == nil && share.Fields == nil && cur.Enabled == made.Enabled {
 		// The change repeated the stored account, so nothing happened.
 		audit.NoChange(ctx)
 	}
@@ -522,6 +543,56 @@ func (p Providers) Remove(ctx context.Context, who app.Caller, id string) error 
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// RouteUses lists every route linked to an account. The preceding account
+// lookup is subject to row security, so a caller cannot use this read to learn
+// about an invisible account.
+func (p Providers) RouteUses(ctx context.Context, who app.Caller, id string) ([]string, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, app.ErrNotFound
+	}
+	tx, err := p.begin(ctx, who)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM gateway.provider_accounts AS a WHERE a.id = $1::uuid AND `+visibleTo(), id).Scan(&one); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, app.ErrNotFound
+		}
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT r.name
+		FROM gateway.route_links AS l
+		JOIN gateway.routes AS r ON r.id = l.route_id
+		WHERE l.provider_account_id = $1::uuid
+		ORDER BY r.name`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ProviderUsesRead,
+		Outcome:  audit.Success,
+		TargetID: id,
+	}); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
 }
 
 // Sealed returns the stored key for an account's ref, or app.ErrNotFound. Row

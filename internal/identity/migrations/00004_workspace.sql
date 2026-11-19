@@ -19,6 +19,50 @@ CREATE TABLE identity.workspace (
 
 INSERT INTO identity.workspace (id) VALUES (true) ON CONFLICT (id) DO NOTHING;
 
+-- This policy helper is the one rule for whether a caller's private provider
+-- account is available. Settings managers remain able to use theirs while the
+-- member switch is off.
+-- +goose StatementBegin
+CREATE FUNCTION identity.member_providers_allowed()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT COALESCE((SELECT allow_member_providers FROM identity.workspace WHERE id), true)
+    OR EXISTS (
+      SELECT 1
+      FROM identity.users AS u
+      JOIN identity.roles AS r ON r.id = u.role_id
+      WHERE u.id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+        AND u.joined_at IS NOT NULL
+        AND u.disabled_at IS NULL
+        AND 'settings:manage' = ANY (identity.role_permissions(r.key, r.permissions))
+    );
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.member_providers_allowed() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.member_providers_allowed() TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.may_manage_provider(owner_user_id uuid, visibility text)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = pg_catalog
+AS $$
+  SELECT identity.may_manage(owner_user_id, visibility)
+    AND (visibility <> 'private'
+      OR identity.member_providers_allowed()
+      OR 'settings:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')));
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.may_manage_provider(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.may_manage_provider(uuid, text) TO upmo_app;
+
 ALTER TABLE identity.users
   ADD COLUMN time_zone text,
   ADD COLUMN locale text;
@@ -100,6 +144,8 @@ GRANT EXECUTE ON FUNCTION identity.sso_sign_in_state(uuid) TO upmo_app;
 -- +goose Down
 
 DROP FUNCTION IF EXISTS identity.sso_sign_in_state(uuid);
+DROP FUNCTION IF EXISTS identity.may_manage_provider(uuid, text);
+DROP FUNCTION IF EXISTS identity.member_providers_allowed();
 DROP POLICY IF EXISTS workspace_update ON identity.workspace;
 DROP POLICY IF EXISTS workspace_select ON identity.workspace;
 DROP POLICY IF EXISTS workspace_owner ON identity.workspace;

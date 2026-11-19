@@ -35,6 +35,9 @@ var (
 	// ErrLocalPlan is a local-plan account, which reaches private addresses
 	// and so only the people who manage the workspace may add or test.
 	ErrLocalPlan = errors.New("gateway: local provider plan")
+	// ErrMemberProvidersDisabled is the workspace policy which lets only
+	// settings managers change private provider accounts.
+	ErrMemberProvidersDisabled = errors.New("gateway: member providers disabled")
 	// ErrNoMasterKey is a server that has no master key, so it cannot hold keys.
 	ErrNoMasterKey = domain.ErrNoMasterKey
 )
@@ -49,9 +52,10 @@ func (InUseError) Error() string { return "gateway: provider in use by a route" 
 // on. The store writes user, allow and teams into the transaction that row
 // security reads.
 type Caller struct {
-	User  string
-	Allow string
-	Teams []string
+	User                   string
+	Allow                  string
+	Teams                  []string
+	MemberProvidersAllowed bool
 }
 
 // mayShare reports whether Allow holds settings:manage.
@@ -148,6 +152,20 @@ type Accounts interface {
 	SeenModels(ctx context.Context, who Caller, id string) ([]domain.SeenModel, error)
 }
 
+// RouteUses is the optional confirmation port implemented by the provider
+// store. Keeping it separate avoids expanding every lightweight Accounts fake.
+type RouteUses interface {
+	RouteUses(ctx context.Context, who Caller, id string) ([]string, error)
+}
+
+// ProviderUses is the confirmation information shown before an account is
+// disabled or removed. Automations currently have no model reference.
+type ProviderUses struct {
+	Routes      []string `json:"routes"`
+	Agents      []string `json:"agents"`
+	Automations []string `json:"automations"`
+}
+
 // Prober makes one cheap call through an adapter to see whether an account
 // works, and returns the models the provider lists alongside the failure class.
 // A malformed or oversized model list returns nil while keeping ClassOK when
@@ -177,6 +195,13 @@ type Providers struct {
 	Allow func(ctx context.Context, user string) (string, error)
 	// Teams lists the teams the person is on. Nil means they are on none.
 	Teams func(ctx context.Context, user string) ([]string, error)
+	// MemberProvidersAllowed says whether members may use and change their own
+	// private providers. Nil preserves the default-on workspace setting.
+	MemberProvidersAllowed func(ctx context.Context, user string) (bool, error)
+	// AgentUses and AutomationUses are ports wired by brain. They avoid a
+	// gateway dependency on either module's adapters.
+	AgentUses      func(ctx context.Context, who Caller, provider string, models []string) ([]string, error)
+	AutomationUses func(ctx context.Context, who Caller, provider string, models []string) ([]string, error)
 	// Names returns the names of the teams that exist. A missing id is unknown.
 	// Nil leaves that check to the store.
 	Names func(ctx context.Context, teams []string) (map[string]string, error)
@@ -218,6 +243,7 @@ type ProviderChange struct {
 	Models     *[]string
 	Visibility *string
 	TeamIDs    *[]string
+	Enabled    *bool
 }
 
 // TestRequest is what a person sends to test an account. With an ID and no
@@ -257,6 +283,14 @@ func (s Providers) caller(ctx context.Context, user string) (Caller, error) {
 			return Caller{}, fmt.Errorf("gateway: teams: %w", err)
 		}
 		who.Teams = teams
+	}
+	who.MemberProvidersAllowed = true
+	if s.MemberProvidersAllowed != nil {
+		allowed, err := s.MemberProvidersAllowed(ctx, user)
+		if err != nil {
+			return Caller{}, fmt.Errorf("gateway: member providers: %w", err)
+		}
+		who.MemberProvidersAllowed = allowed || who.mayShare()
 	}
 	return who, nil
 }
@@ -299,6 +333,9 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		return domain.Provider{}, err
 	}
 	plain := (in.Visibility == "" || in.Visibility == domain.VisibilityPrivate) && len(in.TeamIDs) == 0
+	if plain && !who.MemberProvidersAllowed {
+		return domain.Provider{}, ErrMemberProvidersDisabled
+	}
 	if !plain && !who.mayShare() {
 		return domain.Provider{}, ErrShareOnly
 	}
@@ -367,6 +404,7 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		Models:        models,
 		Own:           visibility == domain.VisibilityPrivate,
 		CredentialRef: ref,
+		KeyHint:       domain.KeyHint(key),
 		Share:         domain.Share{Visibility: visibility, TeamIDs: teams},
 	}, sealed)
 	if err != nil {
@@ -392,6 +430,9 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	cur, err := s.manageable(ctx, who, id)
 	if err != nil {
 		return domain.Provider{}, err
+	}
+	if visibilityOf(cur) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+		return domain.Provider{}, ErrMemberProvidersDisabled
 	}
 	next := cur
 	reset := false
@@ -471,6 +512,9 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 			return domain.Provider{}, err
 		}
 	}
+	if in.Enabled != nil {
+		next.Enabled = *in.Enabled
+	}
 	var sealed *domain.Sealed
 	if key != "" {
 		boxed, err := s.Keys.Seal(cur.CredentialRef, key)
@@ -478,6 +522,7 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 			return domain.Provider{}, err
 		}
 		sealed = &boxed
+		next.KeyHint = domain.KeyHint(key)
 		reset = true
 	}
 	made, err := s.Accounts.Update(ctx, who, next, sealed, reset)
@@ -501,14 +546,49 @@ func (s Providers) Remove(ctx context.Context, user, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.manageable(ctx, who, id); err != nil {
+	cur, err := s.manageable(ctx, who, id)
+	if err != nil {
 		return err
+	}
+	if visibilityOf(cur) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+		return ErrMemberProvidersDisabled
 	}
 	if err := s.Accounts.Remove(ctx, who, id); err != nil {
 		return err
 	}
 	s.log("provider removed", id, user)
 	return nil
+}
+
+// Uses returns the route, agent and automation references to an account's
+// models for the confirmation shown before disabling or removing it.
+func (s Providers) Uses(ctx context.Context, user, id string) (ProviderUses, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return ProviderUses{}, err
+	}
+	account, err := s.manageable(ctx, who, id)
+	if err != nil {
+		return ProviderUses{}, err
+	}
+	routes := []string{}
+	if store, ok := s.Accounts.(RouteUses); ok {
+		if routes, err = store.RouteUses(ctx, who, id); err != nil {
+			return ProviderUses{}, err
+		}
+	}
+	out := ProviderUses{Routes: routes, Agents: []string{}, Automations: []string{}}
+	if s.AgentUses != nil {
+		if out.Agents, err = s.AgentUses(ctx, who, account.Provider, account.Models); err != nil {
+			return ProviderUses{}, err
+		}
+	}
+	if s.AutomationUses != nil {
+		if out.Automations, err = s.AutomationUses(ctx, who, account.Provider, account.Models); err != nil {
+			return ProviderUses{}, err
+		}
+	}
+	return out, nil
 }
 
 // Test makes one cheap call to the provider and says whether it worked. The
@@ -747,6 +827,16 @@ func (s Providers) sealTest(ctx context.Context, id string, ok bool) error {
 func (s Providers) note(p *domain.Provider, who Caller) {
 	p.Share.CanManage = who.manages(*p)
 	p.Share.CanUse = who.uses(*p)
+	if visibilityOf(*p) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+		p.Share.CanManage = false
+		p.Share.CanUse = false
+		p.Status = domain.StatusWorkspaceOff
+	}
+	if !p.Share.CanManage {
+		p.KeyHint = ""
+		p.KeyChangedBy = ""
+		p.KeyChangedAt = nil
+	}
 	p.Share.IsOwner = !p.Share.House && who.User != "" && p.OwnerUserID == who.User
 }
 

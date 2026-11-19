@@ -494,9 +494,9 @@ func TestFeature_UPM363_EstimateUsesVendorHighestRate(t *testing.T) {
 		route    string
 		wantCost int64 // 2 tokens * rate / 1_000_000
 	}{
-		{"route-est-openai", 40},     // 2 * 20_000_000 / 1_000_000
-		{"route-est-anthropic", 30},  // 2 * 15_000_000 / 1_000_000
-		{"route-est-none", 150},      // 2 * 75_000_000 / 1_000_000
+		{"route-est-openai", 40},    // 2 * 20_000_000 / 1_000_000
+		{"route-est-anthropic", 30}, // 2 * 15_000_000 / 1_000_000
+		{"route-est-none", 150},     // 2 * 75_000_000 / 1_000_000
 	}
 	for _, tc := range cases {
 		res, err := disp.ChatCall(ctx, tc.route, "", domain.Principal{User: ada, Source: domain.SourceChat}, in)

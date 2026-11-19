@@ -34,6 +34,9 @@ const (
 	SourceSystem     = domain.SourceSystem
 )
 
+// ProviderCaller is the provider settings caller passed to composition ports.
+type ProviderCaller = app.Caller
+
 //go:embed migrations/*.sql
 var migrations embed.FS
 

@@ -129,7 +129,7 @@ CREATE POLICY provider_accounts_insert ON gateway.provider_accounts
   WITH CHECK (
     NOT house
     AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
-    AND identity.may_manage(owner_user_id, visibility)
+    AND identity.may_manage_provider(owner_user_id, visibility)
   );
 
 -- House stays with the environment. Taking a shared account private is
@@ -137,12 +137,12 @@ CREATE POLICY provider_accounts_insert ON gateway.provider_accounts
 -- the owner.
 CREATE POLICY provider_accounts_update ON gateway.provider_accounts
   FOR UPDATE
-  USING (NOT house AND identity.may_manage(owner_user_id, visibility))
-  WITH CHECK (NOT house AND identity.may_manage(owner_user_id, visibility));
+  USING (NOT house AND identity.may_manage_provider(owner_user_id, visibility))
+  WITH CHECK (NOT house AND identity.may_manage_provider(owner_user_id, visibility));
 
 CREATE POLICY provider_accounts_delete ON gateway.provider_accounts
   FOR DELETE
-  USING (NOT house AND identity.may_manage(owner_user_id, visibility));
+  USING (NOT house AND identity.may_manage_provider(owner_user_id, visibility));
 
 -- A model list follows its account: visible where the account is, writable
 -- where the account may be managed.
@@ -158,7 +158,7 @@ CREATE POLICY provider_models_insert ON gateway.provider_models
   WITH CHECK (EXISTS (
     SELECT 1 FROM gateway.provider_accounts AS a
     WHERE a.id = account_id
-      AND identity.may_manage(a.owner_user_id, a.visibility)
+      AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ));
 
 CREATE POLICY provider_models_delete ON gateway.provider_models
@@ -166,7 +166,7 @@ CREATE POLICY provider_models_delete ON gateway.provider_models
   USING (EXISTS (
     SELECT 1 FROM gateway.provider_accounts AS a
     WHERE a.id = account_id
-      AND identity.may_manage(a.owner_user_id, a.visibility)
+      AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ));
 
 -- A person who only uses a shared account has no policy on its key. House
@@ -178,13 +178,13 @@ CREATE POLICY credentials_manage ON gateway.credentials
     SELECT 1 FROM gateway.provider_accounts AS a
     WHERE a.credential_ref = ref
       AND NOT a.house
-      AND identity.may_manage(a.owner_user_id, a.visibility)
+      AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ))
   WITH CHECK (EXISTS (
     SELECT 1 FROM gateway.provider_accounts AS a
     WHERE a.credential_ref = ref
       AND NOT a.house
-      AND identity.may_manage(a.owner_user_id, a.visibility)
+      AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ));
 
 -- Discovered models from the latest successful probe of a provider account.
@@ -229,7 +229,7 @@ CREATE POLICY account_models_seen_insert ON gateway.account_models_seen
   WITH CHECK (EXISTS (
     SELECT 1 FROM gateway.provider_accounts AS a
     WHERE a.id = account_id
-      AND identity.may_manage(a.owner_user_id, a.visibility)
+      AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ));
 
 CREATE POLICY account_models_seen_delete ON gateway.account_models_seen
@@ -237,7 +237,7 @@ CREATE POLICY account_models_seen_delete ON gateway.account_models_seen
   USING (EXISTS (
     SELECT 1 FROM gateway.provider_accounts AS a
     WHERE a.id = account_id
-      AND identity.may_manage(a.owner_user_id, a.visibility)
+      AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ));
 
 DROP FUNCTION gateway.team_shared(uuid);

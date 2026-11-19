@@ -159,6 +159,44 @@ func (s Store) ListAgents(ctx context.Context, access app.Access) ([]app.Agent, 
 	return out, tx.Commit(ctx)
 }
 
+// ProviderUses lists agents that name one of a provider account's models. It
+// is a narrow composition port; gateway never imports the agents package.
+func (s Store) ProviderUses(ctx context.Context, access app.Access, provider string, models []string) ([]string, error) {
+	if len(models) == 0 {
+		return []string{}, nil
+	}
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, fmt.Errorf("agents: provider uses: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		SELECT name
+		FROM agents.agents
+		WHERE lower(COALESCE(default_model_provider, '')) = lower($1)
+		  AND default_model_id = ANY($2::text[])
+		ORDER BY lower(name), id`, provider, models)
+	if err != nil {
+		return nil, fmt.Errorf("agents: provider uses: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("agents: provider uses: %w", err)
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("agents: provider uses: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("agents: provider uses: %w", err)
+	}
+	return out, nil
+}
+
 func (s Store) GetAgent(ctx context.Context, access app.Access, id string) (app.Agent, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {

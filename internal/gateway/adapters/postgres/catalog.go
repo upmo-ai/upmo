@@ -292,6 +292,7 @@ func (s Store) SuggestModelForInput(ctx context.Context, accountID, vendor, need
 		LEFT JOIN gateway.account_models_seen AS s ON s.account_id = a.id AND s.model_id = pm.model
 		WHERE a.id = $1::uuid
 		  AND a.status = $2
+		  AND a.enabled
 		ORDER BY pm.position`, accountID, domain.StatusConnected)
 	if err != nil {
 		return "", false, err

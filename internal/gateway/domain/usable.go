@@ -10,7 +10,7 @@ import "strings"
 
 // accountHasModel reports whether p is Connected and lists model.
 func accountHasModel(p Provider, model string) bool {
-	if p.Status != StatusConnected {
+	if p.Disabled || p.Status != StatusConnected {
 		return false
 	}
 	for _, have := range p.Models {

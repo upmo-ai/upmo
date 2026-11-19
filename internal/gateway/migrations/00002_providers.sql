@@ -21,11 +21,16 @@ ALTER TABLE gateway.provider_accounts
   ADD COLUMN provider text NOT NULL DEFAULT '',
   ADD COLUMN status text NOT NULL DEFAULT 'Not connected',
   ADD COLUMN checked_at timestamptz,
+  ADD COLUMN enabled boolean NOT NULL DEFAULT true,
+  ADD COLUMN key_hint text NOT NULL DEFAULT '',
+  ADD COLUMN key_changed_at timestamptz,
+  ADD COLUMN key_changed_by uuid,
   ADD CONSTRAINT provider_accounts_status_check CHECK (
     status IN ('Not connected', 'Connected', 'Rate limited', 'Key rejected', 'Offline')
   ),
   ADD CONSTRAINT provider_accounts_house_owner_check CHECK (NOT house OR owner_user_id IS NULL),
-  ADD CONSTRAINT provider_accounts_provider_check CHECK (char_length(provider) <= 60);
+  ADD CONSTRAINT provider_accounts_provider_check CHECK (char_length(provider) <= 60),
+  ADD CONSTRAINT provider_accounts_key_hint_check CHECK (char_length(key_hint) <= 4);
 
 -- A name is unique per owner. All global accounts count as one owner.
 DROP INDEX gateway.provider_accounts_name;
@@ -164,7 +169,7 @@ CREATE POLICY credentials_own ON gateway.credentials
 
 GRANT USAGE ON SCHEMA gateway TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.provider_accounts TO upmo_app;
-GRANT UPDATE (name, plan_kind, base_url, status, checked_at) ON gateway.provider_accounts TO upmo_app;
+GRANT UPDATE (name, plan_kind, base_url, status, checked_at, enabled, key_hint, key_changed_at, key_changed_by) ON gateway.provider_accounts TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.provider_models TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.credentials TO upmo_app;
 GRANT UPDATE (ciphertext, nonce, key_id, created_at) ON gateway.credentials TO upmo_app;
@@ -198,8 +203,13 @@ DELETE FROM gateway.provider_accounts WHERE owner_user_id IS NOT NULL;
 CREATE UNIQUE INDEX provider_accounts_name ON gateway.provider_accounts (name);
 ALTER TABLE gateway.provider_accounts
   DROP CONSTRAINT IF EXISTS provider_accounts_provider_check,
+  DROP CONSTRAINT IF EXISTS provider_accounts_key_hint_check,
   DROP CONSTRAINT IF EXISTS provider_accounts_house_owner_check,
   DROP CONSTRAINT IF EXISTS provider_accounts_status_check,
+  DROP COLUMN key_changed_by,
+  DROP COLUMN key_changed_at,
+  DROP COLUMN key_hint,
+  DROP COLUMN enabled,
   DROP COLUMN checked_at,
   DROP COLUMN status,
   DROP COLUMN provider,

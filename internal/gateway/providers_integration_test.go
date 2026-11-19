@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	agentpg "github.com/upmo-ai/upmo/internal/agents/adapters/postgres"
+	agentapp "github.com/upmo-ai/upmo/internal/agents/app"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
@@ -59,6 +62,9 @@ func migrateWithIdentity(t *testing.T, owner *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	if err := migrate.Up(ctx, owner, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, owner, "agents", os.DirFS("../agents/migrations")); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
@@ -195,23 +201,27 @@ func (r *rig) assertNoSecrets(secrets ...string) {
 }
 
 type account struct {
-	ID           string   `json:"id"`
-	Provider     string   `json:"provider"`
-	Name         string   `json:"name"`
-	Adapter      string   `json:"adapter"`
-	PlanKind     string   `json:"plan_kind"`
-	BaseURL      string   `json:"base_url"`
+	ID            string                `json:"id"`
+	Provider      string                `json:"provider"`
+	Name          string                `json:"name"`
+	Adapter       string                `json:"adapter"`
+	PlanKind      string                `json:"plan_kind"`
+	BaseURL       string                `json:"base_url"`
 	Status        string                `json:"status"`
+	Enabled       bool                  `json:"enabled"`
+	KeyHint       string                `json:"key_hint"`
+	KeyChangedAt  *time.Time            `json:"key_changed_at"`
+	KeyChangedBy  string                `json:"key_changed_by"`
 	Models        []string              `json:"models"`
 	EnabledModels []domain.EnabledModel `json:"enabled_models"`
 	Visibility    string                `json:"visibility"`
-	CanUse       bool     `json:"can_use"`
-	Usable       bool     `json:"usable"`
-	UsableModels []string `json:"usable_models"`
-	TeamIDs      []string `json:"team_ids"`
-	TeamNames    []string `json:"team_names"`
-	CanManage    bool     `json:"can_manage"`
-	IsOwner      bool     `json:"is_owner"`
+	CanUse        bool                  `json:"can_use"`
+	Usable        bool                  `json:"usable"`
+	UsableModels  []string              `json:"usable_models"`
+	TeamIDs       []string              `json:"team_ids"`
+	TeamNames     []string              `json:"team_names"`
+	CanManage     bool                  `json:"can_manage"`
+	IsOwner       bool                  `json:"is_owner"`
 }
 
 func decode[T any](t *testing.T, raw []byte) T {
@@ -1439,9 +1449,10 @@ func TestGatewayProcessReadsEveryAccountUnderForcedRowSecurity(t *testing.T) {
 		`ALTER TABLE gateway.provider_models OWNER TO ` + role,
 		`ALTER TABLE gateway.credentials OWNER TO ` + role,
 		`GRANT USAGE ON SCHEMA gateway TO ` + role,
+		`GRANT USAGE ON SCHEMA identity TO ` + role,
 		`GRANT ALL ON ALL TABLES IN SCHEMA gateway TO ` + role,
 		// The real gateway owns these functions.
-		`GRANT EXECUTE ON FUNCTION identity.may_use(uuid, text, uuid[]), identity.may_manage(uuid, text), identity.can_use(uuid, uuid[], uuid, text, uuid[]) TO ` + role,
+		`GRANT EXECUTE ON FUNCTION identity.may_use(uuid, text, uuid[]), identity.may_manage(uuid, text), identity.may_manage_provider(uuid, text), identity.member_providers_allowed(), identity.can_use(uuid, uuid[], uuid, text, uuid[]) TO ` + role,
 	} {
 		if _, err := r.owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -2124,5 +2135,429 @@ func TestFeature_UPM362_GetModelsRouteReturnsStoredListOrNotFound(t *testing.T) 
 		if code, body := r.call(tc.user, http.MethodGet, "/api/providers/"+tc.id+"/models", nil); code != http.StatusNotFound {
 			t.Fatalf("%s = %d %s, want 404", tc.name, code, body)
 		}
+	}
+}
+
+func TestFeature_UPM365_MemberPolicyOffRefusesRoutesAndDirectInsert(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	memberProviders := true
+	r.svc.MemberProvidersAllowed = func(context.Context, string) (bool, error) { return memberProviders, nil }
+	r.svc.Allow = func(_ context.Context, user string) (string, error) {
+		if user == bob {
+			return domain.SharePermission, nil
+		}
+		return "", nil
+	}
+	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
+	if _, err := r.owner.Exec(context.Background(), `
+		INSERT INTO identity.users (id, email, name, role_id, joined_at)
+		VALUES
+		  ($1::uuid, 'eve@example.test', 'Eve', (SELECT id FROM identity.roles WHERE key = 'owner'), now()),
+		  ($2::uuid, 'ada@example.test', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now()),
+		  ($3::uuid, 'bob@example.test', 'Bob', (SELECT id FROM identity.roles WHERE key = 'admin'), now())`, eve, ada, bob); err != nil {
+		t.Fatal(err)
+	}
+
+	made := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Personal", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+		"models": []string{"m1"},
+	})
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET status = 'Connected' WHERE id = $1::uuid`, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	var routeID string
+	if err := r.owner.QueryRow(context.Background(), `INSERT INTO gateway.routes (name, capability, installed) VALUES ('uses-route', 'chat', true) RETURNING id::text`).Scan(&routeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(context.Background(), `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES ($1::uuid, 1, $2::uuid, 'm1')`, routeID, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	memberProviders = false
+	if _, err := r.owner.Exec(context.Background(), `UPDATE identity.workspace SET allow_member_providers = false WHERE id`); err != nil {
+		t.Fatal(err)
+	}
+	row := r.list(ada)[0]
+	if row.Status != domain.StatusWorkspaceOff || row.CanUse || row.Usable || len(row.UsableModels) != 0 {
+		t.Fatalf("turned-off member account = %+v", row)
+	}
+	route, err := (postgres.Store{Pool: r.owner}).ByNameFor(context.Background(), "uses-route", domain.Principal{User: ada, Source: domain.SourceChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := route.LinksForUser(ada, nil); err == nil {
+		t.Fatal("member account remained in the chat route while the workspace policy is off")
+	}
+	if code, raw := r.add(ada, map[string]any{"provider": "openai", "name": "Blocked", "adapter": domain.AdapterOpenAI, "plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey}); code != http.StatusForbidden {
+		t.Fatalf("member add = %d %s, want 403", code, raw)
+	}
+	if code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"name": "Blocked"}); code != http.StatusForbidden {
+		t.Fatalf("member change = %d %s, want 403", code, raw)
+	}
+	if code, raw := r.call(ada, http.MethodDelete, "/api/providers/"+made.ID, nil); code != http.StatusForbidden {
+		t.Fatalf("member remove = %d %s, want 403", code, raw)
+	}
+
+	// Row security refuses a direct write under the member role as well.
+	tx, err := r.app.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', '', true), set_config('upmo.teams', '{}', true)`, ada); err != nil {
+		t.Fatal(err)
+	}
+	tag, err := tx.Exec(context.Background(), `UPDATE gateway.provider_accounts SET name = 'forged-update-off' WHERE id = $1::uuid`, made.ID)
+	if err != nil || tag.RowsAffected() != 0 {
+		t.Fatalf("member direct update = %d rows, %v", tag.RowsAffected(), err)
+	}
+	if _, err := tx.Exec(context.Background(), `INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house, visibility) VALUES ($1::uuid, 'forged-off', 'fake', 'own_forged_off', 'local', false, 'private')`, ada); err == nil {
+		t.Fatal("member direct insert succeeded while member providers are off")
+	}
+
+	admin := r.mustAdd(bob, map[string]any{
+		"provider": "openai", "name": "Admin personal", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+		"models": []string{"m1"},
+	})
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET status = 'Connected' WHERE id = $1::uuid`, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(context.Background(), `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES ($1::uuid, 2, $2::uuid, 'm1')`, routeID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	adminRoute, err := (postgres.Store{Pool: r.owner}).ByNameFor(context.Background(), "uses-route", domain.Principal{User: bob, Source: domain.SourceChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if links, err := adminRoute.LinksForUser(bob, nil); err != nil || len(links) != 1 || links[0].Account.ID != admin.ID {
+		t.Fatalf("settings manager route links = %+v, %v", links, err)
+	}
+	store := postgres.Store{Pool: r.owner}
+	if _, ok, err := store.PinAccount(context.Background(), bob, admin.ID, "m1"); err != nil || !ok {
+		t.Fatalf("settings manager account pin = %v, %v", ok, err)
+	}
+	if _, ok, err := store.PinProvider(context.Background(), bob, nil, "openai", "m1"); err != nil || !ok {
+		t.Fatalf("settings manager provider pin = %v, %v", ok, err)
+	}
+	if _, ok, err := store.PinAccount(context.Background(), ada, made.ID, "m1"); err != nil || ok {
+		t.Fatalf("member account pin with policy off = %v, %v", ok, err)
+	}
+	if _, ok, err := store.PinProvider(context.Background(), ada, nil, "openai", "m1"); err != nil || ok {
+		t.Fatalf("member provider pin with policy off = %v, %v", ok, err)
+	}
+	shared := r.mustAdd(bob, map[string]any{
+		"provider": "openai", "name": "Shared", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+		"models": []string{"m1"}, "visibility": domain.VisibilityEveryone,
+	})
+	if got, ok, err := store.PinProvider(context.Background(), ada, nil, "openai", "m1"); err != nil || !ok || got.ID != shared.ID {
+		t.Fatalf("member provider pin with shared fallback = (%+v, %v, %v), want %s", got, ok, err, shared.ID)
+	}
+}
+
+func TestFeature_UPM365_MemberPolicyOnRestoresAccount(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	memberProviders := true
+	r.svc.MemberProvidersAllowed = func(context.Context, string) (bool, error) { return memberProviders, nil }
+	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
+	made := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Personal", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+		"models": []string{"m1"},
+	})
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET status = 'Connected' WHERE id = $1::uuid`, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	var routeID string
+	if err := r.owner.QueryRow(context.Background(), `INSERT INTO gateway.routes (name, capability, installed) VALUES ('member-on-route', 'chat', true) RETURNING id::text`).Scan(&routeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(context.Background(), `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES ($1::uuid, 1, $2::uuid, 'm1')`, routeID, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	memberProviders = false
+	if _, err := r.owner.Exec(context.Background(), `UPDATE identity.workspace SET allow_member_providers = false WHERE id`); err != nil {
+		t.Fatal(err)
+	}
+	memberProviders = true
+	if _, err := r.owner.Exec(context.Background(), `UPDATE identity.workspace SET allow_member_providers = true WHERE id`); err != nil {
+		t.Fatal(err)
+	}
+	row := r.list(ada)[0]
+	if row.Status != domain.StatusConnected || !row.CanUse || !row.Usable {
+		t.Fatalf("restored member account = %+v", row)
+	}
+	route, err := (postgres.Store{Pool: r.owner}).ByNameFor(context.Background(), "member-on-route", domain.Principal{User: ada, Source: domain.SourceChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if links, err := route.LinksForUser(ada, nil); err != nil || len(links) != 1 {
+		t.Fatalf("restored account route links = %+v, %v", links, err)
+	}
+}
+
+type disabledStreamRecorder struct {
+	failURL string
+	urls    []string
+}
+
+func (s *disabledStreamRecorder) ChatStream(_ context.Context, attempt app.Attempt, _ domain.Request, emit func(string) error) (domain.Usage, domain.FailureClass, error) {
+	s.urls = append(s.urls, attempt.BaseURL)
+	if attempt.BaseURL == s.failURL {
+		return domain.Usage{}, domain.ClassTransient, errors.New("boom")
+	}
+	if err := emit("ok"); err != nil {
+		return domain.Usage{}, domain.ClassCancelled, err
+	}
+	return domain.Usage{Arrived: true, Input: 1, Output: 1}, domain.ClassOK, nil
+}
+
+type disabledStreamSink struct{}
+
+func (disabledStreamSink) Delta(string) error            { return nil }
+func (disabledStreamSink) Notice(app.StreamNotice) error { return nil }
+func (disabledStreamSink) Done(app.StreamDone)           {}
+func (disabledStreamSink) Fail(app.StreamFail)           {}
+
+func TestFeature_UPM365_DisabledAccountIsSkippedAndRestored(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	made := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Switchable", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://disabled.example.com", "api_key": adaKey,
+		"models": []string{"m1", "m-only-disabled"},
+	})
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET status = 'Connected' WHERE id = $1::uuid`, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	var routeID string
+	if err := r.owner.QueryRow(context.Background(), `INSERT INTO gateway.routes (name, capability, installed) VALUES ('enabled-route', 'chat', true) RETURNING id::text`).Scan(&routeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(context.Background(), `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES ($1::uuid, 1, $2::uuid, 'm1')`, routeID, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	links := func() ([]domain.Link, error) {
+		route, err := (postgres.Store{Pool: r.owner}).ByNameFor(context.Background(), "enabled-route", domain.Principal{User: ada, Source: domain.SourceChat})
+		if err != nil {
+			return nil, err
+		}
+		return route.LinksForUser(ada, nil)
+	}
+	if got, err := links(); err != nil || len(got) != 1 {
+		t.Fatalf("initial dispatch links = %+v, %v", got, err)
+	}
+	code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"enabled": false})
+	if code != http.StatusOK || decode[account](t, raw).Enabled {
+		t.Fatalf("disable = %d %s", code, raw)
+	}
+	if row := r.list(ada)[0]; row.Usable || len(row.UsableModels) != 0 {
+		t.Fatalf("disabled account remains usable: %+v", row)
+	}
+	if got, err := links(); err == nil || len(got) != 0 {
+		t.Fatalf("disabled dispatch links = %+v, %v", got, err)
+	}
+	store := postgres.Store{Pool: r.owner}
+	if _, ok, err := store.PinAccount(context.Background(), ada, made.ID, "m1"); err != nil || ok {
+		t.Fatalf("disabled account pin = %v, %v", ok, err)
+	}
+	if _, ok, err := store.PinProvider(context.Background(), ada, nil, "openai", "m-only-disabled"); err != nil || ok {
+		t.Fatalf("disabled provider pin = %v, %v", ok, err)
+	}
+
+	// A route with both the disabled account and an enabled account of the
+	// same person never tries the disabled one, and PinProvider skips it.
+	backup := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Z-Backup", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://enabled.example.com", "api_key": newKey,
+		"models": []string{"m1"},
+	})
+	failing := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Failing", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://failing.example.com", "api_key": newKey,
+		"models": []string{"m-fail"},
+	})
+	var fallbackRouteID string
+	if err := r.owner.QueryRow(context.Background(), `INSERT INTO gateway.routes (name, capability, installed) VALUES ('fallback-route', 'chat', true) RETURNING id::text`).Scan(&fallbackRouteID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(context.Background(), `
+		INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
+		VALUES
+		  ($1::uuid, 1, $2::uuid, 'm1'),
+		  ($1::uuid, 2, $3::uuid, 'm1')`, fallbackRouteID, made.ID, backup.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := store.PinProvider(context.Background(), ada, nil, "openai", "m1"); err != nil || !ok || got.ID != backup.ID {
+		t.Fatalf("PinProvider with disabled and enabled accounts = (%+v, %v, %v), want %s", got, ok, err, backup.ID)
+	}
+	fallbackRoute, err := store.ByNameFor(context.Background(), "fallback-route", domain.Principal{User: ada, Source: domain.SourceChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own := fallbackRoute.OwnLinks(ada); len(own) != 1 || own[0].Account.ID != backup.ID {
+		t.Fatalf("OwnLinks = %+v, want only backup %s", own, backup.ID)
+	}
+	rec := &disabledStreamRecorder{failURL: "https://failing.example.com"}
+	dispatch := app.Dispatch{
+		Routes:  store,
+		Pins:    store,
+		Ledger:  store,
+		Secrets: Chain{DBSecrets{Pool: r.owner, Keys: r.keys}},
+		Stream:  map[string]app.StreamChatter{domain.AdapterOpenAI: rec},
+	}
+	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+	if err := dispatch.ChatStreamPinned(context.Background(), "fallback-route", "", domain.Principal{User: ada, Source: domain.SourceChat}, in, domain.Pin{AccountID: failing.ID, Model: "m-fail"}, 0, disabledStreamSink{}); err != nil {
+		t.Fatalf("pinned fallback dispatch = %v", err)
+	}
+	if slices.Contains(rec.urls, "https://disabled.example.com") || !slices.Contains(rec.urls, "https://enabled.example.com") {
+		t.Fatalf("dispatch tried urls = %v, want enabled and never disabled", rec.urls)
+	}
+	if r.count(`SELECT count(*) FROM audit.pending WHERE target_id = $1 AND action = 'provider.disable'`, made.ID) != 1 {
+		t.Fatal("provider.disable was not audited")
+	}
+	if code, raw = r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"enabled": true}); code != http.StatusOK || !decode[account](t, raw).Enabled {
+		t.Fatalf("restore = %d %s", code, raw)
+	}
+	if got, err := links(); err != nil || len(got) != 1 {
+		t.Fatalf("restored dispatch links = %+v, %v", got, err)
+	}
+	if r.count(`SELECT count(*) FROM audit.pending WHERE target_id = $1 AND action = 'provider.enable'`, made.ID) != 1 {
+		t.Fatal("provider.enable was not audited")
+	}
+}
+
+func TestFeature_UPM365_KeyHintAndSecretsStayOutOfAuditAndLogs(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	made := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Keyed", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+	})
+	if made.KeyHint != "aaaa" || made.KeyChangedAt == nil || made.KeyChangedBy != ada {
+		t.Fatalf("initial key metadata = %+v", made)
+	}
+	code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"api_key": newKey})
+	changed := decode[account](t, raw)
+	if code != http.StatusOK || changed.KeyHint != "bbbb" || changed.KeyChangedAt == nil || changed.KeyChangedBy != ada {
+		t.Fatalf("rotate = %d %+v", code, changed)
+	}
+	r.assertNoSecrets(adaKey, newKey)
+	var rows string
+	if err := r.owner.QueryRow(context.Background(), `SELECT COALESCE(string_agg(changes::text, E'\n'), '') FROM audit.pending WHERE target_id = $1`, made.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []string{adaKey, newKey, "aaaa", "bbbb"} {
+		if strings.Contains(rows, hidden) || strings.Contains(r.logs.String(), hidden) {
+			t.Fatalf("audit rows or logs contain %q", hidden)
+		}
+	}
+	if r.count(`SELECT count(*) FROM audit.pending WHERE target_id = $1 AND action IN ('provider.create', 'provider.update')`, made.ID) != 2 {
+		t.Fatal("key create and update were not both audited")
+	}
+	short := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Short key", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": "short-key",
+	})
+	if short.KeyHint != "" {
+		t.Fatalf("short key hint = %q, want empty", short.KeyHint)
+	}
+}
+
+func TestFeature_UPM365_MemberCannotSetSubscriptionOnSharedAccount(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	r.svc.Allow = func(_ context.Context, user string) (string, error) {
+		if user == ada {
+			return domain.SharePermission, nil
+		}
+		return "", nil
+	}
+	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
+	made := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Shared", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+		"visibility": domain.VisibilityEveryone,
+	})
+	if code, raw := r.call(bob, http.MethodGet, "/api/providers/"+made.ID+"/uses", nil); code != http.StatusForbidden {
+		t.Fatalf("member reads shared account uses = %d %s, want 403", code, raw)
+	}
+	if code, raw := r.call(bob, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"plan_kind": domain.PlanSubscription, "api_key": newKey}); code != http.StatusForbidden {
+		t.Fatalf("member subscription update = %d %s, want 403", code, raw)
+	}
+	bobGot := r.list(bob)
+	if len(bobGot) != 1 || !bobGot[0].CanUse || bobGot[0].CanManage || bobGot[0].KeyHint != "" || bobGot[0].KeyChangedBy != "" || bobGot[0].KeyChangedAt != nil {
+		t.Fatalf("member list shared account = %+v", bobGot)
+	}
+	got := r.list(ada)[0]
+	if got.PlanKind != domain.PlanMetered {
+		t.Fatalf("refused subscription update changed the account: %+v", got)
+	}
+	if !got.CanManage || got.KeyHint != "aaaa" || got.KeyChangedBy != ada || got.KeyChangedAt == nil {
+		t.Fatalf("settings manager key metadata = %+v", got)
+	}
+	if code, raw := r.call(ada, http.MethodPut, "/api/providers/"+made.ID, map[string]any{"plan_kind": domain.PlanSubscription}); code != http.StatusOK || decode[account](t, raw).PlanKind != domain.PlanSubscription {
+		t.Fatalf("settings manager subscription update = %d %s", code, raw)
+	}
+	if r.count(`SELECT count(*) FROM audit.pending WHERE target_id = $1 AND action = 'provider.update'`, made.ID) != 1 {
+		t.Fatal("subscription update was not audited")
+	}
+}
+
+func TestFeature_UPM365_UsesListsRoutesAgentsAndAutomations(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	ctx := context.Background()
+	var teamT, otherTeam string
+	if err := r.owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Team T') RETURNING id::text`).Scan(&teamT); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Other team') RETURNING id::text`).Scan(&otherTeam); err != nil {
+		t.Fatal(err)
+	}
+	r.svc.Teams = func(_ context.Context, user string) ([]string, error) {
+		if user == ada {
+			return []string{teamT}, nil
+		}
+		return []string{otherTeam}, nil
+	}
+	store := agentpg.Store{Pool: r.app}
+	r.svc.AgentUses = func(ctx context.Context, who app.Caller, provider string, models []string) ([]string, error) {
+		teams := "{}"
+		if len(who.Teams) > 0 {
+			teams = "{" + strings.Join(who.Teams, ",") + "}"
+		}
+		return store.ProviderUses(ctx, agentapp.Access{UserID: who.User, Allow: "agent:view", Teams: teams}, provider, models)
+	}
+	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
+	made := r.mustAdd(ada, map[string]any{
+		"provider": "openai", "name": "Uses", "adapter": domain.AdapterOpenAI,
+		"plan_kind": domain.PlanMetered, "base_url": "https://api.example.com", "api_key": adaKey,
+		"models": []string{"m1"},
+	})
+	var routeID string
+	if err := r.owner.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ('uses-route', 'chat', true) RETURNING id::text`).Scan(&routeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model) VALUES ($1::uuid, 1, $2::uuid, 'm1')`, routeID, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO agents.agents (owner_user_id, visibility, team_ids, name, slug, default_model_provider, default_model_id)
+		VALUES
+		  ($1::uuid, 'private', '{}'::uuid[], 'Own model agent', 'own-model-agent', 'openai', 'm1'),
+		  ($2::uuid, 'everyone', '{}'::uuid[], 'Shared model agent', 'shared-model-agent', 'openai', 'm1'),
+		  ($2::uuid, 'team', ARRAY[$3::uuid], 'Team model agent', 'team-model-agent', 'openai', 'm1'),
+		  ($2::uuid, 'team', ARRAY[$4::uuid], 'Other team model agent', 'other-team-model-agent', 'openai', 'm1'),
+		  ($2::uuid, 'private', '{}'::uuid[], 'Other private model agent', 'other-private-model-agent', 'openai', 'm1')`,
+		ada, bob, teamT, otherTeam); err != nil {
+		t.Fatal(err)
+	}
+	code, raw := r.call(ada, http.MethodGet, "/api/providers/"+made.ID+"/uses", nil)
+	if code != http.StatusOK {
+		t.Fatalf("uses = %d %s", code, raw)
+	}
+	uses := decode[app.ProviderUses](t, raw)
+	if !reflect.DeepEqual(uses, app.ProviderUses{
+		Routes: []string{"uses-route"}, Agents: []string{"Own model agent", "Shared model agent", "Team model agent"}, Automations: []string{},
+	}) {
+		t.Fatalf("uses = %+v", uses)
 	}
 }

@@ -156,6 +156,7 @@ type Account struct {
 	Adapter       string
 	CredentialRef string
 	PlanKind      string
+	Disabled      bool
 	House         bool
 	BaseURL       string
 	// OwnerUserID is the account's owner. It is empty only for a house
@@ -279,6 +280,9 @@ func (r Route) LinksFor(credentialRef string) ([]Link, error) {
 	}
 	var out []Link
 	for _, link := range r.Links {
+		if link.Account.Disabled {
+			continue
+		}
 		if credentialRef == "" {
 			if link.Account.House {
 				out = append(out, link)
@@ -323,6 +327,9 @@ func (r Route) LinksForUser(userID string, teamIDs []string) ([]Link, error) {
 	var own, team, everyone, house []Link
 	seen := map[linkKey]bool{}
 	for _, link := range r.Links {
+		if link.Account.Disabled {
+			continue
+		}
 		reach, via := link.Account.ReachedBy(userID, teamIDs)
 		if reach == ReachNone {
 			continue

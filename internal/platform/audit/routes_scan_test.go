@@ -91,6 +91,7 @@ func TestRouteScanResolvesRouteLoop(t *testing.T) {
 var sensitiveReads = map[string]bool{
 	"GET /api/audit/events":          true,
 	"GET /api/providers/{id}/models": true,
+	"GET /api/providers/{id}/uses":   true,
 }
 
 // compare returns the source patterns the table lacks, and the table entries

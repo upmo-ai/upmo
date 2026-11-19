@@ -11,12 +11,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/riverqueue/river"
 
+	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
@@ -249,5 +252,168 @@ func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("job inserted through a hook's Jobs never ran")
 		}
+	}
+}
+
+func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	appPool := pgtest.App(t, owner)
+
+	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+
+	cfg := Config{
+		Env:             "development",
+		SessionIdle:     identity.IdleTimeout,
+		SessionMaxAge:   identity.MaxAge,
+		PublicURL:       "http://localhost:5173",
+		WebAuthnRPID:    "localhost",
+		ShutdownTimeout: 2 * time.Second,
+	}
+	app, err := New(ctx, cfg,
+		WithPools(owner, appPool),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+	)
+	if err != nil {
+		t.Fatalf("brain.New: %v", err)
+	}
+	defer app.Close()
+
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('owner@example.com', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
+		t.Fatal(err)
+	}
+	var memberID, otherID string
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		RETURNING id::text`).Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `
+		INSERT INTO identity.users (email, name, role_id, joined_at)
+		VALUES ('bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		RETURNING id::text`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	var teamT, otherTeam string
+	if err := owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Team T') RETURNING id::text`).Scan(&teamT); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Other team') RETURNING id::text`).Scan(&otherTeam); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.team_members (team_id, user_id)
+		VALUES ($1::uuid, $2::uuid), ($3::uuid, $4::uuid)`,
+		teamT, memberID, otherTeam, otherID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO agents.agents (owner_user_id, visibility, team_ids, name, slug, default_model_provider, default_model_id)
+		VALUES
+		  ($1::uuid, 'team', ARRAY[$2::uuid], 'Team T agent', 'team-t-agent', 'openai', 'm1'),
+		  ($1::uuid, 'team', ARRAY[$3::uuid], 'Other team agent', 'other-team-agent', 'openai', 'm1'),
+		  ($1::uuid, 'private', '{}'::uuid[], 'Other private agent', 'other-private-agent', 'openai', 'm1')`,
+		otherID, teamT, otherTeam); err != nil {
+		t.Fatal(err)
+	}
+
+	uid, err := identity.ParseUserID(memberID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := identity.Sessions(appPool, cfg.SessionIdle, cfg.SessionMaxAge)
+	token, _, err := sessions.Start(ctx, uid, "passkey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: "__Host-upmo_session", Value: token, Path: "/", Secure: true, HttpOnly: true}
+
+	addReq := httptest.NewRequest(http.MethodPost, "/api/providers", strings.NewReader(`{
+		"provider":"openai","name":"Member key","adapter":"openai_compat",
+		"plan_kind":"metered","base_url":"https://api.example.com",
+		"api_key":"sk-ada-aaaa-aaaa-aaaa-aaaa","models":["m1"]
+	}`))
+	addReq.AddCookie(cookie)
+	addRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(addRec, addReq)
+	if addRec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/providers = %d %s", addRec.Code, addRec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(addRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	usesReq := httptest.NewRequest(http.MethodGet, "/api/providers/"+created.ID+"/uses", nil)
+	usesReq.AddCookie(cookie)
+	usesRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(usesRec, usesReq)
+	if usesRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/providers/%s/uses = %d %s", created.ID, usesRec.Code, usesRec.Body.String())
+	}
+	var uses struct {
+		Routes      []string `json:"routes"`
+		Agents      []string `json:"agents"`
+		Automations []string `json:"automations"`
+	}
+	if err := json.Unmarshal(usesRec.Body.Bytes(), &uses); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(uses.Agents, []string{"Team T agent"}) {
+		t.Fatalf("uses.agents = %v, want [Team T agent]", uses.Agents)
+	}
+	if len(uses.Routes) != 0 || len(uses.Automations) != 0 {
+		t.Fatalf("uses = %+v, want empty routes and automations", uses)
+	}
+
+	if _, err := owner.Exec(ctx, `UPDATE identity.workspace SET allow_member_providers = false WHERE id`); err != nil {
+		t.Fatal(err)
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/providers", nil)
+	listReq.AddCookie(cookie)
+	listRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/providers = %d %s", listRec.Code, listRec.Body.String())
+	}
+	var listed []struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range listed {
+		if row.ID == created.ID {
+			found = true
+			if row.Status != domain.StatusWorkspaceOff {
+				t.Fatalf("provider %s status = %q, want %q", created.ID, row.Status, domain.StatusWorkspaceOff)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("provider %s not found in GET /api/providers: %+v", created.ID, listed)
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodPost, "/api/providers", strings.NewReader(`{
+		"provider":"openai","name":"Blocked key","adapter":"openai_compat",
+		"plan_kind":"metered","base_url":"https://api.example.com",
+		"api_key":"sk-ada-bbbb-bbbb-bbbb-bbbb","models":["m1"]
+	}`))
+	blockedReq.AddCookie(cookie)
+	blockedRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/providers with policy off = %d %s, want 403", blockedRec.Code, blockedRec.Body.String())
 	}
 }

@@ -16,6 +16,11 @@ const (
 	ProviderTest Action = "provider.test"
 	// ProviderModelsRead reads the discovered model list stored for an account.
 	ProviderModelsRead Action = "provider.models.read"
+	// ProviderUsesRead reads the configuration references before a provider is changed.
+	ProviderUsesRead Action = "provider.uses.read"
+	// ProviderEnable and ProviderDisable record availability changes.
+	ProviderEnable  Action = "provider.enable"
+	ProviderDisable Action = "provider.disable"
 
 	// RouteCreate stores one gateway route.
 	RouteCreate Action = "route.create"
@@ -34,6 +39,9 @@ func init() {
 	register(ProviderDelete, "provider", classAPIActivity, activityUnknown)
 	register(ProviderTest, "provider", classAPIActivity, activityUnknown)
 	register(ProviderModelsRead, "provider", classAPIActivity, activityUnknown)
+	register(ProviderUsesRead, "provider", classAPIActivity, activityUnknown)
+	register(ProviderEnable, "provider", classAPIActivity, activityUnknown, "enabled")
+	register(ProviderDisable, "provider", classAPIActivity, activityUnknown, "enabled")
 
 	register(RouteCreate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
 	register(RouteUpdate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")

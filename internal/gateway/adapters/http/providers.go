@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
@@ -41,6 +42,7 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 	mux.Handle("GET /api/providers/catalog", wrap(h.catalog))
 	mux.Handle("GET /api/providers/sharing", wrap(h.sharing))
 	mux.Handle("GET /api/providers/{id}/models", wrap(h.models))
+	mux.Handle("GET /api/providers/{id}/uses", wrap(h.uses))
 	mux.Handle("POST /api/providers", wrap(h.add))
 	mux.Handle("POST /api/providers/test", wrap(h.test))
 	mux.Handle("PUT /api/providers/{id}", wrap(h.change))
@@ -55,6 +57,10 @@ type providerJSON struct {
 	PlanKind      string                `json:"plan_kind"`
 	BaseURL       string                `json:"base_url,omitempty"`
 	Status        string                `json:"status"`
+	Enabled       bool                  `json:"enabled"`
+	KeyHint       string                `json:"key_hint,omitempty"`
+	KeyChangedAt  *time.Time            `json:"key_changed_at,omitempty"`
+	KeyChangedBy  string                `json:"key_changed_by,omitempty"`
 	Models        []string              `json:"models"`
 	EnabledModels []domain.EnabledModel `json:"enabled_models"`
 	// Usable says whether the person can use the account now, and
@@ -115,6 +121,10 @@ func providerBody(p domain.Provider) providerJSON {
 		PlanKind:      p.PlanKind,
 		BaseURL:       p.BaseURL,
 		Status:        p.Status,
+		Enabled:       p.Enabled,
+		KeyHint:       p.KeyHint,
+		KeyChangedAt:  p.KeyChangedAt,
+		KeyChangedBy:  p.KeyChangedBy,
 		Models:        models,
 		EnabledModels: enabled,
 		Usable:        len(usable) > 0,
@@ -310,6 +320,19 @@ func (h ProvidersHandler) models(w http.ResponseWriter, r *http.Request) {
 	writeRouteJSON(w, http.StatusOK, rows)
 }
 
+func (h ProvidersHandler) uses(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	uses, err := h.Service.Uses(r.Context(), user, r.PathValue("id"))
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	writeRouteJSON(w, http.StatusOK, uses)
+}
+
 func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
 	if !ok {
@@ -368,6 +391,7 @@ func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 		Models     *[]string `json:"models"`
 		Visibility *string   `json:"visibility"`
 		TeamIDs    *[]string `json:"team_ids"`
+		Enabled    *bool     `json:"enabled"`
 	}
 	if !decodeProvider(w, r, &body) {
 		return
@@ -380,6 +404,7 @@ func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 		Models:     body.Models,
 		Visibility: body.Visibility,
 		TeamIDs:    body.TeamIDs,
+		Enabled:    body.Enabled,
 	})
 	if err != nil {
 		h.refuse(w, err)
@@ -468,6 +493,8 @@ func (h ProvidersHandler) refuse(w http.ResponseWriter, err error) {
 		writeRouteError(w, http.StatusTooManyRequests, "Too many tests. Try again in a minute.")
 	case errors.Is(err, app.ErrLocalPlan):
 		writeRouteError(w, http.StatusForbidden, "Only the workspace owner or an admin can use a provider on the local plan.")
+	case errors.Is(err, app.ErrMemberProvidersDisabled):
+		writeRouteError(w, http.StatusForbidden, "Your workspace has turned off member providers.")
 	default:
 		if h.Log != nil {
 			h.Log.Error("providers failed", "err", err)

@@ -43,6 +43,7 @@ const (
 	StatusRateLimited  = "Rate limited"
 	StatusKeyRejected  = "Key rejected"
 	StatusOffline      = "Offline"
+	StatusWorkspaceOff = "Turned off by your workspace"
 )
 
 // ModelModalities describes the input and output modalities a provider
@@ -74,13 +75,17 @@ type EnabledModel struct {
 // Provider is one account as a person sees it. CredentialRef names its sealed
 // key and never leaves the backend.
 type Provider struct {
-	ID            string
-	Provider      string
-	Name          string
-	Adapter       string
-	PlanKind      string
-	BaseURL       string
-	Status        string
+	ID       string
+	Provider string
+	Name     string
+	Adapter  string
+	PlanKind string
+	BaseURL  string
+	Status   string
+	Enabled  bool
+	// Disabled preserves the zero-value compatibility of provider test views;
+	// persisted accounts set it from enabled when they are scanned.
+	Disabled      bool
 	Models        []string
 	EnabledModels []EnabledModel
 	// ModelKinds holds the catalogue kind for Models when known. A model
@@ -91,7 +96,20 @@ type Provider struct {
 	OwnerUserID   string
 	CredentialRef string
 	HasKey        bool
+	KeyHint       string
+	KeyChangedAt  *time.Time
+	KeyChangedBy  string
 	Share         Share
+}
+
+// KeyHint returns the final four characters of a sufficiently long key. Short
+// keys do not reveal a hint, even to the person who saved them.
+func KeyHint(key string) string {
+	runes := []rune(key)
+	if len(runes) < 12 {
+		return ""
+	}
+	return string(runes[len(runes)-4:])
 }
 
 // Invalid is a plain-language reason an input was refused.

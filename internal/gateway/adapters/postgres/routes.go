@@ -84,7 +84,7 @@ func (s Store) ByName(ctx context.Context, name string) (domain.Route, error) {
 	}
 	r.Capability = domain.Capability(cap)
 	r.Decision = domain.Decision(decision)
-	return s.loadRouteLinks(ctx, routeID, r)
+	return s.loadRouteLinks(ctx, routeID, r, domain.Principal{})
 }
 
 // ByNameFor loads one route by name for the calling principal. System workers
@@ -140,18 +140,34 @@ func (s Store) ByNameFor(ctx context.Context, name string, who domain.Principal)
 	}
 	r.Capability = domain.Capability(cap)
 	r.Decision = domain.Decision(decision)
-	return s.loadRouteLinks(ctx, routeID, r)
+	return s.loadRouteLinks(ctx, routeID, r, who)
 }
 
-func (s Store) loadRouteLinks(ctx context.Context, routeID string, r domain.Route) (domain.Route, error) {
-	rows, err := s.Pool.Query(ctx, `
+func (s Store) loadRouteLinks(ctx context.Context, routeID string, r domain.Route, who domain.Principal) (domain.Route, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return domain.Route{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	disabled := "NOT account.enabled"
+	args := []any{routeID}
+	if _, err := uuid.Parse(who.User); err == nil {
+		if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true)`, who.User); err != nil {
+			return domain.Route{}, err
+		}
+		disabled += ` OR (account.visibility = 'private'
+			AND account.owner_user_id = $2::uuid
+			AND NOT identity.member_providers_allowed())`
+		args = append(args, who.User)
+	}
+	rows, err := tx.Query(ctx, `
 		SELECT link.position, link.model, link.weight, link.retry_budget, link.required_capabilities,
-			account.id::text, COALESCE(NULLIF(account.provider, ''), account.adapter), account.adapter, account.credential_ref, account.plan_kind, account.house, account.base_url,
+			account.id::text, COALESCE(NULLIF(account.provider, ''), account.adapter), account.adapter, account.credential_ref, account.plan_kind, (`+disabled+`), account.house, account.base_url,
 			`+accountReach("account")+`
 		FROM gateway.route_links AS link
 		JOIN gateway.provider_accounts AS account ON account.id = link.provider_account_id
 		WHERE link.route_id = $1::uuid
-		ORDER BY link.position`, routeID)
+		ORDER BY link.position`, args...)
 	if err != nil {
 		return domain.Route{}, err
 	}
@@ -161,7 +177,7 @@ func (s Store) loadRouteLinks(ctx context.Context, routeID string, r domain.Rout
 		if err := rows.Scan(
 			&link.Position, &link.Model, &link.Weight, &link.RetryBudget, &link.Need,
 			&link.Account.ID, &link.Account.Provider, &link.Account.Adapter, &link.Account.CredentialRef,
-			&link.Account.PlanKind, &link.Account.House, &link.Account.BaseURL, &link.Account.OwnerUserID,
+			&link.Account.PlanKind, &link.Account.Disabled, &link.Account.House, &link.Account.BaseURL, &link.Account.OwnerUserID,
 			&link.Account.Visibility, &link.Account.TeamIDs,
 		); err != nil {
 			return domain.Route{}, err
@@ -171,24 +187,46 @@ func (s Store) loadRouteLinks(ctx context.Context, routeID string, r domain.Rout
 	if err := rows.Err(); err != nil {
 		return domain.Route{}, err
 	}
-	return r, r.Check()
+	if err := r.Check(); err != nil {
+		return domain.Route{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Route{}, err
+	}
+	return r, nil
 }
 
 // PinAccount loads the provider account a pin names. It reads as the table
 // owner like ByName, so the caller decides whether the person may use the
 // account, from the teams it is shared with. ok is false when there is no
 // such account, or it does not list the model, as PinProvider requires.
-func (s Store) PinAccount(ctx context.Context, id, model string) (domain.Account, bool, error) {
+func (s Store) PinAccount(ctx context.Context, user, id, model string) (domain.Account, bool, error) {
+	if _, err := uuid.Parse(user); err != nil {
+		return domain.Account{}, false, nil
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return domain.Account{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true)`, user); err != nil {
+		return domain.Account{}, false, err
+	}
 	var a domain.Account
-	err := s.Pool.QueryRow(ctx, `
-		SELECT a.id::text, COALESCE(NULLIF(a.provider, ''), a.adapter), a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
+	err = tx.QueryRow(ctx, `
+		SELECT a.id::text, COALESCE(NULLIF(a.provider, ''), a.adapter), a.adapter, a.credential_ref, a.plan_kind, NOT a.enabled, a.house, a.base_url, `+accountReach("a")+`
 		FROM gateway.provider_accounts AS a
 		WHERE a.id = $1::uuid
-		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
+		  AND a.enabled
+		  AND (a.visibility <> 'private' OR a.owner_user_id <> $3::uuid OR identity.member_providers_allowed())
+		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $2)`, id, model, user).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.Disabled, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}
 	if err != nil {
+		return domain.Account{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return domain.Account{}, false, err
 	}
 	return a, true, nil
@@ -205,12 +243,25 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 	if teams == nil {
 		teams = []string{}
 	}
+	if _, err := uuid.Parse(user); err != nil {
+		return domain.Account{}, false, nil
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return domain.Account{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true)`, user); err != nil {
+		return domain.Account{}, false, err
+	}
 	var a domain.Account
-	err := s.Pool.QueryRow(ctx, `
-		SELECT a.id::text, COALESCE(NULLIF(a.provider, ''), a.adapter), a.adapter, a.credential_ref, a.plan_kind, a.house, a.base_url, `+accountReach("a")+`
+	err = tx.QueryRow(ctx, `
+		SELECT a.id::text, COALESCE(NULLIF(a.provider, ''), a.adapter), a.adapter, a.credential_ref, a.plan_kind, NOT a.enabled, a.house, a.base_url, `+accountReach("a")+`
 		FROM gateway.provider_accounts AS a
 		WHERE lower(COALESCE(NULLIF(a.provider, ''), a.adapter)) = lower($2)
+		  AND a.enabled
 		  AND identity.can_use($1::uuid, COALESCE($4::uuid[], '{}'), a.owner_user_id, a.visibility, a.team_ids)
+		  AND (a.visibility <> 'private' OR identity.member_providers_allowed())
 		  AND EXISTS (SELECT 1 FROM gateway.provider_models AS m WHERE m.account_id = a.id AND m.model = $3)
 		ORDER BY
 			CASE
@@ -220,11 +271,14 @@ func (s Store) PinProvider(ctx context.Context, user string, teams []string, pro
 				ELSE 3
 			END,
 			a.name
-		LIMIT 1`, user, provider, model, teams).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
+		LIMIT 1`, user, provider, model, teams).Scan(&a.ID, &a.Provider, &a.Adapter, &a.CredentialRef, &a.PlanKind, &a.Disabled, &a.House, &a.BaseURL, &a.OwnerUserID, &a.Visibility, &a.TeamIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, false, nil
 	}
 	if err != nil {
+		return domain.Account{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return domain.Account{}, false, err
 	}
 	return a, true, nil

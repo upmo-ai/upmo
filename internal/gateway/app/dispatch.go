@@ -147,7 +147,7 @@ type Teams interface {
 type PinAccounts interface {
 	// PinAccount loads the account with the teams it is shared with, so the
 	// caller can judge whether the person may use it.
-	PinAccount(ctx context.Context, id, model string) (account domain.Account, ok bool, err error)
+	PinAccount(ctx context.Context, user, id, model string) (account domain.Account, ok bool, err error)
 	// PinProvider resolves a provider name and a model for one person, who
 	// is on teams: their own account of that provider that lists the model,
 	// else one shared with a team of theirs, else a workspace one. ok is
@@ -1133,7 +1133,7 @@ func (d Dispatch) pinAccount(ctx context.Context, who domain.Principal, teams []
 	if pin.Provider != "" {
 		account, found, err = d.Pins.PinProvider(ctx, who.User, teams, pin.Provider, pin.Model)
 	} else {
-		account, found, err = d.Pins.PinAccount(ctx, pin.AccountID, pin.Model)
+		account, found, err = d.Pins.PinAccount(ctx, who.User, pin.AccountID, pin.Model)
 	}
 	if err != nil || !found {
 		return domain.Account{}, false, domain.ReachNone, "", err
@@ -1159,6 +1159,9 @@ func (d Dispatch) pinLink(route domain.Route, account domain.Account, found bool
 }
 
 func (d Dispatch) skip(link domain.Link) (bool, error) {
+	if link.Account.Disabled {
+		return true, fmt.Errorf("gateway: provider account is disabled")
+	}
 	if d.Gates != nil && !d.Gates.Closed(link.Account.CredentialRef) {
 		return true, domain.ErrCooling
 	}

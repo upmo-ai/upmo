@@ -999,7 +999,7 @@ func TestDispatchChatStreamStopsWhenTheTeamsCannotBeRead(t *testing.T) {
 // memPins answers pins from a fixed set of accounts.
 type memPins struct{ accounts map[string]domain.Account }
 
-func (m memPins) PinAccount(_ context.Context, id, _ string) (domain.Account, bool, error) {
+func (m memPins) PinAccount(_ context.Context, _, id, _ string) (domain.Account, bool, error) {
 	account, ok := m.accounts[id]
 	return account, ok, nil
 }
