@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
@@ -26,6 +27,25 @@ func scanWorkspace(row pgx.Row) (domain.Workspace, error) {
 		&w.AllowMemberAgents, &w.SSORequired, &w.UpdatedAt,
 	)
 	return w, err
+}
+
+// WorkspaceTimeZone reads the workspace's configured time zone on the owner pool.
+func WorkspaceTimeZone(ctx context.Context, owner *pgxpool.Pool) (string, error) {
+	if owner == nil {
+		return "UTC", nil
+	}
+	var tz string
+	err := owner.QueryRow(ctx, `SELECT time_zone FROM identity.workspace WHERE id = true`).Scan(&tz)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "UTC", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if tz == "" {
+		return "UTC", nil
+	}
+	return tz, nil
 }
 
 // GetWorkspace reads the single-row workspace settings under row security for actor.

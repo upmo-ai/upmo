@@ -118,6 +118,34 @@ CREATE POLICY ledger_select ON gateway.ledger
 GRANT SELECT ON gateway.ledger TO upmo_app;
 REVOKE INSERT, UPDATE, DELETE ON gateway.ledger FROM upmo_app;
 
+ALTER TABLE gateway.usage_limits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_limits FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_spend ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_spend FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_holds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_holds FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY usage_limits_service ON gateway.usage_limits
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+REVOKE ALL ON gateway.usage_limits FROM upmo_app;
+
+CREATE POLICY usage_spend_service ON gateway.usage_spend
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+REVOKE ALL ON gateway.usage_spend FROM upmo_app;
+
+CREATE POLICY usage_holds_service ON gateway.usage_holds
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+REVOKE ALL ON gateway.usage_holds FROM upmo_app;
+
 CREATE POLICY routes_service ON gateway.routes
   FOR ALL
   USING (gateway.serving())
@@ -200,6 +228,15 @@ GRANT INSERT, UPDATE, DELETE ON gateway.route_links TO upmo_app;
 -- +goose Down
 
 REVOKE ALL ON gateway.ledger FROM upmo_app;
+DROP POLICY IF EXISTS usage_holds_service ON gateway.usage_holds;
+ALTER TABLE gateway.usage_holds NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_holds DISABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS usage_spend_service ON gateway.usage_spend;
+ALTER TABLE gateway.usage_spend NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_spend DISABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS usage_limits_service ON gateway.usage_limits;
+ALTER TABLE gateway.usage_limits NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_limits DISABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS ledger_select ON gateway.ledger;
 DROP POLICY IF EXISTS ledger_service ON gateway.ledger;
 ALTER TABLE gateway.ledger NO FORCE ROW LEVEL SECURITY;

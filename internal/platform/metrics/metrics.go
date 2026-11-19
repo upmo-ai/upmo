@@ -47,20 +47,22 @@ type Registry struct {
 	families   map[string]*family
 	collectors []func(context.Context)
 
-	httpRequests        *CounterVec
-	httpDuration        *HistogramVec
-	sseStreamsActive    *GaugeVec
-	riverJobs           *CounterVec
-	riverJobDuration    *HistogramVec
-	riverQueueDepth     *GaugeVec
-	gatewayCalls        *CounterVec
-	gatewayDuration     *HistogramVec
-	gatewayTokens       *CounterVec
-	gatewayCostMicroUSD *CounterVec
-	gatewayCacheHits    *CounterVec
-	gatewayCacheMisses  *CounterVec
-	sandboxdActiveSeats *GaugeVec
-	sealedRowsUnknown   *GaugeVec
+	httpRequests               *CounterVec
+	httpDuration               *HistogramVec
+	sseStreamsActive           *GaugeVec
+	riverJobs                  *CounterVec
+	riverJobDuration           *HistogramVec
+	riverQueueDepth            *GaugeVec
+	gatewayCalls               *CounterVec
+	gatewayDuration            *HistogramVec
+	gatewayTokens              *CounterVec
+	gatewayCostMicroUSD        *CounterVec
+	gatewayCacheHits           *CounterVec
+	gatewayCacheMisses         *CounterVec
+	gatewaySpendMismatches     *CounterVec
+	gatewayHoldReleaseFailures *CounterVec
+	sandboxdActiveSeats        *GaugeVec
+	sealedRowsUnknown          *GaugeVec
 }
 
 // NewRegistry creates a Registry pre-configured with standard Upmo metrics.
@@ -130,6 +132,15 @@ func NewRegistry() *Registry {
 		"upmo_gateway_cache_misses_total",
 		"Total model gateway attempts with input tokens and no prompt cache read.",
 		"provider", "model",
+	)
+	r.gatewaySpendMismatches = r.CounterVec(
+		"upmo_gateway_spend_mismatches_total",
+		"Total monthly spend counter mismatches found against the gateway ledger.",
+		"kind",
+	)
+	r.gatewayHoldReleaseFailures = r.CounterVec(
+		"upmo_gateway_hold_release_failures_total",
+		"Total failures releasing unsettled gateway spend holds.",
 	)
 	r.sandboxdActiveSeats = r.GaugeVec(
 		"upmo_sandboxd_active_seats",
@@ -293,6 +304,22 @@ func (r *Registry) IncGatewayCacheMiss(provider, model string) {
 		return
 	}
 	r.gatewayCacheMisses.Inc(provider, model)
+}
+
+// IncGatewaySpendMismatch records a discrepancy between usage_spend and ledger sums.
+func (r *Registry) IncGatewaySpendMismatch(kind string) {
+	if r == nil {
+		return
+	}
+	r.gatewaySpendMismatches.Inc(kind)
+}
+
+// IncGatewayHoldReleaseFailure records a failure releasing an unsettled spend hold.
+func (r *Registry) IncGatewayHoldReleaseFailure() {
+	if r == nil {
+		return
+	}
+	r.gatewayHoldReleaseFailures.Inc()
 }
 
 // SetSandboxdActiveSeats sets the current active sandbox seat count.

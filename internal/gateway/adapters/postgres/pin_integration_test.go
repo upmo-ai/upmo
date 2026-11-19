@@ -249,6 +249,7 @@ func newPinWorld(t *testing.T, fail map[string]domain.FailureClass) pinWorld {
 			Routes:  store,
 			Pins:    store,
 			Ledger:  store,
+			Limits:  store,
 			Secrets: pinSecrets(pinKeys),
 			Caps:    func(string) ([]string, bool) { return []string{"tools"}, true },
 			Chat:    map[string]app.Chatter{domain.AdapterFake: adapter},

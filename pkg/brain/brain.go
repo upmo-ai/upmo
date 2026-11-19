@@ -658,6 +658,9 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	audit.AddSealer(workers, owner, os.Stdout)
 	audit.AddRetention(workers, owner, cfg.AuditRetentionDays)
 	audit.AddVerifier(workers, owner)
+	gateway.AddSpendChecker(workers, owner, func(ctx context.Context) (string, error) {
+		return identity.WorkspaceTimeZone(ctx, owner)
+	}, reg, log)
 	auditPush := cfg.AuditWebhookURL != "" || cfg.AuditSyslogAddr != ""
 	if auditPush {
 		audit.AddPusher(workers, owner, audit.PushConfig{
@@ -734,7 +737,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	periodic := []*river.PeriodicJob{
 		chat.SweepPeriodic(), audit.SealPeriodic(),
 		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
-		provision.NonceSweepPeriodic(),
+		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
 	}
 	if auditPush {
 		periodic = append(periodic, audit.PushPeriodic())

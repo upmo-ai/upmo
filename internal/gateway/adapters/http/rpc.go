@@ -208,7 +208,7 @@ func (h Handler) decide(w http.ResponseWriter, r *http.Request) {
 		Options: body.Options,
 	})
 	if err != nil {
-		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+		h.failDispatch(w, body.principal(), err)
 		return
 	}
 	httpserver.WriteJSON(w, http.StatusOK, decideResponse{
@@ -230,7 +230,7 @@ func (h Handler) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.Dispatch.ChatCall(r.Context(), body.Route, body.CredentialRef, body.principal(), chatInput(body))
 	if err != nil {
-		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+		h.failDispatch(w, body.principal(), err)
 		return
 	}
 	httpserver.WriteJSON(w, http.StatusOK, chatResponse{
@@ -274,14 +274,20 @@ func (h Handler) chatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := chatInput(body)
-	out := &chatStreamOut{w: w, rc: http.NewResponseController(w), log: h.Log}
+	who := body.principal()
+	out := &chatStreamOut{w: w, rc: http.NewResponseController(w), log: h.Log, who: who}
 	if err := h.streamReply(r.Context(), w, body, in, out); err != nil {
 		switch {
 		case !out.started:
-			httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+			h.failDispatch(w, who, err)
 		case !out.ended:
-			// The call stopped between frames; the stream still needs its end.
-			out.internalFailure(err)
+			var limitErr domain.LimitReached
+			if errors.As(err, &limitErr) {
+				out.limitFailure(limitErr)
+			} else {
+				// The call stopped between frames; the stream still needs its end.
+				out.internalFailure(err)
+			}
 		}
 	}
 }
@@ -357,6 +363,7 @@ type chatStreamOut struct {
 	rc      *http.ResponseController
 	enc     *json.Encoder
 	log     *slog.Logger
+	who     domain.Principal
 	started bool
 	ended   bool
 }
@@ -434,6 +441,50 @@ func (s *chatStreamOut) internalFailure(err error) {
 	}})
 }
 
+func (s *chatStreamOut) limitFailure(err domain.LimitReached) {
+	s.ended = true
+	logLimitReached(s.log, s.who, err)
+	_ = s.frame(chatStreamError{Error: chatStreamFailure{
+		FailureClass: "limit_reached",
+		Message:      err.Error(),
+	}})
+}
+
+func (h Handler) failDispatch(w http.ResponseWriter, who domain.Principal, err error) {
+	var limitErr domain.LimitReached
+	switch {
+	case errors.As(err, &limitErr):
+		logLimitReached(h.Log, who, limitErr)
+		httpserver.Fail(w, nil, limitErr.Error(), http.StatusTooManyRequests, err)
+	default:
+		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+	}
+}
+
+func logLimitReached(log *slog.Logger, who domain.Principal, err domain.LimitReached) {
+	if log == nil {
+		return
+	}
+	log.Warn("gateway spend limit reached",
+		"kind", err.Kind,
+		"subject_id", limitSubject(err.Kind, who),
+		"limit_micro_usd", err.Limit,
+		"spent_micro_usd", err.Spent,
+		"held_micro_usd", err.Held,
+	)
+}
+
+func limitSubject(kind string, who domain.Principal) string {
+	switch kind {
+	case domain.LimitPerson, domain.LimitPersonDefault:
+		return who.User
+	case domain.LimitAutomation:
+		return who.AutomationID
+	default:
+		return ""
+	}
+}
+
 // logStream records the real error server-side; it never reaches the wire.
 func (s *chatStreamOut) logStream(msg string, class domain.FailureClass, model string, err error) {
 	if s.log != nil {
@@ -479,7 +530,7 @@ func (h Handler) embed(w http.ResponseWriter, r *http.Request) {
 	}
 	model, vectors, err := h.Dispatch.EmbedCall(r.Context(), body.Route, body.CredentialRef, body.principal(), body.Inputs)
 	if err != nil {
-		httpserver.Fail(w, nil, err.Error(), http.StatusBadRequest, err)
+		h.failDispatch(w, body.principal(), err)
 		return
 	}
 	httpserver.WriteJSON(w, http.StatusOK, map[string]any{"model": model, "vectors": vectors})

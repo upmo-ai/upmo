@@ -133,7 +133,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 	if err != nil {
 		return nil, err
 	}
-	gateway.Mount(mux, pool, backends, log, gateway.WithMetrics(reg))
+	gateway.Mount(mux, pool, backends, log,
+		gateway.WithMetrics(reg),
+		gateway.WithTimeZone(func(ctx context.Context) (string, error) {
+			return identity.WorkspaceTimeZone(ctx, pool)
+		}),
+	)
 	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, mux)
 	if err != nil {
 		return nil, err

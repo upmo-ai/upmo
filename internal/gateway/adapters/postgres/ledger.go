@@ -3,8 +3,10 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/kernel"
@@ -108,21 +110,29 @@ func (s Store) HighestRate(ctx context.Context, vendor string) (int64, bool, err
 	return *rate, true, nil
 }
 
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // Record writes one attempt. cost_micro_usd stays NULL for non-metered plans, and
 // owner_team_id when the account was not reached through a team.
 func (s Store) Record(ctx context.Context, row domain.Entry) error {
-	_, err := s.Pool.Exec(ctx, `
+	return insertLedger(ctx, s.Pool, row)
+}
+
+func insertLedger(ctx context.Context, db execer, row domain.Entry) error {
+	_, err := db.Exec(ctx, `
 		INSERT INTO gateway.ledger (
 			route, link_position, provider_account_id, model, plan_kind, failure_class,
 			user_id, agent_id, run_id, parent_run_id,
 			input_tokens, output_tokens, cache_read, cache_write, reasoning,
 			usage_arrived, cost_micro_usd, estimated, source, source_id, automation_id,
-			latency_ms, charged_to_limit, price_source, price_version, owner_team_id
+			latency_ms, charged_to_limit, price_source, price_version, owner_team_id, at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10,
 			$11, $12, $13, $14, $15,
-			$16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+			$16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, COALESCE($27, now())
 		)`,
 		row.Route, row.LinkPosition, uuidOrNil(row.AccountID), row.Model, row.PlanKind, string(row.Class),
 		uuidOrNil(row.Principal.User), uuidOrNil(row.Principal.Agent),
@@ -130,9 +140,16 @@ func (s Store) Record(ctx context.Context, row domain.Entry) error {
 		row.Usage.Input, row.Usage.Output, row.Usage.CacheRead, row.Usage.CacheWrite, row.Usage.Reasoning,
 		row.Usage.Arrived, microOrNil(row.CostMicroUSD), row.Estimated, row.Principal.Source,
 		uuidOrNil(row.Principal.SourceID), uuidOrNil(row.Principal.AutomationID), intOrNil(row.LatencyMS), row.ChargedToLimit,
-		nullIfEmpty(row.PriceSource), nullIfEmpty(row.PriceVersion), uuidOrNil(row.OwnerTeamID),
+		nullIfEmpty(row.PriceSource), nullIfEmpty(row.PriceVersion), uuidOrNil(row.OwnerTeamID), timeOrNil(row.At),
 	)
 	return err
+}
+
+func timeOrNil(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }
 
 func nullIfEmpty(s string) any {

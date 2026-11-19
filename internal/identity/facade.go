@@ -162,3 +162,8 @@ func Workspace(pool *pgxpool.Pool) app.Workspace {
 func MountWorkspace(mux *http.ServeMux, workspace app.Workspace, sessions app.Service) {
 	(httpapi.Workspace{Workspace: workspace, Sessions: sessions}).Mount(mux)
 }
+
+// WorkspaceTimeZone reads the workspace's configured time zone on the owner pool.
+func WorkspaceTimeZone(ctx context.Context, owner *pgxpool.Pool) (string, error) {
+	return postgres.WorkspaceTimeZone(ctx, owner)
+}

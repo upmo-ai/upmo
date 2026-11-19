@@ -70,13 +70,21 @@ func adapters() map[string]adapter {
 type MountOption func(*mountConfig)
 
 type mountConfig struct {
-	metrics *metrics.Registry
+	metrics  *metrics.Registry
+	timeZone func(context.Context) (string, error)
 }
 
 // WithMetrics attaches a Prometheus registry to the gateway dispatch handler.
 func WithMetrics(reg *metrics.Registry) MountOption {
 	return func(c *mountConfig) {
 		c.metrics = reg
+	}
+}
+
+// WithTimeZone attaches the workspace time zone lookup used for spend limit periods.
+func WithTimeZone(fn func(context.Context) (string, error)) MountOption {
+	return func(c *mountConfig) {
+		c.timeZone = fn
 	}
 }
 
@@ -101,20 +109,23 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 	}
 	httpapi.Handler{
 		Dispatch: app.Dispatch{
-			Routes:  store,
-			Pins:    store,
-			Secrets: secrets,
-			Prices:  store,
-			Ledger:  store,
-			Bundles: store,
-			Teams:   store,
-			Decide:  decide,
-			Chat:    chat,
-			Stream:  stream,
-			Embed:   embed,
-			Gates:   app.NewGates(),
-			Status:  app.NewStatusRecorder(store.RecordStatus),
-			Metrics: cfg.metrics,
+			Routes:   store,
+			Pins:     store,
+			Secrets:  secrets,
+			Prices:   store,
+			Ledger:   store,
+			Limits:   store,
+			TimeZone: cfg.timeZone,
+			Bundles:  store,
+			Teams:    store,
+			Decide:   decide,
+			Chat:     chat,
+			Stream:   stream,
+			Embed:    embed,
+			Gates:    app.NewGates(),
+			Status:   app.NewStatusRecorder(store.RecordStatus),
+			Metrics:  cfg.metrics,
+			Log:      log,
 			Caps: func(model string) ([]string, bool) {
 				have, ok, err := store.Capabilities(context.Background(), model)
 				if err != nil || !ok {

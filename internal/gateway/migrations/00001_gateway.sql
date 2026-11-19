@@ -167,6 +167,43 @@ CREATE INDEX ledger_parent ON gateway.ledger (parent_run_id);
 CREATE INDEX ledger_at ON gateway.ledger (at);
 CREATE INDEX ledger_user_at ON gateway.ledger (user_id, at);
 
+CREATE TABLE gateway.usage_limits (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  kind text NOT NULL,
+  subject_id uuid,
+  amount_micro_usd bigint NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT usage_limits_kind_check CHECK (kind IN ('workspace', 'person_default', 'person', 'automation', 'ceiling')),
+  CONSTRAINT usage_limits_subject_check CHECK (
+    (kind IN ('workspace', 'person_default', 'ceiling') AND subject_id IS NULL)
+    OR (kind IN ('person', 'automation') AND subject_id IS NOT NULL)
+  ),
+  CONSTRAINT usage_limits_amount_check CHECK (amount_micro_usd >= 0),
+  CONSTRAINT usage_limits_key UNIQUE NULLS NOT DISTINCT (kind, subject_id)
+);
+
+CREATE TABLE gateway.usage_spend (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  kind text NOT NULL,
+  subject_id uuid,
+  period_start date NOT NULL,
+  spent_micro_usd bigint NOT NULL DEFAULT 0,
+  held_micro_usd bigint NOT NULL DEFAULT 0,
+  CONSTRAINT usage_spend_kind_check CHECK (kind IN ('workspace', 'person', 'automation')),
+  CONSTRAINT usage_spend_subject_check CHECK (
+    (kind = 'workspace' AND subject_id IS NULL)
+    OR (kind IN ('person', 'automation') AND subject_id IS NOT NULL)
+  ),
+  CONSTRAINT usage_spend_spent_check CHECK (spent_micro_usd >= 0),
+  CONSTRAINT usage_spend_held_check CHECK (held_micro_usd >= 0),
+  CONSTRAINT usage_spend_key UNIQUE NULLS NOT DISTINCT (kind, subject_id, period_start)
+);
+
+CREATE TABLE gateway.usage_holds (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE VIEW gateway.task_tokens AS
 SELECT coalesce(parent_run_id, run_id) AS task_id,
   sum(input_tokens + output_tokens + cache_read + cache_write + reasoning)::bigint AS tokens
@@ -191,6 +228,9 @@ $$;
 
 DROP FUNCTION IF EXISTS gateway.cache_hit_alert(int, int);
 DROP VIEW IF EXISTS gateway.task_tokens;
+DROP TABLE IF EXISTS gateway.usage_holds;
+DROP TABLE IF EXISTS gateway.usage_spend;
+DROP TABLE IF EXISTS gateway.usage_limits;
 DROP TABLE IF EXISTS gateway.ledger;
 DROP TABLE IF EXISTS gateway.catalog_meta;
 DROP TABLE IF EXISTS gateway.prices;

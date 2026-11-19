@@ -1,6 +1,10 @@
 package domain
 
-import "github.com/upmo-ai/upmo/internal/kernel"
+import (
+	"time"
+
+	"github.com/upmo-ai/upmo/internal/kernel"
+)
 
 // CacheHitAlertBelow is the cache hit rate that should raise an alert (UPM-26).
 const CacheHitAlertBelow = 0.7
@@ -81,6 +85,7 @@ type Price struct {
 
 // Entry is one ledger row, written per attempt.
 type Entry struct {
+	At             time.Time
 	Route          string
 	LinkPosition   int
 	AccountID      string

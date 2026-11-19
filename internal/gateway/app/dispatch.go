@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -90,6 +91,34 @@ type Ledger interface {
 	Record(ctx context.Context, row domain.Entry) error
 }
 
+// Reservation is a temporary spend hold taken before a metered attempt.
+type Reservation struct {
+	ID           string
+	At           time.Time
+	PeriodStart  time.Time
+	Amount       int64
+	UserID       string
+	Source       string
+	AutomationID string
+}
+
+// ReserveRequest describes a metered attempt before it calls a provider.
+type ReserveRequest struct {
+	UserID       string
+	Source       string
+	AutomationID string
+	Estimate     int64
+	PeriodStart  time.Time
+}
+
+// Limits reserves spend estimates before metered attempts, settles them in
+// the same transaction as the ledger row, and releases unsettled holds.
+type Limits interface {
+	Reserve(ctx context.Context, req ReserveRequest) (Reservation, error)
+	Settle(ctx context.Context, res Reservation, row domain.Entry) error
+	Release(ctx context.Context, res Reservation) error
+}
+
 // Bundles loads a named tool surface.
 type Bundles interface {
 	Bundle(ctx context.Context, name string) (domain.Bundle, error)
@@ -142,6 +171,13 @@ type Dispatch struct {
 	Secrets Secrets
 	Prices  Prices
 	Ledger  Ledger
+	Limits  Limits
+	// TimeZone returns the workspace IANA time zone for monthly spend periods.
+	// Nil defaults to UTC.
+	TimeZone func(ctx context.Context) (string, error)
+	// Now returns the current time for limit periods and ledger timestamps.
+	// Nil defaults to time.Now.
+	Now     func() time.Time
 	Bundles Bundles
 	// Teams says which teams a person is on, for the accounts shared with
 	// them. Nil means nobody is on a team.
@@ -157,15 +193,121 @@ type Dispatch struct {
 	Status Statuses
 	// Metrics records gateway calls, latency, tokens, cost, and cache hits.
 	Metrics *metrics.Registry
+	// Log records internal dispatch failures such as failed hold releases.
+	Log *slog.Logger
 }
 
-func (d Dispatch) recordAttempt(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, started time.Time, reached, producedOutput bool) (*float64, *int64, int, error) {
+func (d Dispatch) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
+}
+
+func (d Dispatch) periodStart(ctx context.Context, at time.Time) (time.Time, error) {
+	tz := "UTC"
+	if d.TimeZone != nil {
+		var err error
+		tz, err = d.TimeZone(ctx)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if tz == "" {
+			tz = "UTC"
+		}
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("gateway: invalid workspace time zone %q: %w", tz, err)
+	}
+	return domain.PeriodStart(at, loc), nil
+}
+
+func (d Dispatch) estimateRate(ctx context.Context, vendor string) (int64, error) {
+	if prices, ok := d.Prices.(ProviderPrices); ok {
+		rate, hasRate, err := prices.HighestRate(ctx, vendor)
+		if err != nil {
+			return 0, err
+		}
+		if hasRate && rate > 0 {
+			return rate, nil
+		}
+	}
+	return domain.EstimatedMicroUSDPerMTok, nil
+}
+
+func (d Dispatch) reserve(ctx context.Context, link domain.Link, who domain.Principal, inputBytes, maxOutputTokens int) (Reservation, error) {
+	if d.Limits == nil || !domain.AccountChargedToLimit(link.Account) {
+		return Reservation{}, nil
+	}
+	at := d.now()
+	periodStart, err := d.periodStart(ctx, at)
+	if err != nil {
+		return Reservation{}, err
+	}
+	rate, err := d.estimateRate(ctx, domain.VendorKey(link.Account.Provider))
+	if err != nil {
+		return Reservation{}, err
+	}
+	estimate := domain.ReserveEstimate(link.Account.PlanKind, rate, inputBytes, maxOutputTokens)
+	res, err := d.Limits.Reserve(ctx, ReserveRequest{
+		UserID:       who.User,
+		Source:       who.Source,
+		AutomationID: who.AutomationID,
+		Estimate:     estimate,
+		PeriodStart:  periodStart,
+	})
+	if err != nil {
+		return Reservation{}, err
+	}
+	res.At = at
+	return res, nil
+}
+
+func (d Dispatch) releaseHold(ctx context.Context, res Reservation) {
+	if res.Amount <= 0 || d.Limits == nil {
+		return
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := d.Limits.Release(rctx, res); err != nil {
+		d.Metrics.IncGatewayHoldReleaseFailure()
+		logger := d.Log
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.ErrorContext(rctx, "gateway release hold failed",
+			"reservation_id", res.ID,
+			"amount_micro_usd", res.Amount,
+			"err", err,
+		)
+	}
+}
+
+func (d Dispatch) withReservation(ctx context.Context, link domain.Link, who domain.Principal, inputBytes, maxOutputTokens int, fn func(res Reservation) (settled bool, err error)) error {
+	res, err := d.reserve(ctx, link, who, inputBytes, maxOutputTokens)
+	if err != nil {
+		return err
+	}
+	settled := false
+	defer func() {
+		if !settled {
+			d.releaseHold(ctx, res)
+		}
+	}()
+	settled, err = fn(res)
+	return err
+}
+
+func (d Dispatch) recordAttempt(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, started time.Time, reached, producedOutput bool, res Reservation) (*float64, *int64, int, error) {
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	var latencyMS *int
 	if reached {
 		ms := int(time.Since(started).Milliseconds())
 		latencyMS = &ms
 	}
-	cost, micro, ctxWindow, err := d.writeCost(ctx, route, link, who, class, usage, inputBytes, outputBytes, latencyMS, producedOutput)
+	cost, micro, ctxWindow, err := d.writeCost(actx, route, link, who, class, usage, inputBytes, outputBytes, latencyMS, producedOutput, res)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -211,19 +353,20 @@ func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usa
 // it priced and the model's context window, so a caller can report the same
 // numbers the row holds. The row keeps the team the link was reached through
 // (link.ViaTeam), as it was now.
-func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, latencyMS *int, producedOutput bool) (*float64, *int64, int, error) {
+func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, latencyMS *int, producedOutput bool, res Reservation) (*float64, *int64, int, error) {
 	knownZero := class != domain.ClassOK && !usage.Arrived && !producedOutput
 	micro, estimated, priceSource, version, ctxWindow, err := d.priceCost(ctx, link, usage, inputBytes, outputBytes, knownZero)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 	cost := domain.USDFromMicro(micro)
-	if d.Ledger == nil {
-		return cost, micro, ctxWindow, nil
+	at := res.At
+	if at.IsZero() {
+		at = d.now()
 	}
-	charged := !knownZero && link.Account.PlanKind == domain.PlanMetered &&
-		(link.Account.House || link.Account.Visibility == domain.VisibilityTeam || link.Account.Visibility == domain.VisibilityEveryone)
-	return cost, micro, ctxWindow, d.Ledger.Record(ctx, domain.Entry{
+	charged := !knownZero && domain.AccountChargedToLimit(link.Account)
+	entry := domain.Entry{
+		At:             at,
 		Route:          route,
 		LinkPosition:   link.Position,
 		AccountID:      link.Account.ID,
@@ -239,7 +382,14 @@ func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link,
 		PriceSource:    priceSource,
 		PriceVersion:   version,
 		OwnerTeamID:    link.ViaTeam,
-	})
+	}
+	if res.Amount > 0 && d.Limits != nil {
+		return cost, micro, ctxWindow, d.Limits.Settle(ctx, res, entry)
+	}
+	if d.Ledger == nil {
+		return cost, micro, ctxWindow, nil
+	}
+	return cost, micro, ctxWindow, d.Ledger.Record(ctx, entry)
 }
 
 // priceCost prices one attempt exactly as its ledger row does: the cost in
@@ -262,14 +412,10 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 	}
 	estimateRate := domain.EstimatedMicroUSDPerMTok
 	if domain.NeedsEstimate(link.Account.PlanKind, usage, price, found, knownZero) {
-		if prices, ok := d.Prices.(ProviderPrices); ok {
-			rate, hasRate, err := prices.HighestRate(ctx, vendor)
-			if err != nil {
-				return nil, false, "", "", 0, err
-			}
-			if hasRate {
-				estimateRate = rate
-			}
+		var err error
+		estimateRate, err = d.estimateRate(ctx, vendor)
+		if err != nil {
+			return nil, false, "", "", 0, err
 		}
 	}
 	micro, estimated, source := domain.MeteredCost(link.Account.PlanKind, usage, price, found, estimateRate, inputBytes, outputBytes, knownZero)
@@ -343,7 +489,7 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false, Reservation{}); werr != nil {
 				return domain.DecideResult{}, werr
 			}
 			if domain.NextAction(domain.ClassCredential, 0) == domain.ActionNext {
@@ -355,10 +501,22 @@ func (d Dispatch) DecideCall(ctx context.Context, routeName, credentialRef strin
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
-			started := time.Now()
-			result, usage, class, err := decider.Decide(ctx, attempt, req)
-			cost, micro, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, inputBytes, 0, started, true, usage.Output > 0)
-			if werr != nil {
+			var (
+				result    domain.DecideResult
+				usage     domain.Usage
+				class     domain.FailureClass
+				cost      *float64
+				micro     *int64
+				ctxWindow int
+				err       error
+			)
+			if werr := d.withReservation(ctx, link, who, inputBytes, 0, func(res Reservation) (bool, error) {
+				started := time.Now()
+				result, usage, class, err = decider.Decide(ctx, attempt, req)
+				var rerr error
+				cost, micro, ctxWindow, rerr = d.recordAttempt(ctx, routeName, link, who, class, usage, inputBytes, 0, started, true, usage.Output > 0, res)
+				return rerr == nil, rerr
+			}); werr != nil {
 				return domain.DecideResult{}, werr
 			}
 			if class == domain.ClassOK && err == nil {
@@ -463,7 +621,7 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false, Reservation{}); werr != nil {
 				return domain.ChatResult{}, werr
 			}
 			last = err
@@ -472,10 +630,21 @@ func (d Dispatch) ChatCall(ctx context.Context, routeName, credentialRef string,
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
-			started := time.Now()
-			res, class, err := chatter.Chat(ctx, attempt, built)
-			cost, micro, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, inputBytes, 0, started, true, res.Usage.Output > 0)
-			if werr != nil {
+			var (
+				res       domain.ChatResult
+				class     domain.FailureClass
+				cost      *float64
+				micro     *int64
+				ctxWindow int
+				err       error
+			)
+			if werr := d.withReservation(ctx, link, who, inputBytes, built.MaxOutputTokens, func(reservation Reservation) (bool, error) {
+				started := time.Now()
+				res, class, err = chatter.Chat(ctx, attempt, built)
+				var rerr error
+				cost, micro, ctxWindow, rerr = d.recordAttempt(ctx, routeName, link, who, class, res.Usage, inputBytes, 0, started, true, res.Usage.Output > 0, reservation)
+				return rerr == nil, rerr
+			}); werr != nil {
 				return domain.ChatResult{}, werr
 			}
 			if class == domain.ClassOK && err == nil {
@@ -695,7 +864,7 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false, Reservation{}); werr != nil {
 				return werr
 			}
 			last, lastModel, lastClass = err, link.Model, domain.ClassCredential
@@ -711,33 +880,44 @@ func (d Dispatch) ChatStreamPinned(ctx context.Context, routeName, credentialRef
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
-			started := time.Now()
-			emitted := false
-			outputBytes := 0
-			var toolEmit func(ToolCallDelta) error
-			if tsink, ok := sink.(ToolStreamSink); ok {
-				toolEmit = func(delta ToolCallDelta) error {
-					if err := tsink.ToolCallDelta(delta); err != nil {
-						return err
+			var (
+				emitted   bool
+				res       domain.ChatResult
+				class     domain.FailureClass
+				cost      *float64
+				micro     *int64
+				ctxWindow int
+				err       error
+			)
+			if werr := d.withReservation(ctx, link, who, inputBytes, built.MaxOutputTokens, func(reservation Reservation) (bool, error) {
+				started := time.Now()
+				outputBytes := 0
+				var toolEmit func(ToolCallDelta) error
+				if tsink, ok := sink.(ToolStreamSink); ok {
+					toolEmit = func(delta ToolCallDelta) error {
+						if err := tsink.ToolCallDelta(delta); err != nil {
+							return err
+						}
+						emitted = true
+						outputBytes += len(delta.Name) + len(delta.ArgumentsDelta)
+						return nil
 					}
-					emitted = true
-					outputBytes += len(delta.Name) + len(delta.ArgumentsDelta)
-					return nil
 				}
-			}
-			res, class, err := chatStreamTools(ctx, streamer, attempt, built, StreamEvents{
-				Text: func(delta string) error {
-					if err := sink.Delta(delta); err != nil {
-						return err
-					}
-					emitted = true
-					outputBytes += len(delta)
-					return nil
-				},
-				ToolCall: toolEmit,
-			})
-			cost, micro, ctxWindow, werr := d.recordAttempt(ctx, routeName, link, who, class, res.Usage, inputBytes, outputBytes, started, true, emitted || res.Usage.Output > 0)
-			if werr != nil {
+				res, class, err = chatStreamTools(ctx, streamer, attempt, built, StreamEvents{
+					Text: func(delta string) error {
+						if err := sink.Delta(delta); err != nil {
+							return err
+						}
+						emitted = true
+						outputBytes += len(delta)
+						return nil
+					},
+					ToolCall: toolEmit,
+				})
+				var rerr error
+				cost, micro, ctxWindow, rerr = d.recordAttempt(ctx, routeName, link, who, class, res.Usage, inputBytes, outputBytes, started, true, emitted || res.Usage.Output > 0, reservation)
+				return rerr == nil, rerr
+			}); werr != nil {
 				return werr
 			}
 			if class == domain.ClassOK && err == nil {
@@ -864,7 +1044,7 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
-			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false); werr != nil {
+			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, domain.ClassCredential, domain.Usage{}, inputBytes, 0, started, false, false, Reservation{}); werr != nil {
 				return "", nil, werr
 			}
 			last = err
@@ -873,16 +1053,25 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 		attempt := Attempt{Adapter: link.Account.Adapter, BaseURL: link.Account.BaseURL, Model: link.Model, Secret: secret, PlanKind: link.Account.PlanKind}
 		retries := link.RetryBudget
 		for {
-			started := time.Now()
-			vectors, usage, class, err := embedder.Embed(ctx, attempt, inputs)
-			if class == domain.ClassOK && err == nil {
-				if verr := domain.CheckEmbeddings(len(inputs), vectors); verr != nil {
-					class = domain.ClassModelAccess
-					err = verr
-					vectors = nil
+			var (
+				vectors [][]float32
+				usage   domain.Usage
+				class   domain.FailureClass
+				err     error
+			)
+			if werr := d.withReservation(ctx, link, who, inputBytes, 0, func(res Reservation) (bool, error) {
+				started := time.Now()
+				vectors, usage, class, err = embedder.Embed(ctx, attempt, inputs)
+				if class == domain.ClassOK && err == nil {
+					if verr := domain.CheckEmbeddings(len(inputs), vectors); verr != nil {
+						class = domain.ClassModelAccess
+						err = verr
+						vectors = nil
+					}
 				}
-			}
-			if _, _, _, werr := d.recordAttempt(ctx, routeName, link, who, class, usage, inputBytes, 0, started, true, usage.Output > 0); werr != nil {
+				_, _, _, rerr := d.recordAttempt(ctx, routeName, link, who, class, usage, inputBytes, 0, started, true, usage.Output > 0, res)
+				return rerr == nil, rerr
+			}); werr != nil {
 				return "", nil, werr
 			}
 			if class == domain.ClassOK && err == nil {
