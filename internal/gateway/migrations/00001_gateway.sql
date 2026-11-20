@@ -201,9 +201,8 @@ CREATE UNIQUE INDEX ledger_hold_id
   ON gateway.ledger (hold_id)
   WHERE hold_id IS NOT NULL;
 
--- usage_daily keeps the per-day totals of the ledger in the workspace time
--- zone, so usage reads need not scan the ledger. user_id is null for system
--- rows, as in the ledger.
+-- usage_daily stores totals at day, payer, workspace, agent, provider account,
+-- model, plan and source grain. user_id is null for system rows, as in ledger.
 CREATE TABLE gateway.usage_daily (
   day date NOT NULL,
   user_id uuid,
@@ -247,6 +246,7 @@ CREATE TABLE gateway.usage_daily (
 
 CREATE INDEX usage_daily_user_day ON gateway.usage_daily (user_id, day);
 
+-- Records which closed days usage_daily covers and in which time zone.
 CREATE TABLE gateway.usage_daily_state (
   id boolean PRIMARY KEY DEFAULT true CHECK (id),
   rolled_through date NOT NULL,

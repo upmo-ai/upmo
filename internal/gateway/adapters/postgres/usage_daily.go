@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -23,9 +24,9 @@ func lockUsageDaily(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
-// RollupUsage stores closed ledger days. Recent days are recomputed on each
-// run; older days are filled once. A missing watermark or zone change rebuilds
-// all daily totals from the ledger.
+// RollupUsage stores closed ledger days. Recent days are deleted before they
+// are recomputed, so reruns never double count. A missing watermark or zone
+// change rebuilds all daily totals from the ledger.
 func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now time.Time) error {
 	if pool == nil {
 		return fmt.Errorf("gateway: no database")
@@ -38,36 +39,55 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now t
 	if err := lockUsageDaily(ctx, tx); err != nil {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
-	var today time.Time
-	var todayDate time.Time
+	var todayStart time.Time
+	var todayDay time.Time
 	if err := tx.QueryRow(ctx, `
 		SELECT date_trunc('day', $2::timestamptz AT TIME ZONE $1) AT TIME ZONE $1,
-			($2::timestamptz AT TIME ZONE $1)::date`, timeZone, now).Scan(&today, &todayDate); err != nil {
+			($2::timestamptz AT TIME ZONE $1)::date`, timeZone, now).Scan(&todayStart, &todayDay); err != nil {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
 	var rolledThrough time.Time
 	var storedZone string
 	err = tx.QueryRow(ctx, `SELECT rolled_through, time_zone FROM gateway.usage_daily_state WHERE id`).Scan(&rolledThrough, &storedZone)
-	fullRebuild := err == pgx.ErrNoRows || storedZone != timeZone
-	if err != nil && err != pgx.ErrNoRows {
+	fullRebuild := errors.Is(err, pgx.ErrNoRows) || storedZone != timeZone
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
-	startDay := todayDate.AddDate(0, 0, -rollupRecentDays)
+	firstDay := todayDay.AddDate(0, 0, -rollupRecentDays)
+	var rollupSQL string
+	var args []any
 	if fullRebuild {
 		if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily`); err != nil {
 			return fmt.Errorf("gateway: roll up usage: %w", err)
 		}
-		startDay = todayDate
+		rollupSQL = rollupFullRebuildSQL
+		args = []any{timeZone, todayStart, todayDay}
 	} else {
-		if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day >= $1::date AND day < $2::date`, startDay, todayDate); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day < $1::date AND (day >= $1::date - $2::int OR day > $3::date)`, todayDay, rollupRecentDays, rolledThrough); err != nil {
 			return fmt.Errorf("gateway: roll up usage: %w", err)
 		}
-		watermarkStart := rolledThrough.AddDate(0, 0, -rollupRecentDays+1)
-		if watermarkStart.Before(startDay) {
-			startDay = watermarkStart
+		watermarkStart := rolledThrough.AddDate(0, 0, 1)
+		if watermarkStart.Before(firstDay) {
+			firstDay = watermarkStart
 		}
+		lowerBound := firstDay.AddDate(0, 0, -1)
+		rollupSQL = rollupIncrementalSQL
+		args = []any{timeZone, todayStart, lowerBound, firstDay, todayDay}
+	}
+	if _, err := tx.Exec(ctx, rollupSQL, args...); err != nil {
+		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
+		INSERT INTO gateway.usage_daily_state (id, rolled_through, time_zone, updated_at)
+		VALUES (true, $1::date - 1, $2, now())
+		ON CONFLICT (id) DO UPDATE SET rolled_through = EXCLUDED.rolled_through,
+			time_zone = EXCLUDED.time_zone, updated_at = EXCLUDED.updated_at`, todayDay, timeZone); err != nil {
+		return fmt.Errorf("gateway: roll up usage: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+const rollupInsert = `
 		INSERT INTO gateway.usage_daily (
 			day, user_id, owner_team_id, agent_id, provider_account_id, model, plan_kind, source,
 			calls, errors, input_tokens, output_tokens, cache_read, cache_write, cache_write_1h,
@@ -83,32 +103,21 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now t
 			(sum(l.cost_micro_usd) FILTER (WHERE l.plan_kind = 'metered'))::bigint,
 			(sum(l.list_cost_micro_usd) FILTER (WHERE l.plan_kind <> 'metered'))::bigint
 		FROM gateway.ledger AS l
-		WHERE l.at < $2::timestamptz
-		  AND ($4::boolean OR l.at >= ($3::date::timestamp AT TIME ZONE $1))
-		  AND ($4::boolean OR (l.at AT TIME ZONE $1)::date >= $7::date - $6::int
-		       OR (l.at AT TIME ZONE $1)::date > $5::date)
-		  AND NOT EXISTS (
-			SELECT 1 FROM gateway.usage_daily AS d
-			WHERE d.day = (l.at AT TIME ZONE $1)::date
-			  AND d.user_id IS NOT DISTINCT FROM l.user_id
-			  AND d.owner_team_id IS NOT DISTINCT FROM l.owner_team_id
-			  AND d.agent_id IS NOT DISTINCT FROM l.agent_id
-			  AND d.provider_account_id IS NOT DISTINCT FROM l.provider_account_id
-			  AND d.model = l.model AND d.plan_kind = l.plan_kind AND d.source = l.source
-		  )
-		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`,
-		timeZone, today, startDay, fullRebuild, rolledThrough, rollupRecentDays, todayDate); err != nil {
-		return fmt.Errorf("gateway: roll up usage: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO gateway.usage_daily_state (id, rolled_through, time_zone, updated_at)
-		VALUES (true, $1::date - 1, $2, now())
-		ON CONFLICT (id) DO UPDATE SET rolled_through = EXCLUDED.rolled_through,
-			time_zone = EXCLUDED.time_zone, updated_at = EXCLUDED.updated_at`, todayDate, timeZone); err != nil {
-		return fmt.Errorf("gateway: roll up usage: %w", err)
-	}
-	return tx.Commit(ctx)
-}
+`
+
+const rollupFullRebuildSQL = rollupInsert + `
+WHERE l.at < $2::timestamptz
+  AND (l.at AT TIME ZONE $1)::date < $3::date
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`
+
+const rollupIncrementalSQL = rollupInsert + `
+WHERE l.at < $2::timestamptz
+  -- The previous local midnight gives ambiguous fall-back midnights a margin;
+  -- the local-date predicates below make the admitted day range exact.
+  AND l.at >= ($3::date::timestamp AT TIME ZONE $1)
+  AND (l.at AT TIME ZONE $1)::date >= $4::date
+  AND (l.at AT TIME ZONE $1)::date < $5::date
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`
 
 // AnonymiseUser replaces userID with domain.AnonymousUserID in gateway.ledger
 // and gateway.usage_daily in one transaction. Daily totals are summed into

@@ -47,9 +47,8 @@ func UsageRollupPeriodic() *river.PeriodicJob {
 	)
 }
 
-// RollupUsageOnce writes the daily totals of the days closed before now in
-// the workspace time zone: the latest closed days are recomputed and older
-// days without totals gain them.
+// RollupUsageOnce writes totals for closed days in the workspace time zone.
+// It recomputes recent days and fills missing days after the watermark.
 func RollupUsageOnce(ctx context.Context, owner *pgxpool.Pool, timeZone func(context.Context) (string, error), now time.Time, log *slog.Logger) error {
 	tz, err := usageTimeZone(ctx, timeZone, log)
 	if err != nil {
