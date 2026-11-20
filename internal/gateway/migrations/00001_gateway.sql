@@ -201,32 +201,58 @@ CREATE UNIQUE INDEX ledger_hold_id
   ON gateway.ledger (hold_id)
   WHERE hold_id IS NOT NULL;
 
--- usage_daily keeps the per-day totals of the ledger in the workspace time
--- zone, so usage reads need not scan the ledger. user_id is null for system
--- rows, as in the ledger.
+-- usage_daily stores totals at day, payer, workspace, agent, provider account,
+-- model, plan and source grain. user_id is null for system rows, as in ledger.
 CREATE TABLE gateway.usage_daily (
   day date NOT NULL,
   user_id uuid,
+  owner_team_id uuid,
+  agent_id uuid,
+  provider_account_id uuid,
   model text NOT NULL,
+  plan_kind text NOT NULL,
   source text NOT NULL,
   calls bigint NOT NULL DEFAULT 0,
+  errors bigint NOT NULL DEFAULT 0,
   input_tokens bigint NOT NULL DEFAULT 0,
   output_tokens bigint NOT NULL DEFAULT 0,
   cache_read bigint NOT NULL DEFAULT 0,
   cache_write bigint NOT NULL DEFAULT 0,
+  cache_write_1h bigint NOT NULL DEFAULT 0,
   reasoning bigint NOT NULL DEFAULT 0,
-  cost_micro_usd bigint NOT NULL DEFAULT 0,
+  unpriced_calls bigint NOT NULL DEFAULT 0,
+  estimated boolean NOT NULL DEFAULT false,
+  cost_micro_usd bigint,
+  list_cost_micro_usd bigint,
   CONSTRAINT usage_daily_model_check CHECK (model <> ''),
+  CONSTRAINT usage_daily_plan_kind_check CHECK (plan_kind IN ('metered', 'subscription', 'local')),
   CONSTRAINT usage_daily_source_check CHECK (source IN ('chat', 'task', 'automation', 'knowledge', 'memory', 'system')),
   CONSTRAINT usage_daily_payer_check CHECK (user_id IS NOT NULL OR source = 'system'),
-  CONSTRAINT usage_daily_counts_nonneg CHECK (
-    calls >= 0 AND input_tokens >= 0 AND output_tokens >= 0 AND cache_read >= 0
-    AND cache_write >= 0 AND reasoning >= 0 AND cost_micro_usd >= 0
+  CONSTRAINT usage_daily_counts_check CHECK (
+    calls >= 0 AND errors >= 0 AND errors <= calls AND input_tokens >= 0 AND output_tokens >= 0
+    AND cache_read >= 0 AND cache_write >= 0 AND cache_write_1h >= 0
+    AND cache_write_1h <= cache_write AND reasoning >= 0 AND unpriced_calls >= 0
+    AND unpriced_calls <= calls
   ),
-  CONSTRAINT usage_daily_key UNIQUE NULLS NOT DISTINCT (day, user_id, model, source)
+  CONSTRAINT usage_daily_money_check CHECK (
+    (cost_micro_usd IS NULL OR cost_micro_usd >= 0)
+    AND (list_cost_micro_usd IS NULL OR list_cost_micro_usd >= 0)
+    AND (plan_kind = 'metered' OR cost_micro_usd IS NULL)
+    AND (plan_kind <> 'metered' OR list_cost_micro_usd IS NULL)
+  ),
+  CONSTRAINT usage_daily_key UNIQUE NULLS NOT DISTINCT
+    (day, user_id, owner_team_id, agent_id, provider_account_id, model, plan_kind, source)
 );
 
 CREATE INDEX usage_daily_user_day ON gateway.usage_daily (user_id, day);
+
+-- Records which closed days usage_daily covers and in which time zone.
+CREATE TABLE gateway.usage_daily_state (
+  id boolean PRIMARY KEY DEFAULT true CHECK (id),
+  rolled_through date NOT NULL,
+  time_zone text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE gateway.usage_limits (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -294,6 +320,7 @@ DROP VIEW IF EXISTS gateway.task_tokens;
 DROP TABLE IF EXISTS gateway.usage_holds;
 DROP TABLE IF EXISTS gateway.usage_spend;
 DROP TABLE IF EXISTS gateway.usage_limits;
+DROP TABLE IF EXISTS gateway.usage_daily_state;
 DROP TABLE IF EXISTS gateway.usage_daily;
 DROP TABLE IF EXISTS gateway.ledger;
 DROP TABLE IF EXISTS gateway.catalog_meta;

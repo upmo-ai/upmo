@@ -616,11 +616,11 @@ func TestFeature_UPM220_LedgerPolicyScopesRows(t *testing.T) {
 	r.call(t, usageCall{at: at, user: second, account: usageHouse, model: "claude-x", in: 40, cost: micro(400)})
 	r.call(t, usageCall{at: at, account: usageHouse, model: "claude-x", in: 30, cost: micro(300)})
 	if _, err := r.owner.Exec(ctx, `
-		INSERT INTO gateway.usage_daily (day, user_id, model, source, calls)
-		VALUES ('2026-11-18', $1::uuid, 'claude-x', 'chat', 1),
-			('2026-11-18', $2::uuid, 'claude-x', 'chat', 1),
-			('2026-11-18', $3::uuid, 'claude-x', 'chat', 1),
-			('2026-11-18', NULL, 'claude-x', 'system', 1)`, usageMember, usageAdmin, second); err != nil {
+		INSERT INTO gateway.usage_daily (day, user_id, model, plan_kind, source, calls)
+		VALUES ('2026-11-18', $1::uuid, 'claude-x', 'metered', 'chat', 1),
+			('2026-11-18', $2::uuid, 'claude-x', 'metered', 'chat', 1),
+			('2026-11-18', $3::uuid, 'claude-x', 'metered', 'chat', 1),
+			('2026-11-18', NULL, 'claude-x', 'metered', 'system', 1)`, usageMember, usageAdmin, second); err != nil {
 		t.Fatal(err)
 	}
 
@@ -682,7 +682,7 @@ func TestFeature_UPM220_LedgerPolicyScopesRows(t *testing.T) {
 			VALUES (now(), 'usage', 1, 'claude-x', 'metered', '', '` + usageAdmin + `', 'chat')`,
 		`UPDATE gateway.ledger SET input_tokens = 0`,
 		`DELETE FROM gateway.ledger`,
-		`INSERT INTO gateway.usage_daily (day, user_id, model, source) VALUES ('2026-11-17', '` + usageAdmin + `', 'claude-x', 'chat')`,
+		`INSERT INTO gateway.usage_daily (day, user_id, model, plan_kind, source) VALUES ('2026-11-17', '` + usageAdmin + `', 'claude-x', 'metered', 'chat')`,
 		`UPDATE gateway.usage_daily SET calls = 0`,
 		`DELETE FROM gateway.usage_daily`,
 	} {

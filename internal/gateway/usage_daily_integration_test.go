@@ -5,6 +5,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -118,7 +119,7 @@ func dailyMonthly(t *testing.T, pool *pgxpool.Pool) map[string]usageTotals {
 	return monthlyTotals(t, pool, `
 		SELECT to_char(day, 'YYYY-MM'), sum(calls)::bigint,
 			sum(input_tokens)::bigint, sum(output_tokens)::bigint, sum(cache_read)::bigint,
-			sum(cache_write)::bigint, sum(reasoning)::bigint, sum(cost_micro_usd)::bigint
+			sum(cache_write)::bigint, sum(reasoning)::bigint, COALESCE(sum(cost_micro_usd), 0)::bigint
 		FROM gateway.usage_daily
 		GROUP BY 1`)
 }
@@ -227,7 +228,7 @@ func TestFeature_UPM358_RollupDayFollowsWorkspaceZone(t *testing.T) {
 		t.Fatalf("days after a late row = %v, want two calls on 2026-11-18", got)
 	}
 	var cost int64
-	if err := pool.QueryRow(ctx, `SELECT sum(cost_micro_usd)::bigint FROM gateway.usage_daily`).Scan(&cost); err != nil || cost != 14 {
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_micro_usd), 0)::bigint FROM gateway.usage_daily`).Scan(&cost); err != nil || cost != 14 {
 		t.Fatalf("cost = %d, %v; want 14", cost, err)
 	}
 }
@@ -375,7 +376,7 @@ func TestFeature_UPM358_AnonymiseKeepsWorkspaceTotals(t *testing.T) {
 				(SELECT sum(input_tokens + output_tokens)::bigint FROM gateway.ledger),
 				(SELECT sum(cost_micro_usd)::bigint FROM gateway.ledger),
 				(SELECT sum(input_tokens + output_tokens)::bigint FROM gateway.usage_daily),
-				(SELECT sum(cost_micro_usd)::bigint FROM gateway.usage_daily)`).Scan(&v[0], &v[1], &v[2], &v[3], &v[4]); err != nil {
+				(SELECT COALESCE(sum(cost_micro_usd), 0)::bigint FROM gateway.usage_daily)`).Scan(&v[0], &v[1], &v[2], &v[3], &v[4]); err != nil {
 			t.Fatal(err)
 		}
 		return v
@@ -426,12 +427,17 @@ func TestFeature_UPM358_AnonymiseKeepsWorkspaceTotals(t *testing.T) {
 
 	// The merged totals match a fresh roll-up of the anonymised ledger.
 	merged := dailyMonthly(t, pool)
+	if _, err := pool.Exec(ctx, `DELETE FROM gateway.usage_daily_state`); err != nil {
+		t.Fatal(err)
+	}
+	snapshotUsageDaily(t, pool)
 	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := dailyMonthly(t, pool); got["2026-11"] != merged["2026-11"] {
 		t.Fatalf("re-rolled totals = %v, merged = %v", got, merged)
 	}
+	assertUsageDailyMatchesSnapshot(t, pool)
 
 	for _, bad := range []string{"", "not-a-uuid", AnonymousUserID} {
 		if err := AnonymiseUser(ctx, pool, bad); err == nil {
@@ -441,6 +447,40 @@ func TestFeature_UPM358_AnonymiseKeepsWorkspaceTotals(t *testing.T) {
 }
 
 func TestFeature_UPM358_UsageDailyReadPolicy(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	day := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	insertUsageRow(t, pool, day, usagePerson, "model-a", "chat", 10, 3)
+	insertUsageRow(t, pool, day, usageOther, "model-a", "chat", 10, 3)
+	insertUsageRow(t, pool, day, "", "model-a", "system", 10, 3)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	app := pgtest.App(t, pool)
+	for _, tc := range []struct {
+		allow string
+		want  int64
+	}{{"", 1}, {"usage:view", 3}} {
+		tx, err := app.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true)`, usagePerson, tc.allow); err != nil {
+			t.Fatal(err)
+		}
+		var got int64
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_daily`).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		_ = tx.Rollback(ctx)
+		if got != tc.want {
+			t.Fatalf("allow %q sees %d rows, want %d", tc.allow, got, tc.want)
+		}
+	}
+}
+
+func TestFeature_UPM392_UsageDailyAndWatermarkAccess(t *testing.T) {
 	ctx := context.Background()
 	pool := newUsageDB(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -475,11 +515,34 @@ func TestFeature_UPM358_UsageDailyReadPolicy(t *testing.T) {
 	if n := visible("usage:view"); n != 3 {
 		t.Fatalf("rows usage:view sees = %d, want 3", n)
 	}
+	stateTx, err := app.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stateTx.Rollback(ctx) }()
+	if _, err := stateTx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true)`, usagePerson); err != nil {
+		t.Fatal(err)
+	}
+	var stateCount int
+	if err := stateTx.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_daily_state`).Scan(&stateCount); err != nil || stateCount != 1 {
+		t.Fatalf("watermark rows visible = %d, %v; want 1", stateCount, err)
+	}
+	noIdentityTx, err := app.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = noIdentityTx.Rollback(ctx) }()
+	if err := noIdentityTx.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_daily_state`).Scan(&stateCount); err != nil || stateCount != 0 {
+		t.Fatalf("watermark rows visible without user id = %d, %v; want 0", stateCount, err)
+	}
 
 	for _, stmt := range []string{
-		`INSERT INTO gateway.usage_daily (day, user_id, model, source) VALUES ('2026-11-11', '` + usagePerson + `', 'm', 'chat')`,
+		`INSERT INTO gateway.usage_daily (day, user_id, model, plan_kind, source) VALUES ('2026-11-11', '` + usagePerson + `', 'm', 'metered', 'chat')`,
 		`UPDATE gateway.usage_daily SET calls = 0`,
 		`DELETE FROM gateway.usage_daily`,
+		`INSERT INTO gateway.usage_daily_state (rolled_through, time_zone) VALUES ('2026-11-19', 'UTC')`,
+		`UPDATE gateway.usage_daily_state SET time_zone = 'Asia/Tokyo'`,
+		`DELETE FROM gateway.usage_daily_state`,
 	} {
 		_, err := app.Exec(ctx, stmt)
 		var pgErr *pgconn.PgError
@@ -487,4 +550,325 @@ func TestFeature_UPM358_UsageDailyReadPolicy(t *testing.T) {
 			t.Fatalf("%s: err = %v, want insufficient_privilege", stmt, err)
 		}
 	}
+}
+
+func TestFeature_UPM392_RollupMatchesLedgerGrain(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.ledger (
+			at, route, link_position, model, plan_kind, failure_class, user_id,
+			owner_team_id, agent_id, provider_account_id, input_tokens, output_tokens,
+			cache_read, cache_write, cache_write_1h, reasoning, cost_micro_usd,
+			list_cost_micro_usd, estimated, source, price_source
+		) VALUES
+			('2026-11-18 12:00Z','usage',1,'m','metered','', $1,'019a0000-0000-7000-8000-000000000401','019a0000-0000-7000-8000-000000000411','019a0000-0000-7000-8000-000000000421',10,2,1,4,2,3,7,NULL,false,'chat','provider'),
+			('2026-11-18 13:00Z','usage',1,'m-free','metered','', $1,'019a0000-0000-7000-8000-000000000401','019a0000-0000-7000-8000-000000000411','019a0000-0000-7000-8000-000000000421',10,2,1,4,2,3,0,NULL,false,'chat','not_billed'),
+			('2026-11-18 14:00Z','usage',1,'m','metered','timeout', $2,'019a0000-0000-7000-8000-000000000402','019a0000-0000-7000-8000-000000000412','019a0000-0000-7000-8000-000000000422',5,3,0,0,0,1,2,NULL,true,'task','estimate'),
+			('2026-11-19 12:00Z','usage',1,'m','metered','', NULL,NULL,NULL,NULL,4,1,0,0,0,0,NULL,NULL,false,'system','unknown'),
+			('2026-11-19 13:00Z','usage',1,'m','subscription','', $1,'019a0000-0000-7000-8000-000000000401','019a0000-0000-7000-8000-000000000411','019a0000-0000-7000-8000-000000000421',1,1,0,0,0,0,NULL,9,false,'chat',NULL),
+			('2026-11-19 14:00Z','usage',1,'m','subscription','', $1,'019a0000-0000-7000-8000-000000000401','019a0000-0000-7000-8000-000000000411','019a0000-0000-7000-8000-000000000421',1,1,0,0,0,0,NULL,NULL,false,'memory',NULL),
+			('2026-11-19 15:00Z','usage',1,'m','local','', $2,'019a0000-0000-7000-8000-000000000402','019a0000-0000-7000-8000-000000000412','019a0000-0000-7000-8000-000000000422',1,0,0,0,0,0,NULL,NULL,false,'task',NULL)`, usagePerson, usageOther); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	var mismatch int
+	if err := pool.QueryRow(ctx, `
+		WITH expected AS (
+			SELECT (at AT TIME ZONE 'UTC')::date usage_day, user_id, owner_team_id, agent_id, provider_account_id,
+				model, plan_kind, source, count(*)::bigint calls,
+				count(*) FILTER (WHERE failure_class <> '')::bigint errors,
+				sum(input_tokens)::bigint input_tokens, sum(output_tokens)::bigint output_tokens,
+				sum(cache_read)::bigint cache_read, sum(cache_write)::bigint cache_write,
+				sum(cache_write_1h)::bigint cache_write_1h, sum(reasoning)::bigint reasoning,
+				count(*) FILTER (WHERE plan_kind='metered' AND (estimated OR cost_micro_usd IS NULL))::bigint unpriced_calls,
+				COALESCE(bool_or(estimated) FILTER (WHERE plan_kind='metered'), false) estimated,
+				(sum(cost_micro_usd) FILTER (WHERE plan_kind='metered'))::bigint cost_micro_usd,
+				(sum(list_cost_micro_usd) FILTER (WHERE plan_kind<>'metered'))::bigint list_cost_micro_usd
+			FROM gateway.ledger WHERE at < $1 GROUP BY 1,2,3,4,5,6,7,8
+		), actual AS (
+			SELECT day,user_id,owner_team_id,agent_id,provider_account_id,model,plan_kind,source,
+				calls,errors,input_tokens,output_tokens,cache_read,cache_write,cache_write_1h,
+				reasoning,unpriced_calls,estimated,cost_micro_usd,list_cost_micro_usd FROM gateway.usage_daily
+		)
+		SELECT (SELECT count(*) FROM (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual) x)
+			+ (SELECT count(*) FROM (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected) x)`, time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)).Scan(&mismatch); err != nil || mismatch != 0 {
+		t.Fatalf("daily grain mismatch count = %d, %v; want 0", mismatch, err)
+	}
+	var unknown, free, nullList, unpriced int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE plan_kind='metered' AND calls=1 AND cost_micro_usd IS NULL),
+			count(*) FILTER (WHERE plan_kind='metered' AND calls=1 AND cost_micro_usd=0),
+			count(*) FILTER (WHERE plan_kind='subscription' AND list_cost_micro_usd IS NULL),
+			count(*) FILTER (WHERE plan_kind='metered' AND calls=1 AND cost_micro_usd IS NULL AND unpriced_calls=1)
+		FROM gateway.usage_daily`).Scan(&unknown, &free, &nullList, &unpriced); err != nil || unknown == 0 || free == 0 || nullList == 0 || unpriced == 0 {
+		t.Fatalf("NULL/zero groups = unknown:%d free:%d null-list:%d unpriced:%d err:%v", unknown, free, nullList, unpriced, err)
+	}
+}
+
+func TestFeature_UPM392_RollupWatermarkAndZoneRebuild(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	callAt := time.Date(2026, 11, 19, 23, 30, 0, 0, time.UTC)
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	insertUsageRow(t, pool, callAt, usagePerson, "m", "chat", 1, 4)
+	if err := RollupUsageOnce(ctx, pool, zone("Asia/Tokyo"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	var day, tz string
+	var through time.Time
+	if err := pool.QueryRow(ctx, `SELECT day::text FROM gateway.usage_daily`).Scan(&day); err != nil || day != "2026-11-20" {
+		t.Fatalf("Tokyo day = %q, %v; want 2026-11-20", day, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT rolled_through, time_zone FROM gateway.usage_daily_state WHERE id`).Scan(&through, &tz); err != nil || through.Format("2006-01-02") != "2026-11-21" || tz != "Asia/Tokyo" {
+		t.Fatalf("watermark = %s %q, %v; want 2026-11-21 Asia/Tokyo", through.Format("2006-01-02"), tz, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE gateway.ledger SET source='task' WHERE model='m'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("Asia/Tokyo"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rows := countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily WHERE model='m' AND source='task'`); rows != 1 || countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily WHERE model='m' AND source='chat'`) != 0 {
+		t.Fatalf("recomputed grain rows = %d, want only the moved task row", rows)
+	}
+	var before string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(t::text, ',' ORDER BY t::text) FROM gateway.usage_daily t`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("Asia/Tokyo"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	var after string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(t::text, ',' ORDER BY t::text) FROM gateway.usage_daily t`).Scan(&after); err != nil || after != before {
+		t.Fatalf("same-zone rerun changed rows or failed: %v", err)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT day::text FROM gateway.usage_daily`).Scan(&day); err != nil || day != "2026-11-19" {
+		t.Fatalf("rebuilt UTC day = %q, %v; want 2026-11-19", day, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT time_zone FROM gateway.usage_daily_state WHERE id`).Scan(&tz); err != nil || tz != "UTC" {
+		t.Fatalf("rebuilt time zone = %q, %v; want UTC", tz, err)
+	}
+}
+
+func TestFeature_UPM392_RollupGapFillAndFrozenLateRows(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := func(offset, hour, minute, second int) time.Time {
+		return time.Date(2026, time.November, 10+offset, hour, minute, second, 0, loc)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("Europe/Berlin"), day(0, 12, 0, 0), nil); err != nil {
+		t.Fatal(err)
+	}
+	for offset := 0; offset < 3; offset++ {
+		insertUsageRow(t, pool, day(offset, 0, 0, 0), usagePerson, "boundary", "chat", 1, 1)
+		insertUsageRow(t, pool, day(offset, 23, 59, 59), usagePerson, "boundary", "chat", 1, 1)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("Europe/Berlin"), day(5, 12, 0, 0), nil); err != nil {
+		t.Fatal(err)
+	}
+	var mismatch int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM (
+			(SELECT (at AT TIME ZONE 'Europe/Berlin')::date AS usage_day, count(*) calls FROM gateway.ledger
+			 WHERE model='boundary' GROUP BY 1
+			 EXCEPT ALL
+			 SELECT usage_daily.day, sum(calls)::bigint FROM gateway.usage_daily WHERE model='boundary' GROUP BY 1)
+			UNION ALL
+			(SELECT usage_daily.day, sum(calls)::bigint FROM gateway.usage_daily WHERE model='boundary' GROUP BY 1
+			 EXCEPT ALL
+			 SELECT (at AT TIME ZONE 'Europe/Berlin')::date, count(*) FROM gateway.ledger
+			 WHERE model='boundary' GROUP BY 1)
+		) differences`).Scan(&mismatch); err != nil || mismatch != 0 {
+		t.Fatalf("gap-fill mismatch count = %d, %v; want 0", mismatch, err)
+	}
+	// D+3 is older than the recomputed window after the next run and remains frozen.
+	if err := RollupUsageOnce(ctx, pool, zone("Europe/Berlin"), day(7, 12, 0, 0), nil); err != nil {
+		t.Fatal(err)
+	}
+	insertUsageRow(t, pool, day(3, 12, 0, 0), usagePerson, "late-frozen", "chat", 1, 1)
+	if err := RollupUsageOnce(ctx, pool, zone("Europe/Berlin"), day(8, 12, 0, 0), nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily WHERE model='late-frozen'`); n != 0 {
+		t.Fatalf("late row older than the recent window was rolled up: rows=%d", n)
+	}
+}
+
+func TestFeature_UPM392_HavanaAmbiguousMidnightSurvivesRerun(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	// Havana repeated 00:00-00:59 on 2025-11-02; this instant is 00:30 in
+	// the first occurrence, before the later standard-time midnight.
+	insertUsageRow(t, pool, time.Date(2025, time.November, 2, 4, 30, 0, 0, time.UTC), usagePerson, "havana", "chat", 1, 1)
+	now := time.Date(2025, time.November, 4, 12, 0, 0, 0, time.UTC)
+	for range 2 {
+		if err := RollupUsageOnce(ctx, pool, zone("America/Havana"), now, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, pool, `SELECT COALESCE(sum(calls),0) FROM gateway.usage_daily WHERE model='havana' AND day='2025-11-02'`); n != 1 {
+		t.Fatalf("ambiguous-midnight calls = %d, want 1", n)
+	}
+}
+
+func TestFeature_UPM392_AnonymiseMergesWidenedDaily(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.ledger (at,route,link_position,model,plan_kind,failure_class,user_id,
+			input_tokens,output_tokens,cache_read,cache_write,cache_write_1h,reasoning,
+			cost_micro_usd,list_cost_micro_usd,estimated,source,price_source)
+		VALUES
+			('2026-11-19 10:00Z','usage',1,'metered','metered','timeout', $1,3,1,4,5,2,3,11,NULL,true,'chat','estimate'),
+			('2026-11-19 11:00Z','usage',1,'metered','metered','', $2,5,2,6,7,3,4,NULL,NULL,false,'chat','unknown'),
+			('2026-11-19 12:00Z','usage',1,'sub','subscription','', $1,7,0,2,3,1,0,NULL,13,false,'task',NULL),
+			('2026-11-19 13:00Z','usage',1,'sub','subscription','', $2,9,0,3,4,2,0,NULL,NULL,false,'task',NULL)`, usagePerson, AnonymousUserID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	totals := func() string {
+		t.Helper()
+		var result string
+		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
+			'calls',COALESCE(sum(calls),0),'errors',COALESCE(sum(errors),0),
+			'input',COALESCE(sum(input_tokens),0),'output',COALESCE(sum(output_tokens),0),
+			'cache_read',COALESCE(sum(cache_read),0),'cache_write',COALESCE(sum(cache_write),0),
+			'cache_write_1h',COALESCE(sum(cache_write_1h),0),'reasoning',COALESCE(sum(reasoning),0),
+			'unpriced',COALESCE(sum(unpriced_calls),0),'estimated',COALESCE(bool_or(estimated),false),
+			'cost',sum(cost_micro_usd),'list_cost',sum(list_cost_micro_usd))::text FROM gateway.usage_daily`).Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	totalsBefore := totals()
+	before := countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily`)
+	if err := AnonymiseUser(ctx, pool, usagePerson); err != nil {
+		t.Fatal(err)
+	}
+	if got := totals(); got != totalsBefore {
+		t.Fatalf("workspace daily totals after erasure = %s, want %s", got, totalsBefore)
+	}
+	if got := countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily`); got != before-2 {
+		t.Fatalf("daily rows after collision merge = %d, want %d", got, before-2)
+	}
+	var cost *int64
+	var listCost *int64
+	if err := pool.QueryRow(ctx, `SELECT cost_micro_usd FROM gateway.usage_daily WHERE model='metered' AND user_id=$1::uuid`, AnonymousUserID).Scan(&cost); err != nil || cost == nil || *cost != 11 {
+		t.Fatalf("merged metered cost = %v, %v; want 11", cost, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT list_cost_micro_usd FROM gateway.usage_daily WHERE model='sub' AND user_id=$1::uuid`, AnonymousUserID).Scan(&listCost); err != nil || listCost == nil || *listCost != 13 {
+		t.Fatalf("merged list cost = %v, %v; want 13", listCost, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM gateway.usage_daily_state`); err != nil {
+		t.Fatal(err)
+	}
+	snapshotUsageDaily(t, pool)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertUsageDailyMatchesSnapshot(t, pool)
+	if got := totals(); got != totalsBefore {
+		t.Fatalf("rebuilt workspace daily totals = %s, want %s", got, totalsBefore)
+	}
+	var rebuildCost *int64
+	if err := pool.QueryRow(ctx, `SELECT cost_micro_usd FROM gateway.usage_daily WHERE model='metered' AND user_id=$1::uuid`, AnonymousUserID).Scan(&rebuildCost); err != nil || rebuildCost == nil || *rebuildCost != *cost {
+		t.Fatalf("rebuilt cost = %v, %v; want %v", rebuildCost, err, cost)
+	}
+}
+
+func snapshotUsageDaily(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `CREATE TABLE gateway.usage_daily_snapshot AS SELECT * FROM gateway.usage_daily`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertUsageDailyMatchesSnapshot(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var mismatch int
+	err := pool.QueryRow(context.Background(), `
+		SELECT (SELECT count(*) FROM (SELECT * FROM gateway.usage_daily_snapshot EXCEPT ALL SELECT * FROM gateway.usage_daily) x)
+			+ (SELECT count(*) FROM (SELECT * FROM gateway.usage_daily EXCEPT ALL SELECT * FROM gateway.usage_daily_snapshot) x)`).Scan(&mismatch)
+	if _, dropErr := pool.Exec(context.Background(), `DROP TABLE gateway.usage_daily_snapshot`); dropErr != nil {
+		t.Fatal(dropErr)
+	}
+	if err != nil || mismatch != 0 {
+		t.Fatalf("fresh rebuild content mismatch count = %d, %v; want 0", mismatch, err)
+	}
+}
+
+func TestFeature_UPM392_BenchmarkMillionRowRollup(t *testing.T) {
+	if os.Getenv("UPM392_BENCHMARK") != "1" {
+		t.Skip("set UPM392_BENCHMARK=1 to run the one-million-row roll-up benchmark")
+	}
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.ledger (at,route,link_position,provider_account_id,model,plan_kind,
+			failure_class,user_id,agent_id,owner_team_id,input_tokens,output_tokens,cost_micro_usd,source,price_source)
+		SELECT '2026-08-22 00:00Z'::timestamptz + (i % 90) * interval '1 day' + (i % 86400) * interval '1 second',
+			'usage',1,('00000000-0000-7000-8000-' || lpad((i % 100)::text, 12, '0'))::uuid,
+			'model-' || (i % 20), 'metered','',
+			('00000000-0000-7000-8000-' || lpad((i % 1000)::text, 12, '0'))::uuid,
+			('00000000-0000-7000-8000-' || lpad((i % 50)::text, 12, '0'))::uuid,
+			('00000000-0000-7000-8000-' || lpad((i % 10)::text, 12, '0'))::uuid,
+			i % 1000, i % 500, 1, 'chat', 'provider'
+		FROM generate_series(1, 1000000) i`); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	fullDuration := time.Since(start)
+	start = time.Now()
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	steadyDuration := time.Since(start)
+	var plan string
+	rows, err := pool.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) FROM gateway.ledger l WHERE l.at < $1 AND l.at >= $2`, now, time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		plan += line + "\n"
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	start = time.Now()
+	if err := RollupUsageOnce(ctx, pool, zone("Asia/Tokyo"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	zoneDuration := time.Since(start)
+	var statementTimeout string
+	if err := pool.QueryRow(ctx, `SHOW statement_timeout`).Scan(&statementTimeout); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("full rebuild 1,000,000 rows / 90 days: %s; steady-state: %s; zone-change rebuild: %s", fullDuration, steadyDuration, zoneDuration)
+	t.Logf("incremental ledger range plan:\n%s", plan)
+	t.Logf("owner pool statement_timeout: %s (roll-up does not override it)", statementTimeout)
 }

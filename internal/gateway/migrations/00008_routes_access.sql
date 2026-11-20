@@ -278,6 +278,21 @@ CREATE POLICY usage_daily_select ON gateway.usage_daily
 REVOKE ALL ON gateway.usage_daily FROM upmo_app;
 GRANT SELECT ON gateway.usage_daily TO upmo_app;
 
+ALTER TABLE gateway.usage_daily_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_daily_state FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY usage_daily_state_service ON gateway.usage_daily_state
+  FOR ALL
+  USING ((SELECT gateway.serving()))
+  WITH CHECK ((SELECT gateway.serving()));
+
+CREATE POLICY usage_daily_state_select ON gateway.usage_daily_state
+  FOR SELECT TO upmo_app
+  USING ((SELECT NULLIF(current_setting('upmo.user_id', true), '')) IS NOT NULL);
+
+REVOKE ALL ON gateway.usage_daily_state FROM upmo_app;
+GRANT SELECT ON gateway.usage_daily_state TO upmo_app;
+
 CREATE POLICY routes_service ON gateway.routes
   FOR ALL
   USING (gateway.serving())
@@ -360,6 +375,11 @@ GRANT INSERT, UPDATE, DELETE ON gateway.route_links TO upmo_app;
 -- +goose Down
 
 REVOKE ALL ON gateway.ledger FROM upmo_app;
+REVOKE ALL ON gateway.usage_daily_state FROM upmo_app;
+DROP POLICY IF EXISTS usage_daily_state_select ON gateway.usage_daily_state;
+DROP POLICY IF EXISTS usage_daily_state_service ON gateway.usage_daily_state;
+ALTER TABLE gateway.usage_daily_state NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_daily_state DISABLE ROW LEVEL SECURITY;
 REVOKE ALL ON gateway.usage_daily FROM upmo_app;
 DROP POLICY IF EXISTS usage_daily_select ON gateway.usage_daily;
 DROP POLICY IF EXISTS usage_daily_service ON gateway.usage_daily;

@@ -3898,8 +3898,8 @@ func TestFeature_UPM388_DispatchPricesTieredMixedCacheWriteAndRecords(t *testing
 		t.Fatal(err)
 	}
 	var dailyCost *int64
-	if err := r.owner.QueryRow(ctx, `SELECT cost_micro_usd FROM gateway.usage_daily WHERE model='tier-dispatch' AND user_id=$1::uuid`, ada).Scan(&dailyCost); err != nil || dailyCost == nil || *dailyCost != 0 {
-		t.Fatalf("usage_daily cost for non-metered list row = %v err=%v, want 0 (list value must not leak in)", dailyCost, err)
+	if err := r.owner.QueryRow(ctx, `SELECT cost_micro_usd FROM gateway.usage_daily WHERE model='tier-dispatch' AND user_id=$1::uuid`, ada).Scan(&dailyCost); err != nil || dailyCost != nil {
+		t.Fatalf("usage_daily cost for non-metered list row = %v err=%v, want NULL (list value must not leak in)", dailyCost, err)
 	}
 	limits, err := (postgres.UsageLimits{Pool: r.app}).GetUsageLimits(ctx, app.Caller{User: ada}, time.Now(), false)
 	if err != nil || limits.Own.SpentMicroUSD != 0 {
