@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/upmo-ai/upmo/internal/kernel"
 	"github.com/upmo-ai/upmo/internal/platform/netguard"
@@ -62,6 +65,12 @@ type memOutputs struct {
 		untrusted bool
 	}
 	seq int
+}
+
+type failingOutputs struct{ memOutputs }
+
+func (failingOutputs) SaveOutput(context.Context, *RunState, string, string, bool) (string, error) {
+	return "", errors.New("save failed")
 }
 
 func (m *memOutputs) SaveOutput(_ context.Context, _ *RunState, title, body string, untrusted bool) (string, error) {
@@ -883,7 +892,7 @@ func TestApprovedCallBoundToCanonicalArgsDigestAndPlaceholderRoleTool(t *testing
 	if digest == "" {
 		t.Fatal("expected non-empty ArgsDigest on HeldCall")
 	}
-	if len(out1.Appended) != 2 || out1.Appended[1].Role != RoleTool || out1.Appended[1].ToolID != "call_0" || out1.Appended[1].Text != "awaiting approval" {
+	if len(out1.Appended) != 2 || out1.Appended[1].Role != RoleTool || out1.Appended[1].ToolID != "call_0" || out1.Appended[1].Text != "awaiting approval" || !out1.Appended[1].HeldPlaceholder {
 		t.Fatalf("expected awaiting approval RoleTool placeholder, got %+v", out1.Appended)
 	}
 
@@ -1153,5 +1162,545 @@ func TestAssembleSystemPrefixSortsIndexCardsDeterministically(t *testing.T) {
 	gotB := AssembleSystemPrefix("stand", "Agent", "inst", nil, cardsB)
 	if gotA != gotB {
 		t.Fatalf("unstable system prefix across card ordering:\nA:\n%s\nB:\n%s", gotA, gotB)
+	}
+}
+
+func TestFeature_UPM314_OffloadedOutputRetrievableWithoutBreakingTools(t *testing.T) {
+	store := &memOutputs{}
+	run := &RunState{RunID: "r", Catalog: NewToolCatalog(nil, nil)}
+	before := BuildPromptRequest(run, "system", nil)
+	body := strings.Repeat("x", 9000)
+	text, offloaded, err := MaybeOffload(context.Background(), store, run, "shell", body, false, 0)
+	if err != nil || !offloaded {
+		t.Fatalf("offload = %v, %v", offloaded, err)
+	}
+	call := ToolCall{Arguments: json.RawMessage(fmt.Sprintf(`{"id":%q,"offset":100,"limit":100}`, strings.TrimPrefix(text, "retrieve_output:")))}
+	result, err := (DefaultExecutor{Outputs: store}).execRetrieveOutput(context.Background(), run, call)
+	if err != nil || !strings.HasPrefix(result.Output, strings.Repeat("x", 100)) || !strings.Contains(result.Output, "total_bytes=9000 next_offset=200") {
+		t.Fatalf("paged output = %q, %v", result.Output, err)
+	}
+	after := BuildPromptRequest(run, "system", nil)
+	if !reflect.DeepEqual(before.Tools, after.Tools) || !reflect.DeepEqual(before.Cache, after.Cache) {
+		t.Fatal("offload changed tools or cache breakpoints")
+	}
+	for _, args := range []string{`{"id":"missing","offset":-1}`, `{"id":"missing","limit":"many"}`} {
+		if _, err := (DefaultExecutor{Outputs: store}).execRetrieveOutput(context.Background(), run, ToolCall{Arguments: json.RawMessage(args)}); err == nil {
+			t.Fatalf("invalid paging arguments accepted: %s", args)
+		}
+	}
+	if _, err := (DefaultExecutor{Outputs: store}).execRetrieveOutput(context.Background(), run, ToolCall{Arguments: json.RawMessage(fmt.Sprintf(`{"id":%q,"offset":null,"limit":null}`, strings.TrimPrefix(text, "retrieve_output:")))}); err != nil {
+		t.Fatalf("null paging defaults rejected: %v", err)
+	}
+}
+
+func TestFeature_UPM314_RetrieveOutputPagesSurviveRunTurn(t *testing.T) {
+	store := &memOutputs{}
+	run := &RunState{RunID: "r", Catalog: NewToolCatalog([]ToolDef{{Name: "produce", Op: OpRead}}, nil)}
+	var history []Message
+	step := 0
+	engine := Engine{Outputs: store, OffloadAtTokens: 100, Executor: DefaultExecutor{Outputs: store, Direct: map[string]ToolHandler{
+		"produce": func(context.Context, *RunState, ToolCall) (ToolResult, error) {
+			return ToolResult{Output: strings.Repeat("é", 5000)}, nil
+		},
+	}}, Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+		step++
+		switch step {
+		case 1:
+			return PromptResponse{ToolCalls: []ToolCall{{ID: "produce", Name: "produce"}}}, nil
+		default:
+			var id string
+			for _, msg := range req.Messages {
+				if msg.Role == RoleTool && strings.HasPrefix(msg.Text, "retrieve_output:") {
+					id = strings.Fields(strings.TrimPrefix(msg.Text, "retrieve_output:"))[0]
+				}
+			}
+			args, _ := json.Marshal(map[string]any{"id": id, "offset": (step - 2) * 100, "limit": map[int]any{2: nil, 3: 100000000}[step]})
+			return PromptResponse{ToolCalls: []ToolCall{{ID: fmt.Sprintf("read-%d", step), Name: toolRetrieveOutput, Arguments: args}}}, nil
+		}
+	}}}
+	for step < 3 {
+		out, err := engine.RunTurn(context.Background(), run, history, "system")
+		if err != nil {
+			t.Fatal(err)
+		}
+		history = out.History
+	}
+	if store.seq != 1 {
+		t.Fatalf("retrieve pages were offloaded again: saves=%d", store.seq)
+	}
+	pages := 0
+	for _, msg := range history {
+		if msg.Role == RoleTool && msg.ToolName == toolRetrieveOutput && strings.Contains(msg.Text, "total_bytes=") {
+			pages++
+		}
+	}
+	if pages != 2 {
+		t.Fatalf("got %d retrieved pages, want 2", pages)
+	}
+	for _, msg := range history {
+		if msg.Role == RoleTool && msg.ToolName == toolRetrieveOutput {
+			if msg.Offload {
+				t.Fatalf("retrieve_output page was re-offloaded: %+v", msg)
+			}
+			if TokenEstimate(msg.Text) > engine.OffloadAtTokens {
+				t.Fatalf("retrieve_output page estimate = %d, want <= %d", TokenEstimate(msg.Text), engine.OffloadAtTokens)
+			}
+		}
+	}
+}
+
+func TestFeature_UPM314_RetrieveOutputPageIsNotReoffloadedAtThreshold(t *testing.T) {
+	store := &memOutputs{}
+	run := &RunState{RunID: "r", Catalog: NewToolCatalog([]ToolDef{{Name: "produce", Op: OpRead}}, nil)}
+	engine := Engine{Outputs: store, OffloadAtTokens: 1, Executor: DefaultExecutor{Outputs: store, Direct: map[string]ToolHandler{
+		"produce": func(context.Context, *RunState, ToolCall) (ToolResult, error) {
+			return ToolResult{Output: strings.Repeat("x", 5000)}, nil
+		},
+	}}, Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+		if len(req.Messages) == 0 {
+			return PromptResponse{ToolCalls: []ToolCall{{ID: "produce", Name: "produce"}}}, nil
+		}
+		id := strings.Fields(strings.TrimPrefix(req.Messages[1].Text, "retrieve_output:"))[0]
+		args, _ := json.Marshal(map[string]any{"id": id, "offset": 0, "limit": 500})
+		return PromptResponse{ToolCalls: []ToolCall{{ID: "page", Name: toolRetrieveOutput, Arguments: args}}}, nil
+	}}}
+	first, err := engine.RunTurn(context.Background(), run, nil, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.RunTurn(context.Background(), run, first.History, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.seq != 1 {
+		t.Fatalf("retrieve page caused another save: saves=%d", store.seq)
+	}
+}
+
+func TestFeature_UPM314_EnginePreservesExecutorOffloadThreshold(t *testing.T) {
+	store := &memOutputs{}
+	run := &RunState{RunID: "r", Catalog: NewToolCatalog([]ToolDef{{Name: "produce", Op: OpRead}}, nil)}
+	engine := Engine{Outputs: store, Executor: DefaultExecutor{Outputs: store, OffloadAtTokens: 1, Direct: map[string]ToolHandler{
+		"produce": func(context.Context, *RunState, ToolCall) (ToolResult, error) {
+			return ToolResult{Output: strings.Repeat("x", 500)}, nil
+		},
+	}}, Model: fakeModel{fn: func(context.Context, PromptRequest) (PromptResponse, error) {
+		return PromptResponse{ToolCalls: []ToolCall{{ID: "produce", Name: "produce"}}}, nil
+	}}}
+	if _, err := engine.RunTurn(context.Background(), run, nil, "system"); err != nil {
+		t.Fatal(err)
+	}
+	if store.seq != 1 {
+		t.Fatalf("executor threshold was overwritten: saves=%d", store.seq)
+	}
+}
+
+func TestFeature_UPM314_RetrievePageIsBoundedAndUtf8Safe(t *testing.T) {
+	store := &memOutputs{items: map[string]struct {
+		body      string
+		untrusted bool
+	}{"id": {body: strings.Repeat("aé🙂", 3000)}}}
+	executor := DefaultExecutor{Outputs: store}
+	var joined strings.Builder
+	first, err := executor.execRetrieveOutput(context.Background(), nil, ToolCall{Arguments: json.RawMessage(`{"id":"id","offset":1,"limit":1}`)})
+	if err != nil || !strings.Contains(first.Output, "next_offset=3]") {
+		t.Fatalf("small UTF-8 page did not advance by one character: output=%q err=%v", first.Output, err)
+	}
+	for offset := 0; offset < len(store.items["id"].body); {
+		call := ToolCall{Arguments: json.RawMessage(fmt.Sprintf(`{"id":"id","offset":%d,"limit":100000000}`, offset))}
+		result, err := executor.execRetrieveOutput(context.Background(), nil, call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marker := fmt.Sprintf("\n[total_bytes=%d next_offset=", len(store.items["id"].body))
+		page, metadata, found := strings.Cut(result.Output, marker)
+		if !found || !utf8.ValidString(page) || len(page) > DefaultOffloadTokens*4-128 {
+			t.Fatalf("invalid or oversized page: bytes=%d output tail=%q", len(page), result.Output[len(result.Output)-40:])
+		}
+		joined.WriteString(page)
+		next, err := strconv.Atoi(strings.TrimSuffix(metadata, "]"))
+		if err != nil {
+			t.Fatalf("invalid next offset metadata %q: %v", metadata, err)
+		}
+		if next <= offset {
+			t.Fatalf("page did not advance offset %d -> %d", offset, next)
+		}
+		offset = next
+	}
+	if joined.String() != store.items["id"].body {
+		t.Fatal("UTF-8 pages did not reassemble the original body")
+	}
+	inside := ToolCall{Arguments: json.RawMessage(`{"id":"id","offset":2,"limit":30}`)}
+	result, err := executor.execRetrieveOutput(context.Background(), nil, inside)
+	if err != nil || !utf8.ValidString(strings.Split(result.Output, "\n[total_bytes=")[0]) {
+		t.Fatalf("offset inside multi-byte rune returned invalid UTF-8: %v", err)
+	}
+}
+
+func TestFeature_UPM314_RetrievePageUsesRuneFallbackBelowByteFloor(t *testing.T) {
+	store := &memOutputs{items: map[string]struct {
+		body      string
+		untrusted bool
+	}{"id": {body: "aé🙂"}}}
+	result, err := (DefaultExecutor{Outputs: store}).execRetrieveOutput(context.Background(), nil, ToolCall{Arguments: json.RawMessage(`{"id":"id","offset":2,"limit":4}`)})
+	if err != nil || !strings.HasPrefix(result.Output, "🙂\n[") || !utf8.ValidString(result.Output) {
+		t.Fatalf("one-character fallback page = %q, err=%v", result.Output, err)
+	}
+}
+
+func TestFeature_UPM314_ToolSurfaceIsAppendOnly(t *testing.T) {
+	store := &memOutputs{}
+	catalog := NewToolCatalog([]ToolDef{{Name: "first", Op: OpRead}}, []ToolDef{{Name: "discovered", Description: "find me"}})
+	run := &RunState{RunID: "r", Catalog: catalog}
+	var requests []PromptRequest
+	engine := Engine{ContextWindow: 1000, Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+		requests = append(requests, req)
+		if len(requests) == 1 {
+			return PromptResponse{ToolCalls: []ToolCall{{ID: "f", Name: toolFindTool, Arguments: json.RawMessage(`{"query":"find me"}`)}, {ID: "o", Name: "first"}}}, nil
+		}
+		return PromptResponse{Text: "done"}, nil
+	}}, Executor: DefaultExecutor{Outputs: store, Direct: map[string]ToolHandler{
+		"first": func(context.Context, *RunState, ToolCall) (ToolResult, error) {
+			return ToolResult{Output: strings.Repeat("x", 9000)}, nil
+		},
+	}}, Outputs: store, OffloadAtTokens: 1}
+	history := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "older"}}}, {Role: RoleTool, ToolID: "old", ToolName: "older", Text: strings.Repeat("z", 6000)}, {Role: RoleAssistant, Text: "previous response"}}
+	first, err := engine.RunTurn(context.Background(), run, history, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := engine.RunTurn(context.Background(), run, first.History, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 || len(requests[1].Tools) <= len(requests[0].Tools) || !reflect.DeepEqual(requests[1].Tools[:len(requests[0].Tools)], requests[0].Tools) || !reflect.DeepEqual(requests[0].Cache, requests[1].Cache) {
+		t.Fatalf("tool surface/cache changed: first=%+v second=%+v", requests[0], requests[1])
+	}
+	if requests[1].Tools[len(requests[1].Tools)-1].Name != "discovered" || second.AssistantText != "done" {
+		t.Fatalf("discovered tool was not appended or second turn not returned: %+v", requests[1].Tools)
+	}
+	hasOffload, hasTrim := false, false
+	for _, msg := range requests[1].Messages {
+		if msg.Role == RoleTool && strings.HasPrefix(msg.Text, "retrieve_output:") {
+			hasOffload = true
+			if strings.Contains(msg.Text, "older-") {
+				hasTrim = true
+			}
+		}
+	}
+	if !hasOffload || !hasTrim {
+		t.Fatalf("turn 2 prompt missing offload or trimmed history: %+v", requests[1].Messages)
+	}
+}
+
+func TestFeature_UPM314_PreCallTrimKeepsRequestWithinWindow(t *testing.T) {
+	store := &memOutputs{}
+	messages := []Message{
+		{Role: RoleUser, Text: "old"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "lookup"}}},
+		{Role: RoleTool, ToolID: "c1", ToolName: "lookup", Text: strings.Repeat("a", 600)},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "lookup"}}},
+		{Role: RoleTool, ToolID: "c2", ToolName: "lookup", Text: strings.Repeat("b", 300)},
+		{Role: RoleAssistant, Text: "previous response"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}},
+		{Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "current"},
+	}
+	var got PromptRequest
+	engine := Engine{ContextWindow: 300, Outputs: store, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+		got = req
+		return PromptResponse{Text: "ok"}, nil
+	}}}
+	_, err := engine.RunTurn(context.Background(), &RunState{Catalog: NewToolCatalog(nil, nil)}, messages, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimateMessages(got.Messages)+TokenEstimate(got.System)+toolTokens(got.Tools)+engine.ContextWindow/20 > engine.ContextWindow || !strings.HasPrefix(got.Messages[2].Text, "retrieve_output:") || got.Messages[4].Text != messages[4].Text || got.Messages[7].Text != "current" {
+		t.Fatalf("request not trimmed to fit: %+v", got.Messages)
+	}
+	ref := strings.Fields(got.Messages[2].Text)[0]
+	content, _, err := store.RetrieveOutput(context.Background(), nil, strings.TrimPrefix(ref, "retrieve_output:"))
+	if err != nil || content != messages[2].Text {
+		t.Fatalf("trimmed output not retrievable: err=%v", err)
+	}
+	if got.Messages[2].ToolID != "c1" || got.Messages[4].ToolID != "c2" {
+		t.Fatalf("pre-call trim did not preserve oldest-first message order: %+v", got.Messages)
+	}
+}
+
+func TestFeature_UPM314_PostTurnTrimAt80Percent(t *testing.T) {
+	belowMessages := []Message{{Role: RoleUser, Text: "old"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c", Name: "lookup"}}}, {Role: RoleTool, ToolID: "c", ToolName: "lookup", Text: strings.Repeat("x", 200)}, {Role: RoleUser, Text: "latest"}}
+	store := &memOutputs{}
+	below, err := TrimMessages(context.Background(), store, nil, belowMessages, 200, 160)
+	if err != nil || !reflect.DeepEqual(belowMessages, below) {
+		t.Fatalf("below threshold changed: %v", err)
+	}
+	aboveMessages := []Message{{Role: RoleUser, Text: "old"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c", Name: "lookup"}}}, {Role: RoleTool, ToolID: "c", ToolName: "lookup", Text: strings.Repeat("x", 800)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "latest"}}
+	above, err := TrimMessages(context.Background(), store, nil, aboveMessages, 200, 160)
+	if err != nil || !strings.HasPrefix(above[2].Text, "retrieve_output:") {
+		t.Fatalf("above threshold not trimmed: %v", err)
+	}
+}
+
+func TestFeature_UPM314_PostTurnThresholdIncludesOverhead(t *testing.T) {
+	if got := PostTurnThreshold(1000, 20, 80, 100); got != 600 {
+		t.Fatalf("threshold = %d, want 600", got)
+	}
+	if got := PostTurnThreshold(100, 100, 100, 10); got >= 0 {
+		t.Fatalf("oversized overhead threshold = %d, want negative so eligible messages still trim", got)
+	}
+	if got := PromptMessageBudget(100, strings.Repeat("s", 400), nil); got >= 0 {
+		t.Fatalf("oversized prompt budget = %d, want negative", got)
+	}
+	if got := PostTurnBudget(1000, "", nil); got != 750 {
+		t.Fatalf("post-turn budget = %d, want 750", got)
+	}
+}
+
+func TestFeature_UPM314_PostTurnBudgetKeepsNextRunStable(t *testing.T) {
+	store := &memOutputs{}
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 380)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "later", Name: "lookup"}}}, {Role: RoleTool, ToolID: "later", ToolName: "lookup", Text: "later result"}}
+	tools := NewToolCatalog(nil, nil).PromptTools()
+	budget := PostTurnBudget(240, "s", tools)
+	trimmed, err := TrimMessages(context.Background(), store, nil, input, 240, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimateMessages(trimmed) > budget {
+		t.Fatalf("trimmed history estimate = %d, budget = %d", estimateMessages(trimmed), budget)
+	}
+	var requests []PromptRequest
+	engine := Engine{ContextWindow: 240, Outputs: store, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+		requests = append(requests, req)
+		return PromptResponse{Text: "ok"}, nil
+	}}}
+	first, err := engine.RunTurn(context.Background(), &RunState{Catalog: NewToolCatalog(nil, nil)}, trimmed, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("first model requests = %d, want 1", len(requests))
+	}
+	secondInput := append(cloneMessages(first.History), Message{Role: RoleUser, Text: strings.Repeat("growth ", 30)})
+	second, err := engine.RunTurn(context.Background(), &RunState{Catalog: NewToolCatalog(nil, nil)}, secondInput, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	if store.seq != 1 || !reflect.DeepEqual(requests[1].Messages[:len(first.History)], first.History) || !reflect.DeepEqual(second.History[:len(first.History)], first.History) {
+		t.Fatalf("request prefix changed or history re-saved: saves=%d", store.seq)
+	}
+}
+
+func TestFeature_UPM314_EngineOffloadThresholdOverridesDefaultExecutor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		executor func(OutputStore, map[string]ToolHandler) Executor
+	}{
+		{name: "value", executor: func(store OutputStore, direct map[string]ToolHandler) Executor {
+			return DefaultExecutor{Outputs: store, OffloadAtTokens: 1, Direct: direct}
+		}},
+		{name: "pointer", executor: func(store OutputStore, direct map[string]ToolHandler) Executor {
+			return &DefaultExecutor{Outputs: store, OffloadAtTokens: 1, Direct: direct}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &memOutputs{items: map[string]struct {
+				body      string
+				untrusted bool
+			}{"saved": {body: strings.Repeat("x", 2000)}}}
+			engine := Engine{Outputs: store, OffloadAtTokens: 100, Executor: tc.executor(store, nil), Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+				if len(req.Messages) == 0 {
+					args, _ := json.Marshal(map[string]string{"id": "saved"})
+					return PromptResponse{ToolCalls: []ToolCall{{ID: "page", Name: toolRetrieveOutput, Arguments: args}}}, nil
+				}
+				return PromptResponse{Text: "done"}, nil
+			}}}
+			out, err := engine.RunTurn(context.Background(), &RunState{RunID: "r", Catalog: NewToolCatalog(nil, nil)}, nil, "system")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Appended) < 2 || strings.Contains(out.Appended[1].Text, "next_offset=4") {
+				t.Fatalf("Engine threshold did not control retrieve_output page size: appended=%+v", out.Appended)
+			}
+		})
+	}
+}
+
+func TestFeature_UPM314_TrimUsesOldestResultFirst(t *testing.T) {
+	input := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "one", Name: "lookup"}}}, {Role: RoleTool, ToolID: "one", ToolName: "lookup", Text: strings.Repeat("a", 400)},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "two", Name: "lookup"}}}, {Role: RoleTool, ToolID: "two", ToolName: "lookup", Text: strings.Repeat("b", 400)},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "latest"},
+	}
+	got, err := TrimMessages(context.Background(), &memOutputs{}, nil, input, 100, 180)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got[1].Text, "retrieve_output:") || got[3].Text != input[3].Text || got[5].Text != "latest" {
+		t.Fatalf("trim order or latest turn changed: %+v", got)
+	}
+}
+
+func TestFeature_UPM314_TrimStableAcrossReturnedHistory(t *testing.T) {
+	store := &memOutputs{}
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 800)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "new", Name: "lookup"}}}, {Role: RoleTool, ToolID: "new", ToolName: "lookup", Text: "latest"}}
+	first, err := TrimMessages(context.Background(), store, nil, input, 100, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := TrimMessages(context.Background(), store, nil, first, 100, 50)
+	if err != nil || !reflect.DeepEqual(first, second) || store.seq != 1 {
+		t.Fatalf("trim churn: saves=%d err=%v", store.seq, err)
+	}
+}
+
+func TestFeature_UPM314_ReturnedTrimmedHistoryIsStableAcrossTurns(t *testing.T) {
+	store := &memOutputs{}
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 800)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "current"}}
+	var requests []PromptRequest
+	engine := Engine{ContextWindow: 200, Outputs: store, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(_ context.Context, req PromptRequest) (PromptResponse, error) {
+		requests = append(requests, req)
+		return PromptResponse{Text: "ok"}, nil
+	}}}
+	run := &RunState{Catalog: NewToolCatalog(nil, nil)}
+	first, err := engine.RunTurn(context.Background(), run, input, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.RunTurn(context.Background(), run, first.History, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.seq != 1 || len(requests) != 2 || !reflect.DeepEqual(requests[0].Messages, requests[1].Messages[:len(requests[0].Messages)]) {
+		t.Fatalf("trimmed history churned: saves=%d requests=%+v", store.seq, requests)
+	}
+}
+
+func TestFeature_UPM314_ContextExceededWhenSystemAndToolsDoNotFit(t *testing.T) {
+	store := &memOutputs{}
+	engine := Engine{ContextWindow: 1, Outputs: store, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(context.Context, PromptRequest) (PromptResponse, error) {
+		t.Fatal("model called with oversized prompt")
+		return PromptResponse{}, nil
+	}}}
+	messages := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 800)}, {Role: RoleAssistant, Text: "latest"}}
+	_, err := engine.RunTurn(context.Background(), &RunState{Catalog: NewToolCatalog(nil, nil)}, messages, "system")
+	if !errors.Is(err, ErrContextExceeded) || store.seq != 1 {
+		t.Fatalf("context error = %v, trim saves = %d; want context error after trimming", err, store.seq)
+	}
+}
+
+func TestFeature_UPM314_ContextExceededAfterTrimAndWithMargin(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		checkSave bool
+		messages  []Message
+		window    int
+	}{
+		{name: "still too large after trimming", checkSave: true, messages: []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "older", Name: "lookup"}}}, {Role: RoleTool, ToolID: "older", ToolName: "lookup", Text: strings.Repeat("x", 1000)}, {Role: RoleUser, Text: strings.Repeat("u", 2000)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "latest"}}, window: 200},
+		{name: "fits only without safety margin", messages: []Message{{Role: RoleUser, Text: "fits"}}, window: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := NewToolCatalog(nil, nil)
+			window := tc.window
+			if window == 0 {
+				window = TokenEstimate("s") + 1
+				window += toolTokens(catalog.PromptTools())
+			}
+			engine := Engine{ContextWindow: window, Outputs: &memOutputs{}, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(context.Context, PromptRequest) (PromptResponse, error) {
+				t.Fatal("model called with context exceeding the window")
+				return PromptResponse{}, nil
+			}}}
+			_, err := engine.RunTurn(context.Background(), &RunState{Catalog: catalog}, tc.messages, "s")
+			if tc.checkSave && engine.Outputs.(*memOutputs).seq != 1 {
+				t.Fatalf("trim saves = %d, want 1", engine.Outputs.(*memOutputs).seq)
+			}
+			if !errors.Is(err, ErrContextExceeded) {
+				t.Fatalf("context error = %v", err)
+			}
+		})
+	}
+}
+
+func TestFeature_UPM314_PreCallTrimSaveFailureFailsTurn(t *testing.T) {
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 800)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "current"}}
+	engine := Engine{ContextWindow: 200, Outputs: &failingOutputs{}, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(context.Context, PromptRequest) (PromptResponse, error) { return PromptResponse{}, nil }}}
+	if _, err := engine.RunTurn(context.Background(), &RunState{Catalog: NewToolCatalog(nil, nil)}, input, "s"); err == nil || err.Error() != "save failed" {
+		t.Fatalf("save failure = %v", err)
+	}
+}
+
+func TestTrimMessagesRules(t *testing.T) {
+	input := []Message{{Role: RoleUser, Text: "user"}, {Role: RoleAssistant, Text: "assistant", ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 500)}, {Role: RoleUser, Text: "latest"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "new", Name: "lookup"}}}, {Role: RoleTool, ToolID: "new", ToolName: "lookup", Text: strings.Repeat("y", 500)}}
+	store := &memOutputs{}
+	got, err := TrimMessages(context.Background(), store, nil, input, 100, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(input) || got[0].Text != "user" || got[1].Text != "assistant" || got[2].ToolID != "old" || !strings.HasPrefix(got[2].Text, "retrieve_output:") || got[5].Text != input[5].Text || got[4].ToolCalls[0].ID != "new" {
+		t.Fatalf("trim violated message invariants: %+v", got)
+	}
+	offloaded := cloneMessages(input)
+	offloaded[2].Offload = true
+	offloaded[2].Text = "retrieve_output:already-stored\n" + strings.Repeat("z", 300)
+	stored, err := TrimMessages(context.Background(), store, nil, offloaded, 100, 1)
+	if err != nil || !reflect.DeepEqual(stored, offloaded) {
+		t.Fatalf("already offloaded result was not skipped: %v", err)
+	}
+	again, err := TrimMessages(context.Background(), store, nil, got, 100, 50)
+	if err != nil || !reflect.DeepEqual(got, again) {
+		t.Fatalf("trim not idempotent: %v", err)
+	}
+	zero, err := TrimMessages(context.Background(), store, nil, input, 0, 1)
+	if err != nil || !reflect.DeepEqual(input, zero) {
+		t.Fatalf("zero window changed messages: %v", err)
+	}
+	first, err := TrimMessages(context.Background(), nil, nil, input, 100, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := TrimMessages(context.Background(), nil, nil, input, 100, 50)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("trim not deterministic: %v", err)
+	}
+}
+
+func TestFeature_UPM314_TrimSkipsUntrustedMarkerTextAndSmallResults(t *testing.T) {
+	input := []Message{{Role: RoleAssistant, Text: "untouched", ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 600) + " awaiting approval retrieve_output:fake"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "small", Name: "lookup"}}}, {Role: RoleTool, ToolID: "small", ToolName: "lookup", Text: "tiny"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "current"}}
+	store := &memOutputs{}
+	got, err := TrimMessages(context.Background(), store, nil, input, 100, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(input) || got[0].Text != input[0].Text || !strings.HasPrefix(got[1].Text, "retrieve_output:") || got[3].Text != "tiny" || got[5].Text != "current" || store.seq != 1 {
+		t.Fatalf("trim changed protected messages or saved a small result: messages=%+v saves=%d", got, store.seq)
+	}
+}
+
+func TestFeature_UPM314_TrimHeldCallPlaceholder(t *testing.T) {
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "held", Name: "change"}}}, {Role: RoleTool, ToolID: "held", Text: strings.Repeat("awaiting approval ", 80), HeldPlaceholder: true}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", Text: "current"}}
+	store := &memOutputs{}
+	got, err := TrimMessages(context.Background(), store, nil, input, 100, 20)
+	if err != nil || got[1].Text != input[1].Text || store.seq != 0 {
+		t.Fatalf("held placeholder changed: saves=%d err=%v", store.seq, err)
+	}
+}
+
+func TestFeature_UPM314_TrimDoesNotSaveUnshrinkableResult(t *testing.T) {
+	store := &memOutputs{}
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: "short"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", Text: "current"}}
+	got, err := TrimMessages(context.Background(), store, nil, input, 100, 1)
+	if err != nil || store.seq != 0 || !reflect.DeepEqual(got, input) {
+		t.Fatalf("small result caused orphan save: saves=%d err=%v messages=%+v", store.seq, err, got)
+	}
+}
+
+func TestFeature_UPM314_TrimUsesRealisticOutputIDLength(t *testing.T) {
+	store := &memOutputs{}
+	input := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 150)}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "latest", Name: "lookup"}}}, {Role: RoleTool, ToolID: "latest", ToolName: "lookup", Text: "current"}}
+	got, err := TrimMessages(context.Background(), store, nil, input, 100, 1)
+	if err != nil || store.seq != 0 || got[1].Text != input[1].Text || got[3].Text != "current" {
+		t.Fatalf("older result was saved despite realistic reference length: saves=%d err=%v messages=%+v", store.seq, err, got)
 	}
 }

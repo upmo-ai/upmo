@@ -12,7 +12,10 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/writeguard"
 )
 
-// Engine runs one turn of the shared agent loop.
+// Engine runs one turn of the shared agent loop. For DefaultExecutor values
+// and pointers, a non-zero Engine.OffloadAtTokens takes precedence; when it is
+// zero, RunTurn uses the executor's value. Wrapping Executors must set their
+// own threshold.
 type Engine struct {
 	Model                ModelClient
 	Executor             Executor
@@ -25,7 +28,9 @@ type Engine struct {
 	FallbackPrice        *kernel.TokenPrice
 	FallbackCostMicroUSD int64
 	OffloadAtTokens      int
-	Now                  func() time.Time
+	// ContextWindow is per Engine because each Engine serves one model.
+	ContextWindow int
+	Now           func() time.Time
 }
 
 // RunTurn executes a single model turn and its tool calls, enforcing micro-USD
@@ -34,6 +39,25 @@ type Engine struct {
 func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, system string) (TurnOutcome, error) {
 	if run == nil || e.Model == nil || e.Executor == nil {
 		return TurnOutcome{}, ErrInvalidConfig
+	}
+	switch executor := e.Executor.(type) {
+	case DefaultExecutor:
+		if e.OffloadAtTokens == 0 {
+			e.OffloadAtTokens = executor.OffloadAtTokens
+		} else {
+			executor.OffloadAtTokens = e.OffloadAtTokens
+			e.Executor = executor
+		}
+	case *DefaultExecutor:
+		if executor != nil {
+			configured := *executor
+			if e.OffloadAtTokens == 0 {
+				e.OffloadAtTokens = configured.OffloadAtTokens
+			} else {
+				configured.OffloadAtTokens = e.OffloadAtTokens
+			}
+			e.Executor = configured
+		}
 	}
 	if run.Paused {
 		return TurnOutcome{}, kernel.ErrExhausted
@@ -49,6 +73,18 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 		nowFn = func() time.Time { return time.Now().UTC() }
 	}
 
+	if e.ContextWindow > 0 {
+		tools := run.Catalog.PromptTools()
+		available := PromptMessageBudget(e.ContextWindow, system, tools)
+		trimmed, trimErr := TrimMessages(ctx, e.Outputs, run, messages, e.ContextWindow, available)
+		if trimErr != nil {
+			return TurnOutcome{}, trimErr
+		}
+		messages = trimmed
+		if estimateMessages(messages) > available {
+			return TurnOutcome{}, ErrContextExceeded
+		}
+	}
 	req := BuildPromptRequest(run, system, messages)
 	resp, err := e.Model.Complete(ctx, req)
 	if err != nil {
@@ -75,6 +111,7 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 	}
 
 	outcome := TurnOutcome{
+		History:       cloneMessages(messages),
 		AssistantText: resp.Text,
 		Model:         resp.Model,
 		CostMicroUSD:  charge,
@@ -216,10 +253,11 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 						return TurnOutcome{}, err
 					}
 					appended = append(appended, Message{
-						Role:     RoleTool,
-						ToolName: call.Name,
-						ToolID:   call.ID,
-						Text:     "awaiting approval",
+						Role:            RoleTool,
+						ToolName:        call.Name,
+						ToolID:          call.ID,
+						Text:            "awaiting approval",
+						HeldPlaceholder: true,
 					})
 					continue
 				}
@@ -300,6 +338,7 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 
 	outcome.Exposure = run.Exposure
 	outcome.Appended = appended
+	outcome.History = append(outcome.History, appended...)
 
 	enqueueNext := false
 	switch {
@@ -381,7 +420,10 @@ func (e Engine) finalizeToolResult(ctx context.Context, run *RunState, call Tool
 	if len(res.DiscoveredTools) > 0 && run.Catalog != nil {
 		run.Catalog.Append(res.DiscoveredTools...)
 	}
-	text, offloaded, err := MaybeOffload(ctx, e.Outputs, run, call.Name, res.Output, res.Untrusted, e.OffloadAtTokens)
+	text, offloaded, err := res.Output, false, error(nil)
+	if call.Name != toolRetrieveOutput {
+		text, offloaded, err = MaybeOffload(ctx, e.Outputs, run, call.Name, res.Output, res.Untrusted, e.OffloadAtTokens)
+	}
 	if err != nil {
 		return Message{}, err
 	}

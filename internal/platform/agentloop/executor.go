@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SandboxCommand describes a command executed inside a sandbox.
@@ -74,14 +76,17 @@ func IsSandboxTool(toolName string) bool {
 
 // DefaultExecutor routes direct in-process tools without touching sandboxd,
 // and lazily provisions a sandboxd seat ONLY when a sandbox tool is invoked.
+// RunTurn uses Engine.OffloadAtTokens when non-zero, otherwise this executor's
+// OffloadAtTokens. Wrappers must set their own threshold.
 type DefaultExecutor struct {
-	Sandbox   SandboxManager
-	Knowledge KnowledgeSearcher
-	Lessons   LessonOpener
-	Memory    MemorySearcher
-	Outputs   OutputStore
-	HTTP      *HTTPConnectorClient
-	Direct    map[string]ToolHandler
+	Sandbox         SandboxManager
+	Knowledge       KnowledgeSearcher
+	Lessons         LessonOpener
+	Memory          MemorySearcher
+	Outputs         OutputStore
+	OffloadAtTokens int
+	HTTP            *HTTPConnectorClient
+	Direct          map[string]ToolHandler
 }
 
 // DoConnectorHTTP executes an outbound connector HTTP request via e.HTTP,
@@ -149,16 +154,78 @@ func (e DefaultExecutor) execRetrieveOutput(ctx context.Context, run *RunState, 
 		return ToolResult{Output: "output store unavailable", IsError: true}, fmt.Errorf("agentloop: output store nil")
 	}
 	var args struct {
-		ID string `json:"id"`
+		ID     string          `json:"id"`
+		Offset json.RawMessage `json:"offset"`
+		Limit  json.RawMessage `json:"limit"`
 	}
 	if err := json.Unmarshal(call.Arguments, &args); err != nil {
 		return ToolResult{Output: "invalid arguments", IsError: true}, err
+	}
+	offset, err := parsePageArg(args.Offset, 0)
+	if err != nil {
+		return ToolResult{Output: "invalid arguments: offset must be a non-negative integer", IsError: true}, err
+	}
+	offloadAt := e.OffloadAtTokens
+	if offloadAt <= 0 {
+		offloadAt = DefaultOffloadTokens
+	}
+	maxPageBytes := offloadAt*4 - 128 // reserve room for paging metadata
+	if maxPageBytes < 4 {
+		maxPageBytes = 4
+	}
+	limit, err := parsePageArg(args.Limit, maxPageBytes)
+	if err != nil || limit == 0 {
+		return ToolResult{Output: "invalid arguments: limit must be a positive integer", IsError: true}, fmt.Errorf("agentloop: invalid retrieve_output limit")
+	}
+	if limit > maxPageBytes {
+		limit = maxPageBytes
+	}
+	if limit < 4 {
+		limit = 4
 	}
 	body, untrusted, err := e.Outputs.RetrieveOutput(ctx, run, args.ID)
 	if err != nil {
 		return ToolResult{Output: err.Error(), IsError: true}, err
 	}
-	return ToolResult{Output: body, Untrusted: untrusted}, nil
+	if len(body) <= limit && offset == 0 {
+		return ToolResult{Output: body, Untrusted: untrusted}, nil
+	}
+	if offset > len(body) {
+		return ToolResult{Output: fmt.Sprintf("offset %d exceeds total size %d", offset, len(body)), IsError: true}, nil
+	}
+	end := len(body)
+	if limit < len(body)-offset {
+		end = offset + limit
+	}
+	for offset > 0 && offset < len(body) && body[offset]&0xc0 == 0x80 {
+		offset++
+	}
+	for end > offset && end < len(body) && body[end]&0xc0 == 0x80 {
+		end--
+	}
+	if end == offset && offset < len(body) {
+		_, size := utf8.DecodeRuneInString(body[offset:])
+		end += size
+	}
+	page := body[offset:end]
+	output := fmt.Sprintf("%s\n[total_bytes=%d next_offset=%d]", page, len(body), end)
+	return ToolResult{Output: output, Untrusted: untrusted}, nil
+}
+
+func parsePageArg(raw json.RawMessage, defaultValue int) (int, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return defaultValue, nil
+	}
+	valueText := string(raw)
+	if valueText == "" {
+		return 0, fmt.Errorf("agentloop: invalid page argument")
+	}
+	for _, char := range valueText {
+		if char < '0' || char > '9' {
+			return 0, fmt.Errorf("agentloop: invalid page argument")
+		}
+	}
+	return strconv.Atoi(valueText)
 }
 
 func (e DefaultExecutor) execSaveOutput(ctx context.Context, run *RunState, call ToolCall) (ToolResult, error) {
