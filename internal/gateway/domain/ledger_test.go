@@ -122,8 +122,21 @@ func TestRollupTokens(t *testing.T) {
 		{Input: 10, Output: 2, CacheRead: 3, CacheWrite: 1, Reasoning: 4},
 		{Input: 5},
 	})
-	if got != 25 {
+	if got != 21 {
 		t.Fatalf("tokens = %d", got)
+	}
+}
+
+func TestFeature_UPM389_ReasoningIsBreakdownOfOutput(t *testing.T) {
+	u := Usage{Arrived: true, Input: 60, Output: 100, Reasoning: 40}
+	if got := u.Tokens(); got != 160 {
+		t.Fatalf("Tokens() = %d", got)
+	}
+	if got := RollupTokens([]Usage{u}); got != 160 {
+		t.Fatalf("RollupTokens = %d", got)
+	}
+	if u.Reasoning != 40 {
+		t.Fatalf("Reasoning = %d, want 40 kept as its own figure", u.Reasoning)
 	}
 }
 

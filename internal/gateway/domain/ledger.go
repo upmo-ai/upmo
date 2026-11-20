@@ -77,9 +77,10 @@ type Usage struct {
 	ReportedCostMicroUSD *int64 `json:"-"`
 }
 
-// Tokens is every counted token on this attempt.
+// Tokens is every counted token on this attempt. Reasoning is a breakdown
+// of Output, not an extra dimension, so it is not added again.
 func (u Usage) Tokens() int {
-	return u.Input + u.Output + u.CacheRead + u.CacheWrite + u.Reasoning
+	return u.Input + u.Output + u.CacheRead + u.CacheWrite
 }
 
 // Price is one catalog row for a model. A nil rate means that dimension
