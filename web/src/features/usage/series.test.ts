@@ -19,8 +19,9 @@ function bucket(extra: Partial<UsageBucket>): UsageBucket {
     output: 0,
     cache_read: 0,
     cache_write: 0,
-    tool_defs_est: 0,
-    spend_usd: 0,
+    spend_micro_usd: 0,
+    estimated: false,
+    list_price_micro_usd: null,
     by_provider: {},
     by_model: {},
     ...extra,
@@ -31,12 +32,17 @@ function usageOf(buckets: UsageBucket[]): Usage {
   return {
     range: 7,
     bucket: "day",
+    time_zone: "UTC",
+    spend_micro_usd: 1,
+    estimated: false,
     unpriced_calls: 0,
+    list_price_micro_usd: null,
     buckets,
     providers: [
-      { id: "mistral", name: "Mistral", scope: "own", spend_usd: 1, requests: 2, errors: 0, latency_ms: { p50: 1, p95: 2, p99: 3 } },
+      { id: "mistral", name: "Mistral", scope: "own", plan_kind: "metered", spend_micro_usd: 1, requests: 2, errors: 0, latency_ms: { p50: 1, p95: 2, p99: 3 } },
     ],
-    models: [{ id: "mistral-large", name: "Mistral Large", provider_id: "mistral", spend_usd: 1, tokens: 20 }],
+    models: [{ id: "mistral-large", name: "Mistral Large", provider_id: "mistral", spend_micro_usd: 1, tokens: 20 }],
+    sources: [],
     tasks: [],
   };
 }
@@ -46,38 +52,36 @@ function values(series: { points: { value: number | null }[] }): (number | null)
 }
 
 describe("usage series", () => {
-  it("usage panels: a token stack adds up to input plus output, also when tool definitions exceed input", () => {
+  it("UPM-359 the token stack has input, output, cache read and cache write, and adds up to every token of a bucket", () => {
     const usage = usageOf([
-      bucket({ at: "2026-11-01", input: 100, output: 40, tool_defs_est: 30 }),
-      bucket({ at: "2026-11-02", input: 100, output: 40, tool_defs_est: 100 }),
-      bucket({ at: "2026-11-03", input: 100, output: 40, tool_defs_est: 150 }),
-      bucket({ at: "2026-11-04", input: 0, output: 5, tool_defs_est: 20 }),
+      bucket({ at: "2026-11-01", input: 100, output: 40, cache_read: 300, cache_write: 7 }),
+      bucket({ at: "2026-11-02", input: 0, output: 5 }),
     ]);
-    const [rest, output, tools] = tokenConsumptionSeries(usage).map(values);
-    expect(rest).toEqual([70, 0, 0, 0]);
-    expect(output).toEqual([40, 40, 40, 5]);
-    expect(tools).toEqual([30, 100, 100, 0]);
-    usage.buckets.forEach((item, index) => {
-      expect(rest![index]! + output![index]! + tools![index]!).toBe(item.input + item.output);
-    });
+    const series = tokenConsumptionSeries(usage);
+    expect(series.map((item) => item.name)).toEqual(["Input", "Output", "Cache read", "Cache write"]);
+    const [input, output, cacheRead, cacheWrite] = series.map(values);
+    expect(input).toEqual([100, 0]);
+    expect(output).toEqual([40, 5]);
+    expect(cacheRead).toEqual([300, 0]);
+    expect(cacheWrite).toEqual([7, 0]);
   });
 
   it("usage panels: a row absent from a bucket spent nothing there even when the bucket's spend is unknown", () => {
     const usage = usageOf([
-      bucket({ at: "2026-11-01", requests: 0, spend_usd: null }),
+      bucket({ at: "2026-11-01", requests: 0, spend_micro_usd: null }),
       bucket({
         at: "2026-11-02",
         requests: 2,
-        spend_usd: 1,
-        by_provider: { mistral: { spend_usd: null, requests: 2, errors: 0, tokens: 20 } },
-        by_model: { "mistral-large": { spend_usd: null, tokens: 20 } },
+        spend_micro_usd: 1,
+        by_provider: { mistral: { spend_micro_usd: null, requests: 2, errors: 0, tokens: 20 } },
+        by_model: { "mistral-large": { spend_micro_usd: null, tokens: 20 } },
       }),
       bucket({
         at: "2026-11-03",
         requests: 2,
-        spend_usd: 1,
-        by_provider: { mistral: { spend_usd: 1, requests: 2, errors: 0, tokens: 20 } },
-        by_model: { "mistral-large": { spend_usd: 1, tokens: 20 } },
+        spend_micro_usd: 1,
+        by_provider: { mistral: { spend_micro_usd: 1, requests: 2, errors: 0, tokens: 20 } },
+        by_model: { "mistral-large": { spend_micro_usd: 1, tokens: 20 } },
       }),
     ]);
     expect(values(providerSpendSeries(usage)[0]!)).toEqual([0, null, 1]);
@@ -86,14 +90,14 @@ describe("usage series", () => {
 
   it("usage polish 4113376c: unknown spend is a gap in the spend bars, known zero stays a bar", () => {
     const usage = usageOf([
-      bucket({ at: "2026-11-01", spend_usd: 1.5 }),
-      bucket({ at: "2026-11-02", spend_usd: null }),
-      bucket({ at: "2026-11-03", spend_usd: 0 }),
+      bucket({ at: "2026-11-01", spend_micro_usd: 1_500_000 }),
+      bucket({ at: "2026-11-02", spend_micro_usd: null }),
+      bucket({ at: "2026-11-03", spend_micro_usd: 0 }),
     ]);
     const groups = spendGroups(usage);
     expect(groups.map((group) => group.label)).toEqual(["1 Nov", "2 Nov", "3 Nov"]);
     expect(groups.map((group) => group.bars)).toEqual([
-      [{ name: "Spend", value: 1.5 }],
+      [{ name: "Spend", value: 1_500_000 }],
       [{ name: "Spend", value: null }],
       [{ name: "Spend", value: 0 }],
     ]);
@@ -119,7 +123,7 @@ describe("usage series", () => {
       output: 0,
       cache_read: 0,
       cache_write: 0,
-      cost_usd: cost,
+      cost_micro_usd: cost,
       by_model: [],
     });
     const usage = {

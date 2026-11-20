@@ -29,24 +29,24 @@ export function hasCalls(usage: Usage): boolean {
  * is a gap. A row absent from the bucket made no calls there, so it spent
  * nothing, whatever the bucket's own spend is.
  */
-function spendPoint(share: { spend_usd: number | null } | undefined): number | null {
-  return share ? share.spend_usd : 0;
+function spendPoint(share: { spend_micro_usd: number | null } | undefined): number | null {
+  return share ? share.spend_micro_usd : 0;
 }
 
 interface Row {
   id: string;
   name: string;
-  spend_usd: number | null;
+  spend_micro_usd: number | null;
 }
 
 function spendSeries(
   usage: Usage,
   rows: Row[],
-  share: (bucket: UsageBucket, id: string) => { spend_usd: number | null } | undefined,
+  share: (bucket: UsageBucket, id: string) => { spend_micro_usd: number | null } | undefined,
 ): LineSeries[] {
   return rows.flatMap((row, index) =>
     // A row whose spend is unknown for the whole range has nothing to draw: it is listed as unpriced instead.
-    row.spend_usd === null
+    row.spend_micro_usd === null
       ? []
       : [
           {
@@ -65,7 +65,7 @@ export function providerSpendSeries(usage: Usage): LineSeries[] {
   const rows = usage.providers.map((provider) => ({
     id: provider.id,
     name: providerLabel(provider),
-    spend_usd: provider.spend_usd,
+    spend_micro_usd: provider.spend_micro_usd,
   }));
   return spendSeries(usage, rows, (bucket, id) => bucket.by_provider[id]);
 }
@@ -92,12 +92,7 @@ export function modelTokenSeries(usage: Usage): LineSeries[] {
   );
 }
 
-/** The estimated tool definitions are part of input, so the slice never exceeds it. */
-function toolDefinitions(bucket: UsageBucket): number {
-  return Math.min(bucket.tool_defs_est, bucket.input);
-}
-
-/** Three layers that add up to input + output in every bucket. */
+/** Four layers that add up to every token of the bucket: input, output, cache read and cache write. */
 export function tokenConsumptionSeries(usage: Usage): LineSeries[] {
   const series = (name: string, pick: (bucket: UsageBucket) => number): LineSeries => ({
     name,
@@ -107,9 +102,10 @@ export function tokenConsumptionSeries(usage: Usage): LineSeries[] {
     })),
   });
   return [
-    series("Input excluding tool definitions", (bucket) => bucket.input - toolDefinitions(bucket)),
+    series("Input", (bucket) => bucket.input),
     series("Output", (bucket) => bucket.output),
-    series("Tool definitions (est.)", toolDefinitions),
+    series("Cache read", (bucket) => bucket.cache_read),
+    series("Cache write", (bucket) => bucket.cache_write),
   ];
 }
 
@@ -120,12 +116,12 @@ export function latencyProviders(usage: Usage): UsageProvider[] {
 
 /** Providers that took calls but have no price anywhere in the range, so the spend charts leave them out. */
 export function unpricedProviders(usage: Usage): string[] {
-  return usage.providers.filter((provider) => provider.spend_usd === null && provider.requests > 0).map(providerLabel);
+  return usage.providers.filter((provider) => provider.spend_micro_usd === null && provider.requests > 0).map(providerLabel);
 }
 
 /** Models that took tokens but have no price anywhere in the range, so the spend charts leave them out. */
 export function unpricedModels(usage: Usage): string[] {
-  return usage.models.filter((model) => model.spend_usd === null && model.tokens > 0).map((model) => model.name);
+  return usage.models.filter((model) => model.spend_micro_usd === null && model.tokens > 0).map((model) => model.name);
 }
 
 export interface SpendShare {
@@ -138,7 +134,7 @@ export interface SpendShare {
 export function spendShare(usage: Usage): SpendShare {
   const slices = usage.providers
     .flatMap((provider) =>
-      provider.spend_usd === null ? [] : [{ label: providerLabel(provider), value: provider.spend_usd }],
+      provider.spend_micro_usd === null ? [] : [{ label: providerLabel(provider), value: provider.spend_micro_usd }],
     )
     .sort((a, b) => b.value - a.value);
   return { slices, unpriced: unpricedProviders(usage) };
@@ -148,7 +144,7 @@ export function spendShare(usage: Usage): SpendShare {
 export function spendGroups(usage: Usage): BarGroup[] {
   return usage.buckets.map((bucket) => ({
     label: formatBucket(bucket.at, usage.bucket),
-    bars: [{ name: "Spend", value: bucket.spend_usd }],
+    bars: [{ name: "Spend", value: bucket.spend_micro_usd }],
   }));
 }
 
@@ -172,6 +168,6 @@ export function cacheHitSeries(usage: Usage): LineSeries[] {
 export function taskCostGroups(usage: Usage, limit = chartTasks): BarGroup[] {
   return costliestTasks(usage.tasks, limit).map((task) => ({
     label: task.goal,
-    bars: [{ name: "Cost", value: task.cost_usd }],
+    bars: [{ name: "Cost", value: task.cost_micro_usd }],
   }));
 }

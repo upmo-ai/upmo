@@ -20,8 +20,8 @@ import {
   formatLatency,
   formatPercentPoints,
   formatRatePrecise,
+  formatMicroUsd,
   formatTokensCompact,
-  formatUsd,
 } from "./format";
 
 vi.mock("@upmo-ai/components", async (importOriginal) => {
@@ -105,7 +105,7 @@ function panelOf(title: string): HTMLElement {
   return panel;
 }
 
-/** The three layers "Token consumption" was given for one bucket label, as numbers. */
+/** The four layers "Token consumption" was given for one bucket label, as numbers. */
 function tokenLayers(label: string): number[] {
   const { series } = chartProps<LineChartProps>("Token consumption");
   return (series ?? []).map((layer) => {
@@ -126,8 +126,9 @@ function bucket(extra: Partial<UsageBucket>): UsageBucket {
     output: 0,
     cache_read: 0,
     cache_write: 0,
-    tool_defs_est: 0,
-    spend_usd: 0,
+    spend_micro_usd: 0,
+    estimated: false,
+    list_price_micro_usd: null,
     by_provider: {},
     by_model: {},
     ...extra,
@@ -166,7 +167,9 @@ describe("Usage panels", () => {
     renderAt("/usage");
     await screen.findByRole("group", { name: "Cost per task" });
     expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Monthly limits",
       ...panelTitles,
+      "Kind of work",
       "Tasks",
     ]);
     const tasks = screen.getByRole("heading", { level: 2, name: "Tasks" });
@@ -188,13 +191,15 @@ describe("Usage panels", () => {
     expect(grid.contains(document.querySelector(".usage-figures"))).toBe(false);
   });
 
-  it("usage polish 4113376c: the layout reads the content width, six tiles and two panels across from 928px, three tiles from 640px", () => {
+  it("usage polish 4113376c: the layout reads the content width, every tile in one row and two panels across from 928px, three tiles from 640px", () => {
     const css = readFileSync(join("src", "features", "usage", "usage.css"), "utf8");
     expect(css).toMatch(/\.usage-page\s*\{[^}]*container:\s*usage\s*\/\s*inline-size/);
     const blocks = css.split("@container usage ").slice(1);
     const from = (min: string) => blocks.find((block) => block.startsWith(`(min-width: ${min})`)) ?? "";
     // 58rem and 40rem are 928px and 640px. A 1280px screen leaves about 990px of content beside the sidebar.
-    expect(from("58rem")).toMatch(/\.usage-figures\s*\{[^}]*repeat\(6,/);
+    // One row whatever the count: six tiles, or seven when Not billed shows. A fixed column count would wrap the last tile alone.
+    expect(from("58rem")).toMatch(/\.usage-figures\s*\{[^}]*grid-auto-flow:\s*column/);
+    expect(from("58rem")).not.toMatch(/\.usage-figures\s*\{[^}]*repeat\(\d+,/);
     expect(from("58rem")).toMatch(/\.usage-panels\s*\{[^}]*repeat\(2,/);
     expect(from("58rem")).toMatch(/\.usage-wide\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
     expect(from("40rem")).toMatch(/\.usage-figures\s*\{[^}]*repeat\(3,/);
@@ -210,12 +215,12 @@ describe("Usage panels", () => {
     await screen.findByRole("group", { name: "Spend by provider" });
     const { header, rows } = chartTable("Spend by provider");
     expect(header).toEqual(["Label", "Anthropic (global)", "OpenAI (global)", "Mistral"]);
-    const known = week.buckets.find((item) => item.spend_usd !== null)!;
+    const known = week.buckets.find((item) => item.spend_micro_usd !== null)!;
     expect(cellOf("Spend by provider", formatBucket(known.at, "day"), "Anthropic (global)")).toBe(
-      formatUsd(known.by_provider.anthropic?.spend_usd),
+      formatMicroUsd(known.by_provider.anthropic?.spend_micro_usd),
     );
     expect(cellOf("Spend by provider", formatBucket(known.at, "day"), "Mistral")).toBe(
-      formatUsd(known.by_provider.mistral?.spend_usd),
+      formatMicroUsd(known.by_provider.mistral?.spend_micro_usd),
     );
     expect(rows).toHaveLength(week.buckets.length);
     expect(within(screen.getByRole("group", { name: "Spend by provider" })).queryByText(/Ollama/)).toBeNull();
@@ -234,9 +239,9 @@ describe("Usage panels", () => {
       "GPT-4.1 mini",
       "Mistral Large",
     ]);
-    const known = week.buckets.find((item) => item.spend_usd !== null)!;
+    const known = week.buckets.find((item) => item.spend_micro_usd !== null)!;
     expect(cellOf("Spend by model", formatBucket(known.at, "day"), "GPT-4.1 mini")).toBe(
-      formatUsd(known.by_model["gpt-4.1-mini"]?.spend_usd),
+      formatMicroUsd(known.by_model["gpt-4.1-mini"]?.spend_micro_usd),
     );
   });
 
@@ -253,48 +258,31 @@ describe("Usage panels", () => {
     expect(cellOf("Tokens per model", formatBucket(day.at, "day"), "Llama 3.3 70B")).toBe("0");
   });
 
-  it("usage panels: token consumption stacks input without tool definitions, output and tool definitions to input plus output", async () => {
+  it("UPM-359 token consumption stacks input, output, cache read and cache write, to every token of a bucket", async () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Token consumption" });
-    expect(chartTable("Token consumption").header).toEqual([
-      "Label",
-      "Input excluding tool definitions",
-      "Output",
-      "Tool definitions (est.)",
-    ]);
+    expect(chartTable("Token consumption").header).toEqual(["Label", "Input", "Output", "Cache read", "Cache write"]);
     for (const item of week.buckets) {
       const label = formatBucket(item.at, "day");
-      expect(tokenLayers(label)).toEqual([
-        item.input - item.tool_defs_est,
-        item.output,
-        item.tool_defs_est,
-      ]);
-      expect(tokenLayers(label).reduce((sum, value) => sum + value, 0)).toBe(item.input + item.output);
+      expect(tokenLayers(label)).toEqual([item.input, item.output, item.cache_read, item.cache_write]);
+      expect(tokenLayers(label).reduce((sum, value) => sum + value, 0)).toBe(
+        item.input + item.output + item.cache_read + item.cache_write,
+      );
     }
     expect(chartProps<LineChartProps>("Token consumption").stacked).toBe(true);
-    expect(screen.getByText("Tool definitions are an estimate and are counted out of input.")).toBeTruthy();
-    expect(screen.queryByText(/already part of input/)).toBeNull();
+    expect(screen.queryByText(/Tool definitions/)).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Token consumption view" })).toBeNull();
   });
 
-  it("usage panels: the token consumption stack still adds up to input plus output when tool definitions exceed input", async () => {
+  it("UPM-359 the token consumption stack keeps one known bucket's four figures, pinned", async () => {
     const client = withUsage((usage) => ({
       ...usage,
-      buckets: [
-        bucket({ at: "2026-11-01", requests: 1, input: 100, output: 40, tool_defs_est: 150 }),
-        bucket({ at: "2026-11-02", requests: 1, input: 100, output: 40, tool_defs_est: 100 }),
-        bucket({ at: "2026-11-03", requests: 1, input: 100, output: 40, tool_defs_est: 30 }),
-      ],
+      buckets: [bucket({ at: "2026-11-01", requests: 1, input: 100, output: 40, cache_read: 300, cache_write: 7 })],
     }));
     renderAt("/usage", client);
     await screen.findByRole("group", { name: "Token consumption" });
-    expect(tokenLayers("1 Nov")).toEqual([0, 40, 100]);
-    expect(tokenLayers("2 Nov")).toEqual([0, 40, 100]);
-    expect(tokenLayers("3 Nov")).toEqual([70, 40, 30]);
-    for (const label of ["1 Nov", "2 Nov", "3 Nov"]) {
-      expect(tokenLayers(label).reduce((sum, value) => sum + value, 0)).toBe(140);
-    }
+    expect(tokenLayers("1 Nov")).toEqual([100, 40, 300, 7]);
   });
 
   it("usage panels: the Lines and Stacked toggle starts on Lines and changes only its own chart", async () => {
@@ -329,12 +317,12 @@ describe("Usage panels", () => {
     const week = await createStubApi().usage(7);
     renderAt("/usage");
     await screen.findByRole("group", { name: "Spend by provider" });
-    const unknown = week.buckets.find((item) => item.spend_usd === null)!;
+    const unknown = week.buckets.find((item) => item.spend_micro_usd === null)!;
     const label = formatBucket(unknown.at, "day");
     const check = () => {
       for (const name of ["Spend by provider", "Spend by model"]) {
         const row = chartTable(name).rows.find((item) => item.label === label)!;
-        expect(row.cells.every((cell) => cell === formatUsd(0))).toBe(true);
+        expect(row.cells.every((cell) => cell === formatMicroUsd(0))).toBe(true);
       }
     };
     check();
@@ -349,14 +337,14 @@ describe("Usage panels", () => {
         bucket({
           at: "2026-11-01",
           requests: 3,
-          spend_usd: 1,
+          spend_micro_usd: 1,
           by_provider: {
-            anthropic: { spend_usd: null, requests: 1, errors: 0, tokens: 10 },
-            mistral: { spend_usd: 1, requests: 2, errors: 0, tokens: 20 },
+            anthropic: { spend_micro_usd: null, requests: 1, errors: 0, tokens: 10 },
+            mistral: { spend_micro_usd: 1, requests: 2, errors: 0, tokens: 20 },
           },
           by_model: {
-            "claude-3-7-sonnet": { spend_usd: null, tokens: 10 },
-            "mistral-large": { spend_usd: 1, tokens: 20 },
+            "claude-3-7-sonnet": { spend_micro_usd: null, tokens: 10 },
+            "mistral-large": { spend_micro_usd: 1, tokens: 20 },
           },
         }),
       ],
@@ -365,9 +353,9 @@ describe("Usage panels", () => {
     await screen.findByRole("group", { name: "Spend by provider" });
     const check = () => {
       expect(cellOf("Spend by provider", "1 Nov", "Anthropic (global)")).toBe("No data");
-      expect(cellOf("Spend by provider", "1 Nov", "Mistral")).toBe(formatUsd(1));
+      expect(cellOf("Spend by provider", "1 Nov", "Mistral")).toBe(formatMicroUsd(1));
       expect(cellOf("Spend by model", "1 Nov", "Claude 3.7 Sonnet")).toBe("No data");
-      expect(cellOf("Spend by model", "1 Nov", "Mistral Large")).toBe(formatUsd(1));
+      expect(cellOf("Spend by model", "1 Nov", "Mistral Large")).toBe(formatMicroUsd(1));
     };
     check();
     fireEvent.click(within(screen.getByRole("radiogroup", { name: "Spend by provider view" })).getByRole("radio", { name: "Stacked" }));
@@ -381,22 +369,22 @@ describe("Usage panels", () => {
         bucket({
           at: "2026-11-01",
           requests: 3,
-          spend_usd: 1,
+          spend_micro_usd: 1,
           by_provider: {
-            anthropic: { spend_usd: null, requests: 1, errors: 0, tokens: 10 },
-            mistral: { spend_usd: 1, requests: 2, errors: 0, tokens: 20 },
+            anthropic: { spend_micro_usd: null, requests: 1, errors: 0, tokens: 10 },
+            mistral: { spend_micro_usd: 1, requests: 2, errors: 0, tokens: 20 },
           },
-          by_model: { "mistral-large": { spend_usd: 1, tokens: 20 } },
+          by_model: { "mistral-large": { spend_micro_usd: 1, tokens: 20 } },
         }),
-        bucket({ at: "2026-11-02", requests: 0, spend_usd: null }),
+        bucket({ at: "2026-11-02", requests: 0, spend_micro_usd: null }),
       ],
     }));
     renderAt("/usage", client);
     await screen.findByRole("group", { name: "Spend by provider" });
     expect(cellOf("Spend by provider", "1 Nov", "Anthropic (global)")).toBe("No data");
-    expect(cellOf("Spend by provider", "1 Nov", "OpenAI (global)")).toBe(formatUsd(0));
-    expect(cellOf("Spend by provider", "1 Nov", "Mistral")).toBe(formatUsd(1));
-    expect(cellOf("Spend by provider", "2 Nov", "Mistral")).toBe(formatUsd(0));
+    expect(cellOf("Spend by provider", "1 Nov", "OpenAI (global)")).toBe(formatMicroUsd(0));
+    expect(cellOf("Spend by provider", "1 Nov", "Mistral")).toBe(formatMicroUsd(1));
+    expect(cellOf("Spend by provider", "2 Nov", "Mistral")).toBe(formatMicroUsd(0));
   });
 
   it("usage panels: latency per provider shows p50, p95 and p99 as readable durations for providers with calls", async () => {
@@ -440,15 +428,15 @@ describe("Usage panels", () => {
     ]);
     expect(within(donut).queryByText(/Ollama/)).toBeNull();
     expect(within(panelOf("Spend share by provider")).getByText("No price for: Ollama")).toBeTruthy();
-    const total = week.providers.reduce((sum, provider) => sum + (provider.spend_usd ?? 0), 0);
-    expect(within(donut).getAllByText(formatUsd(total)).length).toBeGreaterThan(0);
+    const total = week.providers.reduce((sum, provider) => sum + (provider.spend_micro_usd ?? 0), 0);
+    expect(within(donut).getAllByText(formatMicroUsd(total)).length).toBeGreaterThan(0);
   });
 
   it("usage panels: the spend share lists every unpriced provider, and says so when none has a price", async () => {
     const client = withUsage((usage) => ({
       ...usage,
       providers: usage.providers.map((provider) =>
-        provider.id === "mistral" || provider.id === "ollama" ? { ...provider, spend_usd: null } : provider,
+        provider.id === "mistral" || provider.id === "ollama" ? { ...provider, spend_micro_usd: null } : provider,
       ),
     }));
     renderAt("/usage", client);
@@ -458,7 +446,7 @@ describe("Usage panels", () => {
 
     const none = withUsage((usage) => ({
       ...usage,
-      providers: usage.providers.map((provider) => ({ ...provider, spend_usd: null })),
+      providers: usage.providers.map((provider) => ({ ...provider, spend_micro_usd: null })),
     }));
     renderAt("/usage", none);
     await screen.findByRole("heading", { name: "Spend share by provider" });
@@ -481,7 +469,7 @@ describe("Usage panels", () => {
     const several = withUsage((usage) => ({
       ...usage,
       providers: usage.providers.map((provider) =>
-        provider.id === "mistral" || provider.id === "ollama" ? { ...provider, spend_usd: null } : provider,
+        provider.id === "mistral" || provider.id === "ollama" ? { ...provider, spend_micro_usd: null } : provider,
       ),
     }));
     renderAt("/usage", several);
@@ -493,7 +481,7 @@ describe("Usage panels", () => {
   it("usage panels: spend by provider with no priced provider says there is no spend to draw and still names them", async () => {
     const client = withUsage((usage) => ({
       ...usage,
-      providers: usage.providers.map((provider) => ({ ...provider, spend_usd: null })),
+      providers: usage.providers.map((provider) => ({ ...provider, spend_micro_usd: null })),
     }));
     renderAt("/usage", client);
     await screen.findByRole("heading", { level: 2, name: "Spend by provider" });
@@ -514,7 +502,7 @@ describe("Usage panels", () => {
     const several = withUsage((usage) => ({
       ...usage,
       models: usage.models.map((model) =>
-        model.id === "gpt-4.1-mini" || model.id === "llama3.3:70b" ? { ...model, spend_usd: null } : model,
+        model.id === "gpt-4.1-mini" || model.id === "llama3.3:70b" ? { ...model, spend_micro_usd: null } : model,
       ),
     }));
     renderAt("/usage", several);
@@ -527,7 +515,7 @@ describe("Usage panels", () => {
     const week = await createStubApi().usage(7);
     const client = withUsage((usage) => ({
       ...usage,
-      models: usage.models.map((model) => ({ ...model, spend_usd: null })),
+      models: usage.models.map((model) => ({ ...model, spend_micro_usd: null })),
     }));
     renderAt("/usage", client);
     await screen.findByRole("heading", { level: 2, name: "Spend by model" });
@@ -593,6 +581,7 @@ describe("Usage panels", () => {
     expect(screen.queryByText("No latency to show in this range.")).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Spend by provider view" })).toBeNull();
     expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Monthly limits",
       "No usage in this range",
       "Tasks",
     ]);
@@ -642,7 +631,7 @@ describe("Usage panels", () => {
       chartProps<DonutChartProps>("Spend share by provider").formatValue,
     ];
     for (const format of dollars) {
-      expect(format?.(1.1666)).toBe("US$1.17");
+      expect(format?.(1_166_600)).toBe("US$1.17");
     }
     expect(chartProps<GroupedBarChartProps>("Latency per provider").formatValue?.(850)).toBe(formatLatency(850));
     expect(chartProps<LineChartProps>("Cache hit rate").formatValue?.(66.04)).toBe("66%");

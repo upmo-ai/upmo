@@ -4,11 +4,6 @@ import { createStubApi, type UsageRange } from "../../app/api";
 
 const ranges: UsageRange[] = ["today", 7, 30, 90];
 
-/** Money to the 4 decimals the stub keeps, so sums of floats compare equal. */
-function cents(value: number | null): number | null {
-  return value === null ? null : Math.round(value * 10_000) / 10_000;
-}
-
 function sum(values: (number | null)[]): number {
   return values.reduce<number>((total, value) => total + (value ?? 0), 0);
 }
@@ -58,13 +53,13 @@ describe("usage stub", () => {
         return {
           requests: [provider.requests, sum(shares.map((share) => share.requests))],
           errors: [provider.errors, sum(shares.map((share) => share.errors))],
-          spend: [provider.spend_usd, shares.length === 0 ? 0 : total(shares.map((share) => share.spend_usd))],
+          spend: [provider.spend_micro_usd, shares.length === 0 ? 0 : total(shares.map((share) => share.spend_micro_usd))],
         };
       });
       for (const item of providers) {
         expect(item.requests[0]).toBe(item.requests[1]);
         expect(item.errors[0]).toBe(item.errors[1]);
-        expect(cents(item.spend[0] ?? null)).toBe(cents(item.spend[1] ?? null));
+        expect(item.spend[0]).toBe(item.spend[1]);
       }
       const models = usage.models.map((model) => {
         const shares = usage.buckets.flatMap((bucket) => bucket.by_model[model.id] ?? []);
@@ -80,8 +75,8 @@ describe("usage stub", () => {
         expect(bucket.input + bucket.output + bucket.cache_read + bucket.cache_write).toBe(
           sum(shares.map((share) => share.tokens)),
         );
-        const expected = total(shares.map((share) => share.spend_usd));
-        expect(cents(bucket.spend_usd)).toBe(cents(expected));
+        const expected = total(shares.map((share) => share.spend_micro_usd));
+        expect(bucket.spend_micro_usd).toBe(expected);
       }
     }
   });
@@ -91,7 +86,7 @@ describe("usage stub", () => {
     const exactUnknown: Record<string, number> = { today: 1, "7": 1 };
     for (const range of ranges) {
       const usage = await api.usage(range);
-      const unknown = usage.buckets.filter((bucket) => bucket.spend_usd === null);
+      const unknown = usage.buckets.filter((bucket) => bucket.spend_micro_usd === null);
       expect(unknown.length).toBeGreaterThan(0);
       // Exactly one for today and the week, so a bug that nulls every bucket cannot pass.
       expect(unknown.length).toBe(exactUnknown[String(range)] ?? unknown.length);
@@ -107,9 +102,9 @@ describe("usage stub", () => {
       const usage = await api.usage(range);
       const ollama = usage.providers.find((provider) => provider.id === "ollama")!;
       const llama = usage.models.find((model) => model.id === "llama3.3:70b")!;
-      expect(ollama.spend_usd).toBeNull();
-      expect(llama.spend_usd).toBeNull();
-      expect(usage.providers.filter((provider) => provider.id !== "ollama").every((provider) => provider.spend_usd !== null)).toBe(true);
+      expect(ollama.spend_micro_usd).toBeNull();
+      expect(llama.spend_micro_usd).toBeNull();
+      expect(usage.providers.filter((provider) => provider.id !== "ollama").every((provider) => provider.spend_micro_usd !== null)).toBe(true);
     }
   });
 
@@ -128,19 +123,19 @@ describe("usage stub", () => {
     const api = createStubApi();
     for (const range of ranges) {
       const usage = await api.usage(range);
-      const spend = sum(usage.buckets.map((bucket) => bucket.spend_usd));
+      const spend = sum(usage.buckets.map((bucket) => bucket.spend_micro_usd));
       expect(usage.tasks.length).toBeGreaterThan(0);
-      expect(sum(usage.tasks.map((task) => task.cost_usd))).toBeLessThanOrEqual(spend);
+      expect(sum(usage.tasks.map((task) => task.cost_micro_usd))).toBeLessThanOrEqual(spend);
       for (const task of usage.tasks) {
         expect(task.by_model.length).toBeGreaterThan(0);
         expect(sum(task.by_model.map((part) => part.input))).toBe(task.input);
         expect(sum(task.by_model.map((part) => part.output))).toBe(task.output);
         expect(sum(task.by_model.map((part) => part.cache_read))).toBe(task.cache_read);
         expect(sum(task.by_model.map((part) => part.cache_write))).toBe(task.cache_write);
-        const parts = task.by_model.map((part) => part.cost_usd);
+        const parts = task.by_model.map((part) => part.cost_micro_usd);
         const known = parts.filter((value) => value !== null);
-        expect(task.cost_usd === null).toBe(known.length === 0);
-        expect(task.cost_usd ?? 0).toBeCloseTo(sum(known), 6);
+        expect(task.cost_micro_usd === null).toBe(known.length === 0);
+        expect(task.cost_micro_usd ?? 0).toBe(sum(known));
       }
       const tokens = sum(usage.buckets.map((bucket) => bucket.input + bucket.output + bucket.cache_read + bucket.cache_write));
       expect(sum(usage.tasks.map((task) => task.input + task.output + task.cache_read + task.cache_write))).toBeLessThan(tokens);
@@ -150,7 +145,7 @@ describe("usage stub", () => {
   it("usage panels: has a task with unknown cost in the week and gives longer ranges more tasks", async () => {
     const api = createStubApi();
     const [today, week, month, quarter] = await Promise.all(ranges.map((range) => api.usage(range)));
-    expect(week!.tasks.some((task) => task.cost_usd === null)).toBe(true);
+    expect(week!.tasks.some((task) => task.cost_micro_usd === null)).toBe(true);
     expect(today!.tasks.length).toBeLessThan(week!.tasks.length);
     expect(week!.tasks.length).toBeLessThan(month!.tasks.length);
     expect(month!.tasks.length).toBeLessThan(quarter!.tasks.length);
@@ -164,7 +159,7 @@ describe("usage stub", () => {
     const day = week.buckets[week.buckets.length - 1]!;
     expect(sum(today.buckets.map((bucket) => bucket.requests))).toBe(day.requests);
     expect(sum(today.buckets.map((bucket) => bucket.input))).toBe(day.input);
-    expect(sum(today.buckets.map((bucket) => bucket.spend_usd))).toBeCloseTo(day.spend_usd ?? 0, 6);
+    expect(sum(today.buckets.map((bucket) => bucket.spend_micro_usd))).toBe(day.spend_micro_usd ?? 0);
     expect(quarter.buckets.slice(-7)).toEqual(week.buckets);
   });
 
@@ -178,6 +173,35 @@ describe("usage stub", () => {
       expect(usage.providers).toEqual([]);
       expect(usage.models).toEqual([]);
       expect(usage.unpriced_calls).toBe(0);
+      expect(usage.spend_micro_usd).toBeNull();
+      expect(usage.sources).toEqual([]);
     }
+  });
+
+  it("UPM-359 the totals, the kinds of work and the workspace rows add up to the buckets in whole micro-USD", async () => {
+    const api = createStubApi();
+    for (const range of ranges) {
+      const usage = await api.usage(range);
+      const spend = sum(usage.buckets.map((bucket) => bucket.spend_micro_usd));
+      expect(usage.spend_micro_usd).toBe(spend);
+      expect(Number.isInteger(spend)).toBe(true);
+      expect(sum(usage.sources.map((source) => source.spend_micro_usd))).toBe(spend);
+      expect(sum(usage.sources.map((source) => source.requests))).toBe(sum(usage.buckets.map((bucket) => bucket.requests)));
+      const workspace = await api.workspaceUsage(range, "person");
+      expect(workspace.spend_micro_usd).toBe(spend);
+      expect(sum(workspace.rows.map((row) => row.spend_micro_usd))).toBe(spend);
+      expect(sum(workspace.rows.map((row) => row.tokens))).toBe(
+        sum(usage.buckets.map((bucket) => bucket.input + bucket.output + bucket.cache_read + bucket.cache_write)),
+      );
+    }
+  });
+
+  it("UPM-359 the stub sends the limit rows, and the workspace, only to an admin", async () => {
+    const api = createStubApi();
+    expect((await api.usageLimits()).rows).toEqual([]);
+    expect((await api.workspaceUsage(7, "team")).group).toBe("team");
+    await api.me.viewAs("member");
+    expect("rows" in (await api.usageLimits())).toBe(false);
+    await expect(api.workspaceUsage(7, "person")).rejects.toMatchObject({ status: 403 });
   });
 });

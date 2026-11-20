@@ -3,7 +3,7 @@ import { DonutChart } from "@upmo-ai/components";
 
 import type { Usage } from "../../app/api";
 import { UsagePanel } from "./panel";
-import { formatUsd } from "./format";
+import { formatMicroUsd } from "./format";
 import { hasCalls, spendShare } from "./series";
 
 export function ProviderShare({ usage }: { usage: Usage }) {
@@ -16,9 +16,9 @@ export function ProviderShare({ usage }: { usage: Usage }) {
         <DonutChart
           title="Spend share by provider"
           centerLabel="Spend"
-          centerValue={formatUsd(total)}
+          centerValue={formatMicroUsd(total)}
           data={slices}
-          formatValue={formatUsd}
+          formatValue={formatMicroUsd}
         />
       ) : (
         <Text c="dimmed">No priced spend in this range.</Text>
