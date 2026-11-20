@@ -21,6 +21,9 @@ func gatewayRoutes() []entry {
 		{pattern: "DELETE /api/gateway/routes/{id}", route: Route{Action: RouteDelete}},
 		{pattern: "PUT /api/gateway/routes/{id}/share", route: Route{Action: RouteShare}},
 		{pattern: "PUT /api/usage/limits", route: Route{Action: UsageLimitUpdate}},
+		// A sensitive read, audited like a change: the handler answers it only
+		// for usage:view, and the middleware records its refusals.
+		{pattern: "GET /api/usage/workspace", route: Route{Action: UsageWorkspaceView}},
 		{pattern: "POST /upmo.gateway.v1.Gateway/Chat", route: exempt},
 		{pattern: "POST /upmo.gateway.v1.Gateway/ChatStream", route: exempt},
 		{pattern: "POST /upmo.gateway.v1.Gateway/Decide", route: exempt},

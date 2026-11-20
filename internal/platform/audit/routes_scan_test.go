@@ -92,6 +92,7 @@ var sensitiveReads = map[string]bool{
 	"GET /api/audit/events":          true,
 	"GET /api/providers/{id}/models": true,
 	"GET /api/providers/{id}/uses":   true,
+	"GET /api/usage/workspace":       true,
 }
 
 // compare returns the source patterns the table lacks, and the table entries

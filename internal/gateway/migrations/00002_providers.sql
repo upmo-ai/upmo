@@ -71,12 +71,15 @@ CREATE TABLE gateway.credentials (
 -- True for the role that owns the gateway tables. That is the gateway process
 -- and the migrator, which read and write accounts for every person when a
 -- model call needs a key. Brain runs requests as upmo_app, never as the
--- owner, so a person's request never reaches this branch.
+-- owner, so a person's request never reaches this branch. It only reads
+-- current_user, which parallel workers share with the leader, and pg_class,
+-- so it is parallel safe and lets reads under these policies use workers.
 -- +goose StatementBegin
 CREATE FUNCTION gateway.serving()
 RETURNS boolean
 LANGUAGE sql
 STABLE
+PARALLEL SAFE
 SET search_path = pg_catalog, pg_temp
 AS $$
   SELECT current_user = (
