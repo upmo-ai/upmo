@@ -47,8 +47,8 @@ func CoreTools() []ToolDef {
 	return []ToolDef{
 		{
 			Name:        toolRetrieveOutput,
-			Description: "fetch an offloaded tool result",
-			Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`),
+			Description: "fetch an offloaded tool result; offset and limit are byte counts, and each page is capped below the output offload threshold",
+			Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["id"]}`),
 			Category:    CategoryDirect,
 			Op:          OpRead,
 		},

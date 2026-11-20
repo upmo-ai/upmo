@@ -95,6 +95,7 @@ func DeriveIdempotencyKey(scopeID, callID string) string {
 }
 
 // TurnCommit carries everything persisted atomically in tx3 at the end of a turn.
+// Messages contains only the messages appended by this turn.
 type TurnCommit struct {
 	RunID           string
 	ObjectID        string

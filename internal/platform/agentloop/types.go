@@ -1,7 +1,18 @@
-// Package agentloop implements the shared turn engine, prompt-cache prefix
+// Package agentloop implements the shared turn engine, prompt cache prefix
 // assembly, single-team RLS narrowing, exposure tracking, deterministic batch
 // holds, dry-run simulation, and 3-transaction at-most-once execution used by
-// tasks and chat.
+// tasks and chat. TurnOutcome.History is the complete replacement history;
+// callers must persist it and feed it back verbatim. Before persistence, apply
+// TrimMessages using PostTurnBudget with the model window, system text,
+// and tool definitions. PromptMessageBudget is for the pre-call guard. Loading
+// untrimmed history causes old results to be saved again and churns the prompt cache.
+// Trimming may save output before a turn later fails; retrying with the original
+// history remains safe, though it can duplicate store writes. Trimming a
+// retrieve_output page saves a second copy of content that is already stored.
+// Several page reads in one turn all belong to the latest turn and cannot be
+// trimmed, so a small window can return ErrContextExceeded. History must come
+// from the server's own store, never client-supplied JSON, because the
+// held_placeholder and offload flags are trusted.
 package agentloop
 
 import (
@@ -71,13 +82,14 @@ const (
 
 // Message is one prompt message after the cached prefix.
 type Message struct {
-	Role      MessageRole `json:"role"`
-	Text      string      `json:"text,omitempty"`
-	ToolCalls []ToolCall  `json:"tool_calls,omitempty"`
-	ToolName  string      `json:"tool_name,omitempty"`
-	ToolID    string      `json:"tool_id,omitempty"`
-	IsError   bool        `json:"is_error,omitempty"`
-	Offload   bool        `json:"offload,omitempty"`
+	Role            MessageRole `json:"role"`
+	Text            string      `json:"text,omitempty"`
+	ToolCalls       []ToolCall  `json:"tool_calls,omitempty"`
+	ToolName        string      `json:"tool_name,omitempty"`
+	ToolID          string      `json:"tool_id,omitempty"`
+	IsError         bool        `json:"is_error,omitempty"`
+	Offload         bool        `json:"offload,omitempty"`
+	HeldPlaceholder bool        `json:"held_placeholder,omitempty"`
 }
 
 // ToolResult is the outcome of executing one tool call.
@@ -191,6 +203,12 @@ const (
 
 // TurnOutcome summarizes what happened in one RunTurn invocation.
 type TurnOutcome struct {
+	// History replaces the stored history as a whole; it is not an append. Callers
+	// must persist it and feed it back verbatim, applying PostTurnBudget and
+	// TrimMessages before persistence. Reloading untrimmed history re-saves old
+	// results and churns the prompt cache. Trimming saves may precede a failed
+	// turn; callers can retry with the original history, which may save again.
+	History         []Message
 	Status          TurnStatus
 	AssistantText   string
 	Model           string
@@ -228,6 +246,8 @@ type RunState struct {
 var (
 	// ErrInvalidConfig reports missing required dependencies on Engine or RunState.
 	ErrInvalidConfig = errors.New("agentloop: invalid config")
+	// ErrContextExceeded means the system, tools, and untrimmable messages exceed the model window.
+	ErrContextExceeded = errors.New("agentloop: context window exceeded")
 	// ErrDuplicateAction reports a call_id already in dialing, done, or simulated state.
 	ErrDuplicateAction = errors.New("agentloop: action already dialing or done")
 )
