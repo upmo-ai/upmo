@@ -3587,12 +3587,21 @@ func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	window := domain.UsageWindowFor(domain.UsageToday, time.Now(), time.UTC)
-	scan, err := (postgres.Usage{Pool: r.owner}).WorkspaceUsage(ctx, app.Caller{User: userID, Allow: domain.UsageViewPermission}, window, domain.GroupModel)
+	scan, err := (postgres.Usage{Pool: r.app}).WorkspaceUsage(ctx, app.Caller{User: userID, Allow: domain.UsageViewPermission}, window, domain.GroupModel)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(scan.Buckets) != 1 || scan.Buckets[0].Requests != 1 || scan.Buckets[0].ListMicroUSD == nil || *scan.Buckets[0].ListMicroUSD != 900_000 || len(scan.Keyed) != 1 || scan.Keyed[0].Requests != 1 {
 		t.Fatalf("tiered usage rows = %+v", scan)
+	}
+	for _, query := range []string{
+		`INSERT INTO gateway.price_tiers (vendor, model, context_min_tokens) VALUES ('gemini','denied',1)`,
+		`UPDATE gateway.price_tiers SET context_min_tokens=2 WHERE vendor='gemini'`,
+		`DELETE FROM gateway.price_tiers WHERE vendor='gemini'`,
+	} {
+		if _, err := r.app.Exec(ctx, query); err == nil {
+			t.Errorf("upmo_app unexpectedly allowed %s", strings.Fields(query)[0])
+		}
 	}
 	cost := int64(1)
 	if err := store.Record(ctx, domain.Entry{Route: "tier-route", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanMetered, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, CacheWrite: 25, CacheWrite1h: 10}, CostMicroUSD: &cost, Estimated: true, PriceSource: "estimate"}); err != nil {
@@ -3601,6 +3610,30 @@ func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
 	var cacheWrite, cacheWrite1h int
 	if err := r.owner.QueryRow(ctx, `SELECT cache_write, cache_write_1h FROM gateway.ledger WHERE plan_kind='metered' AND model='tier-model'`).Scan(&cacheWrite, &cacheWrite1h); err != nil || cacheWrite != 25 || cacheWrite1h != 10 {
 		t.Fatalf("ledger cache writes = %d/%d err=%v", cacheWrite, cacheWrite1h, err)
+	}
+}
+
+func TestFeature_UPM388_HighestRateReservesTwiceInputForBaseAndNullTierInput(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'c'))
+	store := postgres.Store{Pool: r.owner}
+	for _, tc := range []struct {
+		name string
+		row  domain.CatalogRow
+		want int64
+	}{
+		{name: "base", row: domain.CatalogRow{Vendor: "openai", Model: "reserve-base", Version: "v1", Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(3_000_000), OutputMicroUSDPerMTok: ptrInt64(1_000_000), CacheWriteMicroUSDPerMTok: ptrInt64(2_000_000)}}, want: 6_000_000},
+		{name: "null tier input falls back to base", row: domain.CatalogRow{Vendor: "openai", Model: "reserve-tier", Version: "v1", Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(3_000_000), OutputMicroUSDPerMTok: ptrInt64(1_000_000), Tiers: []domain.PriceTier{{ContextMinTokens: 200_000, Price: domain.Price{OutputMicroUSDPerMTok: ptrInt64(2_000_000)}}}}}, want: 6_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.ReplaceCatalog(ctx, "v1", []domain.CatalogRow{tc.row}); err != nil {
+				t.Fatal(err)
+			}
+			rate, ok, err := store.HighestRate(ctx, "openai")
+			if err != nil || !ok || rate != tc.want {
+				t.Fatalf("HighestRate=%d ok=%v err=%v, want %d", rate, ok, err, tc.want)
+			}
+		})
 	}
 }
 

@@ -164,6 +164,12 @@ type CallPriceResult struct {
 // If any used dimension has no real price (no 1-4, 5a, or 5b) and there is no valid
 // reported cost, the whole call returns nil cost with source "unknown".
 func ResolveCallCost(in CallPriceInput) CallPriceResult {
+	if in.Usage.CacheWrite1h < 0 {
+		in.Usage.CacheWrite1h = 0
+	}
+	if in.Usage.CacheWrite1h > in.Usage.CacheWrite {
+		in.Usage.CacheWrite1h = max(0, in.Usage.CacheWrite)
+	}
 	if in.PlanKind != PlanMetered {
 		return CallPriceResult{}
 	}
@@ -184,6 +190,7 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 	var selectedTier *PriceTier
 	tierPrice := &in.Catalog
 	crossPtr := in.CrossProvider
+	tierFromCross := false
 	if !in.CatalogFound && in.CrossProvider != nil {
 		tierPrice = in.CrossProvider
 	}
@@ -195,19 +202,39 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 			}
 		}
 	}
+	if in.CatalogFound && selectedTier == nil && in.CrossProvider != nil {
+		for i := range in.CrossProvider.Tiers {
+			tier := &in.CrossProvider.Tiers[i]
+			if int64(tier.ContextMinTokens) < contextTokens && (selectedTier == nil || tier.ContextMinTokens > selectedTier.ContextMinTokens) {
+				selectedTier = tier
+				tierPrice = in.CrossProvider
+				tierFromCross = true
+				catPtr = nil
+				crossPtr = in.CrossProvider
+			}
+		}
+	}
 	if selectedTier != nil {
 		price := *tierPrice
 		price.InputMicroUSDPerMTok = chooseTierRate(selectedTier.Price.InputMicroUSDPerMTok, price.InputMicroUSDPerMTok)
 		price.OutputMicroUSDPerMTok = chooseTierRate(selectedTier.Price.OutputMicroUSDPerMTok, price.OutputMicroUSDPerMTok)
 		price.CacheReadMicroUSDPerMTok = chooseTierRate(selectedTier.Price.CacheReadMicroUSDPerMTok, price.CacheReadMicroUSDPerMTok)
 		price.CacheWriteMicroUSDPerMTok = chooseTierRate(selectedTier.Price.CacheWriteMicroUSDPerMTok, price.CacheWriteMicroUSDPerMTok)
-		if in.CatalogFound {
+		if in.CatalogFound && !tierFromCross {
 			catPtr = &price
 		} else {
 			crossPtr = &price
 		}
 	}
 	if in.Usage.Arrived {
+		// Provider-reported pricing reflects the selected context tier, while a
+		// flat override only covers base rates and can only estimate this call.
+		if selectedTier != nil && in.Usage.ReportedCostMicroUSD != nil {
+			rc := *in.Usage.ReportedCostMicroUSD
+			if rc >= 0 && rc <= MaxMicroUSD && (rc > 0 || in.ZeroCostAllowed) {
+				return CallPriceResult{CostMicroUSD: &rc, Source: "provider"}
+			}
+		}
 		hasOverrideOnUsed := in.Override != nil &&
 			((in.Usage.Input > 0 && in.Override.InputMicroUSDPerMTok != nil) ||
 				(in.Usage.Output > 0 && in.Override.OutputMicroUSDPerMTok != nil) ||
@@ -245,7 +272,7 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 		}
 		hasBilledTokens := pricingUsage.Input > 0 || pricingUsage.Output > 0 || pricingUsage.CacheRead > 0 || pricingUsage.CacheWrite > 0 || in.Usage.CacheWrite1h > 0
 		if hasBilledTokens {
-			cost, usedProvList, _, _, missingRate, ok := sumDimensionCost(pricingUsage, in.Override, in.ProviderList, catPtr, crossPtr, vendorEst)
+			cost, usedProvList, usedCross, usedFallback, missingRate, ok := sumDimensionCost(pricingUsage, in.Override, in.ProviderList, catPtr, crossPtr, vendorEst)
 			if ok {
 				if in.Usage.CacheWrite1h > 0 && !hasOverrideOnUsed {
 					rate := firstRate(ratePtr(in.ProviderList), ratePtr(catPtr), ratePtr(crossPtr), vendorEst)
@@ -269,7 +296,7 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 				if cost > MaxMicroUSD {
 					cost = MaxMicroUSD
 				}
-				if selectedTier != nil && !hasOverrideOnUsed && !usedProvList {
+				if selectedTier != nil && in.CatalogFound && !hasOverrideOnUsed && !usedProvList && !usedCross && !usedFallback {
 					return CallPriceResult{CostMicroUSD: &cost, Source: "models_dev"}
 				}
 				return CallPriceResult{CostMicroUSD: &cost, Estimated: true, Source: "estimate"}

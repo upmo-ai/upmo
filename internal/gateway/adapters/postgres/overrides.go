@@ -154,7 +154,7 @@ func (s Store) LookupCallPricing(ctx context.Context, accountID, vendor, model s
 	out.Catalog = cat
 	out.CatalogFound = found
 	out.CrossProvider = cross
-	if rate, hasRate, err := s.HighestRate(ctx, vendor); err != nil {
+	if rate, hasRate, err := s.EstimateRate(ctx, vendor); err != nil {
 		return app.CallPricing{}, err
 	} else if hasRate && rate > 0 {
 		out.EstimateRate = rate

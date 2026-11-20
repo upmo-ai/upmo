@@ -177,7 +177,7 @@ func (s Store) HighestRate(ctx context.Context, vendor string) (int64, bool, err
 	err := s.Pool.QueryRow(ctx, `
 		SELECT max(rate) FROM (
 			SELECT greatest(
-				COALESCE(round(input_usd_per_mtok * $2)::bigint, 0),
+				COALESCE(round(input_usd_per_mtok * $2)::bigint, 0) * 2,
 				COALESCE(round(output_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_read_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_write_usd_per_mtok * $2)::bigint, 0)
@@ -186,12 +186,47 @@ func (s Store) HighestRate(ctx context.Context, vendor string) (int64, bool, err
 			WHERE vendor <> '' AND lower(vendor) = lower($1)
 			UNION ALL
 			SELECT greatest(
+				COALESCE(round(COALESCE(pt.input_usd_per_mtok, p.input_usd_per_mtok) * $2)::bigint, 0) * 2,
+				COALESCE(round(pt.output_usd_per_mtok * $2)::bigint, 0),
+				COALESCE(round(pt.cache_read_usd_per_mtok * $2)::bigint, 0),
+				COALESCE(round(pt.cache_write_usd_per_mtok * $2)::bigint, 0)) AS rate
+			FROM gateway.price_tiers pt JOIN gateway.prices p USING (vendor, model)
+			WHERE pt.vendor <> '' AND lower(pt.vendor) = lower($1)
+		) AS rates WHERE rate > 0`, vendor, kernel.MicroUSDPerDollar).Scan(&rate)
+	if err != nil {
+		return 0, false, err
+	}
+	if rate == nil {
+		return 0, false, nil
+	}
+	return *rate, true, nil
+}
+
+// EstimateRate preserves the per-vendor fallback rate. HighestRate includes
+// reservation headroom for possible one-hour cache writes; fallback billing
+// estimates must keep using the catalog's existing rate ceiling.
+func (s Store) EstimateRate(ctx context.Context, vendor string) (int64, bool, error) {
+	vendor = domain.VendorKey(vendor)
+	if vendor == "" {
+		return 0, false, nil
+	}
+	var rate *int64
+	err := s.Pool.QueryRow(ctx, `
+		SELECT max(rate) FROM (
+			SELECT greatest(
+				COALESCE(round(input_usd_per_mtok * $2)::bigint, 0),
+				COALESCE(round(output_usd_per_mtok * $2)::bigint, 0),
+				COALESCE(round(cache_read_usd_per_mtok * $2)::bigint, 0),
+				COALESCE(round(cache_write_usd_per_mtok * $2)::bigint, 0)) AS rate
+			FROM gateway.prices WHERE vendor <> '' AND lower(vendor) = lower($1)
+			UNION ALL
+			SELECT greatest(
 				COALESCE(round(input_usd_per_mtok * $2)::bigint, 0) * 2,
 				COALESCE(round(output_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_read_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_write_usd_per_mtok * $2)::bigint, 0)) AS rate
 			FROM gateway.price_tiers WHERE vendor <> '' AND lower(vendor) = lower($1)
-		) AS rates WHERE rate > 0`, vendor, kernel.MicroUSDPerDollar).Scan(&rate)
+		) rates WHERE rate > 0`, vendor, kernel.MicroUSDPerDollar).Scan(&rate)
 	if err != nil {
 		return 0, false, err
 	}

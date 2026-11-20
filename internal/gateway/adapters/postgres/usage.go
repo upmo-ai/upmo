@@ -195,7 +195,8 @@ func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageW
 			LEFT JOIN LATERAL (
 				SELECT context_min_tokens, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok
 				FROM gateway.price_tiers
-				WHERE vendor = COALESCE(pv.vendor, pf.vendor) AND model = l.model
+				WHERE (pv.model IS NOT NULL OR pf.model IS NOT NULL)
+				  AND vendor = COALESCE(pv.vendor, pf.vendor) AND model = l.model
 				  AND context_min_tokens < l.input_tokens::bigint + l.cache_read + l.cache_write
 				ORDER BY context_min_tokens DESC LIMIT 1
 			) AS pt ON true

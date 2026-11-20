@@ -589,13 +589,26 @@ func TestResolveCallCostContextTierBoundariesAndCacheReadContext(t *testing.T) {
 	}
 }
 
-func TestResolveCallCostTierAboveFlatOverrideIsEstimate(t *testing.T) {
+func TestResolveCallCostTierAboveFlatOverridePrefersProviderCost(t *testing.T) {
 	catalog := Price{InputMicroUSDPerMTok: microRate(2_000_000), Tiers: []PriceTier{{ContextMinTokens: 200_000, Price: Price{InputMicroUSDPerMTok: microRate(4_000_000)}}}}
 	override := &PriceOverride{InputMicroUSDPerMTok: microRate(1_000_000)}
 	reported := int64(55)
 	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 200_001, ReportedCostMicroUSD: &reported}, Override: override, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 55 || got.Estimated || got.Source != "provider" {
+		t.Fatalf("got %+v, want provider reported cost", got)
+	}
+	got = ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 200_001}, Override: override, Catalog: catalog, CatalogFound: true})
 	if got.CostMicroUSD == nil || *got.CostMicroUSD != 200_001 || !got.Estimated || got.Source != "estimate" {
-		t.Fatalf("got %+v, want base override marked estimated", got)
+		t.Fatalf("got %+v, want flat override estimate when provider cost is absent", got)
+	}
+}
+
+func TestResolveCallCostProviderCostBeatsOneHourEstimate(t *testing.T) {
+	reported := int64(55)
+	catalog := Price{InputMicroUSDPerMTok: microRate(1_000_000)}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, CacheWrite: 100, CacheWrite1h: 100, ReportedCostMicroUSD: &reported}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != reported || got.Estimated || got.Source != "provider" {
+		t.Fatalf("got %+v, want provider cost", got)
 	}
 }
 
@@ -604,6 +617,14 @@ func TestResolveCallCostAnthropicOneHourCacheWrite(t *testing.T) {
 	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, CacheWrite: 100, CacheWrite1h: 100}, Catalog: catalog, CatalogFound: true})
 	if got.CostMicroUSD == nil || *got.CostMicroUSD != 200 || !got.Estimated || got.Source != "estimate" {
 		t.Fatalf("got %+v, want 200 micro-USD estimate", got)
+	}
+}
+
+func TestResolveCallCostCacheWriteWithoutBreakdownStaysExact(t *testing.T) {
+	catalog := Price{CacheWriteMicroUSDPerMTok: microRate(125_000)}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, CacheWrite: 100}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 13 || got.Estimated || got.Source != "models_dev" {
+		t.Fatalf("got %+v, want exact cache-write cost", got)
 	}
 }
 
@@ -621,5 +642,25 @@ func TestResolveCallCostTierUsesBaseForMissingDimensionAndPreservesUnknown(t *te
 	got = ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 100_000, Output: 100_000}, Catalog: catalog, CatalogFound: true})
 	if got.CostMicroUSD != nil || got.Source != "unknown" || got.Estimated {
 		t.Fatalf("missing dimension = %+v, want unknown nil cost", got)
+	}
+}
+
+func TestResolveCallCostTierCrossProviderAndVendorFallbackAreEstimates(t *testing.T) {
+	usage := Usage{Arrived: true, Input: 20}
+	cross := Price{InputMicroUSDPerMTok: microRate(3_000_000), Tiers: []PriceTier{{ContextMinTokens: 10, Price: Price{InputMicroUSDPerMTok: microRate(5_000_000)}}}}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: usage, CrossProvider: &cross})
+	if got.CostMicroUSD == nil || !got.Estimated || got.Source != "estimate" {
+		t.Fatalf("cross-provider tier = %+v, want estimate", got)
+	}
+	catalog := Price{Tiers: []PriceTier{{ContextMinTokens: 10, Price: Price{InputMicroUSDPerMTok: microRate(5_000_000)}}}}
+	fallback := int64(7_000_000)
+	got = ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 10, Output: 10}, Catalog: catalog, CatalogFound: true, EstimateRate: fallback, EstimateRateKnown: true})
+	if got.CostMicroUSD == nil || !got.Estimated || got.Source != "estimate" {
+		t.Fatalf("fallback-filled tier = %+v, want estimate", got)
+	}
+	crossTier := Price{InputMicroUSDPerMTok: microRate(3_000_000), Tiers: []PriceTier{{ContextMinTokens: 10, Price: Price{InputMicroUSDPerMTok: microRate(5_000_000)}}}}
+	got = ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 20}, Catalog: Price{InputMicroUSDPerMTok: microRate(1_000_000)}, CatalogFound: true, CrossProvider: &crossTier})
+	if got.CostMicroUSD == nil || !got.Estimated || got.Source != "estimate" || *got.CostMicroUSD != 100 {
+		t.Fatalf("cross-only tier = %+v, want tier-priced estimate of 100", got)
 	}
 }

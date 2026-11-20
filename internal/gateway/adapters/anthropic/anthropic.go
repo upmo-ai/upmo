@@ -427,29 +427,40 @@ type usageBlock struct {
 // into records the counts that arrived. Anthropic counts input tokens apart
 // from the cache reads and writes, as domain.Usage does.
 func (u usageBlock) into(usage *domain.Usage) {
+	clamp := func(n int) int {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
 	usage.Arrived = true
 	if u.InputTokens != nil {
-		usage.Input = *u.InputTokens
+		usage.Input = clamp(*u.InputTokens)
 	}
 	if u.OutputTokens != nil {
-		usage.Output = *u.OutputTokens
+		usage.Output = clamp(*u.OutputTokens)
 	}
 	if u.CacheRead != nil {
-		usage.CacheRead = *u.CacheRead
+		usage.CacheRead = clamp(*u.CacheRead)
 	}
 	if u.CacheCreate != nil {
 		five, one := 0, 0
 		if u.CacheCreate.FiveMinute != nil {
-			five = *u.CacheCreate.FiveMinute
+			five = clamp(*u.CacheCreate.FiveMinute)
 		}
 		if u.CacheCreate.OneHour != nil {
-			one = *u.CacheCreate.OneHour
+			one = clamp(*u.CacheCreate.OneHour)
 		}
-		usage.CacheWrite1h = one
-		usage.CacheWrite = five + one
+		if u.CacheCreate.FiveMinute != nil || u.CacheCreate.OneHour != nil {
+			usage.CacheWrite1h = one
+			usage.CacheWrite = five + one
+		} else if u.CacheCreation != nil {
+			usage.CacheWrite = max(usage.CacheWrite, clamp(*u.CacheCreation))
+			usage.CacheWrite1h = min(usage.CacheWrite1h, usage.CacheWrite)
+		}
 	} else if u.CacheCreation != nil {
-		usage.CacheWrite = *u.CacheCreation
-		usage.CacheWrite1h = 0
+		usage.CacheWrite = max(usage.CacheWrite, clamp(*u.CacheCreation))
+		usage.CacheWrite1h = min(usage.CacheWrite1h, usage.CacheWrite)
 	}
 }
 

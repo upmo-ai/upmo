@@ -286,3 +286,31 @@ func TestParseCatalogContextOver200kFallback(t *testing.T) {
 		t.Fatalf("legacy context tier = %+v (ok=%v)", row.Price.Tiers, ok)
 	}
 }
+
+func TestParseCatalogDeduplicatesTierSizesAndRejectsNonpositive(t *testing.T) {
+	const duplicate = `{"google":{"models":{"m":{"cost":{"tiers":[{"tier":{"type":"context","size":200000},"input":2},{"tier":{"type":"context","size":200000},"input":9}]}}}}}`
+	rows, err := ParseCatalog(strings.NewReader(duplicate), "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findRow(rows, "gemini", "m")
+	if !ok || len(row.Price.Tiers) != 1 || *row.Price.Tiers[0].Price.InputMicroUSDPerMTok != 2_000_000 {
+		t.Fatalf("tiers=%+v", row.Price.Tiers)
+	}
+	const invalid = `{"google":{"models":{"m":{"cost":{"tiers":[{"tier":{"type":"context","size":0},"input":2}]}}}}}`
+	if _, err := ParseCatalog(strings.NewReader(invalid), "v1"); err == nil {
+		t.Fatal("nonpositive context tier accepted")
+	}
+}
+
+func TestParseCatalogUsesContextOver200kWhenOtherTierTypesAreSkipped(t *testing.T) {
+	const body = `{"google":{"models":{"m":{"cost":{"tiers":[{"tier":{"type":"output","size":1},"input":8}],"context_over_200k":{"input":2}}}}}}`
+	rows, err := ParseCatalog(strings.NewReader(body), "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findRow(rows, "gemini", "m")
+	if !ok || len(row.Price.Tiers) != 1 || row.Price.Tiers[0].ContextMinTokens != 200_000 {
+		t.Fatalf("tiers=%+v", row.Price.Tiers)
+	}
+}

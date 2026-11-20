@@ -192,7 +192,12 @@ func ValidateCatalog(rows []CatalogRow, prevCount int) error {
 		if err := checkRate(row.Model, "cache_write", row.Price.CacheWriteMicroUSDPerMTok, row.Price.CacheWriteMTok); err != nil {
 			return err
 		}
+		seenTiers := map[int]bool{}
 		for _, tier := range row.Price.Tiers {
+			if tier.ContextMinTokens <= 0 || seenTiers[tier.ContextMinTokens] {
+				return fmt.Errorf("gateway: catalog model %s has invalid or duplicate tier size %d", row.Model, tier.ContextMinTokens)
+			}
+			seenTiers[tier.ContextMinTokens] = true
 			for name, rate := range map[string]*int64{"input": tier.Price.InputMicroUSDPerMTok, "output": tier.Price.OutputMicroUSDPerMTok, "cache_read": tier.Price.CacheReadMicroUSDPerMTok, "cache_write": tier.Price.CacheWriteMicroUSDPerMTok} {
 				if err := checkRate(row.Model, "tier_"+name, rate, nil); err != nil {
 					return err
@@ -420,18 +425,26 @@ type apiTierRates struct {
 	Output     json.RawMessage `json:"output"`
 	CacheRead  json.RawMessage `json:"cache_read"`
 	CacheWrite json.RawMessage `json:"cache_write"`
-	Reasoning  json.RawMessage `json:"reasoning"`
 }
 
 func parseAPICostTiers(cost *apiCost) ([]PriceTier, error) {
 	items := cost.Tiers
-	if len(items) == 0 && cost.ContextOver200k != nil {
-		items = []apiCostTier{{Input: cost.ContextOver200k.Input, Output: cost.ContextOver200k.Output, CacheRead: cost.ContextOver200k.CacheRead, CacheWrite: cost.ContextOver200k.CacheWrite}}
-		items[0].Tier.Type, items[0].Tier.Size = "context", 200000
-	}
 	out := make([]PriceTier, 0, len(items))
 	for _, item := range items {
-		if item.Tier.Type != "context" || item.Tier.Size <= 0 {
+		if item.Tier.Type != "context" {
+			continue
+		}
+		if item.Tier.Size <= 0 {
+			return nil, fmt.Errorf("gateway: invalid tier size")
+		}
+		duplicate := false
+		for _, existing := range out {
+			if existing.ContextMinTokens == item.Tier.Size {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
 			continue
 		}
 		price := Price{}
@@ -450,6 +463,15 @@ func parseAPICostTiers(cost *apiCost) ([]PriceTier, error) {
 			*field.dst = rate
 		}
 		out = append(out, PriceTier{ContextMinTokens: item.Tier.Size, Price: price})
+	}
+	if len(out) == 0 && cost.ContextOver200k != nil {
+		fallback := &apiCostTier{Input: cost.ContextOver200k.Input, Output: cost.ContextOver200k.Output, CacheRead: cost.ContextOver200k.CacheRead, CacheWrite: cost.ContextOver200k.CacheWrite}
+		fallback.Tier.Type, fallback.Tier.Size = "context", 200000
+		parsed, err := parseAPICostTiers(&apiCost{Tiers: []apiCostTier{*fallback}})
+		if err != nil {
+			return nil, err
+		}
+		out = parsed
 	}
 	slices.SortFunc(out, func(a, b PriceTier) int { return a.ContextMinTokens - b.ContextMinTokens })
 	return out, nil

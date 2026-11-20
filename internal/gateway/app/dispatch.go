@@ -113,6 +113,10 @@ type ProviderPrices interface {
 	HighestRate(ctx context.Context, vendor string) (int64, bool, error)
 }
 
+type ProviderEstimateRates interface {
+	EstimateRate(ctx context.Context, vendor string) (int64, bool, error)
+}
+
 // Ledger stores one row per attempt.
 type Ledger interface {
 	Record(ctx context.Context, row domain.Entry) error
@@ -270,6 +274,13 @@ func (d Dispatch) vendorHighestRate(ctx context.Context, vendor string) (rate in
 		}
 	}
 	return domain.ReserveHoldMicroUSDPerMTok, false, nil
+}
+
+func (d Dispatch) vendorEstimateRate(ctx context.Context, vendor string) (rate int64, known bool, err error) {
+	if prices, ok := d.Prices.(ProviderEstimateRates); ok {
+		return prices.EstimateRate(ctx, vendor)
+	}
+	return d.vendorHighestRate(ctx, vendor)
 }
 
 const (
@@ -462,6 +473,7 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 				"output_tokens", usage.Output,
 				"cache_read", usage.CacheRead,
 				"cache_write", usage.CacheWrite,
+				"cache_write_1h", usage.CacheWrite1h,
 				"reasoning", usage.Reasoning,
 				"err", err,
 			)
@@ -542,7 +554,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 			cp = CallPricing{}
 			lookupFailed = true
 		} else if !cp.EstimateRateKnown && cp.EstimateRate <= 0 {
-			rate, known, herr := d.vendorHighestRate(ctx, vendor)
+			rate, known, herr := d.vendorEstimateRate(ctx, vendor)
 			if herr != nil {
 				logLookupErr(herr)
 				applySavedReserveRate()
@@ -579,7 +591,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		}
 		if !lookupFailed {
 			cp.ZeroCostAllowed = domain.ZeroCostAllowed(link.Model, nil)
-			rate, known, herr := d.vendorHighestRate(ctx, vendor)
+			rate, known, herr := d.vendorEstimateRate(ctx, vendor)
 			if herr != nil {
 				logLookupErr(herr)
 				applySavedReserveRate()
@@ -593,7 +605,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		applySavedReserveRate()
 		if !cp.EstimateRateKnown {
 			hctx, hcancel := context.WithTimeout(context.WithoutCancel(ctx), priceLookupTimeout)
-			rate, known, herr := d.vendorHighestRate(hctx, vendor)
+			rate, known, herr := d.vendorEstimateRate(hctx, vendor)
 			hcancel()
 			if herr == nil && known {
 				cp.EstimateRate, cp.EstimateRateKnown = rate, true
