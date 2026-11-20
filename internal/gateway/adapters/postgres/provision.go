@@ -49,28 +49,30 @@ type HouseProvider struct {
 
 // UsageTotals holds aggregated monthly token and micro-USD totals.
 type UsageTotals struct {
-	InputTokens      int64 `json:"input_tokens"`
-	OutputTokens     int64 `json:"output_tokens"`
-	CacheReadTokens  int64 `json:"cache_read_tokens"`
-	CacheWriteTokens int64 `json:"cache_write_tokens"`
-	ReasoningTokens  int64 `json:"reasoning_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
-	CostMicroUSD     int64 `json:"cost_micro_usd"`
-	UnknownCostCount int64 `json:"unknown_cost_count"`
+	InputTokens       int64 `json:"input_tokens"`
+	OutputTokens      int64 `json:"output_tokens"`
+	CacheReadTokens   int64 `json:"cache_read_tokens"`
+	CacheWriteTokens  int64 `json:"cache_write_tokens"`
+	ReasoningTokens   int64 `json:"reasoning_tokens"`
+	TotalTokens       int64 `json:"total_tokens"`
+	CostMicroUSD      int64 `json:"cost_micro_usd"`
+	UnknownCostCount  int64 `json:"unknown_cost_count"`
+	UnpricedCallCount int64 `json:"unpriced_call_count"`
 }
 
 // UsageRow holds monthly token and micro-USD totals for one (model, kind) bucket.
 type UsageRow struct {
-	Model            string `json:"model"`
-	Kind             string `json:"kind"`
-	InputTokens      int64  `json:"input_tokens"`
-	OutputTokens     int64  `json:"output_tokens"`
-	CacheReadTokens  int64  `json:"cache_read_tokens"`
-	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	ReasoningTokens  int64  `json:"reasoning_tokens"`
-	TotalTokens      int64  `json:"total_tokens"`
-	CostMicroUSD     int64  `json:"cost_micro_usd"`
-	UnknownCostCount int64  `json:"unknown_cost_count"`
+	Model             string `json:"model"`
+	Kind              string `json:"kind"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	CacheReadTokens   int64  `json:"cache_read_tokens"`
+	CacheWriteTokens  int64  `json:"cache_write_tokens"`
+	ReasoningTokens   int64  `json:"reasoning_tokens"`
+	TotalTokens       int64  `json:"total_tokens"`
+	CostMicroUSD      int64  `json:"cost_micro_usd"`
+	UnknownCostCount  int64  `json:"unknown_cost_count"`
+	UnpricedCallCount int64  `json:"unpriced_call_count"`
 }
 
 // MonthlyUsage is the anonymized workspace usage summary for one UTC month.
@@ -241,6 +243,11 @@ func UpsertHouseProviders(
 				id, item.provider, item.adapter, item.planKind, item.baseURL, status, reset); err != nil {
 				return nil, mapWrite(err)
 			}
+			if prevBaseURL != item.baseURL || prevAdapter != item.adapter {
+				if _, err := tx.Exec(ctx, `DELETE FROM gateway.account_models_seen WHERE account_id = $1::uuid`, id); err != nil {
+					return nil, err
+				}
+			}
 			if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, id); err != nil {
 				return nil, err
 			}
@@ -347,7 +354,8 @@ func QueryMonthlyUsage(ctx context.Context, owner *pgxpool.Pool, month string, s
 			COALESCE(SUM(cache_write), 0)::bigint AS cache_write_tokens,
 			COALESCE(SUM(reasoning), 0)::bigint AS reasoning_tokens,
 			COALESCE(SUM(COALESCE(cost_micro_usd, 0)), 0)::bigint AS cost_micro_usd,
-			COUNT(*) FILTER (WHERE estimated)::bigint AS unknown_cost_count
+			COUNT(*) FILTER (WHERE estimated)::bigint AS unknown_cost_count,
+			COUNT(*) FILTER (WHERE price_source = 'unknown')::bigint AS unpriced_call_count
 		FROM gateway.ledger
 		WHERE at >= $1 AND at < $2
 		GROUP BY 1, 2
@@ -373,6 +381,7 @@ func QueryMonthlyUsage(ctx context.Context, owner *pgxpool.Pool, month string, s
 			&row.ReasoningTokens,
 			&row.CostMicroUSD,
 			&row.UnknownCostCount,
+			&row.UnpricedCallCount,
 		); err != nil {
 			return MonthlyUsage{}, err
 		}
@@ -385,6 +394,7 @@ func QueryMonthlyUsage(ctx context.Context, owner *pgxpool.Pool, month string, s
 		res.Totals.TotalTokens += row.TotalTokens
 		res.Totals.CostMicroUSD += row.CostMicroUSD
 		res.Totals.UnknownCostCount += row.UnknownCostCount
+		res.Totals.UnpricedCallCount += row.UnpricedCallCount
 		res.Breakdown = append(res.Breakdown, row)
 	}
 	if err := rows.Err(); err != nil {

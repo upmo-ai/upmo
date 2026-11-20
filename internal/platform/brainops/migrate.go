@@ -70,6 +70,9 @@ func MigrateAll(ctx context.Context, owner *pgxpool.Pool) error {
 	if err := notices.Up(ctx, owner); err != nil {
 		return err
 	}
+	if err := gateway.SeedCatalog(ctx, owner); err != nil {
+		return err
+	}
 	return audit.Migrated(ctx, owner)
 }
 

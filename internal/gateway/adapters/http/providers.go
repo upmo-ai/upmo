@@ -42,11 +42,14 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 	mux.Handle("GET /api/providers/catalog", wrap(h.catalog))
 	mux.Handle("GET /api/providers/sharing", wrap(h.sharing))
 	mux.Handle("GET /api/providers/{id}/models", wrap(h.models))
+	mux.Handle("GET /api/providers/{id}/pricing", wrap(h.pricing))
 	mux.Handle("GET /api/providers/{id}/uses", wrap(h.uses))
 	mux.Handle("POST /api/providers", wrap(h.add))
 	mux.Handle("POST /api/providers/test", wrap(h.test))
 	mux.Handle("PUT /api/providers/{id}", wrap(h.change))
 	mux.Handle("DELETE /api/providers/{id}", wrap(h.remove))
+	mux.Handle("PUT /api/providers/{id}/overrides", wrap(h.setOverride))
+	mux.Handle("DELETE /api/providers/{id}/overrides", wrap(h.deleteOverride))
 }
 
 type providerJSON struct {
@@ -333,6 +336,67 @@ func (h ProvidersHandler) uses(w http.ResponseWriter, r *http.Request) {
 	writeRouteJSON(w, http.StatusOK, uses)
 }
 
+func (h ProvidersHandler) pricing(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	view, err := h.Service.GetModelPricing(r.Context(), user, r.PathValue("id"), r.URL.Query().Get("model"))
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	writeRouteJSON(w, http.StatusOK, view)
+}
+
+func (h ProvidersHandler) setOverride(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Model                     string `json:"model"`
+		InputMicroUSDPerMTok      *int64 `json:"input_micro_usd_per_mtok"`
+		OutputMicroUSDPerMTok     *int64 `json:"output_micro_usd_per_mtok"`
+		CacheReadMicroUSDPerMTok  *int64 `json:"cache_read_micro_usd_per_mtok"`
+		CacheWriteMicroUSDPerMTok *int64 `json:"cache_write_micro_usd_per_mtok"`
+	}
+	if !decodeProvider(w, r, &body) {
+		return
+	}
+	view, err := h.Service.SetPriceOverride(r.Context(), user, r.PathValue("id"), domain.PriceOverride{
+		Model:                     body.Model,
+		InputMicroUSDPerMTok:      body.InputMicroUSDPerMTok,
+		OutputMicroUSDPerMTok:     body.OutputMicroUSDPerMTok,
+		CacheReadMicroUSDPerMTok:  body.CacheReadMicroUSDPerMTok,
+		CacheWriteMicroUSDPerMTok: body.CacheWriteMicroUSDPerMTok,
+	})
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	writeRouteJSON(w, http.StatusOK, view)
+}
+
+func (h ProvidersHandler) deleteOverride(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if !decodeProvider(w, r, &body) {
+		return
+	}
+	view, err := h.Service.DeletePriceOverride(r.Context(), user, r.PathValue("id"), body.Model)
+	if err != nil {
+		h.refuse(w, err)
+		return
+	}
+	writeRouteJSON(w, http.StatusOK, view)
+}
+
 func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
 	if !ok {
@@ -477,6 +541,8 @@ func (h ProvidersHandler) refuse(w http.ResponseWriter, err error) {
 		writeRouteError(w, http.StatusForbidden, "This provider is shared. Only workspace managers can change it.")
 	case errors.Is(err, app.ErrShareOnly):
 		writeRouteError(w, http.StatusForbidden, "Only workspace admins can share a provider.")
+	case errors.Is(err, app.ErrOverridePermission):
+		writeRouteError(w, http.StatusForbidden, "Only workspace admins can manage price overrides.")
 	case errors.Is(err, app.ErrDuplicate):
 		writeRouteError(w, http.StatusConflict, "You already have a provider with that name.")
 	case errors.Is(err, app.ErrLimit):

@@ -86,20 +86,25 @@ func EffectivePersonLimit(person, personDefault *int64) *int64 {
 	return nil
 }
 
+// ReserveHoldMicroUSDPerMTok is the hold-only fallback rate used by
+// ReserveEstimate when a vendor has no catalog rates. It is never billed.
+const ReserveHoldMicroUSDPerMTok int64 = 75_000_000
+
 // ReserveEstimate computes the worst-case micro-USD reservation for one
 // attempt from inputBytes at estimateRate plus maxOutputTokens when set.
 func ReserveEstimate(plan string, estimateRate int64, inputBytes, maxOutputTokens int) int64 {
-	if inputBytes < 0 {
-		inputBytes = 0
-	}
-	if maxOutputTokens < 0 {
-		maxOutputTokens = 0
-	}
-	micro, _, _ := MeteredCost(plan, Usage{Output: maxOutputTokens}, Price{}, false, estimateRate, inputBytes, 0, false)
-	if micro == nil {
+	if plan != PlanMetered {
 		return 0
 	}
-	return *micro
+	if estimateRate <= 0 {
+		estimateRate = ReserveHoldMicroUSDPerMTok
+	}
+	inBytes := max(int64(inputBytes), 0)
+	tokens := saturatingPositiveSum(inBytes/4+(inBytes%4+3)/4, int64(maxOutputTokens))
+	if tokens < 1 {
+		tokens = 1
+	}
+	return cappedEstimateAmount(tokens, estimateRate)
 }
 
 // CheckLimit verifies that spent + held + estimate stays within limit. A nil

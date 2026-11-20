@@ -100,6 +100,11 @@ CREATE TABLE gateway.prices (
 CREATE TABLE gateway.catalog_meta (
   id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   version text NOT NULL,
+  as_of timestamptz NOT NULL DEFAULT now(),
+  refreshed_at timestamptz,
+  last_attempt_at timestamptz,
+  last_error text NOT NULL DEFAULT '',
+  stale_notified_at timestamptz,
   CONSTRAINT catalog_meta_version_check CHECK (version <> '')
 );
 
@@ -131,6 +136,8 @@ CREATE TABLE gateway.ledger (
   charged_to_limit boolean NOT NULL DEFAULT false,
   price_source text,
   price_version text,
+  unknown_notified_at timestamptz,
+  hold_id uuid,
   CONSTRAINT ledger_route_check CHECK (route <> ''),
   CONSTRAINT ledger_model_check CHECK (model <> ''),
   CONSTRAINT ledger_plan_check CHECK (plan_kind IN ('metered', 'subscription', 'local')),
@@ -144,11 +151,11 @@ CREATE TABLE gateway.ledger (
   CONSTRAINT ledger_payer_check CHECK (user_id IS NOT NULL OR source = 'system'),
   CONSTRAINT ledger_latency_check CHECK (latency_ms IS NULL OR latency_ms >= 0),
   CONSTRAINT ledger_cost_plan_check CHECK (
-    (plan_kind = 'metered' AND cost_micro_usd IS NOT NULL)
-    OR (plan_kind IN ('subscription', 'local') AND cost_micro_usd IS NULL)
+    (plan_kind = 'metered' AND price_source IS NOT NULL AND (cost_micro_usd IS NOT NULL OR price_source = 'unknown'))
+    OR (plan_kind IN ('subscription', 'local') AND cost_micro_usd IS NULL AND price_source IS NULL)
   ),
   CONSTRAINT ledger_price_source_check CHECK (
-    (cost_micro_usd IS NULL AND price_source IS NULL)
+    (cost_micro_usd IS NULL AND (price_source IS NULL OR price_source = 'unknown'))
     OR (cost_micro_usd IS NOT NULL AND price_source IN ('override', 'provider', 'provider_list', 'models_dev', 'estimate', 'not_billed'))
   ),
   CONSTRAINT ledger_estimate_check CHECK (
@@ -160,6 +167,9 @@ CREATE TABLE gateway.ledger (
   ),
   CONSTRAINT ledger_charged_to_limit_check CHECK (
     NOT charged_to_limit OR plan_kind = 'metered'
+  ),
+  CONSTRAINT ledger_unknown_notified_check CHECK (
+    unknown_notified_at IS NULL OR price_source = 'unknown'
   )
 );
 
@@ -167,6 +177,12 @@ CREATE INDEX ledger_run ON gateway.ledger (run_id);
 CREATE INDEX ledger_parent ON gateway.ledger (parent_run_id);
 CREATE INDEX ledger_at ON gateway.ledger (at);
 CREATE INDEX ledger_user_at ON gateway.ledger (user_id, at);
+CREATE UNIQUE INDEX ledger_unknown_notified_pair
+  ON gateway.ledger (provider_account_id, model)
+  WHERE unknown_notified_at IS NOT NULL;
+CREATE UNIQUE INDEX ledger_hold_id
+  ON gateway.ledger (hold_id)
+  WHERE hold_id IS NOT NULL;
 
 CREATE TABLE gateway.usage_limits (
   id uuid PRIMARY KEY DEFAULT uuidv7(),

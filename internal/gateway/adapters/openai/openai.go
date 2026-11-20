@@ -14,6 +14,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/wire"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/kernel"
 )
 
 // Adapter talks OpenAI-compatible chat completions. The paths come from the
@@ -498,29 +499,81 @@ func encodeStream(model string, req domain.Request) ([]byte, error) {
 }
 
 type usagePayload struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	PromptTokensDetails *struct {
+	PromptTokens         int `json:"prompt_tokens"`
+	CompletionTokens     int `json:"completion_tokens"`
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+	PromptTokensDetails  *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details"`
+	Cost           json.RawMessage `json:"cost"`
+	CostInUSDTicks json.RawMessage `json:"cost_in_usd_ticks"`
+	IsBYOK         bool            `json:"is_byok"`
+	CostDetails    *struct {
+		UpstreamInferenceCost json.RawMessage `json:"upstream_inference_cost"`
+	} `json:"cost_details"`
 }
 
 func (u usagePayload) toDomain() domain.Usage {
+	prompt := max(0, u.PromptTokens)
+	completion := max(0, u.CompletionTokens)
+	cached := max(0, u.PromptCacheHitTokens)
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > cached {
+		cached = u.PromptTokensDetails.CachedTokens
+	}
+	if cached > prompt {
+		cached = prompt
+	}
+	var upstreamCost json.RawMessage
+	if u.CostDetails != nil {
+		upstreamCost = u.CostDetails.UpstreamInferenceCost
+	}
 	out := domain.Usage{
-		Arrived: true,
-		Input:   u.PromptTokens,
-		Output:  u.CompletionTokens,
+		Arrived:              true,
+		Input:                prompt - cached,
+		Output:               completion,
+		CacheRead:            cached,
+		ReportedCostMicroUSD: parseReportedCost(u.Cost, u.CostInUSDTicks, upstreamCost, u.IsBYOK),
 	}
-	if u.PromptTokensDetails != nil {
-		out.CacheRead = u.PromptTokensDetails.CachedTokens
-	}
-	if u.CompletionTokensDetails != nil {
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens > 0 {
 		out.Reasoning = u.CompletionTokensDetails.ReasoningTokens
 	}
 	return out
+}
+
+func parseReportedCost(costRaw, ticksRaw, upstreamRaw json.RawMessage, isBYOK bool) *int64 {
+	if isBYOK {
+		micro, ok := domain.ParseDecimalMicroUSD(costRaw, kernel.MicroUSDPerDollar)
+		upstream, upstreamOK := domain.ParseDecimalMicroUSD(upstreamRaw, kernel.MicroUSDPerDollar)
+		if !ok || !upstreamOK || micro < 0 || micro > domain.MaxMicroUSD ||
+			upstream < 0 || upstream > domain.MaxMicroUSD || micro > domain.MaxMicroUSD-upstream {
+			return nil
+		}
+		total := micro + upstream
+		return &total
+	}
+	if trimmed := bytes.TrimSpace(costRaw); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if trimmed[0] == '{' {
+			var obj struct {
+				TotalCost json.RawMessage `json:"total_cost"`
+			}
+			if err := json.Unmarshal(trimmed, &obj); err == nil {
+				if micro, ok := domain.ParseDecimalMicroUSD(obj.TotalCost, kernel.MicroUSDPerDollar); ok && micro >= 0 && micro <= domain.MaxMicroUSD {
+					return &micro
+				}
+			}
+		} else if micro, ok := domain.ParseDecimalMicroUSD(trimmed, kernel.MicroUSDPerDollar); ok && micro >= 0 && micro <= domain.MaxMicroUSD {
+			return &micro
+		}
+	}
+	if trimmed := bytes.TrimSpace(ticksRaw); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if micro, ok := domain.ParseTicksMicroUSD(trimmed); ok && micro >= 0 && micro <= domain.MaxMicroUSD {
+			return &micro
+		}
+	}
+	return nil
 }
 
 type streamToolCall struct {

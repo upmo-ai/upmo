@@ -247,10 +247,17 @@ func (s Store) Settle(ctx context.Context, res app.Reservation, row domain.Entry
 		return err
 	}
 	if !claimed {
+		var settled bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway.ledger WHERE hold_id = $1::uuid)`, res.ID).Scan(&settled); err != nil {
+			return err
+		}
+		if settled {
+			return nil
+		}
 		return fmt.Errorf("gateway: reservation %s already claimed", res.ID)
 	}
 
-	if err := insertLedger(ctx, tx, row); err != nil {
+	if err := insertLedger(ctx, tx, row, res.ID); err != nil {
 		return err
 	}
 	var deltaSpent int64

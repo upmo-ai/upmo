@@ -26,6 +26,9 @@ var (
 	// ErrShareOnly is a person who asked to share an account but does not
 	// hold settings:manage.
 	ErrShareOnly = errors.New("gateway: sharing a provider needs settings:manage")
+	// ErrOverridePermission is a person who tried to change a price override
+	// without holding settings:manage.
+	ErrOverridePermission = errors.New("gateway: price overrides require settings:manage")
 	// ErrDuplicate is a name the person already uses.
 	ErrDuplicate = errors.New("gateway: provider name in use")
 	// ErrLimit is a person at the cap of own accounts.
@@ -165,6 +168,30 @@ type Accounts interface {
 // store. Keeping it separate avoids expanding every lightweight Accounts fake.
 type RouteUses interface {
 	RouteUses(ctx context.Context, who Caller, id string) ([]string, error)
+}
+
+// EndpointSeenModels is an optional extension of Accounts that persists
+// discovered models only while the account's saved adapter and base URL still
+// match the probed endpoint.
+type EndpointSeenModels interface {
+	PutSeenModelsForEndpoint(ctx context.Context, who Caller, id, adapter, baseURL string, models []domain.SeenModel) error
+}
+
+// OverrideStore is the optional price-override port implemented by the provider
+// store.
+type OverrideStore interface {
+	SeenModel(ctx context.Context, who Caller, accountID, model string) (*domain.SeenModel, error)
+	GetOverride(ctx context.Context, who Caller, accountID, model string) (*domain.PriceOverride, error)
+	SetOverride(ctx context.Context, who Caller, accountID string, override domain.PriceOverride) (domain.PriceOverride, error)
+	DeleteOverride(ctx context.Context, who Caller, accountID, model string) error
+}
+
+// ModelPricingView is the merged pricing and override state for one account
+// model, together with any >20% divergence warnings.
+type ModelPricingView struct {
+	Merged   domain.MergedModel       `json:"merged"`
+	Override *domain.PriceOverride    `json:"override,omitempty"`
+	Warnings []domain.OverrideWarning `json:"warnings"`
 }
 
 // ProviderUses is the confirmation information shown before an account is
@@ -657,6 +684,7 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if key, err = domain.CleanKey(key); err != nil {
 		return refuse(err.Error())
 	}
+	unsavedKey := key != ""
 	if key == "" && saved.HasKey {
 		boxed, err := s.Accounts.Sealed(ctx, who, saved.CredentialRef)
 		if err != nil && !errors.Is(err, ErrNotFound) {
@@ -686,12 +714,19 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if err := s.sealTest(ctx, in.ID, result.OK); err != nil {
 		return TestResult{}, err
 	}
-	if in.ID != "" {
+	sameEndpoint := in.ID != "" && !unsavedKey && adapter == saved.Adapter && base == saved.BaseURL
+	if sameEndpoint {
 		if err := s.Accounts.Note(ctx, who, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
 			s.Log.Warn("provider status not stored", "account", in.ID, "owner", user)
 		}
 		if result.OK && models != nil {
-			if err := s.Accounts.PutSeenModels(ctx, who, in.ID, models); err != nil && s.Log != nil {
+			var perr error
+			if ep, ok := s.Accounts.(EndpointSeenModels); ok {
+				perr = ep.PutSeenModelsForEndpoint(ctx, who, in.ID, adapter, base, models)
+			} else {
+				perr = s.Accounts.PutSeenModels(ctx, who, in.ID, models)
+			}
+			if perr != nil && s.Log != nil {
 				s.Log.Warn("provider models not stored", "account", in.ID, "owner", user)
 			}
 		}
@@ -750,7 +785,7 @@ func (s Providers) MergedModel(ctx context.Context, user, accountID, model strin
 	}
 	var catalog *domain.CatalogRow
 	if s.Catalog != nil {
-		row, ok, err := s.Catalog.CatalogModel(ctx, domain.VendorKey(account.Provider), model)
+		row, ok, err := s.Catalog.CatalogModel(ctx, domain.PricingVendorFor(account.Adapter, account.BaseURL), model)
 		if err != nil {
 			return domain.MergedModel{}, err
 		}
@@ -759,6 +794,124 @@ func (s Providers) MergedModel(ctx context.Context, user, accountID, model strin
 		}
 	}
 	return domain.MergeModel(model, override, seen, catalog), nil
+}
+
+// GetModelPricing returns the merged model pricing view, any stored override,
+// and any >20% divergence warnings for an account model visible to user.
+func (s Providers) GetModelPricing(ctx context.Context, user, accountID, model string) (ModelPricingView, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	cleanModel, err := domain.CleanModelID(model)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	account, err := s.Accounts.Get(ctx, who, accountID)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	var override *domain.PriceOverride
+	if store, ok := s.Accounts.(OverrideStore); ok {
+		override, err = store.GetOverride(ctx, who, accountID, cleanModel)
+		if err != nil {
+			return ModelPricingView{}, err
+		}
+	}
+	return s.buildModelPricingView(ctx, who, account, cleanModel, override)
+}
+
+// SetPriceOverride validates and stores a per-account, per-model price override.
+// Requires settings:manage even on a private account.
+func (s Providers) SetPriceOverride(ctx context.Context, user, accountID string, in domain.PriceOverride) (ModelPricingView, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	if !who.mayShare() {
+		return ModelPricingView{}, ErrOverridePermission
+	}
+	clean, err := domain.CleanPriceOverride(in)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	store, ok := s.Accounts.(OverrideStore)
+	if !ok {
+		return ModelPricingView{}, fmt.Errorf("gateway: price overrides are not supported")
+	}
+	account, err := s.Accounts.Get(ctx, who, accountID)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	saved, err := store.SetOverride(ctx, who, accountID, clean)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	return s.buildModelPricingView(ctx, who, account, clean.Model, &saved)
+}
+
+// DeletePriceOverride removes a per-account, per-model price override.
+// Requires settings:manage even on a private account.
+func (s Providers) DeletePriceOverride(ctx context.Context, user, accountID, model string) (ModelPricingView, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	if !who.mayShare() {
+		return ModelPricingView{}, ErrOverridePermission
+	}
+	cleanModel, err := domain.CleanModelID(model)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	store, ok := s.Accounts.(OverrideStore)
+	if !ok {
+		return ModelPricingView{}, fmt.Errorf("gateway: price overrides are not supported")
+	}
+	account, err := s.Accounts.Get(ctx, who, accountID)
+	if err != nil {
+		return ModelPricingView{}, err
+	}
+	if err := store.DeleteOverride(ctx, who, accountID, cleanModel); err != nil {
+		return ModelPricingView{}, err
+	}
+	return s.buildModelPricingView(ctx, who, account, cleanModel, nil)
+}
+
+func (s Providers) buildModelPricingView(ctx context.Context, who Caller, account domain.Provider, model string, override *domain.PriceOverride) (ModelPricingView, error) {
+	var seen *domain.SeenModel
+	if store, ok := s.Accounts.(OverrideStore); ok {
+		var err error
+		seen, err = store.SeenModel(ctx, who, account.ID, model)
+		if err != nil {
+			return ModelPricingView{}, err
+		}
+	}
+	var catalog *domain.CatalogRow
+	var catPrice *domain.Price
+	if s.Catalog != nil {
+		row, ok, err := s.Catalog.CatalogModel(ctx, domain.PricingVendorFor(account.Adapter, account.BaseURL), model)
+		if err != nil {
+			return ModelPricingView{}, err
+		}
+		if ok {
+			catalog = &row
+			if row.Vendor != "" {
+				catPrice = &row.Price
+			}
+		}
+	}
+	var provPrice *domain.Price
+	if seen != nil {
+		if p, ok := domain.ParseSeenPricingMicroUSD(seen.Pricing); ok {
+			provPrice = &p
+		}
+	}
+	return ModelPricingView{
+		Merged:   domain.MergeModel(model, override.ToModelOverride(), seen, catalog),
+		Override: override,
+		Warnings: domain.OverrideWarnings(override, provPrice, catPrice),
+	}, nil
 }
 
 func (s Providers) annotateOneKind(ctx context.Context, p *domain.Provider) error {
@@ -780,7 +933,7 @@ func (s Providers) annotateKinds(ctx context.Context, accounts []domain.Provider
 	seenPairs := map[domain.VendorModel]bool{}
 	var pairs []domain.VendorModel
 	for _, a := range accounts {
-		vendor := domain.VendorKey(a.Provider)
+		vendor := domain.PricingVendorFor(a.Adapter, a.BaseURL)
 		for _, m := range a.Models {
 			k := domain.VendorModel{Vendor: vendor, Model: m}
 			if !seenPairs[k] {
@@ -800,7 +953,7 @@ func (s Providers) annotateKinds(ctx context.Context, accounts []domain.Provider
 		return nil
 	}
 	for i := 0; i < len(accounts); i++ {
-		vendor := domain.VendorKey(accounts[i].Provider)
+		vendor := domain.PricingVendorFor(accounts[i].Adapter, accounts[i].BaseURL)
 		var mk map[string]domain.ModelKind
 		for _, m := range accounts[i].Models {
 			if k, ok := kinds[domain.VendorModel{Vendor: vendor, Model: m}]; ok {

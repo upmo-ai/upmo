@@ -321,7 +321,7 @@ func TestChatStreamTextInOrderWithUsage(t *testing.T) {
 	if len(got) != 2 || got[0] != "Hel" || got[1] != "lo" {
 		t.Fatalf("deltas = %v", got)
 	}
-	if !usage.Arrived || usage.Input != 3 || usage.Output != 2 || usage.CacheRead != 1 {
+	if !usage.Arrived || usage.Input != 2 || usage.Output != 2 || usage.CacheRead != 1 {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
@@ -660,7 +660,7 @@ func TestChatToolCallsAndSerialization(t *testing.T) {
 	if res.StopReason != "tool_calls" || len(res.ToolCalls) != 2 || res.ToolCalls[0].Name != "search" || res.ToolCalls[1].ID != "c2" {
 		t.Fatalf("res = %+v", res)
 	}
-	if !res.Usage.Arrived || res.Usage.Input != 12 || res.Usage.Output != 8 || res.Usage.CacheRead != 4 || res.Usage.Reasoning != 3 {
+	if !res.Usage.Arrived || res.Usage.Input != 8 || res.Usage.Output != 8 || res.Usage.CacheRead != 4 || res.Usage.Reasoning != 3 {
 		t.Fatalf("usage = %+v", res.Usage)
 	}
 	if gotBody["tool_choice"] != "required" || gotBody["max_tokens"] != float64(200) {
@@ -894,6 +894,131 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 			got, class, err := (Adapter{Client: srv.Client()}).Probe(context.Background(), app.Attempt{BaseURL: srv.URL, Secret: "sk-test"})
 			if err != nil || class != domain.ClassOK || got != nil {
 				t.Fatalf("got=%+v class=%s err=%v, want nil models with ClassOK", got, class, err)
+			}
+		})
+	}
+}
+
+func TestOpenAIUsage_CachedTokensAndDeepSeek(t *testing.T) {
+	// 1. Non-streamed OpenAI cached_tokens subtracted from prompt_tokens.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": "ok"}}},
+			"usage": map[string]any{
+				"prompt_tokens":         1000,
+				"completion_tokens":     250,
+				"prompt_tokens_details": map[string]int{"cached_tokens": 800},
+				"cost_in_usd_ticks":     15000,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	res, class, err := Adapter{Client: srv.Client()}.Chat(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "grok-3", Secret: "s"}, domain.Request{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if res.Usage.Input != 200 || res.Usage.CacheRead != 800 || res.Usage.Output != 250 {
+		t.Fatalf("usage = %+v, want input=200 cache_read=800 output=250", res.Usage)
+	}
+	if res.Usage.ReportedCostMicroUSD == nil || *res.Usage.ReportedCostMicroUSD != 2 {
+		t.Fatalf("xai ReportedCostMicroUSD = %v, want 2", res.Usage.ReportedCostMicroUSD)
+	}
+
+	// 2. DeepSeek prompt_cache_hit_tokens (streamed + clamped when > prompt_tokens).
+	dsSrv := sseServer(t, false,
+		`{"choices":[{"delta":{"content":"hi"}}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":500,"completion_tokens":40,"prompt_cache_hit_tokens":350}}`,
+	)
+	usage, class, err := Adapter{Client: dsSrv.Client()}.ChatStream(context.Background(), app.Attempt{BaseURL: dsSrv.URL, Model: "deepseek-chat", Secret: "s"}, domain.Request{
+		Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+	}, func(string) error { return nil })
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("deepseek stream class=%s err=%v", class, err)
+	}
+	if usage.Input != 150 || usage.CacheRead != 350 || usage.Output != 40 {
+		t.Fatalf("deepseek usage = %+v, want input=150 cache_read=350 output=40", usage)
+	}
+
+	// 3. Perplexity usage.cost.total_cost and OpenRouter scalar usage.cost, plus invalid costs ignored.
+	for _, tc := range []struct {
+		name string
+		body string
+		want *int64
+	}{
+		{
+			name: "perplexity total_cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":{"input_tokens_cost":0.001,"output_tokens_cost":0.002,"total_cost":0.003}}}`,
+			want: microPtr(3000),
+		},
+		{
+			name: "openrouter string cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":"0.0000015"}}`,
+			want: microPtr(2),
+		},
+		{
+			name: "openrouter byok includes upstream cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00025,"is_byok":true,"cost_details":{"upstream_inference_cost":0.00075}}}`,
+			want: microPtr(1000),
+		},
+		{
+			name: "openrouter byok missing upstream cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00025,"is_byok":true}}`,
+			want: nil,
+		},
+		{
+			name: "openrouter byok null upstream cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00025,"is_byok":true,"cost_details":{"upstream_inference_cost":null}}}`,
+			want: nil,
+		},
+		{
+			name: "openrouter byok invalid upstream cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00025,"is_byok":true,"cost_details":{"upstream_inference_cost":-1}}}`,
+			want: nil,
+		},
+		{
+			name: "openrouter byok sum overflows cap",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":10000,"is_byok":true,"cost_details":{"upstream_inference_cost":1}}}`,
+			want: nil,
+		},
+		{
+			name: "openrouter non-byok null upstream cost unchanged",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.00025,"is_byok":false,"cost_details":{"upstream_inference_cost":null}}}`,
+			want: microPtr(250),
+		},
+		{
+			name: "clamped cached_tokens",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":99},"cost":-1}}`,
+			want: nil,
+		},
+		{
+			name: "absurd cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":10001}}`,
+			want: nil,
+		},
+		{
+			name: "nan cost",
+			body: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":"NaN"}}`,
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			r, class, err := Adapter{Client: s.Client()}.Chat(context.Background(), app.Attempt{BaseURL: s.URL, Model: "m", Secret: "s"}, domain.Request{
+				Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+			})
+			s.Close()
+			if err != nil || class != domain.ClassOK {
+				t.Fatalf("class=%s err=%v", class, err)
+			}
+			if r.Usage.Input < 0 {
+				t.Fatalf("negative input tokens: %d", r.Usage.Input)
+			}
+			if (r.Usage.ReportedCostMicroUSD == nil) != (tc.want == nil) || (tc.want != nil && *r.Usage.ReportedCostMicroUSD != *tc.want) {
+				t.Fatalf("ReportedCostMicroUSD = %v, want %v", r.Usage.ReportedCostMicroUSD, tc.want)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/upmo-ai/upmo/internal/kernel"
+)
+
+// Minimum catalog counts required to accept a refresh or snapshot.
+const (
+	MinCatalogVendors = 10
+	MinCatalogModels  = 100
 )
 
 // ModelKind is what a model is used for.
@@ -65,15 +74,29 @@ type CatalogRow struct {
 // Providers with a matching picker vendor key produce one (vendor, model) row
 // each. Every provider (including ones with no picker vendor) contributes to
 // the model-only fallback row (Vendor: ""). Providers and models are read in
-// sorted order so duplicate model ids are deterministic across runs: the first
-// provider keeps its price/limits and capabilities/modalities are unioned.
+// sorted order so duplicate model ids are deterministic across runs: vendor
+// rows keep the first provider's price/limits, the model-only fallback row keeps
+// the highest rate seen per dimension across all providers listing that id, and
+// capabilities/modalities are unioned.
 func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		return nil, fmt.Errorf("gateway: catalog version")
 	}
 	var root map[string]apiProvider
-	if err := json.NewDecoder(r).Decode(&root); err != nil {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	if err := dec.Decode(&root); err != nil {
+		return nil, fmt.Errorf("gateway: catalog: %w", err)
+	}
+	if root == nil {
+		return nil, fmt.Errorf("gateway: catalog: empty document")
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("gateway: catalog: trailing data")
+		}
 		return nil, fmt.Errorf("gateway: catalog: %w", err)
 	}
 	byKey := map[VendorModel]*CatalogRow{}
@@ -86,7 +109,10 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 			if id == "" {
 				continue
 			}
-			parsed := parseAPIModel(id, version, model)
+			parsed, err := parseAPIModel(id, version, model)
+			if err != nil {
+				return nil, err
+			}
 			if hasVendor {
 				k := VendorModel{Vendor: vendor, Model: id}
 				if existing, ok := byKey[k]; ok {
@@ -99,7 +125,7 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 			}
 			fbKey := VendorModel{Vendor: "", Model: id}
 			if existing, ok := byKey[fbKey]; ok {
-				mergeCatalogDuplicate(existing, parsed)
+				mergeCatalogFallback(existing, parsed)
 			} else {
 				cp := cloneCatalogRow(parsed)
 				cp.Vendor = ""
@@ -124,7 +150,74 @@ func ParseCatalog(r io.Reader, version string) ([]CatalogRow, error) {
 	return out, nil
 }
 
-func parseAPIModel(id, version string, model apiModel) CatalogRow {
+// ValidateCatalog checks that a parsed catalog meets sanity bounds on every
+// rate, minimum vendor and model counts, and at most a 25% row drop from
+// prevCount (when prevCount > 0).
+func ValidateCatalog(rows []CatalogRow, prevCount int) error {
+	if len(rows) == 0 {
+		return fmt.Errorf("gateway: catalog is empty")
+	}
+	vendors := map[string]bool{}
+	models := map[string]bool{}
+	checkRate := func(model, field string, micro *int64, usd *float64) error {
+		if micro != nil {
+			if *micro < 0 || *micro > MaxMicroUSD {
+				return fmt.Errorf("gateway: catalog rate %s.%s out of bounds", model, field)
+			}
+			return nil
+		}
+		if usd != nil {
+			if *usd < 0 || *usd > float64(MaxMicroUSD/kernel.MicroUSDPerDollar) {
+				return fmt.Errorf("gateway: catalog rate %s.%s out of bounds", model, field)
+			}
+		}
+		return nil
+	}
+	for _, row := range rows {
+		if row.Vendor != "" {
+			vendors[row.Vendor] = true
+		}
+		if row.Model != "" {
+			models[row.Model] = true
+		}
+		if err := checkRate(row.Model, "input", row.Price.InputMicroUSDPerMTok, row.Price.InputPerMTok); err != nil {
+			return err
+		}
+		if err := checkRate(row.Model, "output", row.Price.OutputMicroUSDPerMTok, row.Price.OutputPerMTok); err != nil {
+			return err
+		}
+		if err := checkRate(row.Model, "cache_read", row.Price.CacheReadMicroUSDPerMTok, row.Price.CacheReadMTok); err != nil {
+			return err
+		}
+		if err := checkRate(row.Model, "cache_write", row.Price.CacheWriteMicroUSDPerMTok, row.Price.CacheWriteMTok); err != nil {
+			return err
+		}
+	}
+	if len(vendors) < MinCatalogVendors {
+		return fmt.Errorf("gateway: catalog has %d mapped vendors, want at least %d", len(vendors), MinCatalogVendors)
+	}
+	if len(models) < MinCatalogModels {
+		return fmt.Errorf("gateway: catalog has %d models, want at least %d", len(models), MinCatalogModels)
+	}
+	if prevCount > 0 && len(rows)*100 < prevCount*75 {
+		return fmt.Errorf("gateway: catalog shrunk from %d to %d rows (>25%% drop)", prevCount, len(rows))
+	}
+	return nil
+}
+
+func parseCatalogRate(raw json.RawMessage) (*int64, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	micro, ok := ParseDecimalMicroUSD(trimmed, kernel.MicroUSDPerDollar)
+	if !ok || micro < 0 || micro > MaxMicroUSD {
+		return nil, fmt.Errorf("gateway: invalid catalog rate")
+	}
+	return &micro, nil
+}
+
+func parseAPIModel(id, version string, model apiModel) (CatalogRow, error) {
 	outputs := NormalizeOutputs(model.Modalities.Output)
 	kind := parseModelKind(model.Type, outputs)
 	inputs := NormalizeInputs(model.Modalities.Input)
@@ -146,14 +239,23 @@ func parseAPIModel(id, version string, model apiModel) CatalogRow {
 	}
 	price := Price{Version: version, ContextWindow: ctxWindow}
 	if model.Cost != nil {
-		price.InputPerMTok = floatPtr(model.Cost.Input)
-		price.OutputPerMTok = floatPtr(model.Cost.Output)
-		if model.Cost.CacheRead != nil {
-			price.CacheReadMTok = floatPtr(*model.Cost.CacheRead)
+		var err error
+		if price.InputMicroUSDPerMTok, err = parseCatalogRate(model.Cost.Input); err != nil {
+			return CatalogRow{}, fmt.Errorf("gateway: model %s input: %w", id, err)
 		}
-		if model.Cost.CacheWrite != nil {
-			price.CacheWriteMTok = floatPtr(*model.Cost.CacheWrite)
+		if price.OutputMicroUSDPerMTok, err = parseCatalogRate(model.Cost.Output); err != nil {
+			return CatalogRow{}, fmt.Errorf("gateway: model %s output: %w", id, err)
 		}
+		if price.CacheReadMicroUSDPerMTok, err = parseCatalogRate(model.Cost.CacheRead); err != nil {
+			return CatalogRow{}, fmt.Errorf("gateway: model %s cache_read: %w", id, err)
+		}
+		if price.CacheWriteMicroUSDPerMTok, err = parseCatalogRate(model.Cost.CacheWrite); err != nil {
+			return CatalogRow{}, fmt.Errorf("gateway: model %s cache_write: %w", id, err)
+		}
+		price.InputPerMTok = USDFromMicro(price.InputMicroUSDPerMTok)
+		price.OutputPerMTok = USDFromMicro(price.OutputMicroUSDPerMTok)
+		price.CacheReadMTok = USDFromMicro(price.CacheReadMicroUSDPerMTok)
+		price.CacheWriteMTok = USDFromMicro(price.CacheWriteMicroUSDPerMTok)
 	}
 	retireRaw := strings.TrimSpace(model.RetiresAt)
 	if retireRaw == "" {
@@ -172,7 +274,7 @@ func parseAPIModel(id, version string, model apiModel) CatalogRow {
 		Reasoning:     model.Reasoning,
 		Lifecycle:     normalizeLifecycle(model.Status),
 		RetiresAt:     parseRetireDate(retireRaw),
-	}
+	}, nil
 }
 
 func mergeCatalogDuplicate(dst *CatalogRow, src CatalogRow) {
@@ -184,10 +286,49 @@ func mergeCatalogDuplicate(dst *CatalogRow, src CatalogRow) {
 	}
 }
 
+func mergeCatalogFallback(dst *CatalogRow, src CatalogRow) {
+	mergeCatalogDuplicate(dst, src)
+	dst.Price.InputMicroUSDPerMTok = maxRatePtr(dst.Price.InputMicroUSDPerMTok, src.Price.InputMicroUSDPerMTok)
+	dst.Price.OutputMicroUSDPerMTok = maxRatePtr(dst.Price.OutputMicroUSDPerMTok, src.Price.OutputMicroUSDPerMTok)
+	dst.Price.CacheReadMicroUSDPerMTok = maxRatePtr(dst.Price.CacheReadMicroUSDPerMTok, src.Price.CacheReadMicroUSDPerMTok)
+	dst.Price.CacheWriteMicroUSDPerMTok = maxRatePtr(dst.Price.CacheWriteMicroUSDPerMTok, src.Price.CacheWriteMicroUSDPerMTok)
+	dst.Price.InputPerMTok = USDFromMicro(dst.Price.InputMicroUSDPerMTok)
+	dst.Price.OutputPerMTok = USDFromMicro(dst.Price.OutputMicroUSDPerMTok)
+	dst.Price.CacheReadMTok = USDFromMicro(dst.Price.CacheReadMicroUSDPerMTok)
+	dst.Price.CacheWriteMTok = USDFromMicro(dst.Price.CacheWriteMicroUSDPerMTok)
+}
+
+func maxRatePtr(a, b *int64) *int64 {
+	if b == nil {
+		return a
+	}
+	if a == nil || *b > *a {
+		v := *b
+		return &v
+	}
+	return a
+}
+
+func cloneInt64Ptr(v *int64) *int64 {
+	if v == nil {
+		return nil
+	}
+	cp := *v
+	return &cp
+}
+
 func cloneCatalogRow(r CatalogRow) CatalogRow {
 	r.Inputs = slices.Clone(r.Inputs)
 	r.Outputs = slices.Clone(r.Outputs)
 	r.Caps = slices.Clone(r.Caps)
+	r.Price.InputMicroUSDPerMTok = cloneInt64Ptr(r.Price.InputMicroUSDPerMTok)
+	r.Price.OutputMicroUSDPerMTok = cloneInt64Ptr(r.Price.OutputMicroUSDPerMTok)
+	r.Price.CacheReadMicroUSDPerMTok = cloneInt64Ptr(r.Price.CacheReadMicroUSDPerMTok)
+	r.Price.CacheWriteMicroUSDPerMTok = cloneInt64Ptr(r.Price.CacheWriteMicroUSDPerMTok)
+	r.Price.InputPerMTok = USDFromMicro(r.Price.InputMicroUSDPerMTok)
+	r.Price.OutputPerMTok = USDFromMicro(r.Price.OutputMicroUSDPerMTok)
+	r.Price.CacheReadMTok = USDFromMicro(r.Price.CacheReadMicroUSDPerMTok)
+	r.Price.CacheWriteMTok = USDFromMicro(r.Price.CacheWriteMicroUSDPerMTok)
 	if r.RetiresAt != nil {
 		t := *r.RetiresAt
 		r.RetiresAt = &t
@@ -218,10 +359,10 @@ type apiLimit struct {
 }
 
 type apiCost struct {
-	Input      float64  `json:"input"`
-	Output     float64  `json:"output"`
-	CacheRead  *float64 `json:"cache_read"`
-	CacheWrite *float64 `json:"cache_write"`
+	Input      json.RawMessage `json:"input"`
+	Output     json.RawMessage `json:"output"`
+	CacheRead  json.RawMessage `json:"cache_read"`
+	CacheWrite json.RawMessage `json:"cache_write"`
 }
 
 type apiModalities struct {
@@ -372,8 +513,4 @@ func unionCaps(a, b []string) []string {
 		out = append(out, c)
 	}
 	return out
-}
-
-func floatPtr(v float64) *float64 {
-	return &v
 }

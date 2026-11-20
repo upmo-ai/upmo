@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/anthropic"
@@ -18,6 +20,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
+	"github.com/upmo-ai/upmo/internal/platform/notices"
 )
 
 // Schema is the Postgres schema this process owns.
@@ -73,8 +76,9 @@ func adapters() map[string]adapter {
 type MountOption func(*mountConfig)
 
 type mountConfig struct {
-	metrics  *metrics.Registry
-	timeZone func(context.Context) (string, error)
+	metrics          *metrics.Registry
+	timeZone         func(context.Context) (string, error)
+	settingsManagers func(context.Context) ([]string, error)
 }
 
 // WithMetrics attaches a Prometheus registry to the gateway dispatch handler.
@@ -91,6 +95,14 @@ func WithTimeZone(fn func(context.Context) (string, error)) MountOption {
 	}
 }
 
+// WithSettingsManagers attaches the settings-manager user id lookup used for
+// best-effort one-time unpriced-model estimate notices.
+func WithSettingsManagers(fn func(context.Context) ([]string, error)) MountOption {
+	return func(c *mountConfig) {
+		c.settingsManagers = fn
+	}
+}
+
 // Mount registers the JSON debug routes. cmd/gateway wraps them with HMAC.
 func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slog.Logger, opts ...MountOption) {
 	var cfg mountConfig
@@ -98,6 +110,21 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 		opt(&cfg)
 	}
 	store := postgres.Store{Pool: pool}
+	var estimateNotice app.EstimateNotifier
+	if cfg.settingsManagers != nil {
+		estimateNotice = postgres.EstimateNotifier{
+			Pool:             pool,
+			SettingsManagers: cfg.settingsManagers,
+			Notify: func(ctx context.Context, tx pgx.Tx, userID, title string) error {
+				uid, err := uuid.Parse(userID)
+				if err != nil {
+					return err
+				}
+				_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
+				return err
+			},
+		}
+	}
 	decide := map[string]app.Decider{}
 	chat := map[string]app.Chatter{}
 	stream := map[string]app.StreamChatter{}
@@ -112,23 +139,24 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 	}
 	httpapi.Handler{
 		Dispatch: app.Dispatch{
-			Routes:   store,
-			Pins:     store,
-			Secrets:  secrets,
-			Prices:   store,
-			Ledger:   store,
-			Limits:   store,
-			TimeZone: cfg.timeZone,
-			Bundles:  store,
-			Teams:    store,
-			Decide:   decide,
-			Chat:     chat,
-			Stream:   stream,
-			Embed:    embed,
-			Gates:    app.NewGates(),
-			Status:   app.NewStatusRecorder(store.RecordStatus),
-			Metrics:  cfg.metrics,
-			Log:      log,
+			Routes:         store,
+			Pins:           store,
+			Secrets:        secrets,
+			Prices:         store,
+			Ledger:         store,
+			Limits:         store,
+			TimeZone:       cfg.timeZone,
+			Bundles:        store,
+			Teams:          store,
+			Decide:         decide,
+			Chat:           chat,
+			Stream:         stream,
+			Embed:          embed,
+			Gates:          app.NewGates(),
+			Status:         app.NewStatusRecorder(store.RecordStatus),
+			EstimateNotice: estimateNotice,
+			Metrics:        cfg.metrics,
+			Log:            log,
 			Caps: func(model string) ([]string, bool) {
 				have, ok, err := store.Capabilities(context.Background(), model)
 				if err != nil || !ok {

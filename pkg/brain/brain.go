@@ -751,6 +751,21 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		},
 		Log: log,
 	})
+	gateway.AddCatalogRefresher(workers, gateway.CatalogRefreshDeps{
+		Owner: owner,
+		SettingsManagers: func(ctx context.Context) ([]string, error) {
+			return identity.SettingsManagers(ctx, owner)
+		},
+		Notify: func(ctx context.Context, tx pgx.Tx, userID, title string) error {
+			uid, err := uuid.Parse(userID)
+			if err != nil {
+				return err
+			}
+			_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
+			return err
+		},
+		Log: log,
+	})
 	auditPush := cfg.AuditWebhookURL != "" || cfg.AuditSyslogAddr != ""
 	if auditPush {
 		audit.AddPusher(workers, owner, audit.PushConfig{
@@ -828,7 +843,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		chat.SweepPeriodic(), audit.SealPeriodic(),
 		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
 		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
-		gateway.ProviderCheckPeriodic(),
+		gateway.ProviderCheckPeriodic(), gateway.CatalogRefreshPeriodic(),
 	}
 	if auditPush {
 		periodic = append(periodic, audit.PushPeriodic())

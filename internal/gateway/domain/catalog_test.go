@@ -152,8 +152,8 @@ func TestParseCatalogIsDeterministic(t *testing.T) {
 		t.Fatal(err)
 	}
 	fb, ok := findRow(first, "", "shared")
-	if !ok || fb.Price.InputPerMTok == nil || *fb.Price.InputPerMTok != 5 {
-		t.Fatalf("shared fallback price = %+v (ok=%v), want mid's price (alphabetically first)", fb, ok)
+	if !ok || fb.Price.InputPerMTok == nil || *fb.Price.InputPerMTok != 9 {
+		t.Fatalf("shared fallback price = %+v (ok=%v), want 9 (highest rate across providers)", fb, ok)
 	}
 	if !slices.Contains(fb.Inputs, InputImage) || !slices.Contains(fb.Caps, CapTools) {
 		t.Fatalf("shared fallback did not union inputs/caps: %+v", fb)
@@ -169,9 +169,73 @@ func TestParseCatalogIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestParseCatalogFallbackKeepsHighestRatePerDimension(t *testing.T) {
+	const body = `{
+		"alpha-unmapped": {
+			"models": {
+				"shared-open": {
+					"cost": {"input": 1, "output": 20, "cache_read": 0.1}
+				}
+			}
+		},
+		"openai": {
+			"models": {
+				"shared-open": {
+					"cost": {"input": 5, "output": 10, "cache_read": 0.5, "cache_write": 2}
+				}
+			}
+		},
+		"openrouter": {
+			"models": {
+				"shared-open": {
+					"cost": {"input": 3, "output": 12, "cache_read": 0.9, "cache_write": 6}
+				}
+			}
+		}
+	}`
+	rows, err := ParseCatalog(strings.NewReader(body), "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb, ok := findRow(rows, "", "shared-open")
+	if !ok {
+		t.Fatal("missing fallback row for shared-open")
+	}
+	if *fb.Price.InputMicroUSDPerMTok != 5_000_000 ||
+		*fb.Price.OutputMicroUSDPerMTok != 20_000_000 ||
+		*fb.Price.CacheReadMicroUSDPerMTok != 900_000 ||
+		*fb.Price.CacheWriteMicroUSDPerMTok != 6_000_000 {
+		t.Fatalf("fallback row rates = %+v, want input=5M output=20M cache_read=900k cache_write=6M", fb.Price)
+	}
+	oai, ok := findRow(rows, "openai", "shared-open")
+	if !ok || *oai.Price.InputMicroUSDPerMTok != 5_000_000 || *oai.Price.OutputMicroUSDPerMTok != 10_000_000 {
+		t.Fatalf("openai row rates mutated = %+v", oai.Price)
+	}
+	orRow, ok := findRow(rows, "openrouter", "shared-open")
+	if !ok || *orRow.Price.InputMicroUSDPerMTok != 3_000_000 || *orRow.Price.OutputMicroUSDPerMTok != 12_000_000 {
+		t.Fatalf("openrouter row rates mutated = %+v", orRow.Price)
+	}
+}
+
 func TestParseCatalogNeedsVersion(t *testing.T) {
 	if _, err := ParseCatalog(strings.NewReader(`{}`), " "); err == nil {
 		t.Fatal("expected version error")
+	}
+}
+
+func TestParseCatalogRejectsTrailingData(t *testing.T) {
+	valid := `{"openai":{"models":{"gpt-4o":{"cost":{"input":2.5,"output":10}}}}}`
+	if _, err := ParseCatalog(strings.NewReader(valid+"  \n\t "), "v1"); err != nil {
+		t.Fatalf("trailing whitespace should succeed, got %v", err)
+	}
+	for name, body := range map[string]string{
+		"trailing-json":    valid + `{"extra":{}}`,
+		"trailing-scalar":  valid + ` 123`,
+		"trailing-garbage": valid + ` garbage`,
+	} {
+		if _, err := ParseCatalog(strings.NewReader(body), "v1"); err == nil {
+			t.Fatalf("%s: expected error for trailing data, got nil", name)
+		}
 	}
 }
 

@@ -240,6 +240,54 @@ CREATE POLICY account_models_seen_delete ON gateway.account_models_seen
       AND identity.may_manage_provider(a.owner_user_id, a.visibility)
   ));
 
+-- Per-account, per-model price overrides (in integer micro-USD per million
+-- tokens). Survives daily catalog refreshes; only settings:manage users may
+-- insert, update, or delete rows, even on private accounts.
+CREATE TABLE gateway.price_overrides (
+  account_id uuid NOT NULL REFERENCES gateway.provider_accounts (id) ON DELETE CASCADE,
+  model text NOT NULL,
+  input_micro_usd_per_mtok bigint CHECK (input_micro_usd_per_mtok IS NULL OR (input_micro_usd_per_mtok >= 0 AND input_micro_usd_per_mtok <= 10000000000)),
+  output_micro_usd_per_mtok bigint CHECK (output_micro_usd_per_mtok IS NULL OR (output_micro_usd_per_mtok >= 0 AND output_micro_usd_per_mtok <= 10000000000)),
+  cache_read_micro_usd_per_mtok bigint CHECK (cache_read_micro_usd_per_mtok IS NULL OR (cache_read_micro_usd_per_mtok >= 0 AND cache_read_micro_usd_per_mtok <= 10000000000)),
+  cache_write_micro_usd_per_mtok bigint CHECK (cache_write_micro_usd_per_mtok IS NULL OR (cache_write_micro_usd_per_mtok >= 0 AND cache_write_micro_usd_per_mtok <= 10000000000)),
+  updated_by uuid NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, model),
+  CONSTRAINT price_overrides_model_check CHECK (char_length(model) BETWEEN 1 AND 120)
+);
+
+ALTER TABLE gateway.price_overrides ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.price_overrides FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY price_overrides_service ON gateway.price_overrides
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+CREATE POLICY price_overrides_select ON gateway.price_overrides
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM gateway.provider_accounts AS a
+    WHERE a.id = account_id
+  ));
+
+CREATE POLICY price_overrides_write ON gateway.price_overrides
+  FOR ALL
+  USING (
+    'settings:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM gateway.provider_accounts AS a
+      WHERE a.id = account_id
+    )
+  )
+  WITH CHECK (
+    'settings:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM gateway.provider_accounts AS a
+      WHERE a.id = account_id
+    )
+  );
+
 DROP FUNCTION gateway.team_shared(uuid);
 DROP FUNCTION gateway.my_teams();
 DROP FUNCTION gateway.may_share();
@@ -247,8 +295,17 @@ DROP TABLE gateway.provider_account_teams;
 
 GRANT UPDATE (visibility, team_ids) ON gateway.provider_accounts TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.account_models_seen TO upmo_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.price_overrides TO upmo_app;
 
 -- +goose Down
+
+REVOKE SELECT, INSERT, UPDATE, DELETE ON gateway.price_overrides FROM upmo_app;
+DROP POLICY IF EXISTS price_overrides_write ON gateway.price_overrides;
+DROP POLICY IF EXISTS price_overrides_select ON gateway.price_overrides;
+DROP POLICY IF EXISTS price_overrides_service ON gateway.price_overrides;
+ALTER TABLE gateway.price_overrides NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.price_overrides DISABLE ROW LEVEL SECURITY;
+DROP TABLE IF EXISTS gateway.price_overrides;
 
 REVOKE SELECT, INSERT, DELETE ON gateway.account_models_seen FROM upmo_app;
 DROP POLICY IF EXISTS account_models_seen_delete ON gateway.account_models_seen;

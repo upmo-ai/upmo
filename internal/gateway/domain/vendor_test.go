@@ -187,3 +187,74 @@ func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestPricingVendor(t *testing.T) {
+	// Hosted OpenAI-compatible vendors resolve by host, ignoring the mutable Provider label.
+	for _, v := range Vendors() {
+		acct := Account{Provider: "openai", Adapter: v.Adapter, BaseURL: v.BaseURL}
+		want := v.Key
+		if v.Local {
+			want = ""
+		}
+		if got := PricingVendor(acct); got != want {
+			t.Errorf("%s (%s, %s): PricingVendor = %q, want %q", v.Key, v.Adapter, v.BaseURL, got, want)
+		}
+	}
+
+	cases := []struct {
+		name    string
+		account Account
+		want    string
+	}{
+		{
+			name:    "openai label edited to openrouter host",
+			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: "https://openrouter.ai/api"},
+			want:    "openrouter",
+		},
+		{
+			name:    "uppercase host with port and trailing dot",
+			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: "https://API.Deepseek.com.:443/"},
+			want:    "deepseek",
+		},
+		{
+			name:    "native anthropic on anthropic host",
+			account: Account{Provider: "custom", Adapter: AdapterAnthropic, BaseURL: "https://api.anthropic.com"},
+			want:    "anthropic",
+		},
+		{
+			name:    "native anthropic on custom proxy host",
+			account: Account{Provider: "anthropic", Adapter: AdapterAnthropic, BaseURL: "https://proxy.example.com"},
+			want:    "",
+		},
+		{
+			name:    "openai_compat on anthropic host maps to anthropic",
+			account: Account{Provider: "anthropic", Adapter: AdapterOpenAI, BaseURL: "https://api.anthropic.com"},
+			want:    "anthropic",
+		},
+		{
+			name:    "openai label on custom host",
+			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: "https://llm.example.com/v1"},
+			want:    "",
+		},
+		{
+			name:    "local loopback",
+			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: "http://127.0.0.1:11434"},
+			want:    "",
+		},
+		{
+			name:    "fake adapter",
+			account: Account{Provider: "openai", Adapter: AdapterFake, BaseURL: "https://api.openai.com"},
+			want:    "",
+		},
+		{
+			name:    "empty base URL",
+			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: ""},
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		if got := PricingVendor(tc.account); got != tc.want {
+			t.Errorf("%s: PricingVendor = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

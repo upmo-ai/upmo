@@ -842,24 +842,27 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	cost2 := 0.0030
 	cost3 := 0.0005
 	costOct := 9.99
+	ptrI64 := func(v int64) *int64 { return &v }
 
 	for _, row := range []struct {
-		at        time.Time
-		route     string
-		model     string
-		userID    string
-		agentID   any
-		runID     any
-		inTok     int
-		outTok    int
-		cost      int64
-		estimated bool
+		at          time.Time
+		route       string
+		model       string
+		userID      string
+		agentID     any
+		runID       any
+		inTok       int
+		outTok      int
+		cost        *int64
+		estimated   bool
+		priceSource string
 	}{
-		{nov, "work", "gpt-4o", userA, nil, runID, 1000, 500, int64(cost1 * 1e6), false},
-		{nov, "custom-route", "gpt-4o", userB, agentID, nil, 200, 100, int64(cost2 * 1e6), false},
-		{nov, "chat", "gpt-4o-mini", userA, nil, nil, 50, 25, int64(cost3 * 1e6), false}, // direct even if route happens to be named "chat"
-		{nov, "memory-extract", "gpt-4o-mini", userA, nil, nil, 10, 5, 1, true},
-		{oct, "chat", "gpt-4o", userA, agentID, nil, 9999, 9999, int64(costOct * 1e6), false}, // different month
+		{nov, "work", "gpt-4o", userA, nil, runID, 1000, 500, ptrI64(int64(cost1 * 1e6)), false, "models_dev"},
+		{nov, "custom-route", "gpt-4o", userB, agentID, nil, 200, 100, ptrI64(int64(cost2 * 1e6)), false, "models_dev"},
+		{nov, "chat", "gpt-4o-mini", userA, nil, nil, 50, 25, ptrI64(int64(cost3 * 1e6)), false, "models_dev"}, // direct even if route happens to be named "chat"
+		{nov, "memory-extract", "gpt-4o-mini", userA, nil, nil, 10, 5, ptrI64(1), true, "estimate"},
+		{nov, "unpriced-direct", "gpt-4o-mini", userA, nil, nil, 20, 10, nil, false, "unknown"},
+		{oct, "chat", "gpt-4o", userA, agentID, nil, 9999, 9999, ptrI64(int64(costOct * 1e6)), false, "models_dev"}, // different month
 	} {
 		if _, err := env.owner.Exec(ctx, `
 			INSERT INTO gateway.ledger (
@@ -868,9 +871,9 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 				cost_micro_usd, estimated, source, price_source
 			) VALUES (
 				$1, $2, 1, $3, 'metered', '', $4::uuid, $5::uuid, $6::uuid, $7, $8, true,
-				$9, $10, 'chat', CASE WHEN $10 THEN 'estimate' ELSE 'models_dev' END
+				$9, $10, 'chat', $11
 			)`,
-			row.at, row.route, row.model, row.userID, row.agentID, row.runID, row.inTok, row.outTok, row.cost, row.estimated); err != nil {
+			row.at, row.route, row.model, row.userID, row.agentID, row.runID, row.inTok, row.outTok, row.cost, row.estimated, row.priceSource); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -887,7 +890,7 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	if err := json.Unmarshal(usageRec.Body.Bytes(), &usage); err != nil {
 		t.Fatal(err)
 	}
-	if usage.Month != "2026-11" || usage.Totals.InputTokens != 1260 || usage.Totals.OutputTokens != 630 || usage.Totals.TotalTokens != 1890 || usage.Totals.CostMicroUSD != 16001 || usage.Totals.UnknownCostCount != 1 {
+	if usage.Month != "2026-11" || usage.Totals.InputTokens != 1280 || usage.Totals.OutputTokens != 640 || usage.Totals.TotalTokens != 1920 || usage.Totals.CostMicroUSD != 16001 || usage.Totals.UnknownCostCount != 1 || usage.Totals.UnpricedCallCount != 1 {
 		t.Fatalf("unexpected usage totals = %+v", usage)
 	}
 	if len(usage.Breakdown) != 3 {
@@ -897,13 +900,13 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	for _, b := range usage.Breakdown {
 		byKind[b.Kind] = b
 	}
-	if byKind["task"].Model != "gpt-4o" || byKind["task"].TotalTokens != 1500 || byKind["task"].UnknownCostCount != 0 {
+	if byKind["task"].Model != "gpt-4o" || byKind["task"].TotalTokens != 1500 || byKind["task"].UnknownCostCount != 0 || byKind["task"].UnpricedCallCount != 0 {
 		t.Fatalf("task bucket = %+v", byKind["task"])
 	}
-	if byKind["chat"].Model != "gpt-4o" || byKind["chat"].TotalTokens != 300 || byKind["chat"].UnknownCostCount != 0 {
+	if byKind["chat"].Model != "gpt-4o" || byKind["chat"].TotalTokens != 300 || byKind["chat"].UnknownCostCount != 0 || byKind["chat"].UnpricedCallCount != 0 {
 		t.Fatalf("chat bucket = %+v", byKind["chat"])
 	}
-	if byKind["direct"].Model != "gpt-4o-mini" || byKind["direct"].TotalTokens != 90 || byKind["direct"].UnknownCostCount != 1 {
+	if byKind["direct"].Model != "gpt-4o-mini" || byKind["direct"].TotalTokens != 120 || byKind["direct"].UnknownCostCount != 1 || byKind["direct"].UnpricedCallCount != 1 {
 		t.Fatalf("direct bucket = %+v", byKind["direct"])
 	}
 

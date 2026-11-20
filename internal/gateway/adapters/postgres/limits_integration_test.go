@@ -135,10 +135,10 @@ func seedDecideRoute(t *testing.T, w pinWorld, name string) {
 }
 
 func attachLimitAdapter(w *pinWorld, a *limitAdapter) {
-	w.disp.Decide = map[string]app.Decider{domain.AdapterFake: a}
-	w.disp.Chat = map[string]app.Chatter{domain.AdapterFake: a}
-	w.disp.Stream = map[string]app.StreamChatter{domain.AdapterFake: a}
-	w.disp.Embed = map[string]app.Embedder{domain.AdapterFake: a}
+	w.disp.Decide = map[string]app.Decider{domain.AdapterFake: a, domain.AdapterOpenAI: a}
+	w.disp.Chat = map[string]app.Chatter{domain.AdapterFake: a, domain.AdapterOpenAI: a}
+	w.disp.Stream = map[string]app.StreamChatter{domain.AdapterFake: a, domain.AdapterOpenAI: a}
+	w.disp.Embed = map[string]app.Embedder{domain.AdapterFake: a, domain.AdapterOpenAI: a}
 }
 
 type barrierLimits struct {
@@ -168,8 +168,14 @@ func TestFeature_UPM355_ConcurrentCallsOvershootAtMostInFlight(t *testing.T) {
 		ctx := context.Background()
 		store := postgres.Store{Pool: w.pool}
 
+		if _, err := w.pool.Exec(ctx, `
+			UPDATE gateway.provider_accounts
+			SET provider = 'openai', adapter = $2, base_url = 'https://api.openai.com'
+			WHERE id = $1::uuid`, pinHouse, domain.AdapterOpenAI); err != nil {
+			t.Fatal(err)
+		}
 		if err := store.ReplaceCatalog(ctx, "v1", []domain.CatalogRow{{
-			Vendor: "fake", Model: "m1", Version: "v1",
+			Vendor: "openai", Model: "m1", Version: "v1",
 			Price: domain.Price{InputPerMTok: &pricePerMTok, OutputPerMTok: &pricePerMTok},
 		}}); err != nil {
 			t.Fatal(err)
@@ -425,6 +431,7 @@ func TestFeature_UPM355_RefusedCallNeverReachesAdapter(t *testing.T) {
 
 func TestFeature_UPM355_MonthResetInWorkspaceTimeZone(t *testing.T) {
 	w := newPinWorld(t, nil)
+	seedFakeVendorRate(t, &w, 75.0)
 	ctx := context.Background()
 	adapter := &limitAdapter{}
 	attachLimitAdapter(&w, adapter)
@@ -484,6 +491,7 @@ func TestFeature_UPM355_MonthResetInWorkspaceTimeZone(t *testing.T) {
 
 func TestFeature_UPM355_WorkspaceLimitCappedByCeiling(t *testing.T) {
 	w := newPinWorld(t, nil)
+	seedFakeVendorRate(t, &w, 75.0)
 	ctx := context.Background()
 	adapter := &limitAdapter{}
 	attachLimitAdapter(&w, adapter)
@@ -558,6 +566,7 @@ func TestFeature_UPM355_FailingLimitStoreFailsClosed(t *testing.T) {
 
 func TestFeature_UPM355_NightlyCheckDetectsMismatch(t *testing.T) {
 	w := newPinWorld(t, nil)
+	seedFakeVendorRate(t, &w, 75.0)
 	ctx := context.Background()
 	if err := jobs.Up(ctx, w.pool); err != nil {
 		t.Fatal(err)
@@ -780,9 +789,15 @@ func TestFeature_UPM355_CancelledCallSettlesAndClearsHold(t *testing.T) {
 	ctx := context.Background()
 	store := postgres.Store{Pool: w.pool}
 
+	if _, err := w.pool.Exec(ctx, `
+		UPDATE gateway.provider_accounts
+		SET provider = 'openai', adapter = $2, base_url = 'https://api.openai.com'
+		WHERE id = $1::uuid`, pinHouse, domain.AdapterOpenAI); err != nil {
+		t.Fatal(err)
+	}
 	rate := 100.0
 	if err := store.ReplaceCatalog(ctx, "v1", []domain.CatalogRow{{
-		Vendor: "fake", Model: "m1", Version: "v1",
+		Vendor: "openai", Model: "m1", Version: "v1",
 		Price: domain.Price{InputPerMTok: &rate, OutputPerMTok: &rate},
 	}}); err != nil {
 		t.Fatal(err)
@@ -845,27 +860,28 @@ func (f forcedSettleFailLimits) Release(ctx context.Context, res app.Reservation
 	return f.inner.Release(ctx, res)
 }
 
-type failingReleaseLimits struct {
-	inner app.Limits
-	err   error
-}
-
-func (f failingReleaseLimits) Reserve(ctx context.Context, req app.ReserveRequest) (app.Reservation, error) {
-	return f.inner.Reserve(ctx, req)
-}
-
-func (f failingReleaseLimits) Settle(ctx context.Context, res app.Reservation, row domain.Entry) error {
-	return f.inner.Settle(ctx, res, row)
-}
-
-func (f failingReleaseLimits) Release(context.Context, app.Reservation) error {
-	return f.err
-}
-
 type failingPrices struct{ err error }
 
 func (f failingPrices) Price(context.Context, string, string) (domain.Price, bool, error) {
 	return domain.Price{}, false, f.err
+}
+
+type failingSettleAndReleaseLimits struct {
+	inner      app.Limits
+	settleErr  error
+	releaseErr error
+}
+
+func (f failingSettleAndReleaseLimits) Reserve(ctx context.Context, req app.ReserveRequest) (app.Reservation, error) {
+	return f.inner.Reserve(ctx, req)
+}
+
+func (f failingSettleAndReleaseLimits) Settle(context.Context, app.Reservation, domain.Entry) error {
+	return f.settleErr
+}
+
+func (f failingSettleAndReleaseLimits) Release(context.Context, app.Reservation) error {
+	return f.releaseErr
 }
 
 func TestFeature_UPM355_FailuresReleaseHoldSafely(t *testing.T) {
@@ -904,17 +920,34 @@ func TestFeature_UPM355_FailuresReleaseHoldSafely(t *testing.T) {
 		assertZeroBalances(t, w)
 	})
 
-	t.Run("pricing failure", func(t *testing.T) {
+	t.Run("pricing failure degrades to unknown and settles", func(t *testing.T) {
 		w := newPinWorld(t, nil)
 		attachLimitAdapter(&w, &limitAdapter{})
 		priceErr := errors.New("pricing unavailable")
 		w.disp.Prices = failingPrices{err: priceErr}
 
-		_, err := w.disp.ChatCall(context.Background(), "pin-house", "", principal, in)
-		if !errors.Is(err, priceErr) {
-			t.Fatalf("ChatCall err = %v, want %v", err, priceErr)
+		res, err := w.disp.ChatCall(context.Background(), "pin-house", "", principal, in)
+		if err != nil {
+			t.Fatalf("ChatCall err = %v, want nil (unknown fallback)", err)
 		}
-		assertZeroBalances(t, w)
+		if res.CostMicroUSD != nil {
+			t.Fatalf("CostMicroUSD = %v, want nil", res.CostMicroUSD)
+		}
+		var held, spent int64
+		if err := w.pool.QueryRow(context.Background(), `SELECT COALESCE(sum(held_micro_usd), 0), COALESCE(sum(spent_micro_usd), 0) FROM gateway.usage_spend WHERE kind = 'workspace'`).Scan(&held, &spent); err != nil {
+			t.Fatal(err)
+		}
+		if held != 0 || spent != 0 {
+			t.Fatalf("held=%d spent=%d, want 0 and 0", held, spent)
+		}
+		var source string
+		var cost *int64
+		if err := w.pool.QueryRow(context.Background(), `SELECT cost_micro_usd, price_source FROM gateway.ledger`).Scan(&cost, &source); err != nil {
+			t.Fatal(err)
+		}
+		if cost != nil || source != "unknown" {
+			t.Fatalf("ledger = cost:%v source:%q, want nil unknown", cost, source)
+		}
 	})
 
 	t.Run("adapter panic", func(t *testing.T) {
@@ -935,18 +968,17 @@ func TestFeature_UPM355_FailuresReleaseHoldSafely(t *testing.T) {
 	t.Run("release failure logs and counts metric", func(t *testing.T) {
 		w := newPinWorld(t, nil)
 		attachLimitAdapter(&w, &limitAdapter{})
-		priceErr := errors.New("pricing unavailable")
+		settleErr := errors.New("forced settle failure")
 		releaseErr := errors.New("forced release failure")
 		reg := metrics.NewRegistry()
 		var logBuf bytes.Buffer
-		w.disp.Prices = failingPrices{err: priceErr}
-		w.disp.Limits = failingReleaseLimits{inner: w.disp.Limits, err: releaseErr}
+		w.disp.Limits = failingSettleAndReleaseLimits{inner: w.disp.Limits, settleErr: settleErr, releaseErr: releaseErr}
 		w.disp.Metrics = reg
 		w.disp.Log = slog.New(slog.NewTextHandler(&logBuf, nil))
 
 		_, err := w.disp.ChatCall(context.Background(), "pin-house", "", principal, in)
-		if !errors.Is(err, priceErr) {
-			t.Fatalf("ChatCall err = %v, want %v", err, priceErr)
+		if !errors.Is(err, settleErr) {
+			t.Fatalf("ChatCall err = %v, want %v", err, settleErr)
 		}
 		if !strings.Contains(logBuf.String(), "gateway release hold failed") || !strings.Contains(logBuf.String(), releaseErr.Error()) {
 			t.Fatalf("release failure log = %q, want error recorded", logBuf.String())
@@ -1024,6 +1056,7 @@ func TestFeature_UPM355_TimeZoneErrorRefusesCall(t *testing.T) {
 
 func TestFeature_UPM355_SystemCallsCountOnlyAgainstWorkspace(t *testing.T) {
 	w := newPinWorld(t, nil)
+	seedFakeVendorRate(t, &w, 75.0)
 	ctx := context.Background()
 	adapter := &limitAdapter{}
 	attachLimitAdapter(&w, adapter)

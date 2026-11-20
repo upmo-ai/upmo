@@ -233,23 +233,29 @@ func TestGatewayLedgerNullCostCases(t *testing.T) {
 	usage := domain.Usage{Arrived: true, Input: 1000, Output: 1000}
 	price := domain.Price{Version: "v1", InputMicroUSDPerMTok: microPtr(1_000_000), OutputMicroUSDPerMTok: microPtr(2_000_000)}
 	cases := []struct {
-		plan  string
-		usage domain.Usage
-		found bool
+		plan     string
+		usage    domain.Usage
+		found    bool
+		estRate  int64
+		wantNull bool
 	}{
-		{plan: domain.PlanLocal, usage: usage, found: true},
-		{plan: domain.PlanMetered, usage: domain.Usage{}, found: true},
-		{plan: domain.PlanMetered, usage: usage, found: false},
+		{plan: domain.PlanLocal, usage: usage, found: true, wantNull: true},
+		{plan: domain.PlanMetered, usage: domain.Usage{}, found: true, estRate: 75_000_000},
+		{plan: domain.PlanMetered, usage: usage, found: false, estRate: 75_000_000},
+		{plan: domain.PlanMetered, usage: usage, found: false, estRate: 0, wantNull: true},
 	}
 	for i, tc := range cases {
-		micro, estimated, priceSource := domain.MeteredCost(tc.plan, tc.usage, price, tc.found, domain.EstimatedMicroUSDPerMTok, 8, 0, false)
+		micro, estimated, priceSource := domain.MeteredCost(tc.plan, tc.usage, price, tc.found, tc.estRate, 8, 0, false)
 		row := domain.Entry{
 			Route: "draft", LinkPosition: 1, Model: "stub", PlanKind: tc.plan,
 			Class: domain.ClassOK, Usage: tc.usage, Principal: domain.Principal{Source: domain.SourceSystem},
 			CostMicroUSD: micro, Estimated: estimated, PriceSource: priceSource,
 		}
-		if tc.plan == domain.PlanMetered && row.CostMicroUSD == nil {
+		if !tc.wantNull && row.CostMicroUSD == nil {
 			t.Fatalf("case %d has no metered cost", i)
+		}
+		if tc.wantNull && row.CostMicroUSD != nil {
+			t.Fatalf("case %d cost = %d, want nil", i, *row.CostMicroUSD)
 		}
 		if err := store.Record(ctx, row); err != nil {
 			t.Fatalf("case %d: %v", i, err)

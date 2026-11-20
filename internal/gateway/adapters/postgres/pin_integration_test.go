@@ -582,8 +582,32 @@ func (w pinWorld) post(t *testing.T, body string) (int, []string) {
 	return res.StatusCode, lines
 }
 
+func seedFakeVendorRate(t *testing.T, w *pinWorld, rateUSDPerMTok float64) {
+	t.Helper()
+	if _, err := w.pool.Exec(context.Background(), `
+		UPDATE gateway.provider_accounts
+		SET provider = 'openai', adapter = $2, base_url = 'https://api.openai.com'
+		WHERE id = $1::uuid`, pinHouse, domain.AdapterOpenAI); err != nil {
+		t.Fatal(err)
+	}
+	w.disp.Chat[domain.AdapterOpenAI] = w.adapter
+	w.disp.Stream[domain.AdapterOpenAI] = w.adapter
+	w.disp.Embed[domain.AdapterOpenAI] = w.adapter
+	store := postgres.Store{Pool: w.pool}
+	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
+		Vendor:  "openai",
+		Model:   "priced-other",
+		Version: "v1",
+		Price:   domain.Price{InputPerMTok: &rateUSDPerMTok, OutputPerMTok: &rateUSDPerMTok},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	w.disp.Prices = store
+}
+
 func TestFeature_UPM353_EachSourceWritesItsSourceAndPayer(t *testing.T) {
 	w := newPinWorld(t, nil)
+	seedFakeVendorRate(t, &w, 75.0)
 	mux := http.NewServeMux()
 	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -692,10 +716,19 @@ func TestFeature_UPM353_EachSourceWritesItsSourceAndPayer(t *testing.T) {
 
 func TestFeature_UPM353_SeededTotalsMatchUSDPricing(t *testing.T) {
 	w := newPinWorld(t, nil)
+	if _, err := w.pool.Exec(context.Background(), `
+		UPDATE gateway.provider_accounts
+		SET provider = 'openai', adapter = $2, base_url = 'https://api.openai.com'
+		WHERE id = $1::uuid`, pinHouse, domain.AdapterOpenAI); err != nil {
+		t.Fatal(err)
+	}
+	w.disp.Chat[domain.AdapterOpenAI] = w.adapter
+	w.disp.Stream[domain.AdapterOpenAI] = w.adapter
+	w.disp.Embed[domain.AdapterOpenAI] = w.adapter
 	store := postgres.Store{Pool: w.pool}
 	inRate, outRate, cacheReadRate, cacheWriteRate := 1.5, 3.7, 0.31, 2.13
 	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
-		Vendor:  "fake",
+		Vendor:  "openai",
 		Model:   "m1",
 		Version: "v1",
 		Price: domain.Price{
@@ -736,14 +769,7 @@ func TestFeature_UPM353_SeededTotalsMatchUSDPricing(t *testing.T) {
 
 func TestFeature_UPM353_UnpricedCallUsesProviderCatalogEstimate(t *testing.T) {
 	w := newPinWorld(t, nil)
-	store := postgres.Store{Pool: w.pool}
-	rate := 10.0
-	if err := store.ReplaceCatalog(context.Background(), "v1", []domain.CatalogRow{{
-		Vendor: "fake", Model: "priced-other", Version: "v1", Price: domain.Price{InputPerMTok: &rate, OutputPerMTok: &rate},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	w.disp.Prices = store
+	seedFakeVendorRate(t, &w, 10.0)
 	if _, err := w.disp.ChatCall(context.Background(), "pin-house", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, domain.Input{
 		Messages: []domain.Message{{Role: domain.RoleUser, Text: "12345678"}},
 	}); err != nil {
@@ -807,6 +833,7 @@ func TestFeature_UPM353_FailedAttemptIsKnownZero(t *testing.T) {
 
 func TestFeature_UPM353_FailedAttemptWithOutputIsEstimated(t *testing.T) {
 	w := newPinWorld(t, map[string]domain.FailureClass{"m1": domain.ClassCancelled})
+	seedFakeVendorRate(t, &w, 75.0)
 	w.adapter.streamBeforeFail = map[string]string{"m1": "partial "}
 	sink := &pinSink{}
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}}}

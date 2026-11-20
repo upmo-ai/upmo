@@ -31,17 +31,19 @@ import (
 
 const contractDir = "testdata/contract"
 
+func microPtr(v int64) *int64 { return &v }
+
 // contractUsage is the usage each saved stream must end with. Every stream
 // carries the text "Hel" then "lo".
 var contractUsage = map[string]domain.Usage{
-	"openai":     {Arrived: true, Input: 12, Output: 5, CacheRead: 8},
+	"openai":     {Arrived: true, Input: 4, Output: 5, CacheRead: 8},
 	"gemini":     {Arrived: true, Input: 9, Output: 4},
 	"nebius":     {Arrived: true, Input: 15, Output: 6},
 	"ollama":     {Arrived: true, Input: 21, Output: 7},
-	"deepseek":   {Arrived: true, Input: 11, Output: 5, CacheRead: 3},
+	"deepseek":   {Arrived: true, Input: 8, Output: 5, CacheRead: 3},
 	"groq":       {Arrived: true, Input: 14, Output: 5},
 	"xai":        {Arrived: true, Input: 13, Output: 5},
-	"openrouter": {Arrived: true, Input: 10, Output: 5, CacheRead: 2},
+	"openrouter": {Arrived: true, Input: 8, Output: 5, CacheRead: 2, ReportedCostMicroUSD: microPtr(100)},
 	"mistral":    {Arrived: true, Input: 18, Output: 6},
 	"together":   {Arrived: true, Input: 16, Output: 5},
 	"cerebras":   {Arrived: true, Input: 17, Output: 5},
@@ -49,6 +51,17 @@ var contractUsage = map[string]domain.Usage{
 	"perplexity": {Arrived: true, Input: 20, Output: 5},
 	"cohere":     {Arrived: true, Input: 22, Output: 6},
 	"lmstudio":   {Arrived: true, Input: 8, Output: 5},
+}
+
+func usageEqual(a, b domain.Usage) bool {
+	if a.Arrived != b.Arrived || a.Input != b.Input || a.Output != b.Output ||
+		a.CacheRead != b.CacheRead || a.CacheWrite != b.CacheWrite || a.Reasoning != b.Reasoning {
+		return false
+	}
+	if a.ReportedCostMicroUSD == nil || b.ReportedCostMicroUSD == nil {
+		return a.ReportedCostMicroUSD == nil && b.ReportedCostMicroUSD == nil
+	}
+	return *a.ReportedCostMicroUSD == *b.ReportedCostMicroUSD
 }
 
 // redirect hands every request to one test server and keeps the URL each was
@@ -238,7 +251,7 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if strings.Join(got, "|") != "Hel|lo" {
 				t.Errorf("deltas = %v", got)
 			}
-			if usage != contractUsage[v.Key] {
+			if !usageEqual(usage, contractUsage[v.Key]) {
 				t.Errorf("usage = %+v, want %+v", usage, contractUsage[v.Key])
 			}
 

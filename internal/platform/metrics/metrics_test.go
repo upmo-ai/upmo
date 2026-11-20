@@ -30,6 +30,7 @@ func TestRegistryExpositionAndEscaping(t *testing.T) {
 	reg.IncGatewayCacheHit("anthropic", `claude-"3"`)
 	reg.IncGatewayCacheMiss("anthropic", `claude-"3"`)
 	reg.IncGatewayHoldReleaseFailure()
+	reg.IncGatewaySettleFailure()
 	reg.SetSandboxdActiveSeats(2)
 
 	// Add a custom family with newline/backslash in help and label values.
@@ -69,6 +70,7 @@ func TestRegistryExpositionAndEscaping(t *testing.T) {
 		`upmo_gateway_cache_hits_total{provider="anthropic",model="claude-\"3\""} 1`,
 		`upmo_gateway_cache_misses_total{provider="anthropic",model="claude-\"3\""} 1`,
 		`upmo_gateway_hold_release_failures_total 1`,
+		`upmo_gateway_settle_failures_total 1`,
 		`upmo_sandboxd_active_seats 2`,
 		`# HELP upmo_custom_total line1\nline2\\end`,
 		`upmo_custom_total{tag="a\"b\\c\nd"} 2.5`,

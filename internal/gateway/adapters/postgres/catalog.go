@@ -5,15 +5,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 )
+
+// catalogLockKey serializes SeedCatalog (during migrate) and daily catalog
+// refreshes so they can never interleave.
+const catalogLockKey int64 = 35420261119
+
+// CatalogMeta describes the active catalog version, data date, and refresh state.
+type CatalogMeta struct {
+	Version         string
+	AsOf            time.Time
+	RefreshedAt     *time.Time
+	LastAttemptAt   *time.Time
+	LastError       string
+	StaleNotifiedAt *time.Time
+}
 
 // ReplaceCatalog writes a refreshed catalog in one transaction.
 func (s Store) ReplaceCatalog(ctx context.Context, version string, rows []domain.CatalogRow) error {
@@ -25,11 +42,193 @@ func (s Store) ReplaceCatalog(ctx context.Context, version string, rows []domain
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, catalogLockKey); err != nil {
+		return err
+	}
+	if err := swapCatalogRowsTx(ctx, tx, rows); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO gateway.catalog_meta (id, version, as_of) VALUES (1, $1, now())
+		ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, as_of = EXCLUDED.as_of`, version); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
+// SeedCatalog seeds the embedded snapshot if no catalog exists yet or if the
+// snapshot's asOf date is strictly newer than the stored catalog_meta.as_of.
+// It shares catalogLockKey with the daily refresh job so migrate and refresh
+// cannot interleave.
+func SeedCatalog(ctx context.Context, owner *pgxpool.Pool, version string, asOf time.Time, rows []domain.CatalogRow) (bool, error) {
+	if owner == nil {
+		return false, fmt.Errorf("gateway: no database")
+	}
+	tx, err := owner.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, catalogLockKey); err != nil {
+		return false, err
+	}
+	var curAsOf time.Time
+	err = tx.QueryRow(ctx, `SELECT as_of FROM gateway.catalog_meta WHERE id = 1 FOR UPDATE`).Scan(&curAsOf)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	if err == nil && !asOf.UTC().After(curAsOf.UTC()) {
+		return false, tx.Commit(ctx)
+	}
+	if err := swapCatalogRowsTx(ctx, tx, rows); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO gateway.catalog_meta (id, version, as_of, refreshed_at, last_error, stale_notified_at)
+		VALUES (1, $1, $2, NULL, '', NULL)
+		ON CONFLICT (id) DO UPDATE
+		SET version = EXCLUDED.version,
+		    as_of = EXCLUDED.as_of,
+		    refreshed_at = NULL,
+		    last_error = '',
+		    stale_notified_at = NULL`,
+		version, asOf.UTC(),
+	); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// TryLockCatalog acquires a dedicated connection and attempts a non-blocking
+// advisory lock on catalogLockKey. When locked is false, the caller should skip
+// its refresh without error.
+func TryLockCatalog(ctx context.Context, owner *pgxpool.Pool) (conn *pgxpool.Conn, locked bool, unlock func(), err error) {
+	if owner == nil {
+		return nil, false, nil, fmt.Errorf("gateway: no database")
+	}
+	c, err := owner.Acquire(ctx)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	if err := c.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, catalogLockKey).Scan(&locked); err != nil {
+		c.Release()
+		return nil, false, nil, err
+	}
+	if !locked {
+		c.Release()
+		return nil, false, nil, nil
+	}
+	return c, true, func() {
+		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := c.Exec(uctx, `SELECT pg_advisory_unlock($1)`, catalogLockKey); err != nil {
+			_ = c.Conn().Close(uctx)
+		}
+		c.Release()
+	}, nil
+}
+
+// CatalogRowCount returns the number of rows currently stored in gateway.prices.
+func CatalogRowCount(ctx context.Context, q querier) (int, error) {
+	var count int
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM gateway.prices`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// ApplyCatalogRefreshTx atomically swaps gateway.prices and marks the catalog
+// refreshed at asOf, clearing any prior error and stale notice episode.
+func ApplyCatalogRefreshTx(ctx context.Context, conn *pgxpool.Conn, version string, asOf time.Time, rows []domain.CatalogRow) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := swapCatalogRowsTx(ctx, tx, rows); err != nil {
+		return err
+	}
+	at := asOf.UTC()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO gateway.catalog_meta (id, version, as_of, refreshed_at, last_attempt_at, last_error, stale_notified_at)
+		VALUES (1, $1, $2, $2, $2, '', NULL)
+		ON CONFLICT (id) DO UPDATE
+		SET version = EXCLUDED.version,
+		    as_of = EXCLUDED.as_of,
+		    refreshed_at = EXCLUDED.refreshed_at,
+		    last_attempt_at = EXCLUDED.last_attempt_at,
+		    last_error = '',
+		    stale_notified_at = NULL`,
+		version, at,
+	); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// RecordCatalogAttempt records the failed refresh attempt on catalog_meta and
+// returns the current data date and whether a stale notice has already been sent.
+func RecordCatalogAttempt(ctx context.Context, q querier, at time.Time, errMsg string) (asOf time.Time, staleNotifiedAt *time.Time, found bool, err error) {
+	now := at.UTC()
+	err = q.QueryRow(ctx, `
+		UPDATE gateway.catalog_meta
+		SET last_attempt_at = $1,
+		    last_error = $2
+		WHERE id = 1
+		RETURNING as_of, stale_notified_at`,
+		now, errMsg,
+	).Scan(&asOf, &staleNotifiedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil, false, nil
+	}
+	if err != nil {
+		return time.Time{}, nil, false, err
+	}
+	return asOf.UTC(), staleNotifiedAt, true, nil
+}
+
+// MarkCatalogStaleNotifiedTx records stale_notified_at inside tx alongside the
+// stale-catalog notices.
+func MarkCatalogStaleNotifiedTx(ctx context.Context, tx pgx.Tx, at time.Time) error {
+	_, err := tx.Exec(ctx, `UPDATE gateway.catalog_meta SET stale_notified_at = $1 WHERE id = 1`, at.UTC())
+	return err
+}
+
+// GetCatalogMeta reads the singleton gateway.catalog_meta row, if present.
+func GetCatalogMeta(ctx context.Context, q querier) (CatalogMeta, bool, error) {
+	var m CatalogMeta
+	err := q.QueryRow(ctx, `
+		SELECT version, as_of, refreshed_at, last_attempt_at, last_error, stale_notified_at
+		FROM gateway.catalog_meta
+		WHERE id = 1`,
+	).Scan(&m.Version, &m.AsOf, &m.RefreshedAt, &m.LastAttemptAt, &m.LastError, &m.StaleNotifiedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CatalogMeta{}, false, nil
+	}
+	if err != nil {
+		return CatalogMeta{}, false, err
+	}
+	return m, true, nil
+}
+
+func swapCatalogRowsTx(ctx context.Context, tx pgx.Tx, rows []domain.CatalogRow) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.prices`); err != nil {
 		return err
 	}
-	for _, row := range rows {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{
+		"vendor", "model", "version", "kind", "inputs", "outputs",
+		"input_usd_per_mtok", "output_usd_per_mtok",
+		"cache_read_usd_per_mtok", "cache_write_usd_per_mtok",
+		"capabilities", "context_window", "max_output", "reasoning", "lifecycle", "retires_at",
+	}
+	_, err := tx.CopyFrom(ctx, pgx.Identifier{"gateway", "prices"}, cols, pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+		row := rows[i]
 		ctxWindow := row.ContextWindow
 		if ctxWindow <= 0 {
 			ctxWindow = row.Price.ContextWindow
@@ -62,39 +261,44 @@ func (s Store) ReplaceCatalog(ctx context.Context, version string, rows []domain
 			v := row.MaxOutput
 			maxOut = &v
 		}
-		var retiresAt any
+		var retires pgtype.Date
 		if row.RetiresAt != nil {
-			retiresAt = row.RetiresAt.UTC().Format("2006-01-02")
+			t := row.RetiresAt.UTC()
+			retires = pgtype.Date{Time: time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), Valid: true}
 		}
-		_, err := tx.Exec(ctx, `
-			INSERT INTO gateway.prices (
-				vendor, model, version, kind, inputs, outputs,
-				input_usd_per_mtok, output_usd_per_mtok,
-				cache_read_usd_per_mtok, cache_write_usd_per_mtok,
-				capabilities, context_window, max_output, reasoning, lifecycle, retires_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::date)`,
-			domain.VendorKey(row.Vendor), row.Model, row.Version, string(kind), inputs, outputs,
-			numericOrNil(row.Price.InputPerMTok),
-			numericOrNil(row.Price.OutputPerMTok),
-			numericOrNil(row.Price.CacheReadMTok),
-			numericOrNil(row.Price.CacheWriteMTok),
+		return []any{
+			domain.VendorKey(row.Vendor),
+			row.Model,
+			row.Version,
+			string(kind),
+			inputs,
+			outputs,
+			numericFromMicroOrFloat(row.Price.InputMicroUSDPerMTok, row.Price.InputPerMTok),
+			numericFromMicroOrFloat(row.Price.OutputMicroUSDPerMTok, row.Price.OutputPerMTok),
+			numericFromMicroOrFloat(row.Price.CacheReadMicroUSDPerMTok, row.Price.CacheReadMTok),
+			numericFromMicroOrFloat(row.Price.CacheWriteMicroUSDPerMTok, row.Price.CacheWriteMTok),
 			caps,
 			ctxWindow,
 			maxOut,
 			row.Reasoning,
 			row.Lifecycle,
-			retiresAt,
-		)
-		if err != nil {
-			return err
+			retires,
+		}, nil
+	}))
+	return err
+}
+
+func numericFromMicroOrFloat(micro *int64, fallback *float64) pgtype.Numeric {
+	if micro != nil {
+		return pgtype.Numeric{Int: big.NewInt(*micro), Exp: -6, Valid: true}
+	}
+	if fallback != nil {
+		var n pgtype.Numeric
+		if err := n.Scan(strconv.FormatFloat(*fallback, 'g', -1, 64)); err == nil {
+			return n
 		}
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO gateway.catalog_meta (id, version) VALUES (1, $1)
-		ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version`, version); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return pgtype.Numeric{}
 }
 
 // Capabilities returns the catalog caps for a model. ok is false when absent.
@@ -407,25 +611,47 @@ func scanCatalogRow(scanner interface{ Scan(dest ...any) error }) (domain.Catalo
 		t := time.Date(retires.Time.Year(), retires.Time.Month(), retires.Time.Day(), 0, 0, 0, 0, time.UTC)
 		row.RetiresAt = &t
 	}
+	inMicro := numericMicroPtr(inRate)
+	outMicro := numericMicroPtr(outRate)
+	crMicro := numericMicroPtr(crRate)
+	cwMicro := numericMicroPtr(cwRate)
 	row.Price = domain.Price{
-		Version:        row.Version,
-		InputPerMTok:   numericPtr(inRate),
-		OutputPerMTok:  numericPtr(outRate),
-		CacheReadMTok:  numericPtr(crRate),
-		CacheWriteMTok: numericPtr(cwRate),
-		ContextWindow:  row.ContextWindow,
+		Version:                   row.Version,
+		InputPerMTok:              domain.USDFromMicro(inMicro),
+		OutputPerMTok:             domain.USDFromMicro(outMicro),
+		CacheReadMTok:             domain.USDFromMicro(crMicro),
+		CacheWriteMTok:            domain.USDFromMicro(cwMicro),
+		InputMicroUSDPerMTok:      inMicro,
+		OutputMicroUSDPerMTok:     outMicro,
+		CacheReadMicroUSDPerMTok:  crMicro,
+		CacheWriteMicroUSDPerMTok: cwMicro,
+		ContextWindow:             row.ContextWindow,
 	}
 	return row, nil
 }
 
-func numericPtr(n pgtype.Numeric) *float64 {
-	if !n.Valid {
+func numericMicroPtr(n pgtype.Numeric) *int64 {
+	if !n.Valid || n.Int == nil || n.NaN || n.InfinityModifier != pgtype.Finite {
 		return nil
 	}
-	f, err := n.Float64Value()
-	if err != nil || !f.Valid {
+	exp := int(n.Exp) + 6
+	num := new(big.Int).Set(n.Int)
+	if exp >= 0 {
+		pow := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exp)), nil)
+		num.Mul(num, pow)
+	} else {
+		den := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exp)), nil)
+		half := new(big.Int).Rsh(den, 1)
+		if num.Sign() >= 0 {
+			num.Add(num, half)
+		} else {
+			num.Sub(num, half)
+		}
+		num.Quo(num, den)
+	}
+	if !num.IsInt64() {
 		return nil
 	}
-	v := f.Float64
+	v := num.Int64()
 	return &v
 }

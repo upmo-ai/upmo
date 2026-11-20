@@ -25,6 +25,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
@@ -66,6 +67,9 @@ func run() error {
 		return err
 	}
 	if err := migrate.Up(ctx, pool, gateway.Schema, gateway.Migrations()); err != nil {
+		return err
+	}
+	if err := notices.Up(ctx, pool); err != nil {
 		return err
 	}
 	schemaVersions, err := migrate.SchemaVersions(ctx, pool)
@@ -137,6 +141,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 		gateway.WithMetrics(reg),
 		gateway.WithTimeZone(func(ctx context.Context) (string, error) {
 			return identity.WorkspaceTimeZone(ctx, pool)
+		}),
+		gateway.WithSettingsManagers(func(ctx context.Context) ([]string, error) {
+			return identity.SettingsManagers(ctx, pool)
 		}),
 	)
 	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, mux)

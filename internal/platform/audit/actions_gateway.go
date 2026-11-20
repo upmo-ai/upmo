@@ -21,6 +21,9 @@ const (
 	// ProviderEnable and ProviderDisable record availability changes.
 	ProviderEnable  Action = "provider.enable"
 	ProviderDisable Action = "provider.disable"
+	// PriceOverrideSet and PriceOverrideDelete record per-account model price overrides.
+	PriceOverrideSet    Action = "provider.price_override.set"
+	PriceOverrideDelete Action = "provider.price_override.delete"
 
 	// RouteCreate stores one gateway route.
 	RouteCreate Action = "route.create"
@@ -45,6 +48,10 @@ func init() {
 	register(ProviderUsesRead, "provider", classAPIActivity, activityUnknown)
 	register(ProviderEnable, "provider", classAPIActivity, activityUnknown, "enabled")
 	register(ProviderDisable, "provider", classAPIActivity, activityUnknown, "enabled")
+	register(PriceOverrideSet, "provider", classAPIActivity, activityUnknown,
+		"model", "input_micro_usd_per_mtok", "output_micro_usd_per_mtok", "cache_read_micro_usd_per_mtok", "cache_write_micro_usd_per_mtok")
+	register(PriceOverrideDelete, "provider", classAPIActivity, activityUnknown,
+		"model", "input_micro_usd_per_mtok", "output_micro_usd_per_mtok", "cache_read_micro_usd_per_mtok", "cache_write_micro_usd_per_mtok")
 
 	register(RouteCreate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
 	register(RouteUpdate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")

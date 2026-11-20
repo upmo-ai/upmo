@@ -135,3 +135,40 @@ func CompatPaths(baseURL string) Vendor {
 	}
 	return legacyPaths
 }
+
+// PricingVendor returns the canonical catalogue vendor key for the endpoint
+// actually called by account, never trusting its mutable provider label.
+func PricingVendor(account Account) string {
+	return PricingVendorFor(account.Adapter, account.BaseURL)
+}
+
+// PricingVendorFor returns the canonical catalogue vendor key for the endpoint
+// actually called by adapter and baseURL:
+//   - AdapterOpenAI resolves to the hosted vendor whose BaseURL host matches
+//     baseURL, regardless of that vendor's default adapter;
+//   - AdapterAnthropic resolves to "anthropic" only on Anthropic's host;
+//   - local vendors, unrecognised hosts, and other adapters return "".
+func PricingVendorFor(adapter, baseURL string) string {
+	host := hostOf(baseURL)
+	if host == "" {
+		return ""
+	}
+	switch adapter {
+	case AdapterOpenAI:
+		for _, v := range vendors {
+			if !v.Local && hostOf(v.BaseURL) == host {
+				return v.Key
+			}
+		}
+		return ""
+	case AdapterAnthropic:
+		for _, v := range vendors {
+			if !v.Local && v.Adapter == AdapterAnthropic && hostOf(v.BaseURL) == host {
+				return v.Key
+			}
+		}
+		return ""
+	default:
+		return ""
+	}
+}

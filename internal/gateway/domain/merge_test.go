@@ -169,4 +169,17 @@ func TestMergeModelSourcePrecedence(t *testing.T) {
 		*fromOv.InputPerMTok != 1.25 || fromOv.Lifecycle != LifecycleDeprecated {
 		t.Fatalf("unexpected override values: %+v", fromOv)
 	}
+
+	// 5. Cross-provider fallback row (Vendor == "") labels price fields as SourceOtherProvider.
+	otherCat := *catalog
+	otherCat.Vendor = ""
+	fromOther := MergeModel("claude-sonnet-4", nil, nil, &otherCat)
+	if fromOther.Sources.Kind != SourceModelsDev ||
+		fromOther.Sources.ContextWindow != SourceModelsDev ||
+		fromOther.Sources.InputPerMTok != SourceOtherProvider ||
+		fromOther.Sources.OutputPerMTok != SourceOtherProvider ||
+		fromOther.Sources.CacheReadMTok != SourceOtherProvider ||
+		fromOther.Sources.CacheWriteMTok != SourceOtherProvider {
+		t.Fatalf("cross-provider sources = %+v, want other_provider for prices and models_dev for metadata", fromOther.Sources)
+	}
 }

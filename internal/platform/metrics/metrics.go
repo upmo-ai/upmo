@@ -61,6 +61,7 @@ type Registry struct {
 	gatewayCacheMisses         *CounterVec
 	gatewaySpendMismatches     *CounterVec
 	gatewayHoldReleaseFailures *CounterVec
+	gatewaySettleFailures      *CounterVec
 	sandboxdActiveSeats        *GaugeVec
 	sealedRowsUnknown          *GaugeVec
 }
@@ -141,6 +142,10 @@ func NewRegistry() *Registry {
 	r.gatewayHoldReleaseFailures = r.CounterVec(
 		"upmo_gateway_hold_release_failures_total",
 		"Total failures releasing unsettled gateway spend holds.",
+	)
+	r.gatewaySettleFailures = r.CounterVec(
+		"upmo_gateway_settle_failures_total",
+		"Total failures settling gateway spend holds after retry.",
 	)
 	r.sandboxdActiveSeats = r.GaugeVec(
 		"upmo_sandboxd_active_seats",
@@ -320,6 +325,14 @@ func (r *Registry) IncGatewayHoldReleaseFailure() {
 		return
 	}
 	r.gatewayHoldReleaseFailures.Inc()
+}
+
+// IncGatewaySettleFailure records a failure settling a spend hold after retry.
+func (r *Registry) IncGatewaySettleFailure() {
+	if r == nil {
+		return
+	}
+	r.gatewaySettleFailures.Inc()
 }
 
 // SetSandboxdActiveSeats sets the current active sandbox seat count.

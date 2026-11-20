@@ -935,3 +935,16 @@ func TestDecideReturnsUsage(t *testing.T) {
 		t.Fatalf("usage = %+v", usage)
 	}
 }
+
+func TestAnthropicUsage_DoesNotSubtractCacheFromInput(t *testing.T) {
+	body := `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}`
+	rec := newRecorder(t, jsonReply([]byte(body)))
+	a := Adapter{Client: rec.srv.Client()}
+	res, class, err := a.Chat(context.Background(), attemptFor(rec), hi())
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if res.Usage.Input != 10 || res.Usage.CacheRead != 100 || res.Usage.CacheWrite != 20 || res.Usage.Output != 5 {
+		t.Fatalf("anthropic usage = %+v", res.Usage)
+	}
+}

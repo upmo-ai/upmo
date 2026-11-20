@@ -445,6 +445,11 @@ func (p Providers) Update(ctx context.Context, who app.Caller, a domain.Provider
 	if tag.RowsAffected() == 0 {
 		return domain.Provider{}, app.ErrNotFound
 	}
+	if cur.BaseURL != a.BaseURL {
+		if _, err := tx.Exec(ctx, `DELETE FROM gateway.account_models_seen WHERE account_id = $1::uuid`, a.ID); err != nil {
+			return domain.Provider{}, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.provider_models WHERE account_id = $1::uuid`, a.ID); err != nil {
 		return domain.Provider{}, err
 	}
@@ -674,6 +679,17 @@ func (p Providers) Note(ctx context.Context, who app.Caller, id, status string) 
 // Lists exceeding domain.MaxSeenModels (2,000) are refused rather than
 // truncated so callers never store a partial list.
 func (p Providers) PutSeenModels(ctx context.Context, who app.Caller, id string, models []domain.SeenModel) error {
+	return p.putSeenModels(ctx, who, id, "", "", false, models)
+}
+
+// PutSeenModelsForEndpoint replaces the discovered models stored for an
+// account only if its saved adapter and base URL still match the probed
+// endpoint under the row lock.
+func (p Providers) PutSeenModelsForEndpoint(ctx context.Context, who app.Caller, id, adapter, baseURL string, models []domain.SeenModel) error {
+	return p.putSeenModels(ctx, who, id, adapter, baseURL, true, models)
+}
+
+func (p Providers) putSeenModels(ctx context.Context, who app.Caller, id, adapter, baseURL string, checkEndpoint bool, models []domain.SeenModel) error {
 	if _, err := uuid.Parse(id); err != nil {
 		return app.ErrNotFound
 	}
@@ -685,16 +701,19 @@ func (p Providers) PutSeenModels(ctx context.Context, who app.Caller, id string,
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var ok int
+	var curAdapter, curBaseURL string
 	err = tx.QueryRow(ctx, `
-		SELECT 1 FROM gateway.provider_accounts
+		SELECT adapter, base_url FROM gateway.provider_accounts
 		WHERE id = $1::uuid AND `+changeable+`
-		FOR UPDATE`, id).Scan(&ok)
+		FOR UPDATE`, id).Scan(&curAdapter, &curBaseURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+	if checkEndpoint && (curAdapter != adapter || curBaseURL != baseURL) {
+		return nil
 	}
 	seenSet, err := replaceSeenModels(ctx, tx, id, models)
 	if err != nil {

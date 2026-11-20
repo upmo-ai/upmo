@@ -2,8 +2,6 @@ package domain
 
 import (
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -11,10 +9,11 @@ import (
 type FieldSource string
 
 const (
-	SourceNone      FieldSource = "none"
-	SourceOverride  FieldSource = "override"
-	SourceProvider  FieldSource = "provider"
-	SourceModelsDev FieldSource = "models_dev"
+	SourceNone          FieldSource = "none"
+	SourceOverride      FieldSource = "override"
+	SourceProvider      FieldSource = "provider"
+	SourceModelsDev     FieldSource = "models_dev"
+	SourceOtherProvider FieldSource = "other_provider"
 )
 
 // ModelOverride holds optional per-account or workspace overrides (UPM-354).
@@ -203,37 +202,46 @@ func MergeModel(model string, override *ModelOverride, seen *SeenModel, catalog 
 		out.Sources.MaxOutput = SourceModelsDev
 	}
 
-	// Pricing rates: override > provider (per-token USD -> USD/MTok) > models_dev.
+	// Pricing rates: override > provider (per-token USD -> USD/MTok) > models_dev
+	// (or other_provider when catalog is the cross-provider '' fallback row).
 	var catIn, catOut, catCR, catCW *float64
+	catPriceSource := SourceModelsDev
 	if catalog != nil {
 		catIn = catalog.Price.InputPerMTok
 		catOut = catalog.Price.OutputPerMTok
 		catCR = catalog.Price.CacheReadMTok
 		catCW = catalog.Price.CacheWriteMTok
+		if catalog.Vendor == "" {
+			catPriceSource = SourceOtherProvider
+		}
 	}
-	var seenPricing map[string]string
+	var seenPrice Price
 	if seen != nil {
-		seenPricing = seen.Pricing
+		seenPrice, _ = ParseSeenPricingMicroUSD(seen.Pricing)
 	}
 	out.InputPerMTok, out.Sources.InputPerMTok = resolveRate(
 		overrideRate(override, func(o *ModelOverride) *float64 { return o.InputPerMTok }),
-		providerRatePerMTok(seenPricing, "prompt"),
+		seenPrice.InputPerMTok,
 		catIn,
+		catPriceSource,
 	)
 	out.OutputPerMTok, out.Sources.OutputPerMTok = resolveRate(
 		overrideRate(override, func(o *ModelOverride) *float64 { return o.OutputPerMTok }),
-		providerRatePerMTok(seenPricing, "completion"),
+		seenPrice.OutputPerMTok,
 		catOut,
+		catPriceSource,
 	)
 	out.CacheReadMTok, out.Sources.CacheReadMTok = resolveRate(
 		overrideRate(override, func(o *ModelOverride) *float64 { return o.CacheReadMTok }),
-		providerRatePerMTok(seenPricing, "input_cache_read"),
+		seenPrice.CacheReadMTok,
 		catCR,
+		catPriceSource,
 	)
 	out.CacheWriteMTok, out.Sources.CacheWriteMTok = resolveRate(
 		overrideRate(override, func(o *ModelOverride) *float64 { return o.CacheWriteMTok }),
-		providerRatePerMTok(seenPricing, "input_cache_write"),
+		seenPrice.CacheWriteMTok,
 		catCW,
+		catPriceSource,
 	)
 
 	// Lifecycle and RetiresAt: override > models_dev.
@@ -267,23 +275,7 @@ func overrideRate(o *ModelOverride, get func(*ModelOverride) *float64) *float64 
 	return get(o)
 }
 
-func providerRatePerMTok(pricing map[string]string, key string) *float64 {
-	if len(pricing) == 0 {
-		return nil
-	}
-	raw, ok := pricing[key]
-	if !ok {
-		return nil
-	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || v < 0 {
-		return nil
-	}
-	perMTok := v * float64(tokensPerMillion)
-	return &perMTok
-}
-
-func resolveRate(ov, prov, cat *float64) (*float64, FieldSource) {
+func resolveRate(ov, prov, cat *float64, catSource FieldSource) (*float64, FieldSource) {
 	switch {
 	case ov != nil:
 		v := *ov
@@ -293,7 +285,7 @@ func resolveRate(ov, prov, cat *float64) (*float64, FieldSource) {
 		return &v, SourceProvider
 	case cat != nil:
 		v := *cat
-		return &v, SourceModelsDev
+		return &v, catSource
 	default:
 		return nil, SourceNone
 	}

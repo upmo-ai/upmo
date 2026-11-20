@@ -72,6 +72,33 @@ type Prices interface {
 	Price(ctx context.Context, vendor, model string) (domain.Price, bool, error)
 }
 
+// CallPricing is the full per-call pricing inputs for an account and model:
+// optional override, optional provider-list pricing, optional exact vendor
+// models.dev catalog row, optional cross-provider (”) row, vendor highest
+// rate, and whether zero reported cost is allowed.
+type CallPricing struct {
+	Override          *domain.PriceOverride
+	ProviderList      *domain.Price
+	Catalog           domain.Price
+	CatalogFound      bool
+	CrossProvider     *domain.Price
+	EstimateRate      int64
+	EstimateRateKnown bool
+	ZeroCostAllowed   bool
+}
+
+// CallPricer is an optional extension of Prices that loads override, provider
+// list, and catalog pricing together.
+type CallPricer interface {
+	LookupCallPricing(ctx context.Context, accountID, vendor, model string) (CallPricing, error)
+}
+
+// EstimateNotifier sends a one-time notice per (account, model) to settings
+// managers when a metered call falls back to the default estimate rate (5c).
+type EstimateNotifier interface {
+	NotifyEstimatedModel(ctx context.Context, account domain.Account, model string) error
+}
+
 // InputSupport is an optional extension of Prices that checks which input
 // modalities (image, audio, file) a model accepts and suggests a usable chat
 // model on the same account that accepts a missing modality.
@@ -93,13 +120,15 @@ type Ledger interface {
 
 // Reservation is a temporary spend hold taken before a metered attempt.
 type Reservation struct {
-	ID           string
-	At           time.Time
-	PeriodStart  time.Time
-	Amount       int64
-	UserID       string
-	Source       string
-	AutomationID string
+	ID               string
+	At               time.Time
+	PeriodStart      time.Time
+	Amount           int64
+	ReserveRate      int64
+	ReserveRateKnown bool
+	UserID           string
+	Source           string
+	AutomationID     string
 }
 
 // ReserveRequest describes a metered attempt before it calls a provider.
@@ -191,6 +220,9 @@ type Dispatch struct {
 	// Status hears the outcome of every attempt, by credential ref. It must
 	// not block. Nil hears nothing.
 	Status Statuses
+	// EstimateNotice sends a one-time notice per (account, model) when a
+	// metered call falls back to the last-resort default estimate rate.
+	EstimateNotice EstimateNotifier
 	// Metrics records gateway calls, latency, tokens, cost, and cache hits.
 	Metrics *metrics.Registry
 	// Log records internal dispatch failures such as failed hold releases.
@@ -227,18 +259,24 @@ func resolvePeriodStart(ctx context.Context, timeZone func(context.Context) (str
 	return domain.PeriodStart(at, loc), nil
 }
 
-func (d Dispatch) estimateRate(ctx context.Context, vendor string) (int64, error) {
+func (d Dispatch) vendorHighestRate(ctx context.Context, vendor string) (rate int64, known bool, err error) {
 	if prices, ok := d.Prices.(ProviderPrices); ok {
-		rate, hasRate, err := prices.HighestRate(ctx, vendor)
+		r, hasRate, err := prices.HighestRate(ctx, vendor)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
-		if hasRate && rate > 0 {
-			return rate, nil
+		if hasRate && r > 0 {
+			return r, true, nil
 		}
 	}
-	return domain.EstimatedMicroUSDPerMTok, nil
+	return domain.ReserveHoldMicroUSDPerMTok, false, nil
 }
+
+const (
+	priceLookupTimeout = 5 * time.Second
+	settleTimeout      = 5 * time.Second
+	noticeTimeout      = 5 * time.Second
+)
 
 func (d Dispatch) reserve(ctx context.Context, link domain.Link, who domain.Principal, inputBytes, maxOutputTokens int) (Reservation, error) {
 	if d.Limits == nil || !domain.AccountChargedToLimit(link.Account) {
@@ -249,7 +287,7 @@ func (d Dispatch) reserve(ctx context.Context, link domain.Link, who domain.Prin
 	if err != nil {
 		return Reservation{}, err
 	}
-	rate, err := d.estimateRate(ctx, domain.VendorKey(link.Account.Provider))
+	rate, known, err := d.vendorHighestRate(ctx, domain.PricingVendor(link.Account))
 	if err != nil {
 		return Reservation{}, err
 	}
@@ -265,6 +303,8 @@ func (d Dispatch) reserve(ctx context.Context, link domain.Link, who domain.Prin
 		return Reservation{}, err
 	}
 	res.At = at
+	res.ReserveRate = rate
+	res.ReserveRateKnown = known
 	return res, nil
 }
 
@@ -304,14 +344,13 @@ func (d Dispatch) withReservation(ctx context.Context, link domain.Link, who dom
 }
 
 func (d Dispatch) recordAttempt(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, started time.Time, reached, producedOutput bool, res Reservation) (*float64, *int64, int, error) {
-	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
+	baseCtx := context.WithoutCancel(ctx)
 	var latencyMS *int
 	if reached {
 		ms := int(time.Since(started).Milliseconds())
 		latencyMS = &ms
 	}
-	cost, micro, ctxWindow, err := d.writeCost(actx, route, link, who, class, usage, inputBytes, outputBytes, latencyMS, producedOutput, res)
+	cost, micro, ctxWindow, err := d.writeCost(baseCtx, route, link, who, class, usage, inputBytes, outputBytes, latencyMS, reached, producedOutput, res)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -357,13 +396,15 @@ func (d Dispatch) recordMetrics(link domain.Link, class domain.FailureClass, usa
 // it priced and the model's context window, so a caller can report the same
 // numbers the row holds. The row keeps the team the link was reached through
 // (link.ViaTeam), as it was now.
-func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, latencyMS *int, producedOutput bool, res Reservation) (*float64, *int64, int, error) {
+func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.Link, who domain.Principal, class domain.FailureClass, usage domain.Usage, inputBytes, outputBytes int, latencyMS *int, reached, producedOutput bool, res Reservation) (*float64, *int64, int, error) {
 	knownZero := class != domain.ClassOK && !usage.Arrived && !producedOutput
-	micro, estimated, priceSource, version, ctxWindow, err := d.priceCost(ctx, link, usage, inputBytes, outputBytes, knownZero)
+	pctx, pcancel := context.WithTimeout(baseCtx, priceLookupTimeout)
+	priced, err := d.priceCost(pctx, link, usage, inputBytes, outputBytes, knownZero, res)
+	pcancel()
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	cost := domain.USDFromMicro(micro)
+	cost := domain.USDFromMicro(priced.micro)
 	at := res.At
 	if at.IsZero() {
 		at = d.now()
@@ -379,51 +420,225 @@ func (d Dispatch) writeCost(ctx context.Context, route string, link domain.Link,
 		Class:          class,
 		Principal:      who,
 		Usage:          usage,
-		CostMicroUSD:   micro,
-		Estimated:      estimated,
+		CostMicroUSD:   priced.micro,
+		Estimated:      priced.estimated,
 		LatencyMS:      latencyMS,
 		ChargedToLimit: charged,
-		PriceSource:    priceSource,
-		PriceVersion:   version,
+		PriceSource:    priced.priceSource,
+		PriceVersion:   priced.version,
 		OwnerTeamID:    link.ViaTeam,
 	}
 	if res.Amount > 0 && d.Limits != nil {
-		return cost, micro, ctxWindow, d.Limits.Settle(ctx, res, entry)
+		settleOnce := func() error {
+			sctx, scancel := context.WithTimeout(baseCtx, settleTimeout)
+			defer scancel()
+			return d.Limits.Settle(sctx, res, entry)
+		}
+		err = settleOnce()
+		if err != nil && reached {
+			err = settleOnce()
+		}
+		if err != nil {
+			d.Metrics.IncGatewaySettleFailure()
+			logger := d.Log
+			if logger == nil {
+				logger = slog.Default()
+			}
+			var costLog any
+			if priced.micro != nil {
+				costLog = *priced.micro
+			}
+			logger.ErrorContext(baseCtx, "gateway settle failed",
+				"reservation_id", res.ID,
+				"account_id", link.Account.ID,
+				"model", link.Model,
+				"user_id", who.User,
+				"source", who.Source,
+				"automation_id", who.AutomationID,
+				"cost_micro_usd", costLog,
+				"estimated", priced.estimated,
+				"price_source", priced.priceSource,
+				"input_tokens", usage.Input,
+				"output_tokens", usage.Output,
+				"cache_read", usage.CacheRead,
+				"cache_write", usage.CacheWrite,
+				"reasoning", usage.Reasoning,
+				"err", err,
+			)
+			return cost, priced.micro, priced.ctxWindow, err
+		}
+	} else if d.Ledger != nil {
+		sctx, scancel := context.WithTimeout(baseCtx, settleTimeout)
+		err = d.Ledger.Record(sctx, entry)
+		scancel()
+		if err != nil {
+			return cost, priced.micro, priced.ctxWindow, err
+		}
 	}
-	if d.Ledger == nil {
-		return cost, micro, ctxWindow, nil
+	if priced.notifyUnknownPrice && d.EstimateNotice != nil {
+		nctx, ncancel := context.WithTimeout(baseCtx, noticeTimeout)
+		if nerr := d.EstimateNotice.NotifyEstimatedModel(nctx, link.Account, link.Model); nerr != nil {
+			logger := d.Log
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.WarnContext(nctx, "gateway estimate notice failed",
+				"account_id", link.Account.ID,
+				"model", link.Model,
+				"err", nerr,
+			)
+		}
+		ncancel()
 	}
-	return cost, micro, ctxWindow, d.Ledger.Record(ctx, entry)
+	return cost, priced.micro, priced.ctxWindow, nil
+}
+
+type pricedCost struct {
+	micro              *int64
+	estimated          bool
+	priceSource        string
+	version            string
+	ctxWindow          int
+	notifyUnknownPrice bool
+}
+
+func hasMissingRate(p domain.Price) bool {
+	return p.InputMicroUSDPerMTok == nil ||
+		p.OutputMicroUSDPerMTok == nil ||
+		p.CacheReadMicroUSDPerMTok == nil ||
+		p.CacheWriteMicroUSDPerMTok == nil
 }
 
 // priceCost prices one attempt exactly as its ledger row does: the cost in
 // micro-USD, whether it is estimated, the price source, the catalog version it
 // came from, and the model's context window.
-func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage, inputBytes, outputBytes int, knownZero bool) (*int64, bool, string, string, int, error) {
-	vendor := domain.VendorKey(link.Account.Provider)
-	var price domain.Price
-	found := false
-	if d.Prices != nil {
-		p, ok, err := d.Prices.Price(ctx, vendor, link.Model)
-		if err != nil {
-			return nil, false, "", "", 0, err
+func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.Usage, inputBytes, outputBytes int, knownZero bool, reservation Reservation) (pricedCost, error) {
+	vendor := domain.PricingVendor(link.Account)
+	var cp CallPricing
+	lookupFailed := false
+	applySavedReserveRate := func() {
+		if reservation.ReserveRateKnown && reservation.ReserveRate > 0 {
+			cp.EstimateRate = reservation.ReserveRate
+			cp.EstimateRateKnown = true
 		}
-		price, found = p, ok
+	}
+	logLookupErr := func(err error) {
+		logger := d.Log
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.WarnContext(ctx, "gateway price lookup failed",
+			"account_id", link.Account.ID,
+			"vendor", vendor,
+			"model", link.Model,
+			"err", err,
+		)
+	}
+	if pricer, ok := d.Prices.(CallPricer); ok {
+		var err error
+		cp, err = pricer.LookupCallPricing(ctx, link.Account.ID, vendor, link.Model)
+		if err != nil {
+			logLookupErr(err)
+			cp = CallPricing{}
+			lookupFailed = true
+		} else if !cp.EstimateRateKnown && cp.EstimateRate <= 0 {
+			rate, known, herr := d.vendorHighestRate(ctx, vendor)
+			if herr != nil {
+				logLookupErr(herr)
+				applySavedReserveRate()
+			} else if known {
+				cp.EstimateRate, cp.EstimateRateKnown = rate, true
+			}
+		}
+	} else {
+		if d.Prices != nil {
+			if vendor != "" {
+				p, ok, err := d.Prices.Price(ctx, vendor, link.Model)
+				if err != nil {
+					logLookupErr(err)
+					cp = CallPricing{}
+					lookupFailed = true
+				} else {
+					cp.Catalog, cp.CatalogFound = p, ok
+					if !ok || hasMissingRate(p) {
+						if cross, cok, cerr := d.Prices.Price(ctx, "", link.Model); cerr == nil && cok {
+							cp.CrossProvider = &cross
+						}
+					}
+				}
+			} else {
+				cross, cok, err := d.Prices.Price(ctx, "", link.Model)
+				if err != nil {
+					logLookupErr(err)
+					cp = CallPricing{}
+					lookupFailed = true
+				} else if cok {
+					cp.CrossProvider = &cross
+				}
+			}
+		}
+		if !lookupFailed {
+			cp.ZeroCostAllowed = domain.ZeroCostAllowed(link.Model, nil)
+			rate, known, herr := d.vendorHighestRate(ctx, vendor)
+			if herr != nil {
+				logLookupErr(herr)
+				applySavedReserveRate()
+			} else if known {
+				cp.EstimateRate, cp.EstimateRateKnown = rate, true
+			}
+		}
+	}
+	if lookupFailed {
+		cp.ZeroCostAllowed = domain.ZeroCostAllowed(link.Model, nil)
+		applySavedReserveRate()
+		if !cp.EstimateRateKnown {
+			hctx, hcancel := context.WithTimeout(context.WithoutCancel(ctx), priceLookupTimeout)
+			rate, known, herr := d.vendorHighestRate(hctx, vendor)
+			hcancel()
+			if herr == nil && known {
+				cp.EstimateRate, cp.EstimateRateKnown = rate, true
+			}
+		}
 	}
 	ctxWindow := domain.DefaultContextWindow
-	if found && price.ContextWindow > 0 {
-		ctxWindow = price.ContextWindow
+	if cp.Catalog.ContextWindow > 0 {
+		ctxWindow = cp.Catalog.ContextWindow
+	} else if cp.CrossProvider != nil && cp.CrossProvider.ContextWindow > 0 {
+		ctxWindow = cp.CrossProvider.ContextWindow
 	}
-	estimateRate := domain.EstimatedMicroUSDPerMTok
-	if domain.NeedsEstimate(link.Account.PlanKind, usage, price, found, knownZero) {
-		var err error
-		estimateRate, err = d.estimateRate(ctx, vendor)
-		if err != nil {
-			return nil, false, "", "", 0, err
-		}
+	var estimateRate int64
+	if cp.EstimateRateKnown {
+		estimateRate = cp.EstimateRate
 	}
-	micro, estimated, source := domain.MeteredCost(link.Account.PlanKind, usage, price, found, estimateRate, inputBytes, outputBytes, knownZero)
-	return micro, estimated, source, price.Version, ctxWindow, nil
+	in := domain.CallPriceInput{
+		PlanKind:          link.Account.PlanKind,
+		Model:             link.Model,
+		Usage:             usage,
+		Override:          cp.Override,
+		ProviderList:      cp.ProviderList,
+		Catalog:           cp.Catalog,
+		CatalogFound:      cp.CatalogFound,
+		CrossProvider:     cp.CrossProvider,
+		ZeroCostAllowed:   cp.ZeroCostAllowed,
+		EstimateRate:      estimateRate,
+		EstimateRateKnown: cp.EstimateRateKnown,
+		InputBytes:        inputBytes,
+		OutputBytes:       outputBytes,
+		KnownZero:         knownZero,
+	}
+	res := domain.ResolveCallCost(in)
+	version := ""
+	if cp.CatalogFound && (res.Source == "models_dev" || res.Source == "override") {
+		version = cp.Catalog.Version
+	}
+	return pricedCost{
+		micro:              res.CostMicroUSD,
+		estimated:          res.Estimated,
+		priceSource:        res.Source,
+		version:            version,
+		ctxWindow:          ctxWindow,
+		notifyUnknownPrice: res.Source == "unknown" && !lookupFailed,
+	}, nil
 }
 
 func (d Dispatch) routeByName(ctx context.Context, name string, who domain.Principal) (domain.Route, error) {
@@ -1225,7 +1440,7 @@ func (d Dispatch) missingInput(ctx context.Context, link domain.Link, required [
 	// A model with no catalogue row counts as chat with text input only.
 	var inputs []string
 	if checker, ok := d.Prices.(InputSupport); ok {
-		have, found, err := checker.ModelInputs(ctx, link.Account.ID, domain.VendorKey(link.Account.Provider), link.Model)
+		have, found, err := checker.ModelInputs(ctx, link.Account.ID, domain.PricingVendor(link.Account), link.Model)
 		if err != nil {
 			return "", err
 		}
@@ -1247,7 +1462,7 @@ func (d Dispatch) missingInput(ctx context.Context, link domain.Link, required [
 func (d Dispatch) unsupportedInputError(ctx context.Context, link domain.Link, need string) error {
 	suggestion := ""
 	if checker, ok := d.Prices.(InputSupport); ok {
-		if m, found, err := checker.SuggestModelForInput(ctx, link.Account.ID, domain.VendorKey(link.Account.Provider), need); err == nil && found {
+		if m, found, err := checker.SuggestModelForInput(ctx, link.Account.ID, domain.PricingVendor(link.Account), need); err == nil && found {
 			suggestion = m
 		}
 	}

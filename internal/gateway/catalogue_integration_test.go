@@ -47,7 +47,11 @@ func (s staticSecrets) Get(ref string) (string, error) {
 
 func loadFixtureCatalog(t *testing.T, ctx context.Context, store postgres.Store, version string) {
 	t.Helper()
-	if err := app.RefreshCatalog(ctx, store, bytes.NewReader(testModelsDevFixture), version); err != nil {
+	rows, err := domain.ParseCatalog(bytes.NewReader(testModelsDevFixture), version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceCatalog(ctx, version, rows); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -59,13 +63,19 @@ func insertProviderAndRoute(t *testing.T, r *rig, routeName, vendor, acctName, r
 	if connected {
 		status = domain.StatusConnected
 	}
+	adapter := domain.AdapterFake
+	baseURL := "https://api.example.com"
+	if v, ok := domain.VendorFor(vendor); ok && !v.Local {
+		adapter = v.Adapter
+		baseURL = v.BaseURL
+	}
 	var acctID string
 	if err := r.owner.QueryRow(ctx, `
 		INSERT INTO gateway.provider_accounts
 			(owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, status, visibility)
-		VALUES ($1::uuid, $2, $3, $4, $5, 'metered', false, 'https://api.example.com', $6, 'private')
+		VALUES ($1::uuid, $2, $3, $4, $5, 'metered', false, $6, $7, 'private')
 		RETURNING id::text`,
-		ada, vendor, acctName, domain.AdapterFake, ref, status,
+		ada, vendor, acctName, adapter, ref, baseURL, status,
 	).Scan(&acctID); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +119,7 @@ func TestFeature_UPM363_SameModelDifferentProviderPrices(t *testing.T) {
 		Prices:  store,
 		Ledger:  store,
 		Secrets: staticSecrets{"ref_oai": "k1", "ref_or": "k2"},
-		Chat:    map[string]app.Chatter{domain.AdapterFake: chatter},
+		Chat:    map[string]app.Chatter{domain.AdapterOpenAI: chatter, domain.AdapterAnthropic: chatter, domain.AdapterFake: chatter},
 	}
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
 
@@ -485,26 +495,28 @@ func TestFeature_UPM363_EstimateUsesVendorHighestRate(t *testing.T) {
 		Prices:  store,
 		Ledger:  store,
 		Secrets: staticSecrets{"ref_oai": "k1", "ref_ant": "k2", "ref_none": "k3"},
-		Chat:    map[string]app.Chatter{domain.AdapterFake: chatter},
+		Chat:    map[string]app.Chatter{domain.AdapterOpenAI: chatter, domain.AdapterAnthropic: chatter, domain.AdapterFake: chatter},
 	}
 	// 8 input bytes -> ceil(8/4) = 2 estimated tokens.
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "12345678"}}}
 
 	cases := []struct {
-		route    string
-		wantCost int64 // 2 tokens * rate / 1_000_000
+		route      string
+		wantCost   *int64 // 2 tokens * rate / 1_000_000
+		wantEst    bool
+		wantSource string
 	}{
-		{"route-est-openai", 40},    // 2 * 20_000_000 / 1_000_000
-		{"route-est-anthropic", 30}, // 2 * 15_000_000 / 1_000_000
-		{"route-est-none", 150},     // 2 * 75_000_000 / 1_000_000
+		{"route-est-openai", ptrInt64(40), true, "estimate"},    // 2 * 20_000_000 / 1_000_000
+		{"route-est-anthropic", ptrInt64(30), true, "estimate"}, // 2 * 15_000_000 / 1_000_000
+		{"route-est-none", nil, false, "unknown"},               // nothing known -> unknown
 	}
 	for _, tc := range cases {
 		res, err := disp.ChatCall(ctx, tc.route, "", domain.Principal{User: ada, Source: domain.SourceChat}, in)
 		if err != nil {
 			t.Fatalf("%s ChatCall: %v", tc.route, err)
 		}
-		if res.CostMicroUSD == nil || *res.CostMicroUSD != tc.wantCost {
-			t.Fatalf("%s CostMicroUSD = %v, want %d", tc.route, res.CostMicroUSD, tc.wantCost)
+		if (res.CostMicroUSD == nil) != (tc.wantCost == nil) || (tc.wantCost != nil && *res.CostMicroUSD != *tc.wantCost) {
+			t.Fatalf("%s CostMicroUSD = %v, want %v", tc.route, res.CostMicroUSD, tc.wantCost)
 		}
 	}
 
@@ -514,7 +526,7 @@ func TestFeature_UPM363_EstimateUsesVendorHighestRate(t *testing.T) {
 	}
 	defer rows.Close()
 	type ledgerRow struct {
-		cost      int64
+		cost      *int64
 		estimated bool
 		source    string
 	}
@@ -532,8 +544,9 @@ func TestFeature_UPM363_EstimateUsesVendorHighestRate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		lr, ok := got[tc.route]
-		if !ok || lr.cost != tc.wantCost || !lr.estimated || lr.source != "estimate" {
-			t.Fatalf("%s ledger = %+v (ok=%v), want cost=%d estimated=true source=estimate", tc.route, lr, ok, tc.wantCost)
+		costMatch := (lr.cost == nil) == (tc.wantCost == nil) && (tc.wantCost == nil || *lr.cost == *tc.wantCost)
+		if !ok || !costMatch || lr.estimated != tc.wantEst || lr.source != tc.wantSource {
+			t.Fatalf("%s ledger = %+v (ok=%v), want cost=%v estimated=%t source=%s", tc.route, lr, ok, tc.wantCost, tc.wantEst, tc.wantSource)
 		}
 	}
 }

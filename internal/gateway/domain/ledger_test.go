@@ -72,7 +72,8 @@ func TestNeedsEstimate(t *testing.T) {
 }
 
 func TestFeature_UPM353_UnpricedMeteredCostIsAPositiveEstimate(t *testing.T) {
-	cost, estimated, source := MeteredCost(PlanMetered, Usage{}, Price{}, false, EstimatedMicroUSDPerMTok, 17, 0, false)
+	const vendorRate = int64(75_000_000)
+	cost, estimated, source := MeteredCost(PlanMetered, Usage{}, Price{}, false, vendorRate, 17, 0, false)
 	if cost == nil || *cost <= 0 || !estimated || source != "estimate" {
 		t.Fatalf("unpriced metered cost = %v %t %q", cost, estimated, source)
 	}
@@ -80,19 +81,24 @@ func TestFeature_UPM353_UnpricedMeteredCostIsAPositiveEstimate(t *testing.T) {
 		t.Fatalf("estimate = %d, want 375", *cost)
 	}
 
-	withOutputBytes, estimated, source := MeteredCost(PlanMetered, Usage{}, Price{}, false, EstimatedMicroUSDPerMTok, 5, 8, false)
+	withOutputBytes, estimated, source := MeteredCost(PlanMetered, Usage{}, Price{}, false, vendorRate, 5, 8, false)
 	if withOutputBytes == nil || !estimated || source != "estimate" || *withOutputBytes != 300 {
 		t.Fatalf("estimate with output bytes = %v %t %q, want 300", withOutputBytes, estimated, source)
 	}
 
-	withOutputTokens, estimated, source := MeteredCost(PlanMetered, Usage{Output: 2}, Price{}, false, EstimatedMicroUSDPerMTok, 5, 8, false)
+	withOutputTokens, estimated, source := MeteredCost(PlanMetered, Usage{Output: 2}, Price{}, false, vendorRate, 5, 8, false)
 	if withOutputTokens == nil || !estimated || source != "estimate" || *withOutputTokens != 450 {
 		t.Fatalf("estimate with output bytes and tokens = %v %t %q, want 450", withOutputTokens, estimated, source)
 	}
 
-	arrivedUnpriced, estimated, source := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 10, Output: 5}, Price{}, false, EstimatedMicroUSDPerMTok, 5, 100, false)
+	arrivedUnpriced, estimated, source := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 10, Output: 5}, Price{}, false, vendorRate, 5, 100, false)
 	if arrivedUnpriced == nil || !estimated || source != "estimate" || *arrivedUnpriced != 1125 {
 		t.Fatalf("arrived unpriced estimate = %v %t %q, want 1125", arrivedUnpriced, estimated, source)
+	}
+
+	unknownCost, unknownEst, unknownSrc := MeteredCost(PlanMetered, Usage{Arrived: true, Input: 10, Output: 5}, Price{}, false, 0, 5, 100, false)
+	if unknownCost != nil || unknownEst || unknownSrc != "unknown" {
+		t.Fatalf("unknown metered cost = %v %t %q, want nil false unknown", unknownCost, unknownEst, unknownSrc)
 	}
 }
 
