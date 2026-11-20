@@ -678,6 +678,18 @@ func TestListCostMicroUSDUsesTierAndMixedOneHourRate(t *testing.T) {
 	}
 }
 
+func TestListCostMicroUSDTierStartsStrictlyAboveThreshold(t *testing.T) {
+	price := Price{InputMicroUSDPerMTok: microRate(1_000_000), Tiers: []PriceTier{
+		{ContextMinTokens: 100, Price: Price{InputMicroUSDPerMTok: microRate(2_000_000)}},
+	}}
+	if got := ListCostMicroUSD(Usage{Arrived: true, Input: 100}, price); got == nil || *got != 100 {
+		t.Fatalf("context at the threshold = %v, want 100 micro-USD at the base rate", got)
+	}
+	if got := ListCostMicroUSD(Usage{Arrived: true, Input: 101}, price); got == nil || *got != 202 {
+		t.Fatalf("context one above the threshold = %v, want 202 micro-USD at the tier rate", got)
+	}
+}
+
 func TestListCostMicroUSDUnknownRateIsNil(t *testing.T) {
 	got := ListCostMicroUSD(Usage{Arrived: true, Input: 1, Output: 1}, Price{InputMicroUSDPerMTok: microRate(1_000_000)})
 	if got != nil {
