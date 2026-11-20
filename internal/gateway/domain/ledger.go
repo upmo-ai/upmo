@@ -73,6 +73,7 @@ type Usage struct {
 	Output               int    `json:"output_tokens"`
 	CacheRead            int    `json:"cache_read"`
 	CacheWrite           int    `json:"cache_write"`
+	CacheWrite1h         int    `json:"-"`
 	Reasoning            int    `json:"reasoning"`
 	ReportedCostMicroUSD *int64 `json:"-"`
 }
@@ -96,6 +97,13 @@ type Price struct {
 	CacheReadMicroUSDPerMTok  *int64
 	CacheWriteMicroUSDPerMTok *int64
 	ContextWindow             int
+	Tiers                     []PriceTier
+}
+
+// PriceTier is a context threshold and its optional per-token rates.
+type PriceTier struct {
+	ContextMinTokens int
+	Price            Price
 }
 
 // Entry is one ledger row, written per attempt.
@@ -172,6 +180,33 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 	if in.CatalogFound {
 		catPtr = &in.Catalog
 	}
+	contextTokens := saturatingPositiveSum(int64(in.Usage.Input), int64(in.Usage.CacheRead), int64(in.Usage.CacheWrite))
+	var selectedTier *PriceTier
+	tierPrice := &in.Catalog
+	crossPtr := in.CrossProvider
+	if !in.CatalogFound && in.CrossProvider != nil {
+		tierPrice = in.CrossProvider
+	}
+	if in.Usage.Arrived {
+		for i := range tierPrice.Tiers {
+			tier := &tierPrice.Tiers[i]
+			if int64(tier.ContextMinTokens) < contextTokens && (selectedTier == nil || tier.ContextMinTokens > selectedTier.ContextMinTokens) {
+				selectedTier = tier
+			}
+		}
+	}
+	if selectedTier != nil {
+		price := *tierPrice
+		price.InputMicroUSDPerMTok = chooseTierRate(selectedTier.Price.InputMicroUSDPerMTok, price.InputMicroUSDPerMTok)
+		price.OutputMicroUSDPerMTok = chooseTierRate(selectedTier.Price.OutputMicroUSDPerMTok, price.OutputMicroUSDPerMTok)
+		price.CacheReadMicroUSDPerMTok = chooseTierRate(selectedTier.Price.CacheReadMicroUSDPerMTok, price.CacheReadMicroUSDPerMTok)
+		price.CacheWriteMicroUSDPerMTok = chooseTierRate(selectedTier.Price.CacheWriteMicroUSDPerMTok, price.CacheWriteMicroUSDPerMTok)
+		if in.CatalogFound {
+			catPtr = &price
+		} else {
+			crossPtr = &price
+		}
+	}
 	if in.Usage.Arrived {
 		hasOverrideOnUsed := in.Override != nil &&
 			((in.Usage.Input > 0 && in.Override.InputMicroUSDPerMTok != nil) ||
@@ -180,6 +215,12 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 				(in.Usage.CacheWrite > 0 && in.Override.CacheWriteMicroUSDPerMTok != nil))
 		if hasOverrideOnUsed {
 			if cost, _, _, _, _, ok := sumDimensionCost(in.Usage, in.Override, in.ProviderList, catPtr, nil, nil); ok {
+				if selectedTier != nil {
+					if cost > MaxMicroUSD {
+						cost = MaxMicroUSD
+					}
+					return CallPriceResult{CostMicroUSD: &cost, Estimated: true, Source: "estimate"}
+				}
 				return CallPriceResult{CostMicroUSD: &cost, Source: "override"}
 			}
 		}
@@ -189,7 +230,7 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 				return CallPriceResult{CostMicroUSD: &rc, Source: "provider"}
 			}
 		}
-		if !hasOverrideOnUsed && (in.ProviderList != nil || in.CatalogFound) {
+		if selectedTier == nil && in.Usage.CacheWrite1h == 0 && !hasOverrideOnUsed && (in.ProviderList != nil || in.CatalogFound) {
 			if cost, usedProvList, _, _, _, ok := sumDimensionCost(in.Usage, nil, in.ProviderList, catPtr, nil, nil); ok {
 				src := "models_dev"
 				if usedProvList || (!in.CatalogFound && in.ProviderList != nil) {
@@ -198,18 +239,40 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 				return CallPriceResult{CostMicroUSD: &cost, Source: src}
 			}
 		}
-		hasBilledTokens := in.Usage.Input > 0 || in.Usage.Output > 0 || in.Usage.CacheRead > 0 || in.Usage.CacheWrite > 0
+		pricingUsage := in.Usage
+		if pricingUsage.CacheWrite1h > 0 && !hasOverrideOnUsed {
+			pricingUsage.CacheWrite -= pricingUsage.CacheWrite1h
+		}
+		hasBilledTokens := pricingUsage.Input > 0 || pricingUsage.Output > 0 || pricingUsage.CacheRead > 0 || pricingUsage.CacheWrite > 0 || in.Usage.CacheWrite1h > 0
 		if hasBilledTokens {
-			cost, _, _, _, missingRate, ok := sumDimensionCost(in.Usage, in.Override, in.ProviderList, catPtr, in.CrossProvider, vendorEst)
+			cost, usedProvList, _, _, missingRate, ok := sumDimensionCost(pricingUsage, in.Override, in.ProviderList, catPtr, crossPtr, vendorEst)
 			if ok {
+				if in.Usage.CacheWrite1h > 0 && !hasOverrideOnUsed {
+					rate := firstRate(ratePtr(in.ProviderList), ratePtr(catPtr), ratePtr(crossPtr), vendorEst)
+					if rate == nil {
+						return CallPriceResult{Source: "unknown"}
+					}
+					if *rate < 0 {
+						return CallPriceResult{Source: "unknown"}
+					}
+					var oneHourCost int64
+					if *rate > 0 {
+						oneHourCost = cappedEstimateAmount(int64(in.Usage.CacheWrite1h), *rate*2)
+					}
+					if cost > MaxMicroUSD-oneHourCost {
+						cost = MaxMicroUSD
+					} else {
+						cost += oneHourCost
+					}
+					return CallPriceResult{CostMicroUSD: &cost, Estimated: true, Source: "estimate"}
+				}
 				if cost > MaxMicroUSD {
 					cost = MaxMicroUSD
 				}
-				return CallPriceResult{
-					CostMicroUSD: &cost,
-					Estimated:    true,
-					Source:       "estimate",
+				if selectedTier != nil && !hasOverrideOnUsed && !usedProvList {
+					return CallPriceResult{CostMicroUSD: &cost, Source: "models_dev"}
 				}
+				return CallPriceResult{CostMicroUSD: &cost, Estimated: true, Source: "estimate"}
 			}
 			if missingRate {
 				return CallPriceResult{Source: "unknown"}
@@ -221,7 +284,7 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 				Source:       "estimate",
 			}
 		}
-		if in.CrossProvider != nil {
+		if crossPtr != nil {
 			zero := int64(0)
 			return CallPriceResult{CostMicroUSD: &zero, Estimated: true, Source: "estimate"}
 		}
@@ -251,7 +314,7 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 	if estIn == 0 && estOut == 0 {
 		estIn = 1
 	}
-	cost, _, _, _, missingRate, ok := sumDimensionCostCounts(estIn, estOut, 0, 0, in.Override, in.ProviderList, catPtr, in.CrossProvider, vendorEst)
+	cost, _, _, _, missingRate, ok := sumDimensionCostCounts(estIn, estOut, 0, 0, in.Override, in.ProviderList, catPtr, crossPtr, vendorEst)
 	if ok {
 		if cost > MaxMicroUSD {
 			cost = MaxMicroUSD
@@ -271,6 +334,28 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 		Estimated:    true,
 		Source:       "estimate",
 	}
+}
+
+func ratePtr(p *Price) *int64 {
+	if p == nil {
+		return nil
+	}
+	return p.InputMicroUSDPerMTok
+}
+func firstRate(rates ...*int64) *int64 {
+	for _, rate := range rates {
+		if rate != nil {
+			return rate
+		}
+	}
+	return nil
+}
+
+func chooseTierRate(tier, base *int64) *int64 {
+	if tier != nil {
+		return tier
+	}
+	return base
 }
 
 func cappedEstimateAmount(tokens, rate int64) int64 {

@@ -1097,6 +1097,30 @@ func (p fixedPrices) Price(context.Context, string, string) (domain.Price, bool,
 	return p.price, true, nil
 }
 
+type tierUsageChatter struct{ usage domain.Usage }
+
+func (c tierUsageChatter) Chat(_ context.Context, attempt Attempt, _ domain.Request) (domain.ChatResult, domain.FailureClass, error) {
+	return domain.ChatResult{Text: "ok", Model: attempt.Model, Usage: c.usage}, domain.ClassOK, nil
+}
+
+func TestDispatchPricesAboveContextTierThroughChatCall(t *testing.T) {
+	rateBase, rateTier := int64(1_250_000), int64(2_500_000)
+	account := domain.Account{ID: "house", Provider: "gemini", Adapter: "tiered", CredentialRef: "house", House: true, PlanKind: domain.PlanMetered}
+	route := domain.Route{Name: "draft", Capability: domain.CapChat, Links: []domain.Link{{Position: 1, Account: account, Model: "gemini-2.5-pro", RetryBudget: 0}}}
+	ledger := &memLedger{}
+	dispatch := Dispatch{
+		Routes: memRoutes{route}, Secrets: memSecrets{map[string]string{"house": "secret"}}, Ledger: ledger,
+		Prices: fixedPrices{price: domain.Price{InputMicroUSDPerMTok: &rateBase, Tiers: []domain.PriceTier{{ContextMinTokens: 200_000, Price: domain.Price{InputMicroUSDPerMTok: &rateTier}}}}},
+		Chat:   map[string]Chatter{"tiered": tierUsageChatter{usage: domain.Usage{Arrived: true, Input: 200_001}}},
+	}
+	if _, err := dispatch.ChatCall(context.Background(), "draft", "", domain.Principal{}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.rows) != 1 || ledger.rows[0].CostMicroUSD == nil || *ledger.rows[0].CostMicroUSD != 500_003 || ledger.rows[0].PriceSource != "models_dev" || ledger.rows[0].Estimated {
+		t.Fatalf("ledger rows = %+v", ledger.rows)
+	}
+}
+
 func TestDispatchChatStreamToolsPropagatesDeltasAndMetadata(t *testing.T) {
 	rate := int64(1_000_000)
 	house := domain.Account{ID: "1", Adapter: "tools", CredentialRef: "house", House: true, PlanKind: domain.PlanMetered}

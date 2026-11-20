@@ -561,3 +561,65 @@ func TestValidateCatalogChecks(t *testing.T) {
 		t.Fatal("expected absurd rate error")
 	}
 }
+
+func TestResolveCallCostContextTierBoundariesAndCacheReadContext(t *testing.T) {
+	catalog := Price{
+		InputMicroUSDPerMTok:     microRate(1_250_000),
+		CacheReadMicroUSDPerMTok: microRate(125_000),
+		Tiers: []PriceTier{{ContextMinTokens: 200_000, Price: Price{
+			InputMicroUSDPerMTok:     microRate(2_500_000),
+			CacheReadMicroUSDPerMTok: microRate(250_000),
+		}}},
+	}
+	for _, tc := range []struct {
+		name  string
+		usage Usage
+		want  int64
+	}{
+		{"threshold stays base", Usage{Arrived: true, Input: 200_000}, 250_000},
+		{"one above switches", Usage{Arrived: true, Input: 200_001}, 500_003},
+		{"cache read counts toward context", Usage{Arrived: true, Input: 100_000, CacheRead: 100_001}, 275_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: tc.usage, Catalog: catalog, CatalogFound: true})
+			if got.CostMicroUSD == nil || *got.CostMicroUSD != tc.want || got.Source != "models_dev" || got.Estimated {
+				t.Fatalf("got %+v, want exact models_dev %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveCallCostTierAboveFlatOverrideIsEstimate(t *testing.T) {
+	catalog := Price{InputMicroUSDPerMTok: microRate(2_000_000), Tiers: []PriceTier{{ContextMinTokens: 200_000, Price: Price{InputMicroUSDPerMTok: microRate(4_000_000)}}}}
+	override := &PriceOverride{InputMicroUSDPerMTok: microRate(1_000_000)}
+	reported := int64(55)
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 200_001, ReportedCostMicroUSD: &reported}, Override: override, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 200_001 || !got.Estimated || got.Source != "estimate" {
+		t.Fatalf("got %+v, want base override marked estimated", got)
+	}
+}
+
+func TestResolveCallCostAnthropicOneHourCacheWrite(t *testing.T) {
+	catalog := Price{InputMicroUSDPerMTok: microRate(1_000_000), CacheWriteMicroUSDPerMTok: microRate(125_000)}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, CacheWrite: 100, CacheWrite1h: 100}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 200 || !got.Estimated || got.Source != "estimate" {
+		t.Fatalf("got %+v, want 200 micro-USD estimate", got)
+	}
+}
+
+func TestResolveCallCostTierUsesBaseForMissingDimensionAndPreservesUnknown(t *testing.T) {
+	catalog := Price{
+		InputMicroUSDPerMTok:  microRate(1_000_000),
+		OutputMicroUSDPerMTok: microRate(3_000_000),
+		Tiers:                 []PriceTier{{ContextMinTokens: 10, Price: Price{InputMicroUSDPerMTok: microRate(2_000_000)}}},
+	}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 100_000, Output: 100_000}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 500_000 || got.Source != "models_dev" || got.Estimated {
+		t.Fatalf("base dimension fallback = %+v", got)
+	}
+	catalog.OutputMicroUSDPerMTok = nil
+	got = ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 100_000, Output: 100_000}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD != nil || got.Source != "unknown" || got.Estimated {
+		t.Fatalf("missing dimension = %+v, want unknown nil cost", got)
+	}
+}

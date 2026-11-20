@@ -192,6 +192,13 @@ func ValidateCatalog(rows []CatalogRow, prevCount int) error {
 		if err := checkRate(row.Model, "cache_write", row.Price.CacheWriteMicroUSDPerMTok, row.Price.CacheWriteMTok); err != nil {
 			return err
 		}
+		for _, tier := range row.Price.Tiers {
+			for name, rate := range map[string]*int64{"input": tier.Price.InputMicroUSDPerMTok, "output": tier.Price.OutputMicroUSDPerMTok, "cache_read": tier.Price.CacheReadMicroUSDPerMTok, "cache_write": tier.Price.CacheWriteMicroUSDPerMTok} {
+				if err := checkRate(row.Model, "tier_"+name, rate, nil); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	if len(vendors) < MinCatalogVendors {
 		return fmt.Errorf("gateway: catalog has %d mapped vendors, want at least %d", len(vendors), MinCatalogVendors)
@@ -256,6 +263,10 @@ func parseAPIModel(id, version string, model apiModel) (CatalogRow, error) {
 		price.OutputPerMTok = USDFromMicro(price.OutputMicroUSDPerMTok)
 		price.CacheReadMTok = USDFromMicro(price.CacheReadMicroUSDPerMTok)
 		price.CacheWriteMTok = USDFromMicro(price.CacheWriteMicroUSDPerMTok)
+		price.Tiers, err = parseAPICostTiers(model.Cost)
+		if err != nil {
+			return CatalogRow{}, fmt.Errorf("gateway: model %s tiers: %w", id, err)
+		}
 	}
 	retireRaw := strings.TrimSpace(model.RetiresAt)
 	if retireRaw == "" {
@@ -292,6 +303,25 @@ func mergeCatalogFallback(dst *CatalogRow, src CatalogRow) {
 	dst.Price.OutputMicroUSDPerMTok = maxRatePtr(dst.Price.OutputMicroUSDPerMTok, src.Price.OutputMicroUSDPerMTok)
 	dst.Price.CacheReadMicroUSDPerMTok = maxRatePtr(dst.Price.CacheReadMicroUSDPerMTok, src.Price.CacheReadMicroUSDPerMTok)
 	dst.Price.CacheWriteMicroUSDPerMTok = maxRatePtr(dst.Price.CacheWriteMicroUSDPerMTok, src.Price.CacheWriteMicroUSDPerMTok)
+	for _, tier := range src.Price.Tiers {
+		found := false
+		for i := range dst.Price.Tiers {
+			if dst.Price.Tiers[i].ContextMinTokens != tier.ContextMinTokens {
+				continue
+			}
+			found = true
+			d := &dst.Price.Tiers[i].Price
+			d.InputMicroUSDPerMTok = maxRatePtr(d.InputMicroUSDPerMTok, tier.Price.InputMicroUSDPerMTok)
+			d.OutputMicroUSDPerMTok = maxRatePtr(d.OutputMicroUSDPerMTok, tier.Price.OutputMicroUSDPerMTok)
+			d.CacheReadMicroUSDPerMTok = maxRatePtr(d.CacheReadMicroUSDPerMTok, tier.Price.CacheReadMicroUSDPerMTok)
+			d.CacheWriteMicroUSDPerMTok = maxRatePtr(d.CacheWriteMicroUSDPerMTok, tier.Price.CacheWriteMicroUSDPerMTok)
+			break
+		}
+		if !found {
+			dst.Price.Tiers = append(dst.Price.Tiers, tier)
+		}
+	}
+	slices.SortFunc(dst.Price.Tiers, func(a, b PriceTier) int { return a.ContextMinTokens - b.ContextMinTokens })
 	dst.Price.InputPerMTok = USDFromMicro(dst.Price.InputMicroUSDPerMTok)
 	dst.Price.OutputPerMTok = USDFromMicro(dst.Price.OutputMicroUSDPerMTok)
 	dst.Price.CacheReadMTok = USDFromMicro(dst.Price.CacheReadMicroUSDPerMTok)
@@ -325,6 +355,13 @@ func cloneCatalogRow(r CatalogRow) CatalogRow {
 	r.Price.OutputMicroUSDPerMTok = cloneInt64Ptr(r.Price.OutputMicroUSDPerMTok)
 	r.Price.CacheReadMicroUSDPerMTok = cloneInt64Ptr(r.Price.CacheReadMicroUSDPerMTok)
 	r.Price.CacheWriteMicroUSDPerMTok = cloneInt64Ptr(r.Price.CacheWriteMicroUSDPerMTok)
+	r.Price.Tiers = slices.Clone(r.Price.Tiers)
+	for i := range r.Price.Tiers {
+		r.Price.Tiers[i].Price.InputMicroUSDPerMTok = cloneInt64Ptr(r.Price.Tiers[i].Price.InputMicroUSDPerMTok)
+		r.Price.Tiers[i].Price.OutputMicroUSDPerMTok = cloneInt64Ptr(r.Price.Tiers[i].Price.OutputMicroUSDPerMTok)
+		r.Price.Tiers[i].Price.CacheReadMicroUSDPerMTok = cloneInt64Ptr(r.Price.Tiers[i].Price.CacheReadMicroUSDPerMTok)
+		r.Price.Tiers[i].Price.CacheWriteMicroUSDPerMTok = cloneInt64Ptr(r.Price.Tiers[i].Price.CacheWriteMicroUSDPerMTok)
+	}
 	r.Price.InputPerMTok = USDFromMicro(r.Price.InputMicroUSDPerMTok)
 	r.Price.OutputPerMTok = USDFromMicro(r.Price.OutputMicroUSDPerMTok)
 	r.Price.CacheReadMTok = USDFromMicro(r.Price.CacheReadMicroUSDPerMTok)
@@ -359,10 +396,63 @@ type apiLimit struct {
 }
 
 type apiCost struct {
+	Input           json.RawMessage `json:"input"`
+	Output          json.RawMessage `json:"output"`
+	CacheRead       json.RawMessage `json:"cache_read"`
+	CacheWrite      json.RawMessage `json:"cache_write"`
+	Tiers           []apiCostTier   `json:"tiers"`
+	ContextOver200k *apiTierRates   `json:"context_over_200k"`
+}
+
+type apiCostTier struct {
 	Input      json.RawMessage `json:"input"`
 	Output     json.RawMessage `json:"output"`
 	CacheRead  json.RawMessage `json:"cache_read"`
 	CacheWrite json.RawMessage `json:"cache_write"`
+	Tier       struct {
+		Type string `json:"type"`
+		Size int    `json:"size"`
+	} `json:"tier"`
+}
+
+type apiTierRates struct {
+	Input      json.RawMessage `json:"input"`
+	Output     json.RawMessage `json:"output"`
+	CacheRead  json.RawMessage `json:"cache_read"`
+	CacheWrite json.RawMessage `json:"cache_write"`
+	Reasoning  json.RawMessage `json:"reasoning"`
+}
+
+func parseAPICostTiers(cost *apiCost) ([]PriceTier, error) {
+	items := cost.Tiers
+	if len(items) == 0 && cost.ContextOver200k != nil {
+		items = []apiCostTier{{Input: cost.ContextOver200k.Input, Output: cost.ContextOver200k.Output, CacheRead: cost.ContextOver200k.CacheRead, CacheWrite: cost.ContextOver200k.CacheWrite}}
+		items[0].Tier.Type, items[0].Tier.Size = "context", 200000
+	}
+	out := make([]PriceTier, 0, len(items))
+	for _, item := range items {
+		if item.Tier.Type != "context" || item.Tier.Size <= 0 {
+			continue
+		}
+		price := Price{}
+		fields := []struct {
+			raw json.RawMessage
+			dst **int64
+		}{
+			{item.Input, &price.InputMicroUSDPerMTok}, {item.Output, &price.OutputMicroUSDPerMTok},
+			{item.CacheRead, &price.CacheReadMicroUSDPerMTok}, {item.CacheWrite, &price.CacheWriteMicroUSDPerMTok},
+		}
+		for _, field := range fields {
+			rate, err := parseCatalogRate(field.raw)
+			if err != nil {
+				return nil, err
+			}
+			*field.dst = rate
+		}
+		out = append(out, PriceTier{ContextMinTokens: item.Tier.Size, Price: price})
+	}
+	slices.SortFunc(out, func(a, b PriceTier) int { return a.ContextMinTokens - b.ContextMinTokens })
+	return out, nil
 }
 
 type apiModalities struct {

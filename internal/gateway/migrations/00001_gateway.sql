@@ -97,6 +97,19 @@ CREATE TABLE gateway.prices (
   CONSTRAINT prices_lifecycle_check CHECK (lifecycle IN ('', 'active', 'alpha', 'beta', 'deprecated', 'retired'))
 );
 
+CREATE TABLE gateway.price_tiers (
+  vendor text NOT NULL DEFAULT '',
+  model text NOT NULL,
+  context_min_tokens int NOT NULL,
+  input_usd_per_mtok numeric,
+  output_usd_per_mtok numeric,
+  cache_read_usd_per_mtok numeric,
+  cache_write_usd_per_mtok numeric,
+  PRIMARY KEY (vendor, model, context_min_tokens),
+  FOREIGN KEY (vendor, model) REFERENCES gateway.prices (vendor, model),
+  CONSTRAINT price_tiers_context_check CHECK (context_min_tokens > 0)
+);
+
 CREATE TABLE gateway.catalog_meta (
   id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   version text NOT NULL,
@@ -125,6 +138,7 @@ CREATE TABLE gateway.ledger (
   output_tokens int NOT NULL DEFAULT 0,
   cache_read int NOT NULL DEFAULT 0,
   cache_write int NOT NULL DEFAULT 0,
+  cache_write_1h int NOT NULL DEFAULT 0,
   reasoning int NOT NULL DEFAULT 0,
   usage_arrived boolean NOT NULL DEFAULT false,
   cost_micro_usd bigint,
@@ -144,7 +158,7 @@ CREATE TABLE gateway.ledger (
   CONSTRAINT ledger_position_check CHECK (link_position > 0),
   CONSTRAINT ledger_tokens_nonneg CHECK (
     input_tokens >= 0 AND output_tokens >= 0 AND cache_read >= 0
-    AND cache_write >= 0 AND reasoning >= 0
+    AND cache_write >= 0 AND cache_write_1h >= 0 AND cache_write_1h <= cache_write AND reasoning >= 0
   ),
   CONSTRAINT ledger_cost_nonneg CHECK (cost_micro_usd IS NULL OR cost_micro_usd >= 0),
   CONSTRAINT ledger_source_check CHECK (source IN ('chat', 'task', 'automation', 'knowledge', 'memory', 'system')),
@@ -280,6 +294,7 @@ DROP TABLE IF EXISTS gateway.usage_limits;
 DROP TABLE IF EXISTS gateway.usage_daily;
 DROP TABLE IF EXISTS gateway.ledger;
 DROP TABLE IF EXISTS gateway.catalog_meta;
+DROP TABLE IF EXISTS gateway.price_tiers;
 DROP TABLE IF EXISTS gateway.prices;
 DROP TABLE IF EXISTS gateway.agent_bundles;
 DROP TABLE IF EXISTS gateway.tool_bundle_tools;

@@ -417,7 +417,11 @@ type usageBlock struct {
 	InputTokens   *int `json:"input_tokens"`
 	OutputTokens  *int `json:"output_tokens"`
 	CacheCreation *int `json:"cache_creation_input_tokens"`
-	CacheRead     *int `json:"cache_read_input_tokens"`
+	CacheCreate   *struct {
+		FiveMinute *int `json:"ephemeral_5m_input_tokens"`
+		OneHour    *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	CacheRead *int `json:"cache_read_input_tokens"`
 }
 
 // into records the counts that arrived. Anthropic counts input tokens apart
@@ -433,8 +437,19 @@ func (u usageBlock) into(usage *domain.Usage) {
 	if u.CacheRead != nil {
 		usage.CacheRead = *u.CacheRead
 	}
-	if u.CacheCreation != nil {
+	if u.CacheCreate != nil {
+		five, one := 0, 0
+		if u.CacheCreate.FiveMinute != nil {
+			five = *u.CacheCreate.FiveMinute
+		}
+		if u.CacheCreate.OneHour != nil {
+			one = *u.CacheCreate.OneHour
+		}
+		usage.CacheWrite1h = one
+		usage.CacheWrite = five + one
+	} else if u.CacheCreation != nil {
 		usage.CacheWrite = *u.CacheCreation
+		usage.CacheWrite1h = 0
 	}
 }
 

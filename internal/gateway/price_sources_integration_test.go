@@ -3539,3 +3539,103 @@ func jsonBytes(t *testing.T, value any) []byte {
 	}
 	return encoded
 }
+
+func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'a'))
+	store := postgres.Store{Pool: r.owner}
+	row := domain.CatalogRow{Vendor: "gemini", Model: "tier-model", Version: "tier-v1", Price: domain.Price{
+		InputMicroUSDPerMTok: ptrInt64(1_250_000),
+		Tiers:                []domain.PriceTier{{ContextMinTokens: 200_000, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(2_500_000)}}},
+	}}
+	if err := store.ReplaceCatalog(ctx, "tier-v1", []domain.CatalogRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceCatalog(ctx, "tier-v1", []domain.CatalogRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	if r.count(`SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model'`) != 1 {
+		t.Fatal("repeated refresh duplicated a tier")
+	}
+	price, found, err := store.Price(ctx, "gemini", "tier-model")
+	if err != nil || !found || len(price.Tiers) != 1 || price.Tiers[0].ContextMinTokens != 200_000 {
+		t.Fatalf("price=%+v found=%v err=%v", price, found, err)
+	}
+	if rate, ok, err := store.HighestRate(ctx, "gemini"); err != nil || !ok || rate != 5_000_000 {
+		t.Fatalf("HighestRate=%d ok=%v err=%v, want 5000000", rate, ok, err)
+	}
+	row.Version = "tier-v2"
+	row.Price.Tiers = []domain.PriceTier{
+		{ContextMinTokens: 100_000, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(2_000_000)}},
+		{ContextMinTokens: 256_000, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(3_000_000)}},
+	}
+	if err := store.ReplaceCatalog(ctx, "tier-v2", []domain.CatalogRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	if r.count(`SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model' AND context_min_tokens=200000`) != 0 || r.count(`SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model' AND context_min_tokens IN (100000,256000)`) != 2 {
+		t.Fatal("refresh did not replace tier rows")
+	}
+	if rate, ok, err := store.HighestRate(ctx, "gemini"); err != nil || !ok || rate != 6_000_000 {
+		t.Fatalf("HighestRate=%d ok=%v err=%v, want 6000000 after tier refresh", rate, ok, err)
+	}
+	var accountID string
+	if err := r.owner.QueryRow(ctx, `INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, provider, visibility) VALUES ('tier-list', 'fake', 'tier-list', 'subscription', true, 'gemini', 'everyone') RETURNING id`).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	userID := uuid.NewString()
+	if err := store.Record(ctx, domain.Entry{Route: "tier-route", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanSubscription, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, Input: 300_000}}); err != nil {
+		t.Fatal(err)
+	}
+	window := domain.UsageWindowFor(domain.UsageToday, time.Now(), time.UTC)
+	scan, err := (postgres.Usage{Pool: r.owner}).WorkspaceUsage(ctx, app.Caller{User: userID, Allow: domain.UsageViewPermission}, window, domain.GroupModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Buckets) != 1 || scan.Buckets[0].Requests != 1 || scan.Buckets[0].ListMicroUSD == nil || *scan.Buckets[0].ListMicroUSD != 900_000 || len(scan.Keyed) != 1 || scan.Keyed[0].Requests != 1 {
+		t.Fatalf("tiered usage rows = %+v", scan)
+	}
+	cost := int64(1)
+	if err := store.Record(ctx, domain.Entry{Route: "tier-route", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanMetered, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, CacheWrite: 25, CacheWrite1h: 10}, CostMicroUSD: &cost, Estimated: true, PriceSource: "estimate"}); err != nil {
+		t.Fatal(err)
+	}
+	var cacheWrite, cacheWrite1h int
+	if err := r.owner.QueryRow(ctx, `SELECT cache_write, cache_write_1h FROM gateway.ledger WHERE plan_kind='metered' AND model='tier-model'`).Scan(&cacheWrite, &cacheWrite1h); err != nil || cacheWrite != 25 || cacheWrite1h != 10 {
+		t.Fatalf("ledger cache writes = %d/%d err=%v", cacheWrite, cacheWrite1h, err)
+	}
+}
+
+func TestFeature_UPM388_ConcurrentCatalogRefreshesSerialize(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'b'))
+	store := postgres.Store{Pool: r.owner}
+	rows := [][]domain.CatalogRow{
+		{{Vendor: "gemini", Model: "refresh-a", Version: "refresh-a", Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(1_000_000), Tiers: []domain.PriceTier{{ContextMinTokens: 100_000, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(2_000_000)}}}}}},
+		{{Vendor: "gemini", Model: "refresh-b", Version: "refresh-b", Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(3_000_000), Tiers: []domain.PriceTier{{ContextMinTokens: 200_000, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(4_000_000)}}}}}},
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(rows))
+	var wg sync.WaitGroup
+	for i := range rows {
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); <-start; errs <- store.ReplaceCatalog(ctx, rows[i][0].Version, rows[i]) }(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.count(`SELECT count(*) FROM gateway.prices WHERE vendor='gemini'`) != 1 || r.count(`SELECT count(*) FROM gateway.price_tiers`) != 1 {
+		t.Fatal("concurrent refresh left a partial or combined catalog")
+	}
+	var model string
+	var threshold int
+	if err := r.owner.QueryRow(ctx, `SELECT p.model, t.context_min_tokens FROM gateway.prices p JOIN gateway.price_tiers t USING (vendor,model)`).Scan(&model, &threshold); err != nil {
+		t.Fatal(err)
+	}
+	if !(model == "refresh-a" && threshold == 100_000) && !(model == "refresh-b" && threshold == 200_000) {
+		t.Fatalf("refresh rows = %s/%d", model, threshold)
+	}
+}

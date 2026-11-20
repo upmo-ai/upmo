@@ -948,3 +948,15 @@ func TestAnthropicUsage_DoesNotSubtractCacheFromInput(t *testing.T) {
 		t.Fatalf("anthropic usage = %+v", res.Usage)
 	}
 }
+
+func TestUsageBlockCacheCreationBreakdown(t *testing.T) {
+	var block usageBlock
+	if err := json.Unmarshal([]byte(`{"input_tokens":10,"cache_creation_input_tokens":99,"cache_creation":{"ephemeral_5m_input_tokens":7,"ephemeral_1h_input_tokens":11}}`), &block); err != nil {
+		t.Fatal(err)
+	}
+	var usage domain.Usage
+	block.into(&usage)
+	if usage.CacheWrite != 18 || usage.CacheWrite1h != 11 || usage.Tokens() != 28 {
+		t.Fatalf("usage = %+v, want total cache write 18, 1h 11, tokens 28", usage)
+	}
+}

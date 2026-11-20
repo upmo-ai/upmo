@@ -173,17 +173,17 @@ func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageW
 				`+key+` AS key,
 				COALESCE(l.provider_account_id::text, '') AS account,
 				l.model, l.plan_kind, l.failure_class <> '' AS failed,
-				l.input_tokens, l.output_tokens, l.cache_read, l.cache_write, l.reasoning,
+				l.input_tokens, l.output_tokens, l.cache_read, l.cache_write, l.cache_write_1h, l.reasoning,
 				l.cost_micro_usd, l.estimated,
 				CASE WHEN (pv.model IS NOT NULL OR pf.model IS NOT NULL)
 					AND (l.input_tokens = 0 OR r.input IS NOT NULL)
 					AND (l.output_tokens = 0 OR r.output IS NOT NULL)
 					AND (l.cache_read = 0 OR r.cache_read IS NOT NULL)
-					AND (l.cache_write = 0 OR r.cache_write IS NOT NULL)
+					AND (l.cache_write-l.cache_write_1h = 0 OR r.cache_write IS NOT NULL) AND (l.cache_write_1h = 0 OR r.input IS NOT NULL)
 				THEN div(
 					l.input_tokens * COALESCE(r.input, 0) + l.output_tokens * COALESCE(r.output, 0)
-					+ l.cache_read * COALESCE(r.cache_read, 0) + l.cache_write * COALESCE(r.cache_write, 0)
-					+ 500000, 1000000)
+					+ l.cache_read * COALESCE(r.cache_read, 0) + (l.cache_write-l.cache_write_1h) * COALESCE(r.cache_write, 0)
+					+ l.cache_write_1h * COALESCE(r.input, 0) * 2 + 500000, 1000000)
 				END AS list
 			FROM gateway.ledger AS l
 			LEFT JOIN gateway.provider_accounts AS a
@@ -193,10 +193,17 @@ func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageW
 			LEFT JOIN gateway.prices AS pf
 				ON l.plan_kind <> 'metered' AND pv.model IS NULL AND pf.vendor = '' AND pf.model = l.model
 			LEFT JOIN LATERAL (
-				SELECT round(COALESCE(pv.input_usd_per_mtok, pf.input_usd_per_mtok) * $5)::numeric AS input,
-					round(COALESCE(pv.output_usd_per_mtok, pf.output_usd_per_mtok) * $5)::numeric AS output,
-					round(COALESCE(pv.cache_read_usd_per_mtok, pf.cache_read_usd_per_mtok) * $5)::numeric AS cache_read,
-					round(COALESCE(pv.cache_write_usd_per_mtok, pf.cache_write_usd_per_mtok) * $5)::numeric AS cache_write
+				SELECT context_min_tokens, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok
+				FROM gateway.price_tiers
+				WHERE vendor = COALESCE(pv.vendor, pf.vendor) AND model = l.model
+				  AND context_min_tokens < l.input_tokens::bigint + l.cache_read + l.cache_write
+				ORDER BY context_min_tokens DESC LIMIT 1
+			) AS pt ON true
+			LEFT JOIN LATERAL (
+				SELECT round(COALESCE(pt.input_usd_per_mtok, pv.input_usd_per_mtok, pf.input_usd_per_mtok) * $5)::numeric AS input,
+					round(COALESCE(pt.output_usd_per_mtok, pv.output_usd_per_mtok, pf.output_usd_per_mtok) * $5)::numeric AS output,
+					round(COALESCE(pt.cache_read_usd_per_mtok, pv.cache_read_usd_per_mtok, pf.cache_read_usd_per_mtok) * $5)::numeric AS cache_read,
+					round(COALESCE(pt.cache_write_usd_per_mtok, pv.cache_write_usd_per_mtok, pf.cache_write_usd_per_mtok) * $5)::numeric AS cache_write
 				WHERE pv.model IS NOT NULL OR pf.model IS NOT NULL
 			) AS r ON true
 			WHERE l.at >= $3 AND l.at < $4 `+filter+`

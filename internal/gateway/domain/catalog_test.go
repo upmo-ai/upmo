@@ -260,3 +260,29 @@ func containsAll(have []string, need ...string) bool {
 	}
 	return true
 }
+
+func TestParseCatalogFixtureContextTiers(t *testing.T) {
+	rows, err := ParseCatalog(bytes.NewReader(recordedModelsDev), "fixture-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findRow(rows, "gemini", "gemini-2.5-pro")
+	if !ok || len(row.Price.Tiers) != 1 || row.Price.Tiers[0].ContextMinTokens != 200_000 {
+		t.Fatalf("gemini tier = %+v (ok=%v)", row.Price.Tiers, ok)
+	}
+	if row.Price.Tiers[0].Price.InputMicroUSDPerMTok == nil || *row.Price.Tiers[0].Price.InputMicroUSDPerMTok != 2_500_000 {
+		t.Fatalf("tier input rate = %+v", row.Price.Tiers[0].Price.InputMicroUSDPerMTok)
+	}
+}
+
+func TestParseCatalogContextOver200kFallback(t *testing.T) {
+	const body = `{"google":{"models":{"legacy-tier":{"cost":{"input":1,"context_over_200k":{"input":2,"output":3,"cache_read":0.2}}}}}}`
+	rows, err := ParseCatalog(strings.NewReader(body), "legacy-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findRow(rows, "gemini", "legacy-tier")
+	if !ok || len(row.Price.Tiers) != 1 || row.Price.Tiers[0].ContextMinTokens != 200_000 || row.Price.Tiers[0].Price.InputMicroUSDPerMTok == nil || *row.Price.Tiers[0].Price.InputMicroUSDPerMTok != 2_000_000 {
+		t.Fatalf("legacy context tier = %+v (ok=%v)", row.Price.Tiers, ok)
+	}
+}
