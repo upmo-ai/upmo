@@ -186,11 +186,11 @@ func (s Store) HighestRate(ctx context.Context, vendor string) (int64, bool, err
 			WHERE vendor <> '' AND lower(vendor) = lower($1)
 			UNION ALL
 			SELECT greatest(
-				COALESCE(round(COALESCE(pt.input_usd_per_mtok, p.input_usd_per_mtok) * $2)::bigint, 0) * 2,
+				COALESCE(round(pt.input_usd_per_mtok * $2)::bigint, 0) * 2,
 				COALESCE(round(pt.output_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(pt.cache_read_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(pt.cache_write_usd_per_mtok * $2)::bigint, 0)) AS rate
-			FROM gateway.price_tiers pt JOIN gateway.prices p USING (vendor, model)
+			FROM gateway.price_tiers pt
 			WHERE pt.vendor <> '' AND lower(pt.vendor) = lower($1)
 		) AS rates WHERE rate > 0`, vendor, kernel.MicroUSDPerDollar).Scan(&rate)
 	if err != nil {
@@ -221,7 +221,7 @@ func (s Store) EstimateRate(ctx context.Context, vendor string) (int64, bool, er
 			FROM gateway.prices WHERE vendor <> '' AND lower(vendor) = lower($1)
 			UNION ALL
 			SELECT greatest(
-				COALESCE(round(input_usd_per_mtok * $2)::bigint, 0) * 2,
+				COALESCE(round(input_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(output_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_read_usd_per_mtok * $2)::bigint, 0),
 				COALESCE(round(cache_write_usd_per_mtok * $2)::bigint, 0)) AS rate
@@ -253,12 +253,12 @@ func insertLedger(ctx context.Context, db execer, row domain.Entry, holdID strin
 			user_id, agent_id, run_id, parent_run_id,
 			input_tokens, output_tokens, cache_read, cache_write, cache_write_1h, reasoning,
 			usage_arrived, cost_micro_usd, estimated, source, source_id, automation_id,
-			latency_ms, charged_to_limit, price_source, price_version, owner_team_id, hold_id, at
+			latency_ms, charged_to_limit, price_source, price_version, owner_team_id, hold_id, list_cost_micro_usd, at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16,
-			$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, COALESCE($29, now())
+			$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, COALESCE($30, now())
 		)`,
 		row.Route, row.LinkPosition, uuidOrNil(row.AccountID), row.Model, row.PlanKind, string(row.Class),
 		uuidOrNil(row.Principal.User), uuidOrNil(row.Principal.Agent),
@@ -266,7 +266,7 @@ func insertLedger(ctx context.Context, db execer, row domain.Entry, holdID strin
 		row.Usage.Input, row.Usage.Output, row.Usage.CacheRead, row.Usage.CacheWrite, row.Usage.CacheWrite1h, row.Usage.Reasoning,
 		row.Usage.Arrived, microOrNil(row.CostMicroUSD), row.Estimated, row.Principal.Source,
 		uuidOrNil(row.Principal.SourceID), uuidOrNil(row.Principal.AutomationID), intOrNil(row.LatencyMS), row.ChargedToLimit,
-		nullIfEmpty(row.PriceSource), nullIfEmpty(row.PriceVersion), uuidOrNil(row.OwnerTeamID), uuidOrNil(holdID), timeOrNil(row.At),
+		nullIfEmpty(row.PriceSource), nullIfEmpty(row.PriceVersion), uuidOrNil(row.OwnerTeamID), uuidOrNil(holdID), microOrNil(row.ListCostMicroUSD), timeOrNil(row.At),
 	)
 	return err
 }

@@ -422,22 +422,23 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 	}
 	charged := !knownZero && domain.AccountChargedToLimit(link.Account)
 	entry := domain.Entry{
-		At:             at,
-		Route:          route,
-		LinkPosition:   link.Position,
-		AccountID:      link.Account.ID,
-		Model:          link.Model,
-		PlanKind:       link.Account.PlanKind,
-		Class:          class,
-		Principal:      who,
-		Usage:          usage,
-		CostMicroUSD:   priced.micro,
-		Estimated:      priced.estimated,
-		LatencyMS:      latencyMS,
-		ChargedToLimit: charged,
-		PriceSource:    priced.priceSource,
-		PriceVersion:   priced.version,
-		OwnerTeamID:    link.ViaTeam,
+		At:               at,
+		Route:            route,
+		LinkPosition:     link.Position,
+		AccountID:        link.Account.ID,
+		Model:            link.Model,
+		PlanKind:         link.Account.PlanKind,
+		Class:            class,
+		Principal:        who,
+		Usage:            usage,
+		CostMicroUSD:     priced.micro,
+		ListCostMicroUSD: priced.listMicro,
+		Estimated:        priced.estimated,
+		LatencyMS:        latencyMS,
+		ChargedToLimit:   charged,
+		PriceSource:      priced.priceSource,
+		PriceVersion:     priced.version,
+		OwnerTeamID:      link.ViaTeam,
 	}
 	if res.Amount > 0 && d.Limits != nil {
 		settleOnce := func() error {
@@ -507,6 +508,7 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 
 type pricedCost struct {
 	micro              *int64
+	listMicro          *int64
 	estimated          bool
 	priceSource        string
 	version            string
@@ -639,12 +641,21 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		KnownZero:         knownZero,
 	}
 	res := domain.ResolveCallCost(in)
+	var listMicro *int64
+	if link.Account.PlanKind != domain.PlanMetered {
+		if cp.CatalogFound {
+			listMicro = domain.ListCostMicroUSD(usage, cp.Catalog)
+		} else if cp.CrossProvider != nil {
+			listMicro = domain.ListCostMicroUSD(usage, *cp.CrossProvider)
+		}
+	}
 	version := ""
 	if cp.CatalogFound && (res.Source == "models_dev" || res.Source == "override") {
 		version = cp.Catalog.Version
 	}
 	return pricedCost{
 		micro:              res.CostMicroUSD,
+		listMicro:          listMicro,
 		estimated:          res.Estimated,
 		priceSource:        res.Source,
 		version:            version,

@@ -3575,6 +3575,14 @@ func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
 	if r.count(`SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model' AND context_min_tokens=200000`) != 0 || r.count(`SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model' AND context_min_tokens IN (100000,256000)`) != 2 {
 		t.Fatal("refresh did not replace tier rows")
 	}
+	badRefresh := row
+	badRefresh.Price.Tiers = []domain.PriceTier{{ContextMinTokens: 100_000}, {ContextMinTokens: 100_000}}
+	if err := store.ReplaceCatalog(ctx, "invalid-tier-refresh", []domain.CatalogRow{badRefresh}); err == nil {
+		t.Fatal("invalid catalog refresh succeeded")
+	}
+	if r.count(`SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model'`) != 2 {
+		t.Fatal("failed catalog refresh changed existing tiers")
+	}
 	if rate, ok, err := store.HighestRate(ctx, "gemini"); err != nil || !ok || rate != 6_000_000 {
 		t.Fatalf("HighestRate=%d ok=%v err=%v, want 6000000 after tier refresh", rate, ok, err)
 	}
@@ -3583,7 +3591,11 @@ func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	userID := uuid.NewString()
-	if err := store.Record(ctx, domain.Entry{Route: "tier-route", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanSubscription, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, Input: 300_000}}); err != nil {
+	if err := store.Record(ctx, domain.Entry{Route: "tier-route", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanSubscription, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, Input: 300_000}, ListCostMicroUSD: ptrInt64(900_000)}); err != nil {
+		t.Fatal(err)
+	}
+	row.Price.Tiers[1].Price.InputMicroUSDPerMTok = ptrInt64(4_000_000)
+	if err := store.ReplaceCatalog(ctx, "tier-v3", []domain.CatalogRow{row}); err != nil {
 		t.Fatal(err)
 	}
 	window := domain.UsageWindowFor(domain.UsageToday, time.Now(), time.UTC)
@@ -3598,20 +3610,47 @@ func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
 	if err != nil || len(personal.Buckets) != 1 || personal.Buckets[0].ListMicroUSD == nil || *personal.Buckets[0].ListMicroUSD != 900_000 {
 		t.Fatalf("member tiered personal usage = %+v err=%v", personal, err)
 	}
+	if err := store.Record(ctx, domain.Entry{Route: "unknown-list-route", LinkPosition: 1, AccountID: accountID, Model: "unknown-list-model", PlanKind: domain.PlanSubscription, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, Input: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := (postgres.Usage{Pool: r.app}).WorkspaceUsage(ctx, app.Caller{User: userID, Allow: domain.UsageViewPermission}, window, domain.GroupModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundUnknown := false
+	for _, cell := range unknown.Keyed {
+		if cell.Model == "unknown-list-model" {
+			foundUnknown = true
+			if cell.ListMicroUSD != nil {
+				t.Fatalf("unknown list price cell = %v, want nil", *cell.ListMicroUSD)
+			}
+		}
+	}
+	if !foundUnknown {
+		t.Fatalf("unknown list model missing from usage cells: %+v", unknown.Keyed)
+	}
 	var visibleTiers int
 	if err := r.app.QueryRow(ctx, `SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model'`).Scan(&visibleTiers); err != nil || visibleTiers != 2 {
 		t.Fatalf("upmo_app SELECT price_tiers = %d err=%v, want 2", visibleTiers, err)
 	}
-	for _, query := range []string{
-		`INSERT INTO gateway.price_tiers (vendor, model, context_min_tokens) VALUES ('gemini','denied',1)`,
-		`UPDATE gateway.price_tiers SET context_min_tokens=2 WHERE vendor='gemini'`,
-		`DELETE FROM gateway.price_tiers WHERE vendor='gemini'`,
+	for _, tc := range []struct{ action, query string }{
+		{"INSERT", `INSERT INTO gateway.price_tiers (vendor, model, context_min_tokens) VALUES ('gemini','tier-model',999)`},
+		{"UPDATE", `UPDATE gateway.price_tiers SET context_min_tokens=999 WHERE vendor='gemini' AND model='tier-model'`},
+		{"DELETE", `DELETE FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model'`},
 	} {
-		if _, err := r.app.Exec(ctx, query); err == nil {
-			t.Errorf("upmo_app unexpectedly allowed %s", strings.Fields(query)[0])
+		if _, err := r.app.Exec(ctx, tc.query); err == nil {
+			t.Errorf("upmo_app unexpectedly allowed %s", tc.action)
+		} else {
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+				t.Errorf("upmo_app %s error = %v, want SQLSTATE 42501", tc.action, err)
+			}
 		}
 	}
 	cost := int64(1)
+	if err := store.Record(ctx, domain.Entry{Route: "invalid-metered-list", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanMetered, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, CostMicroUSD: &cost, PriceSource: "provider", ListCostMicroUSD: ptrInt64(1)}); err == nil {
+		t.Fatal("metered ledger row accepted a list cost")
+	}
 	if err := store.Record(ctx, domain.Entry{Route: "tier-route", LinkPosition: 1, AccountID: accountID, Model: "tier-model", PlanKind: domain.PlanMetered, Class: domain.ClassOK, Principal: domain.Principal{User: userID, Source: domain.SourceChat}, Usage: domain.Usage{Arrived: true, CacheWrite: 25, CacheWrite1h: 10}, CostMicroUSD: &cost, Estimated: true, PriceSource: "estimate"}); err != nil {
 		t.Fatal(err)
 	}
@@ -3642,6 +3681,31 @@ func TestFeature_UPM388_HighestRateReservesTwiceInputForBaseAndNullTierInput(t *
 				t.Fatalf("HighestRate=%d ok=%v err=%v, want %d", rate, ok, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFeature_UPM388_EstimateRateKeepsCatalogCeiling(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'c'))
+	store := postgres.Store{Pool: r.owner}
+	rows := []domain.CatalogRow{
+		{Vendor: "estimate-tier", Model: "tiered", Version: "v1", Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(2_000_000), Tiers: []domain.PriceTier{{ContextMinTokens: 100, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(3_000_000)}}}}},
+		{Vendor: "estimate-flat", Model: "flat", Version: "v1", Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(4_000_000)}},
+	}
+	if err := store.ReplaceCatalog(ctx, "v1", rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		vendor string
+		want   int64
+	}{{"estimate-tier", 3_000_000}, {"estimate-flat", 4_000_000}} {
+		got, ok, err := store.EstimateRate(ctx, tc.vendor)
+		if err != nil || !ok || got != tc.want {
+			t.Errorf("EstimateRate(%s)=%d ok=%v err=%v, want %d", tc.vendor, got, ok, err, tc.want)
+		}
+	}
+	if got, ok, err := store.HighestRate(ctx, "estimate-tier"); err != nil || !ok || got != 6_000_000 {
+		t.Fatalf("HighestRate tier=%d ok=%v err=%v, want 6000000", got, ok, err)
 	}
 }
 

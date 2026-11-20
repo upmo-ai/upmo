@@ -27,12 +27,12 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 	store := postgres.Store{Pool: r.app}
 	for i := 0; i < 2000; i++ {
 		model := fmt.Sprintf("perf-model-%04d", i)
-		_, err := r.owner.Exec(ctx, `INSERT INTO gateway.prices(vendor,model,version,input_usd_per_mtok,output_usd_per_mtok) VALUES('openai',$1,'perf',1,2)`, model)
+		_, err := r.owner.Exec(ctx, `INSERT INTO gateway.prices(vendor,model,version,input_usd_per_mtok,output_usd_per_mtok,cache_write_usd_per_mtok) VALUES('openai',$1,'perf',1,2,2)`, model)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if i < 300 {
-			_, err = r.owner.Exec(ctx, `INSERT INTO gateway.price_tiers(vendor,model,context_min_tokens,input_usd_per_mtok,output_usd_per_mtok) VALUES('openai',$1,200000,2,3)`, model)
+			_, err = r.owner.Exec(ctx, `INSERT INTO gateway.price_tiers(vendor,model,context_min_tokens,input_usd_per_mtok,output_usd_per_mtok,cache_write_usd_per_mtok) VALUES('openai',$1,200000,2,3,3)`, model)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,6 +53,9 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 		lookup[i] = float64(time.Since(start).Microseconds()) / 1000
 	}
 	logPercentiles(t, "LookupCallPricing 500", lookup)
+	if p95 := percentile(lookup, .95); p95 >= 5 {
+		t.Fatalf("LookupCallPricing p95=%.3fms, want <5ms", p95)
+	}
 	highest := make([]float64, 500)
 	for i := range highest {
 		start := time.Now()
@@ -66,7 +69,7 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 	// Seed representative ledger rows over the prior 90 days. Every fifth row has
 	// large context, every twentieth includes 1h cache writes, and users rotate.
 	_, err := r.owner.Exec(ctx, `
-		INSERT INTO gateway.ledger(at,route,link_position,provider_account_id,model,plan_kind,failure_class,user_id,input_tokens,output_tokens,cache_write,cache_write_1h,usage_arrived,source,cost_micro_usd,price_source,estimated)
+		INSERT INTO gateway.ledger(at,route,link_position,provider_account_id,model,plan_kind,failure_class,user_id,input_tokens,output_tokens,cache_write,cache_write_1h,usage_arrived,source,cost_micro_usd,price_source,estimated,list_cost_micro_usd)
 		SELECT now() - (g % 90) * interval '1 day', 'perf', 1, $1::uuid,
 			CASE WHEN g % 2 = 0 THEN 'perf-model-0001' ELSE 'unknown-perf' END,
 			(CASE g % 3 WHEN 0 THEN 'metered' WHEN 1 THEN 'subscription' ELSE 'local' END), '',
@@ -74,7 +77,11 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 			CASE WHEN g % 20 = 0 THEN 250000 ELSE 1000 END, 100, 100,
 			CASE WHEN g % 20 = 0 THEN 20 ELSE 0 END, true, 'chat',
 			CASE WHEN g % 3 = 0 THEN 100 ELSE NULL END,
-			CASE WHEN g % 3 = 0 THEN 'models_dev' ELSE NULL END, false
+			CASE WHEN g % 3 = 0 THEN 'models_dev' ELSE NULL END, false,
+			CASE WHEN g % 3 = 0 OR g % 2 <> 0 THEN NULL ELSE div(
+				(CASE WHEN g % 20 = 0 THEN 250000 ELSE 1000 END) * CASE WHEN g % 20 = 0 THEN 2 ELSE 1 END
+				+ 100 * 2 + (100 - CASE WHEN g % 20 = 0 THEN 20 ELSE 0 END) * CASE WHEN g % 20 = 0 THEN 3 ELSE 2 END
+				+ CASE WHEN g % 20 = 0 THEN 20 * 4 ELSE 0 END + 500000, 1000000) END
 		FROM generate_series(1,1000000) AS g`, account, user)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +126,7 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 	if _, err := planTx.Exec(ctx, `SELECT set_config('upmo.user_id',$1,true),set_config('upmo.allow',$2,true),set_config('upmo.teams','{}',true)`, user, domain.UsageViewPermission); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := planTx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) SELECT l.id, pt.context_min_tokens FROM gateway.ledger l LEFT JOIN gateway.prices p ON l.plan_kind <> 'metered' AND p.vendor='openai' AND p.model=l.model LEFT JOIN LATERAL (SELECT context_min_tokens FROM gateway.price_tiers WHERE p.model IS NOT NULL AND vendor=p.vendor AND model=l.model AND context_min_tokens < l.input_tokens+l.cache_read+l.cache_write ORDER BY context_min_tokens DESC LIMIT 1) pt ON true WHERE l.at >= now()-interval '90 days'`)
+	rows, err := planTx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageScanExplainQuery(), "day", "UTC", now.AddDate(0, 0, -90), now)
 	if err != nil {
 		t.Fatalf("explain plan: %v", err)
 	}
@@ -142,7 +149,12 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 func logPercentiles(t *testing.T, label string, values []float64) {
 	t.Helper()
 	sort.Float64s(values)
-	p50 := values[(len(values)-1)/2]
-	p95 := values[int(float64(len(values)-1)*.95)]
+	p50 := percentile(values, .50)
+	p95 := percentile(values, .95)
 	t.Logf("%s p50=%.3fms p95=%.3fms", label, p50, p95)
+}
+
+func percentile(values []float64, p float64) float64 {
+	sort.Float64s(values)
+	return values[int(float64(len(values)-1)*p)]
 }

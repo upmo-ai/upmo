@@ -94,6 +94,7 @@ type usageCall struct {
 	run, parent           string
 	in, out, cr, cw, rs   int
 	cost                  *int64
+	list                  *int64
 	estimated             bool
 	latency               *int
 	charged               bool
@@ -130,17 +131,17 @@ func (r usageRig) call(t *testing.T, c usageCall) {
 			at, route, link_position, provider_account_id, model, plan_kind, failure_class,
 			user_id, agent_id, owner_team_id, run_id, parent_run_id,
 			input_tokens, output_tokens, cache_read, cache_write, reasoning,
-			cost_micro_usd, estimated, source, latency_ms, charged_to_limit, price_source
+			cost_micro_usd, estimated, source, latency_ms, charged_to_limit, price_source, list_cost_micro_usd
 		) VALUES (
 			$1, 'usage', 1, NULLIF($2, '')::uuid, $3, $4, $5,
 			NULLIF($6, '')::uuid, NULLIF($7, '')::uuid, NULLIF($8, '')::uuid, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid,
 			$11, $12, $13, $14, $15,
-			$16, $17, $18, $19, $20, NULLIF($21, '')
+			$16, $17, $18, $19, $20, NULLIF($21, ''), $22
 		)`,
 		c.at, c.account, c.model, c.plan, c.failure,
 		c.user, c.agent, c.team, c.run, c.parent,
 		c.in, c.out, c.cr, c.cw, c.rs,
-		c.cost, c.estimated, c.source, c.latency, c.charged, priceSource); err != nil {
+		c.cost, c.estimated, c.source, c.latency, c.charged, priceSource, c.list); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -454,9 +455,9 @@ func TestFeature_UPM220_SubscriptionAndLocalNotBilled(t *testing.T) {
 	r := newUsageRig(t)
 	at := usageNow.Add(-2 * time.Hour)
 	// 1M input and 100k output on claude-x at 3 and 15 USD: 3 + 1.5 USD.
-	r.call(t, usageCall{at: at, user: usageAdmin, account: usageAdminSub, model: "claude-x", plan: domain.PlanSubscription, in: 1_000_000, out: 100_000})
+	r.call(t, usageCall{at: at, user: usageAdmin, account: usageAdminSub, model: "claude-x", plan: domain.PlanSubscription, in: 1_000_000, out: 100_000, list: micro(4_500_000)})
 	// 2M input on llama at the fallback 0.5 USD: 1 USD.
-	r.call(t, usageCall{at: at, user: usageAdmin, account: usageAdminLocal, model: "llama", plan: domain.PlanLocal, in: 2_000_000})
+	r.call(t, usageCall{at: at, user: usageAdmin, account: usageAdminLocal, model: "llama", plan: domain.PlanLocal, in: 2_000_000, list: micro(1_000_000)})
 	// llama has no cache read rate, so this call has no list price.
 	r.call(t, usageCall{at: at, user: usageAdmin, account: usageAdminLocal, model: "llama", plan: domain.PlanLocal, in: 5, cr: 5})
 
@@ -718,7 +719,7 @@ func TestFeature_UPM220_GroupingsAndCSV(t *testing.T) {
 	at := usageNow.Add(-26 * time.Hour)
 	r.call(t, usageCall{at: at, user: usageAdmin, account: usageHouse, model: "claude-x", agent: usageAgent, team: usageTeam, in: 100, out: 10, rs: 3, cost: micro(1000)})
 	r.call(t, usageCall{at: at, user: usageMember, account: usageMemberOwn, model: "gpt-own", source: domain.SourceTask, run: usageOther, in: 50, cr: 5, cost: micro(400), estimated: true})
-	r.call(t, usageCall{at: usageNow, user: usageAdmin, account: usageAdminSub, model: "claude-x", plan: domain.PlanSubscription, in: 1_000_000})
+	r.call(t, usageCall{at: usageNow, user: usageAdmin, account: usageAdminSub, model: "claude-x", plan: domain.PlanSubscription, in: 1_000_000, list: micro(3_000_000)})
 	r.call(t, usageCall{at: usageNow, account: usageHouse, model: "mystery", in: 7, failure: "transient"})
 
 	s := r.service()

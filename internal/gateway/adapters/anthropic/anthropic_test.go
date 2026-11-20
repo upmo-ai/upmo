@@ -565,6 +565,17 @@ func TestChatStreamDeltaWithoutCacheBreakdownPreservesOneHourWrite(t *testing.T)
 	}
 }
 
+func TestChatStreamCarriesCacheCreationBreakdownThroughAdapter(t *testing.T) {
+	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":18,\"cache_creation\":{\"ephemeral_5m_input_tokens\":7,\"ephemeral_1h_input_tokens\":11}}}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rec := newRecorder(t, streamReply([]byte(body)))
+	a := Adapter{Client: rec.srv.Client()}
+	usage, class, err := a.ChatStream(context.Background(), attemptFor(rec), hi(), func(string) error { return nil })
+	if err != nil || class != domain.ClassOK || usage.CacheWrite != 18 || usage.CacheWrite1h != 11 {
+		t.Fatalf("usage=%+v class=%s err=%v", usage, class, err)
+	}
+}
+
 func TestChatStreamCutKeepsOneHourCacheBreakdown(t *testing.T) {
 	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_creation\":{\"ephemeral_5m_input_tokens\":7,\"ephemeral_1h_input_tokens\":11}}}}\n\n"
 	usage, class, err := readStream(context.Background(), strings.NewReader(body), func(string) error { return nil })
@@ -990,8 +1001,16 @@ func TestChatCompleteReturnsCacheCreationBreakdown(t *testing.T) {
 }
 
 func TestUsageBlockEmptyBreakdownPreservesExistingCacheWritesAndClampsNegative(t *testing.T) {
-	usage := domain.Usage{CacheWrite: 18, CacheWrite1h: 11}
+	var empty domain.Usage
 	var block usageBlock
+	if err := json.Unmarshal([]byte(`{"cache_creation_input_tokens":18,"cache_creation":{}}`), &block); err != nil {
+		t.Fatal(err)
+	}
+	block.into(&empty)
+	if empty.CacheWrite != 18 {
+		t.Fatalf("empty breakdown fallback count = %d, want 18", empty.CacheWrite)
+	}
+	usage := domain.Usage{CacheWrite: 18, CacheWrite1h: 11}
 	if err := json.Unmarshal([]byte(`{"cache_creation_input_tokens":18,"cache_creation":{}}`), &block); err != nil {
 		t.Fatal(err)
 	}

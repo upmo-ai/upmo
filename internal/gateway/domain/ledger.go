@@ -108,21 +108,22 @@ type PriceTier struct {
 
 // Entry is one ledger row, written per attempt.
 type Entry struct {
-	At             time.Time
-	Route          string
-	LinkPosition   int
-	AccountID      string
-	Model          string
-	PlanKind       string
-	Class          FailureClass
-	Principal      Principal
-	Usage          Usage
-	CostMicroUSD   *int64
-	Estimated      bool
-	LatencyMS      *int
-	ChargedToLimit bool
-	PriceSource    string
-	PriceVersion   string
+	At               time.Time
+	Route            string
+	LinkPosition     int
+	AccountID        string
+	Model            string
+	PlanKind         string
+	Class            FailureClass
+	Principal        Principal
+	Usage            Usage
+	CostMicroUSD     *int64
+	ListCostMicroUSD *int64
+	Estimated        bool
+	LatencyMS        *int
+	ChargedToLimit   bool
+	PriceSource      string
+	PriceVersion     string
 	// OwnerTeamID is the team through which the person reached a shared
 	// account, as it was when the attempt ran. It is empty for their own
 	// account and for a workspace-wide one.
@@ -201,16 +202,16 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 				selectedTier = tier
 			}
 		}
-	}
-	if in.CatalogFound && selectedTier == nil && in.CrossProvider != nil {
-		for i := range in.CrossProvider.Tiers {
-			tier := &in.CrossProvider.Tiers[i]
-			if int64(tier.ContextMinTokens) < contextTokens && (selectedTier == nil || tier.ContextMinTokens > selectedTier.ContextMinTokens) {
-				selectedTier = tier
-				tierPrice = in.CrossProvider
-				tierFromCross = true
-				catPtr = nil
-				crossPtr = in.CrossProvider
+		if in.CatalogFound && selectedTier == nil && in.CrossProvider != nil {
+			for i := range in.CrossProvider.Tiers {
+				tier := &in.CrossProvider.Tiers[i]
+				if int64(tier.ContextMinTokens) < contextTokens && (selectedTier == nil || tier.ContextMinTokens > selectedTier.ContextMinTokens) {
+					selectedTier = tier
+					tierPrice = in.CrossProvider
+					tierFromCross = true
+					catPtr = nil
+					crossPtr = in.CrossProvider
+				}
 			}
 		}
 	}
@@ -361,6 +362,61 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 		Estimated:    true,
 		Source:       "estimate",
 	}
+}
+
+// ListCostMicroUSD prices subscription/local usage from its record-time catalog snapshot.
+// A nil result means at least one used dimension had no known rate.
+func ListCostMicroUSD(usage Usage, catalog Price) *int64 {
+	if usage.CacheWrite1h < 0 {
+		usage.CacheWrite1h = 0
+	}
+	if usage.CacheWrite1h > usage.CacheWrite {
+		usage.CacheWrite1h = max(0, usage.CacheWrite)
+	}
+	contextTokens := saturatingPositiveSum(int64(usage.Input), int64(usage.CacheRead), int64(usage.CacheWrite))
+	var selected *PriceTier
+	for i := range catalog.Tiers {
+		t := &catalog.Tiers[i]
+		if int64(t.ContextMinTokens) < contextTokens && (selected == nil || t.ContextMinTokens > selected.ContextMinTokens) {
+			selected = t
+		}
+	}
+	if selected != nil {
+		catalog.InputMicroUSDPerMTok = chooseTierRate(selected.Price.InputMicroUSDPerMTok, catalog.InputMicroUSDPerMTok)
+		catalog.OutputMicroUSDPerMTok = chooseTierRate(selected.Price.OutputMicroUSDPerMTok, catalog.OutputMicroUSDPerMTok)
+		catalog.CacheReadMicroUSDPerMTok = chooseTierRate(selected.Price.CacheReadMicroUSDPerMTok, catalog.CacheReadMicroUSDPerMTok)
+		catalog.CacheWriteMicroUSDPerMTok = chooseTierRate(selected.Price.CacheWriteMicroUSDPerMTok, catalog.CacheWriteMicroUSDPerMTok)
+	}
+	usage.CacheWrite -= usage.CacheWrite1h
+	counts := []int64{int64(usage.Input), int64(usage.Output), int64(usage.CacheRead), int64(usage.CacheWrite), int64(usage.CacheWrite1h)}
+	rates := []*int64{catalog.InputMicroUSDPerMTok, catalog.OutputMicroUSDPerMTok, catalog.CacheReadMicroUSDPerMTok, catalog.CacheWriteMicroUSDPerMTok, catalog.InputMicroUSDPerMTok}
+	maxNumerator := MaxMicroUSD*tokensPerMillion + tokensPerMillion/2
+	var numerator int64
+	for i, count := range counts {
+		if count <= 0 {
+			continue
+		}
+		if rates[i] == nil || *rates[i] < 0 {
+			return nil
+		}
+		rate := *rates[i]
+		if i == len(counts)-1 {
+			if rate > math.MaxInt64/2 {
+				return nil
+			}
+			rate *= 2
+		}
+		if rate > 0 && count > (maxNumerator-numerator)/rate {
+			capped := MaxMicroUSD
+			return &capped
+		}
+		numerator += count * rate
+	}
+	cost := roundHalfUp(numerator)
+	if cost > MaxMicroUSD {
+		cost = MaxMicroUSD
+	}
+	return &cost
 }
 
 func ratePtr(p *Price) *int64 {

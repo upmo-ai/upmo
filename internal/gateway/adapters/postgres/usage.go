@@ -11,7 +11,6 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
-	"github.com/upmo-ai/upmo/internal/kernel"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
@@ -139,23 +138,7 @@ func (u Usage) RecordWorkspaceView(ctx context.Context, who app.Caller, r domain
 	return tx.Commit(ctx)
 }
 
-// scanUsage is one pass over the window: totals by bucket, provider account,
-// model and plan kind, and by key, provider account, model and plan kind. A
-// non-empty user limits it to that person's rows.
-//
-// A subscription or local call is priced at the catalog rates of its
-// account's vendor, else at the model-only fallback, and only when every rate
-// it used is known. An account row security hides has no vendor here, so its
-// calls take the fallback.
-func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageWindow) (domain.UsageScan, error) {
-	filter := ""
-	args := []any{w.Unit, w.Zone.String(), w.Start, w.End, kernel.MicroUSDPerDollar}
-	if user != "" {
-		filter = "AND l.user_id = $6::uuid"
-		args = append(args, user)
-	}
-	// key is one of usageKeys and filter is fixed text.
-	rows, err := q.Query(ctx, `
+const usageScanQuery = `
 		SELECT GROUPING(s.bucket) = 1, s.bucket, s.key, s.account, s.model, s.plan_kind,
 			count(*),
 			count(*) FILTER (WHERE s.failed),
@@ -167,52 +150,40 @@ func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageW
 			(sum(s.cost_micro_usd) FILTER (WHERE s.plan_kind = 'metered'))::bigint,
 			COALESCE(bool_or(s.estimated) FILTER (WHERE s.plan_kind = 'metered'), false),
 			count(*) FILTER (WHERE s.plan_kind = 'metered' AND (s.estimated OR s.cost_micro_usd IS NULL)),
-			sum(s.list)::bigint
+			sum(s.list_cost_micro_usd) FILTER (WHERE s.plan_kind <> 'metered')::bigint
 		FROM (
 			SELECT date_trunc($1, l.at, $2) AS bucket,
-				`+key+` AS key,
+				%s AS key,
 				COALESCE(l.provider_account_id::text, '') AS account,
 				l.model, l.plan_kind, l.failure_class <> '' AS failed,
 				l.input_tokens, l.output_tokens, l.cache_read, l.cache_write, l.cache_write_1h, l.reasoning,
-				l.cost_micro_usd, l.estimated,
-				CASE WHEN (pv.model IS NOT NULL OR pf.model IS NOT NULL)
-					AND (l.input_tokens = 0 OR r.input IS NOT NULL)
-					AND (l.output_tokens = 0 OR r.output IS NOT NULL)
-					AND (l.cache_read = 0 OR r.cache_read IS NOT NULL)
-					AND (l.cache_write-l.cache_write_1h = 0 OR r.cache_write IS NOT NULL) AND (l.cache_write_1h = 0 OR r.input IS NOT NULL)
-				THEN div(
-					l.input_tokens * COALESCE(r.input, 0) + l.output_tokens * COALESCE(r.output, 0)
-					+ l.cache_read * COALESCE(r.cache_read, 0) + (l.cache_write-l.cache_write_1h) * COALESCE(r.cache_write, 0)
-					+ l.cache_write_1h * COALESCE(r.input, 0) * 2 + 500000, 1000000)
-				END AS list
+				l.cost_micro_usd, l.estimated, l.list_cost_micro_usd
 			FROM gateway.ledger AS l
-			LEFT JOIN gateway.provider_accounts AS a
-				ON l.plan_kind <> 'metered' AND a.id = l.provider_account_id
-			LEFT JOIN gateway.prices AS pv
-				ON l.plan_kind <> 'metered' AND pv.vendor = lower(a.provider) AND pv.model = l.model
-			LEFT JOIN gateway.prices AS pf
-				ON l.plan_kind <> 'metered' AND pv.model IS NULL AND pf.vendor = '' AND pf.model = l.model
-			LEFT JOIN LATERAL (
-				SELECT context_min_tokens, input_usd_per_mtok, output_usd_per_mtok, cache_read_usd_per_mtok, cache_write_usd_per_mtok
-				FROM gateway.price_tiers
-				WHERE (pv.model IS NOT NULL OR pf.model IS NOT NULL)
-				  AND vendor = COALESCE(pv.vendor, pf.vendor) AND model = l.model
-				  AND context_min_tokens < l.input_tokens::bigint + l.cache_read + l.cache_write
-				ORDER BY context_min_tokens DESC LIMIT 1
-			) AS pt ON true
-			LEFT JOIN LATERAL (
-				SELECT round(COALESCE(pt.input_usd_per_mtok, pv.input_usd_per_mtok, pf.input_usd_per_mtok) * $5)::numeric AS input,
-					round(COALESCE(pt.output_usd_per_mtok, pv.output_usd_per_mtok, pf.output_usd_per_mtok) * $5)::numeric AS output,
-					round(COALESCE(pt.cache_read_usd_per_mtok, pv.cache_read_usd_per_mtok, pf.cache_read_usd_per_mtok) * $5)::numeric AS cache_read,
-					round(COALESCE(pt.cache_write_usd_per_mtok, pv.cache_write_usd_per_mtok, pf.cache_write_usd_per_mtok) * $5)::numeric AS cache_write
-				WHERE pv.model IS NOT NULL OR pf.model IS NOT NULL
-			) AS r ON true
-			WHERE l.at >= $3 AND l.at < $4 `+filter+`
+			WHERE l.at >= $3 AND l.at < $4 %s
 		) AS s
 		GROUP BY GROUPING SETS (
 			(s.bucket, s.account, s.model, s.plan_kind),
 			(s.key, s.account, s.model, s.plan_kind)
-		)`, args...)
+		)`
+
+// UsageScanExplainQuery returns the unfiltered workspace form of the exact scan query.
+func UsageScanExplainQuery() string { return fmt.Sprintf(usageScanQuery, "l.source", "") }
+
+// scanUsage is one pass over the window: totals by bucket, provider account,
+// model and plan kind, and by key, provider account, model and plan kind. A
+// non-empty user limits it to that person's rows.
+//
+// List cost is frozen on the ledger row; NULL means at least one used rate
+// was unknown when the call was recorded.
+func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageWindow) (domain.UsageScan, error) {
+	filter := ""
+	args := []any{w.Unit, w.Zone.String(), w.Start, w.End}
+	if user != "" {
+		filter = "AND l.user_id = $5::uuid"
+		args = append(args, user)
+	}
+	query := fmt.Sprintf(usageScanQuery, key, filter)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return domain.UsageScan{}, err
 	}

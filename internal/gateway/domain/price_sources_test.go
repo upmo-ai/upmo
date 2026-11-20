@@ -664,3 +664,31 @@ func TestResolveCallCostTierCrossProviderAndVendorFallbackAreEstimates(t *testin
 		t.Fatalf("cross-only tier = %+v, want tier-priced estimate of 100", got)
 	}
 }
+
+func TestListCostMicroUSDUsesTierAndMixedOneHourRate(t *testing.T) {
+	price := Price{InputMicroUSDPerMTok: microRate(1_000_000), CacheWriteMicroUSDPerMTok: microRate(2_000_000), Tiers: []PriceTier{
+		{ContextMinTokens: 100, Price: Price{InputMicroUSDPerMTok: microRate(3_000_000), CacheWriteMicroUSDPerMTok: microRate(4_000_000)}},
+		{ContextMinTokens: 200, Price: Price{InputMicroUSDPerMTok: microRate(5_000_000), CacheWriteMicroUSDPerMTok: microRate(6_000_000)}},
+	}}
+	got := ListCostMicroUSD(Usage{Arrived: true, Input: 200, CacheWrite: 10, CacheWrite1h: 4}, price)
+	// Context 210 selects the 200 tier: 200 input at 5, 6 five-minute writes at 6,
+	// and four one-hour writes at 2x input, all per million tokens.
+	if got == nil || *got != 1_000+36+40 {
+		t.Fatalf("mixed tier list cost = %v, want 1076 micro-USD", got)
+	}
+}
+
+func TestListCostMicroUSDUnknownRateIsNil(t *testing.T) {
+	got := ListCostMicroUSD(Usage{Arrived: true, Input: 1, Output: 1}, Price{InputMicroUSDPerMTok: microRate(1_000_000)})
+	if got != nil {
+		t.Fatalf("unknown output rate = %v, want nil", got)
+	}
+}
+
+func TestResolveCallCostCacheWriteAloneSelectsContextTier(t *testing.T) {
+	catalog := Price{CacheWriteMicroUSDPerMTok: microRate(1_000_000), Tiers: []PriceTier{{ContextMinTokens: 100, Price: Price{CacheWriteMicroUSDPerMTok: microRate(2_000_000)}}}}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, CacheWrite: 101}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 202 || got.Source != "models_dev" {
+		t.Fatalf("cache-write-only tier = %+v, want 202 micro-USD from the tier", got)
+	}
+}

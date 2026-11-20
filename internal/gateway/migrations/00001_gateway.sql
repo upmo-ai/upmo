@@ -142,6 +142,7 @@ CREATE TABLE gateway.ledger (
   reasoning int NOT NULL DEFAULT 0,
   usage_arrived boolean NOT NULL DEFAULT false,
   cost_micro_usd bigint,
+  list_cost_micro_usd bigint,
   estimated boolean NOT NULL DEFAULT false,
   source text NOT NULL,
   source_id uuid,
@@ -161,6 +162,8 @@ CREATE TABLE gateway.ledger (
     AND cache_write >= 0 AND cache_write_1h >= 0 AND cache_write_1h <= cache_write AND reasoning >= 0
   ),
   CONSTRAINT ledger_cost_nonneg CHECK (cost_micro_usd IS NULL OR cost_micro_usd >= 0),
+  CONSTRAINT ledger_list_cost_nonneg CHECK (list_cost_micro_usd IS NULL OR list_cost_micro_usd >= 0),
+  CONSTRAINT ledger_list_cost_plan_check CHECK (plan_kind <> 'metered' OR list_cost_micro_usd IS NULL),
   CONSTRAINT ledger_source_check CHECK (source IN ('chat', 'task', 'automation', 'knowledge', 'memory', 'system')),
   CONSTRAINT ledger_payer_check CHECK (user_id IS NOT NULL OR source = 'system'),
   CONSTRAINT ledger_latency_check CHECK (latency_ms IS NULL OR latency_ms >= 0),
