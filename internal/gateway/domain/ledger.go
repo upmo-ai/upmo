@@ -196,22 +196,14 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 		tierPrice = in.CrossProvider
 	}
 	if in.Usage.Arrived {
-		for i := range tierPrice.Tiers {
-			tier := &tierPrice.Tiers[i]
-			if int64(tier.ContextMinTokens) < contextTokens && (selectedTier == nil || tier.ContextMinTokens > selectedTier.ContextMinTokens) {
-				selectedTier = tier
-			}
-		}
+		selectedTier = selectPriceTier(tierPrice.Tiers, contextTokens)
 		if in.CatalogFound && selectedTier == nil && in.CrossProvider != nil {
-			for i := range in.CrossProvider.Tiers {
-				tier := &in.CrossProvider.Tiers[i]
-				if int64(tier.ContextMinTokens) < contextTokens && (selectedTier == nil || tier.ContextMinTokens > selectedTier.ContextMinTokens) {
-					selectedTier = tier
-					tierPrice = in.CrossProvider
-					tierFromCross = true
-					catPtr = nil
-					crossPtr = in.CrossProvider
-				}
+			selectedTier = selectPriceTier(in.CrossProvider.Tiers, contextTokens)
+			if selectedTier != nil {
+				tierPrice = in.CrossProvider
+				tierFromCross = true
+				catPtr = nil
+				crossPtr = in.CrossProvider
 			}
 		}
 	}
@@ -367,6 +359,9 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 // ListCostMicroUSD prices subscription/local usage from its record-time catalog snapshot.
 // A nil result means at least one used dimension had no known rate.
 func ListCostMicroUSD(usage Usage, catalog Price) *int64 {
+	if !usage.Arrived {
+		return nil
+	}
 	if usage.CacheWrite1h < 0 {
 		usage.CacheWrite1h = 0
 	}
@@ -374,13 +369,7 @@ func ListCostMicroUSD(usage Usage, catalog Price) *int64 {
 		usage.CacheWrite1h = max(0, usage.CacheWrite)
 	}
 	contextTokens := saturatingPositiveSum(int64(usage.Input), int64(usage.CacheRead), int64(usage.CacheWrite))
-	var selected *PriceTier
-	for i := range catalog.Tiers {
-		t := &catalog.Tiers[i]
-		if int64(t.ContextMinTokens) < contextTokens && (selected == nil || t.ContextMinTokens > selected.ContextMinTokens) {
-			selected = t
-		}
-	}
+	selected := selectPriceTier(catalog.Tiers, contextTokens)
 	if selected != nil {
 		catalog.InputMicroUSDPerMTok = chooseTierRate(selected.Price.InputMicroUSDPerMTok, catalog.InputMicroUSDPerMTok)
 		catalog.OutputMicroUSDPerMTok = chooseTierRate(selected.Price.OutputMicroUSDPerMTok, catalog.OutputMicroUSDPerMTok)
@@ -392,6 +381,17 @@ func ListCostMicroUSD(usage Usage, catalog Price) *int64 {
 	rates := []*int64{catalog.InputMicroUSDPerMTok, catalog.OutputMicroUSDPerMTok, catalog.CacheReadMicroUSDPerMTok, catalog.CacheWriteMicroUSDPerMTok, catalog.InputMicroUSDPerMTok}
 	maxNumerator := MaxMicroUSD*tokensPerMillion + tokensPerMillion/2
 	var numerator int64
+	for i, count := range counts {
+		if count <= 0 {
+			continue
+		}
+		if rates[i] == nil || *rates[i] < 0 {
+			return nil
+		}
+		if i == len(counts)-1 && *rates[i] > math.MaxInt64/2 {
+			return nil
+		}
+	}
 	for i, count := range counts {
 		if count <= 0 {
 			continue
@@ -417,6 +417,17 @@ func ListCostMicroUSD(usage Usage, catalog Price) *int64 {
 		cost = MaxMicroUSD
 	}
 	return &cost
+}
+
+func selectPriceTier(tiers []PriceTier, contextTokens int64) *PriceTier {
+	var selected *PriceTier
+	for i := range tiers {
+		tier := &tiers[i]
+		if int64(tier.ContextMinTokens) < contextTokens && (selected == nil || tier.ContextMinTokens > selected.ContextMinTokens) {
+			selected = tier
+		}
+	}
+	return selected
 }
 
 func ratePtr(p *Price) *int64 {

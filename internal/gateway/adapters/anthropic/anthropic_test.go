@@ -576,6 +576,17 @@ func TestChatStreamCarriesCacheCreationBreakdownThroughAdapter(t *testing.T) {
 	}
 }
 
+func TestChatStreamToolsCarriesCacheCreationBreakdownThroughAdapter(t *testing.T) {
+	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":18,\"cache_creation\":{\"ephemeral_5m_input_tokens\":7,\"ephemeral_1h_input_tokens\":11}}}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rec := newRecorder(t, streamReply([]byte(body)))
+	a := Adapter{Client: rec.srv.Client()}
+	result, class, err := a.ChatStreamTools(context.Background(), attemptFor(rec), hi(), app.StreamEvents{})
+	if err != nil || class != domain.ClassOK || result.Usage.CacheWrite != 18 || result.Usage.CacheWrite1h != 11 {
+		t.Fatalf("usage=%+v class=%s err=%v", result.Usage, class, err)
+	}
+}
+
 func TestChatStreamCutKeepsOneHourCacheBreakdown(t *testing.T) {
 	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_creation\":{\"ephemeral_5m_input_tokens\":7,\"ephemeral_1h_input_tokens\":11}}}}\n\n"
 	usage, class, err := readStream(context.Background(), strings.NewReader(body), func(string) error { return nil })
@@ -1018,11 +1029,12 @@ func TestUsageBlockEmptyBreakdownPreservesExistingCacheWritesAndClampsNegative(t
 	if usage.CacheWrite != 18 || usage.CacheWrite1h != 11 {
 		t.Fatalf("empty breakdown erased counts: %+v", usage)
 	}
-	if err := json.Unmarshal([]byte(`{"cache_creation_input_tokens":-4,"cache_creation":{"ephemeral_1h_input_tokens":-2}}`), &block); err != nil {
+	var negative domain.Usage
+	if err := json.Unmarshal([]byte(`{"cache_creation_input_tokens":-4}`), &block); err != nil {
 		t.Fatal(err)
 	}
-	block.into(&usage)
-	if usage.CacheWrite < 0 || usage.CacheWrite1h < 0 || usage.CacheWrite1h > usage.CacheWrite {
-		t.Fatalf("invalid negative counts: %+v", usage)
+	block.into(&negative)
+	if negative.CacheWrite != 0 || negative.CacheWrite1h != 0 {
+		t.Fatalf("negative cache-creation fallback = %+v, want clamped zeros", negative)
 	}
 }

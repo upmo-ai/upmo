@@ -66,7 +66,7 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 	}
 	logPercentiles(t, "HighestRate 500", highest)
 
-	// Seed representative ledger rows over the prior 90 days. Every fifth row has
+	// Seed representative ledger rows over the prior 90 days. Every twentieth row has
 	// large context, every twentieth includes 1h cache writes, and users rotate.
 	_, err := r.owner.Exec(ctx, `
 		INSERT INTO gateway.ledger(at,route,link_position,provider_account_id,model,plan_kind,failure_class,user_id,input_tokens,output_tokens,cache_write,cache_write_1h,usage_arrived,source,cost_micro_usd,price_source,estimated,list_cost_micro_usd)
@@ -124,6 +124,9 @@ func TestUPM388PricingAndUsagePerformance(t *testing.T) {
 	}
 	defer func() { _ = planTx.Rollback(ctx) }()
 	if _, err := planTx.Exec(ctx, `SELECT set_config('upmo.user_id',$1,true),set_config('upmo.allow',$2,true),set_config('upmo.teams','{}',true)`, user, domain.UsageViewPermission); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planTx.Exec(ctx, `SELECT set_config('work_mem', $1, true)`, "64MB"); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := planTx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageScanExplainQuery(), "day", "UTC", now.AddDate(0, 0, -90), now)

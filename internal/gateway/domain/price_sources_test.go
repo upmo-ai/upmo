@@ -697,10 +697,38 @@ func TestListCostMicroUSDUnknownRateIsNil(t *testing.T) {
 	}
 }
 
+func TestListCostMicroUSDUnarrivedIsNil(t *testing.T) {
+	if got := ListCostMicroUSD(Usage{}, Price{}); got != nil {
+		t.Fatalf("unarrived list cost = %v, want nil", *got)
+	}
+}
+
+func TestListCostMicroUSDValidatesAllUsedRatesBeforeOverflowCap(t *testing.T) {
+	got := ListCostMicroUSD(Usage{Arrived: true, Input: 2_000_000, Output: 1}, Price{
+		InputMicroUSDPerMTok:  microRate(MaxMicroUSD),
+		OutputMicroUSDPerMTok: nil,
+	})
+	if got != nil {
+		t.Fatalf("overflow with unknown used output rate = %v, want nil", *got)
+	}
+}
+
 func TestResolveCallCostCacheWriteAloneSelectsContextTier(t *testing.T) {
 	catalog := Price{CacheWriteMicroUSDPerMTok: microRate(1_000_000), Tiers: []PriceTier{{ContextMinTokens: 100, Price: Price{CacheWriteMicroUSDPerMTok: microRate(2_000_000)}}}}
 	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, CacheWrite: 101}, Catalog: catalog, CatalogFound: true})
 	if got.CostMicroUSD == nil || *got.CostMicroUSD != 202 || got.Source != "models_dev" {
 		t.Fatalf("cache-write-only tier = %+v, want 202 micro-USD from the tier", got)
+	}
+}
+
+func TestResolveCallCostSelectsLargestMatchingContextTier(t *testing.T) {
+	catalog := Price{InputMicroUSDPerMTok: microRate(1_000_000), Tiers: []PriceTier{
+		{ContextMinTokens: 100, Price: Price{InputMicroUSDPerMTok: microRate(2_000_000)}},
+		{ContextMinTokens: 200, Price: Price{InputMicroUSDPerMTok: microRate(4_000_000)}},
+		{ContextMinTokens: 300, Price: Price{InputMicroUSDPerMTok: microRate(8_000_000)}},
+	}}
+	got := ResolveCallCost(CallPriceInput{PlanKind: PlanMetered, Usage: Usage{Arrived: true, Input: 250}, Catalog: catalog, CatalogFound: true})
+	if got.CostMicroUSD == nil || *got.CostMicroUSD != 1_000 || got.Source != "models_dev" {
+		t.Fatalf("largest matching tier = %+v, want 1000 micro-USD at tier 200", got)
 	}
 }
