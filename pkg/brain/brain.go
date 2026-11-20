@@ -655,7 +655,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return tasks.AutomationExists(ctx, pool, id)
 	}
 	agentStore := agents.NewStore(pool)
-	providers.AgentUses = func(ctx context.Context, who gateway.ProviderCaller, provider string, models []string) ([]string, error) {
+	providers.AgentUses = func(ctx context.Context, who gateway.ProviderCaller, provider string, models, routes []string) ([]string, error) {
 		person, err := identity.ParseUserID(who.User)
 		if err != nil {
 			return nil, err
@@ -664,12 +664,38 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		if err != nil || !ok {
 			return nil, err
 		}
-		return agentStore.ProviderUses(ctx, access, provider, models)
+		return agentStore.ProviderUses(ctx, access, provider, models, routes)
 	}
-	// Automations currently refer only to a task template, not to a model; keep
-	// the composition port explicit so a future model reference has one home.
-	providers.AutomationUses = func(context.Context, gateway.ProviderCaller, string, []string) ([]string, error) {
-		return []string{}, nil
+	// An automation runs the agent its template names. It depends on the
+	// account when that agent does. The agents are found without the caller's
+	// agent visibility, and only the automations the caller may see are named.
+	providers.AutomationUses = func(ctx context.Context, who gateway.ProviderCaller, provider string, models, routes []string) ([]string, error) {
+		person, err := identity.ParseUserID(who.User)
+		if err != nil {
+			return nil, err
+		}
+		access, ok, err := taskAccessFor(ctx, members, person)
+		if err != nil {
+			return nil, err
+		}
+		// The task allow list carries only task permissions. The automations
+		// policy also lets a person who manages members read every automation,
+		// so that permission is added here for this lookup.
+		allow, err := members.EffectiveAllow(ctx, person)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(strings.Split(allow, ","), "members:manage") {
+			access.UserID = person.String()
+			access.Allow = strings.Trim(access.Allow+",members:manage", ",")
+		} else if !ok {
+			return []string{}, nil
+		}
+		agentIDs, err := agents.SystemProviderAgentIDs(ctx, owner, provider, models, routes)
+		if err != nil {
+			return nil, err
+		}
+		return tasks.NewStore(pool, nil).AutomationUses(ctx, access, agentIDs)
 	}
 	noticeStore := notices.Store{Pool: pool}
 
@@ -961,21 +987,7 @@ func buildHandler(
 		editorSigner = editorTokens
 	}
 	taskAccess := func(ctx context.Context, user identity.UserID) (tasks.Access, bool, error) {
-		allow, err := members.TaskAllow(ctx, user)
-		if err != nil || allow == "" {
-			return tasks.Access{}, false, err
-		}
-		shares, err := members.ShareAccess(ctx, user, identity.TypeTask)
-		if err != nil {
-			return tasks.Access{}, false, err
-		}
-		return tasks.Access{
-			UserID:     user.String(),
-			Allow:      allow,
-			Teams:      shares.Teams,
-			SharedView: shares.SharedView,
-			SharedEdit: shares.SharedEdit,
-		}, true, nil
+		return taskAccessFor(ctx, members, user)
 	}
 	tasks.Handler{
 		Book:         taskBook,
@@ -1307,6 +1319,24 @@ func (c auditCallers) Session(ctx context.Context, r *http.Request) (audit.Reade
 		CredentialType: "session",
 		CredentialID:   person.SessionID,
 		Allow:          allow,
+	}, true, nil
+}
+
+func taskAccessFor(ctx context.Context, members identity.MemberService, user identity.UserID) (tasks.Access, bool, error) {
+	allow, err := members.TaskAllow(ctx, user)
+	if err != nil || allow == "" {
+		return tasks.Access{}, false, err
+	}
+	shares, err := members.ShareAccess(ctx, user, identity.TypeTask)
+	if err != nil {
+		return tasks.Access{}, false, err
+	}
+	return tasks.Access{
+		UserID:     user.String(),
+		Allow:      allow,
+		Teams:      shares.Teams,
+		SharedView: shares.SharedView,
+		SharedEdit: shares.SharedEdit,
 	}, true, nil
 }
 

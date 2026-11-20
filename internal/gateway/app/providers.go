@@ -195,7 +195,7 @@ type ModelPricingView struct {
 }
 
 // ProviderUses is the confirmation information shown before an account is
-// disabled or removed. Automations currently have no model reference.
+// disabled or removed.
 type ProviderUses struct {
 	Routes      []string `json:"routes"`
 	Agents      []string `json:"agents"`
@@ -235,9 +235,11 @@ type Providers struct {
 	// private providers. Nil preserves the default-on workspace setting.
 	MemberProvidersAllowed func(ctx context.Context, user string) (bool, error)
 	// AgentUses and AutomationUses are ports wired by brain. They avoid a
-	// gateway dependency on either module's adapters.
-	AgentUses      func(ctx context.Context, who Caller, provider string, models []string) ([]string, error)
-	AutomationUses func(ctx context.Context, who Caller, provider string, models []string) ([]string, error)
+	// gateway dependency on either module's adapters. Each gets the account's
+	// provider and models, and the names of the routes linked to it, and
+	// returns the names of what the person may see that depends on it.
+	AgentUses      func(ctx context.Context, who Caller, provider string, models, routes []string) ([]string, error)
+	AutomationUses func(ctx context.Context, who Caller, provider string, models, routes []string) ([]string, error)
 	// Names returns the names of the teams that exist. A missing id is unknown.
 	// Nil leaves that check to the store.
 	Names func(ctx context.Context, teams []string) (map[string]string, error)
@@ -615,12 +617,12 @@ func (s Providers) Uses(ctx context.Context, user, id string) (ProviderUses, err
 	}
 	out := ProviderUses{Routes: routes, Agents: []string{}, Automations: []string{}}
 	if s.AgentUses != nil {
-		if out.Agents, err = s.AgentUses(ctx, who, account.Provider, account.Models); err != nil {
+		if out.Agents, err = s.AgentUses(ctx, who, account.Provider, account.Models, routes); err != nil {
 			return ProviderUses{}, err
 		}
 	}
 	if s.AutomationUses != nil {
-		if out.Automations, err = s.AutomationUses(ctx, who, account.Provider, account.Models); err != nil {
+		if out.Automations, err = s.AutomationUses(ctx, who, account.Provider, account.Models, routes); err != nil {
 			return ProviderUses{}, err
 		}
 	}

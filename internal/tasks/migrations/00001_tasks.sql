@@ -1016,6 +1016,31 @@ REVOKE ALL ON FUNCTION tasks.automation_template(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION tasks.automation_template(uuid) TO upmo_app;
 
 -- +goose StatementBegin
+CREATE FUNCTION tasks.automation_uses(agents uuid[])
+RETURNS TABLE (id uuid, goal text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT automation_row.id, template.goal
+  FROM tasks.automations AS automation_row
+  JOIN tasks.templates AS template ON template.id = automation_row.template_id
+  WHERE template.agent_id = ANY (agents)
+    AND (
+      'members:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+      OR (
+        automation_row.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+        AND 'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+      )
+    );
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION tasks.automation_uses(uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tasks.automation_uses(uuid[]) TO upmo_app;
+
+-- +goose StatementBegin
 CREATE FUNCTION tasks.own_template()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -1048,6 +1073,7 @@ GRANT SELECT, INSERT ON tasks.automation_fires TO upmo_app;
 
 DROP TABLE IF EXISTS tasks.automation_fires;
 DROP TABLE IF EXISTS tasks.automations;
+DROP FUNCTION IF EXISTS tasks.automation_uses(uuid[]);
 DROP FUNCTION IF EXISTS tasks.automation_template(uuid);
 DROP FUNCTION IF EXISTS tasks.own_template();
 DROP INDEX IF EXISTS tasks.tasks_worktree_writer;

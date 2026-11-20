@@ -2519,12 +2519,12 @@ func TestFeature_UPM365_UsesListsRoutesAgentsAndAutomations(t *testing.T) {
 		return []string{otherTeam}, nil
 	}
 	store := agentpg.Store{Pool: r.app}
-	r.svc.AgentUses = func(ctx context.Context, who app.Caller, provider string, models []string) ([]string, error) {
+	r.svc.AgentUses = func(ctx context.Context, who app.Caller, provider string, models, routes []string) ([]string, error) {
 		teams := "{}"
 		if len(who.Teams) > 0 {
 			teams = "{" + strings.Join(who.Teams, ",") + "}"
 		}
-		return store.ProviderUses(ctx, agentapp.Access{UserID: who.User, Allow: "agent:view", Teams: teams}, provider, models)
+		return store.ProviderUses(ctx, agentapp.Access{UserID: who.User, Allow: "agent:view", Teams: teams}, provider, models, routes)
 	}
 	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
 	made := r.mustAdd(ada, map[string]any{
