@@ -45,6 +45,15 @@ const report = {
   tasks: [],
 };
 
+/** A copy of a record with one key left out, or set to another value. */
+function changed<T extends object>(source: T, key: string, value?: unknown): T {
+  const { [key]: _left, ...rest } = source as Record<string, unknown>;
+  return (value === undefined ? rest : { ...rest, [key]: value }) as T;
+}
+
+/** An absent money field and one that is not whole micro-USD. Neither may read as unknown or as 0. */
+const notMoney = [undefined, 1.5, "1"];
+
 describe("toUsage", () => {
   it("UPM-359 keeps a real 0 as 0 and unknown as null, and reads micro-USD as whole numbers", () => {
     const usage = toUsage(report);
@@ -64,6 +73,40 @@ describe("toUsage", () => {
     expect(() => toUsage(without)).toThrow("no spend_micro_usd");
     expect(() => toUsage({ ...report, spend_micro_usd: "1" })).toThrow("no spend_micro_usd");
     expect(() => toUsage({ ...report, spend_micro_usd: 1.5 })).toThrow("no spend_micro_usd");
+  });
+
+  it("UPM-359 an absent or non-integer money field is refused on the list price, a bucket, a provider, a model and a source", () => {
+    const places: [place: string, make: (value: unknown) => unknown, key: string][] = [
+      ["list price", (value) => changed(report, "list_price_micro_usd", value), "list_price_micro_usd"],
+      ["bucket spend", (value) => ({ ...report, buckets: [changed(bucket, "spend_micro_usd", value)] }), "spend_micro_usd"],
+      [
+        "bucket list price",
+        (value) => ({ ...report, buckets: [changed(bucket, "list_price_micro_usd", value)] }),
+        "list_price_micro_usd",
+      ],
+      [
+        "provider spend",
+        (value) => ({ ...report, providers: [changed(report.providers[0]!, "spend_micro_usd", value)] }),
+        "spend_micro_usd",
+      ],
+      [
+        "model spend",
+        (value) => ({ ...report, models: [changed(report.models[0]!, "spend_micro_usd", value)] }),
+        "spend_micro_usd",
+      ],
+      [
+        "source spend",
+        (value) => ({ ...report, sources: [changed(report.sources[0]!, "spend_micro_usd", value)] }),
+        "spend_micro_usd",
+      ],
+    ];
+    for (const [place, make, key] of places) {
+      for (const value of notMoney) {
+        expect(() => toUsage(make(value)), `${place} ${String(value)}`).toThrow(`The brain sent no ${key}.`);
+      }
+    }
+    // The same fields as the gateway sends them are read.
+    expect(() => toUsage(report)).not.toThrow();
   });
 
   it("UPM-359 keeps the bucket label as the gateway cut it in the person's zone", () => {
@@ -96,9 +139,31 @@ describe("toUsageLimits", () => {
   it("UPM-359 sends rows on only when the gateway sent them, even empty", () => {
     expect("rows" in toUsageLimits({ period_start: "2026-11-01", own })).toBe(false);
     expect(toUsageLimits({ period_start: "2026-11-01", own, rows: [] }).rows).toEqual([]);
-    expect(toUsageLimits({ period_start: "2026-11-01", own, rows: null }).rows).toEqual([]);
     const row = { kind: "workspace", amount_micro_usd: null, spent_micro_usd: 5, held_micro_usd: 0 };
     expect(toUsageLimits({ period_start: "2026-11-01", own, rows: [row] }).rows).toEqual([row]);
+  });
+
+  it("UPM-359 rows the gateway sent as null do not count as sent, so they never offer the Workspace tab", () => {
+    expect("rows" in toUsageLimits({ period_start: "2026-11-01", own, rows: null })).toBe(false);
+    expect("rows" in toUsageLimits({ period_start: "2026-11-01", own, rows: "none" })).toBe(false);
+  });
+
+  it("UPM-359 an absent or non-integer money field is refused on a limit row and on the own limits", () => {
+    const row = { kind: "workspace", amount_micro_usd: null, spent_micro_usd: 5, held_micro_usd: 0 };
+    for (const key of ["amount_micro_usd", "spent_micro_usd", "held_micro_usd"]) {
+      for (const value of notMoney) {
+        expect(() => toUsageLimits({ period_start: "2026-11-01", own, rows: [changed(row, key, value)] }), `${key} ${String(value)}`).toThrow(
+          `The brain sent no ${key}.`,
+        );
+      }
+    }
+    for (const key of ["limit_micro_usd", "workspace_limit_micro_usd", "held_micro_usd"]) {
+      for (const value of notMoney) {
+        expect(() => toUsageLimits({ period_start: "2026-11-01", own: changed(own, key, value) }), `${key} ${String(value)}`).toThrow(
+          `The brain sent no ${key}.`,
+        );
+      }
+    }
   });
 });
 
@@ -127,6 +192,22 @@ describe("toWorkspaceUsage", () => {
     expect(usage.rows[0]?.spend_micro_usd).toBeNull();
     expect(usage.rows[0]?.list_price_micro_usd).toBe(2_000_000);
     expect(() => toWorkspaceUsage({ ...base, group: "galaxy", rows: [] })).toThrow("unknown group");
+  });
+
+  it("UPM-359 an absent or non-integer money field is refused on a workspace row and on the workspace's list price", () => {
+    const { sources: _sources, providers: _providers, models: _models, tasks: _tasks, ...base } = report;
+    for (const key of ["spend_micro_usd", "list_price_micro_usd"]) {
+      for (const value of notMoney) {
+        expect(() => toWorkspaceUsage({ ...base, group: "team", rows: [changed(row, key, value)] }), `row ${key} ${String(value)}`).toThrow(
+          `The brain sent no ${key}.`,
+        );
+      }
+    }
+    for (const value of notMoney) {
+      expect(() => toWorkspaceUsage(changed({ ...base, group: "team", rows: [row] }, "list_price_micro_usd", value))).toThrow(
+        "The brain sent no list_price_micro_usd.",
+      );
+    }
   });
 });
 

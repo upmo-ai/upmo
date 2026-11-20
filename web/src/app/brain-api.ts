@@ -1027,7 +1027,8 @@ function toLimitRow(value: unknown): UsageLimitRow {
 
 /**
  * GET /api/usage/limits as the gateway sends it. `rows` is left out unless the
- * gateway sent it, because its presence says the person holds usage:view.
+ * gateway sent a list (even an empty one), because its presence says the person
+ * holds usage:view. A null or any other value is not a list and does not count.
  */
 export function toUsageLimits(value: unknown): UsageLimits {
   const source = record(value, "limits");
@@ -1040,9 +1041,7 @@ export function toUsageLimits(value: unknown): UsageLimits {
       spent_micro_usd: micro(own, "spent_micro_usd"),
       held_micro_usd: micro(own, "held_micro_usd"),
     },
-    ...(source.rows === undefined
-      ? {}
-      : { rows: source.rows === null ? [] : list(source.rows, "limit rows").map(toLimitRow) }),
+    ...(Array.isArray(source.rows) ? { rows: source.rows.map(toLimitRow) } : {}),
   };
 }
 

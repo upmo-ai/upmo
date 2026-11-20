@@ -191,13 +191,15 @@ describe("Usage panels", () => {
     expect(grid.contains(document.querySelector(".usage-figures"))).toBe(false);
   });
 
-  it("usage polish 4113376c: the layout reads the content width, six tiles and two panels across from 928px, three tiles from 640px", () => {
+  it("usage polish 4113376c: the layout reads the content width, every tile in one row and two panels across from 928px, three tiles from 640px", () => {
     const css = readFileSync(join("src", "features", "usage", "usage.css"), "utf8");
     expect(css).toMatch(/\.usage-page\s*\{[^}]*container:\s*usage\s*\/\s*inline-size/);
     const blocks = css.split("@container usage ").slice(1);
     const from = (min: string) => blocks.find((block) => block.startsWith(`(min-width: ${min})`)) ?? "";
     // 58rem and 40rem are 928px and 640px. A 1280px screen leaves about 990px of content beside the sidebar.
-    expect(from("58rem")).toMatch(/\.usage-figures\s*\{[^}]*repeat\(6,/);
+    // One row whatever the count: six tiles, or seven when Not billed shows. A fixed column count would wrap the last tile alone.
+    expect(from("58rem")).toMatch(/\.usage-figures\s*\{[^}]*grid-auto-flow:\s*column/);
+    expect(from("58rem")).not.toMatch(/\.usage-figures\s*\{[^}]*repeat\(\d+,/);
     expect(from("58rem")).toMatch(/\.usage-panels\s*\{[^}]*repeat\(2,/);
     expect(from("58rem")).toMatch(/\.usage-wide\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
     expect(from("40rem")).toMatch(/\.usage-figures\s*\{[^}]*repeat\(3,/);

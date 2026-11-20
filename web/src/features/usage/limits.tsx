@@ -3,7 +3,7 @@ import { UsageMeter, Panel } from "@upmo-ai/components";
 
 import type { UsageLimits } from "../../app/api";
 import { limitUse, limitWarnPercent } from "./figures";
-import { formatDay, formatMicroUsd, formatRate } from "./format";
+import { formatDay, formatMicroUsd } from "./format";
 
 /** One limit as a bar, with the words that carry the 80% and the over-the-limit states so colour is not the only signal. */
 function LimitBar({ label, limit, spent, held }: { label: string; limit: number; spent: number; held: number }) {
@@ -23,7 +23,7 @@ function LimitBar({ label, limit, spent, held }: { label: string; limit: number;
         </Text>
       ) : state === "near" ? (
         <Text size="sm" c="orange" role="status">
-          {`${formatRate(percent / 100)} of the limit is used`}
+          {`${Math.floor((spent * 100) / limit)}% of the limit is used`}
         </Text>
       ) : null}
       {held > 0 ? (

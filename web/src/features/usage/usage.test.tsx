@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../../App";
 import {
+  BrainError,
   createStubApi,
   type ApiClient,
   type Usage,
@@ -783,6 +784,12 @@ describe("Usage page limits", () => {
     expect(screen.queryByRole("progressbar", { name: "Workspace limit" })).toBeNull();
   });
 
+  it("UPM-359 limit bars: a limit that is nearly but not fully used never reads 100%", async () => {
+    renderAt("/usage", { ...createStubApi(), usageLimits: async () => limits({ limit_micro_usd: 100_000_000, spent_micro_usd: 99_600_000 }) });
+    expect(await screen.findByText("99% of the limit is used")).toBeTruthy();
+    expect(screen.queryByText("Limit reached")).toBeNull();
+  });
+
   it("UPM-359 limit bars: says so when the limits cannot be read, and the rest of the page still loads", async () => {
     renderAt("/usage", {
       ...createStubApi(),
@@ -949,6 +956,69 @@ describe("Usage page workspace tab", () => {
     expect((await screen.findAllByRole("alert")).map((alert) => alert.textContent)).toContain(
       "Only people who may view usage can see the workspace's usage.",
     );
+  });
+});
+
+describe("Usage page workspace kinds of work", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetChartProps();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("UPM-359 workspace grouped by kind of work names the kinds as Your usage does", async () => {
+    renderAt("/usage");
+    fireEvent.click(await screen.findByRole("tab", { name: "Workspace" }));
+    await screen.findByRole("table", { name: "Workspace usage" });
+    fireEvent.click(screen.getByRole("combobox", { name: "Group by" }));
+    fireEvent.click(within(screen.getByRole("listbox", { name: "Group by", hidden: true })).getByRole("option", { name: "Kind of work", hidden: true }));
+    const table = await screen.findByRole("table", { name: "Workspace usage" });
+    await waitFor(() => expect(within(table).getByRole("columnheader", { name: "Kind of work" })).toBeTruthy());
+    expect(within(table).getByText("Chat")).toBeTruthy();
+    expect(within(table).getByText("Tasks")).toBeTruthy();
+    expect(within(table).queryByText("chat")).toBeNull();
+    expect(screen.getByRole("region", { name: "Usage by kind of work" })).toBeTruthy();
+  });
+});
+
+describe("Usage page refusals", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetChartProps();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("UPM-359 access: a 403 on the workspace read is shown on the tab and does not sign the person out", async () => {
+    const client = createStubApi();
+    const history = renderAt("/usage", {
+      ...client,
+      workspaceUsage: async () => {
+        throw new BrainError(403, "Only people who may view usage can see the workspace's usage.");
+      },
+    });
+    fireEvent.click(await screen.findByRole("tab", { name: "Workspace" }));
+    expect((await screen.findAllByRole("alert")).map((alert) => alert.textContent)).toContain(
+      "Only people who may view usage can see the workspace's usage.",
+    );
+    expect(history.location.pathname).toBe("/usage");
+  });
+
+  it("UPM-359 access: a 401 on the workspace read does sign the person out", async () => {
+    const client = createStubApi();
+    const history = renderAt("/usage", {
+      ...client,
+      workspaceUsage: async () => {
+        throw new BrainError(401, "unauthorised");
+      },
+    });
+    fireEvent.click(await screen.findByRole("tab", { name: "Workspace" }));
+    await waitFor(() => expect(history.location.pathname).toBe("/login"));
   });
 });
 

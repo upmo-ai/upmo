@@ -222,15 +222,23 @@ function UsageOverview({ usage }: { usage: Usage }) {
 /** Where the calls came from: chat, tasks, automations and the rest. */
 function KindOfWork({ usage }: { usage: Usage }) {
   const { sources } = usage;
+  const headingId = useId();
   return (
     <Panel p="md">
-      <Title order={2} size="h4" mb="sm">
+      <Title order={2} size="h4" mb="sm" id={headingId}>
         Kind of work
       </Title>
       {sources.length === 0 ? (
         <Text c="dimmed">No usage by kind of work in this range.</Text>
       ) : (
-        <Table.ScrollContainer minWidth={480} type="native" className="usage-scroll" tabIndex={0} role="region">
+        <Table.ScrollContainer
+          minWidth={480}
+          type="native"
+          className="usage-scroll"
+          tabIndex={0}
+          role="region"
+          aria-labelledby={headingId}
+        >
           <Table aria-label="Kind of work">
             <Table.Thead>
               <Table.Tr>

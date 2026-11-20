@@ -1,6 +1,6 @@
 import { Group, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button, EmptyState, Panel, Select, StatTile, Table } from "@upmo-ai/components";
 
 import {
@@ -10,6 +10,7 @@ import {
   type UsageRange,
   type WorkspaceUsage,
 } from "../../app/api";
+import { sourceLabel } from "./figures";
 import { formatMicroUsd, formatSpend, formatTokens } from "./format";
 
 const groups: { value: UsageGroup; label: string }[] = [
@@ -79,6 +80,7 @@ export function WorkspaceUsageTab({ range }: { range: UsageRange }) {
 }
 
 function WorkspaceFigures({ usage }: { usage: WorkspaceUsage }) {
+  const headingId = useId();
   const label = groups.find((group) => group.value === usage.group)?.label ?? usage.group;
   if (usage.rows.length === 0) {
     return (
@@ -104,10 +106,17 @@ function WorkspaceFigures({ usage }: { usage: WorkspaceUsage }) {
         ) : null}
       </div>
       <Panel p="md">
-        <Title order={2} size="h4" mb="sm">
+        <Title order={2} size="h4" mb="sm" id={headingId}>
           {`Usage by ${label.toLowerCase()}`}
         </Title>
-        <Table.ScrollContainer minWidth={640} type="native" className="usage-scroll" tabIndex={0} role="region">
+        <Table.ScrollContainer
+          minWidth={640}
+          type="native"
+          className="usage-scroll"
+          tabIndex={0}
+          role="region"
+          aria-labelledby={headingId}
+        >
           <Table aria-label="Workspace usage">
             <Table.Thead>
               <Table.Tr>
@@ -121,7 +130,7 @@ function WorkspaceFigures({ usage }: { usage: WorkspaceUsage }) {
             <Table.Tbody>
               {usage.rows.map((row) => (
                 <Table.Tr key={row.id}>
-                  <Table.Td>{row.name}</Table.Td>
+                  <Table.Td>{usage.group === "source" ? sourceLabel(row.name) : row.name}</Table.Td>
                   <Table.Num>{formatTokens(row.requests)}</Table.Num>
                   <Table.Num>{formatTokens(row.tokens)}</Table.Num>
                   <Table.Num>{formatSpend(row.spend_micro_usd, row.estimated)}</Table.Num>
