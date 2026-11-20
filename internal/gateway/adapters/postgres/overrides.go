@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -20,19 +21,116 @@ import (
 
 var (
 	_ app.OverrideStore    = Providers{}
+	_ app.PricingMapStore  = Providers{}
 	_ app.CallPricer       = Store{}
 	_ app.EstimateNotifier = EstimateNotifier{}
 )
+
+func (p Providers) SetPricingMap(ctx context.Context, who app.Caller, accountID string, vendor *string, models map[string]string) error {
+	if _, err := uuid.Parse(accountID); err != nil {
+		return app.ErrNotFound
+	}
+	tx, err := p.begin(ctx, who)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('gateway.pricing_map:' || $1::text, 0))`, accountID); err != nil {
+		return err
+	}
+	before, err := getAccount(ctx, tx, accountID)
+	if err != nil {
+		return err
+	}
+	merged := maps.Clone(before.PricingModels)
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	changedBefore := map[string]string{}
+	changedAfter := map[string]string{}
+	values := map[string]audit.Change{}
+	fields := []string{}
+	updatedVendor := before.PricingProvider
+	if vendor != nil {
+		updatedVendor = *vendor
+	}
+	if before.PricingProvider != updatedVendor {
+		fields = append(fields, "pricing_provider")
+		values["pricing_provider"] = audit.Change{From: before.PricingProvider, To: updatedVendor}
+	}
+	for model, mapped := range models {
+		old, hadOld := merged[model]
+		if mapped == "" {
+			delete(merged, model)
+		} else {
+			merged[model] = mapped
+		}
+		if next, hasNext := merged[model]; hadOld != hasNext || old != next {
+			if hadOld {
+				changedBefore[model] = old
+			}
+			if hasNext {
+				changedAfter[model] = next
+			}
+		}
+	}
+	if len(changedBefore) > 0 || len(changedAfter) > 0 {
+		fields = append(fields, "pricing_model")
+		values["pricing_model"] = audit.Change{From: changedBefore, To: changedAfter}
+	}
+	if len(fields) == 0 {
+		audit.NoChange(ctx)
+		return tx.Commit(ctx)
+	}
+	slices.Sort(fields)
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	var updated bool
+	if err := tx.QueryRow(ctx, `SELECT gateway.set_provider_pricing_map($1::uuid,$2,$3::jsonb)`, accountID, updatedVendor, encoded).Scan(&updated); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "provider_accounts_pricing_models_check" {
+			return app.ErrPricingMapLimit
+		}
+		return mapOverrideErr(err)
+	}
+	if !updated {
+		return app.ErrNotFound
+	}
+	if err := audit.Record(ctx, tx, audit.Event{Action: audit.PricingMapSet, Outcome: audit.Success, TargetID: accountID, Changes: audit.Changes{Fields: fields, Values: values}}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
 // LookupCallPricing loads the override, discovered provider-list pricing,
 // exact vendor catalog pricing, cross-provider (”) fallback pricing, and
 // vendor highest rate for one call on accountID. Uses the store's serving pool.
 func (s Store) LookupCallPricing(ctx context.Context, accountID, vendor, model string) (app.CallPricing, error) {
 	var out app.CallPricing
+	catalogModel := model
 	if s.Pool == nil {
 		return out, nil
 	}
 	if _, err := uuid.Parse(accountID); err == nil {
+		var pricingVendor string
+		var raw []byte
+		if err := s.Pool.QueryRow(ctx, `SELECT pricing_provider, pricing_models FROM gateway.provider_accounts WHERE id=$1::uuid`, accountID).Scan(&pricingVendor, &raw); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return app.CallPricing{}, err
+		}
+		var mapped map[string]string
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &mapped); err != nil {
+				return app.CallPricing{}, err
+			}
+		}
+		if pricingVendor != "" {
+			vendor = pricingVendor
+		}
+		if mapped[model] != "" {
+			catalogModel = mapped[model]
+		}
 		ov, err := readOverride(ctx, s.Pool, accountID, model)
 		if err != nil {
 			return app.CallPricing{}, err
@@ -49,7 +147,7 @@ func (s Store) LookupCallPricing(ctx context.Context, accountID, vendor, model s
 			}
 		}
 	}
-	cat, found, cross, err := s.lookupCatalogPrices(ctx, vendor, model)
+	cat, found, cross, err := s.lookupCatalogPrices(ctx, vendor, catalogModel)
 	if err != nil {
 		return app.CallPricing{}, err
 	}

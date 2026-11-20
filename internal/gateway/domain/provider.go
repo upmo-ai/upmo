@@ -102,14 +102,16 @@ func AccountCheckOffset(accountID string) time.Duration {
 // Provider is one account as a person sees it. CredentialRef names its sealed
 // key and never leaves the backend.
 type Provider struct {
-	ID       string
-	Provider string
-	Name     string
-	Adapter  string
-	PlanKind string
-	BaseURL  string
-	Status   string
-	Enabled  bool
+	ID              string
+	Provider        string
+	Name            string
+	Adapter         string
+	PlanKind        string
+	BaseURL         string
+	PricingProvider string
+	PricingModels   map[string]string
+	Status          string
+	Enabled         bool
 	// Disabled preserves the zero-value compatibility of provider test views;
 	// persisted accounts set it from enabled when they are scanned.
 	Disabled      bool

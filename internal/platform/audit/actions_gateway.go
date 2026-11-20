@@ -24,6 +24,7 @@ const (
 	// PriceOverrideSet and PriceOverrideDelete record per-account model price overrides.
 	PriceOverrideSet    Action = "provider.price_override.set"
 	PriceOverrideDelete Action = "provider.price_override.delete"
+	PricingMapSet       Action = "provider.pricing_map.set"
 
 	// RouteCreate stores one gateway route.
 	RouteCreate Action = "route.create"
@@ -54,6 +55,7 @@ func init() {
 		"model", "input_micro_usd_per_mtok", "output_micro_usd_per_mtok", "cache_read_micro_usd_per_mtok", "cache_write_micro_usd_per_mtok")
 	register(PriceOverrideDelete, "provider", classAPIActivity, activityUnknown,
 		"model", "input_micro_usd_per_mtok", "output_micro_usd_per_mtok", "cache_read_micro_usd_per_mtok", "cache_write_micro_usd_per_mtok")
+	register(PricingMapSet, "provider", classAPIActivity, activityUnknown, "pricing_provider", "pricing_model")
 
 	register(RouteCreate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")
 	register(RouteUpdate, "route", classAPIActivity, activityUnknown, "capability", "decision", "visibility", "team_ids")

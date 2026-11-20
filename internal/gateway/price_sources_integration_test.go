@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/snapshot"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
@@ -3114,4 +3116,426 @@ func TestFeature_UPM354_SettleRetryAndFailureLogsMetric(t *testing.T) {
 			t.Fatalf("second insert with same hold_id = %v, want SQLSTATE 23505", err)
 		}
 	})
+}
+
+func TestFeature_UPM387_CustomHostAndAliasUsePricingMap(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'a'))
+	r.svc.Allow = func(_ context.Context, user string) (string, error) {
+		if user == bob {
+			return domain.SharePermission, nil
+		}
+		return "", nil
+	}
+	r.mount(nil)
+	store := postgres.Store{Pool: r.owner}
+	if err := store.ReplaceCatalog(ctx, "upm387-map-v1", []domain.CatalogRow{
+		{Vendor: "openrouter", Model: "custom-model", Version: "upm387-map-v1", Price: domain.Price{Version: "upm387-map-v1", InputMicroUSDPerMTok: ptrInt64(7_000_000), OutputMicroUSDPerMTok: ptrInt64(11_000_000)}},
+		{Vendor: "openrouter", Model: "upstream-model", Version: "upm387-map-v1", Price: domain.Price{Version: "upm387-map-v1", InputMicroUSDPerMTok: ptrInt64(3_000_000), OutputMicroUSDPerMTok: ptrInt64(5_000_000)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acct := r.mustAdd(bob, map[string]any{"provider": "openai", "name": "Mapped custom host", "adapter": domain.AdapterOpenAI, "plan_kind": domain.PlanMetered, "base_url": "https://proxy.example.test/v1", "api_key": newKey, "models": []string{"custom-model", "deployment-alias"}, "visibility": domain.VisibilityEveryone})
+	code, raw := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"pricing_provider": "openrouter", "models": map[string]any{"deployment-alias": "upstream-model"}})
+	if code != http.StatusNoContent {
+		t.Fatalf("set pricing map = %d %s", code, raw)
+	}
+	var ref string
+	if err := r.owner.QueryRow(ctx, `SELECT credential_ref FROM gateway.provider_accounts WHERE id=$1::uuid`, acct.ID).Scan(&ref); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		sent, catalog string
+		want          int64
+	}{{"custom-model", "custom-model", 12_500_000}, {"deployment-alias", "upstream-model", 5_500_000}} {
+		var route string
+		if err := r.owner.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, 'chat', true) RETURNING id::text`, "r-upm387-"+tc.sent).Scan(&route); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model, retry_budget) VALUES ($1::uuid, 1, $2::uuid, $3, 0)`, route, acct.ID, tc.sent); err != nil {
+			t.Fatal(err)
+		}
+		dispatch := app.Dispatch{Routes: store, Teams: store, Prices: store, Ledger: store, Limits: store, Secrets: staticSecrets{ref: "k"}, Chat: map[string]app.Chatter{domain.AdapterOpenAI: &scriptChatter{usage: domain.Usage{Arrived: true, Input: 1_000_000, Output: 500_000}}}}
+		result, err := dispatch.ChatCall(ctx, "r-upm387-"+tc.sent, "", domain.Principal{User: bob, Source: domain.SourceChat}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}})
+		if err != nil || result.CostMicroUSD == nil || *result.CostMicroUSD != tc.want {
+			t.Fatalf("%s pricing = %+v err=%v", tc.sent, result, err)
+		}
+		var source, version string
+		if err := r.owner.QueryRow(ctx, `SELECT price_source, price_version FROM gateway.ledger WHERE route=$1`, "r-upm387-"+tc.sent).Scan(&source, &version); err != nil {
+			t.Fatal(err)
+		}
+		if source != "models_dev" || version != "upm387-map-v1" {
+			t.Fatalf("%s source/version = %q/%q (catalog row %s)", tc.sent, source, version, tc.catalog)
+		}
+	}
+}
+
+func TestFeature_UPM387_OverrideUsesOriginalModelWithPricingAlias(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'a'))
+	store := postgres.Store{Pool: r.owner}
+	if err := store.ReplaceCatalog(ctx, "upm387-override-v1", []domain.CatalogRow{
+		{Vendor: "openrouter", Model: "upstream-model", Version: "upm387-override-v1", Price: domain.Price{Version: "upm387-override-v1", InputMicroUSDPerMTok: ptrInt64(3_000_000), OutputMicroUSDPerMTok: ptrInt64(5_000_000)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acct := r.mustAdd(ada, map[string]any{"provider": "openai", "name": "Aliased override", "adapter": domain.AdapterOpenAI, "plan_kind": domain.PlanMetered, "base_url": "https://api.openai.com", "api_key": adaKey, "models": []string{"deployment-alias"}, "visibility": domain.VisibilityPrivate})
+	if _, err := r.owner.Exec(ctx, `UPDATE gateway.provider_accounts SET pricing_provider='openrouter', pricing_models='{"deployment-alias":"upstream-model"}'::jsonb WHERE id=$1::uuid`, acct.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.price_overrides (account_id, model, input_micro_usd_per_mtok, output_micro_usd_per_mtok, updated_by) VALUES ($1::uuid, 'deployment-alias', 1000000, 2000000, $2::uuid)`, acct.ID, ada); err != nil {
+		t.Fatal(err)
+	}
+	var route string
+	if err := r.owner.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ('r-upm387-override-alias', 'chat', true) RETURNING id::text`).Scan(&route); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model, retry_budget) VALUES ($1::uuid, 1, $2::uuid, 'deployment-alias', 0)`, route, acct.ID); err != nil {
+		t.Fatal(err)
+	}
+	var ref string
+	if err := r.owner.QueryRow(ctx, `SELECT credential_ref FROM gateway.provider_accounts WHERE id=$1::uuid`, acct.ID).Scan(&ref); err != nil {
+		t.Fatal(err)
+	}
+	dispatch := app.Dispatch{Routes: store, Teams: store, Prices: store, Ledger: store, Limits: store, Secrets: staticSecrets{ref: "k"}, Chat: map[string]app.Chatter{domain.AdapterOpenAI: &scriptChatter{usage: domain.Usage{Arrived: true, Input: 1_000_000, Output: 500_000}}}}
+	result, err := dispatch.ChatCall(ctx, "r-upm387-override-alias", "", domain.Principal{User: ada, Source: domain.SourceChat}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}})
+	if err != nil || result.CostMicroUSD == nil || *result.CostMicroUSD != 2_000_000 {
+		t.Fatalf("aliased override pricing = %+v err=%v, want override cost 2_000_000", result, err)
+	}
+	var source string
+	if err := r.owner.QueryRow(ctx, `SELECT price_source FROM gateway.ledger WHERE route='r-upm387-override-alias'`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "override" {
+		t.Fatalf("aliased override price_source = %q, want override", source)
+	}
+}
+
+func TestFeature_UPM387_CustomHostWithoutPricingMapKeepsUPM354Price(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'a'))
+	store := postgres.Store{Pool: r.owner}
+	if err := store.ReplaceCatalog(ctx, "upm387-control-v1", []domain.CatalogRow{
+		{Vendor: "openrouter", Model: "custom-model", Version: "upm387-control-v1", Price: domain.Price{Version: "upm387-control-v1", InputMicroUSDPerMTok: ptrInt64(7_000_000), OutputMicroUSDPerMTok: ptrInt64(11_000_000)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acct := r.mustAdd(ada, map[string]any{"provider": "openai", "name": "Unmapped custom host", "adapter": domain.AdapterOpenAI, "plan_kind": domain.PlanMetered, "base_url": "https://proxy.example.test/v1", "api_key": adaKey, "models": []string{"custom-model"}, "visibility": domain.VisibilityPrivate})
+	var route string
+	if err := r.owner.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ('r-upm387-custom-control', 'chat', true) RETURNING id::text`).Scan(&route); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.route_links (route_id, position, provider_account_id, model, retry_budget) VALUES ($1::uuid, 1, $2::uuid, 'custom-model', 0)`, route, acct.ID); err != nil {
+		t.Fatal(err)
+	}
+	var ref string
+	if err := r.owner.QueryRow(ctx, `SELECT credential_ref FROM gateway.provider_accounts WHERE id=$1::uuid`, acct.ID).Scan(&ref); err != nil {
+		t.Fatal(err)
+	}
+	dispatch := app.Dispatch{Routes: store, Teams: store, Prices: store, Ledger: store, Limits: store, Secrets: staticSecrets{ref: "k"}, Chat: map[string]app.Chatter{domain.AdapterOpenAI: &scriptChatter{usage: domain.Usage{Arrived: true, Input: 1_000_000, Output: 500_000}}}}
+	if _, err := dispatch.ChatCall(ctx, "r-upm387-custom-control", "", domain.Principal{User: ada, Source: domain.SourceChat}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}); err != nil {
+		t.Fatalf("unmapped custom host ChatCall: %v", err)
+	}
+	var source string
+	var estimated bool
+	if err := r.owner.QueryRow(ctx, `SELECT price_source, estimated FROM gateway.ledger WHERE route='r-upm387-custom-control'`).Scan(&source, &estimated); err != nil {
+		t.Fatal(err)
+	}
+	if !((source == "unknown" && !estimated) || (source == "estimate" && estimated)) {
+		t.Fatalf("unmapped custom host ledger = source:%q estimated:%t, want unknown or estimate", source, estimated)
+	}
+}
+
+func TestFeature_UPM387_PricingMapRequiresSettingsManageAndAudit(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	sealed := newAuditSealer(t, r.owner)
+	r.svc.Allow = func(_ context.Context, user string) (string, error) {
+		if user == bob || user == eve {
+			return domain.SharePermission, nil
+		}
+		return "", nil
+	}
+	mux := http.NewServeMux()
+	ProvidersHandler{Service: r.svc, Access: func(req *http.Request) (string, bool) {
+		return req.Header.Get("X-User"), req.Header.Get("X-User") != ""
+	}}.MountProviders(mux, nil)
+	r.handler = audit.Middleware(audit.Routes(), mux, r.app, "brain", nil, slog.Default())(httpserver.Protect(mux))
+	private := r.mustAdd(ada, map[string]any{"provider": "openai", "name": "Ada private mapping", "adapter": domain.AdapterOpenAI, "plan_kind": "metered", "base_url": "https://api.openai.com", "api_key": adaKey, "models": []string{"alias-model"}, "visibility": domain.VisibilityPrivate})
+	shared := r.mustAdd(bob, map[string]any{"provider": "openrouter", "name": "Shared mapping", "adapter": domain.AdapterOpenAI, "plan_kind": "metered", "base_url": "https://openrouter.ai/api", "api_key": newKey, "models": []string{"alias-model"}, "visibility": domain.VisibilityEveryone})
+	_ = sealed()
+	if code, body := r.call(ada, http.MethodPut, "/api/providers/"+private.ID+"/pricing-map", map[string]any{"pricing_provider": "openrouter", "models": map[string]any{"alias-model": "catalog-model"}}); code != http.StatusForbidden {
+		t.Fatalf("member private pricing map = %d %s, want 403", code, body)
+	}
+	if events := sealed(); len(events) != 1 || events[0].Action != audit.PricingMapSet || events[0].Outcome != audit.Denied {
+		t.Fatalf("denied pricing map audit events = %+v", events)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+private.ID+"/pricing-map", map[string]any{"pricing_provider": "openrouter", "models": map[string]any{"alias-model": "catalog-model"}}); code != http.StatusNotFound {
+		t.Fatalf("manager other member private pricing map = %d %s, want 404", code, body)
+	}
+	for _, event := range sealed() {
+		if event.Outcome == audit.Success {
+			t.Fatalf("hidden private pricing map was audited as success: %+v", event)
+		}
+	}
+	var privateProvider string
+	var privateModels []byte
+	if err := r.owner.QueryRow(context.Background(), `SELECT pricing_provider, pricing_models FROM gateway.provider_accounts WHERE id=$1::uuid`, private.ID).Scan(&privateProvider, &privateModels); err != nil || privateProvider != "" || string(privateModels) != "{}" {
+		t.Fatalf("private map after denied update = %q %s err=%v", privateProvider, privateModels, err)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+shared.ID+"/pricing-map", map[string]any{"pricing_provider": "openrouter", "models": map[string]any{"alias-model": "catalog-model"}}); code != http.StatusNoContent {
+		t.Fatalf("admin pricing map = %d %s", code, body)
+	}
+	events := sealed()
+	if len(events) != 1 || events[0].Action != audit.PricingMapSet || events[0].TargetID != shared.ID {
+		t.Fatalf("pricing map audit events = %+v", events)
+	}
+	if !slices.Contains(events[0].Changes.Fields, "pricing_provider") || !slices.Contains(events[0].Changes.Fields, "pricing_model") {
+		t.Fatalf("pricing map audit changes = %+v", events[0].Changes)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+shared.ID+"/pricing-map", map[string]any{"models": map[string]any{"alias-model": "   "}}); code != http.StatusNoContent {
+		t.Fatalf("clear pricing model without provider = %d %s", code, body)
+	}
+	var pricingProvider string
+	var pricingModels []byte
+	if err := r.owner.QueryRow(context.Background(), `SELECT pricing_provider, pricing_models FROM gateway.provider_accounts WHERE id=$1::uuid`, shared.ID).Scan(&pricingProvider, &pricingModels); err != nil {
+		t.Fatal(err)
+	}
+	if pricingProvider != "openrouter" || string(pricingModels) != "{}" {
+		t.Fatalf("omitted vendor/cleared map = %q %s", pricingProvider, pricingModels)
+	}
+	events = sealed()
+	if len(events) != 1 || events[0].Outcome != audit.Success || !slices.Contains(events[0].Changes.Fields, "pricing_model") {
+		t.Fatalf("clear pricing map audit events = %+v", events)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+shared.ID+"/pricing-map", map[string]any{"pricing_provider": "unknown-vendor"}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown pricing vendor = %d %s", code, body)
+	}
+	var houseID string
+	if err := r.owner.QueryRow(context.Background(), `INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, base_url, provider, visibility) VALUES ('House map', 'openai_compat', 'house-map-ref', 'metered', true, 'https://api.example.test', 'openai', 'everyone') RETURNING id::text`).Scan(&houseID); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+houseID+"/pricing-map", map[string]any{"pricing_provider": "openai", "models": map[string]any{"alias-model": "house-model"}}); code != http.StatusNoContent {
+		t.Fatalf("manager house pricing map = %d %s", code, body)
+	}
+	var houseProvider string
+	var houseModels []byte
+	if err := r.owner.QueryRow(context.Background(), `SELECT pricing_provider, pricing_models FROM gateway.provider_accounts WHERE id=$1::uuid`, houseID).Scan(&houseProvider, &houseModels); err != nil || houseProvider != "openai" || string(houseModels) != `{"alias-model": "house-model"}` {
+		t.Fatalf("house pricing map = %q %s err=%v", houseProvider, houseModels, err)
+	}
+	managerPrivate := r.mustAdd(bob, map[string]any{"provider": "openai", "name": "Manager private mapping", "adapter": domain.AdapterOpenAI, "plan_kind": "metered", "base_url": "https://api.openai.com", "api_key": newKey, "models": []string{"alias-model"}, "visibility": domain.VisibilityPrivate})
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+managerPrivate.ID+"/pricing-map", map[string]any{"pricing_provider": "openai"}); code != http.StatusNoContent {
+		t.Fatalf("manager own private pricing map = %d %s", code, body)
+	}
+	var storedVendor string
+	var storedModels []byte
+	if err := r.owner.QueryRow(context.Background(), `SELECT pricing_provider, pricing_models FROM gateway.provider_accounts WHERE id=$1::uuid`, managerPrivate.ID).Scan(&storedVendor, &storedModels); err != nil || storedVendor != "openai" || string(storedModels) != "{}" {
+		t.Fatalf("manager own private stored mapping = %q %s err=%v", storedVendor, storedModels, err)
+	}
+	tx, err := r.owner.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SET LOCAL ROLE upmo_app`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `SELECT set_config('upmo.allow', 'providers:read', true)`); err != nil {
+		t.Fatal(err)
+	}
+	var updated bool
+	err = tx.QueryRow(context.Background(), `SELECT gateway.set_provider_pricing_map($1::uuid, 'openai', '{}'::jsonb)`, houseID).Scan(&updated)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" || pgErr.Message != "pricing map requires settings:manage" {
+		t.Fatalf("direct pricing map function without settings:manage = %v, want its settings:manage guard", err)
+	}
+	_ = tx.Rollback(context.Background())
+
+	managerTx, err := r.owner.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = managerTx.Rollback(context.Background()) }()
+	if _, err := managerTx.Exec(context.Background(), `SET LOCAL ROLE upmo_app`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managerTx.Exec(context.Background(), `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', 'settings:manage', true)`, bob); err != nil {
+		t.Fatal(err)
+	}
+	err = managerTx.QueryRow(context.Background(), `SELECT gateway.set_provider_pricing_map($1::uuid, 'openai', '{}'::jsonb)`, private.ID).Scan(&updated)
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" || pgErr.Message != "pricing map requires account access" {
+		t.Fatalf("manager direct call for another member private account = %v, want account access guard", err)
+	}
+}
+
+func TestFeature_UPM387_PricingMapLimitsReturnBadRequest(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	r.svc.Allow = func(_ context.Context, user string) (string, error) {
+		if user == bob {
+			return domain.SharePermission, nil
+		}
+		return "", nil
+	}
+	r.mount(nil)
+	acct := r.mustAdd(bob, map[string]any{"provider": "openrouter", "name": "Bounded map", "adapter": domain.AdapterOpenAI, "plan_kind": "metered", "base_url": "https://openrouter.ai/api", "api_key": newKey, "models": []string{"model-a"}, "visibility": domain.VisibilityEveryone})
+	tooMany := make(map[string]any, 2001)
+	for i := 0; i < 2001; i++ {
+		tooMany[fmt.Sprintf("model-%04d", i)] = "catalog-model"
+	}
+	for name, models := range map[string]map[string]any{"count": tooMany, "size": func() map[string]any {
+		m := make(map[string]any, 700)
+		for i := 0; i < 700; i++ {
+			m[fmt.Sprintf("model-%04d", i)] = strings.Repeat("x", 110)
+		}
+		return m
+	}()} {
+		code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": models})
+		if code != http.StatusBadRequest || !strings.Contains(string(body), "65,536 bytes") {
+			t.Fatalf("%s pricing map = %d %s, want 400 size-limit message", name, code, body)
+		}
+	}
+	clears := make(map[string]any, len(tooMany))
+	for model := range tooMany {
+		clears[model] = nil
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": clears}); code != http.StatusNoContent {
+		t.Fatalf("large clearing delta = %d %s, want 204", code, body)
+	}
+	mergedAtLimit := make(map[string]string, 2000)
+	for i := 0; i < 2000; i++ {
+		mergedAtLimit[fmt.Sprintf("m%04d", i)] = "x"
+	}
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models=$2::jsonb WHERE id=$1::uuid`, acct.ID, jsonBytes(t, mergedAtLimit)); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": map[string]any{"another": "x"}}); code != http.StatusBadRequest {
+		t.Fatalf("merged 2,001-entry pricing map = %d %s, want 400", code, body)
+	}
+	boundaryMap := make(map[string]string, 2000)
+	for i := 0; i < 2000; i++ {
+		boundaryMap[fmt.Sprintf("m%04d", i)] = ""
+	}
+	baseSize := func(models map[string]string) int {
+		return len(jsonBytes(t, models)) + 2*len(models) - 1
+	}
+	delta := 65536 - baseSize(boundaryMap)
+	for i := 0; i < 2000 && delta > 0; i++ {
+		add := delta / (2000 - i)
+		if delta%(2000-i) != 0 {
+			add++
+		}
+		boundaryMap[fmt.Sprintf("m%04d", i)] = strings.Repeat("x", add)
+		delta -= add
+	}
+	if delta != 0 || baseSize(boundaryMap) != 65536 {
+		t.Fatalf("failed to construct exact pricing map boundary: remaining delta %d, size %d", delta, baseSize(boundaryMap))
+	}
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models=$2::jsonb WHERE id=$1::uuid`, acct.ID, jsonBytes(t, boundaryMap)); err != nil {
+		t.Fatalf("seed exact-boundary pricing map: %v", err)
+	}
+	boundaryDelta := map[string]string{"m0000": boundaryMap["m0000"]}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": boundaryDelta}); code != http.StatusNoContent {
+		t.Fatalf("65,536-byte pricing map = %d %s, want 204", code, body)
+	}
+	boundaryDelta["m0000"] += "x"
+	if baseSize(boundaryMap)+1 != 65537 {
+		t.Fatalf("constructed pricing map size = %d, want 65,537", baseSize(boundaryMap)+1)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": boundaryDelta}); code != http.StatusBadRequest {
+		t.Fatalf("65,537-byte pricing map = %d %s, want 400", code, body)
+	}
+
+	// A compact map can fit while the database's jsonb text representation crosses the limit.
+	underBoth := make(map[string]string, 1300)
+	for i := 0; i < 1300; i++ {
+		underBoth[fmt.Sprintf("model-%04d", i)] = strings.Repeat("x", 32)
+	}
+	for len(jsonBytes(t, underBoth))+2*len(underBoth)-1 < 65450 {
+		underBoth["model-0000"] += "x"
+	}
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models=$2::jsonb WHERE id=$1::uuid`, acct.ID, jsonBytes(t, underBoth)); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": map[string]any{"edge": strings.Repeat("y", 30)}}); code != http.StatusNoContent {
+		t.Fatalf("map under both byte limits = %d %s, want 204", code, body)
+	}
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models=$2::jsonb WHERE id=$1::uuid`, acct.ID, jsonBytes(t, underBoth)); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := r.call(bob, http.MethodPut, "/api/providers/"+acct.ID+"/pricing-map", map[string]any{"models": map[string]any{"edge": strings.Repeat("y", 120)}}); code != http.StatusBadRequest {
+		t.Fatalf("compact-under/jsonb-over map = %d %s, want 400", code, body)
+	}
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models=$2::jsonb WHERE id=$1::uuid`, acct.ID, jsonBytes(t, tooMany)); err == nil {
+		t.Fatal("database accepted a pricing map above 2,000 entries")
+	}
+	if err := (postgres.Providers{Pool: r.owner}).SetPricingMap(context.Background(), app.Caller{User: bob, Allow: domain.SharePermission}, acct.ID, nil, map[string]string{"model-a": strings.Repeat("x", 65530)}); !errors.Is(err, app.ErrPricingMapLimit) {
+		t.Fatalf("direct store oversized pricing map = %v, want ErrPricingMapLimit", err)
+	}
+
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models='{}'::jsonb WHERE id=$1::uuid`, acct.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(context.Background(), `UPDATE gateway.provider_accounts SET pricing_models='{"a":["x"]}'::jsonb WHERE id=$1::uuid`, acct.ID); err == nil {
+		t.Fatal("pricing map CHECK accepted an array value")
+	} else {
+		var checkErr *pgconn.PgError
+		if !errors.As(err, &checkErr) || checkErr.Code != "23514" {
+			t.Fatalf("array value CHECK error = %v, want SQLSTATE 23514", err)
+		}
+	}
+	tx, err := r.owner.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SET LOCAL ROLE upmo_app`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', 'settings:manage', true)`, bob); err != nil {
+		t.Fatal(err)
+	}
+	var updated bool
+	err = tx.QueryRow(context.Background(), `SELECT gateway.set_provider_pricing_map($1::uuid, 'openai', '{"bad": 1}'::jsonb)`, acct.ID).Scan(&updated)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "22023" {
+		t.Fatalf("non-string direct pricing map value = %v, want database refusal", err)
+	}
+	_ = tx.Rollback(context.Background())
+	tx, err = r.owner.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `SET LOCAL ROLE upmo_app`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', 'settings:manage', true)`, bob); err != nil {
+		t.Fatal(err)
+	}
+	err = tx.QueryRow(context.Background(), `SELECT gateway.set_provider_pricing_map($1::uuid, 'openai', '{"a":["x"]}'::jsonb)`, acct.ID).Scan(&updated)
+	if !errors.As(err, &pgErr) || pgErr.Code != "22023" {
+		t.Fatalf("array-valued direct pricing map = %v, want database refusal", err)
+	}
+	_ = tx.Rollback(context.Background())
+	tx, err = r.owner.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SET LOCAL ROLE upmo_app`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', 'settings:manage', true)`, bob); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow(context.Background(), `SELECT gateway.set_provider_pricing_map($1::uuid, 'openai', '{"a":"x"}'::jsonb)`, acct.ID).Scan(&updated); err != nil || !updated {
+		t.Fatalf("string-valued direct pricing map updated=%t err=%v, want accepted", updated, err)
+	}
+}
+
+func jsonBytes(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }

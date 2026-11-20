@@ -15,6 +15,7 @@ func gatewayRoutes() []entry {
 		{pattern: "PUT /api/providers/{id}", route: Route{Action: ProviderUpdate}},
 		{pattern: "DELETE /api/providers/{id}", route: Route{Action: ProviderDelete}},
 		{pattern: "PUT /api/providers/{id}/overrides", route: Route{Action: PriceOverrideSet}},
+		{pattern: "PUT /api/providers/{id}/pricing-map", route: Route{Action: PricingMapSet}},
 		{pattern: "DELETE /api/providers/{id}/overrides", route: Route{Action: PriceOverrideDelete}},
 		{pattern: "POST /api/gateway/routes", route: Route{Action: RouteCreate}},
 		{pattern: "PATCH /api/gateway/routes/{id}", route: Route{Action: RouteUpdate}},

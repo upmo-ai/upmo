@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,6 +31,7 @@ var (
 	// ErrOverridePermission is a person who tried to change a price override
 	// without holding settings:manage.
 	ErrOverridePermission = errors.New("gateway: price overrides require settings:manage")
+	ErrPricingMapLimit    = errors.New("gateway: pricing map exceeds its size limit")
 	// ErrDuplicate is a name the person already uses.
 	ErrDuplicate = errors.New("gateway: provider name in use")
 	// ErrLimit is a person at the cap of own accounts.
@@ -184,6 +187,10 @@ type OverrideStore interface {
 	GetOverride(ctx context.Context, who Caller, accountID, model string) (*domain.PriceOverride, error)
 	SetOverride(ctx context.Context, who Caller, accountID string, override domain.PriceOverride) (domain.PriceOverride, error)
 	DeleteOverride(ctx context.Context, who Caller, accountID, model string) error
+}
+
+type PricingMapStore interface {
+	SetPricingMap(ctx context.Context, who Caller, accountID string, vendor *string, models map[string]string) error
 }
 
 // ModelPricingView is the merged pricing and override state for one account
@@ -787,7 +794,15 @@ func (s Providers) MergedModel(ctx context.Context, user, accountID, model strin
 	}
 	var catalog *domain.CatalogRow
 	if s.Catalog != nil {
-		row, ok, err := s.Catalog.CatalogModel(ctx, domain.PricingVendorFor(account.Adapter, account.BaseURL), model)
+		vendor := domain.PricingVendorFor(account.Adapter, account.BaseURL)
+		catalogModel := model
+		if account.PricingProvider != "" {
+			vendor = account.PricingProvider
+		}
+		if account.PricingModels[model] != "" {
+			catalogModel = account.PricingModels[model]
+		}
+		row, ok, err := s.Catalog.CatalogModel(ctx, vendor, catalogModel)
 		if err != nil {
 			return domain.MergedModel{}, err
 		}
@@ -880,6 +895,112 @@ func (s Providers) DeletePriceOverride(ctx context.Context, user, accountID, mod
 	return s.buildModelPricingView(ctx, who, account, cleanModel, nil)
 }
 
+// SetPricingMap changes the catalogue mapping for an account. Requires settings:manage.
+func (s Providers) SetPricingMap(ctx context.Context, user, accountID string, vendor *string, models map[string]string) error {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return err
+	}
+	if !who.mayShare() {
+		return ErrOverridePermission
+	}
+	encodedModels, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	if len(encodedModels) > 65536 {
+		return ErrPricingMapLimit
+	}
+	if vendor != nil {
+		cleanVendor := strings.TrimSpace(*vendor)
+		vendor = &cleanVendor
+	}
+	if vendor != nil && *vendor != "" {
+		known := false
+		for _, v := range domain.Vendors() {
+			if v.Key == *vendor {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return domain.Invalid("Choose a pricing provider from the list.")
+		}
+	}
+	clean := make(map[string]string, len(models))
+	for model, pricingModel := range models {
+		id, e := domain.CleanModelID(model)
+		if e != nil {
+			return e
+		}
+		pricingModel = strings.TrimSpace(pricingModel)
+		if pricingModel == "" {
+			clean[id] = ""
+			continue
+		}
+		mapped, e := domain.CleanModelID(pricingModel)
+		if e != nil {
+			return e
+		}
+		clean[id] = mapped
+	}
+	account, err := s.Accounts.Get(ctx, who, accountID)
+	if err != nil {
+		return err
+	}
+	effective := make(map[string]string, len(account.PricingModels)+len(clean))
+	for model, mapped := range account.PricingModels {
+		effective[model] = mapped
+	}
+	for model, mapped := range clean {
+		if mapped == "" {
+			delete(effective, model)
+		} else {
+			effective[model] = mapped
+		}
+	}
+	mergedSize, err := jsonbTextSize(effective)
+	if err != nil {
+		return err
+	}
+	if len(effective) > 2000 || mergedSize > 65536 {
+		return ErrPricingMapLimit
+	}
+	store, ok := s.Accounts.(PricingMapStore)
+	if !ok {
+		return fmt.Errorf("gateway: pricing maps are not supported")
+	}
+	return store.SetPricingMap(ctx, who, accountID, vendor, clean)
+}
+
+// jsonbTextSize matches jsonb::text's two spaces per key/value pair.
+func jsonbTextSize(models map[string]string) (int, error) {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(models); err != nil {
+		return 0, err
+	}
+	jsonbText := encoded.Bytes()
+	compactSize := len(jsonbText) - 1 // json.Encoder adds a trailing newline.
+	for i := 0; i+6 <= len(jsonbText); i++ {
+		if jsonbText[i] != '\\' || string(jsonbText[i+1:i+6]) != "u2028" && string(jsonbText[i+1:i+6]) != "u2029" {
+			continue
+		}
+		backslashes := 0
+		for j := i - 1; j >= 0 && jsonbText[j] == '\\'; j-- {
+			backslashes++
+		}
+		if backslashes%2 == 0 {
+			compactSize -= 3
+		}
+	}
+	if len(models) == 0 {
+		return compactSize, nil
+	}
+	return compactSize + 2*len(models) - 1, nil
+}
+
 func (s Providers) buildModelPricingView(ctx context.Context, who Caller, account domain.Provider, model string, override *domain.PriceOverride) (ModelPricingView, error) {
 	var seen *domain.SeenModel
 	if store, ok := s.Accounts.(OverrideStore); ok {
@@ -892,7 +1013,15 @@ func (s Providers) buildModelPricingView(ctx context.Context, who Caller, accoun
 	var catalog *domain.CatalogRow
 	var catPrice *domain.Price
 	if s.Catalog != nil {
-		row, ok, err := s.Catalog.CatalogModel(ctx, domain.PricingVendorFor(account.Adapter, account.BaseURL), model)
+		vendor := domain.PricingVendorFor(account.Adapter, account.BaseURL)
+		catalogModel := model
+		if account.PricingProvider != "" {
+			vendor = account.PricingProvider
+		}
+		if account.PricingModels[model] != "" {
+			catalogModel = account.PricingModels[model]
+		}
+		row, ok, err := s.Catalog.CatalogModel(ctx, vendor, catalogModel)
 		if err != nil {
 			return ModelPricingView{}, err
 		}

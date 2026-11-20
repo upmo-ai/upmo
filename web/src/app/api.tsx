@@ -172,6 +172,8 @@ export type ProviderAccount = {
   adapter: string;
   plan_kind: ProviderPlanKind;
   base_url?: string;
+  pricing_provider?: string;
+  pricing_models?: Record<string, string>;
   status: ProviderStatus;
   models: string[];
   /** Whether the person can use the account now: they may route through it, and it has a usable model. */
@@ -626,6 +628,8 @@ export interface ApiClient {
     setPrice(id: string, model: string, rates: MicroRates): Promise<ModelPricing>;
     /** DELETE /api/providers/{id}/overrides. 403 without settings:manage. */
     clearPrice(id: string, model: string): Promise<ModelPricing>;
+    /** PUT /api/providers/{id}/pricing-map. 403 without settings:manage. */
+    setPricingMap(id: string, pricing_provider: string | undefined, models: Record<string, string | null>): Promise<void>;
   };
   agents: {
     /** GET /api/agents: the person's own agents first, then the workspace's, each by name. */
@@ -2018,6 +2022,16 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         }
         priceOverrides.delete(`${id}/${model}`);
         return stubPricing(id, model);
+      },
+      async setPricingMap(id, pricing_provider, models) {
+        const account = ownedAccount(id);
+        if (!canManageMembers(actor().role)) throw new BrainError(403, "forbidden", "Only workspace admins can manage pricing maps.");
+        account.pricing_provider = pricing_provider;
+        account.pricing_models = { ...(account.pricing_models ?? {}) };
+        for (const [model, mapped] of Object.entries(models)) {
+          if (mapped === null || mapped === "") delete account.pricing_models[model];
+          else account.pricing_models[model] = mapped;
+        }
       },
     },
     agents: {

@@ -65,6 +65,7 @@ describe("listed prices", () => {
       source: "provider",
     });
     expect(listedPrice({ id: "model-b" }, catalog)).toEqual({ input: 1_000_000, output: 4_000_000, source: "models_dev" });
+    expect(listedPrice({ id: "deployment-alias" }, catalog, "model-b")).toEqual({ input: 1_000_000, output: 4_000_000, source: "models_dev" });
     expect(listedPrice({ id: "model-c" }, catalog)).toEqual({ input: null, output: null, source: "none" });
   });
 

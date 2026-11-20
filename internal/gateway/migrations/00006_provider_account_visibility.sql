@@ -9,7 +9,21 @@
 
 ALTER TABLE gateway.provider_accounts
   ADD COLUMN visibility text NOT NULL DEFAULT 'private',
-  ADD COLUMN team_ids uuid[] NOT NULL DEFAULT '{}';
+  ADD COLUMN team_ids uuid[] NOT NULL DEFAULT '{}',
+  ADD COLUMN pricing_provider text NOT NULL DEFAULT '',
+  ADD COLUMN pricing_models jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE gateway.provider_accounts
+  ADD CONSTRAINT provider_accounts_pricing_provider_check
+    CHECK (pricing_provider = '' OR pricing_provider ~ '^[a-z0-9][a-z0-9_-]*$'),
+  ADD CONSTRAINT provider_accounts_pricing_models_check
+    CHECK (
+      jsonb_typeof(pricing_models) = 'object'
+      AND octet_length(pricing_models::text) <= 65536
+      -- Keep the type guard first: strict jsonpath errors on non-object values.
+      AND NOT jsonb_path_exists(pricing_models, 'strict $.* ? (@.type() != "string")')
+      AND jsonb_array_length(jsonb_path_query_array(pricing_models, '$.*')) <= 2000
+    );
 
 -- House accounts are the workspace's, for everyone.
 UPDATE gateway.provider_accounts
@@ -293,12 +307,55 @@ DROP FUNCTION gateway.my_teams();
 DROP FUNCTION gateway.may_share();
 DROP TABLE gateway.provider_account_teams;
 
+-- Pricing maps are narrower than normal private-account editing: only a
+-- settings manager may change them, including on their own private account.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.set_provider_pricing_map(account_id uuid, pricing_vendor text, models jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF NOT ('settings:manage' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))) THEN
+    RAISE EXCEPTION 'pricing map requires settings:manage' USING ERRCODE = '42501';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM gateway.provider_accounts AS a
+    WHERE a.id = account_id
+      AND (a.house OR identity.may_manage_provider(a.owner_user_id, a.visibility))
+  ) THEN
+    RAISE EXCEPTION 'pricing map requires account access' USING ERRCODE = '42501';
+  END IF;
+  IF jsonb_typeof(models) <> 'object' THEN
+    RAISE EXCEPTION 'pricing models must be an object' USING ERRCODE = '22023';
+  END IF;
+  IF jsonb_path_exists(models, 'strict $.* ? (@.type() != "string")') THEN
+    RAISE EXCEPTION 'pricing model values must be strings' USING ERRCODE = '22023';
+  END IF;
+  IF jsonb_array_length(jsonb_path_query_array(models, '$.*')) > 2000 THEN
+    RAISE EXCEPTION 'pricing map exceeds its entry limit' USING ERRCODE = '23514', CONSTRAINT = 'provider_accounts_pricing_models_check';
+  END IF;
+  UPDATE gateway.provider_accounts
+  SET pricing_provider = pricing_vendor, pricing_models = models
+  WHERE id = account_id;
+  RETURN FOUND;
+END
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION gateway.set_provider_pricing_map(uuid, text, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gateway.set_provider_pricing_map(uuid, text, jsonb) TO upmo_app;
 GRANT UPDATE (visibility, team_ids) ON gateway.provider_accounts TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.account_models_seen TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.price_overrides TO upmo_app;
 
 -- +goose Down
 
+REVOKE EXECUTE ON FUNCTION gateway.set_provider_pricing_map(uuid, text, jsonb) FROM upmo_app;
+DROP FUNCTION gateway.set_provider_pricing_map(uuid, text, jsonb);
+ALTER TABLE gateway.provider_accounts
+  DROP CONSTRAINT provider_accounts_pricing_provider_check,
+  DROP CONSTRAINT provider_accounts_pricing_models_check;
 REVOKE SELECT, INSERT, UPDATE, DELETE ON gateway.price_overrides FROM upmo_app;
 DROP POLICY IF EXISTS price_overrides_write ON gateway.price_overrides;
 DROP POLICY IF EXISTS price_overrides_select ON gateway.price_overrides;
@@ -326,6 +383,8 @@ DROP POLICY IF EXISTS provider_accounts_insert ON gateway.provider_accounts;
 DROP POLICY IF EXISTS provider_accounts_select ON gateway.provider_accounts;
 
 ALTER TABLE gateway.provider_accounts
+  DROP COLUMN pricing_models,
+  DROP COLUMN pricing_provider,
   DROP CONSTRAINT provider_accounts_house_visibility_check,
   DROP CONSTRAINT provider_accounts_house_owner_check,
   DROP CONSTRAINT provider_accounts_team_ids_check,

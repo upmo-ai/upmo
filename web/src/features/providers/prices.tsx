@@ -1,4 +1,4 @@
-import { Card, Group, Stack, Text, Title } from "@mantine/core";
+import { Card, Group, Select, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
@@ -172,6 +172,13 @@ function PriceRow({
     queryFn: () => api.providers.pricing(account.id, model),
   });
   const view = pricing.data;
+  const [pricingModel, setPricingModel] = useState(account.pricing_models?.[model] ?? "");
+  const queryClient = useQueryClient();
+  const mapMutation = useMutation({
+    meta: { shown: true },
+    mutationFn: () => api.providers.setPricingMap(account.id, undefined, { [model]: pricingModel.trim() || null }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: providersQueryKey() }),
+  });
   const override = view?.override;
   const setBy = override?.updated_by ? (names.get(override.updated_by) ?? "a workspace admin") : undefined;
 
@@ -182,6 +189,7 @@ function PriceRow({
           <Text size="sm" ff="monospace">
             {model}
           </Text>
+          {account.pricing_models?.[model] ? <Text size="xs" c="dimmed">Pricing model: {account.pricing_models[model]}</Text> : null}
           <Group gap={4}>
             {override ? (
               <Badge size="xs" color="teal" variant="light">
@@ -234,15 +242,21 @@ function PriceRow({
       ))}
       {canSet ? (
         <Table.Td>
-          <Button
-            size="xs"
-            variant="default"
-            disabled={!view}
-            aria-label={`Set price for ${model}`}
-            onClick={() => view && onSet(view)}
-          >
-            {override ? "Change" : "Set price"}
-          </Button>
+          <Stack gap="xs">
+            <TextInput size="xs" aria-label={`Pricing model for ${model}`} value={pricingModel} placeholder={model} onChange={(event) => setPricingModel(event.currentTarget.value)} />
+            <Button size="xs" variant="default" disabled={mapMutation.isPending} loading={mapMutation.isPending} aria-label={`Save mapping for ${model}`} onClick={() => mapMutation.mutate()}>
+              Save mapping
+            </Button>
+            <Button
+              size="xs"
+              variant="default"
+              disabled={!view}
+              aria-label={`Set price for ${model}`}
+              onClick={() => view && onSet(view)}
+            >
+              {override ? "Change" : "Set price"}
+            </Button>
+          </Stack>
         </Table.Td>
       ) : null}
     </Table.Tr>
@@ -259,8 +273,17 @@ export function ProviderPricesPage() {
   const members = useQuery({ queryKey: MEMBERS_KEY, queryFn: () => api.members.list(), enabled: canSet });
   const names = new Map((members.data ?? []).map((member) => [member.id, member.name]));
   const [editing, setEditing] = useState<ModelPricing | null>(null);
+  const [pricingProviderDraft, setPricingProviderDraft] = useState<{ providerId: string; value: string }>();
+  const vendors = useQuery({ queryKey: [...PROVIDERS_KEY, "vendors"], queryFn: () => api.providers.vendors() });
+  const queryClient = useQueryClient();
+  const saveProvider = useMutation({
+    meta: { shown: true },
+    mutationFn: () => api.providers.setPricingMap(providerId ?? "", pricingProvider, {}),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: providersQueryKey() }),
+  });
 
   const account = accounts.data?.find((item) => item.id === providerId);
+  const pricingProvider = pricingProviderDraft && pricingProviderDraft.providerId === providerId ? pricingProviderDraft.value : account?.pricing_provider ?? "";
   const back = (
     <div>
       <Button component={Link} to="/settings/providers" variant="default">
@@ -299,6 +322,15 @@ export function ProviderPricesPage() {
           {canSet ? " Set your own price where the listed one is wrong." : ""}
         </Text>
       </Stack>
+      {canSet ? (
+        <Card withBorder radius="lg" padding="md">
+          <Group align="end">
+            <Select label="Pricing provider" description="Use this vendor's models.dev prices for this account." aria-label="Pricing provider" searchable allowDeselect data={(vendors.data ?? []).map((vendor) => ({ value: vendor.key, label: vendor.name }))} value={pricingProvider || null} onChange={(value) => setPricingProviderDraft({ providerId: providerId ?? "", value: value ?? "" })} />
+            {pricingProvider ? <Button variant="subtle" aria-label="Clear pricing provider" onClick={() => setPricingProviderDraft({ providerId: providerId ?? "", value: "" })}>Clear</Button> : null}
+            <Button loading={saveProvider.isPending} disabled={saveProvider.isPending} onClick={() => saveProvider.mutate()}>Save pricing provider</Button>
+          </Group>
+        </Card>
+      ) : null}
       <Card withBorder radius="lg" padding="lg">
         {account.models.length === 0 ? (
           <Text c="dimmed" size="sm">
@@ -319,7 +351,7 @@ export function ProviderPricesPage() {
               <Table.Tbody>
                 {account.models.map((model) => (
                   <PriceRow
-                    key={model}
+                    key={`${providerId}:${model}:${account.pricing_models?.[model] ?? ""}`}
                     account={account}
                     model={model}
                     retired={retired.has(model)}

@@ -179,6 +179,16 @@ function stubProviderApi(
           return new Response(null, { status: 204 });
         }
         if (rest === "/models") return Response.json(listedModels.slice(0, 1));
+        if (rest === "/pricing-map" && method === "PUT") {
+          if (Object.hasOwn(body ?? {}, "pricing_provider")) account.pricing_provider = String(body?.pricing_provider ?? "");
+          account.pricing_models = { ...(account.pricing_models ?? {}) };
+          const models = body?.models as Record<string, string | null> | undefined;
+          for (const [model, mapped] of Object.entries(models ?? {})) {
+            if (mapped === null) delete account.pricing_models[model];
+            else account.pricing_models[model] = mapped;
+          }
+          return new Response(null, { status: 204 });
+        }
         if (rest === "/uses" && options.usesFail?.includes(account.id)) {
           return Response.json({ error: "uses unavailable" }, { status: 500 });
         }
@@ -586,6 +596,20 @@ describe("providers", () => {
       expect(screen.getByText(/Key ending 9f3c, set 2 Nov 2026/)).toBeTruthy();
     });
 
+    it("uses an aliased account model for its listed price and source badge", async () => {
+      const aliased = { ...anthropicAccount, pricing_provider: "openai", pricing_models: { "model-a": "model-b" } };
+      stubProviderApi({ accounts: [aliased], testResponse: { ok: true, models: [{ id: "model-a" }] } });
+      renderAt("/settings/providers/p1/edit");
+      expect(await screen.findByText(/Anthropic Credentials & Plan/)).toBeTruthy();
+      await continueTo("Connection Verification");
+      await passTest();
+      await continueTo(/Models & Pricing for Anthropic/);
+
+      const row = screen.getByRole("checkbox", { name: "Select model-a" }).closest("tr") as HTMLElement;
+      expect(within(row).getByText("in $2.50 · out $10.00 / MTok")).toBeTruthy();
+      expect(within(row).getByText("models.dev")).toBeTruthy();
+    });
+
     it("tests the saved key by id, keeps the enabled models ticked and sends no api_key", async () => {
       const { body, requests } = await saveEdit();
 
@@ -708,6 +732,50 @@ describe("providers", () => {
       expect(within(row).getByText("Unknown")).toBeTruthy();
       expect(within(row).getByText("Estimate")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Set price for model-a" })).toBeNull();
+      expect(screen.queryByRole("combobox", { name: "Pricing provider" })).toBeNull();
+      expect(screen.queryByRole("textbox", { name: "Pricing model for model-a" })).toBeNull();
+    });
+
+    it("lets settings managers map the account vendor and model, sending the pricing map body", async () => {
+      const requests = stubProviderApi({ canShare: true });
+      renderAt("/settings/providers/p1/prices");
+
+      const pricingProvider = await screen.findByRole("combobox", { name: "Pricing provider" });
+      fireEvent.change(pricingProvider, { target: { value: "OpenAI" } });
+      fireEvent.keyDown(pricingProvider, { key: "ArrowDown" });
+      fireEvent.keyDown(pricingProvider, { key: "Enter" });
+      click(screen.getByRole("button", { name: "Save pricing provider" }));
+      expect(await sentBody(requests, "PUT", "/api/providers/p1/pricing-map")).toEqual({ pricing_provider: "openai", models: {} });
+
+      click(screen.getByRole("button", { name: "Clear pricing provider" }));
+      click(screen.getByRole("button", { name: "Save pricing provider" }));
+      await waitFor(() => expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map" && request.method === "PUT")).toHaveLength(2));
+      expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map").at(-1)?.body).toEqual({ pricing_provider: "", models: {} });
+
+      const choosePricingProvider = screen.getByRole("combobox", { name: "Pricing provider" });
+      fireEvent.change(choosePricingProvider, { target: { value: "OpenAI" } });
+      fireEvent.keyDown(choosePricingProvider, { key: "ArrowDown" });
+      fireEvent.keyDown(choosePricingProvider, { key: "Enter" });
+      fireEvent.keyDown(choosePricingProvider, { key: "Escape" });
+      fireEvent.click(choosePricingProvider);
+      click(document.querySelector('[data-combobox-option][value="openai"]') as HTMLElement);
+      click(screen.getByRole("button", { name: "Save pricing provider" }));
+      await waitFor(() => expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map" && request.method === "PUT")).toHaveLength(3));
+      expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map").at(-1)?.body).toEqual({ pricing_provider: "", models: {} });
+
+      fireEvent.change(await screen.findByLabelText("Pricing model for model-a"), { target: { value: "upstream/model-a" } });
+      click(screen.getByRole("button", { name: "Save mapping for model-a" }));
+      await waitFor(() => expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map" && request.method === "PUT")).toHaveLength(4));
+      expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map").at(-1)?.body).toEqual({
+        models: { "model-a": "upstream/model-a" },
+      });
+      await waitFor(() => expect((screen.getByLabelText("Pricing model for model-a") as HTMLInputElement).value).toBe("upstream/model-a"));
+
+      fireEvent.change(await screen.findByLabelText("Pricing model for model-a"), { target: { value: "   " } });
+      click(screen.getByRole("button", { name: "Save mapping for model-a" }));
+      await waitFor(() => expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map" && request.method === "PUT")).toHaveLength(5));
+      expect(requests.filter((request) => request.url === "/api/providers/p1/pricing-map").at(-1)?.body).toEqual({ models: { "model-a": null } });
+      await waitFor(() => expect((screen.getByLabelText("Pricing model for model-a") as HTMLInputElement).value).toBe(""));
     });
 
     it("lets a person with settings:manage set a price in micro-USD, then shows Your price, who set it and the warning", async () => {

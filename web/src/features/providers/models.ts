@@ -80,11 +80,12 @@ export function sourceLabel(source: PriceSource): string {
 export function listedPrice(
   seen: SeenModel,
   catalog: readonly CatalogModel[],
+  pricingModel = seen.id,
 ): { input: number | null; output: number | null; source: PriceSource } {
   const input = seenRateMicro(seen.pricing, "prompt");
   const output = seenRateMicro(seen.pricing, "completion");
   if (input !== null || output !== null) return { input, output, source: "provider" };
-  const row = catalog.find((item) => item.model === seen.id);
+  const row = catalog.find((item) => item.model === pricingModel);
   const catIn = catalogMicro(row?.input_usd_per_mtok);
   const catOut = catalogMicro(row?.output_usd_per_mtok);
   if (catIn !== null || catOut !== null) return { input: catIn, output: catOut, source: "models_dev" };
