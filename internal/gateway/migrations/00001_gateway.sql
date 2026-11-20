@@ -184,6 +184,33 @@ CREATE UNIQUE INDEX ledger_hold_id
   ON gateway.ledger (hold_id)
   WHERE hold_id IS NOT NULL;
 
+-- usage_daily keeps the per-day totals of the ledger in the workspace time
+-- zone, so usage reads need not scan the ledger. user_id is null for system
+-- rows, as in the ledger.
+CREATE TABLE gateway.usage_daily (
+  day date NOT NULL,
+  user_id uuid,
+  model text NOT NULL,
+  source text NOT NULL,
+  calls bigint NOT NULL DEFAULT 0,
+  input_tokens bigint NOT NULL DEFAULT 0,
+  output_tokens bigint NOT NULL DEFAULT 0,
+  cache_read bigint NOT NULL DEFAULT 0,
+  cache_write bigint NOT NULL DEFAULT 0,
+  reasoning bigint NOT NULL DEFAULT 0,
+  cost_micro_usd bigint NOT NULL DEFAULT 0,
+  CONSTRAINT usage_daily_model_check CHECK (model <> ''),
+  CONSTRAINT usage_daily_source_check CHECK (source IN ('chat', 'task', 'automation', 'knowledge', 'memory', 'system')),
+  CONSTRAINT usage_daily_payer_check CHECK (user_id IS NOT NULL OR source = 'system'),
+  CONSTRAINT usage_daily_counts_nonneg CHECK (
+    calls >= 0 AND input_tokens >= 0 AND output_tokens >= 0 AND cache_read >= 0
+    AND cache_write >= 0 AND reasoning >= 0 AND cost_micro_usd >= 0
+  ),
+  CONSTRAINT usage_daily_key UNIQUE NULLS NOT DISTINCT (day, user_id, model, source)
+);
+
+CREATE INDEX usage_daily_user_day ON gateway.usage_daily (user_id, day);
+
 CREATE TABLE gateway.usage_limits (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   kind text NOT NULL,
@@ -248,6 +275,7 @@ DROP VIEW IF EXISTS gateway.task_tokens;
 DROP TABLE IF EXISTS gateway.usage_holds;
 DROP TABLE IF EXISTS gateway.usage_spend;
 DROP TABLE IF EXISTS gateway.usage_limits;
+DROP TABLE IF EXISTS gateway.usage_daily;
 DROP TABLE IF EXISTS gateway.ledger;
 DROP TABLE IF EXISTS gateway.catalog_meta;
 DROP TABLE IF EXISTS gateway.prices;

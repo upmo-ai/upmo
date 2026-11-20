@@ -35,6 +35,11 @@ const (
 	SourceSystem     = "system"
 )
 
+// AnonymousUserID is the user id an erased person's usage rows carry. It is
+// the nil UUID: non-null, so a non-system row keeps a payer, and never the id
+// of a real person.
+const AnonymousUserID = "00000000-0000-0000-0000-000000000000"
+
 // ValidSource reports whether source is one of the ledger attribution sources.
 func ValidSource(source string) bool {
 	switch source {

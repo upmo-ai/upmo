@@ -255,6 +255,26 @@ CREATE POLICY usage_holds_service ON gateway.usage_holds
 
 REVOKE ALL ON gateway.usage_holds FROM upmo_app;
 
+ALTER TABLE gateway.usage_daily ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_daily FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY usage_daily_service ON gateway.usage_daily
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+-- A signed-in person sees only their own daily totals; usage:view sees all
+-- rows. upmo_app never writes usage_daily.
+CREATE POLICY usage_daily_select ON gateway.usage_daily
+  FOR SELECT TO upmo_app
+  USING (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    OR 'usage:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+REVOKE ALL ON gateway.usage_daily FROM upmo_app;
+GRANT SELECT ON gateway.usage_daily TO upmo_app;
+
 CREATE POLICY routes_service ON gateway.routes
   FOR ALL
   USING (gateway.serving())
@@ -337,6 +357,11 @@ GRANT INSERT, UPDATE, DELETE ON gateway.route_links TO upmo_app;
 -- +goose Down
 
 REVOKE ALL ON gateway.ledger FROM upmo_app;
+REVOKE ALL ON gateway.usage_daily FROM upmo_app;
+DROP POLICY IF EXISTS usage_daily_select ON gateway.usage_daily;
+DROP POLICY IF EXISTS usage_daily_service ON gateway.usage_daily;
+ALTER TABLE gateway.usage_daily NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.usage_daily DISABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS usage_holds_service ON gateway.usage_holds;
 ALTER TABLE gateway.usage_holds NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE gateway.usage_holds DISABLE ROW LEVEL SECURITY;

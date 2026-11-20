@@ -720,9 +720,11 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	audit.AddSealer(workers, owner, os.Stdout)
 	audit.AddRetention(workers, owner, cfg.AuditRetentionDays)
 	audit.AddVerifier(workers, owner)
-	gateway.AddSpendChecker(workers, owner, func(ctx context.Context) (string, error) {
+	workspaceZone := func(ctx context.Context) (string, error) {
 		return identity.WorkspaceTimeZone(ctx, owner)
-	}, reg, log)
+	}
+	gateway.AddSpendChecker(workers, owner, workspaceZone, reg, log)
+	gateway.AddUsageRollup(workers, owner, workspaceZone, log)
 	checkSecrets := append(slices.Clone(secrets), gateway.DBSecrets{Pool: owner, Keys: masterKeys})
 	gateway.AddProviderChecker(workers, gateway.ProviderCheckDeps{
 		Owner:    owner,
@@ -844,6 +846,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
 		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
 		gateway.ProviderCheckPeriodic(), gateway.CatalogRefreshPeriodic(),
+		gateway.UsageRollupPeriodic(),
 	}
 	if auditPush {
 		periodic = append(periodic, audit.PushPeriodic())
