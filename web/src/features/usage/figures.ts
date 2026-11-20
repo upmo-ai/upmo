@@ -1,19 +1,5 @@
 import type { UsageBucket, UsageTask } from "../../app/api";
 
-/** Total of the buckets whose cost is known. A bucket with unknown cost adds nothing here and is never shown as 0. */
-export function knownSpend(buckets: UsageBucket[]): number {
-  const total = buckets.reduce((sum, bucket) => sum + (bucket.spend_usd ?? 0), 0);
-  return Math.round(total * 10_000) / 10_000;
-}
-
-/** Spend for the range, or null when no bucket has a known cost, so the total is shown as Unknown rather than 0. */
-export function periodSpend(buckets: UsageBucket[]): number | null {
-  if (buckets.every((bucket) => bucket.spend_usd === null)) {
-    return null;
-  }
-  return knownSpend(buckets);
-}
-
 export function totalRequests(buckets: UsageBucket[]): number {
   return buckets.reduce((sum, bucket) => sum + bucket.requests, 0);
 }
@@ -61,10 +47,10 @@ export function isEmptyUsage(buckets: UsageBucket[], tasks: UsageTask[]): boolea
 
 /** A task's share of the range's known spend, or null when either cost is unknown. */
 export function taskShare(task: UsageTask, spend: number | null): number | null {
-  if (task.cost_usd === null || spend === null || spend <= 0) {
+  if (task.cost_micro_usd === null || spend === null || spend <= 0) {
     return null;
   }
-  return task.cost_usd / spend;
+  return task.cost_micro_usd / spend;
 }
 
 export type TaskSortKey = "cost" | "tokens" | "share";
@@ -85,7 +71,7 @@ export function sortTasks(
     if (key === "tokens") {
       return taskTokens(task);
     }
-    return key === "share" ? taskShare(task, spend) : task.cost_usd;
+    return key === "share" ? taskShare(task, spend) : task.cost_micro_usd;
   };
   const sign = direction === "asc" ? 1 : -1;
   return tasks
@@ -102,4 +88,39 @@ export function sortTasks(
 /** The tasks that cost the most, biggest first, then tasks with unknown cost. */
 export function costliestTasks(tasks: UsageTask[], limit: number): UsageTask[] {
   return sortTasks(tasks, "cost", "desc", null).slice(0, limit);
+}
+
+export type LimitState = "ok" | "near" | "over";
+
+/** Where a limit bar turns to its warning, as a share of the limit. */
+export const limitWarnPercent = 80;
+
+/**
+ * How much of a monthly limit is used. The percent is for the bar only. The
+ * state is decided on whole micro-USD, so 80% of the limit is "near" exactly
+ * and not a rounding away. A limit of 0 allows nothing: any spend is over it.
+ */
+export function limitUse(spent: number, limit: number): { percent: number; state: LimitState } {
+  const state: LimitState =
+    spent >= limit && (limit > 0 || spent > 0)
+      ? "over"
+      : spent * 100 >= limit * limitWarnPercent && limit > 0
+        ? "near"
+        : "ok";
+  const percent = limit <= 0 ? (spent > 0 ? 100 : 0) : Math.min(100, (spent / limit) * 100);
+  return { percent, state };
+}
+
+const sourceLabels: Record<string, string> = {
+  chat: "Chat",
+  task: "Tasks",
+  automation: "Automations",
+  knowledge: "Knowledge",
+  memory: "Memory",
+  system: "System",
+};
+
+/** A kind of work as a person reads it. A kind the page does not know is shown as the server named it. */
+export function sourceLabel(source: string): string {
+  return sourceLabels[source] ?? source;
 }

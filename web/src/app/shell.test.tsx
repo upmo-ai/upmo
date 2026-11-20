@@ -615,6 +615,12 @@ describe("app shell", () => {
       async usage(range) {
         return createStubApi({ emptyUsage: true }).usage(range);
       },
+      async usageLimits() {
+        return createStubApi().usageLimits();
+      },
+      async workspaceUsage(range, group) {
+        return createStubApi({ emptyUsage: true }).workspaceUsage(range, group);
+      },
     };
     renderAt("/tasks", client);
     expect(await screen.findByText("Custom task")).toBeTruthy();
@@ -883,6 +889,12 @@ describe("app shell", () => {
       artifacts: createStubApi().artifacts,
       async usage(range) {
         return createStubApi({ emptyUsage: true }).usage(range);
+      },
+      async usageLimits() {
+        return createStubApi().usageLimits();
+      },
+      async workspaceUsage(range, group) {
+        return createStubApi({ emptyUsage: true }).workspaceUsage(range, group);
       },
     });
     const bell = await screen.findByRole("button", { name: /^Notifications$/ });

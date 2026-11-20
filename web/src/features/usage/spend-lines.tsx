@@ -3,7 +3,7 @@ import { Text } from "@mantine/core";
 import { LineChart, type LineSeries } from "@upmo-ai/components";
 
 import { UsagePanel, StackToggle } from "./panel";
-import { formatUsd } from "./format";
+import { formatMicroUsd } from "./format";
 
 /** Spend over time with one line per row, switchable between lines and stacked areas. */
 export function SpendLines({
@@ -33,7 +33,7 @@ export function SpendLines({
         ) : null
       }
     >
-      <LineChart title={title} series={series} stacked={stacked} formatValue={formatUsd} />
+      <LineChart title={title} series={series} stacked={stacked} formatValue={formatMicroUsd} />
     </UsagePanel>
   );
 }

@@ -37,7 +37,7 @@ import type { ArtifactsApi } from "../features/artifacts/types";
 import { createKnowledgeStub } from "../features/knowledge/stub";
 import type { KnowledgeApi } from "../features/knowledge/types";
 import { createChatsStub } from "../features/chat/stub";
-import { usageFor } from "../features/usage/stub";
+import { stubLimits, usageFor, workspaceUsageFor } from "../features/usage/stub";
 import type { Chat, ChatSummary } from "../features/chat/types";
 import { sampleDecisions, sampleGates, sampleRoutes } from "../features/models/sample";
 import type { DecisionBinding, DecisionGate, GatewayRoute } from "../features/models/types";
@@ -358,15 +358,16 @@ export type ProviderProbe = {
 // Usage: GET /api/usage?range=today|7|30|90
 //
 // Everything is the signed-in person's own usage. Global providers and models
-// appear read-only, marked by scope. Every spend field is null when the cost is
-// not known (a call with no configured price); null is never sent as 0.
+// appear read-only, marked by scope. Money is whole micro-USD (1 000 000 = one
+// dollar) and is divided only where it is shown. Every spend field is null when
+// the cost is not known; null is never sent as 0.
 export type UsageRange = "today" | 7 | 30 | 90;
 
 /** "hour" buckets for today, "day" buckets for 7, 30 and 90. */
 export type UsageBucketUnit = "hour" | "day";
 
 export type UsageProviderShare = {
-  spend_usd: number | null;
+  spend_micro_usd: number | null;
   requests: number;
   errors: number;
   /** input + output + cache_read + cache_write. */
@@ -374,13 +375,16 @@ export type UsageProviderShare = {
 };
 
 export type UsageModelShare = {
-  spend_usd: number | null;
+  spend_micro_usd: number | null;
   /** input + output + cache_read + cache_write. */
   tokens: number;
 };
 
 export type UsageBucket = {
-  /** UTC start of the bucket: YYYY-MM-DD for a day, YYYY-MM-DDTHH:00:00Z for an hour. */
+  /**
+   * The start of the bucket in the person's time zone, as the server cut it:
+   * YYYY-MM-DD for a day, an RFC 3339 time with its offset for an hour.
+   */
   at: string;
   requests: number;
   errors: number;
@@ -388,11 +392,13 @@ export type UsageBucket = {
   output: number;
   cache_read: number;
   cache_write: number;
-  /** Estimated tokens spent on tool definitions. Part of input, not added to it. */
-  tool_defs_est: number;
   /** Null when the cost of the bucket is not known. Never 0 for unknown. */
-  spend_usd: number | null;
-  /** Keyed by provider id. Providers with no calls in the bucket are absent. */
+  spend_micro_usd: number | null;
+  /** True when part of the spend is an estimate. */
+  estimated: boolean;
+  /** What subscription and local calls would cost at list price. They are not billed. Null when unknown. */
+  list_price_micro_usd: number | null;
+  /** Keyed by provider account id. Providers with no calls in the bucket are absent. */
   by_provider: Record<string, UsageProviderShare>;
   /** Keyed by model id. Models with no calls in the bucket are absent. */
   by_model: Record<string, UsageModelShare>;
@@ -403,7 +409,9 @@ export type UsageProvider = {
   name: string;
   /** "global" rows are shared and read-only; "own" rows belong to the person. */
   scope: "global" | "own";
-  spend_usd: number | null;
+  /** How the account is paid for: metered, subscription or local. */
+  plan_kind: string;
+  spend_micro_usd: number | null;
   requests: number;
   errors: number;
   /** End to end latency of a call, in milliseconds. */
@@ -414,15 +422,23 @@ export type UsageModel = {
   id: string;
   name: string;
   provider_id: string;
-  spend_usd: number | null;
+  spend_micro_usd: number | null;
   /** input + output + cache_read + cache_write. */
   tokens: number;
+};
+
+/** One kind of work: the part of the calls that came from chat, tasks, automations and so on. */
+export type UsageSource = {
+  source: string;
+  requests: number;
+  tokens: number;
+  spend_micro_usd: number | null;
 };
 
 export type UsageTaskModel = {
   model_id: string;
   /** Null when the cost of this model for the task is not known. */
-  cost_usd: number | null;
+  cost_micro_usd: number | null;
   input: number;
   output: number;
   cache_read: number;
@@ -437,21 +453,96 @@ export type UsageTask = {
   cache_read: number;
   cache_write: number;
   /** Null when the cost of the task is not known. Never 0 for unknown. */
-  cost_usd: number | null;
-  /** The task split by model. Token fields add up to the task's, costs to cost_usd. */
+  cost_micro_usd: number | null;
+  /** The task split by model. Token fields add up to the task's, costs to cost_micro_usd. */
   by_model: UsageTaskModel[];
 };
 
 export type Usage = {
   range: UsageRange;
   bucket: UsageBucketUnit;
+  /** The zone the buckets are cut in. */
+  time_zone: string;
+  /** Null when no call in the range has a known cost. */
+  spend_micro_usd: number | null;
+  /** True when part of the spend is an estimate. */
+  estimated: boolean;
   /** Calls in the range with no configured price. They are left out of every spend figure. */
   unpriced_calls: number;
+  /** What subscription and local calls would cost at list price. Not billed. Null when unknown. */
+  list_price_micro_usd: number | null;
   /** Oldest first. Empty when nothing was recorded in the range. */
   buckets: UsageBucket[];
   providers: UsageProvider[];
   models: UsageModel[];
+  sources: UsageSource[];
   tasks: UsageTask[];
+};
+
+// Usage limits: GET /api/usage/limits. Monthly, in micro-USD.
+export type OwnUsageLimits = {
+  /** The person's own limit, or null when none is set. */
+  limit_micro_usd: number | null;
+  /** The workspace's limit, or null when none is set. */
+  workspace_limit_micro_usd: number | null;
+  /** Spent so far in the period. A real 0 when nothing was spent. */
+  spent_micro_usd: number;
+  /** Held for calls still in progress. */
+  held_micro_usd: number;
+};
+
+/** One limit with its spend so far. Only people who hold usage:view are sent these. */
+export type UsageLimitRow = {
+  kind: string;
+  subject_id?: string;
+  /** Null when the row records spend with no limit set. */
+  amount_micro_usd: number | null;
+  spent_micro_usd: number;
+  held_micro_usd: number;
+};
+
+export type UsageLimits = {
+  /** The first day of the period the figures cover. */
+  period_start: string;
+  own: OwnUsageLimits;
+  /**
+   * Present only for a person who holds usage:view, and then even when empty.
+   * The page offers the Workspace tab on exactly this.
+   */
+  rows?: UsageLimitRow[];
+};
+
+// Workspace usage: GET /api/usage/workspace?range=&group=. Needs usage:view.
+export type UsageGroup = "person" | "team" | "agent" | "model" | "provider" | "source";
+
+export type UsageRow = {
+  id: string;
+  name: string;
+  requests: number;
+  errors: number;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  reasoning: number;
+  tokens: number;
+  spend_micro_usd: number | null;
+  estimated: boolean;
+  unpriced_calls: number;
+  list_price_micro_usd: number | null;
+};
+
+export type WorkspaceUsage = {
+  range: UsageRange;
+  bucket: UsageBucketUnit;
+  time_zone: string;
+  group: UsageGroup;
+  spend_micro_usd: number | null;
+  estimated: boolean;
+  unpriced_calls: number;
+  list_price_micro_usd: number | null;
+  buckets: UsageBucket[];
+  rows: UsageRow[];
 };
 
 export class BrainError extends Error {
@@ -684,6 +775,13 @@ export interface ApiClient {
   };
   /** GET /api/usage?range=today|7|30|90 */
   usage(range: UsageRange): Promise<Usage>;
+  /** GET /api/usage/limits: the person's monthly limits and spend so far. */
+  usageLimits(): Promise<UsageLimits>;
+  /**
+   * GET /api/usage/workspace?range=&group=: the workspace's usage grouped. A
+   * person without usage:view gets a BrainError 403.
+   */
+  workspaceUsage(range: UsageRange, group: UsageGroup): Promise<WorkspaceUsage>;
 
   /** Files a task produced: GET /api/tasks/{id}/artifacts and GET /api/artifacts/{id}/download. */
   artifacts: ArtifactsApi;
@@ -706,6 +804,14 @@ export const USAGE_KEY = ["usage"] as const;
 
 export function usageQueryKey(range: UsageRange) {
   return [...USAGE_KEY, range] as const;
+}
+
+export function usageLimitsQueryKey() {
+  return [...USAGE_KEY, "limits"] as const;
+}
+
+export function workspaceUsageQueryKey(range: UsageRange, group: UsageGroup) {
+  return [...USAGE_KEY, "workspace", range, group] as const;
 }
 
 export function tasksQueryKey() {
@@ -1218,6 +1324,8 @@ export interface StubOptions {
   knowledgeIngestMs?: number;
   /** Start with no usage recorded, so the usage page shows its empty states. */
   emptyUsage?: boolean;
+  /** Replace the monthly limits the usage page reads. */
+  usageLimits?: UsageLimits;
 }
 
 export function createStubApi(options: StubOptions = {}): ApiClient {
@@ -2092,6 +2200,20 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
     },
     async usage(range) {
       return usageFor(range, { empty: options.emptyUsage });
+    },
+    async usageLimits() {
+      const limits = copy(options.usageLimits ?? stubLimits);
+      // Like the brain, send the rows only to a person who holds usage:view.
+      return view === "admin"
+        ? { ...limits, rows: limits.rows ?? [] }
+        : { period_start: limits.period_start, own: limits.own };
+    },
+    async workspaceUsage(range, group) {
+      // Only an owner or an admin holds usage:view; the brain refuses anyone else.
+      if (view !== "admin") {
+        throw new BrainError(403, "Only people who may view usage can see the workspace's usage.");
+      }
+      return workspaceUsageFor(range, group, { empty: options.emptyUsage });
     },
     artifacts: createArtifactsStub(),
   };

@@ -6,10 +6,10 @@ import {
   costliestTasks,
   errorRate,
   isEmptyUsage,
-  knownSpend,
+  limitUse,
   periodCacheHit,
-  periodSpend,
   sortTasks,
+  sourceLabel,
   taskShare,
   taskTokens,
 } from "./figures";
@@ -18,9 +18,11 @@ import {
   formatDay,
   formatHour,
   formatLatency,
+  formatMicroUsd,
   formatPercentPoints,
   formatRate,
   formatRatePrecise,
+  formatSpend,
   formatTokens,
   formatTokensCompact,
   formatUsd,
@@ -36,8 +38,9 @@ function bucket(spend: number | null, extra: Partial<UsageBucket> = {}): UsageBu
     output: 0,
     cache_read: 0,
     cache_write: 0,
-    tool_defs_est: 0,
-    spend_usd: spend,
+    spend_micro_usd: spend,
+    estimated: false,
+    list_price_micro_usd: null,
     by_provider: {},
     by_model: {},
     ...extra,
@@ -45,7 +48,7 @@ function bucket(spend: number | null, extra: Partial<UsageBucket> = {}): UsageBu
 }
 
 function task(id: string, cost: number | null, tokens = 1): UsageTask {
-  return { task_id: id, goal: id, input: tokens, output: 0, cache_read: 0, cache_write: 0, cost_usd: cost, by_model: [] };
+  return { task_id: id, goal: id, input: tokens, output: 0, cache_read: 0, cache_write: 0, cost_micro_usd: cost, by_model: [] };
 }
 
 describe("usage figures", () => {
@@ -55,6 +58,29 @@ describe("usage figures", () => {
     expect(formatUsd(0)).not.toBe("Unknown");
     expect(formatUsd(0)).toMatch(/0/);
     expect(formatUsd(12.47)).toMatch(/12\.47/);
+  });
+
+  it("UPM-359 unknown micro-USD is Unknown and a real zero is US$0.00, never the same text", () => {
+    expect(formatMicroUsd(null)).toBe("Unknown");
+    expect(formatMicroUsd(undefined)).toBe("Unknown");
+    expect(formatMicroUsd(0)).toBe("US$0.00");
+    expect(formatMicroUsd(0)).not.toBe(formatMicroUsd(null));
+  });
+
+  it("UPM-359 divides micro-USD only at display and keeps a tiny real cost visible", () => {
+    expect(formatMicroUsd(12_470_000)).toBe("US$12.47");
+    expect(formatMicroUsd(41_250_000)).toBe("US$41.25");
+    expect(formatMicroUsd(10_000)).toBe("US$0.01");
+    expect(formatMicroUsd(1_200)).toBe("US$0.0012");
+    expect(formatMicroUsd(100)).toBe("US$0.0001");
+    expect(formatMicroUsd(99)).toBe("Under US$0.0001");
+  });
+
+  it("UPM-359 an estimated spend says so, and an unknown one does not claim to be an estimate", () => {
+    expect(formatSpend(2_500_000, true)).toBe("US$2.50 (estimated)");
+    expect(formatSpend(2_500_000, false)).toBe("US$2.50");
+    expect(formatSpend(0, true)).toBe("US$0.00 (estimated)");
+    expect(formatSpend(null, true)).toBe("Unknown");
   });
 
   it("formats tokens and rates in en-GB", () => {
@@ -74,6 +100,15 @@ describe("usage figures", () => {
     expect(formatBucket("2026-11-05T00:00:00Z", "day")).toBe("5 Nov");
   });
 
+  it("UPM-359 an hour keeps the clock reading the server sent, in the person's zone", () => {
+    expect(formatHour("2026-11-05T09:00:00+02:00")).toBe("09:00");
+    expect(formatHour("2026-11-05T23:00:00-05:00")).toBe("23:00");
+    // The spring-forward day has no 02:00 and the label does not invent one.
+    expect(formatHour("2026-03-29T01:00:00+01:00")).toBe("01:00");
+    expect(formatHour("2026-03-29T03:00:00+02:00")).toBe("03:00");
+    expect(formatBucket("2026-03-29T03:00:00+02:00", "hour")).toBe("03:00");
+  });
+
   it("usage panels: formats an hour as a 24 hour clock in UTC and labels buckets by their unit", () => {
     expect(formatHour("2026-11-05T09:00:00Z")).toBe("09:00");
     expect(formatHour("2026-11-05T00:00:00Z")).toBe("00:00");
@@ -88,19 +123,14 @@ describe("usage figures", () => {
     expect(cacheHitRate(0, 20)).toBe(1);
   });
 
-  it("sums known spend and ignores a missing bucket as zero in the total only", async () => {
+  it("the period cache hit rate is between none and all of the input", async () => {
     const { buckets } = await createStubApi().usage(7);
-    expect(buckets.some((item) => item.spend_usd === null)).toBe(true);
-    const known = buckets.reduce((sum, item) => sum + (item.spend_usd ?? 0), 0);
-    expect(knownSpend(buckets)).toBeCloseTo(known);
-    expect(knownSpend(buckets)).toBeGreaterThan(0);
-    expect(knownSpend([bucket(0.1), bucket(0.2), bucket(null)])).toBe(0.3);
     expect(periodCacheHit(buckets)).toBeGreaterThan(0);
     expect(periodCacheHit(buckets)).toBeLessThan(1);
   });
 
   it("UPM-204 adds all four token fields of a task and nothing else", () => {
-    const base = { task_id: "t", goal: "t", cost_usd: null, by_model: [] };
+    const base = { task_id: "t", goal: "t", cost_micro_usd: null, by_model: [] };
     expect(taskTokens({ ...base, input: 1, output: 20, cache_read: 300, cache_write: 4000 })).toBe(4321);
     expect(taskTokens({ ...base, input: 7, output: 0, cache_read: 0, cache_write: 0 })).toBe(7);
     expect(taskTokens({ ...base, input: 0, output: 7, cache_read: 0, cache_write: 0 })).toBe(7);
@@ -109,11 +139,25 @@ describe("usage figures", () => {
     expect(taskTokens({ ...base, input: 0, output: 0, cache_read: 0, cache_write: 0 })).toBe(0);
   });
 
-  it("UPM-204 reports period spend as unknown only when no bucket has a known cost", () => {
-    expect(periodSpend([bucket(null), bucket(null)])).toBeNull();
-    expect(periodSpend([])).toBeNull();
-    expect(periodSpend([bucket(null), bucket(1.5), bucket(2)])).toBe(3.5);
-    expect(periodSpend([bucket(0), bucket(null)])).toBe(0);
+  it("UPM-359 a limit turns near at 80% of it exactly and over at the limit", () => {
+    expect(limitUse(0, 50_000_000)).toEqual({ percent: 0, state: "ok" });
+    expect(limitUse(39_999_999, 50_000_000).state).toBe("ok");
+    expect(limitUse(40_000_000, 50_000_000)).toEqual({ percent: 80, state: "near" });
+    expect(limitUse(49_999_999, 50_000_000).state).toBe("near");
+    expect(limitUse(50_000_000, 50_000_000)).toEqual({ percent: 100, state: "over" });
+    expect(limitUse(75_000_000, 50_000_000)).toEqual({ percent: 100, state: "over" });
+  });
+
+  it("UPM-359 a limit of zero allows nothing, so spending is over it and not spending is fine", () => {
+    expect(limitUse(0, 0)).toEqual({ percent: 0, state: "ok" });
+    expect(limitUse(1, 0)).toEqual({ percent: 100, state: "over" });
+  });
+
+  it("UPM-359 names the kinds of work and shows one it does not know as sent", () => {
+    expect(sourceLabel("chat")).toBe("Chat");
+    expect(sourceLabel("task")).toBe("Tasks");
+    expect(sourceLabel("automation")).toBe("Automations");
+    expect(sourceLabel("something-new")).toBe("something-new");
   });
 
   it("usage panels: formats a latency as milliseconds, seconds or minutes", () => {
@@ -151,10 +195,10 @@ describe("usage figures", () => {
   });
 
   it("usage panels: a task share is its cost over the spend, and none when either is unknown", () => {
-    expect(taskShare(task("a", 2.5), 10)).toBe(0.25);
-    expect(taskShare(task("a", null), 10)).toBeNull();
-    expect(taskShare(task("a", 2.5), null)).toBeNull();
-    expect(taskShare(task("a", 0), 10)).toBe(0);
+    expect(taskShare(task("a", 2_500_000), 10_000_000)).toBe(0.25);
+    expect(taskShare(task("a", null), 10_000_000)).toBeNull();
+    expect(taskShare(task("a", 2_500_000), null)).toBeNull();
+    expect(taskShare(task("a", 0), 10_000_000)).toBe(0);
     expect(taskShare(task("a", 1), 0)).toBeNull();
   });
 

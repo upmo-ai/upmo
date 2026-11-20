@@ -13,6 +13,14 @@
   max-width: 100%;
 }
 
+/* The tiles, charts and tables of one view of the page sit under each other like the page's own sections. */
+.usage-page-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
 /* Two tiles a row on a phone, three from 40rem, all six in one row from 58rem. */
 .usage-figures {
   display: grid;
@@ -129,4 +137,25 @@
 .usage-task-link:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* Limit bars: one under the other, each with its own words. */
+.usage-limits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.usage-limit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* The grouping and export controls of the Workspace tab. */
+.usage-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
 }

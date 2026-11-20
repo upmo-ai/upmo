@@ -1,13 +1,18 @@
 import type {
   Usage,
   UsageBucket,
+  UsageGroup,
+  UsageLimits,
   UsageModel,
   UsageModelShare,
   UsageProvider,
   UsageProviderShare,
   UsageRange,
+  UsageRow,
+  UsageSource,
   UsageTask,
   UsageTaskModel,
+  WorkspaceUsage,
 } from "../../app/api";
 
 // Deterministic usage for the stub. Everything is built bottom-up from one cell
@@ -19,9 +24,8 @@ import type {
 const usageEnd = Date.UTC(2026, 10, 5);
 const hourMs = 3_600_000;
 const dayMs = 86_400_000;
-const perMillion = 1_000_000;
 
-/** Prices in USD per million tokens. */
+/** Prices in USD per million tokens. A token count times this price is the cost in micro-USD. */
 interface Rate {
   input: number;
   output: number;
@@ -38,7 +42,7 @@ interface ModelSpec {
   /** Null when no price is configured for the model. */
   rate: Rate | null;
   /** Average tokens per call. */
-  per_call: { input: number; output: number; cache_read: number; cache_write: number; tool_defs_est: number };
+  per_call: { input: number; output: number; cache_read: number; cache_write: number };
   /** Share of calls that fail, in percent. */
   error_pct: number;
 }
@@ -50,7 +54,7 @@ const modelSpecs: ModelSpec[] = [
     provider_id: "anthropic",
     weight: 30,
     rate: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 },
-    per_call: { input: 2100, output: 520, cache_read: 5400, cache_write: 380, tool_defs_est: 700 },
+    per_call: { input: 2100, output: 520, cache_read: 5400, cache_write: 380 },
     error_pct: 1.8,
   },
   {
@@ -59,7 +63,7 @@ const modelSpecs: ModelSpec[] = [
     provider_id: "anthropic",
     weight: 24,
     rate: { input: 0.8, output: 4, cache_read: 0.08, cache_write: 1 },
-    per_call: { input: 900, output: 240, cache_read: 2200, cache_write: 120, tool_defs_est: 450 },
+    per_call: { input: 900, output: 240, cache_read: 2200, cache_write: 120 },
     error_pct: 1.2,
   },
   {
@@ -68,7 +72,7 @@ const modelSpecs: ModelSpec[] = [
     provider_id: "openai",
     weight: 20,
     rate: { input: 2, output: 8, cache_read: 0.5, cache_write: 0 },
-    per_call: { input: 1800, output: 450, cache_read: 3000, cache_write: 0, tool_defs_est: 650 },
+    per_call: { input: 1800, output: 450, cache_read: 3000, cache_write: 0 },
     error_pct: 2.4,
   },
   {
@@ -77,7 +81,7 @@ const modelSpecs: ModelSpec[] = [
     provider_id: "openai",
     weight: 14,
     rate: { input: 0.4, output: 1.6, cache_read: 0.1, cache_write: 0 },
-    per_call: { input: 700, output: 200, cache_read: 1200, cache_write: 0, tool_defs_est: 400 },
+    per_call: { input: 700, output: 200, cache_read: 1200, cache_write: 0 },
     error_pct: 0.9,
   },
   {
@@ -86,7 +90,7 @@ const modelSpecs: ModelSpec[] = [
     provider_id: "mistral",
     weight: 12,
     rate: { input: 2, output: 6, cache_read: 0, cache_write: 0 },
-    per_call: { input: 1500, output: 380, cache_read: 0, cache_write: 0, tool_defs_est: 300 },
+    per_call: { input: 1500, output: 380, cache_read: 0, cache_write: 0 },
     error_pct: 0,
   },
   {
@@ -95,7 +99,7 @@ const modelSpecs: ModelSpec[] = [
     provider_id: "ollama",
     weight: 0,
     rate: null,
-    per_call: { input: 1200, output: 300, cache_read: 0, cache_write: 0, tool_defs_est: 0 },
+    per_call: { input: 1200, output: 300, cache_read: 0, cache_write: 0 },
     error_pct: 5,
   },
 ];
@@ -104,14 +108,15 @@ interface ProviderSpec {
   id: string;
   name: string;
   scope: "global" | "own";
+  plan_kind: string;
   latency_ms: { p50: number; p95: number; p99: number };
 }
 
 const providerSpecs: ProviderSpec[] = [
-  { id: "anthropic", name: "Anthropic", scope: "global", latency_ms: { p50: 1840, p95: 4200, p99: 7900 } },
-  { id: "openai", name: "OpenAI", scope: "global", latency_ms: { p50: 1250, p95: 3100, p99: 6400 } },
-  { id: "mistral", name: "Mistral", scope: "own", latency_ms: { p50: 980, p95: 2300, p99: 4100 } },
-  { id: "ollama", name: "Ollama", scope: "own", latency_ms: { p50: 3400, p95: 8200, p99: 14100 } },
+  { id: "anthropic", name: "Anthropic", scope: "global", plan_kind: "metered", latency_ms: { p50: 1840, p95: 4200, p99: 7900 } },
+  { id: "openai", name: "OpenAI", scope: "global", plan_kind: "metered", latency_ms: { p50: 1250, p95: 3100, p99: 6400 } },
+  { id: "mistral", name: "Mistral", scope: "own", plan_kind: "metered", latency_ms: { p50: 980, p95: 2300, p99: 4100 } },
+  { id: "ollama", name: "Ollama", scope: "own", plan_kind: "local", latency_ms: { p50: 3400, p95: 8200, p99: 14100 } },
 ];
 
 /** Relative number of calls in each hour of today so far (00:00 to 11:00). */
@@ -127,13 +132,8 @@ interface Cell {
   output: number;
   cache_read: number;
   cache_write: number;
-  tool_defs_est: number;
+  /** Whole micro-USD, or null when no price is configured. */
   cost: number | null;
-}
-
-function round(value: number, places: number): number {
-  const factor = 10 ** places;
-  return Math.round(value * factor) / factor;
 }
 
 function costOf(rate: Rate | null, tokens: Pick<Cell, "input" | "output" | "cache_read" | "cache_write">): number | null {
@@ -141,11 +141,12 @@ function costOf(rate: Rate | null, tokens: Pick<Cell, "input" | "output" | "cach
     return null;
   }
   return (
-    (tokens.input * rate.input +
-      tokens.output * rate.output +
-      tokens.cache_read * rate.cache_read +
-      tokens.cache_write * rate.cache_write) /
-    perMillion
+    Math.round(
+      tokens.input * rate.input +
+        tokens.output * rate.output +
+        tokens.cache_read * rate.cache_read +
+        tokens.cache_write * rate.cache_write,
+    )
   );
 }
 
@@ -170,8 +171,7 @@ function makeCell(spec: ModelSpec, index: number, requests: number, seed: number
     output,
     cache_read: cacheRead,
     cache_write: cacheWrite,
-    tool_defs_est: Math.round(requests * spec.per_call.tool_defs_est * wobble(5)),
-    cost: cost === null ? null : round(cost, 4),
+    cost,
   };
 }
 
@@ -186,8 +186,7 @@ function addCells(a: Cell | null, b: Cell | null): Cell | null {
     output: a.output + b.output,
     cache_read: a.cache_read + b.cache_read,
     cache_write: a.cache_write + b.cache_write,
-    tool_defs_est: a.tool_defs_est + b.tool_defs_est,
-    cost: a.cost === null && b.cost === null ? null : round((a.cost ?? 0) + (b.cost ?? 0), 4),
+    cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0),
   };
 }
 
@@ -228,14 +227,14 @@ function dayCells(offset: number): (Cell | null)[] {
 
 function sumKnown(values: (number | null)[]): number | null {
   const known = values.filter((value): value is number => value !== null);
-  return known.length === 0 ? null : round(known.reduce((sum, value) => sum + value, 0), 4);
+  return known.length === 0 ? null : known.reduce((sum, value) => sum + value, 0);
 }
 
 function bucketFrom(at: string, cells: (Cell | null)[]): UsageBucket {
   const byModel: Record<string, UsageModelShare> = {};
   const costs: Record<string, (number | null)[]> = {};
   const byProvider: Record<string, UsageProviderShare> = {};
-  const total = { requests: 0, errors: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, tool_defs_est: 0 };
+  const total = { requests: 0, errors: 0, input: 0, output: 0, cache_read: 0, cache_write: 0 };
 
   cells.forEach((cell, index) => {
     const spec = modelSpecs[index];
@@ -243,9 +242,9 @@ function bucketFrom(at: string, cells: (Cell | null)[]): UsageBucket {
       return;
     }
     const tokens = cell.input + cell.output + cell.cache_read + cell.cache_write;
-    byModel[spec.id] = { spend_usd: cell.cost, tokens };
+    byModel[spec.id] = { spend_micro_usd: cell.cost, tokens };
     (costs[spec.provider_id] ??= []).push(cell.cost);
-    const share = (byProvider[spec.provider_id] ??= { spend_usd: null, requests: 0, errors: 0, tokens: 0 });
+    const share = (byProvider[spec.provider_id] ??= { spend_micro_usd: null, requests: 0, errors: 0, tokens: 0 });
     share.requests += cell.requests;
     share.errors += cell.errors;
     share.tokens += tokens;
@@ -255,16 +254,17 @@ function bucketFrom(at: string, cells: (Cell | null)[]): UsageBucket {
     total.output += cell.output;
     total.cache_read += cell.cache_read;
     total.cache_write += cell.cache_write;
-    total.tool_defs_est += cell.tool_defs_est;
   });
   for (const [id, share] of Object.entries(byProvider)) {
-    share.spend_usd = sumKnown(costs[id] ?? []);
+    share.spend_micro_usd = sumKnown(costs[id] ?? []);
   }
 
   return {
     at,
     ...total,
-    spend_usd: sumKnown(cells.map((cell) => cell?.cost ?? null)),
+    spend_micro_usd: sumKnown(cells.map((cell) => cell?.cost ?? null)),
+    estimated: false,
+    list_price_micro_usd: null,
     by_provider: byProvider,
     by_model: byModel,
   };
@@ -334,7 +334,7 @@ function taskFrom(fixture: (typeof taskFixtures)[number]): UsageTask {
     const cost = costOf(spec?.rate ?? null, { input, output, cache_read: cacheRead, cache_write: cacheWrite });
     return {
       model_id: modelId,
-      cost_usd: cost === null ? null : round(cost, 2),
+      cost_micro_usd: cost,
       input,
       output,
       cache_read: cacheRead,
@@ -349,7 +349,7 @@ function taskFrom(fixture: (typeof taskFixtures)[number]): UsageTask {
     output: sum((part) => part.output),
     cache_read: sum((part) => part.cache_read),
     cache_write: sum((part) => part.cache_write),
-    cost_usd: sumKnown(byModel.map((part) => part.cost_usd)),
+    cost_micro_usd: sumKnown(byModel.map((part) => part.cost_micro_usd)),
     by_model: byModel,
   };
 }
@@ -361,11 +361,56 @@ function providerPriced(providerId: string): boolean {
 
 const rangeShift: Record<string, number> = { today: 0, "7": 25, "30": -15, "90": 40 };
 
+/** The kinds of work the calls came from, with their shares in percent. Chat takes what the others leave, so the parts add up to the whole. */
+const sourceShares: [source: string, percent: number][] = [
+  ["task", 30],
+  ["automation", 10],
+];
+
+function sourcesOf(buckets: UsageBucket[]): UsageSource[] {
+  const requests = buckets.reduce((sum, bucket) => sum + bucket.requests, 0);
+  const tokens = buckets.reduce((sum, bucket) => sum + bucket.input + bucket.output + bucket.cache_read + bucket.cache_write, 0);
+  const spend = sumKnown(buckets.map((bucket) => bucket.spend_micro_usd));
+  if (requests === 0) {
+    return [];
+  }
+  const parts: UsageSource[] = sourceShares.map(([source, percent]) => ({
+    source,
+    requests: Math.floor((requests * percent) / 100),
+    tokens: Math.floor((tokens * percent) / 100),
+    spend_micro_usd: spend === null ? null : Math.floor((spend * percent) / 100),
+  }));
+  const rest = (total: number | null, pick: (part: UsageSource) => number | null): number | null =>
+    total === null ? null : total - parts.reduce((sum, part) => sum + (pick(part) ?? 0), 0);
+  return [
+    {
+      source: "chat",
+      requests: rest(requests, (part) => part.requests) ?? 0,
+      tokens: rest(tokens, (part) => part.tokens) ?? 0,
+      spend_micro_usd: rest(spend, (part) => part.spend_micro_usd),
+    },
+    ...parts,
+  ];
+}
+
 export function usageFor(range: UsageRange, options: { empty?: boolean } = {}): Usage {
   const { unit, slots } = cellsFor(range);
   const buckets = slots.map((slot) => bucketFrom(slot.at, slot.cells));
   if (options.empty) {
-    return { range, bucket: unit, unpriced_calls: 0, buckets: [], providers: [], models: [], tasks: [] };
+    return {
+      range,
+      bucket: unit,
+      time_zone: "UTC",
+      spend_micro_usd: null,
+      estimated: false,
+      unpriced_calls: 0,
+      list_price_micro_usd: null,
+      buckets: [],
+      providers: [],
+      models: [],
+      sources: [],
+      tasks: [],
+    };
   }
 
   const unpricedCalls = slots.reduce(
@@ -382,7 +427,9 @@ export function usageFor(range: UsageRange, options: { empty?: boolean } = {}): 
       id: spec.id,
       name: spec.name,
       scope: spec.scope,
-      spend_usd: shares.length === 0 ? (providerPriced(spec.id) ? 0 : null) : sumKnown(shares.map((share) => share.spend_usd)),
+      plan_kind: spec.plan_kind,
+      spend_micro_usd:
+        shares.length === 0 ? (providerPriced(spec.id) ? 0 : null) : sumKnown(shares.map((share) => share.spend_micro_usd)),
       requests: shares.reduce((sum, share) => sum + share.requests, 0),
       errors: shares.reduce((sum, share) => sum + share.errors, 0),
       latency_ms: {
@@ -398,7 +445,8 @@ export function usageFor(range: UsageRange, options: { empty?: boolean } = {}): 
       id: spec.id,
       name: spec.name,
       provider_id: spec.provider_id,
-      spend_usd: shares.length === 0 ? (spec.rate === null ? null : 0) : sumKnown(shares.map((share) => share.spend_usd)),
+      spend_micro_usd:
+        shares.length === 0 ? (spec.rate === null ? null : 0) : sumKnown(shares.map((share) => share.spend_micro_usd)),
       tokens: shares.reduce((sum, share) => sum + share.tokens, 0),
     };
   });
@@ -407,10 +455,93 @@ export function usageFor(range: UsageRange, options: { empty?: boolean } = {}): 
   return {
     range,
     bucket: unit,
+    time_zone: "UTC",
+    spend_micro_usd: sumKnown(buckets.map((bucket) => bucket.spend_micro_usd)),
+    estimated: false,
     unpriced_calls: unpricedCalls,
+    list_price_micro_usd: null,
     buckets,
     providers,
     models,
+    sources: sourcesOf(buckets),
     tasks: taskFixtures.filter((fixture) => fixture.age < days).map(taskFrom),
   };
 }
+
+/** Two named rows per grouping, so the workspace table has something to split. */
+const groupNames: Record<UsageGroup, [string, string]> = {
+  person: ["Sam", "Lee"],
+  team: ["Finance", "No team"],
+  agent: ["Digest agent", "No agent"],
+  model: ["Claude 3.7 Sonnet", "GPT-4.1"],
+  provider: ["Anthropic", "OpenAI"],
+  source: ["chat", "task"],
+};
+
+/** The first row takes 70% of a figure and the second the rest, so the rows add up to the whole. */
+function split(total: number): [number, number] {
+  const first = Math.floor((total * 70) / 100);
+  return [first, total - first];
+}
+
+/** The workspace's usage for a range, grouped. The stub splits the person's own totals over two named rows. */
+export function workspaceUsageFor(range: UsageRange, group: UsageGroup, options: { empty?: boolean } = {}): WorkspaceUsage {
+  const usage = usageFor(range, options);
+  const sum = (pick: (bucket: UsageBucket) => number) => usage.buckets.reduce((total, bucket) => total + pick(bucket), 0);
+  const totals = {
+    requests: sum((bucket) => bucket.requests),
+    errors: sum((bucket) => bucket.errors),
+    input: sum((bucket) => bucket.input),
+    output: sum((bucket) => bucket.output),
+    cache_read: sum((bucket) => bucket.cache_read),
+    cache_write: sum((bucket) => bucket.cache_write),
+  };
+  const rows: UsageRow[] =
+    totals.requests === 0
+      ? []
+      : [0, 1].map((slot) => {
+          const part = (value: number) => split(value)[slot] ?? 0;
+          const parts = {
+            requests: part(totals.requests),
+            errors: part(totals.errors),
+            input: part(totals.input),
+            output: part(totals.output),
+            cache_read: part(totals.cache_read),
+            cache_write: part(totals.cache_write),
+          };
+          return {
+            id: `${group}-${slot + 1}`,
+            name: groupNames[group][slot] ?? "",
+            ...parts,
+            reasoning: 0,
+            tokens: parts.input + parts.output + parts.cache_read + parts.cache_write,
+            spend_micro_usd: usage.spend_micro_usd === null ? null : part(usage.spend_micro_usd),
+            estimated: false,
+            unpriced_calls: part(usage.unpriced_calls),
+            list_price_micro_usd: null,
+          };
+        });
+  return {
+    range,
+    bucket: usage.bucket,
+    time_zone: usage.time_zone,
+    group,
+    spend_micro_usd: usage.spend_micro_usd,
+    estimated: usage.estimated,
+    unpriced_calls: usage.unpriced_calls,
+    list_price_micro_usd: usage.list_price_micro_usd,
+    buckets: usage.buckets,
+    rows,
+  };
+}
+
+/** The limits the stub starts with: a person limit most of the way used, so the page shows its 80% state. */
+export const stubLimits: UsageLimits = {
+  period_start: "2026-11-01",
+  own: {
+    limit_micro_usd: 50_000_000,
+    workspace_limit_micro_usd: 200_000_000,
+    spent_micro_usd: 42_000_000,
+    held_micro_usd: 0,
+  },
+};

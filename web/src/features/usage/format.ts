@@ -21,21 +21,18 @@ export function formatDay(date: string): string {
   return day.format(new Date(`${date.slice(0, 10)}T00:00:00Z`));
 }
 
-const hour = new Intl.DateTimeFormat("en-GB", {
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-  timeZone: "UTC",
-});
-
 const precisePercent = new Intl.NumberFormat("en-GB", {
   style: "percent",
   maximumFractionDigits: 1,
 });
 
-/** A YYYY-MM-DDTHH:00:00Z hour as "14:00" in UTC. Unique within a day, so safe as a chart label. */
+/**
+ * An hour as the server sent it, such as 2026-03-29T03:00:00+02:00, as "03:00".
+ * The clock reading is taken from the text, never converted, so it stays the
+ * person's local hour on the days the clocks change. Unique within a day.
+ */
 export function formatHour(at: string): string {
-  return hour.format(new Date(at));
+  return at.slice(11, 16);
 }
 
 /** A bucket start as a chart label: the hour for hourly buckets, the calendar day for daily ones. */
@@ -43,11 +40,44 @@ export function formatBucket(at: string, unit: "hour" | "day"): string {
   return unit === "hour" ? formatHour(at) : formatDay(at);
 }
 
+/** Dollars as a float, for figures that are not money from the ledger, such as a chat line's cost. */
 export function formatUsd(value: number | null | undefined): string {
   if (value === null || value === undefined) {
     return "Unknown";
   }
   return money.format(value);
+}
+
+const microPerDollar = 1_000_000;
+
+/** Amounts under a cent keep four decimals, so a real but tiny cost does not read as $0.00. */
+const smallMoney = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 4,
+});
+
+/**
+ * Money from whole micro-USD, divided only here. Unknown (null or undefined) is
+ * "Unknown" and a real 0 is $0.00; the two are never the same text.
+ */
+export function formatMicroUsd(micro: number | null | undefined): string {
+  if (micro === null || micro === undefined) {
+    return "Unknown";
+  }
+  const abs = Math.abs(micro);
+  if (abs === 0 || abs >= microPerDollar / 100) {
+    return money.format(micro / microPerDollar);
+  }
+  // Below $0.0001 four decimals would round to zero.
+  return abs < microPerDollar / 10_000 ? `Under ${smallMoney.format(0.0001)}` : smallMoney.format(micro / microPerDollar);
+}
+
+/** Spend with its estimate marker. An unknown cost is just Unknown: there is no figure to call an estimate. */
+export function formatSpend(micro: number | null | undefined, estimated: boolean): string {
+  const text = formatMicroUsd(micro);
+  return estimated && micro !== null && micro !== undefined ? `${text} (estimated)` : text;
 }
 
 export function formatTokens(value: number): string {

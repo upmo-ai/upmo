@@ -3,7 +3,7 @@ import { GroupedBarChart } from "@upmo-ai/components";
 
 import type { Usage } from "../../app/api";
 import { UsagePanel } from "./panel";
-import { formatBucket, formatUsd } from "./format";
+import { formatBucket, formatMicroUsd } from "./format";
 import { hasCalls, spendGroups } from "./series";
 
 export function SpendChart({ usage }: { usage: Usage }) {
@@ -23,7 +23,7 @@ export function SpendChart({ usage }: { usage: Usage }) {
         ) : null
       }
     >
-      <GroupedBarChart title="Spend" groups={spendGroups(usage)} formatValue={formatUsd} />
+      <GroupedBarChart title="Spend" groups={spendGroups(usage)} formatValue={formatMicroUsd} />
     </UsagePanel>
   );
 }

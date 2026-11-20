@@ -23,6 +23,22 @@ import {
   type ProviderVisibility,
   type SeenModel,
   type TestResult,
+  type Usage,
+  type UsageBucket,
+  type UsageBucketUnit,
+  type UsageGroup,
+  type UsageLimitRow,
+  type UsageLimits,
+  type UsageModel,
+  type UsageModelShare,
+  type UsageProvider,
+  type UsageProviderShare,
+  type UsageRange,
+  type UsageRow,
+  type UsageSource,
+  type UsageTask,
+  type UsageTaskModel,
+  type WorkspaceUsage,
 } from "./api";
 import {
   noticeKinds,
@@ -836,6 +852,242 @@ async function callText(path: string): Promise<string> {
   return response.text();
 }
 
+/**
+ * Money as whole micro-USD, or null when the brain says the cost is unknown.
+ * A field that is missing is refused, so an absent cost never reads as unknown
+ * and a null never reads as 0.
+ */
+function microOrNull(source: Json, key: string): number | null {
+  const value = source[key];
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new Error(`The brain sent no ${key}.`);
+  return value;
+}
+
+function micro(source: Json, key: string): number {
+  const value = microOrNull(source, key);
+  if (value === null) throw new Error(`The brain sent no ${key}.`);
+  return value;
+}
+
+function flag(source: Json, key: string): boolean {
+  const value = source[key];
+  if (typeof value !== "boolean") throw new Error(`The brain sent no ${key}.`);
+  return value;
+}
+
+function usageRange(value: unknown): UsageRange {
+  if (value === "today" || value === 7 || value === 30 || value === 90) return value;
+  throw new Error("The brain sent an unknown range.");
+}
+
+function bucketUnit(value: unknown): UsageBucketUnit {
+  if (value === "hour" || value === "day") return value;
+  throw new Error("The brain sent an unknown bucket.");
+}
+
+const usageGroups: readonly string[] = ["person", "team", "agent", "model", "provider", "source"];
+
+function usageGroup(value: unknown): UsageGroup {
+  if (typeof value === "string" && usageGroups.includes(value)) return value as UsageGroup;
+  throw new Error("The brain sent an unknown group.");
+}
+
+function toProviderShare(value: unknown): UsageProviderShare {
+  const source = record(value, "provider share");
+  return {
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    requests: whole(source, "requests"),
+    errors: whole(source, "errors"),
+    tokens: whole(source, "tokens"),
+  };
+}
+
+function toModelShare(value: unknown): UsageModelShare {
+  const source = record(value, "model share");
+  return { spend_micro_usd: microOrNull(source, "spend_micro_usd"), tokens: whole(source, "tokens") };
+}
+
+function shares<T>(value: unknown, what: string, read: (item: unknown) => T): Record<string, T> {
+  const source = record(value, what);
+  return Object.fromEntries(Object.entries(source).map(([key, item]) => [key, read(item)]));
+}
+
+function toUsageBucket(value: unknown): UsageBucket {
+  const source = record(value, "bucket");
+  return {
+    at: text(source, "at"),
+    requests: whole(source, "requests"),
+    errors: whole(source, "errors"),
+    input: whole(source, "input"),
+    output: whole(source, "output"),
+    cache_read: whole(source, "cache_read"),
+    cache_write: whole(source, "cache_write"),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    estimated: flag(source, "estimated"),
+    list_price_micro_usd: microOrNull(source, "list_price_micro_usd"),
+    by_provider: shares(source.by_provider, "provider shares", toProviderShare),
+    by_model: shares(source.by_model, "model shares", toModelShare),
+  };
+}
+
+function toUsageProvider(value: unknown): UsageProvider {
+  const source = record(value, "provider");
+  const scope = source.scope;
+  if (scope !== "global" && scope !== "own") throw new Error("The brain sent an unknown scope.");
+  const latency = record(source.latency_ms, "latency");
+  return {
+    id: text(source, "id"),
+    name: text(source, "name"),
+    scope,
+    plan_kind: text(source, "plan_kind"),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    requests: whole(source, "requests"),
+    errors: whole(source, "errors"),
+    latency_ms: { p50: whole(latency, "p50"), p95: whole(latency, "p95"), p99: whole(latency, "p99") },
+  };
+}
+
+function toUsageModel(value: unknown): UsageModel {
+  const source = record(value, "model");
+  return {
+    id: text(source, "id"),
+    name: text(source, "name"),
+    provider_id: text(source, "provider_id"),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    tokens: whole(source, "tokens"),
+  };
+}
+
+function toUsageSource(value: unknown): UsageSource {
+  const source = record(value, "source");
+  return {
+    source: text(source, "source"),
+    requests: whole(source, "requests"),
+    tokens: whole(source, "tokens"),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+  };
+}
+
+function toUsageTaskModel(value: unknown): UsageTaskModel {
+  const source = record(value, "task model");
+  return {
+    model_id: text(source, "model_id"),
+    cost_micro_usd: microOrNull(source, "cost_micro_usd"),
+    input: whole(source, "input"),
+    output: whole(source, "output"),
+    cache_read: whole(source, "cache_read"),
+    cache_write: whole(source, "cache_write"),
+  };
+}
+
+function toUsageTask(value: unknown): UsageTask {
+  const source = record(value, "task");
+  return {
+    task_id: text(source, "task_id"),
+    goal: text(source, "goal"),
+    input: whole(source, "input"),
+    output: whole(source, "output"),
+    cache_read: whole(source, "cache_read"),
+    cache_write: whole(source, "cache_write"),
+    cost_micro_usd: microOrNull(source, "cost_micro_usd"),
+    by_model: list(source.by_model, "task models").map(toUsageTaskModel),
+  };
+}
+
+/** GET /api/usage as the gateway sends it. */
+export function toUsage(value: unknown): Usage {
+  const source = record(value, "usage");
+  return {
+    range: usageRange(source.range),
+    bucket: bucketUnit(source.bucket),
+    time_zone: text(source, "time_zone"),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    estimated: flag(source, "estimated"),
+    unpriced_calls: whole(source, "unpriced_calls"),
+    list_price_micro_usd: microOrNull(source, "list_price_micro_usd"),
+    buckets: list(source.buckets, "buckets").map(toUsageBucket),
+    providers: list(source.providers, "providers").map(toUsageProvider),
+    models: list(source.models, "models").map(toUsageModel),
+    sources: list(source.sources, "sources").map(toUsageSource),
+    tasks: list(source.tasks, "tasks").map(toUsageTask),
+  };
+}
+
+function toLimitRow(value: unknown): UsageLimitRow {
+  const source = record(value, "limit row");
+  return {
+    kind: text(source, "kind"),
+    ...(typeof source.subject_id === "string" ? { subject_id: source.subject_id } : {}),
+    amount_micro_usd: microOrNull(source, "amount_micro_usd"),
+    spent_micro_usd: micro(source, "spent_micro_usd"),
+    held_micro_usd: micro(source, "held_micro_usd"),
+  };
+}
+
+/**
+ * GET /api/usage/limits as the gateway sends it. `rows` is left out unless the
+ * gateway sent it, because its presence says the person holds usage:view.
+ */
+export function toUsageLimits(value: unknown): UsageLimits {
+  const source = record(value, "limits");
+  const own = record(source.own, "own limits");
+  return {
+    period_start: text(source, "period_start"),
+    own: {
+      limit_micro_usd: microOrNull(own, "limit_micro_usd"),
+      workspace_limit_micro_usd: microOrNull(own, "workspace_limit_micro_usd"),
+      spent_micro_usd: micro(own, "spent_micro_usd"),
+      held_micro_usd: micro(own, "held_micro_usd"),
+    },
+    ...(source.rows === undefined
+      ? {}
+      : { rows: source.rows === null ? [] : list(source.rows, "limit rows").map(toLimitRow) }),
+  };
+}
+
+function toUsageRow(value: unknown): UsageRow {
+  const source = record(value, "row");
+  return {
+    id: text(source, "id"),
+    name: text(source, "name"),
+    requests: whole(source, "requests"),
+    errors: whole(source, "errors"),
+    input: whole(source, "input"),
+    output: whole(source, "output"),
+    cache_read: whole(source, "cache_read"),
+    cache_write: whole(source, "cache_write"),
+    reasoning: whole(source, "reasoning"),
+    tokens: whole(source, "tokens"),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    estimated: flag(source, "estimated"),
+    unpriced_calls: whole(source, "unpriced_calls"),
+    list_price_micro_usd: microOrNull(source, "list_price_micro_usd"),
+  };
+}
+
+/** GET /api/usage/workspace as the gateway sends it. */
+export function toWorkspaceUsage(value: unknown): WorkspaceUsage {
+  const source = record(value, "workspace usage");
+  return {
+    range: usageRange(source.range),
+    bucket: bucketUnit(source.bucket),
+    time_zone: text(source, "time_zone"),
+    group: usageGroup(source.group),
+    spend_micro_usd: microOrNull(source, "spend_micro_usd"),
+    estimated: flag(source, "estimated"),
+    unpriced_calls: whole(source, "unpriced_calls"),
+    list_price_micro_usd: microOrNull(source, "list_price_micro_usd"),
+    buckets: list(source.buckets, "buckets").map(toUsageBucket),
+    rows: list(source.rows, "rows").map(toUsageRow),
+  };
+}
+
+/** The query of a usage read: the range as the route spells it. */
+export function usageQuery(range: UsageRange, group?: UsageGroup): string {
+  return `range=${encodeURIComponent(String(range))}${group === undefined ? "" : `&group=${encodeURIComponent(group)}`}`;
+}
+
 function taskPath(taskId: string) {
   return `/api/tasks/${encodeURIComponent(taskId)}`;
 }
@@ -1094,6 +1346,18 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
         if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, picks);
         await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: { ...picks } });
       },
+    },
+    async usage(range) {
+      if ((await chosen()) === "stub") return stub.usage(range);
+      return toUsage(await call(`/api/usage?${usageQuery(range)}`));
+    },
+    async usageLimits() {
+      if ((await chosen()) === "stub") return stub.usageLimits();
+      return toUsageLimits(await call("/api/usage/limits"));
+    },
+    async workspaceUsage(range, group) {
+      if ((await chosen()) === "stub") return stub.workspaceUsage(range, group);
+      return toWorkspaceUsage(await call(`/api/usage/workspace?${usageQuery(range, group)}`));
     },
     artifacts: {
       async list(taskId) {
