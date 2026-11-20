@@ -36,6 +36,8 @@ const (
 
 	// UsageLimitUpdate sets, changes, or removes one monthly spend limit.
 	UsageLimitUpdate Action = "usage_limit.update"
+	// UsageWorkspaceView reads or exports everyone's usage, a sensitive read.
+	UsageWorkspaceView Action = "usage.workspace.view"
 )
 
 func init() {
@@ -59,4 +61,5 @@ func init() {
 	register(RouteDelete, "route", classAPIActivity, activityUnknown)
 
 	register(UsageLimitUpdate, "usage_limit", classAPIActivity, activityUnknown, "kind", "subject_id", "amount_micro_usd")
+	register(UsageWorkspaceView, "usage", classAPIActivity, activityUnknown, "range", "group", "format")
 }

@@ -1212,6 +1212,79 @@ func buildHandler(
 		return identity.RequireSession(sessions, next)
 	})
 
+	usage := gateway.NewUsage(pool)
+	usage.Allow = func(ctx context.Context, user string) (string, error) {
+		person, err := identity.ParseUserID(user)
+		if err != nil {
+			return "", err
+		}
+		return members.EffectiveAllow(ctx, person)
+	}
+	usage.Teams = ideps.providers.Teams
+	// The workspace zone for everyone until a person can choose their own.
+	usage.TimeZone = func(ctx context.Context, _ string) (string, error) {
+		return identity.WorkspaceTimeZone(ctx, deps.Owner)
+	}
+	usage.People = func(ctx context.Context, ids []string) (map[string]string, error) {
+		names, _, err := members.NamesOf(ctx, ids, nil)
+		return names, err
+	}
+	usage.TeamNames = func(ctx context.Context, ids []string) (map[string]string, error) {
+		_, names, err := members.NamesOf(ctx, nil, ids)
+		return names, err
+	}
+	usage.Agents = func(ctx context.Context, user string, _ []string) (map[string]string, error) {
+		person, err := identity.ParseUserID(user)
+		if err != nil {
+			return nil, err
+		}
+		access, ok, err := agentAccess(ctx, members, person)
+		if err != nil || !ok {
+			return nil, err
+		}
+		list, err := agents.ListAgents(ctx, ideps.agents, access)
+		if err != nil {
+			return nil, err
+		}
+		names := make(map[string]string, len(list))
+		for _, a := range list {
+			names[a.ID] = a.Name
+		}
+		return names, nil
+	}
+	usage.Goals = func(ctx context.Context, user string, _ []string) (map[string]string, error) {
+		person, err := identity.ParseUserID(user)
+		if err != nil {
+			return nil, err
+		}
+		access, ok, err := taskAccess(ctx, person)
+		if err != nil || !ok {
+			return nil, err
+		}
+		list, err := taskBook.List(ctx, access)
+		if err != nil {
+			return nil, err
+		}
+		goals := make(map[string]string, len(list))
+		for _, t := range list {
+			goals[t.ID] = t.Title
+		}
+		return goals, nil
+	}
+	gateway.UsageHandler{
+		Service: usage,
+		Log:     log,
+		Access: func(r *http.Request) (string, bool) {
+			person, ok := identity.SessionFrom(r.Context())
+			if !ok {
+				return "", false
+			}
+			return person.UserID.String(), true
+		},
+	}.MountUsage(mux, func(next http.Handler) http.Handler {
+		return identity.RequireSession(sessions, next)
+	})
+
 	agents.Handler{
 		Agents:       ideps.agents,
 		Teams:        agentTeamLookup{members: members},

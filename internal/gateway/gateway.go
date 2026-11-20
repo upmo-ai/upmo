@@ -226,6 +226,12 @@ func NewUsageLimits(pool *pgxpool.Pool, log *slog.Logger) app.UsageLimits {
 	}
 }
 
+// NewUsage is the use case behind the usage reports. Nobody may read the
+// workspace's usage until the caller sets Allow.
+func NewUsage(pool *pgxpool.Pool) app.UsageService {
+	return app.UsageService{Store: postgres.Usage{Pool: pool}}
+}
+
 // RoutesHandler serves the routing rows to a signed-in settings manager.
 type RoutesHandler = httpapi.RoutesHandler
 
@@ -234,6 +240,9 @@ type ProvidersHandler = httpapi.ProvidersHandler
 
 // UsageLimitsHandler serves monthly spend limits to a signed-in person.
 type UsageLimitsHandler = httpapi.UsageLimitsHandler
+
+// UsageHandler serves the usage reports to a signed-in person.
+type UsageHandler = httpapi.UsageHandler
 
 // A model request and the input it is built from.
 type (
@@ -255,6 +264,7 @@ type (
 	RouteBook             = app.RouteBook
 	RouteService          = app.RouteService
 	UsageLimits           = app.UsageLimits
+	UsageService          = app.UsageService
 	UsageLimitsView       = app.UsageLimitsView
 	UsageLimitRow         = app.UsageLimitRow
 	OwnUsageLimits        = app.OwnUsageLimits
