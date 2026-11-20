@@ -65,6 +65,7 @@ func (p Providers) begin(ctx context.Context, who app.Caller) (pgx.Tx, error) {
 // or to someone who can only use a shared account.
 const accountColumns = `a.id::text, a.provider, a.name, a.adapter, a.plan_kind, a.base_url, a.status,
 	a.enabled,
+	a.pricing_provider, a.pricing_models,
 	a.visibility, COALESCE(a.owner_user_id::text, ''),
 	CASE WHEN NOT a.house AND identity.may_manage_provider(a.owner_user_id, a.visibility) THEN a.credential_ref ELSE '' END,
 	EXISTS (SELECT 1 FROM gateway.credentials AS c WHERE c.ref = a.credential_ref),
@@ -80,8 +81,15 @@ func visibleTo() string {
 
 func scanAccount(row pgx.Row) (domain.Provider, error) {
 	var a domain.Provider
+	var pricingModels []byte
 	err := row.Scan(&a.ID, &a.Provider, &a.Name, &a.Adapter, &a.PlanKind, &a.BaseURL, &a.Status, &a.Enabled,
+		&a.PricingProvider, &pricingModels,
 		&a.Share.Visibility, &a.OwnerUserID, &a.CredentialRef, &a.HasKey, &a.KeyHint, &a.KeyChangedAt, &a.KeyChangedBy, &a.Share.House)
+	if len(pricingModels) > 0 {
+		if err := json.Unmarshal(pricingModels, &a.PricingModels); err != nil {
+			return domain.Provider{}, err
+		}
+	}
 	if a.Provider == "" {
 		a.Provider = a.Adapter
 	}

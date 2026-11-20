@@ -461,6 +461,10 @@ export function toProvider(value: unknown): ListedProvider {
     is_owner: source.is_owner,
   };
   if (typeof source.base_url === "string" && source.base_url !== "") account.base_url = source.base_url;
+  if (typeof source.pricing_provider === "string") account.pricing_provider = source.pricing_provider;
+  if (isRecord(source.pricing_models)) {
+    account.pricing_models = Object.fromEntries(Object.entries(source.pricing_models).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  }
   account.enabled = source.enabled !== false;
   if (typeof source.key_hint === "string" && source.key_hint !== "") account.key_hint = source.key_hint;
   if (typeof source.key_changed_at === "string") account.key_changed_at = source.key_changed_at;
@@ -1034,6 +1038,10 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async clearPrice(id, model) {
         if ((await chosen()) === "stub") return stub.providers.clearPrice(id, model);
         return toModelPricing(await call(`${providerPath(id)}/overrides`, { method: "DELETE", body: { model } }));
+      },
+      async setPricingMap(id, pricing_provider, models) {
+        if ((await chosen()) === "stub") return stub.providers.setPricingMap(id, pricing_provider, models);
+        await call(`${providerPath(id)}/pricing-map`, { method: "PUT", body: { ...(pricing_provider === undefined ? {} : { pricing_provider }), models } });
       },
     },
     agents: {

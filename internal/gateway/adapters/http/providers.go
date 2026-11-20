@@ -18,6 +18,9 @@ import (
 // 100-model list is up to ~12 KiB, so 64 KiB is generous.
 const maxProviderBody = 64 << 10
 
+// maxPricingMapBody allows a full map request while the service enforces its smaller stored-map limit.
+const maxPricingMapBody = 128 << 10
+
 // ProvidersHandler serves a signed-in person's own provider accounts and the
 // ones shared with them beside them: their teams' and the workspace's. A key
 // is accepted but never returned.
@@ -49,23 +52,26 @@ func (h ProvidersHandler) MountProviders(mux *http.ServeMux, guard func(http.Han
 	mux.Handle("PUT /api/providers/{id}", wrap(h.change))
 	mux.Handle("DELETE /api/providers/{id}", wrap(h.remove))
 	mux.Handle("PUT /api/providers/{id}/overrides", wrap(h.setOverride))
+	mux.Handle("PUT /api/providers/{id}/pricing-map", wrap(h.setPricingMap))
 	mux.Handle("DELETE /api/providers/{id}/overrides", wrap(h.deleteOverride))
 }
 
 type providerJSON struct {
-	ID            string                `json:"id"`
-	Provider      string                `json:"provider"`
-	Name          string                `json:"name"`
-	Adapter       string                `json:"adapter"`
-	PlanKind      string                `json:"plan_kind"`
-	BaseURL       string                `json:"base_url,omitempty"`
-	Status        string                `json:"status"`
-	Enabled       bool                  `json:"enabled"`
-	KeyHint       string                `json:"key_hint,omitempty"`
-	KeyChangedAt  *time.Time            `json:"key_changed_at,omitempty"`
-	KeyChangedBy  string                `json:"key_changed_by,omitempty"`
-	Models        []string              `json:"models"`
-	EnabledModels []domain.EnabledModel `json:"enabled_models"`
+	ID              string                `json:"id"`
+	Provider        string                `json:"provider"`
+	Name            string                `json:"name"`
+	Adapter         string                `json:"adapter"`
+	PlanKind        string                `json:"plan_kind"`
+	BaseURL         string                `json:"base_url,omitempty"`
+	PricingProvider string                `json:"pricing_provider"`
+	PricingModels   map[string]string     `json:"pricing_models"`
+	Status          string                `json:"status"`
+	Enabled         bool                  `json:"enabled"`
+	KeyHint         string                `json:"key_hint,omitempty"`
+	KeyChangedAt    *time.Time            `json:"key_changed_at,omitempty"`
+	KeyChangedBy    string                `json:"key_changed_by,omitempty"`
+	Models          []string              `json:"models"`
+	EnabledModels   []domain.EnabledModel `json:"enabled_models"`
 	// Usable says whether the person can use the account now, and
 	// UsableModels lists the models of theirs that count: the rule is
 	// domain's, computed per account here.
@@ -117,27 +123,29 @@ func providerBody(p domain.Provider) providerJSON {
 		usable = domain.UsableModels(p)
 	}
 	return providerJSON{
-		ID:            p.ID,
-		Provider:      p.Provider,
-		Name:          p.Name,
-		Adapter:       p.Adapter,
-		PlanKind:      p.PlanKind,
-		BaseURL:       p.BaseURL,
-		Status:        p.Status,
-		Enabled:       p.Enabled,
-		KeyHint:       p.KeyHint,
-		KeyChangedAt:  p.KeyChangedAt,
-		KeyChangedBy:  p.KeyChangedBy,
-		Models:        models,
-		EnabledModels: enabled,
-		Usable:        len(usable) > 0,
-		UsableModels:  usable,
-		Visibility:    visibility,
-		TeamIDs:       teamIDs,
-		TeamNames:     teamNames,
-		CanManage:     p.Share.CanManage,
-		CanUse:        p.Share.CanUse,
-		IsOwner:       p.Share.IsOwner,
+		ID:              p.ID,
+		Provider:        p.Provider,
+		Name:            p.Name,
+		Adapter:         p.Adapter,
+		PlanKind:        p.PlanKind,
+		BaseURL:         p.BaseURL,
+		PricingProvider: p.PricingProvider,
+		PricingModels:   p.PricingModels,
+		Status:          p.Status,
+		Enabled:         p.Enabled,
+		KeyHint:         p.KeyHint,
+		KeyChangedAt:    p.KeyChangedAt,
+		KeyChangedBy:    p.KeyChangedBy,
+		Models:          models,
+		EnabledModels:   enabled,
+		Usable:          len(usable) > 0,
+		UsableModels:    usable,
+		Visibility:      visibility,
+		TeamIDs:         teamIDs,
+		TeamNames:       teamNames,
+		CanManage:       p.Share.CanManage,
+		CanUse:          p.Share.CanUse,
+		IsOwner:         p.Share.IsOwner,
 	}
 }
 
@@ -161,7 +169,11 @@ func (h ProvidersHandler) person(w http.ResponseWriter, r *http.Request) (string
 
 // decode reads a bounded JSON body. It answers 400 or 413 itself on failure.
 func decodeProvider(w http.ResponseWriter, r *http.Request, into any) bool {
-	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProviderBody)).Decode(into)
+	return decodeProviderLimit(w, r, into, maxProviderBody)
+}
+
+func decodeProviderLimit(w http.ResponseWriter, r *http.Request, into any, limit int64) bool {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(into)
 	if err == nil {
 		return true
 	}
@@ -378,6 +390,54 @@ func (h ProvidersHandler) setOverride(w http.ResponseWriter, r *http.Request) {
 	writeRouteJSON(w, http.StatusOK, view)
 }
 
+func (h ProvidersHandler) setPricingMap(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		PricingProvider *string            `json:"pricing_provider"`
+		Models          map[string]*string `json:"models"`
+	}
+	var raw map[string]json.RawMessage
+	if !decodeProviderLimit(w, r, &raw, maxPricingMapBody) {
+		return
+	}
+	if value, ok := raw["pricing_provider"]; ok && string(value) != "null" {
+		if err := json.Unmarshal(value, &body.PricingProvider); err != nil {
+			h.refuse(w, domain.Invalid("Invalid pricing provider."))
+			return
+		}
+	}
+	if value, ok := raw["models"]; ok {
+		if err := json.Unmarshal(value, &body.Models); err != nil {
+			h.refuse(w, domain.Invalid("Invalid model mappings."))
+			return
+		}
+	}
+	models := make(map[string]string, len(body.Models))
+	for model, mapped := range body.Models {
+		if mapped != nil {
+			models[model] = *mapped
+		} else {
+			models[model] = ""
+		}
+	}
+	var vendor *string
+	if value, ok := raw["pricing_provider"]; ok {
+		v := ""
+		if string(value) != "null" && body.PricingProvider != nil {
+			v = *body.PricingProvider
+		}
+		vendor = &v
+	}
+	if err := h.Service.SetPricingMap(r.Context(), user, r.PathValue("id"), vendor, models); err != nil {
+		h.refuse(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h ProvidersHandler) deleteOverride(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
 	if !ok {
@@ -543,6 +603,8 @@ func (h ProvidersHandler) refuse(w http.ResponseWriter, err error) {
 		writeRouteError(w, http.StatusForbidden, "Only workspace admins can share a provider.")
 	case errors.Is(err, app.ErrOverridePermission):
 		writeRouteError(w, http.StatusForbidden, "Only workspace admins can manage price overrides.")
+	case errors.Is(err, app.ErrPricingMapLimit):
+		writeRouteError(w, http.StatusBadRequest, "The pricing map may contain at most 2,000 models and 65,536 bytes.")
 	case errors.Is(err, app.ErrDuplicate):
 		writeRouteError(w, http.StatusConflict, "You already have a provider with that name.")
 	case errors.Is(err, app.ErrLimit):

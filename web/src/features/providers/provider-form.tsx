@@ -163,16 +163,16 @@ function ProviderForm({ mode, vendors, existing }: ProviderFormProps) {
 
   // What the provider listed: the last test's answer, or for a saved account
   // the list its last saved test stored. Prices come from the provider's own
-  // list first, then from models.dev for the vendor.
+  // list first, then from models.dev for the account's pricing vendor and model mapping.
   const storedModels = useQuery({
     queryKey: providerModelsQueryKey(existing?.id ?? ""),
     queryFn: () => api.providers.models(existing?.id ?? ""),
     enabled: existing !== undefined,
   });
   const catalogQuery = useQuery({
-    queryKey: providerCatalogQueryKey(selectedProviderId),
-    queryFn: () => api.providers.catalog(selectedProviderId),
-    enabled: selectedProviderId !== "" && selectedMeta.adapter !== "fake",
+    queryKey: providerCatalogQueryKey(existing?.pricing_provider || selectedProviderId),
+    queryFn: () => api.providers.catalog(existing?.pricing_provider || selectedProviderId),
+    enabled: (existing?.pricing_provider || selectedProviderId) !== "" && selectedMeta.adapter !== "fake",
   });
   const discovered = testResult?.ok ? (testResult.models ?? []) : (storedModels.data ?? []);
   const catalog = catalogQuery.data ?? [];
@@ -623,7 +623,7 @@ function ProviderForm({ mode, vendors, existing }: ProviderFormProps) {
               <Table.Tbody>
                 {shownRows.map(({ seen, listed }) => {
                   const isChecked = selectedModels.includes(seen.id);
-                  const price = listedPrice(seen, catalog);
+                  const price = listedPrice(seen, catalog, existing?.pricing_models?.[seen.id] || seen.id);
                   return (
                     <Table.Tr key={seen.id} onClick={() => handleToggleModel(seen.id)} style={{ cursor: "pointer" }}>
                       <Table.Td onClick={(e) => e.stopPropagation()}>
