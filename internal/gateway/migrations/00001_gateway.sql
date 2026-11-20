@@ -248,9 +248,11 @@ CREATE TABLE gateway.usage_holds (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- reasoning is a breakdown of output_tokens, not an extra dimension, so the
+-- per-task total does not add it on top of output.
 CREATE VIEW gateway.task_tokens AS
 SELECT coalesce(parent_run_id, run_id) AS task_id,
-  sum(input_tokens + output_tokens + cache_read + cache_write + reasoning)::bigint AS tokens
+  sum(input_tokens + output_tokens + cache_read + cache_write)::bigint AS tokens
 FROM gateway.ledger
 WHERE run_id IS NOT NULL
 GROUP BY 1;

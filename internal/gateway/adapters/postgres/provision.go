@@ -385,7 +385,8 @@ func QueryMonthlyUsage(ctx context.Context, owner *pgxpool.Pool, month string, s
 		); err != nil {
 			return MonthlyUsage{}, err
 		}
-		row.TotalTokens = row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens + row.ReasoningTokens
+		// Reasoning tokens are a breakdown of output, not an extra dimension.
+		row.TotalTokens = row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheWriteTokens
 		res.Totals.InputTokens += row.InputTokens
 		res.Totals.OutputTokens += row.OutputTokens
 		res.Totals.CacheReadTokens += row.CacheReadTokens
