@@ -899,6 +899,47 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 	}
 }
 
+func TestProbePerplexityModelsFixture(t *testing.T) {
+	v, ok := domain.VendorFor("perplexity")
+	if !ok {
+		t.Fatal("missing perplexity vendor")
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "perplexity_models.json")) //nolint:gosec // static testdata path
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(raw)
+	}))
+	t.Cleanup(srv.Close)
+
+	var askedURL string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		askedURL = r.URL.String()
+		moved := r.Clone(r.Context())
+		moved.URL.Scheme = "http"
+		moved.URL.Host = strings.TrimPrefix(srv.URL, "http://")
+		moved.Host = ""
+		return http.DefaultTransport.RoundTrip(moved)
+	})
+	a := Adapter{Client: &http.Client{Transport: rt}}
+	got, class, err := a.Probe(context.Background(), app.Attempt{BaseURL: v.BaseURL, Secret: "sk-test", PlanKind: domain.PlanMetered})
+	if err != nil || class != domain.ClassOK {
+		t.Fatalf("class=%s err=%v", class, err)
+	}
+	if askedURL != "https://api.perplexity.ai/v1/models" {
+		t.Fatalf("perplexity models URL = %q, want https://api.perplexity.ai/v1/models", askedURL)
+	}
+	want := []domain.SeenModel{
+		{ID: "anthropic/claude-opus-5"},
+		{ID: "anthropic/claude-opus-5-5"},
+		{ID: "anthropic/claude-sonnet-5"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got = %+v, want %+v", got, want)
+	}
+}
+
 func TestOpenAIUsage_CachedTokensAndDeepSeek(t *testing.T) {
 	// 1. Non-streamed OpenAI cached_tokens subtracted from prompt_tokens.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
