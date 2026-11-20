@@ -1,220 +1,23 @@
-import { Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Card, Group, List, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Badge, Button, ConfirmDialog, Input, ProviderCard, StatusAlert } from "@upmo-ai/components";
+import { Badge, Button, ConfirmDialog, Input, ProviderCard, StatusAlert, Switch } from "@upmo-ai/components";
 
-import { PROVIDERS_KEY, providersQueryKey, useApi } from "../../app/api";
-import { adapterLabel, providerProblem } from "./rules";
+import { PROVIDERS_KEY, providersQueryKey, useApi, type ProviderUses } from "../../app/api";
+import { formatDate } from "../identity/format";
+import { adapterLabel, cardStatus, keyLine, providerProblem, retiredModels, workspaceOff } from "./rules";
 import { canManage, sharedNote, type ListedProvider } from "./sharing";
 
-export interface KnownProvider {
-  id: string;
-  name: string;
-  adapter: string;
-  description: string;
-  defaultPlan: "metered" | "subscription" | "local";
-  defaultModels: string[];
-  requiresKey: boolean;
-  /**
-   * The address the provider is reached at, as the brain's vendor table has it
-   * (internal/gateway/domain/vendor.go). The brain adds the chat, models and
-   * embeddings paths itself, which it picks from this address.
-   */
-  defaultBaseUrl?: string;
+/** Each use as one line, or nothing when nothing uses the account. */
+function usedBy(uses: ProviderUses): string[] {
+  return [
+    ...uses.routes.map((name) => `Route ${name}`),
+    ...uses.agents.map((name) => `Agent ${name}`),
+    ...uses.automations.map((name) => `Automation ${name}`),
+  ];
 }
-
-export const KNOWN_PROVIDERS: KnownProvider[] = [
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    adapter: "anthropic",
-    description: "Claude 3.7 Sonnet, Claude 3.5 Haiku",
-    defaultPlan: "metered",
-    defaultModels: ["claude-3-7-sonnet", "claude-3-5-haiku"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.anthropic.com",
-  },
-  {
-    id: "openai",
-    name: "OpenAI",
-    adapter: "openai",
-    description: "GPT-4o, o1, o3-mini",
-    defaultPlan: "metered",
-    defaultModels: ["gpt-4o", "o3-mini"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.openai.com",
-  },
-  {
-    id: "gemini",
-    name: "Google Gemini",
-    adapter: "gemini",
-    description: "Gemini 2.0 Flash, Gemini 1.5 Pro",
-    defaultPlan: "metered",
-    defaultModels: ["gemini-2.0-flash", "gemini-1.5-pro"],
-    requiresKey: true,
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-  },
-  {
-    id: "nebius",
-    name: "Nebius",
-    adapter: "nebius",
-    description: "DeepSeek-R1, Llama 3.3, Qwen 2.5 on fast GPUs",
-    defaultPlan: "metered",
-    defaultModels: [
-      "deepseek-ai/DeepSeek-R1",
-      "meta-llama/Meta-Llama-3.1-70B-Instruct",
-      "Qwen/Qwen2.5-Coder-32B-Instruct",
-    ],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.studio.nebius.ai",
-  },
-  {
-    id: "ollama",
-    name: "Ollama",
-    adapter: "ollama",
-    description: "Local models, no API key required",
-    defaultPlan: "local",
-    defaultModels: ["llama3.3:70b", "deepseek-r1:14b"],
-    requiresKey: false,
-    defaultBaseUrl: "http://localhost:11434",
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    adapter: "deepseek",
-    description: "DeepSeek-R1, DeepSeek-V3",
-    defaultPlan: "metered",
-    defaultModels: ["deepseek-r1", "deepseek-v3"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.deepseek.com",
-  },
-  {
-    id: "groq",
-    name: "Groq",
-    adapter: "groq",
-    description: "Fast inference: Llama 3.3, Mixtral",
-    defaultPlan: "metered",
-    defaultModels: ["llama-3.3-70b-versatile"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.groq.com/openai",
-  },
-  {
-    id: "xai",
-    name: "xAI",
-    adapter: "xai",
-    description: "Grok-2, Grok-2-mini",
-    defaultPlan: "metered",
-    defaultModels: ["grok-2", "grok-2-mini"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.x.ai",
-  },
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    adapter: "openrouter",
-    description: "One API key, hundreds of models",
-    defaultPlan: "metered",
-    defaultModels: ["anthropic/claude-3.7-sonnet", "openai/gpt-4o"],
-    requiresKey: true,
-    defaultBaseUrl: "https://openrouter.ai/api",
-  },
-  {
-    id: "mistral",
-    name: "Mistral",
-    adapter: "mistral",
-    description: "Mistral Large, Codestral",
-    defaultPlan: "metered",
-    defaultModels: ["mistral-large-latest", "codestral-latest"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.mistral.ai",
-  },
-  {
-    id: "together",
-    name: "Together AI",
-    adapter: "together",
-    description: "Fast open-source inference: Llama 3.3, DeepSeek",
-    defaultPlan: "metered",
-    defaultModels: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "deepseek-ai/DeepSeek-R1"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.together.xyz",
-  },
-  {
-    id: "cerebras",
-    name: "Cerebras",
-    adapter: "cerebras",
-    description: "Ultra-fast Wafer-Scale inference",
-    defaultPlan: "metered",
-    defaultModels: ["llama3.3-70b", "llama3.1-8b"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.cerebras.ai",
-  },
-  {
-    id: "fireworks",
-    name: "Fireworks AI",
-    adapter: "fireworks",
-    description: "Production compound AI inference",
-    defaultPlan: "metered",
-    defaultModels: [
-      "accounts/fireworks/models/llama-v3p3-70b-instruct",
-      "accounts/fireworks/models/deepseek-r1",
-    ],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.fireworks.ai/inference",
-  },
-  {
-    id: "perplexity",
-    name: "Perplexity",
-    adapter: "perplexity",
-    description: "Search-augmented models: Sonar",
-    defaultPlan: "metered",
-    defaultModels: ["sonar-pro", "sonar", "sonar-reasoning"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.perplexity.ai",
-  },
-  {
-    id: "cohere",
-    name: "Cohere",
-    adapter: "cohere",
-    description: "Command R+, Command R",
-    defaultPlan: "metered",
-    defaultModels: ["command-r-plus-08-2024", "command-r-08-2024"],
-    requiresKey: true,
-    defaultBaseUrl: "https://api.cohere.ai/compatibility/v1",
-  },
-  {
-    id: "lmstudio",
-    name: "LM Studio",
-    adapter: "lmstudio",
-    description: "Local model runtime with OpenAI-compatible API",
-    defaultPlan: "local",
-    defaultModels: ["local-model"],
-    requiresKey: false,
-    defaultBaseUrl: "http://localhost:1234",
-  },
-];
-
-/**
- * A provider with no network behind it, for trying the screens and the e2e
- * checks. It is offered in a dev build only, but an account that uses it is
- * always recognised.
- */
-export const TEST_PROVIDER: KnownProvider = {
-  id: "fake",
-  name: "Test provider",
-  adapter: "fake",
-  description: "Built in, no network. For trying Upmo out.",
-  defaultPlan: "local",
-  defaultModels: [],
-  requiresKey: true,
-};
-
-/** Every provider an account can name. */
-export const ALL_PROVIDERS: KnownProvider[] = [...KNOWN_PROVIDERS, TEST_PROVIDER];
-
-/** The providers the picker offers. */
-export const PICKABLE_PROVIDERS: KnownProvider[] = import.meta.env.DEV ? ALL_PROVIDERS : KNOWN_PROVIDERS;
 
 export function ProvidersPage() {
   const api = useApi();
@@ -248,6 +51,29 @@ export function ProvidersPage() {
     setDisconnectError("");
     setDisconnectTarget(account);
   };
+
+  // Turning an account off asks first and names what uses it. Turning it on does not.
+  const [offTarget, setOffTarget] = useState<ListedProvider | null>(null);
+  const [switchError, setSwitchError] = useState("");
+  const usesQuery = useQuery({
+    queryKey: [...PROVIDERS_KEY, offTarget?.id ?? "", "uses"],
+    queryFn: () => api.providers.uses(offTarget?.id ?? ""),
+    enabled: offTarget !== null,
+  });
+  const switchMutation = useMutation({
+    meta: { shown: true },
+    mutationFn: (input: { id: string; enabled: boolean }) => api.providers.update(input.id, { enabled: input.enabled }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
+      setOffTarget(null);
+    },
+    onError: (error: unknown) => setSwitchError(providerProblem(error)),
+  });
+  const askOff = (account: ListedProvider | null) => {
+    setSwitchError("");
+    setOffTarget(account);
+  };
+  const uses = usesQuery.data ? usedBy(usesQuery.data) : [];
 
   const [search, setSearch] = useState("");
 
@@ -284,13 +110,19 @@ export function ProvidersPage() {
           )}
           <Button
             component={Link}
-            to="/providers/new"
+            to="/settings/providers/new"
             leftSection={<IconPlus size={16} aria-hidden="true" />}
           >
             Add provider
           </Button>
         </Group>
       </Group>
+
+      {switchError && !offTarget ? (
+        <StatusAlert tone="critical" title="Could not turn it on">
+          {switchError}
+        </StatusAlert>
+      ) : null}
 
       {providersQuery.isPending ? (
         <Text c="dimmed" size="sm" role="status">
@@ -313,7 +145,7 @@ export function ProvidersPage() {
             <Button
               mt="xs"
               component={Link}
-              to="/providers/new"
+              to="/settings/providers/new"
               leftSection={<IconPlus size={16} aria-hidden="true" />}
             >
               Add provider
@@ -329,9 +161,12 @@ export function ProvidersPage() {
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
           {filteredProviders.map((prov) => {
-            // Edit and disconnect only when the brain says this person may.
+            // Edit, disconnect and the switch only when the brain says this person may.
             const manage = canManage(prov);
             const note = sharedNote(prov);
+            const on = prov.enabled !== false;
+            const retired = retiredModels(prov);
+            const key = keyLine(prov, formatDate);
             return (
               <Stack key={prov.id} gap="xs">
                 <ProviderCard
@@ -340,7 +175,7 @@ export function ProvidersPage() {
                   brand={prov.provider}
                   name={prov.name}
                   adapter={adapterLabel(prov.adapter)}
-                  status={prov.status}
+                  status={cardStatus(prov.status)}
                   planKind={prov.plan_kind}
                   baseUrl={prov.base_url}
                   models={prov.models}
@@ -348,13 +183,41 @@ export function ProvidersPage() {
                     manage
                       ? () =>
                           void navigate({
-                            to: "/providers/$providerId/edit",
+                            to: "/settings/providers/$providerId/edit",
                             params: { providerId: prov.id },
                           })
                       : undefined
                   }
                   onDisconnect={manage ? () => askDisconnect(prov) : undefined}
                 />
+                {key ? (
+                  <Text size="xs" c="dimmed">
+                    {key}
+                  </Text>
+                ) : null}
+                <Group gap="sm" justify="space-between" wrap="wrap">
+                  {manage ? (
+                    <Switch
+                      label={on ? "On" : "Off"}
+                      aria-label={`${prov.name} on`}
+                      checked={on}
+                      disabled={switchMutation.isPending}
+                      onChange={(event) => {
+                        if (event.currentTarget.checked) switchMutation.mutate({ id: prov.id, enabled: true });
+                        else askOff(prov);
+                      }}
+                    />
+                  ) : null}
+                  <Button
+                    component={Link}
+                    to={`/settings/providers/${encodeURIComponent(prov.id)}/prices`}
+                    variant="subtle"
+                    size="xs"
+                    aria-label={`Prices for ${prov.name}`}
+                  >
+                    Prices
+                  </Button>
+                </Group>
                 {note ? (
                   <Group gap="xs">
                     <Badge variant="light" size="sm">
@@ -365,7 +228,30 @@ export function ProvidersPage() {
                     </Text>
                   </Group>
                 ) : null}
-                {!prov.usable ? (
+                {workspaceOff(prov.status) ? (
+                  <Group gap="xs">
+                    <Badge variant="light" size="sm" color="orange">
+                      Turned off by your workspace
+                    </Badge>
+                  </Group>
+                ) : null}
+                {retired.length > 0 ? (
+                  <Group gap="xs">
+                    <Badge variant="light" size="sm" color="orange">
+                      Retired
+                    </Badge>
+                    <Text size="xs" c="dimmed">
+                      {retired.join(", ")} no longer listed by the provider.
+                    </Text>
+                  </Group>
+                ) : null}
+                {!on ? (
+                  <Group gap="xs">
+                    <Badge variant="light" size="sm">
+                      Turned off
+                    </Badge>
+                  </Group>
+                ) : !prov.usable ? (
                   <Group gap="xs">
                     <Badge variant="light" size="sm">
                       Inactive
@@ -396,6 +282,46 @@ export function ProvidersPage() {
         {disconnectError ? (
           <StatusAlert tone="critical" title="Could not disconnect">
             {disconnectError}
+          </StatusAlert>
+        ) : null}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        opened={Boolean(offTarget)}
+        title={offTarget ? `Turn off ${offTarget.name}` : "Turn off provider"}
+        body="Its models leave every picker until it is turned on again."
+        action="Turn off"
+        destructive
+        busy={switchMutation.isPending}
+        confirmDisabled={usesQuery.isPending || usesQuery.isError}
+        onClose={() => askOff(null)}
+        onConfirm={() => {
+          if (offTarget) switchMutation.mutate({ id: offTarget.id, enabled: false });
+        }}
+      >
+        {usesQuery.isPending ? (
+          <Text size="sm" c="dimmed" role="status">
+            Checking what uses it
+          </Text>
+        ) : usesQuery.isError ? (
+          <StatusAlert tone="critical" title="Could not check what uses it">
+            {providerProblem(usesQuery.error)}
+          </StatusAlert>
+        ) : uses.length === 0 ? (
+          <Text size="sm">Nothing uses it now.</Text>
+        ) : (
+          <Stack gap={4}>
+            <Text size="sm">These stop working:</Text>
+            <List size="sm" aria-label="What uses it">
+              {uses.map((line) => (
+                <List.Item key={line}>{line}</List.Item>
+              ))}
+            </List>
+          </Stack>
+        )}
+        {switchError ? (
+          <StatusAlert tone="critical" title="Could not turn it off">
+            {switchError}
           </StatusAlert>
         ) : null}
       </ConfirmDialog>

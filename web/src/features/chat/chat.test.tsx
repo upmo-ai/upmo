@@ -757,7 +757,7 @@ describe("UPM-265 nothing usable", () => {
 
     const guide = await screen.findByTestId("chat-setup-guide");
     expect(within(guide).getByRole("heading", { name: "Connect a provider" })).toBeTruthy();
-    expect(within(guide).getByRole("link", { name: "Add provider" }).getAttribute("href")).toBe("/providers/new");
+    expect(within(guide).getByRole("link", { name: "Add provider" }).getAttribute("href")).toBe("/settings/providers/new");
     expect(within(guide).getByRole("link", { name: "route" }).getAttribute("href")).toBe("/models");
     expect(within(guide).getByRole("link", { name: "agent" }).getAttribute("href")).toBe("/agents");
     expect(screen.queryByText("Write a message to start this chat.")).toBeNull();

@@ -38,7 +38,7 @@ const items: PaletteItem[] = [
   { to: "/agents", label: "Agents", group: "Pages", icon: IconRobot, meta: "Go to" },
   { to: "/knowledge", label: "Knowledge", group: "Workspace", icon: IconBrain, meta: "Go to" },
   { to: "/usage", label: "Usage", group: "Workspace", icon: IconChartBar, meta: "Go to" },
-  { to: "/providers", label: "Providers", group: "Workspace", icon: IconServer, meta: "Go to" },
+  { to: "/settings/providers", label: "Providers", group: "Workspace", icon: IconServer, meta: "Go to" },
   { to: "/connectors", label: "Connectors", group: "Workspace", icon: IconPlug, meta: "Go to" },
   { to: "/personalisation", label: "Personalisation", group: "Workspace", icon: IconSettings, meta: "Go to" },
   { to: "/security", label: "Security", group: "Management", icon: IconShieldLock, meta: "Go to" },
