@@ -102,6 +102,12 @@ func SystemProviderModelUses(ctx context.Context, owner *pgxpool.Pool, provider 
 	return postgres.SystemProviderModelUses(ctx, owner, provider, models)
 }
 
+// SystemProviderAgentIDs returns the ids of the agents that depend on a
+// provider account: they name one of its models or default to one of routes.
+func SystemProviderAgentIDs(ctx context.Context, owner *pgxpool.Pool, provider string, models, routes []string) ([]string, error) {
+	return postgres.SystemProviderAgentIDs(ctx, owner, provider, models, routes)
+}
+
 // CreateAgent validates, stores, and versions a new agent.
 func CreateAgent(ctx context.Context, store Store, teams app.TeamNames, access Access, in AgentFields) (Agent, error) {
 	return app.CreateAgent(ctx, store, teams, access, in)

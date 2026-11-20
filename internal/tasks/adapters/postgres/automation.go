@@ -307,3 +307,39 @@ func AutomationExists(ctx context.Context, pool *pgxpool.Pool, id string) (bool,
 	err := pool.QueryRow(ctx, `SELECT tasks.automation_exists($1::uuid)`, id).Scan(&exists)
 	return exists, err
 }
+
+// AutomationUses lists the goals of the automations access may see whose
+// template runs one of the agents. tasks.automation_uses applies the
+// automations visibility rule (managers see all, others their own) and returns
+// only the goal, so an agent id says nothing to a person who cannot see an
+// automation that uses it.
+func (s Store) AutomationUses(ctx context.Context, access app.Access, agentIDs []string) ([]string, error) {
+	if len(agentIDs) == 0 {
+		return []string{}, nil
+	}
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		SELECT goal
+		FROM tasks.automation_uses($1::uuid[])
+		ORDER BY lower(goal), id`, agentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: automation uses: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var goal string
+		if err := rows.Scan(&goal); err != nil {
+			return nil, fmt.Errorf("tasks: automation uses: %w", err)
+		}
+		out = append(out, goal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tasks: automation uses: %w", err)
+	}
+	return out, tx.Commit(ctx)
+}

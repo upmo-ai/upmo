@@ -159,10 +159,12 @@ func (s Store) ListAgents(ctx context.Context, access app.Access) ([]app.Agent, 
 	return out, tx.Commit(ctx)
 }
 
-// ProviderUses lists agents that name one of a provider account's models. It
-// is a narrow composition port; gateway never imports the agents package.
-func (s Store) ProviderUses(ctx context.Context, access app.Access, provider string, models []string) ([]string, error) {
-	if len(models) == 0 {
+// ProviderUses lists the agents access may see that depend on a provider
+// account: one that names one of its models, or whose default route is one of
+// routes, the routes linked to the account. It is a narrow composition port;
+// gateway never imports the agents package.
+func (s Store) ProviderUses(ctx context.Context, access app.Access, provider string, models, routes []string) ([]string, error) {
+	if len(models) == 0 && len(routes) == 0 {
 		return []string{}, nil
 	}
 	tx, err := s.begin(ctx, access)
@@ -173,9 +175,8 @@ func (s Store) ProviderUses(ctx context.Context, access app.Access, provider str
 	rows, err := tx.Query(ctx, `
 		SELECT name
 		FROM agents.agents
-		WHERE lower(COALESCE(default_model_provider, '')) = lower($1)
-		  AND default_model_id = ANY($2::text[])
-		ORDER BY lower(name), id`, provider, models)
+		WHERE `+providerUsesMatch+`
+		ORDER BY lower(name), id`, provider, nonNilStrings(models), nonNilStrings(routes))
 	if err != nil {
 		return nil, fmt.Errorf("agents: provider uses: %w", err)
 	}
@@ -195,6 +196,40 @@ func (s Store) ProviderUses(ctx context.Context, access app.Access, provider str
 		return nil, fmt.Errorf("agents: provider uses: %w", err)
 	}
 	return out, nil
+}
+
+// providerUsesMatch is the agent filter of a provider account: $1 is the
+// provider, $2 its models and $3 the names of the routes linked to it.
+const providerUsesMatch = `(
+	(lower(COALESCE(default_model_provider, '')) = lower($1) AND default_model_id = ANY($2::text[]))
+	OR default_route = ANY($3::text[])
+)`
+
+// SystemProviderAgentIDs returns the ids of every agent that depends on a
+// provider account, read on the owner pool. The ids are only a filter for a
+// caller's own visibility rules elsewhere; they are never shown.
+func SystemProviderAgentIDs(ctx context.Context, owner *pgxpool.Pool, provider string, models, routes []string) ([]string, error) {
+	if owner == nil || (len(models) == 0 && len(routes) == 0) {
+		return []string{}, nil
+	}
+	rows, err := owner.Query(ctx, `
+		SELECT id::text
+		FROM agents.agents
+		WHERE `+providerUsesMatch+`
+		ORDER BY id`, provider, nonNilStrings(models), nonNilStrings(routes))
+	if err != nil {
+		return nil, fmt.Errorf("agents: system provider agent ids: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("agents: system provider agent ids: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // SystemProviderModelUses returns which models of provider are named by any
