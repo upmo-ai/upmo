@@ -27,7 +27,7 @@ interface RecordedRequest {
 const vendors: ProviderVendor[] = [
   { key: "anthropic", name: "Anthropic", adapter: "anthropic", default_base_url: "https://api.anthropic.com", suggested_plan: "metered" },
   { key: "openai", name: "OpenAI", adapter: "openai_compat", default_base_url: "https://api.openai.com", suggested_plan: "metered" },
-  { key: "nebius", name: "Nebius", adapter: "openai_compat", default_base_url: "https://api.studio.nebius.ai", suggested_plan: "metered" },
+  { key: "nebius", name: "Nebius", adapter: "openai_compat", default_base_url: "https://api.tokenfactory.nebius.com", suggested_plan: "metered" },
   { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434", suggested_plan: "local" },
 ];
 

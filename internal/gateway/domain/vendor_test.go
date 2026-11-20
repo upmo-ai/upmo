@@ -2,6 +2,7 @@ package domain
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -53,22 +54,36 @@ func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
 	}
 }
 
+// savedBases is every base URL an account of v may be saved on: the vendor's
+// default plus one per legacy host from before a move.
+func savedBases(v Vendor) []string {
+	bases := []string{v.BaseURL}
+	for _, h := range v.LegacyHosts {
+		bases = append(bases, "https://"+h)
+	}
+	return bases
+}
+
 func TestHostedVendorHostsAreUnique(t *testing.T) {
 	// The host is how the compatible adapter tells hosted vendors apart, so two
-	// of them may not share one. A local runtime is judged by no host.
+	// of them may not share one, and a legacy host may not collide with any
+	// host another vendor answers on. A local runtime is judged by no host.
 	seen := map[string]string{}
 	for _, v := range Vendors() {
 		if v.Local {
 			continue
 		}
-		host := hostOf(v.BaseURL)
-		if host == "" {
-			t.Errorf("%s: no host in %q", v.Key, v.BaseURL)
+		hosts := append([]string{hostOf(v.BaseURL)}, v.LegacyHosts...)
+		for _, host := range hosts {
+			if host == "" {
+				t.Errorf("%s: empty host among %v", v.Key, hosts)
+				continue
+			}
+			if other, dup := seen[host]; dup {
+				t.Errorf("%s and %s share the host %s, so the host cannot tell them apart", v.Key, other, host)
+			}
+			seen[host] = v.Key
 		}
-		if other, dup := seen[host]; dup {
-			t.Errorf("%s and %s share the host %s, so the host cannot tell them apart", v.Key, other, host)
-		}
-		seen[host] = v.Key
 	}
 }
 
@@ -88,6 +103,47 @@ func TestVendorsReturnsACopy(t *testing.T) {
 	list[0].Key = "changed"
 	if again := Vendors(); again[0].Key != "anthropic" {
 		t.Fatalf("first vendor = %q", again[0].Key)
+	}
+}
+
+func TestLegacyHostsAreCopiedWhenAVendorIsHandedOut(t *testing.T) {
+	// Vendors, VendorFor and CompatPaths hand Vendor values out of the table.
+	// Their LegacyHosts must be copies, or a caller editing a returned slice
+	// would rewrite the alias data every later call reads.
+	checked := 0
+	for _, v := range Vendors() {
+		if len(v.LegacyHosts) == 0 {
+			continue
+		}
+		checked++
+		want := slices.Clone(v.LegacyHosts)
+
+		v.LegacyHosts[0] = "mutated.example.com"
+		if again, ok := VendorFor(v.Key); !ok || !slices.Equal(again.LegacyHosts, want) {
+			t.Errorf("%s: VendorFor legacy hosts = %v after editing the Vendors() copy, want %v", v.Key, again.LegacyHosts, want)
+		}
+
+		fromLookup, ok := VendorFor(v.Key)
+		if !ok {
+			t.Fatalf("%s disappeared from the table", v.Key)
+		}
+		fromLookup.LegacyHosts[0] = "mutated.example.com"
+		if again, ok := VendorFor(v.Key); !ok || !slices.Equal(again.LegacyHosts, want) {
+			t.Errorf("%s: VendorFor legacy hosts = %v after editing a returned vendor, want %v", v.Key, again.LegacyHosts, want)
+		}
+
+		base := "https://" + want[0]
+		paths := CompatPaths(base)
+		if paths.Key != v.Key {
+			t.Fatalf("CompatPaths(%q) = %q, want %s", base, paths.Key, v.Key)
+		}
+		paths.LegacyHosts[0] = "mutated.example.com"
+		if got := CompatPaths(base); got.Key != v.Key || slices.Contains(got.LegacyHosts, "mutated.example.com") {
+			t.Errorf("%s: CompatPaths(%q) after editing a returned vendor = %+v, want %s with %v", v.Key, base, got, v.Key, want)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no vendor carries a legacy host, so the copies went untested")
 	}
 }
 
@@ -123,6 +179,7 @@ func TestCompatPathsFollowTheHost(t *testing.T) {
 		{"cohere", "https://api.cohere.ai/compatibility/v1", "/chat/completions", "/models", "/embeddings"},
 		{"deepseek", "https://api.deepseek.com", "/chat/completions", "/models", "/embeddings"},
 		{"groq", "https://api.groq.com/openai", "/v1/chat/completions", "/v1/models", "/v1/embeddings"},
+		{"perplexity", "https://api.perplexity.ai", "/chat/completions", "/v1/models", "/v1/embeddings"},
 		{"upper case and a port", "https://API.Deepseek.com:443/", "/chat/completions", "/models", "/embeddings"},
 		{"a root dot", "https://api.deepseek.com./", "/chat/completions", "/models", "/embeddings"},
 		{"anthropic keeps the compatible endpoint", "https://api.anthropic.com", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
@@ -142,15 +199,38 @@ func TestCompatPathsFollowTheHost(t *testing.T) {
 
 func TestCompatPathsKnowEveryHostedCompatibleVendor(t *testing.T) {
 	for _, v := range Vendors() {
-		got := CompatPaths(v.BaseURL)
-		if v.Adapter == AdapterOpenAI && !v.Local {
-			if got.Key != v.Key {
-				t.Errorf("%s: default base URL resolves to %q", v.Key, got.Key)
+		for _, base := range savedBases(v) {
+			got := CompatPaths(base)
+			if v.Adapter == AdapterOpenAI && !v.Local {
+				if got.Key != v.Key {
+					t.Errorf("%s: base URL %q resolves to %q", v.Key, base, got.Key)
+				}
+				continue
 			}
-			continue
+			if got.Key != "" {
+				t.Errorf("%s: base URL %q resolves to vendor %q, want the legacy paths", v.Key, base, got.Key)
+			}
 		}
-		if got.Key != "" {
-			t.Errorf("%s: resolves to vendor %q, want the legacy paths", v.Key, got.Key)
+	}
+}
+
+func TestAMovedVendorStillAnswersOnItsLegacyHost(t *testing.T) {
+	// Nebius moved from api.studio.nebius.ai to api.tokenfactory.nebius.com.
+	// Accounts saved on the old host keep the vendor's compat paths and pricing
+	// vendor, so the move cannot silently drop pricing for them.
+	moved, ok := VendorFor("nebius")
+	if !ok || moved.BaseURL != "https://api.tokenfactory.nebius.com" {
+		t.Fatalf("nebius = %+v, ok = %v", moved, ok)
+	}
+	now := CompatPaths(moved.BaseURL)
+	for _, host := range moved.LegacyHosts {
+		base := "https://" + host
+		if got := CompatPaths(base); got.Key != moved.Key || got.ChatPath != now.ChatPath ||
+			got.ModelsPath != now.ModelsPath || got.EmbedPath != now.EmbedPath {
+			t.Errorf("CompatPaths(%q) = %+v, want the %s paths %+v", base, got, moved.Key, now)
+		}
+		if got := PricingVendorFor(AdapterOpenAI, base); got != moved.Key {
+			t.Errorf("PricingVendorFor(%q) = %q, want %q", base, got, moved.Key)
 		}
 	}
 }
@@ -189,15 +269,18 @@ func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 }
 
 func TestPricingVendor(t *testing.T) {
-	// Hosted OpenAI-compatible vendors resolve by host, ignoring the mutable Provider label.
+	// Hosted OpenAI-compatible vendors resolve by host, on their default base
+	// URL and on every legacy host, ignoring the mutable Provider label.
 	for _, v := range Vendors() {
-		acct := Account{Provider: "openai", Adapter: v.Adapter, BaseURL: v.BaseURL}
-		want := v.Key
-		if v.Local {
-			want = ""
-		}
-		if got := PricingVendor(acct); got != want {
-			t.Errorf("%s (%s, %s): PricingVendor = %q, want %q", v.Key, v.Adapter, v.BaseURL, got, want)
+		for _, base := range savedBases(v) {
+			acct := Account{Provider: "openai", Adapter: v.Adapter, BaseURL: base}
+			want := v.Key
+			if v.Local {
+				want = ""
+			}
+			if got := PricingVendor(acct); got != want {
+				t.Errorf("%s (%s, %s): PricingVendor = %q, want %q", v.Key, v.Adapter, base, got, want)
+			}
 		}
 	}
 
