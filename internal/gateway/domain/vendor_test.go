@@ -235,6 +235,29 @@ func TestAMovedVendorStillAnswersOnItsLegacyHost(t *testing.T) {
 	}
 }
 
+func TestSavedLegacyHostsKeepTheirVendorPathsAndPricing(t *testing.T) {
+	// Pinned with literal hosts, not LegacyHosts, so removing a legacy host
+	// from the vendor table fails here.
+	cases := []struct{ vendor, legacy, current string }{
+		{"nebius", "https://api.studio.nebius.ai", "https://api.tokenfactory.nebius.com"},
+		{"together", "https://api.together.xyz", "https://api.together.ai"},
+	}
+	for _, tc := range cases {
+		want := CompatPaths(tc.current)
+		if want.Key != tc.vendor {
+			t.Fatalf("%s: current host %q resolves to %q", tc.vendor, tc.current, want.Key)
+		}
+		got := CompatPaths(tc.legacy)
+		if got.Key != tc.vendor || got.ChatPath != want.ChatPath ||
+			got.ModelsPath != want.ModelsPath || got.EmbedPath != want.EmbedPath {
+			t.Errorf("%s: CompatPaths(%q) = %+v, want the paths of %q: %+v", tc.vendor, tc.legacy, got, tc.current, want)
+		}
+		if got, want := PricingVendorFor(AdapterOpenAI, tc.legacy), PricingVendorFor(AdapterOpenAI, tc.current); got != tc.vendor || got != want {
+			t.Errorf("%s: PricingVendorFor(%q) = %q, current host gives %q, want %q", tc.vendor, tc.legacy, got, want, tc.vendor)
+		}
+	}
+}
+
 func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 	for _, v := range Vendors() {
 		if v.Name == "" {
