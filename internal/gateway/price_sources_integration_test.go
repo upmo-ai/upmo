@@ -819,6 +819,55 @@ func catalogJSONWithTier(raw []byte, model string, threshold int, inputRate floa
 	return result
 }
 
+// TestFeature_UPM394_SnapshotAloneSeedsContextTierPricing proves a fresh install
+// with no network prices a call above 200,000 context tokens at the tier rate,
+// from the embedded snapshot alone (no HTTP server, no refresh).
+func TestFeature_UPM394_SnapshotAloneSeedsContextTierPricing(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'a'))
+	store := postgres.Store{Pool: r.owner}
+
+	if err := SeedCatalog(ctx, r.owner); err != nil {
+		t.Fatalf("SeedCatalog: %v", err)
+	}
+
+	// models.dev google/gemini-2.5-pro in snapshot 2026-11-20T21:39:11Z (vendor
+	// key "gemini"): base $1.25 in / $10 out, context tier above 200000 tokens
+	// $2.50 in / $15 out. A tier change in a later snapshot must update these.
+	accountID := insertProviderAndRoute(t, r, "r-upm394-tier", "gemini", "Gemini Tier", "ref_upm394_tier", "gemini-2.5-pro", true)
+	if accountID == "" {
+		t.Fatal("insertProviderAndRoute returned an empty account id")
+	}
+	chatter := &scriptChatter{}
+	dispatch := app.Dispatch{Routes: store, Teams: store, Prices: store, Ledger: store, Secrets: staticSecrets{"ref_upm394_tier": "k"}, Chat: map[string]app.Chatter{domain.AdapterOpenAI: chatter}}
+	who := domain.Principal{User: ada, Source: domain.SourceChat}
+	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+
+	for _, tc := range []struct {
+		name  string
+		input int
+		want  int64
+	}{
+		// 200,000 is not above the boundary: base rate. 200000*1.25 + 3*10 = 250,000 + 30.
+		{"boundary 200000 uses base rate", 200_000, 250_030},
+		// 200,001 is above it: tier rate. 200001*2.50 + 3*15 = 500,002.5 + 45 = 500,047.5, rounded half up.
+		{"200001 uses tier rate", 200_001, 500_048},
+	} {
+		chatter.usage = domain.Usage{Arrived: true, Input: tc.input, Output: 3}
+		res, err := dispatch.ChatCall(ctx, "r-upm394-tier", "", who, in)
+		if err != nil || res.CostMicroUSD == nil {
+			t.Fatalf("%s: cost=%v err=%v, want %d", tc.name, res.CostMicroUSD, err, tc.want)
+		}
+		if *res.CostMicroUSD != tc.want {
+			t.Fatalf("%s: cost=%d, want %d", tc.name, *res.CostMicroUSD, tc.want)
+		}
+	}
+	var source string
+	if err := r.owner.QueryRow(ctx, `SELECT price_source FROM gateway.ledger WHERE route='r-upm394-tier' ORDER BY at DESC, id DESC LIMIT 1`).Scan(&source); err != nil || source != "models_dev" {
+		t.Fatalf("price_source=%q err=%v, want models_dev", source, err)
+	}
+}
+
 func TestFeature_UPM354_RefreshValidationKeepsOldCatalogAndNotifiesOnce(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t, masterKeys(t, 'a'))
