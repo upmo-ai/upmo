@@ -3594,6 +3594,14 @@ func TestFeature_UPM388_RefreshReplacesPriceTiersAndHighestRate(t *testing.T) {
 	if len(scan.Buckets) != 1 || scan.Buckets[0].Requests != 1 || scan.Buckets[0].ListMicroUSD == nil || *scan.Buckets[0].ListMicroUSD != 900_000 || len(scan.Keyed) != 1 || scan.Keyed[0].Requests != 1 {
 		t.Fatalf("tiered usage rows = %+v", scan)
 	}
+	personal, err := (postgres.Usage{Pool: r.app}).PersonalUsage(ctx, app.Caller{User: userID}, window)
+	if err != nil || len(personal.Buckets) != 1 || personal.Buckets[0].ListMicroUSD == nil || *personal.Buckets[0].ListMicroUSD != 900_000 {
+		t.Fatalf("member tiered personal usage = %+v err=%v", personal, err)
+	}
+	var visibleTiers int
+	if err := r.app.QueryRow(ctx, `SELECT count(*) FROM gateway.price_tiers WHERE vendor='gemini' AND model='tier-model'`).Scan(&visibleTiers); err != nil || visibleTiers != 2 {
+		t.Fatalf("upmo_app SELECT price_tiers = %d err=%v, want 2", visibleTiers, err)
+	}
 	for _, query := range []string{
 		`INSERT INTO gateway.price_tiers (vendor, model, context_min_tokens) VALUES ('gemini','denied',1)`,
 		`UPDATE gateway.price_tiers SET context_min_tokens=2 WHERE vendor='gemini'`,
@@ -3634,6 +3642,38 @@ func TestFeature_UPM388_HighestRateReservesTwiceInputForBaseAndNullTierInput(t *
 				t.Fatalf("HighestRate=%d ok=%v err=%v, want %d", rate, ok, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFeature_UPM388_DispatchPricesTieredMixedCacheWriteAndRecords(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'd'))
+	store := postgres.Store{Pool: r.owner}
+	const version = "upm388-dispatch-v1"
+	if err := store.ReplaceCatalog(ctx, version, []domain.CatalogRow{{Vendor: "openai", Model: "tier-dispatch", Version: version, Price: domain.Price{
+		InputMicroUSDPerMTok: ptrInt64(1_000_000), OutputMicroUSDPerMTok: ptrInt64(1_000_000), CacheWriteMicroUSDPerMTok: ptrInt64(3_000_000),
+		Tiers: []domain.PriceTier{{ContextMinTokens: 200_000, Price: domain.Price{InputMicroUSDPerMTok: ptrInt64(4_000_000), OutputMicroUSDPerMTok: ptrInt64(2_000_000), CacheWriteMicroUSDPerMTok: ptrInt64(5_000_000)}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	accountID := insertProviderAndRoute(t, r, "r-upm388-tier-dispatch", "openai", "Tier Dispatch", "ref_upm388_tier", "tier-dispatch", true)
+	usage := domain.Usage{Arrived: true, Input: 210_000, CacheWrite: 20, CacheWrite1h: 10}
+	dispatch := app.Dispatch{Routes: store, Teams: store, Prices: store, Ledger: store, Secrets: staticSecrets{"ref_upm388_tier": "secret"}, Chat: map[string]app.Chatter{domain.AdapterOpenAI: &scriptChatter{usage: usage}}}
+	result, err := dispatch.ChatCall(ctx, "r-upm388-tier-dispatch", "", domain.Principal{User: ada, Source: domain.SourceChat}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}})
+	if err != nil || result.CostMicroUSD == nil || *result.CostMicroUSD != 840_130 {
+		t.Fatalf("tiered mixed-write dispatch = %+v err=%v, want cost 840130", result, err)
+	}
+	var gotCost int64
+	var cacheWrite, cacheWrite1h int
+	var source string
+	if err := r.owner.QueryRow(ctx, `SELECT cost_micro_usd,cache_write,cache_write_1h,price_source FROM gateway.ledger WHERE route='r-upm388-tier-dispatch'`).Scan(&gotCost, &cacheWrite, &cacheWrite1h, &source); err != nil {
+		t.Fatal(err)
+	}
+	if gotCost != 840_130 || cacheWrite != 20 || cacheWrite1h != 10 || source != "estimate" {
+		t.Fatalf("tier dispatch ledger cost/cache/source=%d/%d/%d/%q", gotCost, cacheWrite, cacheWrite1h, source)
+	}
+	if accountID == "" {
+		t.Fatal("insertProviderAndRoute returned an empty account id")
 	}
 }
 
