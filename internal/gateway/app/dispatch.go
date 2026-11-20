@@ -113,6 +113,10 @@ type ProviderPrices interface {
 	HighestRate(ctx context.Context, vendor string) (int64, bool, error)
 }
 
+type ProviderEstimateRates interface {
+	EstimateRate(ctx context.Context, vendor string) (int64, bool, error)
+}
+
 // Ledger stores one row per attempt.
 type Ledger interface {
 	Record(ctx context.Context, row domain.Entry) error
@@ -272,6 +276,13 @@ func (d Dispatch) vendorHighestRate(ctx context.Context, vendor string) (rate in
 	return domain.ReserveHoldMicroUSDPerMTok, false, nil
 }
 
+func (d Dispatch) vendorEstimateRate(ctx context.Context, vendor string) (rate int64, known bool, err error) {
+	if prices, ok := d.Prices.(ProviderEstimateRates); ok {
+		return prices.EstimateRate(ctx, vendor)
+	}
+	return d.vendorHighestRate(ctx, vendor)
+}
+
 const (
 	priceLookupTimeout = 5 * time.Second
 	settleTimeout      = 5 * time.Second
@@ -411,22 +422,23 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 	}
 	charged := !knownZero && domain.AccountChargedToLimit(link.Account)
 	entry := domain.Entry{
-		At:             at,
-		Route:          route,
-		LinkPosition:   link.Position,
-		AccountID:      link.Account.ID,
-		Model:          link.Model,
-		PlanKind:       link.Account.PlanKind,
-		Class:          class,
-		Principal:      who,
-		Usage:          usage,
-		CostMicroUSD:   priced.micro,
-		Estimated:      priced.estimated,
-		LatencyMS:      latencyMS,
-		ChargedToLimit: charged,
-		PriceSource:    priced.priceSource,
-		PriceVersion:   priced.version,
-		OwnerTeamID:    link.ViaTeam,
+		At:               at,
+		Route:            route,
+		LinkPosition:     link.Position,
+		AccountID:        link.Account.ID,
+		Model:            link.Model,
+		PlanKind:         link.Account.PlanKind,
+		Class:            class,
+		Principal:        who,
+		Usage:            usage,
+		CostMicroUSD:     priced.micro,
+		ListCostMicroUSD: priced.listMicro,
+		Estimated:        priced.estimated,
+		LatencyMS:        latencyMS,
+		ChargedToLimit:   charged,
+		PriceSource:      priced.priceSource,
+		PriceVersion:     priced.version,
+		OwnerTeamID:      link.ViaTeam,
 	}
 	if res.Amount > 0 && d.Limits != nil {
 		settleOnce := func() error {
@@ -462,6 +474,7 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 				"output_tokens", usage.Output,
 				"cache_read", usage.CacheRead,
 				"cache_write", usage.CacheWrite,
+				"cache_write_1h", usage.CacheWrite1h,
 				"reasoning", usage.Reasoning,
 				"err", err,
 			)
@@ -495,6 +508,7 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 
 type pricedCost struct {
 	micro              *int64
+	listMicro          *int64
 	estimated          bool
 	priceSource        string
 	version            string
@@ -542,7 +556,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 			cp = CallPricing{}
 			lookupFailed = true
 		} else if !cp.EstimateRateKnown && cp.EstimateRate <= 0 {
-			rate, known, herr := d.vendorHighestRate(ctx, vendor)
+			rate, known, herr := d.vendorEstimateRate(ctx, vendor)
 			if herr != nil {
 				logLookupErr(herr)
 				applySavedReserveRate()
@@ -579,7 +593,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		}
 		if !lookupFailed {
 			cp.ZeroCostAllowed = domain.ZeroCostAllowed(link.Model, nil)
-			rate, known, herr := d.vendorHighestRate(ctx, vendor)
+			rate, known, herr := d.vendorEstimateRate(ctx, vendor)
 			if herr != nil {
 				logLookupErr(herr)
 				applySavedReserveRate()
@@ -593,7 +607,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		applySavedReserveRate()
 		if !cp.EstimateRateKnown {
 			hctx, hcancel := context.WithTimeout(context.WithoutCancel(ctx), priceLookupTimeout)
-			rate, known, herr := d.vendorHighestRate(hctx, vendor)
+			rate, known, herr := d.vendorEstimateRate(hctx, vendor)
 			hcancel()
 			if herr == nil && known {
 				cp.EstimateRate, cp.EstimateRateKnown = rate, true
@@ -627,12 +641,21 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		KnownZero:         knownZero,
 	}
 	res := domain.ResolveCallCost(in)
+	var listMicro *int64
+	if link.Account.PlanKind != domain.PlanMetered {
+		if cp.CatalogFound {
+			listMicro = domain.ListCostMicroUSD(usage, cp.Catalog)
+		} else if cp.CrossProvider != nil {
+			listMicro = domain.ListCostMicroUSD(usage, *cp.CrossProvider)
+		}
+	}
 	version := ""
 	if cp.CatalogFound && (res.Source == "models_dev" || res.Source == "override") {
 		version = cp.Catalog.Version
 	}
 	return pricedCost{
 		micro:              res.CostMicroUSD,
+		listMicro:          listMicro,
 		estimated:          res.Estimated,
 		priceSource:        res.Source,
 		version:            version,

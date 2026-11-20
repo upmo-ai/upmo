@@ -417,24 +417,50 @@ type usageBlock struct {
 	InputTokens   *int `json:"input_tokens"`
 	OutputTokens  *int `json:"output_tokens"`
 	CacheCreation *int `json:"cache_creation_input_tokens"`
-	CacheRead     *int `json:"cache_read_input_tokens"`
+	CacheCreate   *struct {
+		FiveMinute *int `json:"ephemeral_5m_input_tokens"`
+		OneHour    *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	CacheRead *int `json:"cache_read_input_tokens"`
 }
 
 // into records the counts that arrived. Anthropic counts input tokens apart
 // from the cache reads and writes, as domain.Usage does.
 func (u usageBlock) into(usage *domain.Usage) {
+	clamp := func(n int) int {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
 	usage.Arrived = true
 	if u.InputTokens != nil {
-		usage.Input = *u.InputTokens
+		usage.Input = clamp(*u.InputTokens)
 	}
 	if u.OutputTokens != nil {
-		usage.Output = *u.OutputTokens
+		usage.Output = clamp(*u.OutputTokens)
 	}
 	if u.CacheRead != nil {
-		usage.CacheRead = *u.CacheRead
+		usage.CacheRead = clamp(*u.CacheRead)
 	}
-	if u.CacheCreation != nil {
-		usage.CacheWrite = *u.CacheCreation
+	if u.CacheCreate != nil {
+		five, one := 0, 0
+		if u.CacheCreate.FiveMinute != nil {
+			five = clamp(*u.CacheCreate.FiveMinute)
+		}
+		if u.CacheCreate.OneHour != nil {
+			one = clamp(*u.CacheCreate.OneHour)
+		}
+		if u.CacheCreate.FiveMinute != nil || u.CacheCreate.OneHour != nil {
+			usage.CacheWrite1h = one
+			usage.CacheWrite = five + one
+		} else if u.CacheCreation != nil {
+			usage.CacheWrite = max(usage.CacheWrite, clamp(*u.CacheCreation))
+			usage.CacheWrite1h = min(usage.CacheWrite1h, usage.CacheWrite)
+		}
+	} else if u.CacheCreation != nil {
+		usage.CacheWrite = max(usage.CacheWrite, clamp(*u.CacheCreation))
+		usage.CacheWrite1h = min(usage.CacheWrite1h, usage.CacheWrite)
 	}
 }
 

@@ -8,8 +8,12 @@
         "name": "Bedrock Only",
         "tool_call": true,
         "modalities": {
-          "input": ["text"],
-          "output": ["text"]
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
         },
         "limit": {
           "context": 128000,
@@ -34,8 +38,14 @@
         "structured_output": true,
         "status": "active",
         "modalities": {
-          "input": ["text", "image", "pdf"],
-          "output": ["text"]
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
         },
         "limit": {
           "context": 200000,
@@ -46,6 +56,46 @@
           "output": 15.0,
           "cache_read": 0.3,
           "cache_write": 3.75
+        }
+      },
+      "claude-haiku-5-5": {
+        "id": "claude-haiku-5-5",
+        "name": "Claude Haiku 5.5",
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125,
+          "tiers": [
+            {
+              "input": 0.5,
+              "output": 2.5,
+              "cache_read": 0.05,
+              "cache_write": 0.625,
+              "tier": {
+                "type": "context",
+                "size": 100000
+              }
+            }
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        }
+      },
+      "claude-sonnet-4-5": {
+        "id": "claude-sonnet-4-5",
+        "name": "Claude Sonnet 4.5 (latest)",
+        "cost": {
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.3,
+          "cache_write": 3.75
+        },
+        "limit": {
+          "context": 200000,
+          "output": 64000
         }
       }
     }
@@ -60,8 +110,15 @@
         "reasoning": true,
         "tool_call": true,
         "modalities": {
-          "input": ["text", "image", "audio", "pdf"],
-          "output": ["text"]
+          "input": [
+            "text",
+            "image",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
         },
         "limit": {
           "context": 1048576,
@@ -70,6 +127,35 @@
         "cost": {
           "input": 0.15,
           "output": 0.6
+        }
+      },
+      "gemini-2.5-pro": {
+        "id": "gemini-2.5-pro",
+        "name": "Gemini 2.5 Pro",
+        "cost": {
+          "input": 1.25,
+          "output": 10,
+          "cache_read": 0.125,
+          "tiers": [
+            {
+              "input": 2.5,
+              "output": 15,
+              "cache_read": 0.25,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 2.5,
+            "output": 15,
+            "cache_read": 0.25
+          }
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
         }
       }
     }
@@ -84,8 +170,13 @@
         "tool_call": true,
         "structured_output": true,
         "modalities": {
-          "input": ["text", "image"],
-          "output": ["text"]
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
         },
         "limit": {
           "context": 128000,
@@ -104,8 +195,12 @@
         "status": "deprecated",
         "retires_at": "2026-12-31",
         "modalities": {
-          "input": ["text"],
-          "output": ["text"]
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
         },
         "limit": {
           "context": 16385,
@@ -121,7 +216,9 @@
         "name": "Text Embedding 3 Small",
         "type": "embedding",
         "modalities": {
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "output": []
         },
         "limit": {
@@ -130,6 +227,20 @@
         "cost": {
           "input": 0.02,
           "output": 0
+        }
+      },
+      "gpt-5": {
+        "id": "gpt-5",
+        "name": "GPT-5",
+        "cost": {
+          "input": 1.25,
+          "output": 10,
+          "cache_read": 0.125
+        },
+        "limit": {
+          "context": 400000,
+          "input": 272000,
+          "output": 128000
         }
       }
     }
@@ -144,8 +255,13 @@
         "tool_call": true,
         "structured_output": true,
         "modalities": {
-          "input": ["text", "image"],
-          "output": ["text"]
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
         },
         "limit": {
           "context": 128000,
@@ -154,6 +270,45 @@
         "cost": {
           "input": 2.75,
           "output": 11.0
+        }
+      }
+    }
+  },
+  "alibaba": {
+    "models": {
+      "qwen-plus": {
+        "id": "qwen-plus",
+        "name": "Qwen Plus",
+        "cost": {
+          "input": 0.4,
+          "output": 1.2,
+          "reasoning": 4,
+          "cache_read": 0.08,
+          "cache_write": 0.5,
+          "tiers": [
+            {
+              "input": 1.2,
+              "output": 3.6,
+              "reasoning": 12,
+              "cache_read": 0.24,
+              "cache_write": 1.5,
+              "tier": {
+                "type": "context",
+                "size": 256000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 1.2,
+            "output": 3.6,
+            "reasoning": 12,
+            "cache_read": 0.24,
+            "cache_write": 1.5
+          }
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 32768
         }
       }
     }

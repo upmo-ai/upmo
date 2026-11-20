@@ -418,7 +418,7 @@ func TestFeature_UPM363_VendorAndCatalogRoutes(t *testing.T) {
 		CacheWriteMTok *float64 `json:"cache_write_usd_per_mtok"`
 	}
 	rows := decode[[]catalogResp](t, raw)
-	if len(rows) != 3 {
+	if len(rows) != 4 {
 		t.Fatalf("openai catalog rows = %d: %s", len(rows), raw)
 	}
 	byModel := map[string]catalogResp{}

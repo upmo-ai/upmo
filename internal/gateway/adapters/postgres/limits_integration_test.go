@@ -282,10 +282,11 @@ func TestFeature_UPM355_ConcurrentCallsOvershootAtMostInFlight(t *testing.T) {
 
 	t.Run("estimate equals cost", func(t *testing.T) {
 		// Price m1 at $1,000 / MTok (1,000 micro-USD per token). Input "hi" (2 bytes -> 1 token)
-		// gives a 1,000 micro-USD estimate, equal to the 1-token actual cost. With a 1,500
+		// gives a 1,000 micro-USD estimate, equal to the 1-token actual cost. The reservation
+		// includes 2x input headroom for possible 1h cache writes. With a 2,500
 		// micro-USD workspace limit, FOR UPDATE locking on the workspace spend row must admit
 		// exactly 1 call and keep spent <= limit.
-		const limitMicroUSD = 1500
+		const limitMicroUSD = 2500
 		const callCost = 1000
 		okCount, refusedCount, spent, _ := runBurst(t, domain.LimitWorkspace, "", 1000.0, domain.Usage{Arrived: true, Input: 1, Output: 0}, limitMicroUSD)
 		if okCount != 1 || refusedCount != 19 {
@@ -447,8 +448,8 @@ func TestFeature_UPM355_MonthResetInWorkspaceTimeZone(t *testing.T) {
 	now := time.Date(2026, 12, 1, 4, 30, 0, 0, time.UTC)
 	w.disp.Now = func() time.Time { return now }
 
-	// Room for 1 call (estimate 75 micro-USD, limit 100 micro-USD).
-	setUsageLimit(t, w, domain.LimitPerson, pinAuthor, 100)
+	// Room for 1 call (actual estimate 75; reserve includes 2x input headroom).
+	setUsageLimit(t, w, domain.LimitPerson, pinAuthor, 200)
 
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
 	principal := domain.Principal{User: pinAuthor, Source: domain.SourceChat}
@@ -497,7 +498,7 @@ func TestFeature_UPM355_WorkspaceLimitCappedByCeiling(t *testing.T) {
 	attachLimitAdapter(&w, adapter)
 
 	setUsageLimit(t, w, domain.LimitWorkspace, "", 1000)
-	setUsageLimit(t, w, domain.LimitCeiling, "", 100)
+	setUsageLimit(t, w, domain.LimitCeiling, "", 200)
 
 	in := domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
 	if _, err := w.disp.ChatCall(ctx, "pin-house", "", domain.Principal{Source: domain.SourceSystem}, in); err != nil {
@@ -508,8 +509,8 @@ func TestFeature_UPM355_WorkspaceLimitCappedByCeiling(t *testing.T) {
 	if !errors.As(err, &reached) {
 		t.Fatalf("second call err = %v, want LimitReached", err)
 	}
-	if reached.Kind != domain.LimitWorkspace || reached.Limit != 100 {
-		t.Fatalf("reached = %+v, want workspace limit capped at ceiling 100", reached)
+	if reached.Kind != domain.LimitWorkspace || reached.Limit != 200 {
+		t.Fatalf("reached = %+v, want workspace limit capped at ceiling 200", reached)
 	}
 	if adapter.callCount() != 1 {
 		t.Fatalf("adapter calls = %d, want 1", adapter.callCount())

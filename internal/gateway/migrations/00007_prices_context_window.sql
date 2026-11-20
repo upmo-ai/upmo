@@ -5,9 +5,11 @@ ALTER TABLE gateway.prices
   ADD CONSTRAINT prices_context_window_check CHECK (context_window > 0);
 
 GRANT SELECT ON gateway.prices TO upmo_app;
+GRANT SELECT ON gateway.price_tiers TO upmo_app;
 
 -- +goose Down
 
+REVOKE SELECT ON gateway.price_tiers FROM upmo_app;
 REVOKE SELECT ON gateway.prices FROM upmo_app;
 
 ALTER TABLE gateway.prices

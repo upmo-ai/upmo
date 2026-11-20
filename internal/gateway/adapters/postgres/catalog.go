@@ -215,6 +215,9 @@ func GetCatalogMeta(ctx context.Context, q querier) (CatalogMeta, bool, error) {
 }
 
 func swapCatalogRowsTx(ctx context.Context, tx pgx.Tx, rows []domain.CatalogRow) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM gateway.price_tiers`); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM gateway.prices`); err != nil {
 		return err
 	}
@@ -284,6 +287,28 @@ func swapCatalogRowsTx(ctx context.Context, tx pgx.Tx, rows []domain.CatalogRow)
 			row.Lifecycle,
 			retires,
 		}, nil
+	}))
+	if err != nil {
+		return err
+	}
+	var tiers []struct {
+		vendor, model string
+		tier          domain.PriceTier
+	}
+	for _, row := range rows {
+		for _, tier := range row.Price.Tiers {
+			tiers = append(tiers, struct {
+				vendor, model string
+				tier          domain.PriceTier
+			}{domain.VendorKey(row.Vendor), row.Model, tier})
+		}
+	}
+	if len(tiers) == 0 {
+		return nil
+	}
+	_, err = tx.CopyFrom(ctx, pgx.Identifier{"gateway", "price_tiers"}, []string{"vendor", "model", "context_min_tokens", "input_usd_per_mtok", "output_usd_per_mtok", "cache_read_usd_per_mtok", "cache_write_usd_per_mtok"}, pgx.CopyFromSlice(len(tiers), func(i int) ([]any, error) {
+		t := tiers[i]
+		return []any{t.vendor, t.model, t.tier.ContextMinTokens, numericFromMicroOrFloat(t.tier.Price.InputMicroUSDPerMTok, nil), numericFromMicroOrFloat(t.tier.Price.OutputMicroUSDPerMTok, nil), numericFromMicroOrFloat(t.tier.Price.CacheReadMicroUSDPerMTok, nil), numericFromMicroOrFloat(t.tier.Price.CacheWriteMicroUSDPerMTok, nil)}, nil
 	}))
 	return err
 }
