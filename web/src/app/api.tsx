@@ -154,7 +154,13 @@ export type ConnectorRulesInput = {
 
 export type ProviderPlanKind = "metered" | "subscription" | "local";
 
-export type ProviderStatus = "Connected" | "Not connected" | "Rate limited" | "Key rejected" | "Offline";
+export type ProviderStatus =
+  | "Connected"
+  | "Not connected"
+  | "Rate limited"
+  | "Key rejected"
+  | "Offline"
+  | "Turned off by your workspace";
 
 /** Who may use a provider account: the owner, named teams, or the whole workspace. */
 export type ProviderVisibility = "private" | "team" | "everyone";
@@ -183,7 +189,76 @@ export type ProviderAccount = {
   can_use: boolean;
   /** Whether this person owns the account. A house account is never theirs. Display only. */
   is_owner: boolean;
+  /** Whether the account is switched on. The brain always sends it; absent reads as on. */
+  enabled?: boolean;
+  /** The last characters of the saved key, and when and by whom it was last set. */
+  key_hint?: string;
+  key_changed_at?: string;
+  key_changed_by?: string;
+  /** Each enabled model, whether the provider listed it when saved, and whether daily checks retired it. */
+  enabled_models?: EnabledModel[];
 };
+
+export type EnabledModel = { id: string; listed: boolean; retired: boolean };
+
+/** One vendor the picker offers, as GET /api/providers/vendors sends it. */
+export type ProviderVendor = {
+  key: string;
+  name: string;
+  adapter: string;
+  default_base_url: string;
+  suggested_plan?: ProviderPlanKind;
+};
+
+/** One model a provider's own list named, as the test and GET /api/providers/{id}/models send it. */
+export type SeenModel = {
+  id: string;
+  display_name?: string;
+  context_length?: number;
+  /** The provider's rates in USD per token as text, keyed prompt, completion, input_cache_read, input_cache_write. */
+  pricing?: Record<string, string>;
+};
+
+/** One models.dev row for a vendor, as GET /api/providers/catalog sends it. Rates are USD per million tokens. */
+export type CatalogModel = {
+  model: string;
+  kind: string;
+  context_window: number;
+  lifecycle?: string;
+  retires_at?: string;
+  input_usd_per_mtok: number | null;
+  output_usd_per_mtok: number | null;
+  cache_read_usd_per_mtok: number | null;
+  cache_write_usd_per_mtok: number | null;
+};
+
+/** Where a price came from. other_provider is another provider's price for the same model, an estimate. */
+export type PriceSource = "override" | "provider" | "models_dev" | "other_provider" | "none";
+
+export type PriceRate = "input" | "output" | "cache_read" | "cache_write";
+
+/** The four rates in micro-USD per million tokens; null is not set. */
+export type MicroRates = Record<PriceRate, number | null>;
+
+/** A stored price override, with who set it and when. */
+export type PriceOverride = MicroRates & { updated_by?: string; updated_at?: string };
+
+/** An override rate more than 20% away from the provider's or models.dev's. */
+export type PriceWarning = { rate: PriceRate; override: number; base: number; base_source: PriceSource };
+
+/** GET /api/providers/{id}/pricing: the effective rates, the source of each, the override and its warnings. */
+export type ModelPricing = {
+  model: string;
+  rates: MicroRates;
+  sources: Record<PriceRate, PriceSource>;
+  lifecycle?: string;
+  retires_at?: string;
+  override?: PriceOverride;
+  warnings: PriceWarning[];
+};
+
+/** GET /api/providers/{id}/uses: what stops working when the account is turned off. */
+export type ProviderUses = { routes: string[]; agents: string[]; automations: string[] };
 
 /**
  * What the composer sends with a line or a retry, as the chat API takes it. A
@@ -260,6 +335,8 @@ export type ProviderChange = {
   /** Left out, the sharing stays as it is. team_ids is sent only for team. */
   visibility?: ProviderVisibility;
   team_ids?: string[];
+  /** Switches the account on or off. */
+  enabled?: boolean;
 };
 
 /**
@@ -392,6 +469,8 @@ export interface TestResult {
   latency_ms?: number;
   error?: string;
   model?: string;
+  /** The models the provider listed, when a provider test reached its model list. */
+  models?: SeenModel[];
 }
 
 export interface ApiClient {
@@ -533,6 +612,20 @@ export interface ApiClient {
      * ({ok: false, error}); 429 after 10 tests a minute is a BrainError.
      */
     test(config: ProviderProbe): Promise<TestResult>;
+    /** GET /api/providers/vendors: the vendors the picker offers, in picker order. */
+    vendors(): Promise<ProviderVendor[]>;
+    /** GET /api/providers/catalog?vendor=: the vendor's models.dev rows. */
+    catalog(vendor: string): Promise<CatalogModel[]>;
+    /** GET /api/providers/{id}/models: the models the account's last saved test found. */
+    models(id: string): Promise<SeenModel[]>;
+    /** GET /api/providers/{id}/pricing?model=: the price of one model and where it came from. */
+    pricing(id: string, model: string): Promise<ModelPricing>;
+    /** GET /api/providers/{id}/uses: the routes, agents and automations that use the account. */
+    uses(id: string): Promise<ProviderUses>;
+    /** PUT /api/providers/{id}/overrides. 403 without settings:manage. */
+    setPrice(id: string, model: string, rates: MicroRates): Promise<ModelPricing>;
+    /** DELETE /api/providers/{id}/overrides. 403 without settings:manage. */
+    clearPrice(id: string, model: string): Promise<ModelPricing>;
   };
   agents: {
     /** GET /api/agents: the person's own agents first, then the workspace's, each by name. */
@@ -645,6 +738,22 @@ export function connectorRulesQueryKey(connector: string) {
 
 export function providersQueryKey() {
   return PROVIDERS_KEY;
+}
+
+export function providerVendorsQueryKey() {
+  return [...PROVIDERS_KEY, "vendors"] as const;
+}
+
+export function providerCatalogQueryKey(vendor: string) {
+  return [...PROVIDERS_KEY, "catalog", vendor] as const;
+}
+
+export function providerModelsQueryKey(id: string) {
+  return [...PROVIDERS_KEY, id, "models"] as const;
+}
+
+export function providerPricingQueryKey(id: string, model: string) {
+  return [...PROVIDERS_KEY, id, "pricing", model] as const;
 }
 
 export function agentsQueryKey() {
@@ -1192,8 +1301,35 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
   // person may use the account, it is Connected, and it lists the model. The
   // stub keeps its accounts truthful with the same rule.
   const withUsable = (account: Omit<ProviderAccount, "usable" | "usable_models">): ProviderAccount => {
-    const usable_models = account.can_use && account.status === "Connected" ? [...account.models] : [];
+    const on = account.enabled !== false && account.can_use && account.status === "Connected";
+    const usable_models = on ? [...account.models] : [];
     return { ...account, usable: usable_models.length > 0, usable_models };
+  };
+  // Sample vendors for a session with no brain. The brain's GET
+  // /api/providers/vendors is the real list.
+  const providerVendors: ProviderVendor[] = [
+    { key: "anthropic", name: "Anthropic", adapter: "anthropic", default_base_url: "https://api.anthropic.com", suggested_plan: "metered" },
+    { key: "openai", name: "OpenAI", adapter: "openai_compat", default_base_url: "https://api.openai.com", suggested_plan: "metered" },
+    { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434", suggested_plan: "local" },
+  ];
+  const priceOverrides = new Map<string, PriceOverride>();
+  const noRates = (): MicroRates => ({ input: null, output: null, cache_read: null, cache_write: null });
+  const stubPricing = (id: string, model: string): ModelPricing => {
+    const override = priceOverrides.get(`${id}/${model}`);
+    const rates = override ? { input: override.input, output: override.output, cache_read: override.cache_read, cache_write: override.cache_write } : noRates();
+    const source = (rate: PriceRate): PriceSource => (rates[rate] === null ? "none" : "override");
+    return {
+      model,
+      rates,
+      sources: { input: source("input"), output: source("output"), cache_read: source("cache_read"), cache_write: source("cache_write") },
+      ...(override ? { override: copy(override) } : {}),
+      warnings: [],
+    };
+  };
+  const ownedAccount = (id: string) => {
+    const account = providerAccounts.find((item) => item.id === id);
+    if (!account) throw new BrainError(404, "Not found.");
+    return account;
   };
 
   const providerAccounts: ProviderAccount[] = [
@@ -1825,6 +1961,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         if (input.plan_kind !== undefined) account.plan_kind = input.plan_kind;
         if (input.base_url !== undefined) account.base_url = input.base_url;
         if (input.models !== undefined) account.models = copy(input.models);
+        if (input.enabled !== undefined) account.enabled = input.enabled;
         Object.assign(account, withUsable(account));
         return copy(account);
       },
@@ -1841,11 +1978,46 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         if (config.api_key && config.api_key.toLowerCase().includes("invalid")) {
           return { ok: false, error: "Authentication failed: Invalid API key or unauthorized." };
         }
+        const saved = config.id ? providerAccounts.find((item) => item.id === config.id) : undefined;
         return {
           ok: true,
           latency_ms: 124,
           model: config.model || "default",
+          models: (saved?.models ?? []).map((id) => ({ id })),
         };
+      },
+      async vendors() {
+        return copy(providerVendors);
+      },
+      async catalog() {
+        return [];
+      },
+      async models(id) {
+        return ownedAccount(id).models.map((model) => ({ id: model }));
+      },
+      async pricing(id, model) {
+        ownedAccount(id);
+        return stubPricing(id, model);
+      },
+      async uses(id) {
+        ownedAccount(id);
+        return { routes: [], agents: [], automations: [] };
+      },
+      async setPrice(id, model, rates) {
+        ownedAccount(id);
+        if (!canManageMembers(actor().role)) {
+          throw new BrainError(403, "forbidden", "Only workspace admins can manage price overrides.");
+        }
+        priceOverrides.set(`${id}/${model}`, { ...rates, updated_by: actor().id, updated_at: new Date().toISOString() });
+        return stubPricing(id, model);
+      },
+      async clearPrice(id, model) {
+        ownedAccount(id);
+        if (!canManageMembers(actor().role)) {
+          throw new BrainError(403, "forbidden", "Only workspace admins can manage price overrides.");
+        }
+        priceOverrides.delete(`${id}/${model}`);
+        return stubPricing(id, model);
       },
     },
     agents: {

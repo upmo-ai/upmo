@@ -1,65 +1,72 @@
 import { describe, expect, it } from "vitest";
 
-import { KNOWN_PROVIDERS, TEST_PROVIDER } from "./providers";
-import { adapterKey, baseUrlRequired, hostedBaseUrl } from "./rules";
+import type { ProviderVendor } from "../../app/api";
+import { adapterKey, baseUrlRequired, hostedBaseUrl, keyRequired } from "./rules";
+import { pickerVendor, pickerVendors, TEST_VENDOR } from "./vendors";
 
-// The brain's vendor table (internal/gateway/domain/vendor.go): picker id, the
-// adapter key the brain dispatches that vendor to, and its base URL. The Go
-// tests hold the same list, so a vendor added to one side and not the other
-// fails there.
-const brainVendors: ReadonlyArray<readonly [string, string, string]> = [
-  ["anthropic", "anthropic", "https://api.anthropic.com"],
-  ["openai", "openai_compat", "https://api.openai.com"],
-  ["gemini", "openai_compat", "https://generativelanguage.googleapis.com/v1beta/openai"],
-  ["nebius", "openai_compat", "https://api.studio.nebius.ai"],
-  ["ollama", "openai_compat", "http://localhost:11434"],
-  ["deepseek", "openai_compat", "https://api.deepseek.com"],
-  ["groq", "openai_compat", "https://api.groq.com/openai"],
-  ["xai", "openai_compat", "https://api.x.ai"],
-  ["openrouter", "openai_compat", "https://openrouter.ai/api"],
-  ["mistral", "openai_compat", "https://api.mistral.ai"],
-  ["together", "openai_compat", "https://api.together.xyz"],
-  ["cerebras", "openai_compat", "https://api.cerebras.ai"],
-  ["fireworks", "openai_compat", "https://api.fireworks.ai/inference"],
-  ["perplexity", "openai_compat", "https://api.perplexity.ai"],
-  ["cohere", "openai_compat", "https://api.cohere.ai/compatibility/v1"],
-  ["lmstudio", "openai_compat", "http://localhost:1234"],
-];
+// Rows as GET /api/providers/vendors sends them: a hosted vendor on the
+// native adapter, a hosted one on the compatible adapter, and a local runtime.
+const hosted: ProviderVendor = {
+  key: "anthropic",
+  name: "Anthropic",
+  adapter: "anthropic",
+  default_base_url: "https://api.anthropic.com",
+  suggested_plan: "metered",
+};
+const compatible: ProviderVendor = {
+  key: "gemini",
+  name: "Google Gemini",
+  adapter: "openai_compat",
+  default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+  suggested_plan: "metered",
+};
+const local: ProviderVendor = {
+  key: "ollama",
+  name: "Ollama",
+  adapter: "openai_compat",
+  default_base_url: "http://localhost:11434",
+  suggested_plan: "local",
+};
 
 describe("the picker's vendors", () => {
-  it("are exactly the brain's vendors, in its order", () => {
-    expect(KNOWN_PROVIDERS.map((provider) => provider.id)).toEqual(brainVendors.map(([id]) => id));
+  it("are the brain's vendors in its order, with the test provider only in a dev build", () => {
+    expect(pickerVendors([hosted, compatible, local], false).map((vendor) => vendor.id)).toEqual([
+      "anthropic",
+      "gemini",
+      "ollama",
+    ]);
+    expect(pickerVendors([hosted], true).map((vendor) => vendor.id)).toEqual(["anthropic", "fake"]);
   });
 
-  it("each resolve to the brain's adapter key and default base URL", () => {
-    for (const [id, adapter, baseUrl] of brainVendors) {
-      const provider = KNOWN_PROVIDERS.find((known) => known.id === id);
-      expect([id, provider !== undefined]).toEqual([id, true]);
-      expect([id, adapterKey(provider?.adapter ?? "")]).toEqual([id, adapter]);
-      expect([id, provider?.defaultBaseUrl]).toEqual([id, baseUrl]);
+  it("keep the brain's adapter key and default address", () => {
+    for (const row of [hosted, compatible, local]) {
+      const vendor = pickerVendor(row);
+      expect([row.key, adapterKey(vendor.adapter), vendor.defaultBaseUrl]).toEqual([
+        row.key,
+        row.adapter,
+        row.default_base_url,
+      ]);
     }
   });
 
-  it("have a well formed default base URL: https, unless the vendor is a local runtime", () => {
-    for (const provider of KNOWN_PROVIDERS) {
-      const url = new URL(provider.defaultBaseUrl ?? "");
-      const local = provider.defaultPlan === "local";
-      expect([provider.id, url.protocol]).toEqual([provider.id, local ? "http:" : "https:"]);
-      expect([provider.id, url.search + url.hash]).toEqual([provider.id, ""]);
-      expect([provider.id, provider.defaultBaseUrl?.endsWith("/")]).toEqual([provider.id, false]);
-    }
+  it("start on the plan the brain suggests, and a vendor with none on metered", () => {
+    expect(pickerVendor(local).suggestedPlan).toBe("local");
+    expect(pickerVendor(hosted).suggestedPlan).toBe("metered");
+    expect(pickerVendor({ ...compatible, suggested_plan: undefined }).suggestedPlan).toBe("metered");
   });
 
   it("need no typed base URL when hosted, and need one when they run on the person's machine", () => {
-    for (const provider of KNOWN_PROVIDERS) {
-      const local = provider.defaultPlan === "local";
-      expect([provider.id, baseUrlRequired(provider.adapter, provider.defaultBaseUrl)]).toEqual([provider.id, local]);
-      expect([provider.id, hostedBaseUrl(provider.defaultBaseUrl) === undefined]).toEqual([provider.id, local]);
+    for (const row of [hosted, compatible, local]) {
+      const vendor = pickerVendor(row);
+      const runsLocally = row.suggested_plan === "local";
+      expect([row.key, baseUrlRequired(vendor.adapter, vendor.defaultBaseUrl)]).toEqual([row.key, runsLocally]);
+      expect([row.key, hostedBaseUrl(vendor.defaultBaseUrl) === undefined]).toEqual([row.key, runsLocally]);
+      expect([row.key, keyRequired(vendor.suggestedPlan)]).toEqual([row.key, !runsLocally]);
     }
   });
 
   it("keep the test provider on the fake adapter with no base URL", () => {
-    expect(adapterKey(TEST_PROVIDER.adapter)).toBe("fake");
-    expect(baseUrlRequired(TEST_PROVIDER.adapter, TEST_PROVIDER.defaultBaseUrl)).toBe(false);
+    expect(adapterKey(TEST_VENDOR.adapter)).toBe("fake");
+    expect(baseUrlRequired(TEST_VENDOR.adapter, TEST_VENDOR.defaultBaseUrl)).toBe(false);
   });
 });

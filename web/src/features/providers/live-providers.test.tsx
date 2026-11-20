@@ -47,9 +47,9 @@ const claude: Row = {
   plan_kind: "metered",
   base_url: "https://api.anthropic.com",
   status: "Connected",
-  models: ["claude-3-7-sonnet"],
+  models: ["model-a"],
   usable: true,
-  usable_models: ["claude-3-7-sonnet"],
+  usable_models: ["model-a"],
   ...own,
 };
 const local: Row = {
@@ -60,7 +60,7 @@ const local: Row = {
   plan_kind: "local",
   base_url: "http://ollama.office:11434",
   status: "Key rejected",
-  models: ["llama3.3:70b"],
+  models: ["model-c"],
   usable: false,
   usable_models: [],
   ...own,
@@ -72,7 +72,7 @@ const shared: Row = {
   adapter: "openai_compat",
   plan_kind: "metered",
   status: "Offline",
-  models: ["gpt-4o"],
+  models: ["model-b"],
   usable: false,
   usable_models: [],
   visibility: "everyone",
@@ -82,6 +82,17 @@ const shared: Row = {
   can_use: true,
   is_owner: false,
 };
+
+// The vendors the brain offers. The test provider tile is the app's own, in a dev build.
+const vendors = [
+  { key: "anthropic", name: "Anthropic", adapter: "anthropic", default_base_url: "https://api.anthropic.com", suggested_plan: "metered" },
+  { key: "openai", name: "OpenAI", adapter: "openai_compat", default_base_url: "https://api.openai.com", suggested_plan: "metered" },
+  { key: "deepseek", name: "DeepSeek", adapter: "openai_compat", default_base_url: "https://api.deepseek.com", suggested_plan: "metered" },
+  { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434", suggested_plan: "local" },
+];
+
+// The models a passing test finds on the provider.
+const listed = [{ id: "model-a" }, { id: "model-b" }];
 
 /**
  * A brain that keeps provider accounts in memory and answers the provider
@@ -119,8 +130,10 @@ function brain(
     if (path === "/api/providers" && method === "GET") {
       return options.providers?.() ?? Response.json(accounts);
     }
+    if (path === "/api/providers/vendors" && method === "GET") return Response.json(vendors);
+    if (path.startsWith("/api/providers/catalog?") && method === "GET") return Response.json([]);
     if (path === "/api/providers/test" && method === "POST") {
-      return options.testReply?.() ?? Response.json({ ok: true });
+      return options.testReply?.() ?? Response.json({ ok: true, models: listed });
     }
     if (path === "/api/providers" && method === "POST") {
       const sent = body as Record<string, unknown>;
@@ -143,6 +156,9 @@ function brain(
       };
       accounts.push(made);
       return Response.json(made, { status: 201 });
+    }
+    if (method === "GET" && accounts.some((account) => path === `/api/providers/${account.id}/models`)) {
+      return Response.json([]);
     }
     const target = accounts.find((account) => path === `/api/providers/${account.id}`);
     if (target && method === "PUT") {
@@ -195,23 +211,45 @@ function writes(calls: Call[], method: string) {
   return calls.filter((call) => call.method === method && call.path.startsWith("/api/providers"));
 }
 
-// Walks the wizard for OpenAI with a typed key and stops on the Review step.
-async function openReviewWithKey() {
-  const history = renderAt("/providers/new");
-  await screen.findByRole("heading", { level: 1, name: "Connect a provider" });
-  clickButton("OpenAI");
-  await continueTo(/OpenAI Credentials & Plan/);
-  fireEvent.change(screen.getByLabelText(/^API Key/), { target: { value: secret } });
-  await continueTo(/Models & Pricing for OpenAI/);
-  await continueTo("Review Configuration");
+// Opens the new provider page once the brain's vendors are on it.
+async function openNew() {
+  const history = renderAt("/settings/providers/new");
+  await screen.findByRole("button", { name: "OpenAI" });
   return history;
 }
 
-async function openReviewOfEdit(id: string, name: RegExp) {
-  renderAt(`/providers/${id}/edit`);
-  expect(await screen.findByText(name)).toBeTruthy();
+async function passTest() {
+  clickButton("Test connection");
+  expect(await screen.findByText("Connection verified")).toBeTruthy();
+}
+
+function tick(model: string) {
+  click(screen.getByRole("checkbox", { name: `Select ${model}` }));
+}
+
+// Walks the wizard for OpenAI with a typed key through a passing test to its models.
+async function openModelsWithKey() {
+  const history = await openNew();
+  clickButton("OpenAI");
+  await continueTo(/OpenAI Credentials & Plan/);
+  fireEvent.change(screen.getByLabelText(/^API Key/), { target: { value: secret } });
+  await continueTo("Connection Verification");
+  await passTest();
+  await continueTo(/Models & Pricing for OpenAI/);
+  return history;
+}
+
+// From the credentials step of an edit, through a passing test to the models.
+async function testAndOpenModels() {
+  await continueTo("Connection Verification");
+  await passTest();
   await continueTo(/Models & Pricing for/);
-  await continueTo("Review Configuration");
+}
+
+async function openModelsOfEdit(id: string, name: RegExp) {
+  renderAt(`/settings/providers/${id}/edit`);
+  expect(await screen.findByText(name)).toBeTruthy();
+  await testAndOpenModels();
 }
 
 describe("providers from the brain", () => {
@@ -228,7 +266,7 @@ describe("providers from the brain", () => {
   it("lists the person's own accounts first, then the shared one read only, with the status the brain stores", async () => {
     const { fetcher, calls } = brain({ accounts: [claude, local, shared] });
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers");
+    renderAt("/settings/providers");
 
     await screen.findByTestId("provider-card-p1");
     expect(cardIds()).toEqual(["provider-card-p1", "provider-card-p2", "provider-card-g1"]);
@@ -253,7 +291,7 @@ describe("providers from the brain", () => {
 
   it("opens a shared account's address as a read only page", async () => {
     vi.stubGlobal("fetch", brain({ accounts: [shared] }).fetcher);
-    renderAt("/providers/g1/edit");
+    renderAt("/settings/providers/g1/edit");
 
     expect(await screen.findByText("This provider is shared by the workspace. It is read only here.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
@@ -262,10 +300,10 @@ describe("providers from the brain", () => {
   it("adds an account with the body the brain expects, then never shows or sends the key again", async () => {
     const { fetcher, calls } = brain({ accounts: [claude] });
     vi.stubGlobal("fetch", fetcher);
-    await openReviewWithKey();
+    await openModelsWithKey();
 
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    tick("model-a");
+    tick("model-b");
     clickButton("Connect provider");
     await waitFor(() => {
       expect(screen.getByRole("heading", { level: 1, name: "Providers" })).toBeTruthy();
@@ -281,7 +319,6 @@ describe("providers from the brain", () => {
           plan_kind: "metered",
           base_url: "https://api.openai.com",
           api_key: secret,
-          model: "gpt-4o",
         },
       ],
       [
@@ -293,9 +330,11 @@ describe("providers from the brain", () => {
           plan_kind: "metered",
           base_url: "https://api.openai.com",
           api_key: secret,
-          models: ["gpt-4o", "o3-mini"],
+          models: ["model-a", "model-b"],
         },
       ],
+      // The saved account is tested once by id, so the brain stores its status and models.
+      ["/api/providers/test", { provider: "openai", id: "made-1" }],
     ]);
 
     // The new account is in the list as the brain stores it, with no key anywhere.
@@ -310,8 +349,7 @@ describe("providers from the brain", () => {
 
   it("starts every hosted vendor on its own address and lets a typed address replace it", async () => {
     vi.stubGlobal("fetch", brain().fetcher);
-    renderAt("/providers/new");
-    await screen.findByRole("heading", { level: 1, name: "Connect a provider" });
+    await openNew();
 
     clickButton("OpenAI");
     await continueTo(/OpenAI Credentials & Plan/);
@@ -334,8 +372,7 @@ describe("providers from the brain", () => {
 
   it("asks for a key on the metered plan of a local provider and holds Continue until one is typed", async () => {
     vi.stubGlobal("fetch", brain().fetcher);
-    renderAt("/providers/new");
-    await screen.findByRole("heading", { level: 1, name: "Connect a provider" });
+    await openNew();
     clickButton("Ollama");
     await continueTo(/Ollama Credentials & Plan/);
 
@@ -343,8 +380,7 @@ describe("providers from the brain", () => {
     expect(screen.queryByLabelText(/^API Key/)).toBeNull();
     expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(false);
 
-    const plans = screen.getByRole("listbox", { name: "Plan kind", hidden: true });
-    click(within(plans).getByRole("option", { name: "Metered (Pay-as-you-go)", hidden: true }));
+    click(screen.getByRole("radio", { name: /^Metered/ }));
 
     const key = await screen.findByLabelText(/^API Key/);
     expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(true);
@@ -367,10 +403,8 @@ describe("providers from the brain", () => {
     };
     const { fetcher, calls } = brain({ accounts: [bare] });
     vi.stubGlobal("fetch", fetcher);
-    await openReviewOfEdit("f1", /Test provider Credentials & Plan/);
+    await openModelsOfEdit("f1", /Test provider Credentials & Plan/);
 
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
     clickButton("Save changes");
     await waitFor(() => {
       expect(writes(calls, "PUT")).toHaveLength(1);
@@ -399,16 +433,13 @@ describe("providers from the brain", () => {
     };
     const { fetcher, calls } = brain({ accounts: [pointed] });
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers/f2/edit");
+    renderAt("/settings/providers/f2/edit");
     expect(await screen.findByText(/Test provider Credentials & Plan/)).toBeTruthy();
 
     const baseUrl = screen.getByLabelText(/Base URL/);
     expect(baseUrl).toHaveProperty("value", "http://127.0.0.1:4000");
     fireEvent.change(baseUrl, { target: { value: "" } });
-    await continueTo(/Models & Pricing for/);
-    await continueTo("Review Configuration");
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    await testAndOpenModels();
     clickButton("Save changes");
     await waitFor(() => {
       expect(writes(calls, "PUT")).toHaveLength(1);
@@ -425,22 +456,20 @@ describe("providers from the brain", () => {
   it("adds the built in test provider on the local plan with no key", async () => {
     const { fetcher, calls } = brain();
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers/new");
-    await screen.findByRole("heading", { level: 1, name: "Connect a provider" });
+    await openNew();
     clickButton("Test provider");
     await continueTo(/Test provider Credentials & Plan/);
     // A local account may go without a key.
     expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(false);
+    await continueTo("Connection Verification");
+    await passTest();
     await continueTo(/Models & Pricing for Test provider/);
-    expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(true);
+    expect(isDisabled(screen.getByRole("button", { name: "Connect provider" }))).toBe(true);
     const input = screen.getByLabelText(/Add Custom Model Identifier/);
     for (const model of ["alpha", "beta"]) {
       fireEvent.change(input, { target: { value: model } });
       clickButton("Add");
     }
-    await continueTo("Review Configuration");
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
     clickButton("Connect provider");
     await screen.findByTestId("provider-card-made-1");
 
@@ -457,14 +486,11 @@ describe("providers from the brain", () => {
   it("does not prefill the key on edit, tests the saved key by id and saves without an api_key", async () => {
     const { fetcher, calls } = brain({ accounts: [claude] });
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers/p1/edit");
+    renderAt("/settings/providers/p1/edit");
     expect(await screen.findByText(/Anthropic Credentials & Plan/)).toBeTruthy();
     expect(screen.getByLabelText(/^API Key/)).toHaveProperty("value", "");
-    await continueTo(/Models & Pricing for Anthropic/);
-    await continueTo("Review Configuration");
+    await testAndOpenModels();
 
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
     clickButton("Save changes");
     await waitFor(() => {
       expect(writes(calls, "PUT")).toHaveLength(1);
@@ -475,7 +501,7 @@ describe("providers from the brain", () => {
       adapter: "anthropic",
       plan_kind: "metered",
       base_url: "https://api.anthropic.com",
-      model: "claude-3-7-sonnet",
+      model: "model-a",
       id: "p1",
     });
     const put = writes(calls, "PUT")[0];
@@ -484,20 +510,18 @@ describe("providers from the brain", () => {
       name: "Claude Team",
       plan_kind: "metered",
       base_url: "https://api.anthropic.com",
-      models: ["claude-3-7-sonnet"],
+      models: ["model-a"],
     });
   });
 
   it("tests a newly typed key by value and not by id", async () => {
     const { fetcher, calls } = brain({ accounts: [claude] });
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers/p1/edit");
+    renderAt("/settings/providers/p1/edit");
     expect(await screen.findByText(/Anthropic Credentials & Plan/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText(/^API Key/), { target: { value: secret } });
-    await continueTo(/Models & Pricing for Anthropic/);
-    await continueTo("Review Configuration");
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    await continueTo("Connection Verification");
+    await passTest();
 
     const probe = writes(calls, "POST")[0]?.body;
     expect(probe?.api_key).toBe(secret);
@@ -508,12 +532,15 @@ describe("providers from the brain", () => {
   it("shows the sentence of a failed test and of a throttled one", async () => {
     let reply = () => Response.json({ ok: false, error: "The key was rejected." });
     vi.stubGlobal("fetch", brain({ accounts: [claude], testReply: () => reply() }).fetcher);
-    await openReviewOfEdit("p1", /Anthropic Credentials & Plan/);
+    renderAt("/settings/providers/p1/edit");
+    expect(await screen.findByText(/Anthropic Credentials & Plan/)).toBeTruthy();
+    await continueTo("Connection Verification");
 
     clickButton("Test connection");
     expect(await screen.findByText("Connection failed")).toBeTruthy();
     expect(screen.getByText("The key was rejected.")).toBeTruthy();
-    expect(isDisabled(screen.getByRole("button", { name: "Save changes" }))).toBe(true);
+    // The models, and so the save, stay out of reach.
+    expect(isDisabled(screen.getByRole("button", { name: "Continue" }))).toBe(true);
 
     reply = () => Response.json({ error: "Too many tests. Try again in a minute." }, { status: 429 });
     clickButton("Test connection");
@@ -529,33 +556,30 @@ describe("providers from the brain", () => {
           : undefined,
     });
     vi.stubGlobal("fetch", fetcher);
-    const history = await openReviewWithKey();
+    const history = await openModelsWithKey();
+    tick("model-a");
 
-    // A name the brain refuses.
+    // A name the brain refuses. A new name keeps the passing test.
     clickButton("Back");
     clickButton("Back");
     fireEvent.change(await screen.findByLabelText(/Provider display name/), { target: { value: "Bad name" } });
+    await continueTo("Connection Verification");
     await continueTo(/Models & Pricing for OpenAI/);
-    await continueTo("Review Configuration");
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
     clickButton("Connect provider");
     expect(await screen.findByText("The name must be 1 to 60 characters.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect provider" })).toBeTruthy();
-    expect(history.location.pathname).toBe("/providers/new");
+    expect(history.location.pathname).toBe("/settings/providers/new");
 
     // A name already used.
     clickButton("Back");
     clickButton("Back");
     fireEvent.change(await screen.findByLabelText(/Provider display name/), { target: { value: "Claude Team" } });
+    await continueTo("Connection Verification");
     await continueTo(/Models & Pricing for OpenAI/);
-    await continueTo("Review Configuration");
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
     clickButton("Connect provider");
     expect(await screen.findByText("You already have a provider with that name.")).toBeTruthy();
     expect(screen.queryByText("The name must be 1 to 60 characters.")).toBeNull();
-    expect(history.location.pathname).toBe("/providers/new");
+    expect(history.location.pathname).toBe("/settings/providers/new");
     expect(writes(calls, "POST").filter((call) => call.path === "/api/providers")).toHaveLength(2);
   });
 
@@ -567,15 +591,14 @@ describe("providers from the brain", () => {
           : undefined,
     });
     vi.stubGlobal("fetch", fetcher);
-    const history = await openReviewWithKey();
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    const history = await openModelsWithKey();
+    tick("model-a");
     clickButton("Connect provider");
 
     expect(await screen.findByText("Saving keys is turned off on this server.")).toBeTruthy();
     expect(screen.queryByText(/not set up/)).toBeNull();
     expect(screen.getByRole("button", { name: "Connect provider" })).toBeTruthy();
-    expect(history.location.pathname).toBe("/providers/new");
+    expect(history.location.pathname).toBe("/settings/providers/new");
     expect(document.body.textContent).not.toContain(secret);
   });
 
@@ -585,9 +608,8 @@ describe("providers from the brain", () => {
         call.path === "/api/providers" ? Response.json({ error: `providers ${secret}` }, { status: 500 }) : undefined,
     });
     vi.stubGlobal("fetch", fetcher);
-    await openReviewWithKey();
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    await openModelsWithKey();
+    tick("model-a");
     clickButton("Connect provider");
 
     expect(await screen.findByText("Something went wrong. Try again.")).toBeTruthy();
@@ -603,7 +625,7 @@ describe("providers from the brain", () => {
           : undefined,
     });
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers");
+    renderAt("/settings/providers");
 
     click(within(await screen.findByTestId("provider-card-p1")).getByRole("button", { name: "Disconnect" }));
     let dialog = await screen.findByRole("dialog");
@@ -631,7 +653,7 @@ describe("providers from the brain", () => {
       "fetch",
       brain({ providers: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
     );
-    const history = renderAt("/providers");
+    const history = renderAt("/settings/providers");
 
     await waitFor(() => {
       expect(history.location.pathname).toBe("/login");
@@ -644,7 +666,7 @@ describe("providers from the brain", () => {
       "fetch",
       brain({ tasks: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
     );
-    const history = renderAt("/providers");
+    const history = renderAt("/settings/providers");
 
     await waitFor(() => {
       expect(history.location.pathname).toBe("/login");
@@ -654,7 +676,7 @@ describe("providers from the brain", () => {
 
   it("says the list could not be loaded on a server error and shows no empty state", async () => {
     vi.stubGlobal("fetch", brain({ providers: () => new Response(null, { status: 500 }) }).fetcher);
-    renderAt("/providers");
+    renderAt("/settings/providers");
 
     expect(await screen.findByText("Providers could not be loaded")).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 3, name: "Connect a provider" })).toBeNull();
@@ -663,7 +685,7 @@ describe("providers from the brain", () => {
   it("uses the sample accounts for the whole session when no brain is there", async () => {
     const { fetcher, calls } = brain({ tasks: () => new Response(null, { status: 404 }) });
     vi.stubGlobal("fetch", fetcher);
-    renderAt("/providers");
+    renderAt("/settings/providers");
 
     expect(await screen.findByTestId("provider-card-provider-anthropic")).toBeTruthy();
     expect(screen.getByTestId("provider-card-provider-ollama")).toBeTruthy();

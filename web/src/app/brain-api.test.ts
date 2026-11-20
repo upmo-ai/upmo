@@ -5,6 +5,7 @@ import {
   causeSentence,
   createBrainApi,
   providerAddBody,
+  priceOverrideBody,
   providerChangeBody,
   providerTestBody,
   shareBody,
@@ -12,17 +13,22 @@ import {
   toApproval,
   toArtifactDiff,
   toArtifactRecord,
+  toCatalogModel,
   toChat,
   toChatLine,
   toChatSummary,
   toGatewayRoute,
   toMember,
+  toModelPricing,
   toNotification,
   toProvider,
+  toProviderUses,
+  toSeenModel,
   toTask,
   toTaskShare,
   toTeam,
   toTestResult,
+  toVendor,
 } from "./brain-api";
 import type { ShareGrant } from "../features/identity/types";
 
@@ -343,6 +349,14 @@ describe("toProvider", () => {
     can_manage: true,
     can_use: false,
     is_owner: true,
+    enabled: true,
+    key_hint: "9f3c",
+    key_changed_at: "2026-11-02T10:00:00Z",
+    key_changed_by: "01990000-0000-7000-8000-0000000000f1",
+    enabled_models: [
+      { id: "gpt-4o", listed: true, retired: false },
+      { id: "o3-mini", listed: false, retired: true },
+    ],
   };
 
   it("keeps the account as the brain sends it, status and visibility included", () => {
@@ -382,6 +396,118 @@ describe("toProvider", () => {
 
   it("reads no key, even if one were sent", () => {
     expect(toProvider({ ...sent, api_key: "sk-secret" })).not.toHaveProperty("api_key");
+  });
+
+  it("reads a switched off account and the workspace's policy state", () => {
+    expect(toProvider({ ...sent, enabled: false }).enabled).toBe(false);
+    expect(toProvider({ ...sent, status: "Turned off by your workspace" }).status).toBe("Turned off by your workspace");
+  });
+
+  it("reads an account from an older brain as on, with every model listed", () => {
+    const { enabled: _on, enabled_models: _models, key_hint: _hint, ...older } = sent;
+    expect(toProvider(older)).toMatchObject({
+      enabled: true,
+      enabled_models: [
+        { id: "gpt-4o", listed: true, retired: false },
+        { id: "o3-mini", listed: true, retired: false },
+      ],
+    });
+    expect(toProvider(older)).not.toHaveProperty("key_hint");
+  });
+});
+
+describe("provider catalogue and prices", () => {
+  it("reads a vendor and drops a plan the web does not know", () => {
+    const row = { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434" };
+    expect(toVendor({ ...row, suggested_plan: "local" })).toEqual({ ...row, suggested_plan: "local" });
+    expect(toVendor({ ...row, suggested_plan: "free" })).toEqual(row);
+    expect(() => toVendor({ ...row, key: 4 })).toThrow("no key");
+  });
+
+  it("reads the models a test found, with only text rates", () => {
+    expect(
+      toTestResult({ ok: true, models: [{ id: "model-a", context_length: 8000, pricing: { prompt: "0.000001", x: 2 } }] }),
+    ).toEqual({ ok: true, models: [{ id: "model-a", context_length: 8000, pricing: { prompt: "0.000001" } }] });
+    expect(toSeenModel({ id: "model-b", display_name: "" })).toEqual({ id: "model-b" });
+  });
+
+  it("reads a catalogue row with absent rates as null", () => {
+    expect(
+      toCatalogModel({ model: "model-a", kind: "chat", context_window: 8000, input_usd_per_mtok: 0.5, retires_at: "2027-01-01" }),
+    ).toEqual({
+      model: "model-a",
+      kind: "chat",
+      context_window: 8000,
+      retires_at: "2027-01-01",
+      input_usd_per_mtok: 0.5,
+      output_usd_per_mtok: null,
+      cache_read_usd_per_mtok: null,
+      cache_write_usd_per_mtok: null,
+    });
+  });
+
+  it("reads a price view, taking an override rate exactly from micro-USD", () => {
+    const view = toModelPricing({
+      merged: {
+        model: "model-a",
+        input_usd_per_mtok: 0.29,
+        output_usd_per_mtok: 0.075,
+        lifecycle: "deprecated",
+        sources: {
+          input_usd_per_mtok: "override",
+          output_usd_per_mtok: "models_dev",
+          cache_read_usd_per_mtok: "none",
+          cache_write_usd_per_mtok: "something_new",
+        },
+      },
+      override: {
+        model: "model-a",
+        input_micro_usd_per_mtok: 290_000,
+        output_micro_usd_per_mtok: null,
+        cache_read_micro_usd_per_mtok: null,
+        cache_write_micro_usd_per_mtok: null,
+        updated_by: "01990000-0000-7000-8000-0000000000f1",
+        updated_at: "2026-11-10T09:00:00Z",
+      },
+      warnings: [
+        { field: "input_micro_usd_per_mtok", override_micro_usd_per_mtok: 290_000, base_micro_usd_per_mtok: 3_000_000, base_source: "provider" },
+        { field: "unknown_field", override_micro_usd_per_mtok: 1, base_micro_usd_per_mtok: 2, base_source: "provider" },
+      ],
+    });
+    expect(view).toEqual({
+      model: "model-a",
+      rates: { input: 290_000, output: 75_000, cache_read: null, cache_write: null },
+      sources: { input: "override", output: "models_dev", cache_read: "none", cache_write: "none" },
+      lifecycle: "deprecated",
+      override: {
+        input: 290_000,
+        output: null,
+        cache_read: null,
+        cache_write: null,
+        updated_by: "01990000-0000-7000-8000-0000000000f1",
+        updated_at: "2026-11-10T09:00:00Z",
+      },
+      warnings: [{ rate: "input", override: 290_000, base: 3_000_000, base_source: "provider" }],
+    });
+  });
+
+  it("sends every override rate in micro-USD, null where it is not set", () => {
+    expect(priceOverrideBody("model-a", { input: 2_500_000, output: null, cache_read: 0, cache_write: null })).toEqual({
+      model: "model-a",
+      input_micro_usd_per_mtok: 2_500_000,
+      output_micro_usd_per_mtok: null,
+      cache_read_micro_usd_per_mtok: 0,
+      cache_write_micro_usd_per_mtok: null,
+    });
+  });
+
+  it("reads what uses an account", () => {
+    expect(toProviderUses({ routes: ["daily"], agents: [], automations: ["Digest"] })).toEqual({
+      routes: ["daily"],
+      agents: [],
+      automations: ["Digest"],
+    });
+    expect(toProviderUses({ routes: ["daily"] })).toEqual({ routes: ["daily"], agents: [], automations: [] });
   });
 });
 
@@ -444,6 +570,7 @@ describe("provider request bodies", () => {
     expect(providerChangeBody({ models: [] })).toEqual({ models: [] });
     expect(providerChangeBody({ base_url: "" })).toEqual({ base_url: "" });
     expect(providerChangeBody({ base_url: undefined })).toEqual({});
+    expect(providerChangeBody({ enabled: false })).toEqual({ enabled: false });
   });
 
   it("always sends plan_kind in a test when it is known, with the brain's adapter key", () => {

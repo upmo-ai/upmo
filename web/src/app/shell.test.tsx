@@ -26,7 +26,7 @@ const sidebarRoutes = [
   ["/agents", "Agents", "Agents"],
   ["/knowledge", "Knowledge", "Knowledge"],
   ["/usage", "Usage", "Usage"],
-  ["/providers", "Providers", "Providers"],
+  ["/settings/providers", "Providers", "Providers"],
   ["/connectors", "Connectors", "Connectors"],
   ["/admin/members", "Members", "Members"],
   ["/admin/teams", "Teams", "Teams"],
@@ -222,6 +222,7 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       },
     },
     providers: {
+      ...createStubApi().providers,
       async list() {
         return [];
       },
@@ -1448,7 +1449,7 @@ describe("app shell", () => {
     expect(sessionFetches).toBe(1);
   });
 
-  it("redirects legacy /settings paths to new top-level paths", async () => {
+  it("redirects legacy paths to where the pages live now", async () => {
     renderAt("/settings");
     expect(await screen.findByRole("heading", { level: 1, name: "Security" })).toBeTruthy();
 
@@ -1459,6 +1460,14 @@ describe("app shell", () => {
     cleanup();
     renderAt("/settings/providers");
     expect(await screen.findByRole("heading", { level: 1, name: "Providers" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/providers");
+    expect(await screen.findByRole("heading", { level: 1, name: "Providers" })).toBeTruthy();
+
+    cleanup();
+    renderAt("/providers/new");
+    expect(await screen.findByRole("heading", { level: 1, name: "Connect a provider" })).toBeTruthy();
 
     cleanup();
     renderAt("/personalization");

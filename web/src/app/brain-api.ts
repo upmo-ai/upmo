@@ -5,12 +5,23 @@ import {
   type AgentInput,
   type AgentProfile,
   type ApiClient,
+  type CatalogModel,
+  type EnabledModel,
+  type MicroRates,
+  type ModelPricing,
+  type PriceOverride,
+  type PriceRate,
+  type PriceSource,
+  type PriceWarning,
   type ProviderAdd,
   type ProviderChange,
   type ProviderPlanKind,
   type ProviderProbe,
   type ProviderStatus,
+  type ProviderUses,
+  type ProviderVendor,
   type ProviderVisibility,
+  type SeenModel,
   type TestResult,
 } from "./api";
 import {
@@ -399,6 +410,7 @@ const providerStatuses: readonly ProviderStatus[] = [
   "Rate limited",
   "Key rejected",
   "Offline",
+  "Turned off by your workspace",
 ];
 
 /** A list of text. A missing list, or one that is not all text, is refused. */
@@ -449,7 +461,177 @@ export function toProvider(value: unknown): ListedProvider {
     is_owner: source.is_owner,
   };
   if (typeof source.base_url === "string" && source.base_url !== "") account.base_url = source.base_url;
+  account.enabled = source.enabled !== false;
+  if (typeof source.key_hint === "string" && source.key_hint !== "") account.key_hint = source.key_hint;
+  if (typeof source.key_changed_at === "string") account.key_changed_at = source.key_changed_at;
+  if (typeof source.key_changed_by === "string" && source.key_changed_by !== "") {
+    account.key_changed_by = source.key_changed_by;
+  }
+  account.enabled_models = Array.isArray(source.enabled_models)
+    ? source.enabled_models.map(toEnabledModel)
+    : account.models.map((id) => ({ id, listed: true, retired: false }));
   return account;
+}
+
+function toEnabledModel(value: unknown): EnabledModel {
+  const source = record(value, "enabled model");
+  return { id: text(source, "id"), listed: source.listed === true, retired: source.retired === true };
+}
+
+/** A whole number, or undefined when the brain left it out. */
+function optionalWhole(source: Json, key: string): number | undefined {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** A rate in USD per million tokens, or null when the brain sends none. */
+function usdRate(source: Json, key: string): number | null {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** A rate in micro-USD per million tokens, or null when it is not set. */
+function microRate(source: Json, key: string): number | null {
+  const value = source[key];
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** One vendor of GET /api/providers/vendors. A plan the web does not know is no suggestion. */
+export function toVendor(value: unknown): ProviderVendor {
+  const source = record(value, "vendor");
+  const vendor: ProviderVendor = {
+    key: text(source, "key"),
+    name: text(source, "name"),
+    adapter: text(source, "adapter"),
+    default_base_url: text(source, "default_base_url"),
+  };
+  const plan = source.suggested_plan;
+  if (planKinds.some((kind) => kind === plan)) vendor.suggested_plan = plan as ProviderPlanKind;
+  return vendor;
+}
+
+/** One model a provider listed. Pricing keeps only its text rates. */
+export function toSeenModel(value: unknown): SeenModel {
+  const source = record(value, "model");
+  const seen: SeenModel = { id: text(source, "id") };
+  if (typeof source.display_name === "string" && source.display_name !== "") seen.display_name = source.display_name;
+  const context = optionalWhole(source, "context_length");
+  if (context !== undefined && context > 0) seen.context_length = context;
+  if (isRecord(source.pricing)) {
+    const pricing: Record<string, string> = {};
+    for (const [key, rate] of Object.entries(source.pricing)) {
+      if (typeof rate === "string") pricing[key] = rate;
+    }
+    seen.pricing = pricing;
+  }
+  return seen;
+}
+
+/** One models.dev row of GET /api/providers/catalog. */
+export function toCatalogModel(value: unknown): CatalogModel {
+  const source = record(value, "catalogue row");
+  const row: CatalogModel = {
+    model: text(source, "model"),
+    kind: typeof source.kind === "string" ? source.kind : "",
+    context_window: optionalWhole(source, "context_window") ?? 0,
+    input_usd_per_mtok: usdRate(source, "input_usd_per_mtok"),
+    output_usd_per_mtok: usdRate(source, "output_usd_per_mtok"),
+    cache_read_usd_per_mtok: usdRate(source, "cache_read_usd_per_mtok"),
+    cache_write_usd_per_mtok: usdRate(source, "cache_write_usd_per_mtok"),
+  };
+  if (typeof source.lifecycle === "string" && source.lifecycle !== "") row.lifecycle = source.lifecycle;
+  if (typeof source.retires_at === "string" && source.retires_at !== "") row.retires_at = source.retires_at;
+  return row;
+}
+
+const priceRates: readonly PriceRate[] = ["input", "output", "cache_read", "cache_write"];
+const priceSources: readonly PriceSource[] = ["override", "provider", "models_dev", "other_provider", "none"];
+
+function priceSource(value: unknown): PriceSource {
+  return priceSources.some((known) => known === value) ? (value as PriceSource) : "none";
+}
+
+/** The merged view names each rate in USD; the override and warnings in micro-USD. */
+const usdKeys: Readonly<Record<PriceRate, string>> = {
+  input: "input_usd_per_mtok",
+  output: "output_usd_per_mtok",
+  cache_read: "cache_read_usd_per_mtok",
+  cache_write: "cache_write_usd_per_mtok",
+};
+
+const microKeys: Readonly<Record<PriceRate, string>> = {
+  input: "input_micro_usd_per_mtok",
+  output: "output_micro_usd_per_mtok",
+  cache_read: "cache_read_micro_usd_per_mtok",
+  cache_write: "cache_write_micro_usd_per_mtok",
+};
+
+function toPriceOverride(value: unknown): PriceOverride {
+  const source = record(value, "override");
+  const override: PriceOverride = {
+    input: microRate(source, microKeys.input),
+    output: microRate(source, microKeys.output),
+    cache_read: microRate(source, microKeys.cache_read),
+    cache_write: microRate(source, microKeys.cache_write),
+  };
+  if (typeof source.updated_by === "string" && source.updated_by !== "") override.updated_by = source.updated_by;
+  if (typeof source.updated_at === "string") override.updated_at = source.updated_at;
+  return override;
+}
+
+function toPriceWarning(value: unknown): PriceWarning | null {
+  const source = record(value, "warning");
+  const rate = priceRates.find((item) => microKeys[item] === source.field);
+  const override = microRate(source, "override_micro_usd_per_mtok");
+  const base = microRate(source, "base_micro_usd_per_mtok");
+  if (!rate || override === null || base === null) return null;
+  return { rate, override, base, base_source: priceSource(source.base_source) };
+}
+
+/**
+ * GET /api/providers/{id}/pricing and the override writes. A rate the
+ * override set is taken from the override in micro-USD, exactly; any other is
+ * the merged USD rate, rounded to whole micro-USD.
+ */
+export function toModelPricing(value: unknown): ModelPricing {
+  const source = record(value, "pricing");
+  const merged = record(source.merged, "pricing");
+  const sources = isRecord(merged.sources) ? merged.sources : {};
+  const override = source.override == null ? undefined : toPriceOverride(source.override);
+  const rates = {} as MicroRates;
+  const from = {} as Record<PriceRate, PriceSource>;
+  for (const rate of priceRates) {
+    from[rate] = priceSource(sources[usdKeys[rate]]);
+    const usd = usdRate(merged, usdKeys[rate]);
+    const exact = from[rate] === "override" ? override?.[rate] : undefined;
+    rates[rate] = exact ?? (usd === null ? null : Math.round(usd * 1_000_000));
+  }
+  const pricing: ModelPricing = {
+    model: text(merged, "model"),
+    rates,
+    sources: from,
+    warnings: Array.isArray(source.warnings)
+      ? source.warnings.map(toPriceWarning).filter((item): item is PriceWarning => item !== null)
+      : [],
+  };
+  if (override) pricing.override = override;
+  if (typeof merged.lifecycle === "string" && merged.lifecycle !== "") pricing.lifecycle = merged.lifecycle;
+  if (typeof merged.retires_at === "string" && merged.retires_at !== "") pricing.retires_at = merged.retires_at;
+  return pricing;
+}
+
+/** GET /api/providers/{id}/uses. */
+export function toProviderUses(value: unknown): ProviderUses {
+  const source = record(value, "uses");
+  const names = (key: string) => (Array.isArray(source[key]) ? strings(source[key], key) : []);
+  return { routes: names("routes"), agents: names("agents"), automations: names("automations") };
+}
+
+/** The PUT body of an override: every rate, null where it is not set. */
+export function priceOverrideBody(model: string, rates: MicroRates): Json {
+  const body: Json = { model };
+  for (const rate of priceRates) body[microKeys[rate]] = rates[rate];
+  return body;
 }
 
 /** An agent as GET /api/agents and the write routes send it. */
@@ -537,6 +719,7 @@ export function toTestResult(value: unknown): TestResult {
   if (typeof source.ok !== "boolean") throw new Error("The brain sent no ok.");
   const result: TestResult = { ok: source.ok };
   if (typeof source.error === "string" && source.error !== "") result.error = source.error;
+  if (Array.isArray(source.models)) result.models = source.models.map(toSeenModel);
   return result;
 }
 
@@ -584,6 +767,7 @@ export function providerChangeBody(input: ProviderChange): Json {
     ...(input.base_url !== undefined ? { base_url: input.base_url } : {}),
     ...given("api_key", input.api_key),
     ...(input.models !== undefined ? { models: input.models } : {}),
+    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
     ...sharing(input, true),
   };
 }
@@ -820,6 +1004,36 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async test(config) {
         if ((await chosen()) === "stub") return stub.providers.test(config);
         return toTestResult(await call("/api/providers/test", { method: "POST", body: providerTestBody(config) }));
+      },
+      async vendors() {
+        if ((await chosen()) === "stub") return stub.providers.vendors();
+        return list(await call("/api/providers/vendors"), "vendors").map(toVendor);
+      },
+      async catalog(vendor) {
+        if ((await chosen()) === "stub") return stub.providers.catalog(vendor);
+        const path = `/api/providers/catalog?vendor=${encodeURIComponent(vendor)}`;
+        return list(await call(path), "catalogue").map(toCatalogModel);
+      },
+      async models(id) {
+        if ((await chosen()) === "stub") return stub.providers.models(id);
+        return list(await call(`${providerPath(id)}/models`), "models").map(toSeenModel);
+      },
+      async pricing(id, model) {
+        if ((await chosen()) === "stub") return stub.providers.pricing(id, model);
+        return toModelPricing(await call(`${providerPath(id)}/pricing?model=${encodeURIComponent(model)}`));
+      },
+      async uses(id) {
+        if ((await chosen()) === "stub") return stub.providers.uses(id);
+        return toProviderUses(await call(`${providerPath(id)}/uses`));
+      },
+      async setPrice(id, model, rates) {
+        if ((await chosen()) === "stub") return stub.providers.setPrice(id, model, rates);
+        const body = priceOverrideBody(model, rates);
+        return toModelPricing(await call(`${providerPath(id)}/overrides`, { method: "PUT", body }));
+      },
+      async clearPrice(id, model) {
+        if ((await chosen()) === "stub") return stub.providers.clearPrice(id, model);
+        return toModelPricing(await call(`${providerPath(id)}/overrides`, { method: "DELETE", body: { model } }));
       },
     },
     agents: {

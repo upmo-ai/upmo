@@ -21,6 +21,7 @@ import { EditConnectorPage, NewConnectorPage } from "../features/connectors/conn
 import { AgentsPage } from "../features/agents/agents";
 import { ProvidersPage } from "../features/providers/providers";
 import { EditProviderPage, NewProviderPage } from "../features/providers/provider-form";
+import { ProviderPricesPage } from "../features/providers/prices";
 import { TaskPage, TasksPage } from "../features/tasks/tasks";
 import { KnowledgeFolderPage } from "../features/knowledge/folder";
 import { KnowledgePage } from "../features/knowledge/knowledge";
@@ -180,28 +181,29 @@ const editConnectorRoute = createRoute({
   component: EditConnectorPage,
 });
 
-const providersRoute = createRoute({
+// The providers pages live under settings. The old addresses still open them.
+const legacyProvidersRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/providers",
-  component: () => <Outlet />,
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/providers" });
+  },
 });
 
-const providersIndexRoute = createRoute({
-  getParentRoute: () => providersRoute,
-  path: "/",
-  component: ProvidersPage,
+const legacyNewProviderRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/providers/new",
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/providers/new" });
+  },
 });
 
-const newProviderRoute = createRoute({
-  getParentRoute: () => providersRoute,
-  path: "new",
-  component: NewProviderPage,
-});
-
-const editProviderRoute = createRoute({
-  getParentRoute: () => providersRoute,
-  path: "$providerId/edit",
-  component: EditProviderPage,
+const legacyEditProviderRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/providers/$providerId/edit",
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: "/settings/providers/$providerId/edit", params });
+  },
 });
 
 const personalisationRoute = createRoute({
@@ -276,12 +278,34 @@ const settingsConnectorsRoute = createRoute({
   },
 });
 
-const settingsProvidersRoute = createRoute({
+const providersRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "providers",
-  beforeLoad: () => {
-    throw redirect({ to: "/providers" });
-  },
+  component: () => <Outlet />,
+});
+
+const providersIndexRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "/",
+  component: ProvidersPage,
+});
+
+const newProviderRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "new",
+  component: NewProviderPage,
+});
+
+const editProviderRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "$providerId/edit",
+  component: EditProviderPage,
+});
+
+const providerPricesRoute = createRoute({
+  getParentRoute: () => providersRoute,
+  path: "$providerId/prices",
+  component: ProviderPricesPage,
 });
 
 const settingsModelsRoute = createRoute({
@@ -340,11 +364,9 @@ const routeTree = rootRoute.addChildren([
       newConnectorRoute,
       editConnectorRoute,
     ]),
-    providersRoute.addChildren([
-      providersIndexRoute,
-      newProviderRoute,
-      editProviderRoute,
-    ]),
+    legacyProvidersRoute,
+    legacyNewProviderRoute,
+    legacyEditProviderRoute,
     personalisationRoute,
     legacyPersonalizationRoute,
     securityRoute,
@@ -355,7 +377,12 @@ const routeTree = rootRoute.addChildren([
       settingsPersonalisationUKRoute,
       settingsTokensRoute,
       settingsConnectorsRoute,
-      settingsProvidersRoute,
+      providersRoute.addChildren([
+        providersIndexRoute,
+        newProviderRoute,
+        editProviderRoute,
+        providerPricesRoute,
+      ]),
       settingsModelsRoute,
     ]),
     adminRoute.addChildren([

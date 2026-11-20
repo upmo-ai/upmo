@@ -1,4 +1,4 @@
-import { BrainError, type ProviderPlanKind } from "../../app/api";
+import { BrainError, type ProviderAccount, type ProviderPlanKind, type ProviderStatus } from "../../app/api";
 
 /**
  * The brain dispatches to three adapters: `fake`, which has no network,
@@ -78,4 +78,31 @@ export function providerProblem(error: unknown): string {
   if (error.status === 503) return keysOffSentence;
   if (plainStatuses.has(error.status) && error.error) return error.error;
   return unknownSentence;
+}
+
+const workspaceOffStatus = "Turned off by your workspace" satisfies ProviderStatus;
+
+/** Whether the workspace's policy has turned the account off for this person. */
+export function workspaceOff(status: ProviderStatus): boolean {
+  return status === workspaceOffStatus;
+}
+
+/** The status the card shows. One the workspace turned off reads as not connected; a badge says why. */
+export function cardStatus(status: ProviderStatus): Exclude<ProviderStatus, typeof workspaceOffStatus> {
+  return status === workspaceOffStatus ? "Not connected" : status;
+}
+
+/** The enabled models two daily checks found missing from the provider's list. */
+export function retiredModels(account: Pick<ProviderAccount, "enabled_models">): string[] {
+  return (account.enabled_models ?? []).filter((model) => model.retired).map((model) => model.id);
+}
+
+/** The line about the saved key: its last characters, and when it was set. Nothing without a hint. */
+export function keyLine(
+  account: Pick<ProviderAccount, "key_hint" | "key_changed_at">,
+  date: (iso: string) => string,
+): string | null {
+  if (!account.key_hint) return null;
+  const when = account.key_changed_at ? `, set ${date(account.key_changed_at)}` : "";
+  return `Key ending ${account.key_hint}${when}`;
 }

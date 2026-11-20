@@ -22,7 +22,7 @@ const personal: Row = {
   status: "Connected",
   usable: true,
   usable_models: ["gpt-x"],
-  models: ["claude-3-7-sonnet"],
+  models: ["model-a"],
   visibility: "private",
   team_ids: [],
   team_names: [],
@@ -56,6 +56,14 @@ const forWorkspace: Row = {
   is_owner: false,
 };
 
+// The vendors the brain offers.
+const vendors = [
+  { key: "anthropic", name: "Anthropic", adapter: "anthropic", default_base_url: "https://api.anthropic.com", suggested_plan: "metered" },
+  { key: "openai", name: "OpenAI", adapter: "openai_compat", default_base_url: "https://api.openai.com", suggested_plan: "metered" },
+  { key: "deepseek", name: "DeepSeek", adapter: "openai_compat", default_base_url: "https://api.deepseek.com", suggested_plan: "metered" },
+  { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434", suggested_plan: "local" },
+];
+
 interface Recorded {
   url: string;
   method: string;
@@ -85,7 +93,12 @@ function stubBrain(options: { accounts?: Row[]; canShare?: boolean }) {
           { id: opsTeam, name: "Ops" },
         ]);
       }
-      if (url === "/api/providers/test" && method === "POST") return Response.json({ ok: true });
+      if (url === "/api/providers/vendors" && method === "GET") return Response.json(vendors);
+      if (url.startsWith("/api/providers/catalog?") && method === "GET") return Response.json([]);
+      if (url.startsWith("/api/providers/") && url.endsWith("/models") && method === "GET") return Response.json([]);
+      if (url === "/api/providers/test" && method === "POST") {
+        return Response.json({ ok: true, models: [{ id: "model-a" }, { id: "model-b" }] });
+      }
       if (url === "/api/providers" && method === "POST") {
         return Response.json({ ...personal, id: "made", name: String(body?.name ?? "") }, { status: 201 });
       }
@@ -130,17 +143,21 @@ function isDisabled(element: HTMLElement) {
 
 // Walks the wizard for Ollama, which needs no key, up to its credentials step.
 async function openCredentials() {
-  renderAt("/providers/new");
-  expect(await screen.findByRole("heading", { level: 1, name: "Connect a provider" })).toBeTruthy();
-  clickButton("Ollama");
+  renderAt("/settings/providers/new");
+  click(await screen.findByRole("button", { name: "Ollama" }));
   await continueTo(/Ollama Credentials & Plan/);
 }
 
-async function connect(requests: Recorded[]) {
-  await continueTo(/Models & Pricing for Ollama/);
-  await continueTo("Review Configuration");
+async function passTestAndOpenModels() {
+  await continueTo("Connection Verification");
   clickButton("Test connection");
   expect(await screen.findByText("Connection verified")).toBeTruthy();
+  await continueTo(/Models & Pricing for/);
+}
+
+async function connect(requests: Recorded[]) {
+  await passTestAndOpenModels();
+  click(screen.getByRole("checkbox", { name: "Select model-a" }));
   clickButton("Connect provider");
   await waitFor(() => {
     expect(requests.some((request) => request.method === "POST" && request.url === "/api/providers")).toBe(true);
@@ -231,7 +248,7 @@ describe("sharing a provider", () => {
 
   it("shows who an account is shared with, and Edit and Disconnect only where the brain says the person may", async () => {
     stubBrain({ accounts: [personal, forTeams, forTeamsAsAdmin, forWorkspace] });
-    renderAt("/providers");
+    renderAt("/settings/providers");
 
     await screen.findByTestId("provider-card-p-own");
     const buttons = (id: string) => {
@@ -261,7 +278,7 @@ describe("sharing a provider", () => {
 
   it("opens a shared account the person may not manage as a read only page", async () => {
     stubBrain({ accounts: [forTeams] });
-    renderAt("/providers/p-team/edit");
+    renderAt("/settings/providers/p-team/edit");
 
     expect(await screen.findByText("This provider is shared by the workspace. It is read only here.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
@@ -319,10 +336,8 @@ describe("sharing a provider", () => {
   });
 
   async function saveEdit(requests: Recorded[]) {
-    await continueTo(/Models & Pricing for/);
-    await continueTo("Review Configuration");
-    clickButton("Test connection");
-    expect(await screen.findByText("Connection verified")).toBeTruthy();
+    expect(await screen.findByText(/Credentials & Plan/)).toBeTruthy();
+    await passTestAndOpenModels();
     clickButton("Save changes");
     await waitFor(() => {
       expect(requests.some((request) => request.method === "PUT" && request.url.startsWith("/api/providers/"))).toBe(
@@ -336,7 +351,7 @@ describe("sharing a provider", () => {
 
   it("offers the sharing choice when editing a private account and sends the teams that were picked", async () => {
     const requests = stubBrain({ accounts: [personal], canShare: true });
-    renderAt("/providers/p-own/edit");
+    renderAt("/settings/providers/p-own/edit");
 
     expect(await screen.findByText("Who can use this provider")).toBeTruthy();
     expect(screen.getByRole("radio", { name: /^Only me/ })).toBeTruthy();
@@ -350,7 +365,7 @@ describe("sharing a provider", () => {
 
   it("lets the owner of a shared account take it back to only them", async () => {
     const requests = stubBrain({ accounts: [forTeamsAsAdmin], canShare: true });
-    renderAt("/providers/p-team-admin/edit");
+    renderAt("/settings/providers/p-team-admin/edit");
 
     expect(await screen.findByRole("radio", { name: /^Only me/ })).toBeTruthy();
     click(screen.getByRole("radio", { name: /^Only me/ }));
@@ -362,7 +377,7 @@ describe("sharing a provider", () => {
 
   it("hides Only me when a person who may share does not own the account", async () => {
     stubBrain({ accounts: [{ ...forTeamsAsAdmin, is_owner: false }], canShare: true });
-    renderAt("/providers/p-team-admin/edit");
+    renderAt("/settings/providers/p-team-admin/edit");
 
     expect(await screen.findByText("Who can use this provider")).toBeTruthy();
     expect(screen.getByRole("radio", { name: /^Teams/ })).toBeTruthy();
@@ -372,7 +387,7 @@ describe("sharing a provider", () => {
 
   it("does not ask a person who may not share when they edit an account", async () => {
     const requests = stubBrain({ accounts: [personal], canShare: false });
-    renderAt("/providers/p-own/edit");
+    renderAt("/settings/providers/p-own/edit");
 
     expect(await screen.findByRole("heading", { level: 1, name: "Edit My Claude" })).toBeTruthy();
     await waitFor(() => {
@@ -385,7 +400,7 @@ describe("sharing a provider", () => {
 
   it("sends no visibility when an edit leaves the sharing choice alone", async () => {
     const requests = stubBrain({ accounts: [forTeamsAsAdmin], canShare: true });
-    renderAt("/providers/p-team-admin/edit");
+    renderAt("/settings/providers/p-team-admin/edit");
 
     expect(await screen.findByText("Who can use this provider")).toBeTruthy();
     const sent = await saveEdit(requests);

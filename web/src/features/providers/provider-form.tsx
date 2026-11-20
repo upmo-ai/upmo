@@ -12,7 +12,6 @@ import {
   ConnectWizard,
   Input,
   Radio,
-  Select,
   StatusAlert,
   Table,
   TestConnectionPanel,
@@ -21,17 +20,23 @@ import {
 
 import {
   PROVIDERS_KEY,
+  providerCatalogQueryKey,
+  providerModelsQueryKey,
   providersQueryKey,
+  providerVendorsQueryKey,
   teamsQueryKey,
   useApi,
   type ProviderAdd,
   type ProviderChange,
+  type ProviderPlanKind,
+  type SeenModel,
   type TestResult,
 } from "../../app/api";
-import { formatPricing, getProviderModels, type ModelInfo } from "./models";
-import { ALL_PROVIDERS, KNOWN_PROVIDERS, PICKABLE_PROVIDERS, type KnownProvider } from "./providers";
-import { baseUrlRequired, hostedBaseUrl, keyRequired, providerProblem, showsKeyField } from "./rules";
+import { formatDate } from "../identity/format";
+import { formatRates, listedPrice, sourceLabel } from "./models";
+import { baseUrlRequired, hostedBaseUrl, keyLine, keyRequired, providerProblem, showsKeyField } from "./rules";
 import { canManage, fetchCanShare, type ListedProvider } from "./sharing";
+import { pickerVendors, planOptions, type PickerVendor } from "./vendors";
 
 interface ProviderFormPageProps {
   mode: "create" | "edit";
@@ -39,11 +44,14 @@ interface ProviderFormPageProps {
 
 interface ProviderFormProps {
   mode: "create" | "edit";
+  vendors: PickerVendor[];
   existing?: ListedProvider;
 }
 
 /** Who an account is for: the person alone, named teams, or the whole workspace. */
 type ShareAsk = "private" | "team" | "everyone";
+
+const LIST_PATH = "/settings/providers";
 
 function sameTeamIds(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
@@ -58,12 +66,9 @@ function shareChoiceChanged(existing: ListedProvider, scope: ShareAsk, teams: re
   return scope === "team" && !sameTeamIds(teams, existing.team_ids);
 }
 
-function baseUrlHelp(meta: KnownProvider): string {
-  if (meta.id === "lmstudio") return "Required. Address of your local LM Studio service.";
-  if (meta.id === "ollama") return "Required. Address of your local or private Ollama service.";
-  if (!baseUrlRequired(meta.adapter, meta.defaultBaseUrl) && meta.adapter === "fake") {
-    return "Optional for the built in test provider.";
-  }
+function baseUrlHelp(meta: PickerVendor): string {
+  if (meta.adapter === "fake") return "Optional for the built in test provider.";
+  if (meta.suggestedPlan === "local") return `Required. Address of your local or private ${meta.name} service.`;
   const fallback = hostedBaseUrl(meta.defaultBaseUrl);
   if (fallback) {
     return `Optional. Empty uses ${fallback}. Change it only for a proxy or a private deployment, and give the address without the chat path.`;
@@ -71,30 +76,51 @@ function baseUrlHelp(meta: KnownProvider): string {
   return "Required. Address of the provider's API as its documentation gives it, for example https://api.example.com, without the chat path.";
 }
 
-function ProviderForm({ mode, existing }: ProviderFormProps) {
+/** A saved account whose vendor the brain no longer offers still opens, under its own name. */
+function vendorOf(vendors: readonly PickerVendor[], existing: ListedProvider | undefined, id: string): PickerVendor {
+  const known = vendors.find((vendor) => vendor.id === id);
+  if (known) return known;
+  return {
+    id,
+    name: existing?.name ?? id,
+    adapter: existing?.adapter ?? "",
+    description: "",
+    suggestedPlan: existing?.plan_kind ?? "metered",
+    requiresKey: existing?.plan_kind !== "local",
+    defaultBaseUrl: existing?.base_url,
+  };
+}
+
+/** The models a list offers: the ones the provider named, then any selected one it did not. */
+function modelRows(discovered: readonly SeenModel[], selected: readonly string[]): { seen: SeenModel; listed: boolean }[] {
+  const ids = new Set(discovered.map((model) => model.id));
+  return [
+    ...discovered.map((seen) => ({ seen, listed: true })),
+    ...selected.filter((id) => !ids.has(id)).map((id) => ({ seen: { id }, listed: false })),
+  ];
+}
+
+function ProviderForm({ mode, vendors, existing }: ProviderFormProps) {
   const api = useApi();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
+  const first = vendors[0];
   const [activeStep, setActiveStep] = useState<number>(mode === "edit" ? 1 : 0);
   const [providerSearch, setProviderSearch] = useState<string>("");
 
-  const [selectedProviderId, setSelectedProviderId] = useState<string>(
-    existing?.provider ?? "anthropic",
-  );
-  const [name, setName] = useState<string>(existing?.name ?? KNOWN_PROVIDERS[0].name);
+  const [selectedProviderId, setSelectedProviderId] = useState<string>(existing?.provider ?? first?.id ?? "");
+  const [name, setName] = useState<string>(existing?.name ?? first?.name ?? "");
   const [apiKey, setApiKey] = useState<string>("");
   const [baseUrl, setBaseUrl] = useState<string>(
-    existing ? (existing.base_url ?? "") : (KNOWN_PROVIDERS[0].defaultBaseUrl ?? ""),
+    existing ? (existing.base_url ?? "") : (first?.defaultBaseUrl ?? ""),
   );
-  const [planKind, setPlanKind] = useState<"metered" | "subscription" | "local">(
-    existing?.plan_kind ?? KNOWN_PROVIDERS[0].defaultPlan,
+  const [planKind, setPlanKind] = useState<ProviderPlanKind>(
+    existing?.plan_kind ?? first?.suggestedPlan ?? "metered",
   );
 
-  // Models state
-  const [selectedModels, setSelectedModels] = useState<string[]>(
-    existing ? existing.models : KNOWN_PROVIDERS[0].defaultModels,
-  );
+  const [selectedModels, setSelectedModels] = useState<string[]>(existing ? existing.models : []);
+  const [modelSearch, setModelSearch] = useState<string>("");
   const [customModelInput, setCustomModelInput] = useState<string>("");
 
   // Sharing: who may use the account. Only a person who may share is asked.
@@ -121,8 +147,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [submitError, setSubmitError] = useState<string>("");
 
-  const selectedMeta: KnownProvider =
-    ALL_PROVIDERS.find((p) => p.id === selectedProviderId) ?? KNOWN_PROVIDERS[0];
+  const selectedMeta = vendorOf(vendors, existing, selectedProviderId);
   // The brain keeps a key for every account that is not local, so only a
   // saved local account may have none.
   const hasSavedKey = existing !== undefined && existing.plan_kind !== "local";
@@ -134,23 +159,41 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
   const sentBaseUrl = baseUrl.trim() || hostedBaseUrl(selectedMeta.defaultBaseUrl);
   // A key typed while the field was shown is not sent once it is hidden.
   const typedKey = showKey ? apiKey.trim() : "";
+  const savedKeyLine = existing ? keyLine(existing, formatDate) : null;
+
+  // What the provider listed: the last test's answer, or for a saved account
+  // the list its last saved test stored. Prices come from the provider's own
+  // list first, then from models.dev for the vendor.
+  const storedModels = useQuery({
+    queryKey: providerModelsQueryKey(existing?.id ?? ""),
+    queryFn: () => api.providers.models(existing?.id ?? ""),
+    enabled: existing !== undefined,
+  });
+  const catalogQuery = useQuery({
+    queryKey: providerCatalogQueryKey(selectedProviderId),
+    queryFn: () => api.providers.catalog(selectedProviderId),
+    enabled: selectedProviderId !== "" && selectedMeta.adapter !== "fake",
+  });
+  const discovered = testResult?.ok ? (testResult.models ?? []) : (storedModels.data ?? []);
+  const catalog = catalogQuery.data ?? [];
+
+  const resetTest = () => setTestResult(null);
 
   const handleSelectProvider = (provId: string) => {
     if (mode === "edit") return;
     setSelectedProviderId(provId);
-    const meta = ALL_PROVIDERS.find((p) => p.id === provId);
+    const meta = vendors.find((p) => p.id === provId);
     if (meta) {
       setName(meta.name);
-      setPlanKind(meta.defaultPlan);
+      setPlanKind(meta.suggestedPlan);
       setBaseUrl(meta.defaultBaseUrl ?? "");
-      setSelectedModels([...meta.defaultModels]);
+      setSelectedModels([]);
       setApiKey("");
-      setTestResult(null);
+      resetTest();
     }
   };
 
   const handleToggleModel = (modelId: string) => {
-    setTestResult(null);
     setSelectedModels((prev) =>
       prev.includes(modelId) ? prev.filter((m) => m !== modelId) : [...prev, modelId],
     );
@@ -165,7 +208,6 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     if (!trimmed) return;
     if (!selectedModels.includes(trimmed)) {
       setSelectedModels((prev) => [...prev, trimmed]);
-      setTestResult(null);
     }
     setCustomModelInput("");
   };
@@ -186,7 +228,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
         id: savedId,
       });
       setTestResult(result);
-      // The brain stores the status a saved account's test found.
+      // The brain stores the status and the model list a saved account's test found.
       if (savedId) await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
     } catch (err: unknown) {
       setTestResult({ ok: false, error: providerProblem(err) });
@@ -218,7 +260,13 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           input.visibility = shareScope;
           if (shareScope === "team") input.team_ids = shareTeams;
         }
-        return api.providers.add(input);
+        const made = await api.providers.add(input);
+        // A new account starts Not connected. Testing it once saved, with its
+        // saved key, stores its status and model list, so its models reach
+        // the pickers. The form's own test already passed, so a failure here
+        // only leaves the account as the brain saved it.
+        await api.providers.test({ provider: made.provider, id: made.id }).catch(() => undefined);
+        return made;
       }
 
       // An empty key field keeps the saved key. An emptied base URL is sent
@@ -239,26 +287,27 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
-      await navigate({ to: "/providers" });
+      await navigate({ to: LIST_PATH });
     },
     onError: (err: Error) => {
       setSubmitError(providerProblem(err));
     },
   });
 
-  const availableCatalog = getProviderModels(selectedProviderId);
-  const catalogIds = new Set(availableCatalog.map((m) => m.id));
-  const customOnlyModels = selectedModels.filter((m) => !catalogIds.has(m));
-
-  const filteredProviders = PICKABLE_PROVIDERS.filter((p) => {
+  const filteredProviders = vendors.filter((p) => {
     if (!providerSearch.trim()) return true;
     const q = providerSearch.toLowerCase();
-    return (
-      p.name.toLowerCase().includes(q) ||
-      p.description.toLowerCase().includes(q) ||
-      p.defaultModels.some((m) => m.toLowerCase().includes(q))
-    );
+    return p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
   });
+
+  const rows = modelRows(discovered, selectedModels);
+  const modelQuery = modelSearch.trim().toLowerCase();
+  const shownRows = rows.filter(
+    ({ seen }) =>
+      !modelQuery ||
+      seen.id.toLowerCase().includes(modelQuery) ||
+      (seen.display_name ?? "").toLowerCase().includes(modelQuery),
+  );
 
   // Validation checks for advancing steps
   const canProceedStep1 = mode === "edit" || Boolean(selectedProviderId);
@@ -267,8 +316,8 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     (!needsKey || typedKey.length > 0) &&
     (!needsBaseUrl || baseUrl.trim().length > 0) &&
     (!sharedWithTeams || shareTeams.length > 0);
-  const canProceedStep3 = selectedModels.length > 0;
-  const canSubmit = testResult?.ok === true && !saveMutation.isPending;
+  const tested = testResult?.ok === true;
+  const canSubmit = tested && selectedModels.length > 0 && !saveMutation.isPending;
 
   const testState: TestConnectionState = isTesting
     ? "testing"
@@ -326,7 +375,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
         )}
 
         <Group justify="space-between" mt="md">
-          <Button component={Link} to="/providers" variant="subtle">
+          <Button component={Link} to={LIST_PATH} variant="subtle">
             Cancel
           </Button>
           <Button disabled={!canProceedStep1} onClick={() => setActiveStep(1)}>
@@ -357,10 +406,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           required
           size="md"
           value={name}
-          onChange={(e) => {
-            setName(e.target.value);
-            setTestResult(null);
-          }}
+          onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Anthropic Production, Nebius AI, Local Ollama"
         />
 
@@ -372,7 +418,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             autoComplete="off"
             description={
               hasSavedKey
-                ? "Leave blank to keep the currently stored key."
+                ? `Leave blank to keep the currently stored key.${savedKeyLine ? ` ${savedKeyLine}.` : ""}`
                 : needsKey
                   ? "Keys are encrypted at rest and stay on this server."
                   : "Optional on the local plan. Keys are encrypted at rest and stay on this server."
@@ -381,7 +427,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
             value={apiKey}
             onChange={(e) => {
               setApiKey(e.target.value);
-              setTestResult(null);
+              resetTest();
             }}
           />
         ) : null}
@@ -394,29 +440,31 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           value={baseUrl}
           onChange={(e) => {
             setBaseUrl(e.target.value);
-            setTestResult(null);
+            resetTest();
           }}
           placeholder={selectedMeta.defaultBaseUrl ?? "https://api.example.com"}
         />
 
-        <Select
+        <Radio.Group
           label="Plan kind"
-          size="md"
-          checkIconPosition="right"
           description="Controls rate limits, cost accounting, and scheduling."
-          data={[
-            { value: "metered", label: "Metered (Pay-as-you-go)" },
-            { value: "subscription", label: "Subscription" },
-            { value: "local", label: "Local (Self-hosted)" },
-          ]}
           value={planKind}
-          onChange={(val) => {
-            if (val) {
-              setPlanKind(val as "metered" | "subscription" | "local");
-              setTestResult(null);
-            }
+          onChange={(value) => {
+            setPlanKind(value as ProviderPlanKind);
+            resetTest();
           }}
-        />
+        >
+          <Stack gap="xs" mt="xs">
+            {planOptions.map((option) => (
+              <Radio
+                key={option.value}
+                value={option.value}
+                label={option.value === selectedMeta.suggestedPlan ? `${option.label} (suggested)` : option.label}
+                description={option.line}
+              />
+            ))}
+          </Stack>
+        </Radio.Group>
 
         {offerSharing ? (
           <Stack gap="xs">
@@ -471,14 +519,11 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
               Back
             </Button>
           ) : (
-            <Button component={Link} to="/providers" variant="subtle">
+            <Button component={Link} to={LIST_PATH} variant="subtle">
               Cancel
             </Button>
           )}
-          <Button
-            disabled={!canProceedStep2}
-            onClick={() => setActiveStep(2)}
-          >
+          <Button disabled={!canProceedStep2} onClick={() => setActiveStep(2)}>
             Continue
           </Button>
         </Group>
@@ -486,143 +531,38 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
     </Card>
   );
 
-  const modelsStep = (
+  const testStep = (
     <Card withBorder radius="lg" padding="lg">
       <Stack gap="md">
         <div>
           <Text fw={600} size="sm">
-            Models & Pricing for {selectedMeta.name}
+            Connection Verification
           </Text>
           <Text size="xs" c="dimmed">
-            Select which models are active for this provider. Token pricing is displayed per 1M tokens (MTok).
+            Test the endpoint and credentials. A passing test lists the provider&rsquo;s models to choose from.
           </Text>
         </div>
 
-        <Table.ScrollContainer minWidth={600}>
-          <Table verticalSpacing="xs" striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th style={{ width: 48 }}>Active</Table.Th>
-                <Table.Th>Model</Table.Th>
-                <Table.Th>Context</Table.Th>
-                <Table.Th>Token Pricing</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {availableCatalog.map((model: ModelInfo) => {
-                const isChecked = selectedModels.includes(model.id);
-                return (
-                  <Table.Tr
-                    key={model.id}
-                    onClick={() => handleToggleModel(model.id)}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <Table.Td onClick={(e) => e.stopPropagation()}>
-                      <Checkbox
-                        checked={isChecked}
-                        onChange={() => handleToggleModel(model.id)}
-                        aria-label={`Select ${model.name}`}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <Stack gap={2}>
-                        <Text fw={600} size="sm">
-                          {model.name}
-                        </Text>
-                        <Text size="xs" c="dimmed" ff="monospace">
-                          {model.id}
-                        </Text>
-                      </Stack>
-                    </Table.Td>
-                    <Table.Td>
-                      <Badge size="xs" variant="outline">
-                        {model.context_window ?? "128k"}
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" fw={500}>
-                        {formatPricing(model.input_per_mtok, model.output_per_mtok)}
-                      </Text>
-                    </Table.Td>
-                  </Table.Tr>
-                );
-              })}
-
-              {customOnlyModels.map((customId) => (
-                <Table.Tr
-                  key={customId}
-                  onClick={() => handleToggleModel(customId)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <Table.Td onClick={(e) => e.stopPropagation()}>
-                    <Checkbox
-                      checked={true}
-                      onChange={() => handleToggleModel(customId)}
-                      aria-label={`Select ${customId}`}
-                    />
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Text fw={600} size="sm">
-                        Custom Model
-                      </Text>
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        {customId}
-                      </Text>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge size="xs" variant="outline">
-                      Custom
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed">
-                      Custom rate
-                    </Text>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-
-        <Group align="flex-end" gap="xs">
-          <Input
-            label="Add Custom Model Identifier"
-            size="md"
-            description="Type any additional model ID supported by this provider."
-            placeholder="e.g. meta-llama/Llama-3.3-70B-Instruct"
-            value={customModelInput}
-            onChange={(e) => setCustomModelInput(e.target.value)}
-            style={{ flex: 1 }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAddCustomModel();
-              }
-            }}
-          />
-          <Button
-            variant="default"
-            size="md"
-            leftSection={<IconPlus size={16} />}
-            onClick={handleAddCustomModel}
-          >
-            Add
-          </Button>
-        </Group>
-
-        <Group gap={6}>
+        {sentBaseUrl ? (
           <Text size="xs" c="dimmed">
-            Selected ({selectedModels.length}):
+            Endpoint: <Text span ff="monospace">{sentBaseUrl}</Text>
           </Text>
-          {selectedModels.map((m) => (
-            <Badge key={m} size="xs" variant="default" leftSection={<IconCpu size={10} />}>
-              {m}
-            </Badge>
-          ))}
-        </Group>
+        ) : null}
+
+        <TestConnectionPanel
+          state={testState}
+          onTest={runTestConnection}
+          latencyMs={testResult?.latency_ms}
+          error={testResult?.ok === false ? testErrorMessage : undefined}
+        />
+
+        {tested ? (
+          <Text size="sm" role="status">
+            {discovered.length === 0
+              ? "The provider listed no models. Add the ones you use by id."
+              : `The provider listed ${discovered.length} ${discovered.length === 1 ? "model" : "models"}.`}
+          </Text>
+        ) : null}
 
         <Group justify="space-between" mt="md">
           <Button
@@ -632,55 +572,133 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           >
             Back
           </Button>
-          <Button
-            disabled={!canProceedStep3}
-            onClick={() => setActiveStep(3)}
-          >
+          <Button disabled={!tested} onClick={() => setActiveStep(3)}>
             Continue
           </Button>
         </Group>
+
+        {!tested ? (
+          <Text size="xs" c="dimmed" ta="right">
+            You must run a passing connection test before choosing models.
+          </Text>
+        ) : null}
       </Stack>
     </Card>
   );
 
-  const validationStep = (
+  const modelsStep = (
     <Stack gap="lg">
       <Card withBorder radius="lg" padding="lg">
         <Stack gap="md">
-          <Title order={3} size="h4">
-            Review Configuration
-          </Title>
-
-          <Group justify="space-between" align="center">
-            <Group gap="md">
-              <BrandMark brand={selectedProviderId} size={40} kind="provider" />
-              <Stack gap={2}>
-                <Text fw={600} size="md">
-                  {name}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {selectedMeta.name} · Adapter: {selectedMeta.adapter} · Plan: {planKind}
-                </Text>
-              </Stack>
-            </Group>
-            <Badge variant="light" color="teal">
-              {selectedModels.length} {selectedModels.length === 1 ? "model" : "models"} configured
-            </Badge>
+          <Group justify="space-between" align="center" wrap="wrap" gap="sm">
+            <div>
+              <Text fw={600} size="sm">
+                Models & Pricing for {selectedMeta.name}
+              </Text>
+              <Text size="xs" c="dimmed">
+                Tick the models to enable. Token pricing is per 1M tokens (MTok), with where it came from.
+              </Text>
+            </div>
+            <Input
+              placeholder="Search models..."
+              aria-label="Search models"
+              leftSection={<IconSearch size={16} aria-hidden="true" />}
+              size="sm"
+              value={modelSearch}
+              onChange={(e) => setModelSearch(e.target.value)}
+              style={{ width: 220 }}
+            />
           </Group>
 
-          {sentBaseUrl ? (
-            <Text size="xs" c="dimmed">
-              Endpoint: <Text span ff="monospace">{sentBaseUrl}</Text>
-            </Text>
-          ) : null}
+          <Table.ScrollContainer minWidth={600}>
+            <Table verticalSpacing="xs" striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th style={{ width: 48 }}>Active</Table.Th>
+                  <Table.Th>Model</Table.Th>
+                  <Table.Th>Token Pricing</Table.Th>
+                  <Table.Th>Source</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {shownRows.map(({ seen, listed }) => {
+                  const isChecked = selectedModels.includes(seen.id);
+                  const price = listedPrice(seen, catalog);
+                  return (
+                    <Table.Tr key={seen.id} onClick={() => handleToggleModel(seen.id)} style={{ cursor: "pointer" }}>
+                      <Table.Td onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={isChecked}
+                          onChange={() => handleToggleModel(seen.id)}
+                          aria-label={`Select ${seen.id}`}
+                        />
+                      </Table.Td>
+                      <Table.Td>
+                        <Stack gap={2}>
+                          <Text fw={600} size="sm">
+                            {seen.display_name ?? seen.id}
+                          </Text>
+                          <Text size="xs" c="dimmed" ff="monospace">
+                            {seen.id}
+                          </Text>
+                          {!listed ? (
+                            <Badge size="xs" variant="outline">
+                              Not listed by the provider
+                            </Badge>
+                          ) : null}
+                        </Stack>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="xs" fw={500}>
+                          {formatRates(price.input, price.output)}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Badge size="xs" variant="light">
+                          {sourceLabel(price.source)}
+                        </Badge>
+                      </Table.Td>
+                    </Table.Tr>
+                  );
+                })}
+                {shownRows.length === 0 ? (
+                  <Table.Tr>
+                    <Table.Td colSpan={4}>
+                      <Text size="sm" c="dimmed" ta="center">
+                        {rows.length === 0 ? "No models yet." : `No models match “${modelSearch}”.`}
+                      </Text>
+                    </Table.Td>
+                  </Table.Tr>
+                ) : null}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
 
-          {offerSharing && shareScope !== "private" ? (
-            <Text size="xs" c="dimmed">
-              Shared with: {sharedWithText}
-            </Text>
-          ) : null}
+          <Group align="flex-end" gap="xs">
+            <Input
+              label="Add Custom Model Identifier"
+              size="md"
+              description="Type any model ID the provider serves but did not list."
+              placeholder="e.g. my-org/fine-tuned-model"
+              value={customModelInput}
+              onChange={(e) => setCustomModelInput(e.target.value)}
+              style={{ flex: 1 }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddCustomModel();
+                }
+              }}
+            />
+            <Button variant="default" size="md" leftSection={<IconPlus size={16} />} onClick={handleAddCustomModel}>
+              Add
+            </Button>
+          </Group>
 
           <Group gap={6}>
+            <Text size="xs" c="dimmed">
+              Selected ({selectedModels.length}):
+            </Text>
             {selectedModels.map((m) => (
               <Badge key={m} size="xs" variant="default" leftSection={<IconCpu size={10} />}>
                 {m}
@@ -691,22 +709,18 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
       </Card>
 
       <Card withBorder radius="lg" padding="lg">
-        <Stack gap="md">
-          <div>
-            <Text fw={600} size="sm">
-              Connection Verification
-            </Text>
+        <Stack gap="xs">
+          <Title order={3} size="h4">
+            Review Configuration
+          </Title>
+          <Text size="xs" c="dimmed">
+            {name} · {selectedMeta.name} · Adapter: {selectedMeta.adapter} · Plan: {planKind}
+          </Text>
+          {offerSharing && shareScope !== "private" ? (
             <Text size="xs" c="dimmed">
-              Test the endpoint and credentials before saving. The provider cannot be connected until validated.
+              Shared with: {sharedWithText}
             </Text>
-          </div>
-
-          <TestConnectionPanel
-            state={testState}
-            onTest={runTestConnection}
-            latencyMs={testResult?.latency_ms}
-            error={testResult?.ok === false ? testErrorMessage : undefined}
-          />
+          ) : null}
         </Stack>
       </Card>
 
@@ -717,15 +731,11 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
       ) : null}
 
       <Group justify="space-between" mt="md">
-        <Button
-          variant="subtle"
-          leftSection={<IconArrowLeft size={16} />}
-          onClick={() => setActiveStep(2)}
-        >
+        <Button variant="subtle" leftSection={<IconArrowLeft size={16} />} onClick={() => setActiveStep(2)}>
           Back
         </Button>
         <Group gap="xs">
-          <Button component={Link} to="/providers" variant="subtle">
+          <Button component={Link} to={LIST_PATH} variant="subtle">
             Cancel
           </Button>
           <Button
@@ -738,14 +748,6 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           </Button>
         </Group>
       </Group>
-
-      {!canSubmit && (
-        <Text size="xs" c="dimmed" ta="right">
-          {testResult?.ok !== true
-            ? "You must run a passing connection test before connecting this provider."
-            : ""}
-        </Text>
-      )}
     </Stack>
   );
 
@@ -758,7 +760,7 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
           </Title>
           <Text c="dimmed" size="sm">
             {mode === "create"
-              ? "Configure an LLM provider to power workspace tasks. Test credentials and review model pricing before saving."
+              ? "Configure an LLM provider to power workspace tasks. Test credentials, then choose its models."
               : "Update available models, endpoints, or credentials for this provider."}
           </Text>
         </Stack>
@@ -770,11 +772,21 @@ function ProviderForm({ mode, existing }: ProviderFormProps) {
         steps={[
           { label: "Provider", description: "Choose service", disabled: mode === "edit", content: providerStep },
           { label: "Credentials", description: "API key & plan", content: credentialsStep },
+          { label: "Test", description: "Test connection", content: testStep },
           { label: "Models & Pricing", description: "Select models", content: modelsStep },
-          { label: "Validation", description: "Test connection", content: validationStep },
         ]}
       />
     </Stack>
+  );
+}
+
+function BackToProviders() {
+  return (
+    <div>
+      <Button component={Link} to={LIST_PATH} variant="default">
+        Back to Providers
+      </Button>
+    </div>
   );
 }
 
@@ -789,6 +801,10 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
     queryFn: () => api.providers.list(),
     enabled: mode === "edit",
   });
+  const vendorList = useQuery({
+    queryKey: providerVendorsQueryKey(),
+    queryFn: () => api.providers.vendors(),
+  });
 
   const existing: ListedProvider | undefined =
     mode === "edit" ? accounts.data?.find((p) => p.id === providerId) : undefined;
@@ -798,11 +814,7 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
       <Stack gap="md" className="identity-page">
         <Title order={1}>Provider could not be loaded</Title>
         <Text c="dimmed">{providerProblem(accounts.error)}</Text>
-        <div>
-          <Button component={Link} to="/providers" variant="default">
-            Back to Providers
-          </Button>
-        </div>
+        <BackToProviders />
       </Stack>
     );
   }
@@ -812,11 +824,7 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
       <Stack gap="md" className="identity-page">
         <Title order={1}>Provider not found</Title>
         <Text c="dimmed">The requested provider configuration could not be located.</Text>
-        <div>
-          <Button component={Link} to="/providers" variant="default">
-            Back to Providers
-          </Button>
-        </div>
+        <BackToProviders />
       </Stack>
     );
   }
@@ -834,16 +842,34 @@ export function ProviderFormPage({ mode }: ProviderFormPageProps) {
       <Stack gap="md" className="identity-page">
         <Title order={1}>{existing.name}</Title>
         <Text c="dimmed">This provider is shared by the workspace. It is read only here.</Text>
-        <div>
-          <Button component={Link} to="/providers" variant="default">
-            Back to Providers
-          </Button>
-        </div>
+        <BackToProviders />
       </Stack>
     );
   }
 
-  return <ProviderForm key={existing?.id ?? "create"} mode={mode} existing={existing} />;
+  if (vendorList.isError) {
+    return (
+      <Stack gap="md" className="identity-page">
+        <Title order={1}>Providers could not be loaded</Title>
+        <Text c="dimmed">{providerProblem(vendorList.error)}</Text>
+        <BackToProviders />
+      </Stack>
+    );
+  }
+
+  if (vendorList.isPending) {
+    return (
+      <Stack gap="md" className="identity-page">
+        <Title order={1}>{mode === "create" ? "Connect a provider" : `Edit ${existing?.name ?? "provider"}`}</Title>
+        <Text c="dimmed" size="sm" role="status">
+          Loading providers
+        </Text>
+      </Stack>
+    );
+  }
+
+  const vendors = pickerVendors(vendorList.data, import.meta.env.DEV);
+  return <ProviderForm key={existing?.id ?? "create"} mode={mode} vendors={vendors} existing={existing} />;
 }
 
 export function NewProviderPage() {

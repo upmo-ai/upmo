@@ -56,7 +56,7 @@ const primary = [
 
 const workspaceItems = [
   {
-    to: "/providers",
+    to: "/settings/providers",
     label: "Providers",
     icon: <IconServer size={16} stroke={1.75} aria-hidden="true" />,
   },
@@ -78,8 +78,8 @@ function isCurrent(pathname: string, to: string) {
   if (to === "/connectors") {
     return pathname === "/connectors" || pathname.startsWith("/connectors/");
   }
-  if (to === "/providers") {
-    return pathname === "/providers" || pathname.startsWith("/providers/");
+  if (to === "/settings/providers") {
+    return pathname === "/settings/providers" || pathname.startsWith("/settings/providers/");
   }
   if (to === "/admin" || to === "/tasks" || to === "/knowledge") {
     return pathname === to || pathname.startsWith(`${to}/`);
@@ -120,16 +120,28 @@ function shellCrumbs(pathname: string): BreadcrumbItem[] {
     return [crumb("Workspace", "/settings/models"), { label: "Models and routes" }];
   }
 
-  if (pathname === "/providers") {
-    return [crumb("Workspace", "/providers"), { label: "Providers" }];
+  if (pathname === "/settings/providers") {
+    return [crumb("Workspace", "/settings/providers"), { label: "Providers" }];
   }
 
-  if (pathname === "/providers/new") {
-    return [crumb("Workspace", "/providers"), crumb("Providers", "/providers"), { label: "Connect provider" }];
+  if (pathname === "/settings/providers/new") {
+    return [
+      crumb("Workspace", "/settings/providers"),
+      crumb("Providers", "/settings/providers"),
+      { label: "Connect provider" },
+    ];
   }
 
-  if (pathname.startsWith("/providers/") && pathname.endsWith("/edit")) {
-    return [crumb("Workspace", "/providers"), crumb("Providers", "/providers"), { label: "Edit provider" }];
+  if (pathname.startsWith("/settings/providers/") && pathname.endsWith("/edit")) {
+    return [
+      crumb("Workspace", "/settings/providers"),
+      crumb("Providers", "/settings/providers"),
+      { label: "Edit provider" },
+    ];
+  }
+
+  if (pathname.startsWith("/settings/providers/") && pathname.endsWith("/prices")) {
+    return [crumb("Workspace", "/settings/providers"), crumb("Providers", "/settings/providers"), { label: "Prices" }];
   }
 
   if (pathname.startsWith("/knowledge/")) {

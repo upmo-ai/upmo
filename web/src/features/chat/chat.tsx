@@ -69,7 +69,7 @@ function SetupGuide() {
         <Text c="dimmed" size="sm" maw={360} ta="center">
           Nothing here can answer yet. Connect a provider with a working model first.
         </Text>
-        <Button mt="xs" component={Link} to="/providers/new" leftSection={<IconPlus size={16} aria-hidden="true" />}>
+        <Button mt="xs" component={Link} to="/settings/providers/new" leftSection={<IconPlus size={16} aria-hidden="true" />}>
           Add provider
         </Button>
         <Text size="sm" c="dimmed" ta="center">
