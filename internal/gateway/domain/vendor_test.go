@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// pickerVendors is the vendor list of the web picker (KNOWN_PROVIDERS in
-// web/src/features/providers/providers.tsx), in its order. The web tests hold
-// the same list, so a vendor added to one side and not the other fails there.
+// pickerVendors pins the order served by GET /api/providers/vendors. The web
+// picker reads that endpoint and maps the response to tiles with pickerVendors
+// in web/src/features/providers/vendors.ts.
 var pickerVendors = []string{
 	"anthropic", "openai", "gemini", "nebius", "ollama", "deepseek", "groq", "xai",
 	"openrouter", "mistral", "together", "cerebras", "fireworks", "perplexity", "cohere", "lmstudio",

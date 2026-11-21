@@ -63,12 +63,12 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now t
 		rollupSQL = rollupFullRebuildSQL
 		args = []any{timeZone, todayStart, todayDay}
 	} else {
-		if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day < $1::date AND (day >= $1::date - $2::int OR day > $3::date)`, todayDay, rollupRecentDays, rolledThrough); err != nil {
-			return fmt.Errorf("gateway: roll up usage: %w", err)
-		}
 		watermarkStart := rolledThrough.AddDate(0, 0, 1)
 		if watermarkStart.Before(firstDay) {
 			firstDay = watermarkStart
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day >= $1::date`, firstDay); err != nil {
+			return fmt.Errorf("gateway: roll up usage: %w", err)
 		}
 		lowerBound := firstDay.AddDate(0, 0, -1)
 		rollupSQL = rollupIncrementalSQL
@@ -119,9 +119,13 @@ WHERE l.at < $2::timestamptz
   AND (l.at AT TIME ZONE $1)::date < $5::date
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`
 
+// RollupIncrementalExplainQuery returns the exact incremental INSERT query.
+func RollupIncrementalExplainQuery() string { return rollupIncrementalSQL }
+
 // AnonymiseUser replaces userID with domain.AnonymousUserID in gateway.ledger
 // and gateway.usage_daily in one transaction. Daily totals are summed into
-// the anonymous row of the same full grain when one exists.
+// the anonymous row of the same full grain when one exists. Workspace totals
+// do not change, and running it again changes nothing.
 func AnonymiseUser(ctx context.Context, pool *pgxpool.Pool, userID string) error {
 	if pool == nil {
 		return fmt.Errorf("gateway: no database")
