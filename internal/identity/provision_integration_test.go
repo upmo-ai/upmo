@@ -48,15 +48,8 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := provider.DownTo(ctx, 4); err != nil {
-		t.Fatalf("down to 4: %v", err)
-	}
-	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 4 {
-		t.Fatalf("version after down = %d, want 4", version)
+	if _, err := provider.DownTo(ctx, 0); err != nil {
+		t.Fatalf("down to 0: %v", err)
 	}
 
 	var hasTable bool
@@ -96,11 +89,12 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("re-up: %v", err)
 	}
+	var version int
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("version after re-up = %d, want 6", version)
+	if version != 1 {
+		t.Fatalf("version after re-up = %d, want 1", version)
 	}
 	if err := owner.QueryRow(ctx, `
 		SELECT EXISTS (

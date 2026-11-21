@@ -62,8 +62,8 @@ func newUsesRig(t *testing.T) usesRig {
 
 	var ownerID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('owner@example.com', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('owner@example.com', sha256('owner@example.com'::bytea), 'k1', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +76,8 @@ func newUsesRig(t *testing.T) usesRig {
 		{"bob@example.com", "Bob", &bobID},
 	} {
 		if err := owner.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, role_id, joined_at)
-			VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = 'member'), now())
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = 'member'), now())
 			RETURNING id::text`, who.email, who.name).Scan(who.id); err != nil {
 			t.Fatal(err)
 		}

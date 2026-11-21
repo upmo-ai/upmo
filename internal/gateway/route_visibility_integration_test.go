@@ -135,8 +135,8 @@ func newRouteVisWorld(t *testing.T) *routeVisWorld {
 		{visStranger, "stranger@example.com", "member"},
 	} {
 		w.exec(`
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
 			person.id, person.email, person.role)
 	}
 	w.exec(`INSERT INTO identity.teams (id, name) VALUES ($1::uuid, 'Finance')`, visTeam)
@@ -519,33 +519,30 @@ func TestRouteValidationShareAndAntiShadowingHTTP(t *testing.T) {
 func TestRouteMigration00008BackfillAndDownUp(t *testing.T) {
 	ctx := context.Background()
 	pool := pgtest.New(t)
-	provider, db := gooseGateway(t, pool)
-	defer func() { _ = db.Close() }()
-
-	if _, err := provider.UpTo(ctx, 7); err != nil {
-		t.Fatalf("up to 7: %v", err)
-	}
-	var seededID string
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO gateway.routes (name, capability, decision)
-		VALUES ('pre-existing-chat', 'chat', '')
-		RETURNING id::text`).Scan(&seededID); err != nil {
+	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Up(ctx); err != nil {
-		t.Fatalf("up to 8: %v", err)
+	if err := migrate.Up(ctx, pool, Schema, Migrations()); err != nil {
+		t.Fatal(err)
 	}
 
+	var routeID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO gateway.routes (name, capability, decision, installed)
+		VALUES ('installed-chat', 'chat', '', true)
+		RETURNING id::text`).Scan(&routeID); err != nil {
+		t.Fatal(err)
+	}
 	var installed bool
 	var vis, owner string
 	var teams []string
 	if err := pool.QueryRow(ctx, `
 		SELECT installed, visibility, COALESCE(owner_user_id::text, ''), team_ids::text[]
-		FROM gateway.routes WHERE id = $1::uuid`, seededID).Scan(&installed, &vis, &owner, &teams); err != nil {
+		FROM gateway.routes WHERE id = $1::uuid`, routeID).Scan(&installed, &vis, &owner, &teams); err != nil {
 		t.Fatal(err)
 	}
 	if !installed || vis != "everyone" || owner != "" || len(teams) != 0 {
-		t.Fatalf("backfilled route = installed:%v vis:%q owner:%q teams:%v", installed, vis, owner, teams)
+		t.Fatalf("installed route = installed:%v vis:%q owner:%q teams:%v", installed, vis, owner, teams)
 	}
 
 	var forced int
@@ -556,14 +553,21 @@ func TestRouteMigration00008BackfillAndDownUp(t *testing.T) {
 		t.Fatalf("forced RLS tables = %d, %v", forced, err)
 	}
 
-	if _, err := provider.DownTo(ctx, 7); err != nil {
-		t.Fatalf("down to 7: %v", err)
+	if err := migrate.Down(ctx, pool, Schema, Migrations()); err != nil {
+		t.Fatalf("down: %v", err)
 	}
-	if _, err := provider.Up(ctx); err != nil {
-		t.Fatalf("re-up to 8: %v", err)
+	var ns *string
+	if err := pool.QueryRow(ctx, `SELECT to_regnamespace('gateway')::text`).Scan(&ns); err != nil {
+		t.Fatal(err)
+	}
+	if ns != nil {
+		t.Fatalf("gateway schema survived down: %q", *ns)
+	}
+	if err := migrate.Up(ctx, pool, Schema, Migrations()); err != nil {
+		t.Fatalf("re-up: %v", err)
 	}
 	var version int
-	if err := pool.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
+	if err := pool.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 1 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
 	}
 }

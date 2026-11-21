@@ -37,13 +37,12 @@ func TestFeature_UPM389_TaskTokenTotalsCountReasoningOnce(t *testing.T) {
 	pool := newUsageDB(t)
 	insertUPM389TaskRow(t, pool, time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC))
 
-	var tokens int64
-	if err := pool.QueryRow(context.Background(),
-		`SELECT tokens FROM gateway.task_tokens WHERE task_id = $1::uuid`, upm389Run).Scan(&tokens); err != nil {
+	var taskTokensView *string
+	if err := pool.QueryRow(context.Background(), `SELECT to_regclass('gateway.task_tokens')::text`).Scan(&taskTokensView); err != nil {
 		t.Fatal(err)
 	}
-	if tokens != 160 {
-		t.Fatalf("task tokens = %d, want 160 (input 60 + output 100, reasoning 40 not added)", tokens)
+	if taskTokensView != nil {
+		t.Fatalf("gateway.task_tokens still exists: %q", *taskTokensView)
 	}
 	var reasoning int
 	if err := pool.QueryRow(context.Background(),

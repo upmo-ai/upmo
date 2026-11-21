@@ -115,7 +115,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.Ready || payload.SchemaVersions["identity"] != 6 {
+	if !payload.Ready || payload.SchemaVersions["identity"] != 1 {
 		t.Fatalf("unexpected status payload: %+v", payload)
 	}
 
@@ -286,20 +286,20 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 	defer app.Close()
 
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('owner@example.com', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('owner@example.com', sha256('owner@example.com'::bytea), 'k1', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
 		t.Fatal(err)
 	}
 	var memberID, otherID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now())
 		RETURNING id::text`).Scan(&memberID); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('bob@example.com', sha256('bob@example.com'::bytea), 'k1', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())
 		RETURNING id::text`).Scan(&otherID); err != nil {
 		t.Fatal(err)
 	}
@@ -448,14 +448,14 @@ func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
 
 	var ownerID, memberID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('owner@example.com', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('owner@example.com', sha256('owner@example.com'::bytea), 'k1', 'Owner', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('member@example.com', 'Member', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('member@example.com', sha256('member@example.com'::bytea), 'k1', 'Member', (SELECT id FROM identity.roles WHERE key = 'member'), now())
 		RETURNING id::text`).Scan(&memberID); err != nil {
 		t.Fatal(err)
 	}

@@ -1524,7 +1524,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	ctx := context.Background()
 	migrateWithIdentity(t, owner)
 	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 1 {
 		t.Fatalf("version %d, %v", version, err)
 	}
 	var n int
@@ -1557,7 +1557,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	if err := migrate.Up(ctx, owner, Schema, Migrations()); err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
+	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 1 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
 	}
 }
@@ -2150,11 +2150,11 @@ func TestFeature_UPM365_MemberPolicyOffRefusesRoutesAndDirectInsert(t *testing.T
 	}
 	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
 	if _, err := r.owner.Exec(context.Background(), `
-		INSERT INTO identity.users (id, email, name, role_id, joined_at)
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
 		VALUES
-		  ($1::uuid, 'eve@example.test', 'Eve', (SELECT id FROM identity.roles WHERE key = 'owner'), now()),
-		  ($2::uuid, 'ada@example.test', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now()),
-		  ($3::uuid, 'bob@example.test', 'Bob', (SELECT id FROM identity.roles WHERE key = 'admin'), now())`, eve, ada, bob); err != nil {
+		  ($1::uuid, 'eve@example.test', sha256('eve@example.test'::bytea), 'k1', 'Eve', (SELECT id FROM identity.roles WHERE key = 'owner'), now()),
+		  ($2::uuid, 'ada@example.test', sha256('ada@example.test'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now()),
+		  ($3::uuid, 'bob@example.test', sha256('bob@example.test'::bytea), 'k1', 'Bob', (SELECT id FROM identity.roles WHERE key = 'admin'), now())`, eve, ada, bob); err != nil {
 		t.Fatal(err)
 	}
 

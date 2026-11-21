@@ -12,6 +12,9 @@ CREATE TABLE tasks.tasks (
   budget int NOT NULL DEFAULT 0,
   held int NOT NULL DEFAULT 0,
   spent int NOT NULL DEFAULT 0,
+  budget_micro_usd bigint NOT NULL DEFAULT 0,
+  held_micro_usd bigint NOT NULL DEFAULT 0,
+  spent_micro_usd bigint NOT NULL DEFAULT 0,
   paused boolean NOT NULL DEFAULT false,
   allow text NOT NULL DEFAULT '',
   tainted boolean NOT NULL DEFAULT false,
@@ -32,6 +35,10 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000),
   CONSTRAINT tasks_held_check CHECK (held BETWEEN 0 AND budget),
   CONSTRAINT tasks_spent_check CHECK (spent BETWEEN 0 AND budget),
+  CONSTRAINT tasks_budget_micro_check CHECK (budget_micro_usd >= 0),
+  CONSTRAINT tasks_held_micro_check CHECK (held_micro_usd BETWEEN 0 AND budget_micro_usd),
+  CONSTRAINT tasks_spent_micro_check CHECK (spent_micro_usd >= 0),
+  CONSTRAINT tasks_budget_single_unit_check CHECK (NOT (budget > 0 AND budget_micro_usd > 0)),
   CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
   CONSTRAINT tasks_cause_check CHECK (
     cause = '' OR (cause = 'parent_cancelled' AND status = 'Failed')
@@ -66,7 +73,7 @@ CREATE TABLE tasks.task_events (
     OR (input = 'fail' AND to_status = 'Failed' AND from_status IN ('Preparing', 'Planning', 'Working', 'Checking', 'Needs approval'))
     OR (input = 'pass' AND from_status = 'Checking' AND to_status = 'Done')
     OR (input = 'pause' AND from_status = 'Working' AND to_status = 'Needs approval')
-    OR (input = 'resume' AND from_status = 'Needs approval' AND to_status = 'Working')
+    OR (input IN ('resume', 'approve', 'deny') AND from_status = 'Needs approval' AND to_status = 'Working')
   )
 );
 
@@ -1069,8 +1076,398 @@ GRANT SELECT, INSERT ON tasks.automations TO upmo_app;
 GRANT UPDATE (mode, failures, reason, owner_user_id) ON tasks.automations TO upmo_app;
 GRANT SELECT, INSERT ON tasks.automation_fires TO upmo_app;
 
+-- tasks.open_child_count counts the open children of every task, for the
+-- ceiling, so it must see rows the caller may not. It runs as the owner of the
+-- table, and this policy admits that role to the open children and nothing
+-- else, like chat.deltas_sweep_select. It holds for an owner that is neither a
+-- superuser nor BYPASSRLS, since FORCE applies to an owner too. Without it
+-- such an owner would count only what the caller may see.
+CREATE POLICY tasks_owner_open_children ON tasks.tasks
+  FOR SELECT
+  USING (
+    parent_id IS NOT NULL
+    AND status NOT IN ('Done', 'Failed')
+    AND current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.tasks'::regclass))
+  );
+
+-- tasks.automation_exists checks whether an automation id exists when setting
+-- a spend limit, returning only a boolean so callers without task:view or
+-- members:manage never read automation columns. Because tasks.automations has
+-- FORCE ROW LEVEL SECURITY, an owner that is neither a superuser nor BYPASSRLS
+-- needs this policy for the SECURITY DEFINER function to see rows across
+-- owners. Setting upmo.automation_probe transaction-locally around the EXISTS
+-- check and clearing it before returning limits the owner policy to that single
+-- probed id; without the setting, the table owner sees no automation rows.
+-- Nothing outside tasks.automation_exists reads automations as the table owner;
+-- upmo_app holds EXECUTE only on the function.
+-- +goose StatementBegin
+CREATE FUNCTION tasks.automation_exists(p_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_exists boolean;
+BEGIN
+  IF p_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  PERFORM pg_catalog.set_config('upmo.automation_probe', p_id::text, true);
+
+  SELECT EXISTS (
+    SELECT 1
+    FROM tasks.automations
+    WHERE id = p_id
+  )
+  INTO v_exists;
+
+  PERFORM pg_catalog.set_config('upmo.automation_probe', '', true);
+
+  RETURN v_exists;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION tasks.automation_exists(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION tasks.automation_exists(uuid) TO upmo_app;
+
+CREATE POLICY automations_owner_exists ON tasks.automations
+  FOR SELECT
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.automations'::regclass))
+    AND id = NULLIF(current_setting('upmo.automation_probe', true), '')::uuid
+  );
+
+-- A task event or a chat line announces itself to the stream hub of every
+-- brain process. The payload carries ids only: the hub reads the rows. NOTIFY
+-- is queued in the writing transaction and sent when it commits, so a
+-- rollback sends nothing. It is not durable: the hub replays from the tables
+-- after a reconnect and on a timer.
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.stream_notify()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  PERFORM pg_notify('task_stream', json_build_object('task', NEW.task_id, 'id', NEW.id)::text);
+  RETURN NULL;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER task_events_stream_notify
+  AFTER INSERT ON tasks.task_events
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.stream_notify();
+
+CREATE TRIGGER chat_events_stream_notify
+  AFTER INSERT ON tasks.chat_events
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.stream_notify();
+
+CREATE TABLE tasks.approvals (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id),
+  user_id uuid NOT NULL,
+  tool text NOT NULL,
+  reason text NOT NULL,
+  action text NOT NULL,
+  preview text NOT NULL DEFAULT '',
+  calls jsonb[] NOT NULL DEFAULT '{}'::jsonb[],
+  untrusted_origin boolean NOT NULL DEFAULT false,
+  state text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  decided_at timestamptz,
+  CONSTRAINT approvals_tool_check CHECK (char_length(tool) BETWEEN 1 AND 64),
+  CONSTRAINT approvals_reason_check CHECK (reason IN ('ask', 'expired')),
+  CONSTRAINT approvals_action_check CHECK (char_length(action) BETWEEN 1 AND 200),
+  CONSTRAINT approvals_state_check CHECK (state IN ('pending', 'approved', 'denied', 'closed')),
+  CONSTRAINT approvals_decided_check CHECK ((state = 'pending') = (decided_at IS NULL))
+);
+
+CREATE UNIQUE INDEX approvals_one_pending
+  ON tasks.approvals (task_id)
+  WHERE state = 'pending';
+
+CREATE INDEX approvals_user_idx ON tasks.approvals (user_id, created_at DESC);
+
+ALTER TABLE tasks.approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.approvals FORCE ROW LEVEL SECURITY;
+
+-- The task owner is the one who decides, so a person who can only view or
+-- edit a shared task never sees its approvals.
+CREATE POLICY approvals_select ON tasks.approvals
+  FOR SELECT
+  USING (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY approvals_insert ON tasks.approvals
+  FOR INSERT
+  WITH CHECK (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.owner_user_id = user_id
+    )
+  );
+
+CREATE POLICY approvals_update ON tasks.approvals
+  FOR UPDATE
+  USING (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  )
+  WITH CHECK (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+  );
+
+CREATE POLICY approvals_close ON tasks.approvals
+  FOR UPDATE
+  USING (
+    state = 'pending'
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.status IN ('Done', 'Failed')
+    )
+  )
+  WITH CHECK (state = 'closed');
+
+CREATE POLICY approvals_close_read ON tasks.approvals
+  FOR SELECT
+  USING (
+    state IN ('pending', 'closed')
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.status IN ('Done', 'Failed')
+        AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+    )
+  );
+
+-- +goose StatementBegin
+CREATE FUNCTION tasks.decide_once()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF OLD.state <> 'pending' THEN
+    RAISE EXCEPTION 'tasks: approval';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER approvals_decide_once
+  BEFORE UPDATE ON tasks.approvals
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.decide_once();
+
+GRANT SELECT, INSERT ON tasks.approvals TO upmo_app;
+GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_app;
+
+CREATE TABLE tasks.findings (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id) ON DELETE CASCADE,
+  run_id uuid REFERENCES tasks.runs (id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'finding',
+  title text NOT NULL DEFAULT '',
+  body text NOT NULL,
+  source_ref text NOT NULL DEFAULT '',
+  untrusted boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output'))
+);
+
+CREATE INDEX findings_task_idx ON tasks.findings (task_id, created_at);
+
+ALTER TABLE tasks.findings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.findings FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY findings_owner ON tasks.findings
+  FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.findings'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.findings'::regclass))
+  );
+
+CREATE POLICY findings_select ON tasks.findings
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY findings_insert ON tasks.findings
+  FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+GRANT SELECT, INSERT ON tasks.findings TO upmo_app;
+
+CREATE TABLE tasks.turns (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id) ON DELETE CASCADE,
+  run_id uuid NOT NULL REFERENCES tasks.runs (id) ON DELETE CASCADE,
+  seq int NOT NULL,
+  role text NOT NULL,
+  body text NOT NULL DEFAULT '',
+  tool_calls jsonb,
+  tool_name text NOT NULL DEFAULT '',
+  tool_id text NOT NULL DEFAULT '',
+  is_error boolean NOT NULL DEFAULT false,
+  offloaded boolean NOT NULL DEFAULT false,
+  tainted boolean NOT NULL DEFAULT false,
+  private_read boolean NOT NULL DEFAULT false,
+  model text NOT NULL DEFAULT '',
+  input_tokens int NOT NULL DEFAULT 0,
+  output_tokens int NOT NULL DEFAULT 0,
+  cost_micro_usd bigint,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, seq),
+  CONSTRAINT turns_seq_check CHECK (seq > 0),
+  CONSTRAINT turns_role_check CHECK (role IN ('user', 'assistant', 'tool', 'blocked', 'simulated'))
+);
+
+CREATE INDEX turns_task_idx ON tasks.turns (task_id, seq);
+
+ALTER TABLE tasks.turns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.turns FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY turns_owner ON tasks.turns
+  FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.turns'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.turns'::regclass))
+  );
+
+CREATE POLICY turns_select ON tasks.turns
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY turns_insert ON tasks.turns
+  FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+GRANT SELECT, INSERT ON tasks.turns TO upmo_app;
+
+CREATE TABLE tasks.action_logs (
+  scope_id uuid NOT NULL,
+  call_id text NOT NULL,
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id) ON DELETE CASCADE,
+  run_id uuid REFERENCES tasks.runs (id) ON DELETE CASCADE,
+  user_id uuid NOT NULL,
+  tool_name text NOT NULL,
+  action text NOT NULL DEFAULT '',
+  preview text NOT NULL DEFAULT '',
+  state text NOT NULL,
+  untrusted_origin boolean NOT NULL DEFAULT false,
+  dry_run boolean NOT NULL DEFAULT false,
+  response_digest text NOT NULL DEFAULT '',
+  error_text text NOT NULL DEFAULT '',
+  executed_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  PRIMARY KEY (scope_id, call_id),
+  CONSTRAINT action_logs_call_id_check CHECK (char_length(call_id) BETWEEN 1 AND 200),
+  CONSTRAINT action_logs_state_check CHECK (state IN ('dialing', 'done', 'failed', 'simulated'))
+);
+
+CREATE INDEX action_logs_task_idx ON tasks.action_logs (task_id, executed_at DESC);
+
+ALTER TABLE tasks.action_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.action_logs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY action_logs_owner ON tasks.action_logs
+  FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.action_logs'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.action_logs'::regclass))
+  );
+
+CREATE POLICY action_logs_select ON tasks.action_logs
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY action_logs_insert ON tasks.action_logs
+  FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY action_logs_update ON tasks.action_logs
+  FOR UPDATE
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+GRANT SELECT, INSERT ON tasks.action_logs TO upmo_app;
+GRANT UPDATE (state, response_digest, error_text, completed_at) ON tasks.action_logs TO upmo_app;
+
 -- +goose Down
 
+DROP TABLE IF EXISTS tasks.action_logs;
+DROP TABLE IF EXISTS tasks.turns;
+DROP TABLE IF EXISTS tasks.findings;
+DROP TRIGGER IF EXISTS approvals_decide_once ON tasks.approvals;
+DROP FUNCTION IF EXISTS tasks.decide_once();
+DROP TABLE IF EXISTS tasks.approvals;
+DROP TRIGGER IF EXISTS chat_events_stream_notify ON tasks.chat_events;
+DROP TRIGGER IF EXISTS task_events_stream_notify ON tasks.task_events;
+DROP FUNCTION IF EXISTS tasks.stream_notify();
+DROP POLICY IF EXISTS automations_owner_exists ON tasks.automations;
+DROP FUNCTION IF EXISTS tasks.automation_exists(uuid);
+DROP POLICY IF EXISTS tasks_owner_open_children ON tasks.tasks;
 DROP TABLE IF EXISTS tasks.automation_fires;
 DROP TABLE IF EXISTS tasks.automations;
 DROP FUNCTION IF EXISTS tasks.automation_uses(uuid[]);

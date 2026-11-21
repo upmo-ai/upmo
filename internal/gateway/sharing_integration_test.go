@@ -21,8 +21,8 @@ func (r *rig) person(name, role string) string {
 	r.t.Helper()
 	var id string
 	err := r.owner.QueryRow(context.Background(), `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = $3), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now())
 		RETURNING id::text`, name+"@example.com", name, role).Scan(&id)
 	if err != nil {
 		r.t.Fatal(err)

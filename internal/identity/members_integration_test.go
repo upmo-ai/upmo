@@ -87,8 +87,8 @@ func TestMembersIntegration(t *testing.T) {
 
 	var viewer string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		VALUES ('view@example.com', 'View', (SELECT id FROM identity.roles WHERE key = 'viewer'), $1, $1)
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ('view@example.com', sha256('view@example.com'::bytea), 'k1', 'View', (SELECT id FROM identity.roles WHERE key = 'viewer'), $1, $1)
 		RETURNING id::text`, now).Scan(&viewer); err != nil {
 		t.Fatal(err)
 	}
@@ -223,8 +223,8 @@ func TestMembersIntegration(t *testing.T) {
 	}
 	var secondOwnerText string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		VALUES ('coowner@example.com', 'Co', (SELECT id FROM identity.roles WHERE key = 'owner'), $1, $1)
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ('coowner@example.com', sha256('coowner@example.com'::bytea), 'k1', 'Co', (SELECT id FROM identity.roles WHERE key = 'owner'), $1, $1)
 		RETURNING id::text`, now).Scan(&secondOwnerText); err != nil {
 		t.Fatal(err)
 	}

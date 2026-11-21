@@ -36,3 +36,29 @@ func TestFeature_UPM354_MigrateAllSeedsSnapshot(t *testing.T) {
 		t.Fatalf("gateway.prices row count = %d, want %d", count, len(snapRows))
 	}
 }
+
+func TestPrepareSchemasAtSubsetVersionOneWithRiver(t *testing.T) {
+	ctx := context.Background()
+	owner := pgtest.New(t)
+	if err := PrepareSchemasAt(ctx, owner, map[string]int64{
+		"audit":    1,
+		"platform": 1,
+		"agents":   1,
+	}); err != nil {
+		t.Fatalf("PrepareSchemasAt: %v", err)
+	}
+	var riverJob *string
+	if err := owner.QueryRow(ctx, `SELECT to_regclass('platform.river_job')::text`).Scan(&riverJob); err != nil {
+		t.Fatal(err)
+	}
+	if riverJob == nil {
+		t.Fatal("platform.river_job missing after PrepareSchemasAt")
+	}
+	var riverMigSelect bool
+	if err := owner.QueryRow(ctx, `SELECT has_table_privilege('upmo_app', 'platform.river_migration', 'SELECT')`).Scan(&riverMigSelect); err != nil {
+		t.Fatal(err)
+	}
+	if riverMigSelect {
+		t.Fatal("upmo_app has SELECT on platform.river_migration, want false")
+	}
+}

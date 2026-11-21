@@ -150,8 +150,18 @@ GRANT INSERT ON audit.pending TO upmo_app;
 GRANT SELECT ON audit.events TO upmo_app;
 REVOKE ALL ON audit.goose_db_version FROM upmo_app;
 
+-- Where the audit push stopped: the highest position each target accepted.
+-- A missing row means position 0. Only the owner role touches this table; the
+-- request role is granted nothing on it.
+CREATE TABLE audit.push_cursor (
+  target text PRIMARY KEY CHECK (target IN ('webhook', 'syslog')),
+  position bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- +goose Down
 
+DROP TABLE IF EXISTS audit.push_cursor;
 DROP TABLE IF EXISTS audit.pending;
 DROP TABLE IF EXISTS audit.events;
 DROP TABLE IF EXISTS audit.head;

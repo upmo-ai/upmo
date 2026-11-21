@@ -602,8 +602,8 @@ func insertPerson(t *testing.T, owner *pgxpool.Pool, email string) string {
 	t.Helper()
 	var id string
 	err := owner.QueryRow(context.Background(), `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`, email, email).Scan(&id)
 	if err != nil {
 		t.Fatal(err)

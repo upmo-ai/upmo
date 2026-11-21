@@ -48,8 +48,8 @@ func newReadRig(t *testing.T) *readRig {
 	// The first joined person must be an owner. Seed one without a session,
 	// so the trails hold only the sessions the test opens.
 	if _, err := owner.Exec(context.Background(), `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('root@example.com', 'Root', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('root@example.com', sha256('root@example.com'::bytea), 'k1', 'Root', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`); err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

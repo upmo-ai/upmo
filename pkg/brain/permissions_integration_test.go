@@ -33,8 +33,8 @@ func TestRoutePermissionRefusal_UPM243_KeepsSession(t *testing.T) {
 	pool := pgtest.App(t, owner)
 	var ownerID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		SELECT 'owner@example.com', 'Owner', id, now() FROM identity.roles WHERE key = 'owner'
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		SELECT 'owner@example.com', sha256('owner@example.com'::bytea), 'k1', 'Owner', id, now() FROM identity.roles WHERE key = 'owner'
 		RETURNING id::text`).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
@@ -46,8 +46,8 @@ func TestRoutePermissionRefusal_UPM243_KeepsSession(t *testing.T) {
 	}
 	var userID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('member@example.com', 'Member', $1::uuid, now()) RETURNING id::text`, memberID).Scan(&userID); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('member@example.com', sha256('member@example.com'::bytea), 'k1', 'Member', $1::uuid, now()) RETURNING id::text`, memberID).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
 	uid, err := identity.ParseUserID(userID)

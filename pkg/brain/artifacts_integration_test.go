@@ -44,15 +44,15 @@ func TestBrain_UPM222_ListDownloadTextDiffAndAccess(t *testing.T) {
 
 	var ownerID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		SELECT 'owner@example.com', 'Owner', id, now() FROM identity.roles WHERE key = 'owner'
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		SELECT 'owner@example.com', sha256('owner@example.com'::bytea), 'k1', 'Owner', id, now() FROM identity.roles WHERE key = 'owner'
 		RETURNING id::text`).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	var memberID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		SELECT 'member@example.com', 'Member', id, now() FROM identity.roles WHERE key = 'member'
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		SELECT 'member@example.com', sha256('member@example.com'::bytea), 'k1', 'Member', id, now() FROM identity.roles WHERE key = 'member'
 		RETURNING id::text`).Scan(&memberID); err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +64,8 @@ func TestBrain_UPM222_ListDownloadTextDiffAndAccess(t *testing.T) {
 	}
 	var lockedID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('locked@example.com', 'Locked', $1::uuid, now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('locked@example.com', sha256('locked@example.com'::bytea), 'k1', 'Locked', $1::uuid, now())
 		RETURNING id::text`, lockedRole).Scan(&lockedID); err != nil {
 		t.Fatal(err)
 	}

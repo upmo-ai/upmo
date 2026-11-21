@@ -150,11 +150,11 @@ func newCheckRig(t *testing.T) *checkRig {
 		memberUID = "33333333-3333-4333-8333-333333333333"
 	)
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, joined_at)
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
 		VALUES
-		  ($1::uuid, 'owner@example.com', 'Owner', $4::uuid, now()),
-		  ($2::uuid, 'admin@example.com', 'Admin', $5::uuid, now()),
-		  ($3::uuid, 'member@example.com', 'Member', $6::uuid, now())`,
+		  ($1::uuid, 'owner@example.com', sha256('owner@example.com'::bytea), 'k1', 'Owner', $4::uuid, now()),
+		  ($2::uuid, 'admin@example.com', sha256('admin@example.com'::bytea), 'k1', 'Admin', $5::uuid, now()),
+		  ($3::uuid, 'member@example.com', sha256('member@example.com'::bytea), 'k1', 'Member', $6::uuid, now())`,
 		ownerUID, adminUID, memberUID, ownerRoleID, adminRoleID, memberRoleID); err != nil {
 		t.Fatal(err)
 	}
@@ -583,8 +583,8 @@ func TestFeature_UPM364_KeyRejectedFlipsStatusAndNotifiesOnceUntilRecovered(t *t
 	}
 	const unjoinedMemberUID = "66666666-6666-4666-8666-666666666666"
 	if _, err := r.owner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, joined_at, disabled_at)
-		VALUES ($1::uuid, 'unjoined-owner@example.com', 'Unjoined Owner', $2::uuid, NULL, NULL)`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at, disabled_at)
+		VALUES ($1::uuid, 'unjoined-owner@example.com', sha256('unjoined-owner@example.com'::bytea), 'k1', 'Unjoined Owner', $2::uuid, NULL, NULL)`,
 		unjoinedMemberUID, memberRoleID); err != nil {
 		t.Fatal(err)
 	}
@@ -617,10 +617,10 @@ func TestFeature_UPM364_TwoMissesRetireModelAndNotifyInUseRecipients(t *testing.
 		unjoinedAdminUID = "55555555-5555-4555-8555-555555555555"
 	)
 	if _, err := r.owner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, joined_at, disabled_at)
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at, disabled_at)
 		VALUES
-		  ($1::uuid, 'disabled@example.com', 'Disabled', $3::uuid, now(), now()),
-		  ($2::uuid, 'unjoined@example.com', 'Unjoined', $3::uuid, NULL, NULL)`,
+		  ($1::uuid, 'disabled@example.com', sha256('disabled@example.com'::bytea), 'k1', 'Disabled', $3::uuid, now(), now()),
+		  ($2::uuid, 'unjoined@example.com', sha256('unjoined@example.com'::bytea), 'k1', 'Unjoined', $3::uuid, NULL, NULL)`,
 		disabledAdminUID, unjoinedAdminUID, adminRoleID); err != nil {
 		t.Fatal(err)
 	}

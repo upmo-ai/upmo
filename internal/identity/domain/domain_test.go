@@ -15,9 +15,6 @@ func TestParseRejectsUnknown(t *testing.T) {
 	if _, err := ParseVisibility("public"); err == nil {
 		t.Fatal("ParseVisibility(public) succeeded")
 	}
-	if _, err := ParseKind("service"); err == nil {
-		t.Fatal("ParseKind(service) succeeded")
-	}
 }
 
 func TestParseAcceptsKnown(t *testing.T) {
@@ -32,9 +29,5 @@ func TestParseAcceptsKnown(t *testing.T) {
 	visibility, err := ParseVisibility("team")
 	if err != nil || visibility != VisibilityTeam {
 		t.Fatalf("visibility = %q, %v", visibility, err)
-	}
-	kind, err := ParseKind("run")
-	if err != nil || kind != KindRun {
-		t.Fatalf("kind = %q, %v", kind, err)
 	}
 }

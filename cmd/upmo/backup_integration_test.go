@@ -93,8 +93,8 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatalf("seal password hash: %v", err)
 	}
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at, password_hash)
-		VALUES ($1, 'founder@example.com', 'Founder', $2, now(), now(), $3)`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at, password_hash)
+		VALUES ($1, 'founder@example.com', sha256('founder@example.com'::bytea), 'k1', 'Founder', $2, now(), now(), $3)`,
 		userID, ownerRoleID, sealedPW,
 	); err != nil {
 		t.Fatalf("seed identity.users: %v", err)
@@ -305,8 +305,8 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'live@example.com', 'Live User', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'live@example.com', sha256('live@example.com'::bytea), 'k1', 'Live User', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 	liveArtDir := t.TempDir()
@@ -469,22 +469,8 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 	ctx := context.Background()
 	oldOwner := pgtest.New(t)
 
-	// Prepare an older migration head (tasks at v3, chat at v6).
-	if err := brainops.PrepareSchemasAt(ctx, oldOwner, map[string]int64{
-		"audit":     2,
-		"identity":  3,
-		"memory":    1,
-		"knowledge": 5,
-		"tasks":     3,
-		"chat":      6,
-		"decisions": 1,
-		"artifacts": 1,
-		"runtime":   2,
-		"gateway":   7,
-		"notices":   2,
-		"platform":  2,
-	}); err != nil {
-		t.Fatalf("prepareSchemasAt(old): %v", err)
+	if err := brainops.MigrateAll(ctx, oldOwner); err != nil {
+		t.Fatalf("MigrateAll(old): %v", err)
 	}
 
 	var roleID uuid.UUID
@@ -547,24 +533,38 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.SchemaVersions["tasks"] != 3 || m.SchemaVersions["chat"] != 6 {
-		t.Fatalf("unexpected old schema_versions: %v", m.SchemaVersions)
+	supported, err := brainops.SupportedSchemaVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(supported) != 13 {
+		t.Fatalf("SupportedSchemaVersions len = %d, want 13: %v", len(supported), supported)
+	}
+	for s, v := range supported {
+		if v != 1 {
+			t.Fatalf("supported[%s] = %d, want 1", s, v)
+		}
+		if m.SchemaVersions[s] != 1 {
+			t.Fatalf("manifest schema_versions[%s] = %d, want 1", s, m.SchemaVersions[s])
+		}
 	}
 
-	// Restore onto a fresh DB -> must forward-migrate tasks->4, chat->7, and create agents.
+	// Restore onto a fresh empty DB -> all 13 schemas land at version 1.
 	newOwner := pgtest.New(t)
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, newOwner))
 	var restoreOut bytes.Buffer
 	if err := restoreCommand([]string{"--in", archivePath}, &restoreOut); err != nil {
-		t.Fatalf("restoreCommand(old->new): %v", err)
+		t.Fatalf("restoreCommand(v1->empty): %v", err)
 	}
 
 	afterVersions, err := migrate.SchemaVersions(ctx, newOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterVersions["tasks"] < 4 || afterVersions["chat"] < 7 || afterVersions[agents.Schema] < 1 {
-		t.Fatalf("expected forward migrations to head, got %v", afterVersions)
+	for s := range supported {
+		if afterVersions[s] != 1 {
+			t.Fatalf("expected restored schema %s version 1, got %v", s, afterVersions)
+		}
 	}
 	var gotGoal string
 	if err := newOwner.QueryRow(ctx, `SELECT goal FROM tasks.tasks WHERE id = $1`, taskID).Scan(&gotGoal); err != nil || gotGoal != "Older schema task" {
@@ -658,8 +658,8 @@ func TestBackupSealsEmailAndRestoreNeedsItsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'live@example.com', 'Live User', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'live@example.com', sha256('live@example.com'::bytea), 'k1', 'Live User', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 	liveArtDir := t.TempDir()
@@ -719,8 +719,8 @@ func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
 	}
 	srcUserID := uuid.New()
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
-		VALUES ($1, 'src@example.com', 'Src', $2, now(), now())`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'src@example.com', sha256('src@example.com'::bytea), 'k1', 'Src', $2, now(), now())`,
 		srcUserID, roleID,
 	); err != nil {
 		t.Fatal(err)
@@ -749,8 +749,8 @@ func TestBackupRestoreWipesExistingTargetData(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := dstOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'stale@example.com', 'Stale', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'stale@example.com', sha256('stale@example.com'::bytea), 'k1', 'Stale', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 	dstArt := t.TempDir()
@@ -875,8 +875,8 @@ func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := liveTarget.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'keep@example.com', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'keep@example.com', sha256('keep@example.com'::bytea), 'k1', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 	liveArt := t.TempDir()
@@ -1034,8 +1034,8 @@ func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'stay@example.com', 'Stay', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'stay@example.com', sha256('stay@example.com'::bytea), 'k1', 'Stay', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 	liveArt := t.TempDir()
@@ -1058,7 +1058,7 @@ func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 		{
 			name: "altered_schema_versions",
 			mutate: func(m *backup.Manifest) {
-				m.SchemaVersions["audit"] = 1
+				m.SchemaVersions["audit"] = 0
 			},
 		},
 		{
@@ -1161,8 +1161,8 @@ func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := liveOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'intact@example.com', 'Intact', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'intact@example.com', sha256('intact@example.com'::bytea), 'k1', 'Intact', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 	liveArt := t.TempDir()
@@ -1203,8 +1203,8 @@ func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 	}
 	srcUserID := uuid.New()
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
-		VALUES ($1, 'newhead@example.com', 'NewHead', $2, now(), now())`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'newhead@example.com', sha256('newhead@example.com'::bytea), 'k1', 'NewHead', $2, now(), now())`,
 		srcUserID, roleID,
 	); err != nil {
 		t.Fatal(err)
@@ -1223,27 +1223,17 @@ func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Target DB is populated at an OLDER head (Case C).
+	// Target DB is populated at a proper subset of schemas (Case C).
 	dstOwner := pgtest.New(t)
 	if err := brainops.PrepareSchemasAt(ctx, dstOwner, map[string]int64{
-		"audit":     2,
-		"identity":  3,
-		"memory":    1,
-		"knowledge": 5,
-		"tasks":     3,
-		"chat":      6,
-		"decisions": 1,
-		"artifacts": 1,
-		"runtime":   2,
-		"gateway":   7,
-		"notices":   2,
-		"platform":  2,
+		"audit":    1,
+		"identity": 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := dstOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'stale-old@example.com', 'StaleOld', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'stale-old@example.com', sha256('stale-old@example.com'::bytea), 'k1', 'StaleOld', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1493,8 +1483,8 @@ func TestRestore_UPM375_FailingForwardMigrationLeavesDatabaseAndVolumesUnchanged
 	}
 	srcUserID := uuid.New()
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
-		VALUES ($1, 'src-upm375@example.com', 'Src', $2, now(), now())`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'src-upm375@example.com', sha256('src-upm375@example.com'::bytea), 'k1', 'Src', $2, now(), now())`,
 		srcUserID, roleID,
 	); err != nil {
 		t.Fatalf("seed source user: %v", err)
@@ -1527,8 +1517,8 @@ func TestRestore_UPM375_FailingForwardMigrationLeavesDatabaseAndVolumesUnchanged
 		t.Fatal(err)
 	}
 	if _, err := dstOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'keep@example.com', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'keep@example.com', sha256('keep@example.com'::bytea), 'k1', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatalf("seed target user: %v", err)
 	}
 	beforeVersions, err := migrate.SchemaVersions(ctx, dstOwner)
@@ -1642,8 +1632,8 @@ func TestRestore_UPM375_LiveMigrationFailureAfterCommitSwapsVolumesIn(t *testing
 	}
 	srcUserID := uuid.New()
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
-		VALUES ($1, 'src-live-mig@example.com', 'Src', $2, now(), now())`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'src-live-mig@example.com', sha256('src-live-mig@example.com'::bytea), 'k1', 'Src', $2, now(), now())`,
 		srcUserID, roleID,
 	); err != nil {
 		t.Fatalf("seed source user: %v", err)
@@ -1676,8 +1666,8 @@ func TestRestore_UPM375_LiveMigrationFailureAfterCommitSwapsVolumesIn(t *testing
 		t.Fatal(err)
 	}
 	if _, err := dstOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'keep@example.com', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'keep@example.com', sha256('keep@example.com'::bytea), 'k1', 'Keep', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatalf("seed target user: %v", err)
 	}
 	dstArt := t.TempDir()
@@ -1837,8 +1827,8 @@ func TestRestore_UPM375_CaseCFailureLeavesLiveDatabaseUntouched(t *testing.T) {
 	}
 	srcUserID := uuid.New()
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, invited_at, joined_at)
-		VALUES ($1, 'newhead-upm375@example.com', 'NewHead', $2, now(), now())`,
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ($1, 'newhead-upm375@example.com', sha256('newhead-upm375@example.com'::bytea), 'k1', 'NewHead', $2, now(), now())`,
 		srcUserID, roleID,
 	); err != nil {
 		t.Fatalf("seed source user: %v", err)
@@ -1857,27 +1847,17 @@ func TestRestore_UPM375_CaseCFailureLeavesLiveDatabaseUntouched(t *testing.T) {
 		t.Fatalf("backupCommand(src): %v", err)
 	}
 
-	// Given: a target populated at an older head with a live artifacts file.
+	// Given: a target populated at a subset head with a live artifacts file.
 	dstOwner := pgtest.New(t)
 	if err := brainops.PrepareSchemasAt(ctx, dstOwner, map[string]int64{
-		"audit":     2,
-		"identity":  3,
-		"memory":    1,
-		"knowledge": 5,
-		"tasks":     3,
-		"chat":      6,
-		"decisions": 1,
-		"artifacts": 1,
-		"runtime":   2,
-		"gateway":   7,
-		"notices":   2,
-		"platform":  2,
+		"audit":    1,
+		"identity": 1,
 	}); err != nil {
-		t.Fatalf("prepareSchemasAt(old): %v", err)
+		t.Fatalf("prepareSchemasAt(subset): %v", err)
 	}
 	if _, err := dstOwner.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		SELECT 'stale-old@example.com', 'StaleOld', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		SELECT 'stale-old@example.com', sha256('stale-old@example.com'::bytea), 'k1', 'StaleOld', id, now(), now() FROM identity.roles WHERE key = 'owner'`); err != nil {
 		t.Fatalf("seed stale user: %v", err)
 	}
 	beforeVersions, err := migrate.SchemaVersions(ctx, dstOwner)

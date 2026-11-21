@@ -39,11 +39,6 @@ type Snapshot struct {
 
 // CanonicalSnapshot normalizes slice fields, serializes s into RFC 8785
 // canonical JSON, and returns the canonical bytes and 64-char hex SHA-256 digest.
-//
-// Initial v1 rows created by SQL migration 00001_agents.sql use Postgres
-// encode(sha256(snapshot::text::bytea), 'hex'), whereas all Go-created
-// snapshots use CanonicalSnapshot; future digest verifiers must handle legacy
-// v1 SQL-migrated digests accordingly.
 func CanonicalSnapshot(s Snapshot) ([]byte, string, error) {
 	if s.ToolClasses == nil {
 		s.ToolClasses = []string{}

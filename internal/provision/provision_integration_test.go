@@ -826,7 +826,7 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusBody); err != nil {
 		t.Fatal(err)
 	}
-	if !statusBody.Ready || statusBody.SchemaVersions["identity"] != 6 || statusBody.SpendCeilingMicroUSD == nil || *statusBody.SpendCeilingMicroUSD != 12345678 {
+	if !statusBody.Ready || statusBody.SchemaVersions["identity"] != 1 || statusBody.SpendCeilingMicroUSD == nil || *statusBody.SpendCeilingMicroUSD != 12345678 {
 		t.Fatalf("unexpected status = %+v", statusBody)
 	}
 

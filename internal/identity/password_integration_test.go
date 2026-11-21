@@ -152,13 +152,13 @@ func TestPasswordSignIn(t *testing.T) {
 	wrong := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "ada@example.com", "password": "not the password!!"})
 	unknown := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "noone@example.com", "password": password})
 	if _, err := ownerPool.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('bob@example.com', sha256('bob@example.com'::bytea), 'k1', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ownerPool.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at, disabled_at)
-		VALUES ('gone@example.com', 'Gone', (SELECT id FROM identity.roles WHERE key = 'member'), now(), now())`); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at, disabled_at)
+		VALUES ('gone@example.com', sha256('gone@example.com'::bytea), 'k1', 'Gone', (SELECT id FROM identity.roles WHERE key = 'member'), now(), now())`); err != nil {
 		t.Fatal(err)
 	}
 	none := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "bob@example.com", "password": password})
@@ -201,8 +201,8 @@ func TestPasswordAndPasskeyRemovalsCannotBothPass(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	var id string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, password_hash, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', 'hash', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, password_hash, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', 'hash', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -251,8 +251,8 @@ func TestPasswordStore(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	var id string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -317,8 +317,8 @@ func TestE2EResetMakesTheOfferAvailable(t *testing.T) {
 		t.Helper()
 		var id string
 		if err := ownerPool.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, password_hash, role_id, joined_at)
-			VALUES ($1, 'Person', 'hash', (SELECT id FROM identity.roles WHERE key = $2), now())
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, password_hash, role_id, joined_at)
+			VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', 'Person', 'hash', (SELECT id FROM identity.roles WHERE key = $2), now())
 			RETURNING id::text`, email, role).Scan(&id); err != nil {
 			t.Fatal(err)
 		}

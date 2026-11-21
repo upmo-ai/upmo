@@ -81,9 +81,13 @@ func TestAppCannotInsertUsersOrTokensDirectly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := appPool.Exec(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('rogue@example.com', 'Rogue', $1, now())`, memberRoleID)
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal("rogue@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = appPool.Exec(ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Rogue', $4, now())`, stored, hash, keyID, memberRoleID)
 	assertDenied(t, "insert users", err)
 
 	_, err = appPool.Exec(ctx, `
@@ -97,10 +101,14 @@ func TestAppCannotDeleteUsers(t *testing.T) {
 	appPool := pgtest.AppLogin(t, owner)
 	seedOwner(t, owner, ctx, "ada@example.com")
 	var memberID string
+	mStored, mHash, mKeyID, err := sealer.NewEmail(t).Seal("lee@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('lee@example.com', 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now())
-		RETURNING id::text`).Scan(&memberID); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, $2, $3, 'Lee', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		RETURNING id::text`, mStored, mHash, mKeyID).Scan(&memberID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,7 +120,7 @@ func TestAppCannotDeleteUsers(t *testing.T) {
 		t.Fatalf("identity.users DELETE grant = true, want false")
 	}
 
-	_, err := appPool.Exec(ctx, `DELETE FROM identity.users WHERE id = $1`, memberID)
+	_, err = appPool.Exec(ctx, `DELETE FROM identity.users WHERE id = $1`, memberID)
 	assertDenied(t, "delete users", err)
 }
 
@@ -374,11 +382,15 @@ func seedPerson(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email, ro
 	if disabled {
 		disabledAt = now
 	}
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var id string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at, disabled_at)
-		VALUES ($1, 'Person', $2, $3, $4, $5)
-		RETURNING id::text`, email, roleID, now, joinedAt, disabledAt).Scan(&id); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at, disabled_at)
+		VALUES ($1, $2, $3, 'Person', $4, $5, $6, $7)
+		RETURNING id::text`, stored, hash, keyID, roleID, now, joinedAt, disabledAt).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
