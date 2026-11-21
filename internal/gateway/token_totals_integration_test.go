@@ -33,28 +33,6 @@ func insertUPM389TaskRow(t *testing.T, pool *pgxpool.Pool, at time.Time) {
 	}
 }
 
-func TestFeature_UPM389_TaskTokenTotalsCountReasoningOnce(t *testing.T) {
-	pool := newUsageDB(t)
-	insertUPM389TaskRow(t, pool, time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC))
-
-	var tokens int64
-	if err := pool.QueryRow(context.Background(),
-		`SELECT tokens FROM gateway.task_tokens WHERE task_id = $1::uuid`, upm389Run).Scan(&tokens); err != nil {
-		t.Fatal(err)
-	}
-	if tokens != 160 {
-		t.Fatalf("task tokens = %d, want 160 (input 60 + output 100, reasoning 40 not added)", tokens)
-	}
-	var reasoning int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT reasoning FROM gateway.ledger WHERE run_id = $1::uuid`, upm389Run).Scan(&reasoning); err != nil {
-		t.Fatal(err)
-	}
-	if reasoning != 40 {
-		t.Fatalf("stored reasoning = %d, want 40 kept as its own figure", reasoning)
-	}
-}
-
 func TestFeature_UPM389_MonthlyUsageTotalsCountReasoningOnce(t *testing.T) {
 	ctx := context.Background()
 	pool := newUsageDB(t)

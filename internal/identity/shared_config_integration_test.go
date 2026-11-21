@@ -199,19 +199,12 @@ func TestSharedConfigUpDownUp(t *testing.T) {
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	// Down version 2 only: the schema and version 1 objects survive.
-	if _, err := provider.DownTo(ctx, 1); err != nil {
-		t.Fatalf("down to 1: %v", err)
+	// Down to 0: all identity objects are dropped cleanly.
+	if _, err := provider.DownTo(ctx, 0); err != nil {
+		t.Fatalf("down to 0: %v", err)
 	}
 	if fns := sharedConfigFunctions(t, owner, ctx); fns != 0 {
 		t.Fatalf("%d shared config functions remain after down", fns)
-	}
-	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 1 {
-		t.Fatalf("version after down = %d, want 1", version)
 	}
 	var tables int
 	if err := owner.QueryRow(ctx, `
@@ -223,8 +216,8 @@ func TestSharedConfigUpDownUp(t *testing.T) {
 		  AND tab.relname IN ('roles', 'users', 'teams', 'team_members')`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if tables != 4 {
-		t.Fatalf("%d version 1 tables remain after down, want 4", tables)
+	if tables != 0 {
+		t.Fatalf("%d identity tables remain after down, want 0", tables)
 	}
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("up after down: %v", err)
@@ -232,11 +225,12 @@ func TestSharedConfigUpDownUp(t *testing.T) {
 	if fns := sharedConfigFunctions(t, owner, ctx); fns != 4 {
 		t.Fatalf("%d shared config functions after re-up, want 4", fns)
 	}
+	var version int
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("version after re-up = %d, want 6", version)
+	if version != 1 {
+		t.Fatalf("version after re-up = %d, want 1", version)
 	}
 	app := pgtest.App(t, owner)
 	var ok bool

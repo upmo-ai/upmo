@@ -28,8 +28,8 @@ func TestMigrationRecordsItsVersionInTheRuntimeSchema(t *testing.T) {
 	if err := owner.QueryRow(context.Background(), `SELECT count(*) FROM runtime.goose_db_version WHERE version_id > 0`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("runtime versions = %d", n)
+	if n != 1 {
+		t.Fatalf("runtime versions = %d, want 1", n)
 	}
 	if err := migrate.Down(context.Background(), owner, runtime.Schema, runtime.Migrations()); err != nil {
 		t.Fatal(err)

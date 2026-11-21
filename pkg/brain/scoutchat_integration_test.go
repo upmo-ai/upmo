@@ -41,8 +41,8 @@ func TestScoutChatReadsASharedChatForItsSharedPeopleOnly(t *testing.T) {
 		t.Helper()
 		var id uuid.UUID
 		err := owner.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, role_id, joined_at)
-			SELECT lower($1::text) || '@example.com', $1::text, role.id, now()
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			SELECT lower($1::text) || '@example.com', sha256(convert_to(lower($1::text) || '@example.com', 'UTF8')), 'k1', $1::text, role.id, now()
 			FROM identity.roles AS role
 			WHERE role.key = $2::text
 			RETURNING id`, name, role).Scan(&id)

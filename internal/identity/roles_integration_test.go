@@ -206,8 +206,8 @@ func TestRolesIntegration(t *testing.T) {
 	}
 	var secondOwnerText string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-		VALUES ('coowner@example.com', 'Co', (SELECT id FROM identity.roles WHERE key = 'owner'), $1, $1)
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ('coowner@example.com', sha256('coowner@example.com'::bytea), 'k1', 'Co', (SELECT id FROM identity.roles WHERE key = 'owner'), $1, $1)
 		RETURNING id::text`, now).Scan(&secondOwnerText); err != nil {
 		t.Fatal(err)
 	}

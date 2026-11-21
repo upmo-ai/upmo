@@ -107,8 +107,8 @@ func newVisWorld(t *testing.T) *visWorld {
 		{visStranger, "stranger@example.com", "member"},
 	} {
 		w.exec(`
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
 			person.id, person.email, person.role)
 	}
 	w.exec(`INSERT INTO identity.teams (id, name) VALUES ($1::uuid, 'Finance')`, visTeam)
@@ -582,58 +582,9 @@ func TestProviderAccountVisibilityUpDownUp(t *testing.T) {
 	pool := pgtest.New(t)
 	provider, db := gooseGateway(t, pool)
 	defer func() { _ = db.Close() }()
-	if _, err := provider.UpTo(ctx, 5); err != nil {
-		t.Fatalf("up to 5: %v", err)
-	}
-	// No joined owner: a shared account cannot be given one.
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('orphan', 'fake', 'orphan', 'local', false)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Up(ctx); err == nil || !strings.Contains(err.Error(), "provider accounts need a joined owner") {
-		t.Fatalf("up with no owner: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM gateway.provider_accounts WHERE name = 'orphan'`); err != nil {
-		t.Fatal(err)
-	}
-
-	early, later, disabled, absent := insertOwners(t, pool)
-	personal := insertOwned(t, pool, early)
-	var teamA, teamB, teamAccount, workspace, house string
-	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Alpha') RETURNING id::text`).Scan(&teamA); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Beta') RETURNING id::text`).Scan(&teamB); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('for a team', 'fake', 'team-ref', 'local', false) RETURNING id::text`).Scan(&teamAccount); err != nil {
-		t.Fatal(err)
-	}
-	for _, team := range []string{teamB, teamA} {
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO gateway.provider_account_teams (account_id, team_id)
-			VALUES ($1::uuid, $2::uuid)`, teamAccount, team); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('for everyone', 'fake', 'everyone-ref', 'local', false) RETURNING id::text`).Scan(&workspace); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house)
-		VALUES ('the house', 'fake', 'house-ref', 'local', true) RETURNING id::text`).Scan(&house); err != nil {
-		t.Fatal(err)
-	}
-
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	assertBackfill(t, pool, early, later, disabled, absent, personal, teamAccount, workspace, house, []string{teamA, teamB})
 	if n := countGatewayFns(t, pool, "may_share", "my_teams", "team_shared"); n != 0 {
 		t.Fatalf("%d old sharing functions remain", n)
 	}
@@ -641,170 +592,52 @@ func TestProviderAccountVisibilityUpDownUp(t *testing.T) {
 		t.Fatal("provider_account_teams remains")
 	}
 
-	if _, err := provider.DownTo(ctx, 5); err != nil {
-		t.Fatalf("down to 5: %v", err)
+	var ownerID, teamA, teamB string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('early@example.com', sha256('early@example.com'::bytea), 'k1', 'Early', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		RETURNING id::text`).Scan(&ownerID); err != nil {
+		t.Fatal(err)
 	}
-	assertDown(t, pool, personal, teamAccount, workspace, house, []string{teamA, teamB})
-	if n := countGatewayFns(t, pool, "may_share", "my_teams", "team_shared"); n != 3 {
-		t.Fatalf("sharing functions after down = %d, want 3", n)
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Alpha') RETURNING id::text`).Scan(&teamA); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Beta') RETURNING id::text`).Scan(&teamB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (owner_user_id, visibility, team_ids, name, adapter, credential_ref, plan_kind, house)
+		VALUES ($1::uuid, 'team', ARRAY[$2::uuid, $3::uuid], 'for a team', 'fake', 'team-ref', 'local', false)`,
+		ownerID, teamA, teamB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (owner_user_id, visibility, name, adapter, credential_ref, plan_kind, house)
+		VALUES ($1::uuid, 'everyone', 'for everyone', 'fake', 'everyone-ref', 'local', false)`, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (visibility, name, adapter, credential_ref, plan_kind, house)
+		VALUES ('everyone', 'the house', 'fake', 'house-ref', 'local', true)`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.DownTo(ctx, 0); err != nil {
+		t.Fatalf("down to 0: %v", err)
+	}
+	if n := countRelation(t, pool, "provider_accounts"); n != 0 {
+		t.Fatalf("provider_accounts remains after down: %d", n)
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
-	assertBackfill(t, pool, early, later, disabled, absent, personal, teamAccount, workspace, house, []string{teamA, teamB})
+	if n := countRelation(t, pool, "provider_account_teams"); n != 0 {
+		t.Fatal("provider_account_teams remains after re-up")
+	}
 	var version int
-	if err := pool.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 8 {
+	if err := pool.QueryRow(ctx, `SELECT max(version_id) FROM gateway.goose_db_version WHERE is_applied`).Scan(&version); err != nil || version != 1 {
 		t.Fatalf("version after re-up = %d, %v", version, err)
-	}
-}
-
-func insertOwners(t *testing.T, pool *pgxpool.Pool) (early, later, disabled, absent string) {
-	t.Helper()
-	ctx := context.Background()
-	insert := `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, $1, (SELECT id FROM identity.roles WHERE key = 'owner'), $2)
-		RETURNING id::text`
-	// The earliest enabled owner is the one a shared account is given. A
-	// disabled owner who joined sooner, and one who has not joined, are not.
-	if err := pool.QueryRow(ctx, insert, "early@example.com", "2020-01-02").Scan(&early); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at, disabled_at)
-		VALUES ('disabled@example.com', 'disabled', (SELECT id FROM identity.roles WHERE key = 'owner'), '2020-01-01', '2020-02-01')
-		RETURNING id::text`).Scan(&disabled); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, insert, "later@example.com", "2020-03-01").Scan(&later); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id)
-		VALUES ('absent@example.com', 'absent', (SELECT id FROM identity.roles WHERE key = 'owner'))
-		RETURNING id::text`).Scan(&absent); err != nil {
-		t.Fatal(err)
-	}
-	return early, later, disabled, absent
-}
-
-func insertOwned(t *testing.T, pool *pgxpool.Pool, owner string) string {
-	t.Helper()
-	var id string
-	if err := pool.QueryRow(context.Background(), `
-		INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house)
-		VALUES ($1::uuid, 'personal', 'fake', 'personal-ref', 'local', false)
-		RETURNING id::text`, owner).Scan(&id); err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
-func assertBackfill(t *testing.T, pool *pgxpool.Pool, early, later, disabled, absent, personal, teamAccount, workspace, house string, teams []string) {
-	t.Helper()
-	ctx := context.Background()
-	type row struct {
-		visibility, owner string
-		house             bool
-		teamIDs           []string
-	}
-	read := func(id string) row {
-		t.Helper()
-		var got row
-		if err := pool.QueryRow(ctx, `
-			SELECT visibility, COALESCE(owner_user_id::text, ''), house, team_ids::text[]
-			FROM gateway.provider_accounts WHERE id = $1::uuid`, id).Scan(&got.visibility, &got.owner, &got.house, &got.teamIDs); err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
-	if got := read(personal); got.visibility != "private" || got.owner != early || got.house || len(got.teamIDs) != 0 {
-		t.Fatalf("personal = %+v, want private owned by the early owner", got)
-	}
-	got := read(teamAccount)
-	slices.Sort(teams)
-	slices.Sort(got.teamIDs)
-	if got.visibility != "team" || got.owner != early || !slices.Equal(got.teamIDs, teams) {
-		t.Fatalf("team = %+v, want team owned by %s teams %v", got, early, teams)
-	}
-	if got := read(workspace); got.visibility != "everyone" || got.owner != early || got.house || len(got.teamIDs) != 0 {
-		t.Fatalf("workspace = %+v, want everyone owned by the early owner", got)
-	}
-	if got := read(house); got.visibility != "everyone" || got.owner != "" || !got.house || len(got.teamIDs) != 0 {
-		t.Fatalf("house = %+v", got)
-	}
-	for _, other := range []string{later, disabled, absent} {
-		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM gateway.provider_accounts WHERE owner_user_id = $1::uuid`, other).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 0 {
-			t.Fatalf("owner %s was given %d accounts", other, n)
-		}
-	}
-	var ledger int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM information_schema.columns
-		WHERE table_schema = 'gateway' AND table_name = 'ledger' AND column_name = 'owner_team_id'`).Scan(&ledger); err != nil || ledger != 1 {
-		t.Fatalf("ledger.owner_team_id = %d, %v", ledger, err)
-	}
-}
-
-func assertDown(t *testing.T, pool *pgxpool.Pool, personal, teamAccount, workspace, house string, teams []string) {
-	t.Helper()
-	ctx := context.Background()
-	var columns int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM information_schema.columns
-		WHERE table_schema = 'gateway' AND table_name = 'provider_accounts'
-		  AND column_name IN ('visibility', 'team_ids')`).Scan(&columns); err != nil || columns != 0 {
-		t.Fatalf("visibility columns after down = %d, %v", columns, err)
-	}
-	ownerOf := func(id string) (owner string, house bool) {
-		t.Helper()
-		if err := pool.QueryRow(ctx, `
-			SELECT COALESCE(owner_user_id::text, ''), house
-			FROM gateway.provider_accounts WHERE id = $1::uuid`, id).Scan(&owner, &house); err != nil {
-			t.Fatal(err)
-		}
-		return owner, house
-	}
-	if owner, house := ownerOf(personal); owner == "" || house {
-		t.Fatalf("personal owner after down = %q house %v", owner, house)
-	}
-	for _, id := range []string{teamAccount, workspace} {
-		if owner, house := ownerOf(id); owner != "" || house {
-			t.Fatalf("shared %s owner after down = %q house %v", id, owner, house)
-		}
-	}
-	if owner, houseRow := ownerOf(house); owner != "" || !houseRow {
-		t.Fatalf("house after down = %q house %v", owner, houseRow)
-	}
-	var got []string
-	rows, err := pool.Query(ctx, `
-		SELECT team_id::text FROM gateway.provider_account_teams
-		WHERE account_id = $1::uuid ORDER BY team_id`, teamAccount)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, id)
-	}
-	rows.Close()
-	slices.Sort(teams)
-	if err := rows.Err(); err != nil || !slices.Equal(got, teams) {
-		t.Fatalf("team rows after down = %v, %v, want %v", got, err, teams)
-	}
-	var index int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM pg_indexes
-		WHERE schemaname = 'gateway' AND indexname = 'provider_accounts_owner_name'`).Scan(&index); err != nil || index != 1 {
-		t.Fatalf("owner name index = %d, %v", index, err)
 	}
 }
 

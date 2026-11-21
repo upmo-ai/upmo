@@ -32,8 +32,8 @@ func TestSessionHTTP(t *testing.T) {
 	pool := pgtest.App(t, owner)
 	var user string
 	err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&user)
 	if err != nil {
 		t.Fatal(err)

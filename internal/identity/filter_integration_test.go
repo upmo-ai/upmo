@@ -356,8 +356,8 @@ func insertUser(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email str
 	t.Helper()
 	var id string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ($1, 'Person', (SELECT id FROM identity.roles WHERE key = 'member'), now()) RETURNING id::text`, email).Scan(&id); err != nil {
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', 'Person', (SELECT id FROM identity.roles WHERE key = 'member'), now()) RETURNING id::text`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id

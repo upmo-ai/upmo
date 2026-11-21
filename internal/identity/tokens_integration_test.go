@@ -92,7 +92,7 @@ func TestPersonalTokens(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id::text FROM identity.roles WHERE key = 'owner'`).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ownerPool.Exec(ctx, `INSERT INTO identity.users (email, name, role_id, joined_at) VALUES ('bea@example.com', 'Bea', $1, now())`, owner); err != nil {
+	if _, err := ownerPool.Exec(ctx, `INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at) VALUES ('bea@example.com', sha256('bea@example.com'::bytea), 'k1', 'Bea', $1, now())`, owner); err != nil {
 		t.Fatal(err)
 	}
 	var narrow string

@@ -115,8 +115,8 @@ func (e *shareEnv) person(t *testing.T, name, role string, disabled bool) {
 	t.Helper()
 	var id string
 	err := e.owner.QueryRow(context.Background(), `
-		INSERT INTO identity.users (email, name, role_id, joined_at, disabled_at)
-		SELECT lower($1::text) || '@example.com', $1::text, role.id, now(),
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at, disabled_at)
+		SELECT lower($1::text) || '@example.com', sha256(convert_to(lower($1::text) || '@example.com', 'UTF8')), 'k1', $1::text, role.id, now(),
 		       CASE WHEN $3::boolean THEN now() END
 		FROM identity.roles AS role
 		WHERE role.key = $2::text

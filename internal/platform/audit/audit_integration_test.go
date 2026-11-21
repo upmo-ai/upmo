@@ -774,8 +774,8 @@ func TestStartupEventRecordsSchemaVersions(t *testing.T) {
 		t.Fatalf("values = %v, want versions", got.Values)
 	}
 	versions, ok := version.To.(string)
-	if !ok || !strings.Contains(versions, "audit=2") || !strings.Contains(versions, "identity=6") {
-		t.Fatalf("versions = %v", version.To)
+	if !ok || versions != "audit=1 identity=1" {
+		t.Fatalf("versions = %v, want %q", version.To, "audit=1 identity=1")
 	}
 }
 

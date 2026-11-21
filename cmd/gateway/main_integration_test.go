@@ -144,8 +144,8 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 		WHERE is_applied AND version_id > 0`).Scan(&n, &latest); err != nil {
 		t.Fatal(err)
 	}
-	if n != 8 || latest != 8 {
-		t.Fatalf("applied versions = %d latest = %d, want 8 and 8", n, latest)
+	if n != 1 || latest != 1 {
+		t.Fatalf("applied versions = %d latest = %d, want 1 and 1", n, latest)
 	}
 
 	var attempts, priced int
@@ -268,12 +268,12 @@ func TestGatewayLedgerNullCostCases(t *testing.T) {
 	if priced != 2 || estimated != 2 {
 		t.Fatalf("priced = %d, estimated = %d", priced, estimated)
 	}
-	var alert bool
-	if err := owner.QueryRow(ctx, `SELECT gateway.cache_hit_alert(40, 60)`).Scan(&alert); err != nil {
+	var alertProc *string
+	if err := owner.QueryRow(ctx, `SELECT to_regprocedure('gateway.cache_hit_alert(integer, integer)')::text`).Scan(&alertProc); err != nil {
 		t.Fatal(err)
 	}
-	if !alert {
-		t.Fatal("expected cache hit alert")
+	if alertProc != nil {
+		t.Fatalf("gateway.cache_hit_alert still exists: %q", *alertProc)
 	}
 }
 
@@ -308,8 +308,8 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 		if got.Version != info.Version || got.Commit != info.Commit || got.BuildTime != info.BuildTime {
 			t.Fatalf("%s info = %+v, want %+v", path, got, info)
 		}
-		if got.SchemaVersions[gateway.Schema] < 6 {
-			t.Fatalf("%s gateway schema version = %d, want >= 6", path, got.SchemaVersions[gateway.Schema])
+		if got.SchemaVersions[gateway.Schema] != 1 {
+			t.Fatalf("%s gateway schema version = %d, want 1", path, got.SchemaVersions[gateway.Schema])
 		}
 		if _, hasTasks := got.SchemaVersions["tasks"]; hasTasks {
 			t.Fatalf("%s unexpectedly reported unmigrated tasks schema: %v", path, got.SchemaVersions)

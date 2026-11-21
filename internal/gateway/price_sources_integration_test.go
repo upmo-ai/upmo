@@ -887,8 +887,8 @@ func TestFeature_UPM354_RefreshValidationKeepsOldCatalogAndNotifiesOnce(t *testi
 		{memberID, "member-cat@example.com", "member"},
 	} {
 		if _, err := r.owner.Exec(ctx, `
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3), now())`,
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now())`,
 			p.id, p.email, p.roleKey,
 		); err != nil {
 			t.Fatal(err)
@@ -1957,8 +1957,8 @@ func TestFeature_UPM354_MultiProviderPricingAndEstimates(t *testing.T) {
 		{ada, "ada@example.com", "Ada", "member"},
 	} {
 		if _, err := r.owner.Exec(ctx, `
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $3, (SELECT id FROM identity.roles WHERE key = $4), now())
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $3, (SELECT id FROM identity.roles WHERE key = $4), now())
 			ON CONFLICT (id) DO UPDATE SET role_id = EXCLUDED.role_id, joined_at = now(), disabled_at = NULL`,
 			p.id, p.email, p.name, p.roleKey); err != nil {
 			t.Fatal(err)
@@ -2229,8 +2229,8 @@ func TestFeature_UPM354_UnknownPriceAndCheckConstraints(t *testing.T) {
 		{ada, "ada@example.com", "Ada", "member"},
 	} {
 		if _, err := r.owner.Exec(ctx, `
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $3, (SELECT id FROM identity.roles WHERE key = $4), now())
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $3, (SELECT id FROM identity.roles WHERE key = $4), now())
 			ON CONFLICT (id) DO UPDATE SET role_id = EXCLUDED.role_id, joined_at = now(), disabled_at = NULL`,
 			p.id, p.email, p.name, p.roleKey); err != nil {
 			t.Fatal(err)
@@ -2689,8 +2689,8 @@ func TestFeature_UPM354_InterruptedStreamWithOverridesBillsEstimateNoNotice(t *t
 	store := postgres.Store{Pool: r.owner}
 
 	if _, err := r.owner.Exec(ctx, `
-		INSERT INTO identity.users (id, email, name, role_id, joined_at)
-		VALUES ($1::uuid, 'bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1::uuid, 'bob@example.com', sha256('bob@example.com'::bytea), 'k1', 'Bob', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		ON CONFLICT (id) DO UPDATE SET role_id = EXCLUDED.role_id, joined_at = now(), disabled_at = NULL`, bob); err != nil {
 		t.Fatal(err)
 	}

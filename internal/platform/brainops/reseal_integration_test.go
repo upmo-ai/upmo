@@ -89,8 +89,8 @@ func seedPerson(t *testing.T, owner *pgxpool.Pool, ring gateway.Keyring, address
 	ctx := context.Background()
 	var id string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('', sha256(random()::text::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}

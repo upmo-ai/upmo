@@ -1012,8 +1012,8 @@ func TestFeature_UPM353_ChargedLimitAndLatencyRules(t *testing.T) {
 		{pinAuthor, "author@example.com", "member"},
 	} {
 		if _, err := w.pool.Exec(ctx, `
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3), now())`,
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now())`,
 			person.id, person.email, person.role); err != nil {
 			t.Fatal(err)
 		}

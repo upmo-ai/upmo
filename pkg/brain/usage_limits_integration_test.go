@@ -82,13 +82,13 @@ func newLimitRig(t *testing.T) *limitRig {
 	} {
 		if p.disabled {
 			exec(`
-				INSERT INTO identity.users (id, email, name, role_id, joined_at, disabled_at)
-				VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now(), now())`,
+				INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at, disabled_at)
+				VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now(), now())`,
 				p.id, p.email, p.role)
 		} else {
 			exec(`
-				INSERT INTO identity.users (id, email, name, role_id, joined_at)
-				VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
+				INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+				VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
 				p.id, p.email, p.role)
 		}
 	}

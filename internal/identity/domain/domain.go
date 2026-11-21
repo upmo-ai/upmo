@@ -10,7 +10,6 @@ import (
 
 type userID struct{}
 type teamID struct{}
-type principalID struct{}
 type shareID struct{}
 type roleID struct{}
 
@@ -19,9 +18,6 @@ type UserID = kernel.ID[userID]
 
 // TeamID identifies a team.
 type TeamID = kernel.ID[teamID]
-
-// PrincipalID identifies who acts.
-type PrincipalID = kernel.ID[principalID]
 
 // ShareID identifies a grant.
 type ShareID = kernel.ID[shareID]
@@ -117,21 +113,6 @@ const (
 	KindUser  Kind = "user"
 	KindAgent Kind = "agent"
 	KindRun   Kind = "run"
-	// KindToken is a personal API token. It is not a row in principals.
+	// KindToken is a personal API token.
 	KindToken Kind = "token"
 )
-
-// Kinds are the principal kinds the database accepts.
-func Kinds() []Kind {
-	return []Kind{KindUser, KindAgent, KindRun}
-}
-
-// ParseKind rejects an unknown principal kind.
-func ParseKind(s string) (Kind, error) {
-	for _, kind := range Kinds() {
-		if s == string(kind) {
-			return kind, nil
-		}
-	}
-	return "", fmt.Errorf("identity: unknown principal kind %q", s)
-}

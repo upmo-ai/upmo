@@ -184,7 +184,7 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 	owner, ctx := upOwner(t)
 	person := seedOwner(t, owner, ctx, "ada@example.com")
 
-	// Seed both pre-v4 and v4-only session/link rows prior to Down.
+	// Seed session and sign-in link rows across methods and purposes prior to Down.
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at, sign_in_method)
 		VALUES ($1, $2, now(), now(), now() + interval '1 hour', 'sso'),
@@ -213,17 +213,10 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := provider.DownTo(ctx, 3); err != nil {
-		t.Fatalf("down to 3: %v", err)
+	if _, err := provider.DownTo(ctx, 0); err != nil {
+		t.Fatalf("down to 0: %v", err)
 	}
 
-	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 3 {
-		t.Fatalf("version after down = %d, want 3", version)
-	}
 	var regclass *string
 	if err := owner.QueryRow(ctx, `SELECT to_regclass('identity.workspace')::text`).Scan(&regclass); err != nil {
 		t.Fatal(err)
@@ -231,29 +224,18 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 	if regclass != nil {
 		t.Fatalf("identity.workspace still exists after down: %s", *regclass)
 	}
-	var sessionsLeft, linksLeft int
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM identity.sessions WHERE user_id = $1`, person).Scan(&sessionsLeft); err != nil {
-		t.Fatal(err)
-	}
-	if sessionsLeft != 1 {
-		t.Fatalf("sessions after down = %d, want 1 (passkey preserved, sso deleted)", sessionsLeft)
-	}
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM identity.sign_in_links WHERE user_id = $1`, person).Scan(&linksLeft); err != nil {
-		t.Fatal(err)
-	}
-	if linksLeft != 1 {
-		t.Fatalf("sign_in_links after down = %d, want 1 (invite preserved, v4 purposes deleted)", linksLeft)
-	}
 
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("re-up: %v", err)
 	}
+	var version int
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("version after re-up = %d, want 6", version)
+	if version != 1 {
+		t.Fatalf("version after re-up = %d, want 1", version)
 	}
+	person = seedOwner(t, owner, ctx, "ada@example.com")
 	var forced bool
 	if err := owner.QueryRow(ctx, `SELECT relforcerowsecurity FROM pg_class WHERE oid = 'identity.workspace'::regclass`).Scan(&forced); err != nil || !forced {
 		t.Fatalf("relforcerowsecurity after re-up = %v, %v", forced, err)

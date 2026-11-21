@@ -130,8 +130,8 @@ func TestRequireSessionSeamIntegration(t *testing.T) {
 	pool := pgtest.App(t, owner)
 	var userID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +214,8 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		t.Helper()
 		var userID string
 		if err := owner.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, role_id, joined_at)
-			VALUES ($1, 'Person', (SELECT id FROM identity.roles WHERE key = $2), now())
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', 'Person', (SELECT id FROM identity.roles WHERE key = $2), now())
 			RETURNING id::text`, email, role).Scan(&userID); err != nil {
 			t.Fatal(err)
 		}
@@ -539,8 +539,8 @@ func newAgentsRig(t *testing.T) agentsRig {
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	var userID string
 	if err := owner.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}

@@ -89,8 +89,8 @@ func TestPasskeySignIn(t *testing.T) {
 
 	var bob string
 	err = ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('bob@example.com', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('bob@example.com', sha256('bob@example.com'::bytea), 'k1', 'Bob', (SELECT id FROM identity.roles WHERE key = 'member'), now())
 		RETURNING id::text`).Scan(&bob)
 	if err != nil {
 		t.Fatal(err)
@@ -315,8 +315,8 @@ func TestTwoRemovalsCannotBothPass(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	var user string
 	if err := ownerPool.QueryRow(ctx, `
-		INSERT INTO identity.users (email, name, role_id, joined_at)
-		VALUES ('ada@example.com', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ('ada@example.com', sha256('ada@example.com'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'owner'), now())
 		RETURNING id::text`).Scan(&user); err != nil {
 		t.Fatal(err)
 	}

@@ -126,8 +126,7 @@ func UnknownKeyRows(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyri
 	rows, err := owner.Query(ctx, `
 		SELECT split_part(email, ':', 1), email_hash_key_id, count(*)
 		FROM identity.users
-		WHERE email_hash_key_id IS NOT NULL
-		  AND email ~ '`+storedFormat+`'
+		WHERE email ~ '`+storedFormat+`'
 		  AND (split_part(email, ':', 1) <> $1 OR email_hash_key_id <> $1)
 		GROUP BY 1, 2`, current)
 	if err != nil {
@@ -435,18 +434,16 @@ func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 }
 
 // resealEmails re-seals identity.users.email together with its index hash, so
-// a resealed person stays findable by address. Rows with no email_hash_key_id
-// are unsealed legacy rows: left alone and counted nowhere. A stored address
-// outside the sealed format can never be opened or counted under a key id:
-// the row is counted Failed, left as it is and never printed.
+// a resealed person stays findable by address. A stored address outside the
+// sealed format can never be opened or counted under a key id: the row is
+// counted Failed, left as it is and never printed.
 func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring, opts ResealOptions) (StoreCount, error) {
 	count := StoreCount{Store: StoreEmails}
 	current := ring.CurrentID()
 	byKey, err := countByKey(ctx, owner, `
 		SELECT split_part(email, ':', 1), count(*)
 		FROM identity.users
-		WHERE email_hash_key_id IS NOT NULL
-		  AND email ~ '`+storedFormat+`'
+		WHERE email ~ '`+storedFormat+`'
 		  AND (split_part(email, ':', 1) <> $1 OR email_hash_key_id <> $1)
 		GROUP BY 1`, current)
 	if err != nil {
@@ -466,8 +463,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*)
 		FROM identity.users
-		WHERE email_hash_key_id IS NOT NULL
-		  AND email !~ '`+storedFormat+`'`,
+		WHERE email !~ '`+storedFormat+`'`,
 	).Scan(&count.Failed); err != nil {
 		return count, fmt.Errorf("brain: re-seal %s: count: %w", StoreEmails, err)
 	}
@@ -493,8 +489,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 		rows, err := tx.Query(ctx, `
 			SELECT id::text, email, email_hash
 			FROM identity.users
-			WHERE email_hash_key_id IS NOT NULL
-			  AND email ~ '`+storedFormat+`'
+			WHERE email ~ '`+storedFormat+`'
 			  AND (split_part(email, ':', 1) <> $1 OR email_hash_key_id <> $1)
 			  AND split_part(email, ':', 1) <> ALL (coalesce($2::text[], '{}'::text[]))
 			  AND ($3::uuid IS NULL OR id > $3)

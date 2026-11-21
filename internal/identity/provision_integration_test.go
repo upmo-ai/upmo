@@ -48,60 +48,31 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := provider.DownTo(ctx, 4); err != nil {
-		t.Fatalf("down to 4: %v", err)
-	}
-	var version int
-	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 4 {
-		t.Fatalf("version after down = %d, want 4", version)
+	if _, err := provider.DownTo(ctx, 0); err != nil {
+		t.Fatalf("down to 0: %v", err)
 	}
 
-	var hasTable bool
-	if err := owner.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.tables
-			WHERE table_schema = 'identity' AND table_name = 'provision_nonces'
-		)`).Scan(&hasTable); err != nil {
-		t.Fatal(err)
-	}
-	if hasTable {
-		t.Fatal("identity.provision_nonces still exists after down")
-	}
-
-	var hasCol bool
-	if err := owner.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'identity' AND table_name = 'teams' AND column_name = 'external_id'
-		)`).Scan(&hasCol); err != nil {
-		t.Fatal(err)
-	}
-	if hasCol {
-		t.Fatal("identity.teams.external_id still exists after down")
-	}
-	if err := owner.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'identity' AND table_name = 'workspace' AND column_name = 'spend_ceiling_micro_usd'
-		)`).Scan(&hasCol); err != nil {
-		t.Fatal(err)
-	}
-	if hasCol {
-		t.Fatal("identity.workspace.spend_ceiling_micro_usd still exists after down")
+	for _, tbl := range []string{"identity.provision_nonces", "identity.teams", "identity.workspace"} {
+		var reg *string
+		if err := owner.QueryRow(ctx, `SELECT to_regclass($1)::text`, tbl).Scan(&reg); err != nil {
+			t.Fatal(err)
+		}
+		if reg != nil {
+			t.Fatalf("%s still exists after down: %q", tbl, *reg)
+		}
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("re-up: %v", err)
 	}
+	var version int
 	if err := owner.QueryRow(ctx, `SELECT max(version_id) FROM identity.goose_db_version WHERE is_applied`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("version after re-up = %d, want 6", version)
+	if version != 1 {
+		t.Fatalf("version after re-up = %d, want 1", version)
 	}
+	var hasTable bool
 	if err := owner.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM information_schema.tables

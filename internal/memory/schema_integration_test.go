@@ -257,30 +257,26 @@ func half() string {
 	return "[" + strings.Join(parts, ",") + "]"
 }
 
-func TestLessonColumnsAreSeparateFromFacts(t *testing.T) {
+func TestMemoryLessonsRemovedAndFactsHasNoLessonColumn(t *testing.T) {
 	owner, _ := up(t)
 	ctx := context.Background()
-	var hasAgent, hasUser, factsHaveLesson bool
-	if err := owner.QueryRow(ctx, `
-		SELECT
-		  EXISTS (
-		    SELECT 1 FROM information_schema.columns
-		    WHERE table_schema = 'memory' AND table_name = 'lessons'
-		      AND column_name = 'agent_id'
-		  ),
-		  EXISTS (
-		    SELECT 1 FROM information_schema.columns
-		    WHERE table_schema = 'memory' AND table_name = 'lessons'
-		      AND column_name = 'user_id'
-		  ),
-		  EXISTS (
-		    SELECT 1 FROM information_schema.columns
-		    WHERE table_schema = 'memory' AND table_name = 'facts'
-		      AND column_name = 'lesson'
-		  )`).Scan(&hasAgent, &hasUser, &factsHaveLesson); err != nil {
+	var lessonsReg *string
+	if err := owner.QueryRow(ctx, `SELECT to_regclass('memory.lessons')::text`).Scan(&lessonsReg); err != nil {
 		t.Fatal(err)
 	}
-	if !hasAgent || hasUser || factsHaveLesson {
-		t.Fatalf("agent_id=%v user_id=%v facts.lesson=%v", hasAgent, hasUser, factsHaveLesson)
+	if lessonsReg != nil {
+		t.Fatalf("memory.lessons still exists: %q", *lessonsReg)
+	}
+	var factsHaveLesson bool
+	if err := owner.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM information_schema.columns
+		  WHERE table_schema = 'memory' AND table_name = 'facts'
+		    AND column_name = 'lesson'
+		)`).Scan(&factsHaveLesson); err != nil {
+		t.Fatal(err)
+	}
+	if factsHaveLesson {
+		t.Fatal("memory.facts unexpectedly has a lesson column")
 	}
 }

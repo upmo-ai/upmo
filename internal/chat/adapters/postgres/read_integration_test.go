@@ -6,14 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -505,24 +503,13 @@ func TestSayStillEnqueuesTheScoutAndTheExtract(t *testing.T) {
 	}
 }
 
-// firstMigration is the chat migrations with only 00001, so a test can store
-// rows in the old shape before 00002 types them.
-func firstMigration(t *testing.T) fs.FS {
-	t.Helper()
-	raw, err := fs.ReadFile(chat.Migrations(), "00001_chat.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fstest.MapFS{"00001_chat.sql": &fstest.MapFile{Data: raw}}
-}
-
-func TestMigrationTypesRowsThatExistedBefore(t *testing.T) {
+func TestFinalSchemaLineDefaultsOnInsert(t *testing.T) {
 	pool := pgtest.New(t)
 	ctx := context.Background()
 	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate.Up(ctx, pool, chat.Schema, firstMigration(t)); err != nil {
+	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
 		t.Fatal(err)
 	}
 	var chatID string
@@ -532,7 +519,7 @@ func TestMigrationTypesRowsThatExistedBefore(t *testing.T) {
 		RETURNING id::text`, ownerUser).Scan(&chatID); err != nil {
 		t.Fatal(err)
 	}
-	for i, body := range []string{"old one", "old two"} {
+	for i, body := range []string{"first line", "second line"} {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO chat.lines (chat_id, seq, body)
 			VALUES ($1::uuid, $2, $3)`, chatID, i+1, body); err != nil {
@@ -540,45 +527,47 @@ func TestMigrationTypesRowsThatExistedBefore(t *testing.T) {
 		}
 	}
 
-	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
-		t.Fatal(err)
-	}
-
 	store := postgres.Store{Pool: pgtest.App(t, pool)}
 	got, err := app.Read(ctx, store, ownerAccess, chatID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Lines) != 2 || got.Lines[0].Body != "old one" || got.Lines[1].Body != "old two" {
+	if len(got.Lines) != 2 || got.Lines[0].Body != "first line" || got.Lines[1].Body != "second line" {
 		t.Fatalf("lines = %+v", got.Lines)
 	}
 	first, second := got.Lines[0], got.Lines[1]
-	if first.ID == "" || first.ID == second.ID {
+	if first.ID == "" || second.ID == "" || first.ID == second.ID {
 		t.Fatalf("line ids = %q %q", first.ID, second.ID)
 	}
 	for _, line := range got.Lines {
-		if line.Role != "user" || line.Model != nil || line.Tokens != 0 || line.CostMicroUSD != nil {
-			t.Fatalf("migrated line = %+v", line)
+		if line.Role != "user" || line.Model != nil || line.Tokens != 0 || line.CostMicroUSD != nil || line.Status != "done" {
+			t.Fatalf("default line = %+v", line)
 		}
 	}
-	// now() is stable, so both lines carry the one migration instant.
-	if !first.At.Equal(second.At) {
-		t.Fatalf("migrated at = %v and %v", first.At, second.At)
+	var feed1, feed2 string
+	if err := pool.QueryRow(ctx, `SELECT feed_id::text FROM chat.lines WHERE chat_id = $1 AND seq = 1`, chatID).Scan(&feed1); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT feed_id::text FROM chat.lines WHERE chat_id = $1 AND seq = 2`, chatID).Scan(&feed2); err != nil {
+		t.Fatal(err)
+	}
+	if feed1 == "" || feed2 == "" || feed1 == feed2 {
+		t.Fatalf("feed ids invalid: %q %q", feed1, feed2)
 	}
 	var created time.Time
 	if err := pool.QueryRow(ctx, `SELECT created_at FROM chat.chats WHERE id = $1`, chatID).Scan(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.IsZero() || first.At.Sub(created) > time.Minute {
-		t.Fatalf("created at %v, lines at %v", created, first.At)
+	if created.IsZero() || first.At.IsZero() {
+		t.Fatalf("created=%v at=%v", created, first.At)
 	}
 
 	listed, err := app.List(ctx, store, ownerAccess)
-	if err != nil || len(listed) != 1 || listed[0].Title != "old one" || listed[0].Preview != "old two" {
+	if err != nil || len(listed) != 1 || listed[0].Title != "first line" || listed[0].Preview != "second line" {
 		t.Fatalf("list = %+v %v", listed, err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE chat.lines SET body = 'changed' WHERE chat_id = $1`, chatID); err == nil {
-		t.Fatal("a migrated line was rewritten")
+		t.Fatal("a line was rewritten")
 	}
 }
 

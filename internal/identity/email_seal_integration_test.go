@@ -495,38 +495,27 @@ func TestInviteRefusesAnAddressStoredUnderTwoKeys(t *testing.T) {
 }
 
 func TestPlainEmailIsRefused(t *testing.T) {
-	cases := map[string]string{
-		"no hash": `
-			INSERT INTO identity.users (email, name, role_id, invited_at, joined_at)
-			VALUES ('plain@example.com', 'Plain', (SELECT id FROM identity.roles WHERE key = 'member'), now(), now())
-			RETURNING id::text`,
-		"plain with a hash": `
-			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
-			VALUES ('plain@example.com', sha256('plain'::bytea), 'k1', 'Plain',
-			        (SELECT id FROM identity.roles WHERE key = 'member'), now(), now())
-			RETURNING id::text`,
+	k := newEmailKit(t)
+	emails := sealer.NewEmail(t)
+	session := k.ownerSession(t, emails, "owner@example.com")
+	var id string
+	if err := k.owner.QueryRow(k.ctx, `
+		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+		VALUES ('plain@example.com', sha256('plain'::bytea), 'k1', 'Plain',
+		        (SELECT id FROM identity.roles WHERE key = 'member'), now(), now())
+		RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
 	}
-	for name, insert := range cases {
-		t.Run(name, func(t *testing.T) {
-			k := newEmailKit(t)
-			emails := sealer.NewEmail(t)
-			session := k.ownerSession(t, emails, "owner@example.com")
-			var id string
-			if err := k.owner.QueryRow(k.ctx, insert).Scan(&id); err != nil {
-				t.Fatal(err)
-			}
-			plain := parseUser(t, id)
-			store := k.store(emails)
-			_, _, profileErr := store.Profile(k.ctx, plain)
-			_, listErr := k.members(emails).List(k.ctx, session)
-			_, accountErr := store.Account(k.ctx, plain)
-			for what, err := range map[string]error{"profile": profileErr, "list": listErr, "account": accountErr} {
-				if !errors.Is(err, identity.ErrStoredEmail) {
-					t.Fatalf("%s = %v, want ErrStoredEmail", what, err)
-				}
-				assertQuiet(t, err, "plain@example.com", keyText('t'))
-			}
-		})
+	plain := parseUser(t, id)
+	store := k.store(emails)
+	_, _, profileErr := store.Profile(k.ctx, plain)
+	_, listErr := k.members(emails).List(k.ctx, session)
+	_, accountErr := store.Account(k.ctx, plain)
+	for what, err := range map[string]error{"profile": profileErr, "list": listErr, "account": accountErr} {
+		if !errors.Is(err, identity.ErrStoredEmail) {
+			t.Fatalf("%s = %v, want ErrStoredEmail", what, err)
+		}
+		assertQuiet(t, err, "plain@example.com", keyText('t'))
 	}
 }
 

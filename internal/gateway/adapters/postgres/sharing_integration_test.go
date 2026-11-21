@@ -56,8 +56,8 @@ func newShareWorld(t *testing.T, fail map[string]domain.FailureClass) shareWorld
 	addPerson := func(name, role string) string {
 		var id string
 		if err := pool.QueryRow(ctx, `
-			INSERT INTO identity.users (email, name, role_id, joined_at)
-			VALUES ($1, $2, (SELECT id FROM identity.roles WHERE key = $3), now())
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1, sha256(convert_to($1, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now())
 			RETURNING id::text`, name+"@example.com", name, role).Scan(&id); err != nil {
 			t.Fatal(err)
 		}

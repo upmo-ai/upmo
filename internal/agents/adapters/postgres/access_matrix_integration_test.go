@@ -75,8 +75,8 @@ func newAgWorld(t *testing.T) *agWorld {
 		{agStranger, "stranger@example.com", "member"},
 	} {
 		w.exec(`
-			INSERT INTO identity.users (id, email, name, role_id, joined_at)
-			VALUES ($1::uuid, $2, $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3 OR (key IS NULL AND name = $3)), now())`,
 			person.id, person.email, person.role)
 	}
 	w.exec(`INSERT INTO identity.teams (id, name) VALUES ($1::uuid, 'Finance')`, agTeam)
