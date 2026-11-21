@@ -5,15 +5,21 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/gateway/app"
+	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -172,13 +178,14 @@ func TestFeature_UPM358_RollupKeepsMonthlyTotals(t *testing.T) {
 		}
 	}
 
-	// A day older than the latest closed days keeps the totals it has.
+	// A late row on a closed day older than the recent window is recomputed as a dirty day.
 	insertUsageRow(t, pool, start.Add(time.Hour), usagePerson, "model-a", "chat", 10, 5)
 	if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := dailyMonthly(t, pool)["2025-07"]; got != before["2025-07"] {
-		t.Fatalf("2025-07 after a late row = %v, want %v", got, before["2025-07"])
+	wantJuly := ledgerMonthly(t, pool, tz)["2025-07"]
+	if got := dailyMonthly(t, pool)["2025-07"]; got != wantJuly {
+		t.Fatalf("2025-07 after a late row = %v, want %v", got, wantJuly)
 	}
 }
 
@@ -659,7 +666,7 @@ func TestFeature_UPM398_RollupSurvivesClockGoingBack(t *testing.T) {
 	rollup(6)
 }
 
-func TestFeature_UPM392_RollupGapFillAndFrozenLateRows(t *testing.T) {
+func TestFeature_UPM392_RollupGapFillAndLateRows(t *testing.T) {
 	ctx := context.Background()
 	pool := newUsageDB(t)
 	loc, err := time.LoadLocation("Europe/Berlin")
@@ -694,7 +701,7 @@ func TestFeature_UPM392_RollupGapFillAndFrozenLateRows(t *testing.T) {
 		) differences`).Scan(&mismatch); err != nil || mismatch != 0 {
 		t.Fatalf("gap-fill mismatch count = %d, %v; want 0", mismatch, err)
 	}
-	// D+5 is the last frozen day before the next run's recent window.
+	// D+5 is older than the next run's recent window and is recomputed as a dirty day.
 	if err := RollupUsageOnce(ctx, pool, zone("Europe/Berlin"), day(7, 12, 0, 0), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -702,8 +709,8 @@ func TestFeature_UPM392_RollupGapFillAndFrozenLateRows(t *testing.T) {
 	if err := RollupUsageOnce(ctx, pool, zone("Europe/Berlin"), day(8, 12, 0, 0), nil); err != nil {
 		t.Fatal(err)
 	}
-	if n := countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily WHERE model='late-frozen'`); n != 0 {
-		t.Fatalf("late row older than the recent window was rolled up: rows=%d", n)
+	if n := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE model='late-frozen' AND day='2026-11-15'`); n != 1 {
+		t.Fatalf("late row older than the recent window calls = %d, want 1", n)
 	}
 }
 
@@ -851,9 +858,10 @@ func TestFeature_UPM392_BenchmarkMillionRowRollup(t *testing.T) {
 	firstDay := todayDay.AddDate(0, 0, -2)
 	lowerBound := firstDay.AddDate(0, 0, -1)
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO gateway.ledger (at,route,link_position,provider_account_id,model,plan_kind,
+		INSERT INTO gateway.ledger (id,at,route,link_position,provider_account_id,model,plan_kind,
 			failure_class,user_id,agent_id,owner_team_id,input_tokens,output_tokens,cost_micro_usd,source,price_source)
-		SELECT '2026-08-22 00:00Z'::timestamptz + (i % 90) * interval '1 day' + (i % 86400) * interval '1 second',
+		SELECT uuidv7('-15 minutes'::interval),
+			'2026-08-22 00:00Z'::timestamptz + (i % 90) * interval '1 day' + (i % 86400) * interval '1 second',
 			'usage',1,('00000000-0000-7000-8000-' || lpad((i % 100)::text, 12, '0'))::uuid,
 			'model-' || (i % 20), 'metered','',
 			('00000000-0000-7000-8000-' || lpad((i % 1000)::text, 12, '0'))::uuid,
@@ -922,4 +930,391 @@ func TestFeature_UPM392_BenchmarkMillionRowRollup(t *testing.T) {
 	t.Logf("incremental ledger scan: %s", ledgerScan)
 	t.Logf("incremental INSERT plan:\n%s", plan)
 	t.Logf("test pool statement_timeout: %s (roll-up does not override it)", statementTimeout)
+}
+
+func sortUsageScanCells(s *domain.UsageScan) {
+	less := func(a, b domain.UsageCell) bool {
+		return fmt.Sprintf("%s/%s/%s/%s/%s", a.Bucket.Format(time.RFC3339Nano), a.Key, a.Account, a.Model, a.PlanKind) <
+			fmt.Sprintf("%s/%s/%s/%s/%s", b.Bucket.Format(time.RFC3339Nano), b.Key, b.Account, b.Model, b.PlanKind)
+	}
+	slices.SortFunc(s.Buckets, func(a, b domain.UsageCell) int {
+		if less(a, b) {
+			return -1
+		}
+		if less(b, a) {
+			return 1
+		}
+		return 0
+	})
+	slices.SortFunc(s.Keyed, func(a, b domain.UsageCell) int {
+		if less(a, b) {
+			return -1
+		}
+		if less(b, a) {
+			return 1
+		}
+		return 0
+	})
+}
+
+func ledgerOnlyScan(t *testing.T, owner, appPool *pgxpool.Pool, who app.Caller, w domain.UsageWindow, group domain.UsageGroup, personal bool) domain.UsageScan {
+	t.Helper()
+	ctx := context.Background()
+	var rolled, updated time.Time
+	var tz string
+	stateErr := owner.QueryRow(ctx, `SELECT rolled_through, time_zone, updated_at FROM gateway.usage_daily_state WHERE id`).Scan(&rolled, &tz, &updated)
+	if stateErr != nil && !errors.Is(stateErr, pgx.ErrNoRows) {
+		t.Fatal(stateErr)
+	}
+	if _, err := owner.Exec(ctx, `DELETE FROM gateway.usage_daily_state`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if errors.Is(stateErr, pgx.ErrNoRows) {
+			_, _ = owner.Exec(ctx, `DELETE FROM gateway.usage_daily_state`)
+		} else {
+			_, _ = owner.Exec(ctx, `
+				INSERT INTO gateway.usage_daily_state (id, rolled_through, time_zone, updated_at)
+				VALUES (true, $1::date, $2, $3)
+				ON CONFLICT (id) DO UPDATE SET rolled_through = EXCLUDED.rolled_through,
+					time_zone = EXCLUDED.time_zone, updated_at = EXCLUDED.updated_at`,
+				rolled.Format("2006-01-02"), tz, updated)
+		}
+	}()
+	store := postgres.Usage{Pool: appPool}
+	var got domain.UsageScan
+	var err error
+	if personal {
+		got, err = store.PersonalUsage(ctx, who, w)
+	} else {
+		got, err = store.WorkspaceUsage(ctx, who, w, group)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestFeature_UPM399_LateRowCountedAfterRollup(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	appPool := pgtest.App(t, pool)
+	store := postgres.Usage{Pool: appPool}
+
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	// 2026-11-09 closed at 2026-11-10 00:00Z, 10 days before now's day (2026-11-20).
+	tenDaysClosed := time.Date(2026, time.November, 9, 14, 0, 0, 0, time.UTC)
+	recentClosed := time.Date(2026, time.November, 19, 10, 0, 0, 0, time.UTC)
+
+	insertUsageRow(t, pool, tenDaysClosed, usagePerson, "model-a", "chat", 10, 40)
+	insertUsageRow(t, pool, recentClosed, usagePerson, "model-a", "chat", 5, 20)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a late row on the day that closed 10 days ago.
+	insertUsageRow(t, pool, tenDaysClosed.Add(time.Hour), usagePerson, "model-a", "chat", 7, 35)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	w30 := domain.UsageWindowFor(domain.UsageRange("30"), now, time.UTC)
+	personalWho := app.Caller{User: usagePerson}
+	workspaceWho := app.Caller{User: usagePerson, Allow: "usage:view"}
+
+	personalGot, err := store.PersonalUsage(ctx, personalWho, w30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personalWant := ledgerOnlyScan(t, pool, appPool, personalWho, w30, "", true)
+	sortUsageScanCells(&personalGot)
+	sortUsageScanCells(&personalWant)
+	if !reflect.DeepEqual(personalGot.Buckets, personalWant.Buckets) || !reflect.DeepEqual(personalGot.Keyed, personalWant.Keyed) {
+		t.Fatalf("30-day personal report after late row differs from ledger-only read: got=%+v want=%+v", personalGot, personalWant)
+	}
+
+	workspaceGot, err := store.WorkspaceUsage(ctx, workspaceWho, w30, domain.GroupModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceWant := ledgerOnlyScan(t, pool, appPool, workspaceWho, w30, domain.GroupModel, false)
+	sortUsageScanCells(&workspaceGot)
+	sortUsageScanCells(&workspaceWant)
+	if !reflect.DeepEqual(workspaceGot.Buckets, workspaceWant.Buckets) || !reflect.DeepEqual(workspaceGot.Keyed, workspaceWant.Keyed) {
+		t.Fatalf("30-day workspace report after late row differs from ledger-only read: got=%+v want=%+v", workspaceGot, workspaceWant)
+	}
+
+	if len(workspaceGot.Keyed) != 1 {
+		t.Fatalf("keyed cells = %d, want 1", len(workspaceGot.Keyed))
+	}
+	cell := workspaceGot.Keyed[0]
+	if cell.Requests != 3 || cell.Input != 22 || cell.Output != 22 || cell.SpendMicroUSD == nil || *cell.SpendMicroUSD != 95 {
+		t.Fatalf("30-day workspace cell = %+v (spend=%v), want requests=3 input=22 output=22 spend=95", cell, cell.SpendMicroUSD)
+	}
+}
+
+func TestFeature_UPM399_DirtyDaysIdempotent(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	todayStart := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	oldDay := time.Date(2026, time.November, 5, 12, 0, 0, 0, time.UTC)
+	recentDay := time.Date(2026, time.November, 19, 12, 0, 0, 0, time.UTC)
+
+	insertUsageRow(t, pool, oldDay, usagePerson, "model-a", "chat", 10, 30)
+	insertUsageRow(t, pool, recentDay, usagePerson, "model-a", "chat", 4, 12)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Late rows on the already-rolled old day (both existing grain and new grain).
+	insertUsageRow(t, pool, oldDay.Add(time.Hour), usagePerson, "model-a", "chat", 6, 18)
+	insertUsageRow(t, pool, oldDay.Add(2*time.Hour), usagePerson, "model-b", "task", 9, 27)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertUsageDailyMatchesClosedLedger(t, pool, "UTC", todayStart)
+	snapshotUsageDaily(t, pool)
+
+	for range 2 {
+		if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertUsageDailyMatchesClosedLedger(t, pool, "UTC", todayStart)
+	}
+	assertUsageDailyMatchesSnapshot(t, pool)
+
+	var calls, input, cost int64
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(sum(calls), 0)::bigint, COALESCE(sum(input_tokens), 0)::bigint, COALESCE(sum(cost_micro_usd), 0)::bigint
+		FROM gateway.usage_daily WHERE day = '2026-11-05'`).Scan(&calls, &input, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || input != 25 || cost != 75 {
+		t.Fatalf("2026-11-05 totals = calls:%d input:%d cost:%d, want 3, 25, 75", calls, input, cost)
+	}
+}
+
+func TestFeature_UPM399_DirtyDaysFollowZone(t *testing.T) {
+	ctx := context.Background()
+	t.Run("Europe/Berlin", func(t *testing.T) {
+		pool := newUsageDB(t)
+		const tz = "Europe/Berlin"
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Date(2026, time.November, 20, 12, 0, 0, 0, loc)
+		todayStart := time.Date(2026, time.November, 20, 0, 0, 0, 0, loc)
+
+		// Seed rows on Berlin spring-forward day (2026-03-29) and fall-back day (2026-10-25)
+		// at instants whose UTC date is the previous day.
+		insertUsageRow(t, pool, time.Date(2026, time.March, 28, 23, 15, 0, 0, time.UTC), usagePerson, "model-a", "chat", 10, 10)
+		insertUsageRow(t, pool, time.Date(2026, time.October, 24, 22, 15, 0, 0, time.UTC), usagePerson, "model-a", "chat", 20, 20)
+		if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		// Late rows at instants where Berlin date is 2026-03-29 / 2026-10-25 while UTC date is 2026-03-28 / 2026-10-24.
+		insertUsageRow(t, pool, time.Date(2026, time.March, 28, 23, 45, 0, 0, time.UTC), usagePerson, "model-a", "chat", 5, 5)
+		insertUsageRow(t, pool, time.Date(2026, time.October, 24, 22, 45, 0, 0, time.UTC), usagePerson, "model-a", "chat", 7, 7)
+		if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertUsageDailyMatchesClosedLedger(t, pool, tz, todayStart)
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2026-03-29'`); calls != 2 {
+			t.Fatalf("Berlin 2026-03-29 calls = %d, want 2", calls)
+		}
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2026-10-25'`); calls != 2 {
+			t.Fatalf("Berlin 2026-10-25 calls = %d, want 2", calls)
+		}
+
+		// Late rows straddling Berlin's skipped hour (01:59:30 CET, 03:00:30 CEST)
+		// and repeated hour (02:30:30 CEST, 02:30:30 CET).
+		insertUsageRow(t, pool, time.Date(2026, time.March, 29, 0, 59, 30, 0, time.UTC), usagePerson, "model-a", "chat", 3, 3)
+		insertUsageRow(t, pool, time.Date(2026, time.March, 29, 1, 0, 30, 0, time.UTC), usagePerson, "model-a", "chat", 4, 4)
+		insertUsageRow(t, pool, time.Date(2026, time.October, 25, 0, 30, 30, 0, time.UTC), usagePerson, "model-a", "chat", 6, 6)
+		insertUsageRow(t, pool, time.Date(2026, time.October, 25, 1, 30, 30, 0, time.UTC), usagePerson, "model-a", "chat", 8, 8)
+		if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertUsageDailyMatchesClosedLedger(t, pool, tz, todayStart)
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2026-03-29'`); calls != 4 {
+			t.Fatalf("Berlin 2026-03-29 calls after DST transition rows = %d, want 4", calls)
+		}
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2026-10-25'`); calls != 4 {
+			t.Fatalf("Berlin 2026-10-25 calls after repeated-hour rows = %d, want 4", calls)
+		}
+	})
+
+	t.Run("America/Havana", func(t *testing.T) {
+		pool := newUsageDB(t)
+		const tz = "America/Havana"
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Date(2025, time.November, 15, 12, 0, 0, 0, loc)
+		todayStart := time.Date(2025, time.November, 15, 0, 0, 0, 0, loc)
+
+		// Seed rows on Havana 2025-03-08 and fall-back day 2025-11-02 at instants whose UTC date is the next day.
+		insertUsageRow(t, pool, time.Date(2025, time.March, 9, 4, 15, 0, 0, time.UTC), usagePerson, "model-a", "chat", 10, 10)
+		insertUsageRow(t, pool, time.Date(2025, time.November, 3, 3, 15, 0, 0, time.UTC), usagePerson, "model-a", "chat", 20, 20)
+		if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		// Late rows at instants where Havana date is 2025-03-08 / 2025-11-02 while UTC date is 2025-03-09 / 2025-11-03.
+		insertUsageRow(t, pool, time.Date(2025, time.March, 9, 4, 45, 0, 0, time.UTC), usagePerson, "model-a", "chat", 3, 3)
+		insertUsageRow(t, pool, time.Date(2025, time.November, 3, 3, 45, 0, 0, time.UTC), usagePerson, "model-a", "chat", 6, 6)
+		if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertUsageDailyMatchesClosedLedger(t, pool, tz, todayStart)
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2025-03-08'`); calls != 2 {
+			t.Fatalf("Havana 2025-03-08 calls = %d, want 2", calls)
+		}
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2025-11-02'`); calls != 2 {
+			t.Fatalf("Havana 2025-11-02 calls = %d, want 2", calls)
+		}
+
+		// Late rows on Havana's spring-forward skipped-midnight day (2025-03-09 01:30 CDT)
+		// and fall-back ambiguous first midnight hour (2025-11-02 00:30 CDT).
+		insertUsageRow(t, pool, time.Date(2025, time.March, 9, 5, 30, 0, 0, time.UTC), usagePerson, "model-a", "chat", 2, 2)
+		insertUsageRow(t, pool, time.Date(2025, time.November, 2, 4, 30, 0, 0, time.UTC), usagePerson, "model-a", "chat", 4, 4)
+		if err := RollupUsageOnce(ctx, pool, zone(tz), now, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertUsageDailyMatchesClosedLedger(t, pool, tz, todayStart)
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2025-03-09'`); calls != 1 {
+			t.Fatalf("Havana 2025-03-09 calls = %d, want 1", calls)
+		}
+		if calls := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE day = '2025-11-02'`); calls != 3 {
+			t.Fatalf("Havana 2025-11-02 calls after ambiguous midnight row = %d, want 3", calls)
+		}
+	})
+}
+
+func TestFeature_UPM399_LongInsertCountedNextRun(t *testing.T) {
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	todayStart := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	oldDay := time.Date(2026, time.November, 5, 12, 0, 0, 0, time.UTC)
+
+	insertUsageRow(t, pool, oldDay, usagePerson, "model-a", "chat", 10, 10)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Record the database clock at the start of the usage_daily modification
+	// inside the roll-up transaction, which occurs at/after the first ledger read
+	// and before usage_daily_state is written at the end of the run.
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE gateway.test_rollup_clock (at timestamptz NOT NULL);
+		CREATE FUNCTION gateway.record_rollup_clock() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			INSERT INTO gateway.test_rollup_clock VALUES (clock_timestamp());
+			PERFORM pg_sleep(0.01);
+			RETURN NULL;
+		END;
+		$$;
+		CREATE TRIGGER usage_daily_rollup_clock BEFORE DELETE ON gateway.usage_daily
+			FOR EACH STATEMENT EXECUTE FUNCTION gateway.record_rollup_clock();
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Connection 1 opens a transaction and inserts a late row before run N starts,
+	// holding the transaction uncommitted across run N.
+	insertTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = insertTx.Rollback(ctx) }()
+	if _, err := insertTx.Exec(ctx, `
+		INSERT INTO gateway.ledger (
+			at, route, link_position, model, plan_kind, failure_class, user_id,
+			input_tokens, output_tokens, cost_micro_usd, source, price_source
+		) VALUES ($1, 'usage', 1, 'long-tx', 'metered', '', $2::uuid, 25, 25, 50, 'chat', 'provider')`,
+		oldDay.Add(time.Hour), usagePerson); err != nil {
+		t.Fatal(err)
+	}
+	// Ensure run N starts on a strictly later millisecond than the uncommitted insert's uuidv7.
+	time.Sleep(10 * time.Millisecond)
+
+	// Connection 2 runs roll-up N while insertTx is still uncommitted.
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var updatedAt, firstReadAt time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT s.updated_at, c.at
+		FROM gateway.usage_daily_state s, gateway.test_rollup_clock c
+		ORDER BY c.at DESC LIMIT 1`).Scan(&updatedAt, &firstReadAt); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAt.After(firstReadAt) {
+		t.Fatalf("usage_daily_state.updated_at = %v > first ledger read time %v", updatedAt, firstReadAt)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM gateway.usage_daily WHERE model = 'long-tx'`); n != 0 {
+		t.Fatalf("uncommitted row counted during run N: rows = %d, want 0", n)
+	}
+
+	// Commit the open insert transaction after run N finished, then run roll-up N+1.
+	if err := insertTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countRows(t, pool, `SELECT COALESCE(sum(calls), 0) FROM gateway.usage_daily WHERE model = 'long-tx' AND day = '2026-11-05'`); n != 1 {
+		t.Fatalf("committed long-insert row calls after run N+1 = %d, want 1", n)
+	}
+	assertUsageDailyMatchesClosedLedger(t, pool, "UTC", todayStart)
+}
+
+func TestFeature_UPM399_BenchmarkLateBackfill(t *testing.T) {
+	if os.Getenv("UPM392_BENCHMARK") != "1" {
+		t.Skip("set UPM392_BENCHMARK=1 to run the one-million-row late-backfill benchmark")
+	}
+	ctx := context.Background()
+	pool := newUsageDB(t)
+	todayDay := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	now := todayDay.Add(12 * time.Hour)
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO gateway.ledger (at,route,link_position,provider_account_id,model,plan_kind,
+			failure_class,user_id,agent_id,owner_team_id,input_tokens,output_tokens,cost_micro_usd,source,price_source)
+		SELECT '2026-08-22 00:00Z'::timestamptz + (i % 90) * interval '1 day' + (i % 86400) * interval '1 second',
+			'usage',1,('00000000-0000-7000-8000-' || lpad((i % 100)::text, 12, '0'))::uuid,
+			'model-' || (i % 20), 'metered','',
+			('00000000-0000-7000-8000-' || lpad((i % 1000)::text, 12, '0'))::uuid,
+			('00000000-0000-7000-8000-' || lpad((i % 50)::text, 12, '0'))::uuid,
+			('00000000-0000-7000-8000-' || lpad((i % 10)::text, 12, '0'))::uuid,
+			i % 1000, i % 500, 1, 'chat', 'provider'
+		FROM generate_series(1, 1000000) i`); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	lateBackfillDuration := time.Since(start)
+	if _, err := pool.Exec(ctx, `DELETE FROM gateway.usage_daily_state`); err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if err := RollupUsageOnce(ctx, pool, zone("UTC"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	fullDuration := time.Since(start)
+	t.Logf("late backfill 1,000,000 rows / 90 days: %s; full rebuild: %s", lateBackfillDuration, fullDuration)
+	if lateBackfillDuration > 2*fullDuration {
+		t.Fatalf("late backfill duration %s > 2x full rebuild duration %s", lateBackfillDuration, fullDuration)
+	}
 }

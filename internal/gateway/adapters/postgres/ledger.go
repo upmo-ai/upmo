@@ -246,6 +246,9 @@ func (s Store) Record(ctx context.Context, row domain.Entry) error {
 	return insertLedger(ctx, s.Pool, row, "")
 }
 
+// insertLedger lets the database assign id (DEFAULT uuidv7()). A bulk import
+// or backfill that holds inserts open longer than the overlap must end with a
+// full rebuild (delete the usage_daily_state row).
 func insertLedger(ctx context.Context, db execer, row domain.Entry, holdID string) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO gateway.ledger (
