@@ -45,7 +45,7 @@ func (u Usage) begin(ctx context.Context, who app.Caller) (pgx.Tx, error) {
 	if _, err := uuid.Parse(who.User); err != nil {
 		return nil, fmt.Errorf("gateway: usage reader")
 	}
-	tx, err := u.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := u.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +166,47 @@ const usageScanQuery = `
 			(s.key, s.account, s.model, s.plan_kind)
 		)`
 
+const usageHybridScanQuery = `
+		SELECT GROUPING(s.bucket) = 1, s.bucket, s.key, s.account, s.model, s.plan_kind,
+			sum(s.calls)::bigint, sum(s.errors)::bigint,
+			COALESCE(sum(s.input_tokens), 0)::bigint, COALESCE(sum(s.output_tokens), 0)::bigint,
+			COALESCE(sum(s.cache_read), 0)::bigint, COALESCE(sum(s.cache_write), 0)::bigint,
+			COALESCE(sum(s.reasoning), 0)::bigint,
+			(sum(s.cost_micro_usd) FILTER (WHERE s.plan_kind = 'metered'))::bigint,
+			COALESCE(bool_or(s.estimated) FILTER (WHERE s.plan_kind = 'metered'), false),
+			sum(s.unpriced)::bigint,
+			sum(s.list_cost_micro_usd) FILTER (WHERE s.plan_kind <> 'metered')::bigint
+		FROM (
+			SELECT date_trunc($1, l.at, $2) AS bucket, %s AS key,
+				COALESCE(l.provider_account_id::text, '') AS account, l.model, l.plan_kind,
+				1::bigint AS calls, (l.failure_class <> '')::int AS errors,
+				l.input_tokens, l.output_tokens, l.cache_read, l.cache_write, l.reasoning,
+				l.cost_micro_usd, l.estimated,
+				(l.plan_kind = 'metered' AND (l.estimated OR l.cost_micro_usd IS NULL))::int AS unpriced,
+				l.list_cost_micro_usd
+			FROM gateway.ledger AS l
+			WHERE l.at >= $3 AND l.at < $4
+				AND l.at >= ($6::date::timestamp AT TIME ZONE $2)
+				AND (l.at AT TIME ZONE $2)::date > $6::date %s
+			UNION ALL
+			SELECT date_trunc($1, (l.day::timestamp AT TIME ZONE $2), $2), %s AS key,
+				COALESCE(l.provider_account_id::text, ''), l.model, l.plan_kind,
+				l.calls, l.errors, l.input_tokens, l.output_tokens, l.cache_read, l.cache_write,
+				l.reasoning, l.cost_micro_usd, l.estimated, l.unpriced_calls, l.list_cost_micro_usd
+			FROM gateway.usage_daily AS l
+			WHERE l.day >= $5::date AND l.day <= $6::date %s
+		) AS s
+		GROUP BY GROUPING SETS (
+			(s.bucket, s.account, s.model, s.plan_kind),
+			(s.key, s.account, s.model, s.plan_kind))`
+
 // UsageScanExplainQuery returns the unfiltered workspace form of the exact scan query.
 func UsageScanExplainQuery() string { return fmt.Sprintf(usageScanQuery, "l.source", "") }
+
+// UsageHybridScanExplainQuery returns the workspace hybrid scan for EXPLAIN.
+func UsageHybridScanExplainQuery() string {
+	return fmt.Sprintf(usageHybridScanQuery, "l.source", "", "l.source", "")
+}
 
 // scanUsage is one pass over the window: totals by bucket, provider account,
 // model and plan kind, and by key, provider account, model and plan kind. A
@@ -176,6 +215,17 @@ func UsageScanExplainQuery() string { return fmt.Sprintf(usageScanQuery, "l.sour
 // List cost is frozen on the ledger row; NULL means at least one used rate
 // was unknown when the call was recorded.
 func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageWindow) (domain.UsageScan, error) {
+	if w.Unit != domain.BucketDay {
+		return scanLedgerUsage(ctx, q, key, user, w)
+	}
+	return scanUsageWithQuery(ctx, q, key, user, w, true)
+}
+
+func scanLedgerUsage(ctx context.Context, q querier, key, user string, w domain.UsageWindow) (domain.UsageScan, error) {
+	return scanUsageWithQuery(ctx, q, key, user, w, false)
+}
+
+func scanUsageWithQuery(ctx context.Context, q querier, key, user string, w domain.UsageWindow, hybrid bool) (domain.UsageScan, error) {
 	filter := ""
 	args := []any{w.Unit, w.Zone.String(), w.Start, w.End}
 	if user != "" {
@@ -183,6 +233,45 @@ func scanUsage(ctx context.Context, q querier, key, user string, w domain.UsageW
 		args = append(args, user)
 	}
 	query := fmt.Sprintf(usageScanQuery, key, filter)
+	if hybrid && w.Unit == domain.BucketDay {
+		var rolled time.Time
+		var zone string
+		err := q.QueryRow(ctx, `SELECT rolled_through, time_zone FROM gateway.usage_daily_state WHERE id`).Scan(&rolled, &zone)
+		if err == nil && zone == w.Zone.String() {
+			first := w.Start.In(w.Zone)
+			firstDay := time.Date(first.Year(), first.Month(), first.Day(), 0, 0, 0, 0, time.UTC)
+			end := w.End.In(w.Zone)
+			today := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+			cutoff := today.AddDate(0, 0, -3)
+			rolledLocal := rolled.In(w.Zone)
+			rolledDay := time.Date(rolledLocal.Year(), rolledLocal.Month(), rolledLocal.Day(), 0, 0, 0, 0, time.UTC)
+			if rolledDay.Before(cutoff) {
+				cutoff = rolledDay
+			}
+			var daily bool
+			if !cutoff.Before(firstDay) {
+				err = q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM gateway.usage_daily WHERE day >= $1::date AND day <= $2::date)`, firstDay, cutoff).Scan(&daily)
+			}
+			if err == nil && daily {
+				// Postgres casts timestamptz to date in the session zone. Pass
+				// civil dates explicitly so a local midnight stays that date.
+				firstDate := firstDay.Format("2006-01-02")
+				cutoffDate := cutoff.Format("2006-01-02")
+				ledgerFilter, dailyFilter := "", ""
+				if user != "" {
+					ledgerFilter = "AND l.user_id = $7::uuid"
+					dailyFilter = ledgerFilter
+				}
+				query = fmt.Sprintf(usageHybridScanQuery, key, ledgerFilter, key, dailyFilter)
+				args = []any{w.Unit, w.Zone.String(), w.Start, w.End, firstDate, cutoffDate}
+				if user != "" {
+					args = append(args, user)
+				}
+			}
+		} else if err != nil && err != pgx.ErrNoRows {
+			return domain.UsageScan{}, err
+		}
+	}
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return domain.UsageScan{}, err
