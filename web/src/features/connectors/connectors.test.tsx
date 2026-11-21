@@ -1,10 +1,14 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../../App";
 import { BrainError, createStubApi, type ApiClient } from "../../app/api";
 import { AppProviders } from "../../theme";
+
+// The first findBy after a route render waits on a lazy chunk and a fetch. The 1000ms default
+// is too short on a loaded machine (UPM-384); this stays under the 5000ms test timeout.
+configure({ asyncUtilTimeout: 4000 });
 
 function renderAt(path: string, client?: ApiClient) {
   const history = createMemoryHistory({ initialEntries: [path] });
