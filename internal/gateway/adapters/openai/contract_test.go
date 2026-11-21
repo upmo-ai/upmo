@@ -207,9 +207,9 @@ func contractURL(base string, v domain.Vendor, operation string) string {
 	}
 }
 
-func assertContractAuth(t *testing.T, call contractCall, v domain.Vendor) {
+func assertContractAuth(t *testing.T, call contractCall, vendorKey string) {
 	t.Helper()
-	if v.AuthStyle == domain.AuthAPIKey {
+	if vendorKey == "azure" {
 		if call.APIKey != "sk-test" || call.Auth != "" {
 			t.Errorf("auth = api-key:%q Authorization:%q, want api-key only", call.APIKey, call.Auth)
 		}
@@ -291,7 +291,7 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if call.Method != http.MethodPost || call.Type != "application/json" {
 				t.Errorf("stream call = %+v", call)
 			}
-			assertContractAuth(t, call, v)
+			assertContractAuth(t, call, v.Key)
 			body := call.Body
 			if body["model"] != "m" || body["stream"] != true || body["max_tokens"] != float64(64) {
 				t.Errorf("stream body = %v", body)
@@ -328,7 +328,7 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if want := contractURL(base, v, "chat"); rt.lastAsked() != want {
 				t.Errorf("chat URL = %s, want %s", rt.lastAsked(), want)
 			}
-			assertContractAuth(t, cs.last(t), v)
+			assertContractAuth(t, cs.last(t), v.Key)
 			if _, streamed := cs.last(t).Body["stream"]; streamed {
 				t.Errorf("a plain chat set the stream flag")
 			}
@@ -344,7 +344,7 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if call := cs.last(t); call.Method != http.MethodGet {
 				t.Errorf("probe call = %+v", call)
 			} else {
-				assertContractAuth(t, call, v)
+				assertContractAuth(t, call, v.Key)
 			}
 
 			// Vendors without embeddings refuse before another request.
@@ -361,7 +361,7 @@ func TestContractEveryCompatVendor(t *testing.T) {
 				if want := contractURL(base, v, "embeddings"); rt.lastAsked() != want {
 					t.Errorf("embed URL = %s, want %s", rt.lastAsked(), want)
 				}
-				assertContractAuth(t, cs.last(t), v)
+				assertContractAuth(t, cs.last(t), v.Key)
 			}
 		})
 	}

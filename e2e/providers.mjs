@@ -57,6 +57,7 @@ try {
   }
 
   async function checkTemplateEndpoint(vendor, placeholder, endpoint) {
+    await openProviders();
     await page.getByRole("link", { name: "Add provider" }).first().click();
     await heading("Connect a provider").waitFor();
     await button(vendor).click();

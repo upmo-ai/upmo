@@ -808,19 +808,41 @@ func TestMantleEmbeddingSkipsWithoutLedgerOrCooldown(t *testing.T) {
 		t.Fatalf("Mantle ledger rows=%d key available=%t", mantleLedger, w.disp.Gates.Closed("pin_house"))
 	}
 
+	var beforeOnlyLedger int
+	if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger`).Scan(&beforeOnlyLedger); err != nil {
+		t.Fatal(err)
+	}
+	assertNoNewAttempts := func() {
+		t.Helper()
+		var ledgerRows int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger`).Scan(&ledgerRows); err != nil {
+			t.Fatal(err)
+		}
+		if ledgerRows != beforeOnlyLedger || mantleHits.Load() != 0 || openAIEmbedHits.Load() != 1 || openAIChatHits.Load() != 0 || !w.disp.Gates.Closed("pin_house") {
+			t.Fatalf("Mantle-only embed: ledger=%d want %d Mantle hits=%d OpenAI embed hits=%d chat hits=%d key available=%t", ledgerRows, beforeOnlyLedger, mantleHits.Load(), openAIEmbedHits.Load(), openAIChatHits.Load(), w.disp.Gates.Closed("pin_house"))
+		}
+	}
+	_, _, err = w.disp.EmbedCall(ctx, "mantle-only", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, []string{"query"})
+	if !errors.Is(err, domain.ErrCapability) {
+		t.Fatalf("Mantle-only embed error=%v, want ErrCapability", err)
+	}
+	assertNoNewAttempts()
+
+	mux := http.NewServeMux()
+	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
+	rec := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"route":"mantle-only","user_id":%q,"source":"chat","inputs":["query"]}`, pinAuthor)
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, httpapi.PathEmbed, strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != domain.ErrCapability.Error()+"\n" {
+		t.Fatalf("Mantle-only embedding status=%d body=%q, want 400 and capability error", rec.Code, rec.Body.String())
+	}
+	assertNoNewAttempts()
+
 	if _, err := w.disp.ChatCall(ctx, "mantle-chat", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}}}); err != nil {
 		t.Fatalf("Mantle chat after embed skip: %v", err)
 	}
 	if mantleHits.Load() != 1 || openAIChatHits.Load() != 1 || !w.disp.Gates.Closed("pin_house") {
 		t.Fatalf("after Mantle chat: Mantle hits=%d OpenAI chat hits=%d key available=%t", mantleHits.Load(), openAIChatHits.Load(), w.disp.Gates.Closed("pin_house"))
-	}
-
-	mux := http.NewServeMux()
-	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, httpapi.PathEmbed, strings.NewReader(`{"route":"mantle-only","inputs":["query"]}`)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("Mantle-only embedding status=%d body=%s, want 400", rec.Code, rec.Body.String())
 	}
 }
 

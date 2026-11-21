@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -114,8 +115,9 @@ func TestPatternVendorURLsTrimTrailingSlashAndKeepDocumentedPath(t *testing.T) {
 	}{
 		{
 			key:  "azure",
-			base: "https://sample.openai.azure.com/openai/v1/",
+			base: "https://sample.openai.azure.com/openai/v1",
 			want: []string{
+				"https://sample.openai.azure.com/openai/v1/chat/completions",
 				"https://sample.openai.azure.com/openai/v1/chat/completions",
 				"https://sample.openai.azure.com/openai/v1/models",
 				"https://sample.openai.azure.com/openai/v1/embeddings",
@@ -123,27 +125,52 @@ func TestPatternVendorURLsTrimTrailingSlashAndKeepDocumentedPath(t *testing.T) {
 		},
 		{
 			key:  "bedrock-mantle",
-			base: "https://bedrock-mantle.us-east-1.api.aws/v1/",
+			base: "https://bedrock-mantle.us-east-1.api.aws/v1",
 			want: []string{
+				"https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions",
 				"https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions",
 				"https://bedrock-mantle.us-east-1.api.aws/v1/models",
 			},
 		},
 	} {
-		_, ok := domain.VendorFor(tc.key)
-		if !ok {
-			t.Fatalf("VendorFor(%q) missing", tc.key)
-		}
-		base, paths, ok := target(app.Attempt{BaseURL: tc.base})
-		if !ok || base != strings.TrimSuffix(tc.base, "/") || paths.Key != tc.key {
-			t.Fatalf("target(%q) = %q %+v %t", tc.base, base, paths, ok)
-		}
-		got := []string{base + paths.ChatPath, base + paths.ModelsPath}
-		if paths.EmbedPath != "" {
-			got = append(got, base+paths.EmbedPath)
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("%s final URLs = %v, want %v", tc.key, got, tc.want)
+		for _, suffix := range []string{"", "/"} {
+			t.Run(fmt.Sprintf("%s/trailing-slash=%t", tc.key, suffix != ""), func(t *testing.T) {
+				stream, err := os.ReadFile(filepath.Join(contractDir, tc.key+".sse"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				cs := newContractServer(t, stream)
+				to, err := url.Parse(cs.srv.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rt := &redirect{to: to}
+				a := Adapter{Client: &http.Client{Transport: rt}}
+				attempt := app.Attempt{BaseURL: tc.base + suffix, Model: "m", Secret: "sk-test", PlanKind: domain.PlanMetered}
+				request := domain.Request{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}}}
+				ctx := context.Background()
+				if _, class, err := a.ChatStream(ctx, attempt, request, func(string) error { return nil }); err != nil || class != domain.ClassOK {
+					t.Fatalf("stream: class=%s err=%v", class, err)
+				}
+				assertContractAuth(t, cs.last(t), tc.key)
+				if _, class, err := a.Chat(ctx, attempt, request); err != nil || class != domain.ClassOK {
+					t.Fatalf("chat: class=%s err=%v", class, err)
+				}
+				assertContractAuth(t, cs.last(t), tc.key)
+				if _, class, err := a.Probe(ctx, attempt); err != nil || class != domain.ClassOK {
+					t.Fatalf("probe: class=%s err=%v", class, err)
+				}
+				assertContractAuth(t, cs.last(t), tc.key)
+				if tc.key == "azure" {
+					if _, _, class, err := a.Embed(ctx, attempt, []string{"one"}); err != nil || class != domain.ClassOK {
+						t.Fatalf("embed: class=%s err=%v", class, err)
+					}
+					assertContractAuth(t, cs.last(t), tc.key)
+				}
+				if !reflect.DeepEqual(rt.asked, tc.want) {
+					t.Errorf("final URLs = %v, want %v", rt.asked, tc.want)
+				}
+			})
 		}
 	}
 }
@@ -843,9 +870,8 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 		return raw
 	}
 	recordedCases := []struct {
-		name string
-		file string
-		want []domain.SeenModel
+		name, file, key, base, wantURL string
+		want                           []domain.SeenModel
 	}{
 		{
 			name: "plain openai-compat",
@@ -856,14 +882,20 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 			},
 		},
 		{
-			name: "Azure deployment list",
-			file: "azure_models.json",
-			want: []domain.SeenModel{{ID: "my-gpt-4o-deployment"}},
+			name:    "Azure deployment list",
+			file:    "azure_models.json",
+			key:     "azure",
+			base:    "https://sample.openai.azure.com/openai/v1",
+			wantURL: "https://sample.openai.azure.com/openai/v1/models",
+			want:    []domain.SeenModel{{ID: "my-gpt-4o-deployment"}},
 		},
 		{
-			name: "Bedrock Mantle model list",
-			file: "bedrock_mantle_models.json",
-			want: []domain.SeenModel{{ID: "openai.gpt-oss-20b"}},
+			name:    "Bedrock Mantle model list",
+			file:    "bedrock_mantle_models.json",
+			key:     "bedrock-mantle",
+			base:    "https://bedrock-mantle.us-east-1.api.aws/v1",
+			wantURL: "https://bedrock-mantle.us-east-1.api.aws/v1/models",
+			want:    []domain.SeenModel{{ID: "openai.gpt-oss-20b"}},
 		},
 		{
 			name: "gemini strips models prefix",
@@ -911,13 +943,28 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 	for _, tc := range recordedCases {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := readFixture(tc.file)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.key != "" {
+					assertContractAuth(t, contractCall{Auth: r.Header.Get("Authorization"), APIKey: r.Header.Get("api-key")}, tc.key)
+				}
 				_, _ = w.Write(raw)
 			}))
 			t.Cleanup(srv.Close)
-			got, class, err := (Adapter{Client: srv.Client()}).Probe(context.Background(), app.Attempt{BaseURL: srv.URL, Secret: "sk-test"})
+			to, err := url.Parse(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt := &redirect{to: to}
+			base := tc.base
+			if base == "" {
+				base = srv.URL
+			}
+			got, class, err := (Adapter{Client: &http.Client{Transport: rt}}).Probe(context.Background(), app.Attempt{BaseURL: base, Secret: "sk-test"})
 			if err != nil || class != domain.ClassOK {
 				t.Fatalf("class=%s err=%v", class, err)
+			}
+			if tc.wantURL != "" && rt.lastAsked() != tc.wantURL {
+				t.Errorf("models URL = %q, want %q", rt.lastAsked(), tc.wantURL)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got = %+v, want %+v", got, tc.want)
@@ -968,9 +1015,10 @@ func TestAzureAndMantleDocumentedChatToolAndErrorFixtures(t *testing.T) {
 	for _, vendor := range []struct {
 		name, chat, tool, failure string
 		wantID, wantArgs          string
+		base, path                string
 	}{
-		{"azure", "azure_chat.json", "azure_tool.json", "azure_error.json", "call_azure_1", `{"q":"azure"}`},
-		{"bedrock-mantle", "bedrock_mantle_chat.json", "bedrock_mantle_tool.json", "bedrock_mantle_error.json", "call_mantle_1", `{"q":"mantle"}`},
+		{"azure", "azure_chat.json", "azure_tool.json", "azure_error.json", "call_azure_1", `{"q":"azure"}`, "https://sample.openai.azure.com/openai/v1", "/openai/v1/chat/completions"},
+		{"bedrock-mantle", "bedrock_mantle_chat.json", "bedrock_mantle_tool.json", "bedrock_mantle_error.json", "call_mantle_1", `{"q":"mantle"}`, "https://bedrock-mantle.us-east-1.api.aws/v1", "/v1/chat/completions"},
 	} {
 		vendor := vendor
 		t.Run(vendor.name, func(t *testing.T) {
@@ -983,24 +1031,34 @@ func TestAzureAndMantleDocumentedChatToolAndErrorFixtures(t *testing.T) {
 				return raw
 			}
 			chat, tool := read(vendor.chat), read(vendor.tool)
+			checkRequest := func(r *http.Request) {
+				t.Helper()
+				if r.URL.Path != vendor.path {
+					t.Errorf("chat path = %q, want %q", r.URL.Path, vendor.path)
+				}
+				assertContractAuth(t, contractCall{Auth: r.Header.Get("Authorization"), APIKey: r.Header.Get("api-key")}, vendor.name)
+			}
 			var chatHits atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/chat/completions" {
-					t.Errorf("chat path = %q", r.URL.Path)
-				}
-				if chatHits.Add(1) == 1 {
-					_, _ = w.Write(chat)
+				checkRequest(r)
+				if chatHits.Add(1) == 2 {
+					_, _ = w.Write(tool)
 					return
 				}
-				_, _ = w.Write(tool)
+				_, _ = w.Write(chat)
 			}))
 			t.Cleanup(srv.Close)
 			request, err := domain.Build(domain.Input{Tools: []domain.Tool{{Name: "search"}}, Messages: []domain.Message{{Role: domain.RoleUser, Text: "find"}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			adapter := Adapter{Client: srv.Client()}
-			attempt := app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "sk-test"}
+			to, err := url.Parse(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt := &redirect{to: to}
+			adapter := Adapter{Client: &http.Client{Transport: rt}}
+			attempt := app.Attempt{BaseURL: vendor.base, Model: "m", Secret: "sk-test"}
 			got, class, err := adapter.Chat(context.Background(), attempt, request)
 			if err != nil || class != domain.ClassOK || got.Text != "Fixture answer" || !got.Usage.Arrived {
 				t.Fatalf("chat fixture=%+v class=%s err=%v", got, class, err)
@@ -1009,16 +1067,33 @@ func TestAzureAndMantleDocumentedChatToolAndErrorFixtures(t *testing.T) {
 			if err != nil || class != domain.ClassOK || len(got.ToolCalls) != 1 || got.ToolCalls[0].ID != vendor.wantID || got.ToolCalls[0].Name != "search" || string(got.ToolCalls[0].Arguments) != vendor.wantArgs {
 				t.Fatalf("tool response=%+v class=%s err=%v", got, class, err)
 			}
+			decision, _, class, err := adapter.Decide(context.Background(), attempt, domain.DecideRequest{Kind: domain.DecisionChoice, Prompt: "choose", Options: []string{"Fixture answer", "other"}})
+			if err != nil || class != domain.ClassOK || decision.Choice != "Fixture answer" {
+				t.Fatalf("decide fixture=%+v class=%s err=%v", decision, class, err)
+			}
+			wantURL := vendor.base + "/chat/completions"
+			if want := []string{wantURL, wantURL, wantURL}; !reflect.DeepEqual(rt.asked, want) {
+				t.Errorf("chat, tool and decide URLs = %v, want %v", rt.asked, want)
+			}
 
 			failure := read(vendor.failure)
-			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				checkRequest(r)
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write(failure)
 			}))
 			defer bad.Close()
-			_, class, err = (Adapter{Client: bad.Client()}).Chat(context.Background(), app.Attempt{BaseURL: bad.URL, Model: "m", Secret: "sk-test"}, request)
+			to, err = url.Parse(bad.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt = &redirect{to: to}
+			_, class, err = (Adapter{Client: &http.Client{Transport: rt}}).Chat(context.Background(), attempt, request)
 			if err == nil || class != domain.ClassRateLimit {
 				t.Fatalf("error fixture class=%s err=%v", class, err)
+			}
+			if rt.lastAsked() != wantURL {
+				t.Errorf("error URL = %q, want %q", rt.lastAsked(), wantURL)
 			}
 		})
 	}
