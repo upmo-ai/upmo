@@ -921,5 +921,5 @@ func TestFeature_UPM392_BenchmarkMillionRowRollup(t *testing.T) {
 	t.Logf("full rebuild 1,000,000 rows / 90 days: %s; steady-state: %s; zone-change rebuild: %s", fullDuration, steadyDuration, zoneDuration)
 	t.Logf("incremental ledger scan: %s", ledgerScan)
 	t.Logf("incremental INSERT plan:\n%s", plan)
-	t.Logf("owner pool statement_timeout: %s (roll-up does not override it)", statementTimeout)
+	t.Logf("test pool statement_timeout: %s (roll-up does not override it)", statementTimeout)
 }
