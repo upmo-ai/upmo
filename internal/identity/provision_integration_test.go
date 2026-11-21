@@ -52,38 +52,14 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 		t.Fatalf("down to 0: %v", err)
 	}
 
-	var hasTable bool
-	if err := owner.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.tables
-			WHERE table_schema = 'identity' AND table_name = 'provision_nonces'
-		)`).Scan(&hasTable); err != nil {
-		t.Fatal(err)
-	}
-	if hasTable {
-		t.Fatal("identity.provision_nonces still exists after down")
-	}
-
-	var hasCol bool
-	if err := owner.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'identity' AND table_name = 'teams' AND column_name = 'external_id'
-		)`).Scan(&hasCol); err != nil {
-		t.Fatal(err)
-	}
-	if hasCol {
-		t.Fatal("identity.teams.external_id still exists after down")
-	}
-	if err := owner.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'identity' AND table_name = 'workspace' AND column_name = 'spend_ceiling_micro_usd'
-		)`).Scan(&hasCol); err != nil {
-		t.Fatal(err)
-	}
-	if hasCol {
-		t.Fatal("identity.workspace.spend_ceiling_micro_usd still exists after down")
+	for _, tbl := range []string{"identity.provision_nonces", "identity.teams", "identity.workspace"} {
+		var reg *string
+		if err := owner.QueryRow(ctx, `SELECT to_regclass($1)::text`, tbl).Scan(&reg); err != nil {
+			t.Fatal(err)
+		}
+		if reg != nil {
+			t.Fatalf("%s still exists after down: %q", tbl, *reg)
+		}
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
@@ -96,6 +72,7 @@ func TestProvisionMigrationDownUp(t *testing.T) {
 	if version != 1 {
 		t.Fatalf("version after re-up = %d, want 1", version)
 	}
+	var hasTable bool
 	if err := owner.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM information_schema.tables

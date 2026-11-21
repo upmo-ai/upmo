@@ -184,7 +184,7 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 	owner, ctx := upOwner(t)
 	person := seedOwner(t, owner, ctx, "ada@example.com")
 
-	// Seed both pre-v4 and v4-only session/link rows prior to Down.
+	// Seed session and sign-in link rows across methods and purposes prior to Down.
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at, sign_in_method)
 		VALUES ($1, $2, now(), now(), now() + interval '1 hour', 'sso'),

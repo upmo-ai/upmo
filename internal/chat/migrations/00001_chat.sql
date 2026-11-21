@@ -124,6 +124,7 @@ CREATE TRIGGER chat_keep_line
 GRANT SELECT, INSERT ON chat.lines TO upmo_app;
 
 SELECT identity.protect('chat.chats');
+REVOKE UPDATE (created_at) ON chat.chats FROM upmo_app;
 
 -- chat.fail_reply runs for a person who can no longer write the chat, so no
 -- policy that asks for their access lets it through. It runs as the owner of

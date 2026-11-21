@@ -4,12 +4,14 @@ package identity_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -83,15 +85,17 @@ func TestEmailHashAndKeyIDAreNotNull(t *testing.T) {
 	if nullable != 2 {
 		t.Fatalf("non-nullable email index columns = %d, want 2", nullable)
 	}
+	var pgErr *pgconn.PgError
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
-		VALUES ('nullhash@example.com', NULL, 'k1', 'NullHash', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err == nil {
-		t.Fatal("NULL email_hash was accepted")
+		VALUES ('nullhash@example.com', NULL, 'k1', 'NullHash', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); !errors.As(err, &pgErr) || pgErr.Code != "23502" {
+		t.Fatalf("NULL email_hash err = %v, want SQLSTATE 23502", err)
 	}
+	pgErr = nil
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
-		VALUES ('nullkey@example.com', sha256('nullkey'::bytea), NULL, 'NullKey', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); err == nil {
-		t.Fatal("NULL email_hash_key_id was accepted")
+		VALUES ('nullkey@example.com', sha256('nullkey'::bytea), NULL, 'NullKey', (SELECT id FROM identity.roles WHERE key = 'member'), now())`); !errors.As(err, &pgErr) || pgErr.Code != "23502" {
+		t.Fatalf("NULL email_hash_key_id err = %v, want SQLSTATE 23502", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)

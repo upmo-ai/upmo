@@ -516,7 +516,7 @@ func TestRouteValidationShareAndAntiShadowingHTTP(t *testing.T) {
 	}
 }
 
-func TestRouteMigration00008BackfillAndDownUp(t *testing.T) {
+func TestRouteDefaultsAndDownUp(t *testing.T) {
 	ctx := context.Background()
 	pool := pgtest.New(t)
 	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
@@ -526,11 +526,12 @@ func TestRouteMigration00008BackfillAndDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const routeOwner = "019a0000-0000-7000-8000-000000000001"
 	var routeID string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO gateway.routes (name, capability, decision, installed)
-		VALUES ('installed-chat', 'chat', '', true)
-		RETURNING id::text`).Scan(&routeID); err != nil {
+		INSERT INTO gateway.routes (owner_user_id, name, capability, decision)
+		VALUES ($1::uuid, 'default-chat', 'chat', '')
+		RETURNING id::text`, routeOwner).Scan(&routeID); err != nil {
 		t.Fatal(err)
 	}
 	var installed bool
@@ -541,8 +542,8 @@ func TestRouteMigration00008BackfillAndDownUp(t *testing.T) {
 		FROM gateway.routes WHERE id = $1::uuid`, routeID).Scan(&installed, &vis, &owner, &teams); err != nil {
 		t.Fatal(err)
 	}
-	if !installed || vis != "everyone" || owner != "" || len(teams) != 0 {
-		t.Fatalf("installed route = installed:%v vis:%q owner:%q teams:%v", installed, vis, owner, teams)
+	if installed || vis != "everyone" || owner != routeOwner || len(teams) != 0 {
+		t.Fatalf("default route = installed:%v vis:%q owner:%q teams:%v", installed, vis, owner, teams)
 	}
 
 	var forced int

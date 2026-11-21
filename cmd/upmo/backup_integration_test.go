@@ -464,17 +464,17 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
+func TestBackupRestoreVersion1ArchiveToEmptyTarget(t *testing.T) {
 	t.Setenv("UPMO_ENV", "development")
 	ctx := context.Background()
-	oldOwner := pgtest.New(t)
+	srcOwner := pgtest.New(t)
 
-	if err := brainops.MigrateAll(ctx, oldOwner); err != nil {
-		t.Fatalf("MigrateAll(old): %v", err)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatalf("MigrateAll(src): %v", err)
 	}
 
 	var roleID uuid.UUID
-	if err := oldOwner.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'owner'`).Scan(&roleID); err != nil {
+	if err := srcOwner.QueryRow(ctx, `SELECT id FROM identity.roles WHERE key = 'owner'`).Scan(&roleID); err != nil {
 		t.Fatal(err)
 	}
 	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x55}, 32))
@@ -485,26 +485,26 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	emails := brainops.NewEmailSealer(ring1)
-	stored, hash, keyID, err := emails.Seal("old@example.com")
+	stored, hash, keyID, err := emails.Seal("src@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 	userID := uuid.New()
-	if _, err := oldOwner.Exec(ctx, `
+	if _, err := srcOwner.Exec(ctx, `
 		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
-		VALUES ($1, $2, $3, $4, 'Old User', $5, now(), now())`,
+		VALUES ($1, $2, $3, $4, 'Source User', $5, now(), now())`,
 		userID, stored, hash, keyID, roleID,
 	); err != nil {
 		t.Fatal(err)
 	}
 	taskID := uuid.New()
-	tx, err := oldOwner.Begin(ctx)
+	tx, err := srcOwner.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO tasks.tasks (id, owner_user_id, visibility, goal, status)
-		VALUES ($1, $2, 'private', 'Older schema task', 'Preparing')`,
+		VALUES ($1, $2, 'private', 'Version 1 archive task', 'Preparing')`,
 		taskID, userID,
 	); err != nil {
 		t.Fatal(err)
@@ -520,14 +520,14 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("UPMO_DATABASE_URL", poolURL(t, oldOwner))
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
 	t.Setenv("UPMO_ARTIFACTS_DIR", "")
 	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
 
-	archivePath := filepath.Join(t.TempDir(), "old-backup.tar.gz")
+	archivePath := filepath.Join(t.TempDir(), "v1-backup.tar.gz")
 	var out bytes.Buffer
 	if err := backupCommand([]string{"--out", archivePath}, &out); err != nil {
-		t.Fatalf("backupCommand(old): %v", err)
+		t.Fatalf("backupCommand(v1): %v", err)
 	}
 	m, err := backup.Inspect(archivePath)
 	if err != nil {
@@ -550,14 +550,14 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 	}
 
 	// Restore onto a fresh empty DB -> all 13 schemas land at version 1.
-	newOwner := pgtest.New(t)
-	t.Setenv("UPMO_DATABASE_URL", poolURL(t, newOwner))
+	targetOwner := pgtest.New(t)
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, targetOwner))
 	var restoreOut bytes.Buffer
 	if err := restoreCommand([]string{"--in", archivePath}, &restoreOut); err != nil {
 		t.Fatalf("restoreCommand(v1->empty): %v", err)
 	}
 
-	afterVersions, err := migrate.SchemaVersions(ctx, newOwner)
+	afterVersions, err := migrate.SchemaVersions(ctx, targetOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,15 +567,15 @@ func TestBackupRestoreForwardMigratesOlderBackup(t *testing.T) {
 		}
 	}
 	var gotGoal string
-	if err := newOwner.QueryRow(ctx, `SELECT goal FROM tasks.tasks WHERE id = $1`, taskID).Scan(&gotGoal); err != nil || gotGoal != "Older schema task" {
-		t.Fatalf("restored task missing after forward migration: goal=%q err=%v", gotGoal, err)
+	if err := targetOwner.QueryRow(ctx, `SELECT goal FROM tasks.tasks WHERE id = $1`, taskID).Scan(&gotGoal); err != nil || gotGoal != "Version 1 archive task" {
+		t.Fatalf("restored task mismatch: goal=%q err=%v", gotGoal, err)
 	}
 	var gotStored string
 	var gotHash []byte
-	if err := newOwner.QueryRow(ctx, `SELECT email, email_hash FROM identity.users WHERE id = $1`, userID).Scan(&gotStored, &gotHash); err != nil {
+	if err := targetOwner.QueryRow(ctx, `SELECT email, email_hash FROM identity.users WHERE id = $1`, userID).Scan(&gotStored, &gotHash); err != nil {
 		t.Fatal(err)
 	}
-	if address, err := emails.Open(gotStored, gotHash); err != nil || address != "old@example.com" {
+	if address, err := emails.Open(gotStored, gotHash); err != nil || address != "src@example.com" {
 		t.Fatalf("restored address opens to %q, err=%v", address, err)
 	}
 	// Verify JSON encoding of manifest works cleanly.
