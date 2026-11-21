@@ -12,6 +12,18 @@ More entries are added as assets and libraries are bundled.
 - Licence: [SIL Open Font License 1.1](https://openfontlicense.org)
 - Used in: the web build, which bundles the font as the UI typeface.
 
+### Familjen Grotesk
+
+- Project: [Familjen Grotesk](https://fonts.google.com/specimen/Familjen+Grotesk)
+- Licence: [SIL Open Font License 1.1](https://openfontlicense.org)
+- Used in: the web build, which bundles the 700 weight for headings.
+
+### Fira Code
+
+- Project: [Fira Code](https://fonts.google.com/specimen/Fira+Code) by Nikita Prokopov and contributors
+- Licence: [SIL Open Font License 1.1](https://openfontlicense.org)
+- Used in: the web build, which bundles the 400 weight for code text.
+
 ## Code
 
 ### Monaco Editor

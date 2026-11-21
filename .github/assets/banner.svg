@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Upmo">
+  <title>Upmo</title>
+  <rect width="1200" height="300" rx="24" fill="#0d1117"/>
+  <path d="M150 168 L212 106 L274 168" fill="none" stroke="#3fb950" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="320" y="168" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="104" font-weight="700" fill="#f0f6fc">Upmo</text>
+  <text x="152" y="232" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="34" fill="#8b949e">AI agents can do the work. Upmo makes them safe to trust.</text>
+</svg>

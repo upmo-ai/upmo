@@ -446,7 +446,7 @@ export function Shell() {
     queryFn: () => (api.members?.list ? api.members.list() : Promise.resolve([])),
   });
   const currentMember = members.data?.find((m) => m.id === session.data?.memberId);
-  const userName = currentMember?.name ?? "Muhammad Sumon Molla Selim";
+  const userName = currentMember?.name ?? "You";
   const userRole = session.data?.view ?? currentMember?.role ?? "owner";
   const user: ShellUser = {
     name: userName,

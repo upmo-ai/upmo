@@ -23,7 +23,7 @@ Run `make ci` before you open a pull request. CI runs the same checks.
 
 ## Tasks
 
-Each change links its task ID (`UPM-n`) in the pull request.
+Internal changes reference their task ID (`UPM-n`) in the pull request. As an outside contributor, open an issue first and reference that issue instead.
 
 ## Commits
 

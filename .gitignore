@@ -23,6 +23,7 @@ coverage/
 .vscode/
 
 # Local agent files
+.work/
 AGENTS.md
 CLAUDE.md
 .claude/

@@ -4,7 +4,7 @@ What changes and why.
 
 ## Task
 
-The task this belongs to, for example UPM-12.
+The task or issue this belongs to, for example `UPM-12` or `#34`.
 
 ## Testing
 
