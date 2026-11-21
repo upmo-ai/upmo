@@ -8,9 +8,8 @@ import (
 
 // Vendor is what the gateway knows about one provider in the picker: the
 // adapter that reaches it, the address it lives at, and the paths added to an
-// account's base URL to call it. The web picker holds the same table (its
-// default base URLs and adapter keys), and both are tested against the same
-// vendor list.
+// account's base URL to call it. The web picker gets this list from
+// GET /api/providers/vendors, and pickerVendors in vendors.ts maps it to tiles.
 type Vendor struct {
 	// Key is the picker id.
 	Key     string
