@@ -4,7 +4,7 @@ Version 1.1, 2026-10-21
 
 Thank you for your interest in Upmo. To clarify the intellectual property license granted with Contributions from any person or entity, the Maintainer must have a signed Contributor License Agreement ("Agreement") from each Contributor, indicating agreement with the license terms below. This Agreement is for your protection as a Contributor as well as the protection of the Maintainer and the users of Upmo. It does not change your rights to use your own Contributions for any other purpose.
 
-"Maintainer" means Muhammad Sumon Molla Selim, who maintains Upmo, or the successor to whom this Agreement is assigned under section 9.
+"Maintainer" means Klassroom, a sole proprietorship registered in the Netherlands that maintains Upmo, or the successor to whom this Agreement is assigned under section 9.
 
 You accept and agree to the following terms and conditions for Your Contributions (present and future) that you submit to the Maintainer. Except for the license granted herein to the Maintainer and recipients of software distributed by the Maintainer, You reserve all right, title, and interest in and to Your Contributions.
 

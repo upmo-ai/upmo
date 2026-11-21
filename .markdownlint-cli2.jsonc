@@ -4,7 +4,10 @@
     // Prose is written one paragraph per line.
     "MD013": false,
     // Contact addresses are written as plain text.
-    "MD034": false
+    "MD034": false,
+    // The README opens with the banner image, centred with HTML.
+    "MD033": false,
+    "MD041": false
   },
   "globs": ["**/*.md"],
   // The pull request template starts at a second level heading by design.

@@ -2,6 +2,11 @@
 exclude = [
   '^mailto:',
   'cla-assistant\.io',
+  # Badge images depend on external services, not on this repository.
+  'badge\.svg$',
+  'goreportcard\.com',
+  # Links back into this repository cannot be checked while it is private.
+  '^https://github\.com/upmo-ai/',
 ]
 exclude_path = [
   'node_modules',
