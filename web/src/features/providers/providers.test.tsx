@@ -387,13 +387,13 @@ describe("providers", () => {
     expect(screen.queryByRole("button", { name: "Anthropic" })).toBeNull();
   });
 
-  it("has a brand mark for every vendor the brain offers except Nebius", () => {
+  it("has a brand mark for every vendor except Nebius and Bedrock Mantle", () => {
     const aliasOf: Record<string, string> = aliases;
     const missing = vendors
       .map(({ key }) => key)
       .filter((key) => !Object.hasOwn(marks, aliasOf[key] ?? key));
 
-    expect(missing).toEqual(["nebius", "azure", "bedrock-mantle"]);
+    expect(missing).toEqual(["nebius", "bedrock-mantle"]);
   });
 
   it("suggests the vendor's plan with one line under each choice", async () => {
