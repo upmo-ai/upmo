@@ -677,7 +677,7 @@ func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
 	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id',$1,true), set_config('upmo.allow',$2,true), set_config('upmo.teams','',true), set_config('work_mem',$3,true)`, usageAdmin, "usage:view", "64MB"); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageHybridScanExplainQuery(), "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"))
+	rows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageHybridScanExplainQuery(false), "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,16 +689,28 @@ func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
 		plan.WriteString(line + "\n")
 	}
 	rows.Close()
-	t.Logf("hybrid explain:\n%s", plan.String())
+	t.Logf("90-day workspace hybrid explain:\n%s", plan.String())
+
+	sevenDayWindow := usageWindow(now, 7, time.UTC)
+	hybridPlan := new(strings.Builder)
+	sevenDayRows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageHybridScanExplainQuery(false), "day", "UTC", sevenDayWindow.Start, sevenDayWindow.End, sevenDayWindow.Start.Format("2006-01-02"), sevenDayWindow.End.AddDate(0, 0, -4).Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sevenDayRows.Next() {
+		var line string
+		if err := sevenDayRows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		hybridPlan.WriteString(line + "\n")
+	}
+	sevenDayRows.Close()
+	t.Logf("7-day workspace hybrid explain:\n%s", hybridPlan.String())
 	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id',$1,true), set_config('upmo.allow',$2,true), set_config('upmo.teams','',true), set_config('work_mem',$3,true)`, personalUser, "", "64MB"); err != nil {
 		t.Fatal(err)
 	}
 	personalPlan := new(strings.Builder)
-	personalQuery := postgres.UsageHybridScanExplainQuery()
-	personalQuery = strings.Replace(personalQuery, "AND (l.at AT TIME ZONE $2)::date > $6::date", "AND (l.at AT TIME ZONE $2)::date > $6::date AND l.user_id = $7::uuid", 1)
-	personalQuery = strings.Replace(personalQuery, "AND (l.at AT TIME ZONE $2)::date < $5::date", "AND (l.at AT TIME ZONE $2)::date < $5::date AND l.user_id = $7::uuid", 1)
-	personalQuery = strings.Replace(personalQuery, "WHERE l.day >= $5::date AND l.day <= $6::date", "WHERE l.day >= $5::date AND l.day <= $6::date AND l.user_id = $7::uuid", 1)
-	personalRows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+personalQuery, "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"), personalUser)
+	personalRows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageHybridScanExplainQuery(true), "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"), personalUser)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -711,11 +723,11 @@ func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
 	}
 	personalRows.Close()
 	t.Logf("personal hybrid explain (%s):\n%s", personalUser, personalPlan.String())
-	if strings.Contains(plan.String(), "Seq Scan on usage_daily") {
-		t.Fatal("hybrid workspace read did a sequential scan of usage_daily")
+	if strings.Contains(hybridPlan.String(), "Seq Scan on usage_daily") {
+		t.Fatal("7-day hybrid workspace read did a sequential scan of usage_daily")
 	}
-	if strings.Contains(plan.String(), "Seq Scan on ledger") {
-		t.Fatal("hybrid workspace read did a sequential scan of ledger")
+	if strings.Contains(hybridPlan.String(), "Seq Scan on ledger") {
+		t.Fatal("7-day hybrid workspace read did a sequential scan of ledger")
 	}
 	if strings.Contains(personalPlan.String(), "Seq Scan on usage_daily") {
 		t.Fatal("hybrid personal read did a sequential scan of usage_daily")

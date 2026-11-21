@@ -215,9 +215,17 @@ const usageHybridScanQuery = `
 // UsageScanExplainQuery returns the unfiltered workspace form of the exact scan query.
 func UsageScanExplainQuery() string { return fmt.Sprintf(usageScanQuery, "l.source", "") }
 
-// UsageHybridScanExplainQuery returns the workspace hybrid scan for EXPLAIN.
-func UsageHybridScanExplainQuery() string {
-	return fmt.Sprintf(usageHybridScanQuery, "l.source", "", "l.source", "", "l.source", "")
+// UsageHybridScanExplainQuery returns the hybrid scan for EXPLAIN.
+func UsageHybridScanExplainQuery(personal bool) string {
+	return usageHybridScanQueryFor("l.source", personal)
+}
+
+func usageHybridScanQueryFor(key string, personal bool) string {
+	filter := ""
+	if personal {
+		filter = "AND l.user_id = $7::uuid"
+	}
+	return fmt.Sprintf(usageHybridScanQuery, key, filter, key, filter, key, filter)
 }
 
 // scanUsage is one pass over the window: totals by bucket, provider account,
@@ -267,12 +275,7 @@ func scanUsageWithQuery(ctx context.Context, q querier, key, user string, w doma
 				// civil dates explicitly so a local midnight stays that date.
 				firstDate := firstDay.Format("2006-01-02")
 				cutoffDate := cutoff.Format("2006-01-02")
-				ledgerFilter, dailyFilter := "", ""
-				if user != "" {
-					ledgerFilter = "AND l.user_id = $7::uuid"
-					dailyFilter = ledgerFilter
-				}
-				query = fmt.Sprintf(usageHybridScanQuery, key, ledgerFilter, key, ledgerFilter, key, dailyFilter)
+				query = usageHybridScanQueryFor(key, user != "")
 				args = []any{w.Unit, w.Zone.String(), w.Start, w.End, firstDate, cutoffDate}
 				if user != "" {
 					args = append(args, user)
