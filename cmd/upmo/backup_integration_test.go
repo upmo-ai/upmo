@@ -551,6 +551,13 @@ func TestBackupRestoreVersion1ArchiveToEmptyTarget(t *testing.T) {
 
 	// Restore onto a fresh empty DB -> all 13 schemas land at version 1.
 	targetOwner := pgtest.New(t)
+	// TestMain seeds identity into every test database; drop it so restore takes the empty-target path.
+	if _, err := targetOwner.Exec(ctx, `DROP SCHEMA identity CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if before, err := migrate.SchemaVersions(ctx, targetOwner); err != nil || len(before) != 0 {
+		t.Fatalf("target schema versions before restore = %v, err=%v, want empty", before, err)
+	}
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, targetOwner))
 	var restoreOut bytes.Buffer
 	if err := restoreCommand([]string{"--in", archivePath}, &restoreOut); err != nil {

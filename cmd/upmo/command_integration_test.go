@@ -476,7 +476,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Insert: []string{"claim", "claim_hash", "claim_tsv", "created_at", "embedding", "embedding_model", "id", "invalid_at", "last_confirmed_at", "source_id", "source_kind", "source_seq", "superseded_by", "trust", "user_id", "valid_from"},
 			Update: []string{"embedding", "embedding_model", "invalid_at", "last_confirmed_at", "superseded_by"},
 		},
-		"memory.goose_db_version":  {},
+		"memory.goose_db_version": {},
 		"memory.profiles": {
 			Table:  []string{"INSERT", "SELECT"},
 			Select: []string{"body", "updated_at", "user_id"},
