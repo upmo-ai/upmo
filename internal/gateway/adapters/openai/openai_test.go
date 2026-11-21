@@ -130,7 +130,7 @@ func TestPatternVendorURLsTrimTrailingSlashAndKeepDocumentedPath(t *testing.T) {
 			},
 		},
 	} {
-		v, ok := domain.VendorFor(tc.key)
+		_, ok := domain.VendorFor(tc.key)
 		if !ok {
 			t.Fatalf("VendorFor(%q) missing", tc.key)
 		}
