@@ -23,8 +23,8 @@ import (
 	chatgateway "github.com/upmo-ai/upmo/internal/chat/adapters/gateway"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
-	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	openaiadapter "github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	knowledgegateway "github.com/upmo-ai/upmo/internal/knowledge/adapters/gateway"
@@ -764,14 +764,14 @@ func TestMantleEmbeddingSkipsWithoutLedgerOrCooldown(t *testing.T) {
 			vector := make([]float32, domain.EmbedDim)
 			vector[0] = 1
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"data": []map[string]any{{"index": 0, "embedding": vector}},
+				"data":  []map[string]any{{"index": 0, "embedding": vector}},
 				"usage": map[string]int{"prompt_tokens": 1},
 			})
 		default:
 			openAIChatHits.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"choices": []map[string]any{{"message": map[string]string{"content": "from mantle"}}},
-				"usage": map[string]int{"prompt_tokens": 1, "completion_tokens": 1},
+				"usage":   map[string]int{"prompt_tokens": 1, "completion_tokens": 1},
 			})
 		}
 	}))
@@ -793,7 +793,7 @@ func TestMantleEmbeddingSkipsWithoutLedgerOrCooldown(t *testing.T) {
 	w.disp.Stream[domain.AdapterOpenAI] = adapter
 	w.disp.Embed[domain.AdapterOpenAI] = adapter
 
-	model, vectors, err := w.disp.EmbedCall(ctx, "mantle-fallback", "", domain.Principal{}, []string{"query"})
+	model, vectors, err := w.disp.EmbedCall(ctx, "mantle-fallback", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, []string{"query"})
 	if err != nil || model != "openai-embed" || len(vectors) != 1 || len(vectors[0]) != domain.EmbedDim {
 		t.Fatalf("model=%q vectors=%d err=%v", model, len(vectors), err)
 	}
@@ -808,7 +808,7 @@ func TestMantleEmbeddingSkipsWithoutLedgerOrCooldown(t *testing.T) {
 		t.Fatalf("Mantle ledger rows=%d key available=%t", mantleLedger, w.disp.Gates.Closed("pin_house"))
 	}
 
-	if _, err := w.disp.ChatCall(ctx, "mantle-chat", "", domain.Principal{}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}}}); err != nil {
+	if _, err := w.disp.ChatCall(ctx, "mantle-chat", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}}}); err != nil {
 		t.Fatalf("Mantle chat after embed skip: %v", err)
 	}
 	if mantleHits.Load() != 1 || openAIChatHits.Load() != 1 || !w.disp.Gates.Closed("pin_house") {
