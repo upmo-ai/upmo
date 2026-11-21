@@ -17,6 +17,26 @@ import (
 // recomputes, so a call settled after its day closed is still counted.
 const rollupRecentDays = 2
 
+// rollupDirtyOverlap is 120x settleTimeout (internal/gateway/app/dispatch.go:288),
+// covering an insert transaction that started before the previous run and
+// committed after it.
+const rollupDirtyOverlap = 10 * time.Minute
+
+// uuidv7LowerBound returns the smallest UUIDv7 for t's millisecond: 48-bit
+// millisecond timestamp, version 7, rest zero.
+func uuidv7LowerBound(t time.Time) uuid.UUID {
+	ms := max(t.UnixMilli(), 0)
+	var id uuid.UUID
+	id[0] = byte((ms >> 40) & 0xff)
+	id[1] = byte((ms >> 32) & 0xff)
+	id[2] = byte((ms >> 24) & 0xff)
+	id[3] = byte((ms >> 16) & 0xff)
+	id[4] = byte((ms >> 8) & 0xff)
+	id[5] = byte(ms & 0xff)
+	id[6] = 0x70
+	return id
+}
+
 // lockUsageDaily serialises the roll-up and an erasure, so neither reads the
 // ledger while the other is moving its rows.
 func lockUsageDaily(ctx context.Context, tx pgx.Tx) error {
@@ -24,9 +44,11 @@ func lockUsageDaily(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
-// RollupUsage stores closed ledger days. Recent days are deleted before they
-// are recomputed, so reruns never double count. A missing watermark or zone
-// change rebuilds all daily totals from the ledger.
+// RollupUsage stores closed ledger days. Recent and dirty closed days are
+// deleted before they are recomputed, so reruns never double count. A missing
+// watermark or zone change rebuilds all daily totals from the ledger.
+// Ledger rows are never deleted; any future retention must update usage_daily
+// in the same transaction.
 func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now time.Time) error {
 	if pool == nil {
 		return fmt.Errorf("gateway: no database")
@@ -41,14 +63,17 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now t
 	}
 	var todayStart time.Time
 	var todayDay time.Time
+	var runStart time.Time
 	if err := tx.QueryRow(ctx, `
 		SELECT date_trunc('day', $2::timestamptz AT TIME ZONE $1) AT TIME ZONE $1,
-			($2::timestamptz AT TIME ZONE $1)::date`, timeZone, now).Scan(&todayStart, &todayDay); err != nil {
+			($2::timestamptz AT TIME ZONE $1)::date,
+			clock_timestamp()`, timeZone, now).Scan(&todayStart, &todayDay, &runStart); err != nil {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
 	var rolledThrough time.Time
 	var storedZone string
-	err = tx.QueryRow(ctx, `SELECT rolled_through, time_zone FROM gateway.usage_daily_state WHERE id`).Scan(&rolledThrough, &storedZone)
+	var prevRunStart time.Time
+	err = tx.QueryRow(ctx, `SELECT rolled_through, time_zone, updated_at FROM gateway.usage_daily_state WHERE id`).Scan(&rolledThrough, &storedZone, &prevRunStart)
 	fullRebuild := errors.Is(err, pgx.ErrNoRows) || storedZone != timeZone
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
@@ -67,21 +92,60 @@ func RollupUsage(ctx context.Context, pool *pgxpool.Pool, timeZone string, now t
 		if watermarkStart.Before(firstDay) {
 			firstDay = watermarkStart
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day >= $1::date`, firstDay); err != nil {
+		bound := uuidv7LowerBound(prevRunStart.Add(-rollupDirtyOverlap))
+		rows, err := tx.Query(ctx, `
+			SELECT DISTINCT (l.at AT TIME ZONE $1)::date
+			FROM gateway.ledger AS l
+			WHERE l.id >= $2::uuid
+			  AND l.id <= 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid
+			  AND (l.at AT TIME ZONE $1)::date < $3::date`,
+			timeZone, bound, todayDay)
+		if err != nil {
 			return fmt.Errorf("gateway: roll up usage: %w", err)
 		}
-		lowerBound := firstDay.AddDate(0, 0, -1)
-		rollupSQL = rollupIncrementalSQL
-		args = []any{timeZone, todayStart, lowerBound, firstDay, todayDay}
+		var dirtyDays []time.Time
+		minDay := firstDay
+		for rows.Next() {
+			var d time.Time
+			if err := rows.Scan(&d); err != nil {
+				rows.Close()
+				return fmt.Errorf("gateway: roll up usage: %w", err)
+			}
+			if d.Before(firstDay) {
+				dirtyDays = append(dirtyDays, d)
+				if d.Before(minDay) {
+					minDay = d
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("gateway: roll up usage: %w", err)
+		}
+		rows.Close()
+		lowerBound := minDay.AddDate(0, 0, -1)
+		if len(dirtyDays) == 0 {
+			if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day >= $1::date`, firstDay); err != nil {
+				return fmt.Errorf("gateway: roll up usage: %w", err)
+			}
+			rollupSQL = rollupIncrementalSQL
+			args = []any{timeZone, todayStart, lowerBound, firstDay, todayDay}
+		} else {
+			if _, err := tx.Exec(ctx, `DELETE FROM gateway.usage_daily WHERE day >= $1::date OR day = ANY($2::date[])`, firstDay, dirtyDays); err != nil {
+				return fmt.Errorf("gateway: roll up usage: %w", err)
+			}
+			rollupSQL = rollupDirtySQL
+			args = []any{timeZone, todayStart, lowerBound, firstDay, todayDay, dirtyDays}
+		}
 	}
 	if _, err := tx.Exec(ctx, rollupSQL, args...); err != nil {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO gateway.usage_daily_state (id, rolled_through, time_zone, updated_at)
-		VALUES (true, $1::date - 1, $2, now())
+		VALUES (true, $1::date - 1, $2, $3)
 		ON CONFLICT (id) DO UPDATE SET rolled_through = EXCLUDED.rolled_through,
-			time_zone = EXCLUDED.time_zone, updated_at = EXCLUDED.updated_at`, todayDay, timeZone); err != nil {
+			time_zone = EXCLUDED.time_zone, updated_at = EXCLUDED.updated_at`, todayDay, timeZone, runStart); err != nil {
 		return fmt.Errorf("gateway: roll up usage: %w", err)
 	}
 	return tx.Commit(ctx)
@@ -116,6 +180,18 @@ WHERE l.at < $2::timestamptz
   -- the local-date predicates below make the admitted day range exact.
   AND l.at >= ($3::date::timestamp AT TIME ZONE $1)
   AND (l.at AT TIME ZONE $1)::date >= $4::date
+  AND (l.at AT TIME ZONE $1)::date < $5::date
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`
+
+const rollupDirtySQL = rollupInsert + `
+WHERE l.at < $2::timestamptz
+  -- The previous local midnight gives ambiguous fall-back midnights a margin;
+  -- the local-date predicates below make the admitted day range exact.
+  AND l.at >= ($3::date::timestamp AT TIME ZONE $1)
+  AND (
+    (l.at AT TIME ZONE $1)::date >= $4::date
+    OR (l.at AT TIME ZONE $1)::date = ANY($6::date[])
+  )
   AND (l.at AT TIME ZONE $1)::date < $5::date
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`
 
