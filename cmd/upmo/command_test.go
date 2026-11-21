@@ -106,6 +106,7 @@ func TestOperatorCommandsDoNotEchoUserOrHostOnConnectFailure(t *testing.T) {
 		host   = "127.0.0.1"
 	)
 	t.Setenv("UPMO_ENV", "development")
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	t.Setenv("UPMO_DATABASE_URL", "postgres://"+user+":"+marker+"@"+host+":1/x?sslmode=require")
 	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:8080")
 	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
@@ -132,6 +133,25 @@ func TestOperatorCommandsDoNotEchoUserOrHostOnConnectFailure(t *testing.T) {
 			}
 			if want := "brain: UPMO_DATABASE_URL could not be opened"; !strings.Contains(msg, want) {
 				t.Fatalf("err = %q, want %q", msg, want)
+			}
+		})
+	}
+}
+
+func TestSecretCommandsRefuseMissingMasterKeyBeforeOpeningDatabase(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv("UPMO_MASTER_KEY", "")
+	t.Setenv("UPMO_DATABASE_URL", "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable")
+	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:8080")
+	for name, args := range map[string][]string{
+		"keys":      {"reseal"},
+		"bootstrap": {"--email", "a@example.com", "--name", "A"},
+		"recover":   {"--email", "a@example.com"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := command(name, args)
+			if err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
+				t.Fatalf("command err = %v", err)
 			}
 		})
 	}

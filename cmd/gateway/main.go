@@ -42,8 +42,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// Gateway seals the provider keys people add, so outside development it
-	// also needs UPMO_MASTER_KEY, checked before any pool opens.
+	// Gateway seals the provider keys people add, so its startup guard requires
+	// UPMO_MASTER_KEY in every environment before a pool opens.
 	if err := config.CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
 		return err
 	}

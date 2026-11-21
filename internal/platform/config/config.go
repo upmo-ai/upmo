@@ -109,23 +109,21 @@ type SMTP struct {
 	From string
 }
 
-// Load reads the configuration from the environment and applies defaults,
-// then refuses the development keys and passwords unless UPMO_ENV is
-// development.
+// Load reads configuration and requires the master key used by secret-using
+// Upmo commands, while development keys and passwords remain allowed locally.
 func Load() (Config, error) {
 	cfg, err := load(os.LookupEnv)
 	if err != nil {
 		return Config{}, err
 	}
-	if err := CheckConfig(cfg, false, os.LookupEnv, os.Environ()); err != nil {
+	if err := CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-// LoadBrain reads the brain configuration from the environment. Brain alone
-// opens a request pool, so UPMO_DATABASE_APP_URL is required for it, and it
-// needs UPMO_MASTER_KEY outside development.
+// LoadBrain reads the brain configuration. Brain opens a request pool and
+// requires UPMO_DATABASE_APP_URL and UPMO_MASTER_KEY in every environment.
 func LoadBrain() (Config, error) {
 	cfg, err := loadBrain(os.LookupEnv)
 	if err != nil {

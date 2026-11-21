@@ -93,8 +93,8 @@ type Guard struct {
 	// ServiceKeys are UPMO_SERVICE_KEY, UPMO_SERVICE_KEY_PREVIOUS and each
 	// UPMO_PROVISION_KEYS entry, only the non-empty ones.
 	ServiceKeys []Setting
-	// RequireMasterKey refuses a missing UPMO_MASTER_KEY: brain and gateway
-	// seal credentials with it, so they need one in production.
+	// RequireMasterKey refuses a missing UPMO_MASTER_KEY: callers that load
+	// secrets need one in every environment, including development.
 	RequireMasterKey bool
 }
 
@@ -103,6 +103,11 @@ type Guard struct {
 // name the variable and the rule, never the value. In development a public
 // https origin is refused instead: the relaxed rules are for the local stack.
 func CheckGuard(g Guard, lookup func(string) (string, bool), environ []string) error {
+	if g.RequireMasterKey {
+		if v, ok := lookup("UPMO_MASTER_KEY"); !ok || strings.TrimSpace(v) == "" {
+			return fmt.Errorf("config: UPMO_MASTER_KEY is required; set a key")
+		}
+	}
 	if g.Env == EnvDevelopment {
 		if u, err := url.Parse(g.PublicURL); err == nil && u.Scheme == "https" && !tlscheck.ExemptHost(u.Hostname()) {
 			return fmt.Errorf("config: UPMO_ENV=development is refused with a public https UPMO_PUBLIC_URL")
@@ -146,11 +151,6 @@ func CheckGuard(g Guard, lookup func(string) (string, bool), environ []string) e
 		}
 		if _, isCredential := strings.CutPrefix(name, "UPMO_CREDENTIAL_"); isCredential && knownDevSecret(value) {
 			return fmt.Errorf("config: %s uses a development value; set a real value or UPMO_ENV=development", name)
-		}
-	}
-	if g.RequireMasterKey {
-		if v, ok := lookup("UPMO_MASTER_KEY"); !ok || strings.TrimSpace(v) == "" {
-			return fmt.Errorf("config: UPMO_MASTER_KEY is required in production; set a key or UPMO_ENV=development")
 		}
 	}
 	return nil
@@ -200,8 +200,8 @@ func weakKeyError(name string) error {
 	return fmt.Errorf("config: %s uses a development or weak key; set a unique key or UPMO_ENV=development", name)
 }
 
-// CheckConfig runs the guard for a loaded Config. requireMasterKey is true for
-// brain and gateway, which seal credentials with UPMO_MASTER_KEY.
+// CheckConfig runs the guard for a loaded Config. Secret-using callers require
+// UPMO_MASTER_KEY in every environment.
 func CheckConfig(cfg Config, requireMasterKey bool, lookup func(string) (string, bool), environ []string) error {
 	g := Guard{
 		Env:              cfg.Env,

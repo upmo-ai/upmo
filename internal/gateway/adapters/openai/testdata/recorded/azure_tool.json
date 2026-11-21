@@ -1,0 +1,1 @@
+{"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"call_azure_1","type":"function","function":{"name":"search","arguments":"{\"q\":\"azure\"}"}}]}}],"usage":{"prompt_tokens":8,"completion_tokens":4}}

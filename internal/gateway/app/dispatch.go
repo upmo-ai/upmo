@@ -1283,6 +1283,10 @@ func (d Dispatch) EmbedCall(ctx context.Context, routeName, credentialRef string
 			last = err
 			continue
 		}
+		if link.Account.Adapter == domain.AdapterOpenAI && domain.CompatPaths(link.Account.BaseURL).EmbedPath == "" {
+			last = domain.ErrCapability
+			continue
+		}
 		started := time.Now()
 		secret, err := d.Secrets.Get(link.Account.CredentialRef)
 		if err != nil {
