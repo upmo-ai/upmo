@@ -52,9 +52,9 @@ type Vendor struct {
 	// BaseURL is the vendor's root without a trailing slash. A path below the
 	// host that every call needs (such as /v1beta/openai) is part of it. Empty
 	// requires a user-entered base URL on a HostPatterns vendor.
-	BaseURL      string
-	HostPatterns []HostPattern
-	AuthStyle    AuthStyle
+	BaseURL       string
+	HostPatterns  []HostPattern
+	AuthStyle     AuthStyle
 	SuggestedPlan string
 	ChatPath      string
 	ModelsPath    string
@@ -90,22 +90,22 @@ var vendors = []Vendor{
 // keys. Providers not in this table contribute only to the model-only fallback
 // row in the catalogue.
 var modelsDevVendors = map[string]string{
-	"anthropic":    "anthropic",
-	"openai":       "openai",
-	"google":       "gemini",
-	"nebius":       "nebius",
-	"ollama":       "ollama",
-	"deepseek":     "deepseek",
-	"groq":         "groq",
-	"xai":          "xai",
-	"openrouter":   "openrouter",
-	"mistral":      "mistral",
-	"togetherai":   "together",
-	"cerebras":     "cerebras",
-	"fireworks-ai": "fireworks",
-	"perplexity":   "perplexity",
-	"cohere":       "cohere",
-	"lmstudio":      "lmstudio",
+	"anthropic":      "anthropic",
+	"openai":         "openai",
+	"google":         "gemini",
+	"nebius":         "nebius",
+	"ollama":         "ollama",
+	"deepseek":       "deepseek",
+	"groq":           "groq",
+	"xai":            "xai",
+	"openrouter":     "openrouter",
+	"mistral":        "mistral",
+	"togetherai":     "together",
+	"cerebras":       "cerebras",
+	"fireworks-ai":   "fireworks",
+	"perplexity":     "perplexity",
+	"cohere":         "cohere",
+	"lmstudio":       "lmstudio",
 	"amazon-bedrock": "bedrock-mantle",
 }
 

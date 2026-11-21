@@ -37,22 +37,22 @@ func microPtr(v int64) *int64 { return &v }
 // contractUsage is the usage each saved stream must end with. Every stream
 // carries the text "Hel" then "lo".
 var contractUsage = map[string]domain.Usage{
-	"openai":     {Arrived: true, Input: 4, Output: 5, CacheRead: 8},
-	"gemini":     {Arrived: true, Input: 9, Output: 4},
-	"nebius":     {Arrived: true, Input: 15, Output: 6},
-	"ollama":     {Arrived: true, Input: 21, Output: 7},
-	"deepseek":   {Arrived: true, Input: 8, Output: 5, CacheRead: 3},
-	"groq":       {Arrived: true, Input: 14, Output: 5},
-	"xai":        {Arrived: true, Input: 13, Output: 5},
-	"openrouter": {Arrived: true, Input: 8, Output: 5, CacheRead: 2, ReportedCostMicroUSD: microPtr(100)},
-	"mistral":    {Arrived: true, Input: 18, Output: 6},
-	"together":   {Arrived: true, Input: 16, Output: 5},
-	"cerebras":   {Arrived: true, Input: 17, Output: 5},
-	"fireworks":  {Arrived: true, Input: 19, Output: 5},
-	"perplexity": {Arrived: true, Input: 20, Output: 5},
-	"cohere":     {Arrived: true, Input: 22, Output: 6},
-	"lmstudio":   {Arrived: true, Input: 8, Output: 5},
-	"azure":      {Arrived: true, Input: 6, Output: 3},
+	"openai":         {Arrived: true, Input: 4, Output: 5, CacheRead: 8},
+	"gemini":         {Arrived: true, Input: 9, Output: 4},
+	"nebius":         {Arrived: true, Input: 15, Output: 6},
+	"ollama":         {Arrived: true, Input: 21, Output: 7},
+	"deepseek":       {Arrived: true, Input: 8, Output: 5, CacheRead: 3},
+	"groq":           {Arrived: true, Input: 14, Output: 5},
+	"xai":            {Arrived: true, Input: 13, Output: 5},
+	"openrouter":     {Arrived: true, Input: 8, Output: 5, CacheRead: 2, ReportedCostMicroUSD: microPtr(100)},
+	"mistral":        {Arrived: true, Input: 18, Output: 6},
+	"together":       {Arrived: true, Input: 16, Output: 5},
+	"cerebras":       {Arrived: true, Input: 17, Output: 5},
+	"fireworks":      {Arrived: true, Input: 19, Output: 5},
+	"perplexity":     {Arrived: true, Input: 20, Output: 5},
+	"cohere":         {Arrived: true, Input: 22, Output: 6},
+	"lmstudio":       {Arrived: true, Input: 8, Output: 5},
+	"azure":          {Arrived: true, Input: 6, Output: 3},
 	"bedrock-mantle": {Arrived: true, Input: 7, Output: 4},
 }
 
@@ -97,7 +97,7 @@ func (r *redirect) lastAsked() string {
 // contractCall is what the test server saw in one request.
 type contractCall struct {
 	Method, Auth, APIKey, Type string
-	Body                      map[string]any
+	Body                       map[string]any
 }
 
 // contractServer answers like a compatible vendor: the saved stream for a

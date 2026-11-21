@@ -967,7 +967,7 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 func TestAzureAndMantleDocumentedChatToolAndErrorFixtures(t *testing.T) {
 	for _, vendor := range []struct {
 		name, chat, tool, failure string
-		wantID, wantArgs         string
+		wantID, wantArgs          string
 	}{
 		{"azure", "azure_chat.json", "azure_tool.json", "azure_error.json", "call_azure_1", `{"q":"azure"}`},
 		{"bedrock-mantle", "bedrock_mantle_chat.json", "bedrock_mantle_tool.json", "bedrock_mantle_error.json", "call_mantle_1", `{"q":"mantle"}`},
