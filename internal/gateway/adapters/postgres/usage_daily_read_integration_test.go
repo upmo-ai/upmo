@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
@@ -51,11 +53,21 @@ func sortUsageScan(s *domain.UsageScan) {
 func ledgerReference(t *testing.T, r usageRig, who app.Caller, w domain.UsageWindow, group domain.UsageGroup, personal bool) domain.UsageScan {
 	t.Helper()
 	ctx := context.Background()
+	var rolled time.Time
+	var zone string
+	stateErr := r.owner.QueryRow(ctx, `SELECT rolled_through, time_zone FROM gateway.usage_daily_state WHERE id`).Scan(&rolled, &zone)
+	if stateErr != nil && !errors.Is(stateErr, pgx.ErrNoRows) {
+		t.Fatal(stateErr)
+	}
 	if _, err := r.owner.Exec(ctx, `DELETE FROM gateway.usage_daily_state`); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = r.owner.Exec(ctx, `INSERT INTO gateway.usage_daily_state (id, rolled_through, time_zone) VALUES (true, $1::date, $2) ON CONFLICT (id) DO UPDATE SET rolled_through=EXCLUDED.rolled_through,time_zone=EXCLUDED.time_zone`, w.End.AddDate(0, 0, -1).Format("2006-01-02"), w.Zone.String())
+		if errors.Is(stateErr, pgx.ErrNoRows) {
+			_, _ = r.owner.Exec(ctx, `DELETE FROM gateway.usage_daily_state`)
+		} else {
+			_, _ = r.owner.Exec(ctx, `INSERT INTO gateway.usage_daily_state (id, rolled_through, time_zone) VALUES (true, $1::date, $2) ON CONFLICT (id) DO UPDATE SET rolled_through=EXCLUDED.rolled_through,time_zone=EXCLUDED.time_zone`, rolled.Format("2006-01-02"), zone)
+		}
 	}()
 	store := postgres.Usage{Pool: r.app}
 	var got domain.UsageScan
@@ -133,6 +145,27 @@ func TestFeature_UPM392_DailyReadMatchesLedger(t *testing.T) {
 					}
 					return ""
 				}()})
+			}
+			// Pin both ends of every requested day range, the preceding day, and
+			// the two-day ledger margin around today's cutoff.
+			for _, days := range []int{7, 30, 90} {
+				w := usageWindow(z.now, days, z.loc)
+				first := w.Start.In(z.loc)
+				fy, fm, fd := first.Date()
+				for dayOffset, label := range []string{"first", "before"} {
+					day := time.Date(fy, fm, fd-dayOffset, 0, 0, 0, 0, z.loc)
+					for _, clock := range []struct{ h, m, s int }{{0, 0, 0}, {23, 59, 59}} {
+						at := time.Date(day.Year(), day.Month(), day.Day(), clock.h, clock.m, clock.s, 0, z.loc)
+						r.call(t, usageCall{at: at, user: usageAdmin, account: usageHouse, model: fmt.Sprintf("boundary-%d-%s-%d%d%d", days, label, clock.h, clock.m, clock.s), in: 1, cost: micro(1)})
+					}
+				}
+				for _, offset := range []int{-3, -2} {
+					day := z.now.In(z.loc).AddDate(0, 0, offset)
+					for _, clock := range []struct{ h, m, s int }{{0, 0, 0}, {23, 59, 59}} {
+						at := time.Date(day.Year(), day.Month(), day.Day(), clock.h, clock.m, clock.s, 0, z.loc)
+						r.call(t, usageCall{at: at, user: usageAdmin, account: usageHouse, model: fmt.Sprintf("margin-%d-%d%d%d", offset, clock.h, clock.m, clock.s), in: 1, cost: micro(1)})
+					}
+				}
 			}
 			if z.name == "Europe/Berlin" {
 				for _, at := range []time.Time{
@@ -229,6 +262,50 @@ func TestFeature_UPM392_DailyReadMatchesLedger(t *testing.T) {
 					}
 				}
 			}
+			// Prove the daily branch is used for personal 30/90-day and
+			// workspace 30-day reads by requiring an exact +1 delta.
+			for _, check := range []struct {
+				days     int
+				personal bool
+			}{{30, true}, {90, true}, {30, false}} {
+				w := usageWindow(z.now, check.days, z.loc)
+				mutate := func(delta int64) {
+					filter := ""
+					if check.personal {
+						filter = " AND user_id='" + usageAdmin + "'::uuid"
+					}
+					if _, err := r.owner.Exec(ctx, `UPDATE gateway.usage_daily SET calls=calls+$1 WHERE ctid=(SELECT ctid FROM gateway.usage_daily WHERE day >= $2::date AND day <= $3::date`+filter+` ORDER BY day LIMIT 1)`, delta, w.Start.In(z.loc).Format("2006-01-02"), w.End.AddDate(0, 0, -4).In(z.loc).Format("2006-01-02")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				read := func() domain.UsageScan {
+					var scan domain.UsageScan
+					var err error
+					if check.personal {
+						scan, err = store.PersonalUsage(ctx, app.Caller{User: usageAdmin}, w)
+					} else {
+						scan, err = store.WorkspaceUsage(ctx, caller, w, domain.GroupModel)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					return scan
+				}
+				total := func(s domain.UsageScan) int64 {
+					var n int64
+					for _, c := range s.Keyed {
+						n += c.Requests
+					}
+					return n
+				}
+				before := total(read())
+				mutate(1)
+				after := total(read())
+				mutate(-1)
+				if after-before != 1 {
+					t.Fatalf("daily mutation days=%d personal=%v changed requests by %d, want 1", check.days, check.personal, after-before)
+				}
+			}
 			if z.name == "America/Havana" {
 				havanaNow := time.Date(2025, 11, 12, 12, 0, 0, 0, time.UTC)
 				if err := postgres.RollupUsage(ctx, r.owner, z.name, havanaNow); err != nil {
@@ -279,6 +356,118 @@ func mustLocation(t *testing.T, name string) *time.Location {
 	return l
 }
 
+func TestFeature_UPM392_SkippedMidnightAndSpringForward(t *testing.T) {
+	ctx := context.Background()
+	havana := mustLocation(t, "America/Havana")
+	r := newUsageRig(t)
+	now := time.Date(2025, 3, 15, 18, 0, 0, 0, time.UTC)
+	for _, v := range []struct {
+		day, hour int
+		model     string
+	}{{8, 12, "before-window"}, {8, 23, "partial-first-day"}, {9, 1, "daily-first-day"}} {
+		r.call(t, usageCall{at: time.Date(2025, 3, 8+v.day-8, v.hour, 30, 0, 0, havana), user: usageAdmin, account: usageHouse, model: v.model, in: 1, cost: micro(1)})
+	}
+	if err := postgres.RollupUsage(ctx, r.owner, havana.String(), now); err != nil {
+		t.Fatal(err)
+	}
+	w := usageWindow(now, 7, havana)
+	store := postgres.Usage{Pool: r.app}
+	caller := app.Caller{User: usageAdmin, Allow: "usage:view"}
+	for _, read := range []struct {
+		personal bool
+		group    domain.UsageGroup
+	}{{true, ""}, {false, domain.GroupModel}} {
+		var got, want domain.UsageScan
+		var err error
+		if read.personal {
+			got, err = store.PersonalUsage(ctx, app.Caller{User: usageAdmin}, w)
+			if err == nil {
+				want = ledgerReference(t, r, app.Caller{User: usageAdmin}, w, "", true)
+			}
+		} else {
+			got, err = store.WorkspaceUsage(ctx, caller, w, read.group)
+			if err == nil {
+				want = ledgerReference(t, r, caller, w, read.group, false)
+			}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		sortUsageScan(&got)
+		sortUsageScan(&want)
+		if !reflect.DeepEqual(got.Buckets, want.Buckets) || !reflect.DeepEqual(got.Keyed, want.Keyed) {
+			t.Fatalf("Havana skipped-midnight read differs (personal=%v)", read.personal)
+		}
+		var partial, excluded int64
+		for _, c := range got.Keyed {
+			if c.Model == "partial-first-day" {
+				partial += c.Requests
+			}
+			if c.Model == "before-window" {
+				excluded += c.Requests
+			}
+		}
+		if partial != 1 || excluded != 0 {
+			t.Fatalf("Havana first-day requests included=%d before-window=%d, want 1 and 0", partial, excluded)
+		}
+	}
+
+	// On the evening before Havana's skipped midnight, today comes from the
+	// final instant in the window. A daily row on today-3 must remain readable.
+	havanaNow := time.Date(2025, 3, 8, 18, 0, 0, 0, time.UTC)
+	if err := postgres.RollupUsage(ctx, r.owner, havana.String(), havanaNow); err != nil {
+		t.Fatal(err)
+	}
+	hw := usageWindow(havanaNow, 7, havana)
+	day := havanaNow.In(havana).AddDate(0, 0, -3).Format("2006-01-02")
+	if _, err := r.owner.Exec(ctx, `UPDATE gateway.usage_daily_state SET rolled_through=$1::date`, day); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.usage_daily(day,user_id,model,plan_kind,source,calls,cost_micro_usd) VALUES($1::date,$2::uuid,'havana-today-cutoff','metered','chat',1,1) ON CONFLICT DO NOTHING`, day, usageAdmin); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.PersonalUsage(ctx, app.Caller{User: usageAdmin}, hw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cutoffCalls int64
+	for _, c := range got.Keyed {
+		if c.Model == "havana-today-cutoff" {
+			cutoffCalls += c.Requests
+		}
+	}
+	if cutoffCalls != 1 {
+		t.Fatalf("Havana gap-eve today-3 calls=%d, want 1", cutoffCalls)
+	}
+
+	berlin := mustLocation(t, "Europe/Berlin")
+	berlinNow := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	r2 := newUsageRig(t)
+	for _, at := range []time.Time{
+		time.Date(2026, 3, 29, 1, 59, 59, 0, berlin),
+		time.Date(2026, 3, 29, 3, 0, 0, 0, berlin),
+	} {
+		r2.call(t, usageCall{at: at, user: usageAdmin, account: usageHouse, model: "spring-forward", in: 1, cost: micro(1)})
+	}
+	if err := postgres.RollupUsage(ctx, r2.owner, berlin.String(), berlinNow); err != nil {
+		t.Fatal(err)
+	}
+	store2 := postgres.Usage{Pool: r2.app}
+	for _, days := range []int{7, 30} {
+		bw := usageWindow(berlinNow, days, berlin)
+		got, err := store2.PersonalUsage(ctx, app.Caller{User: usageAdmin}, bw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ledgerReference(t, r2, app.Caller{User: usageAdmin}, bw, "", true)
+		sortUsageScan(&got)
+		sortUsageScan(&want)
+		if !reflect.DeepEqual(got.Buckets, want.Buckets) || !reflect.DeepEqual(got.Keyed, want.Keyed) {
+			t.Fatalf("Berlin spring-forward %d-day read differs", days)
+		}
+	}
+}
+
 func TestFeature_UPM392_FreshnessAndZoneFallback(t *testing.T) {
 	ctx := context.Background()
 	r := newUsageRig(t)
@@ -325,7 +514,7 @@ func TestFeature_UPM392_FreshnessAndZoneFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range got.Keyed {
+	for _, c := range got.Buckets {
 		if c.Model == "bogus" {
 			t.Fatalf("lagging watermark included later bogus daily row")
 		}
@@ -365,10 +554,10 @@ func TestFeature_UPM392_FreshnessAndZoneFallback(t *testing.T) {
 		t.Fatalf("late-settle requests=%d, want 3", lateRequests)
 	}
 	// A zone mismatch forces the ledger-only path.
+	r.call(t, usageCall{at: time.Date(2026, 11, 11, 23, 30, 0, 0, time.UTC), user: usageAdmin, account: usageHouse, model: "zone-boundary", in: 1, cost: micro(1)})
 	if err := postgres.RollupUsage(ctx, r.owner, "UTC", now); err != nil {
 		t.Fatal(err)
 	}
-	r.call(t, usageCall{at: time.Date(2026, 11, 11, 23, 30, 0, 0, time.UTC), user: usageAdmin, account: usageHouse, model: "zone-boundary", in: 1, cost: micro(1)})
 	berlin := mustLocation(t, "Europe/Berlin")
 	wb := usageWindow(now, 90, berlin)
 	got, err = store.WorkspaceUsage(ctx, who, wb, domain.GroupModel)
@@ -381,6 +570,15 @@ func TestFeature_UPM392_FreshnessAndZoneFallback(t *testing.T) {
 	if !reflect.DeepEqual(got.Buckets, want.Buckets) || !reflect.DeepEqual(got.Keyed, want.Keyed) {
 		t.Fatal("zone mismatch did not match ledger")
 	}
+	var zoneRequests int64
+	for _, c := range got.Buckets {
+		if c.Model == "zone-boundary" && c.Bucket.Equal(time.Date(2026, 11, 12, 0, 0, 0, 0, berlin)) {
+			zoneRequests += c.Requests
+		}
+	}
+	if zoneRequests != 1 {
+		t.Fatalf("zone mismatch Berlin bucket requests=%d, want 1", zoneRequests)
+	}
 }
 
 func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
@@ -390,16 +588,26 @@ func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
 	ctx := context.Background()
 	r := newUsageRig(t)
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.ledger(at,route,link_position,provider_account_id,model,plan_kind,failure_class,user_id,agent_id,owner_team_id,input_tokens,output_tokens,cost_micro_usd,source,price_source) SELECT '2026-08-22 00:00Z'::timestamptz+(i%90)*interval '1 day'+(i%86400)*interval '1 second','usage',1,('00000000-0000-7000-8000-'||lpad((i%100)::text,12,'0'))::uuid,'model-'||(i%20),'metered','',('00000000-0000-7000-8000-'||lpad((i%1000)::text,12,'0'))::uuid,('00000000-0000-7000-8000-'||lpad((i%50)::text,12,'0'))::uuid,('00000000-0000-7000-8000-'||lpad((i%10)::text,12,'0'))::uuid,i%1000,i%500,1,'chat','provider' FROM generate_series(1,1000000) i`); err != nil {
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.ledger(at,route,link_position,provider_account_id,model,plan_kind,failure_class,user_id,agent_id,owner_team_id,input_tokens,output_tokens,cost_micro_usd,list_cost_micro_usd,source,price_source) SELECT '2026-08-22 00:00Z'::timestamptz+((i/3000)%90)*interval '1 day'+(((i::bigint*7919)%86400))*interval '1 second','usage',1,('00000000-0000-7000-8000-'||lpad(((m*2+((i/9000)%2))%100)::text,12,'0'))::uuid,'model-'||m,CASE WHEN i%20=0 THEN 'subscription' ELSE 'metered' END,'',('00000000-0000-7000-8000-'||lpad(u::text,12,'0'))::uuid,CASE WHEN i%4=0 THEN NULL ELSE ('00000000-0000-7000-8000-'||lpad(((u*20+m)%50)::text,12,'0'))::uuid END,('00000000-0000-7000-8000-'||lpad((u%10)::text,12,'0'))::uuid,i%1000,i%500,CASE WHEN i%20=0 OR i%10=0 THEN NULL ELSE 1 END,CASE WHEN i%20=0 THEN 100 ELSE NULL END,'chat',CASE WHEN i%20=0 THEN NULL WHEN i%10=0 THEN 'unknown' ELSE 'provider' END FROM (SELECT i, i%1000 AS u, ((i%1000 + (i/1000)%3)%20) AS m FROM generate_series(1,1000000) i) x`); err != nil {
 		t.Fatal(err)
 	}
 	if err := postgres.RollupUsage(ctx, r.owner, "UTC", now); err != nil {
 		t.Fatal(err)
 	}
+	var dailyRows int64
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_daily`).Scan(&dailyRows); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("usage_daily rows=%d", dailyRows)
+	if dailyRows < 200000 {
+		t.Fatalf("usage_daily rows=%d, want at least 200000", dailyRows)
+	}
 	store := postgres.Usage{Pool: r.app}
 	caller := app.Caller{User: usageAdmin, Allow: "usage:view"}
 	w := usageWindow(now, 90, time.UTC)
 	groups := []domain.UsageGroup{domain.GroupPerson, domain.GroupModel}
+	personalUser := "00000000-0000-7000-8000-000000000007"
+	personalCaller := app.Caller{User: personalUser}
 	for _, g := range groups {
 		times := make([]time.Duration, 0, 10)
 		for i := 0; i < 12; i++ {
@@ -414,35 +622,62 @@ func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
 			}
 		}
 		sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
-		median := times[5]
+		median := (times[4] + times[5]) / 2
 		p95 := times[9]
 		t.Logf("%s hybrid median=%s p95=%s", g, median, p95)
 		if median >= 300*time.Millisecond {
 			t.Errorf("%s median %s exceeds 300ms", g, median)
 		}
 	}
-	start := time.Now()
-	if _, err := store.PersonalUsage(ctx, app.Caller{User: usageAdmin}, w); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("personal 90-day hybrid=%s", time.Since(start))
+	personalTimes := benchmarkUsage(t, 12, func() error {
+		scan, err := store.PersonalUsage(ctx, personalCaller, w)
+		if err != nil {
+			return err
+		}
+		if requestTotal := usageRequestTotal(scan); requestTotal == 0 {
+			return fmt.Errorf("personal hybrid read for %s returned zero requests", personalUser)
+		}
+		return nil
+	})
+	t.Logf("personal 90-day hybrid median=%s p95=%s", medianUsage(personalTimes), percentile95Usage(personalTimes))
 	for _, g := range groups {
 		_, err := r.owner.Exec(ctx, `DELETE FROM gateway.usage_daily_state`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		start := time.Now()
-		_, err = store.WorkspaceUsage(ctx, caller, w, g)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("%s ledger-only=%s", g, time.Since(start))
+		times := benchmarkUsage(t, 12, func() error { _, err := store.WorkspaceUsage(ctx, caller, w, g); return err })
+		t.Logf("%s ledger-only median=%s p95=%s", g, medianUsage(times), percentile95Usage(times))
 		if err = postgres.RollupUsage(ctx, r.owner, "UTC", now); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if _, err := r.owner.Exec(ctx, `DELETE FROM gateway.usage_daily_state`); err != nil {
+		t.Fatal(err)
+	}
+	personalLedger := benchmarkUsage(t, 12, func() error {
+		scan, err := store.PersonalUsage(ctx, personalCaller, w)
+		if err != nil {
+			return err
+		}
+		if requestTotal := usageRequestTotal(scan); requestTotal == 0 {
+			return fmt.Errorf("personal ledger-only read for %s returned zero requests", personalUser)
+		}
+		return nil
+	})
+	t.Logf("personal 90-day ledger-only median=%s p95=%s", medianUsage(personalLedger), percentile95Usage(personalLedger))
+	if err := postgres.RollupUsage(ctx, r.owner, "UTC", now); err != nil {
+		t.Fatal(err)
+	}
 	var plan strings.Builder
-	rows, err := r.owner.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageHybridScanExplainQuery(), "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"))
+	tx, err := r.app.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id',$1,true), set_config('upmo.allow',$2,true), set_config('upmo.teams','',true), set_config('work_mem',$3,true)`, usageAdmin, "usage:view", "64MB"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+postgres.UsageHybridScanExplainQuery(), "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,8 +689,65 @@ func TestFeature_UPM392_Benchmark90DayMillionRows(t *testing.T) {
 		plan.WriteString(line + "\n")
 	}
 	rows.Close()
+	t.Logf("hybrid explain:\n%s", plan.String())
+	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id',$1,true), set_config('upmo.allow',$2,true), set_config('upmo.teams','',true), set_config('work_mem',$3,true)`, personalUser, "", "64MB"); err != nil {
+		t.Fatal(err)
+	}
+	personalPlan := new(strings.Builder)
+	personalQuery := postgres.UsageHybridScanExplainQuery()
+	personalQuery = strings.Replace(personalQuery, "AND (l.at AT TIME ZONE $2)::date > $6::date", "AND (l.at AT TIME ZONE $2)::date > $6::date AND l.user_id = $7::uuid", 1)
+	personalQuery = strings.Replace(personalQuery, "AND (l.at AT TIME ZONE $2)::date < $5::date", "AND (l.at AT TIME ZONE $2)::date < $5::date AND l.user_id = $7::uuid", 1)
+	personalQuery = strings.Replace(personalQuery, "WHERE l.day >= $5::date AND l.day <= $6::date", "WHERE l.day >= $5::date AND l.day <= $6::date AND l.user_id = $7::uuid", 1)
+	personalRows, err := tx.Query(ctx, `EXPLAIN (ANALYZE, BUFFERS) `+personalQuery, "day", "UTC", w.Start, w.End, w.Start.Format("2006-01-02"), w.End.AddDate(0, 0, -4).Format("2006-01-02"), personalUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for personalRows.Next() {
+		var line string
+		if err := personalRows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		personalPlan.WriteString(line + "\n")
+	}
+	personalRows.Close()
+	t.Logf("personal hybrid explain (%s):\n%s", personalUser, personalPlan.String())
 	if strings.Contains(plan.String(), "Seq Scan on usage_daily") {
 		t.Fatal("hybrid workspace read did a sequential scan of usage_daily")
 	}
-	t.Logf("hybrid explain:\n%s", plan.String())
+	if strings.Contains(plan.String(), "Seq Scan on ledger") {
+		t.Fatal("hybrid workspace read did a sequential scan of ledger")
+	}
+	if strings.Contains(personalPlan.String(), "Seq Scan on usage_daily") {
+		t.Fatal("hybrid personal read did a sequential scan of usage_daily")
+	}
+	if strings.Contains(personalPlan.String(), "Seq Scan on ledger") {
+		t.Fatal("hybrid personal read did a sequential scan of ledger")
+	}
 }
+
+func usageRequestTotal(scan domain.UsageScan) int64 {
+	var total int64
+	for _, cell := range scan.Keyed {
+		total += cell.Requests
+	}
+	return total
+}
+
+func benchmarkUsage(t *testing.T, runs int, run func() error) []time.Duration {
+	t.Helper()
+	times := make([]time.Duration, 0, runs-2)
+	for i := 0; i < runs; i++ {
+		start := time.Now()
+		if err := run(); err != nil {
+			t.Fatal(err)
+		}
+		if i >= 2 {
+			times = append(times, time.Since(start))
+		}
+	}
+	slices.Sort(times)
+	return times
+}
+
+func medianUsage(times []time.Duration) time.Duration       { return (times[4] + times[5]) / 2 }
+func percentile95Usage(times []time.Duration) time.Duration { return times[9] }
