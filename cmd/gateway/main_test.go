@@ -35,6 +35,7 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Setenv("UPMO_ENV", "")
 		t.Setenv("UPMO_DATABASE_URL", freshDBURL(t))
 		t.Setenv("UPMO_PUBLIC_URL", "http://127.0.0.1:8082")
+		t.Setenv("UPMO_MASTER_KEY", freshKey(t))
 	}
 	for _, tc := range []struct {
 		name, key, value, want string
@@ -83,9 +84,10 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 	})
 	t.Run("master key required", func(t *testing.T) {
 		base(t)
+		t.Setenv("UPMO_MASTER_KEY", "")
 		t.Setenv("UPMO_SERVICE_KEY", "upmo_svc_"+freshKey(t))
 		err := run()
-		if err == nil || !strings.Contains(err.Error(), "UPMO_MASTER_KEY is required in production") {
+		if err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
 			t.Fatalf("run err = %v", err)
 		}
 	})

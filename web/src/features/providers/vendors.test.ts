@@ -27,6 +27,20 @@ const local: ProviderVendor = {
   default_base_url: "http://localhost:11434",
   suggested_plan: "local",
 };
+const azure: ProviderVendor = {
+  key: "azure",
+  name: "Azure OpenAI",
+  adapter: "openai_compat",
+  default_base_url: "",
+  suggested_plan: "metered",
+};
+const mantle: ProviderVendor = {
+  key: "bedrock-mantle",
+  name: "Bedrock Mantle",
+  adapter: "openai_compat",
+  default_base_url: "",
+  suggested_plan: "metered",
+};
 
 describe("the picker's vendors", () => {
   it("are the brain's vendors in its order, with the test provider only in a dev build", () => {
@@ -68,5 +82,13 @@ describe("the picker's vendors", () => {
   it("keep the test provider on the fake adapter with no base URL", () => {
     expect(adapterKey(TEST_VENDOR.adapter)).toBe("fake");
     expect(baseUrlRequired(TEST_VENDOR.adapter, TEST_VENDOR.defaultBaseUrl)).toBe(false);
+  });
+
+  it("requires an entered endpoint for Azure and Bedrock Mantle", () => {
+    for (const row of [azure, mantle]) {
+      const vendor = pickerVendor(row);
+      expect([vendor.id, baseUrlRequired(vendor.adapter, vendor.defaultBaseUrl)]).toEqual([row.key, true]);
+      expect(hostedBaseUrl(vendor.defaultBaseUrl)).toBeUndefined();
+    }
   });
 });

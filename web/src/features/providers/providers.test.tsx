@@ -28,6 +28,8 @@ const vendors: ProviderVendor[] = [
   { key: "anthropic", name: "Anthropic", adapter: "anthropic", default_base_url: "https://api.anthropic.com", suggested_plan: "metered" },
   { key: "openai", name: "OpenAI", adapter: "openai_compat", default_base_url: "https://api.openai.com", suggested_plan: "metered" },
   { key: "nebius", name: "Nebius", adapter: "openai_compat", default_base_url: "https://api.tokenfactory.nebius.com", suggested_plan: "metered" },
+  { key: "azure", name: "Azure OpenAI", adapter: "openai_compat", default_base_url: "", suggested_plan: "metered" },
+  { key: "bedrock-mantle", name: "Bedrock Mantle", adapter: "openai_compat", default_base_url: "", suggested_plan: "metered" },
   { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434", suggested_plan: "local" },
 ];
 
@@ -391,7 +393,7 @@ describe("providers", () => {
       .map(({ key }) => key)
       .filter((key) => !Object.hasOwn(marks, aliasOf[key] ?? key));
 
-    expect(missing).toEqual(["nebius"]);
+    expect(missing).toEqual(["nebius", "azure", "bedrock-mantle"]);
   });
 
   it("suggests the vendor's plan with one line under each choice", async () => {
@@ -500,6 +502,26 @@ describe("providers", () => {
   });
 
   describe("step gates", () => {
+    it.each([
+      ["Azure OpenAI", "https://{resource}.openai.azure.com/openai/v1", "https://endpoint.openai.azure.com/openai/v1", "Required. Paste the Azure OpenAI base URL including /openai/v1, without the chat path."],
+      ["Bedrock Mantle", "https://bedrock-mantle.{region}.api.aws/v1", "https://bedrock-mantle.us-east-1.api.aws/v1", "Required. Paste the Bedrock Mantle base URL including /v1, without the chat path."],
+    ])("requires the documented base URL for %s", async (vendor, placeholder, endpoint, help) => {
+      stubProviderApi();
+      renderAt("/settings/providers/new");
+      click(await screen.findByRole("button", { name: vendor }));
+      await continueTo(new RegExp(`${vendor} Credentials & Plan`));
+
+      const baseUrl = screen.getByLabelText(/Base URL/) as HTMLInputElement;
+      expect(baseUrl.placeholder).toBe(placeholder);
+      expect(screen.getByText(help)).toBeTruthy();
+      expect(screen.queryByText(/api.example.com/)).toBeNull();
+      expect(isDisabled(continueButton())).toBe(true);
+      fireEvent.change(screen.getByLabelText(/^API Key/), { target: { value: "sk-test-key" } });
+      expect(isDisabled(continueButton())).toBe(true);
+      fireEvent.change(baseUrl, { target: { value: endpoint } });
+      expect(isDisabled(continueButton())).toBe(false);
+    });
+
     it("keeps Continue disabled on Credentials until a required API key is typed", async () => {
       stubProviderApi();
       renderAt("/settings/providers/new");

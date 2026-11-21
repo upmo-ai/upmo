@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,8 @@ var contractUsage = map[string]domain.Usage{
 	"perplexity": {Arrived: true, Input: 20, Output: 5},
 	"cohere":     {Arrived: true, Input: 22, Output: 6},
 	"lmstudio":   {Arrived: true, Input: 8, Output: 5},
+	"azure":      {Arrived: true, Input: 6, Output: 3},
+	"bedrock-mantle": {Arrived: true, Input: 7, Output: 4},
 }
 
 func usageEqual(a, b domain.Usage) bool {
@@ -93,8 +96,8 @@ func (r *redirect) lastAsked() string {
 
 // contractCall is what the test server saw in one request.
 type contractCall struct {
-	Method, Auth, Type string
-	Body               map[string]any
+	Method, Auth, APIKey, Type string
+	Body                      map[string]any
 }
 
 // contractServer answers like a compatible vendor: the saved stream for a
@@ -109,7 +112,7 @@ func newContractServer(t *testing.T, stream []byte) *contractServer {
 	t.Helper()
 	cs := &contractServer{}
 	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		call := contractCall{Method: r.Method, Auth: r.Header.Get("Authorization"), Type: r.Header.Get("Content-Type")}
+		call := contractCall{Method: r.Method, Auth: r.Header.Get("Authorization"), APIKey: r.Header.Get("api-key"), Type: r.Header.Get("Content-Type")}
 		if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
 			_ = json.Unmarshal(raw, &call.Body)
 		}
@@ -157,6 +160,64 @@ func compatVendors() []domain.Vendor {
 		}
 	}
 	return out
+}
+
+func contractBase(v domain.Vendor) string {
+	if v.BaseURL != "" {
+		return v.BaseURL
+	}
+	switch v.Key {
+	case "azure":
+		return "https://sample.openai.azure.com/openai/v1"
+	case "bedrock-mantle":
+		return "https://bedrock-mantle.us-east-1.api.aws/v1"
+	default:
+		return ""
+	}
+}
+
+func contractURL(base string, v domain.Vendor, operation string) string {
+	if v.Key == "azure" {
+		switch operation {
+		case "chat":
+			return "https://sample.openai.azure.com/openai/v1/chat/completions"
+		case "models":
+			return "https://sample.openai.azure.com/openai/v1/models"
+		case "embeddings":
+			return "https://sample.openai.azure.com/openai/v1/embeddings"
+		}
+	}
+	if v.Key == "bedrock-mantle" {
+		switch operation {
+		case "chat":
+			return "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions"
+		case "models":
+			return "https://bedrock-mantle.us-east-1.api.aws/v1/models"
+		}
+	}
+	switch operation {
+	case "chat":
+		return base + v.ChatPath
+	case "models":
+		return base + v.ModelsPath
+	case "embeddings":
+		return base + v.EmbedPath
+	default:
+		return ""
+	}
+}
+
+func assertContractAuth(t *testing.T, call contractCall, v domain.Vendor) {
+	t.Helper()
+	if v.AuthStyle == domain.AuthAPIKey {
+		if call.APIKey != "sk-test" || call.Auth != "" {
+			t.Errorf("auth = api-key:%q Authorization:%q, want api-key only", call.APIKey, call.Auth)
+		}
+		return
+	}
+	if call.Auth != "Bearer sk-test" || call.APIKey != "" {
+		t.Errorf("auth = api-key:%q Authorization:%q, want Bearer only", call.APIKey, call.Auth)
+	}
 }
 
 func TestContractEveryCompatVendorHasOneSavedStream(t *testing.T) {
@@ -207,7 +268,8 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if v.Local {
 				plan = domain.PlanLocal
 			}
-			attempt := app.Attempt{BaseURL: v.BaseURL, Model: "m", Secret: "sk-test", PlanKind: plan}
+			base := contractBase(v)
+			attempt := app.Attempt{BaseURL: base, Model: "m", Secret: "sk-test", PlanKind: plan}
 			ctx := context.Background()
 
 			// A streamed chat: URL, request shape, text deltas, final usage.
@@ -222,13 +284,14 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if err != nil || class != domain.ClassOK {
 				t.Fatalf("stream: class=%s err=%v", class, err)
 			}
-			if want := v.BaseURL + v.ChatPath; rt.lastAsked() != want {
+			if want := contractURL(base, v, "chat"); rt.lastAsked() != want {
 				t.Errorf("stream URL = %s, want %s", rt.lastAsked(), want)
 			}
 			call := cs.last(t)
-			if call.Method != http.MethodPost || call.Auth != "Bearer sk-test" || call.Type != "application/json" {
+			if call.Method != http.MethodPost || call.Type != "application/json" {
 				t.Errorf("stream call = %+v", call)
 			}
+			assertContractAuth(t, call, v)
 			body := call.Body
 			if body["model"] != "m" || body["stream"] != true || body["max_tokens"] != float64(64) {
 				t.Errorf("stream body = %v", body)
@@ -262,9 +325,10 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if err != nil || class != domain.ClassOK || res.Text != "hi" {
 				t.Fatalf("chat: %+v class=%s err=%v", res, class, err)
 			}
-			if want := v.BaseURL + v.ChatPath; rt.lastAsked() != want {
+			if want := contractURL(base, v, "chat"); rt.lastAsked() != want {
 				t.Errorf("chat URL = %s, want %s", rt.lastAsked(), want)
 			}
+			assertContractAuth(t, cs.last(t), v)
 			if _, streamed := cs.last(t).Body["stream"]; streamed {
 				t.Errorf("a plain chat set the stream flag")
 			}
@@ -274,20 +338,30 @@ func TestContractEveryCompatVendor(t *testing.T) {
 			if err != nil || class != domain.ClassOK {
 				t.Fatalf("probe: class=%s err=%v", class, err)
 			}
-			if want := v.BaseURL + v.ModelsPath; rt.lastAsked() != want {
+			if want := contractURL(base, v, "models"); rt.lastAsked() != want {
 				t.Errorf("probe URL = %s, want %s", rt.lastAsked(), want)
 			}
-			if call := cs.last(t); call.Method != http.MethodGet || call.Auth != "Bearer sk-test" {
+			if call := cs.last(t); call.Method != http.MethodGet {
 				t.Errorf("probe call = %+v", call)
+			} else {
+				assertContractAuth(t, call, v)
 			}
 
-			// An embed call goes to the vendor's embeddings path.
+			// Vendors without embeddings refuse before another request.
+			beforeEmbed := len(cs.calls)
 			vectors, _, class, err := a.Embed(ctx, attempt, []string{"one"})
-			if err != nil || class != domain.ClassOK || len(vectors) != 1 {
-				t.Fatalf("embed: %v class=%s err=%v", vectors, class, err)
-			}
-			if want := v.BaseURL + v.EmbedPath; rt.lastAsked() != want {
-				t.Errorf("embed URL = %s, want %s", rt.lastAsked(), want)
+			if v.EmbedPath == "" {
+				if !errors.Is(err, domain.ErrCapability) || class != domain.ClassModelAccess || len(cs.calls) != beforeEmbed {
+					t.Fatalf("unsupported embed: vectors=%v class=%s err=%v calls=%d want %d", vectors, class, err, len(cs.calls), beforeEmbed)
+				}
+			} else {
+				if err != nil || class != domain.ClassOK || len(vectors) != 1 {
+					t.Fatalf("embed: %v class=%s err=%v", vectors, class, err)
+				}
+				if want := contractURL(base, v, "embeddings"); rt.lastAsked() != want {
+					t.Errorf("embed URL = %s, want %s", rt.lastAsked(), want)
+				}
+				assertContractAuth(t, cs.last(t), v)
 			}
 		})
 	}

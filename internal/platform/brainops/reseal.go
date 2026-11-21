@@ -43,8 +43,8 @@ type ResealOptions struct {
 }
 
 // StoreCount is one store's tally. Unknown counts rows whose key id is not
-// loaded; Failed counts rows a loaded key could not open, and stored emails
-// outside the sealed format.
+// loaded; Failed counts rows a loaded key could not open, and stored password
+// hashes or emails outside the sealed format.
 type StoreCount struct {
 	Store    string
 	Resealed int64 // in a dry run: rows that would be resealed
@@ -289,8 +289,8 @@ func resealCredentials(ctx context.Context, owner *pgxpool.Pool, ring gateway.Ke
 }
 
 // resealPasswords re-seals identity.users.password_hash, walking the users by
-// id. A stored hash that is not in the sealed format is a plain legacy value:
-// left alone and counted nowhere.
+// id. A non-NULL stored hash outside the sealed format cannot be opened: it is
+// counted Failed, left as it is and never printed. NULL is not a password row.
 func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring, opts ResealOptions) (StoreCount, error) {
 	count := StoreCount{Store: StorePasswords}
 	current := ring.CurrentID()
@@ -311,6 +311,13 @@ func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 		WHERE password_hash ~ '`+storedFormat+`'
 		  AND split_part(password_hash, ':', 1) = $1`, current,
 	).Scan(&count.Current); err != nil {
+		return count, fmt.Errorf("brain: re-seal %s: count: %w", StorePasswords, err)
+	}
+	if err := owner.QueryRow(ctx, `
+		SELECT count(*)
+		FROM identity.users
+		WHERE password_hash IS NOT NULL
+		  AND password_hash !~ '`+storedFormat+`'`).Scan(&count.Failed); err != nil {
 		return count, fmt.Errorf("brain: re-seal %s: count: %w", StorePasswords, err)
 	}
 	if opts.DryRun {

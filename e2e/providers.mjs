@@ -56,6 +56,28 @@ try {
     await page.getByText("Loading providers").waitFor({ state: "detached", timeout: 20_000 });
   }
 
+  async function checkTemplateEndpoint(vendor, placeholder, endpoint) {
+    await page.getByRole("link", { name: "Add provider" }).first().click();
+    await heading("Connect a provider").waitFor();
+    await button(vendor).click();
+    await button("Continue").click();
+    await page.getByText(new RegExp(`${vendor} Credentials & Plan`)).waitFor();
+    const base = page.getByLabel(/Base URL/);
+    if ((await base.getAttribute("placeholder")) !== placeholder) {
+      throw new Error(`${vendor} base URL placeholder is ${await base.getAttribute("placeholder")}`);
+    }
+    await page.getByLabel(/^API Key/).fill("fixture-key-not-submitted");
+    if (await button("Continue").isEnabled()) {
+      throw new Error(`${vendor} continued without a base URL`);
+    }
+    await base.fill(endpoint);
+    if (!(await button("Continue").isEnabled())) {
+      throw new Error(`${vendor} did not continue after the base URL was filled`);
+    }
+    await button("Back").click();
+    await heading("Connect a provider").waitFor();
+  }
+
   // Walks the wizard for the built in test provider through a passing test to
   // the models the provider listed.
   async function testToModels(accountName) {
@@ -119,6 +141,13 @@ try {
   if ((await card().count()) !== 0) {
     throw new Error(`${name} is already in the list: e2e/seed-tasks.sql did not clear the provider accounts`);
   }
+
+  // Template vendors require the documented endpoint path before the wizard
+  // can continue. The placeholder key is never submitted to the server.
+  await checkTemplateEndpoint("Azure OpenAI", "https://{resource}.openai.azure.com/openai/v1", "https://example.openai.azure.com/openai/v1");
+  await checkTemplateEndpoint("Bedrock Mantle", "https://bedrock-mantle.{region}.api.aws/v1", "https://bedrock-mantle.us-east-1.api.aws/v1");
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await heading("Providers").waitFor();
 
   // Add an account: test, tick two of the models the provider listed, save.
   await testToModels(name);

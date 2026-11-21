@@ -27,6 +27,7 @@ import (
 )
 
 func TestBrainNewAndExtensionOptions(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -197,6 +198,7 @@ func (w *hookJobWorker) Work(context.Context, *river.Job[hookJobArgs]) error {
 }
 
 func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -419,6 +421,7 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 }
 
 func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {

@@ -93,6 +93,61 @@ func TestAdapterEmbedOrdersByIndex(t *testing.T) {
 	}
 }
 
+func TestEmbedUnsupportedCapability(t *testing.T) {
+	var hits atomic.Int32
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		hits.Add(1)
+		return nil, errors.New("unexpected HTTP request")
+	})
+	_, _, class, err := (Adapter{Client: &http.Client{Transport: rt}}).Embed(context.Background(), app.Attempt{
+		BaseURL: "https://bedrock-mantle.us-east-1.api.aws/v1", Model: "openai.gpt-oss-20b", Secret: "sk-test",
+	}, []string{"one"})
+	if !errors.Is(err, domain.ErrCapability) || class != domain.ClassModelAccess || hits.Load() != 0 {
+		t.Fatalf("class=%s err=%v HTTP hits=%d, want model-access capability refusal and no request", class, err, hits.Load())
+	}
+}
+
+func TestPatternVendorURLsTrimTrailingSlashAndKeepDocumentedPath(t *testing.T) {
+	for _, tc := range []struct {
+		key, base string
+		want      []string
+	}{
+		{
+			key:  "azure",
+			base: "https://sample.openai.azure.com/openai/v1/",
+			want: []string{
+				"https://sample.openai.azure.com/openai/v1/chat/completions",
+				"https://sample.openai.azure.com/openai/v1/models",
+				"https://sample.openai.azure.com/openai/v1/embeddings",
+			},
+		},
+		{
+			key:  "bedrock-mantle",
+			base: "https://bedrock-mantle.us-east-1.api.aws/v1/",
+			want: []string{
+				"https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions",
+				"https://bedrock-mantle.us-east-1.api.aws/v1/models",
+			},
+		},
+	} {
+		v, ok := domain.VendorFor(tc.key)
+		if !ok {
+			t.Fatalf("VendorFor(%q) missing", tc.key)
+		}
+		base, paths, ok := target(app.Attempt{BaseURL: tc.base})
+		if !ok || base != strings.TrimSuffix(tc.base, "/") || paths.Key != tc.key {
+			t.Fatalf("target(%q) = %q %+v %t", tc.base, base, paths, ok)
+		}
+		got := []string{base + paths.ChatPath, base + paths.ModelsPath}
+		if paths.EmbedPath != "" {
+			got = append(got, base+paths.EmbedPath)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s final URLs = %v, want %v", tc.key, got, tc.want)
+		}
+	}
+}
+
 func TestEncodeChatOrderIsToolsSystemMessages(t *testing.T) {
 	req, err := domain.Build(domain.Input{
 		Tools:    []domain.Tool{{Name: "search", Schema: json.RawMessage(`{"type":"object"}`)}},
@@ -801,6 +856,16 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 			},
 		},
 		{
+			name: "Azure deployment list",
+			file: "azure_models.json",
+			want: []domain.SeenModel{{ID: "my-gpt-4o-deployment"}},
+		},
+		{
+			name: "Bedrock Mantle model list",
+			file: "bedrock_mantle_models.json",
+			want: []domain.SeenModel{{ID: "openai.gpt-oss-20b"}},
+		},
+		{
 			name: "gemini strips models prefix",
 			file: "gemini_models.json",
 			want: []domain.SeenModel{
@@ -894,6 +959,66 @@ func TestProbeParsesRecordedFixturesAndRejectsBadLists(t *testing.T) {
 			got, class, err := (Adapter{Client: srv.Client()}).Probe(context.Background(), app.Attempt{BaseURL: srv.URL, Secret: "sk-test"})
 			if err != nil || class != domain.ClassOK || got != nil {
 				t.Fatalf("got=%+v class=%s err=%v, want nil models with ClassOK", got, class, err)
+			}
+		})
+	}
+}
+
+func TestAzureAndMantleDocumentedChatToolAndErrorFixtures(t *testing.T) {
+	for _, vendor := range []struct {
+		name, chat, tool, failure string
+		wantID, wantArgs         string
+	}{
+		{"azure", "azure_chat.json", "azure_tool.json", "azure_error.json", "call_azure_1", `{"q":"azure"}`},
+		{"bedrock-mantle", "bedrock_mantle_chat.json", "bedrock_mantle_tool.json", "bedrock_mantle_error.json", "call_mantle_1", `{"q":"mantle"}`},
+	} {
+		vendor := vendor
+		t.Run(vendor.name, func(t *testing.T) {
+			read := func(name string) []byte {
+				t.Helper()
+				raw, err := os.ReadFile(filepath.Join("testdata", "recorded", name)) //nolint:gosec // static testdata path
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			}
+			chat, tool := read(vendor.chat), read(vendor.tool)
+			var chatHits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/chat/completions" {
+					t.Errorf("chat path = %q", r.URL.Path)
+				}
+				if chatHits.Add(1) == 1 {
+					_, _ = w.Write(chat)
+					return
+				}
+				_, _ = w.Write(tool)
+			}))
+			t.Cleanup(srv.Close)
+			request, err := domain.Build(domain.Input{Tools: []domain.Tool{{Name: "search"}}, Messages: []domain.Message{{Role: domain.RoleUser, Text: "find"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := Adapter{Client: srv.Client()}
+			attempt := app.Attempt{BaseURL: srv.URL, Model: "m", Secret: "sk-test"}
+			got, class, err := adapter.Chat(context.Background(), attempt, request)
+			if err != nil || class != domain.ClassOK || got.Text != "Fixture answer" || !got.Usage.Arrived {
+				t.Fatalf("chat fixture=%+v class=%s err=%v", got, class, err)
+			}
+			got, class, err = adapter.Chat(context.Background(), attempt, request)
+			if err != nil || class != domain.ClassOK || len(got.ToolCalls) != 1 || got.ToolCalls[0].ID != vendor.wantID || got.ToolCalls[0].Name != "search" || string(got.ToolCalls[0].Arguments) != vendor.wantArgs {
+				t.Fatalf("tool response=%+v class=%s err=%v", got, class, err)
+			}
+
+			failure := read(vendor.failure)
+			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write(failure)
+			}))
+			defer bad.Close()
+			_, class, err = (Adapter{Client: bad.Client()}).Chat(context.Background(), app.Attempt{BaseURL: bad.URL, Model: "m", Secret: "sk-test"}, request)
+			if err == nil || class != domain.ClassRateLimit {
+				t.Fatalf("error fixture class=%s err=%v", class, err)
 			}
 		})
 	}

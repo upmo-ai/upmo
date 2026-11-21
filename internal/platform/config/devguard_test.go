@@ -205,7 +205,7 @@ func TestCheckGuardProductionRefuses(t *testing.T) {
 	t.Run("missing master key", func(t *testing.T) {
 		refuses(t, Guard{Env: EnvProduction, RequireMasterKey: true},
 			lookupFrom(nil), nil,
-			"UPMO_MASTER_KEY is required in production", "")
+			"UPMO_MASTER_KEY is required; set a key", "")
 	})
 	t.Run("unparseable url left to the existing checks", func(t *testing.T) {
 		urls := []Setting{{Name: "UPMO_DATABASE_URL", Value: "not a url at all"}}
@@ -242,6 +242,9 @@ func TestCheckGuardDevelopment(t *testing.T) {
 	if err := CheckGuard(g, lookup, environ); err != nil {
 		t.Fatalf("development with the compose values: %v", err)
 	}
+	if err := CheckGuard(g, lookupFrom(nil), environ); err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
+		t.Fatalf("development missing-key err = %v", err)
+	}
 
 	g.PublicURL = "https://upmo.example.com"
 	err := CheckGuard(g, lookup, environ)
@@ -265,6 +268,7 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Setenv("UPMO_ENV", "")
 		t.Setenv("UPMO_DATABASE_URL", freshDBURL(t))
 		t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
+		t.Setenv("UPMO_MASTER_KEY", freshKey(t))
 	}
 	for _, tc := range []struct {
 		name, key, value, want string
@@ -299,9 +303,22 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 	t.Run("missing master key", func(t *testing.T) {
 		base(t)
 		t.Setenv("UPMO_DATABASE_APP_URL", freshDBURL(t))
+		t.Setenv("UPMO_MASTER_KEY", "")
 		_, err := LoadBrain()
-		if err == nil || !strings.Contains(err.Error(), "UPMO_MASTER_KEY is required in production") {
+		if err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
 			t.Fatalf("LoadBrain err = %v", err)
+		}
+	})
+	t.Run("development missing master key", func(t *testing.T) {
+		base(t)
+		t.Setenv("UPMO_ENV", "development")
+		t.Setenv("UPMO_DATABASE_URL", composeDBURL())
+		t.Setenv("UPMO_DATABASE_APP_URL", "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable")
+		t.Setenv("UPMO_MASTER_KEY", "")
+		for name, load := range map[string]func() (Config, error){"brain": LoadBrain, "gateway": Load} {
+			if _, err := load(); err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
+				t.Errorf("development %s missing-key err = %v", name, err)
+			}
 		}
 	})
 }

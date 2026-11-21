@@ -56,4 +56,11 @@ func TestGateCooldown(t *testing.T) {
 	if bad.Closed(now) {
 		t.Fatal("a credential failure cools the key")
 	}
+	if NextAction(ClassModelAccess, 0) != ActionNext {
+		t.Fatal("model-access failure should advance to the next link")
+	}
+	modelAccess := Gate{}.Note(now, ClassModelAccess, 0)
+	if modelAccess.Closed(now.Add(DefaultCool - time.Nanosecond)) {
+		t.Fatal("model-access failure should cool the key for DefaultCool")
+	}
 }

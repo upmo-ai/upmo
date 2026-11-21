@@ -33,9 +33,9 @@ const (
 )
 
 // KeyringFromEnv builds the ring from configuration. With no UPMO_MASTER_KEY
-// it returns the zero ring and no error: the process runs, and saving a key
-// is refused. A key that is set but wrong is an error naming the variable,
-// never the value.
+// it still returns the zero ring and no error; process startup guards require
+// the key before brain or gateway starts. A set but invalid key is an error
+// naming the variable, never the value.
 func KeyringFromEnv(lookup func(string) (string, bool), environ []string) (Keyring, error) {
 	current, _ := lookup(EnvMasterKey)
 	if strings.TrimSpace(current) == "" {

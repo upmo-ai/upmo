@@ -1,0 +1,1 @@
+{"id":"chatcmpl-mantle-fixture","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}

@@ -69,11 +69,19 @@ function shareChoiceChanged(existing: ListedProvider, scope: ShareAsk, teams: re
 function baseUrlHelp(meta: PickerVendor): string {
   if (meta.adapter === "fake") return "Optional for the built in test provider.";
   if (meta.suggestedPlan === "local") return `Required. Address of your local or private ${meta.name} service.`;
+  if (meta.id === "azure") return "Required. Paste the Azure OpenAI base URL including /openai/v1, without the chat path.";
+  if (meta.id === "bedrock-mantle") return "Required. Paste the Bedrock Mantle base URL including /v1, without the chat path.";
   const fallback = hostedBaseUrl(meta.defaultBaseUrl);
   if (fallback) {
     return `Optional. Empty uses ${fallback}. Change it only for a proxy or a private deployment, and give the address without the chat path.`;
   }
   return "Required. Address of the provider's API as its documentation gives it, for example https://api.example.com, without the chat path.";
+}
+
+function baseUrlPlaceholder(meta: PickerVendor): string {
+  if (meta.id === "azure") return "https://{resource}.openai.azure.com/openai/v1";
+  if (meta.id === "bedrock-mantle") return "https://bedrock-mantle.{region}.api.aws/v1";
+  return meta.defaultBaseUrl ?? "https://api.example.com";
 }
 
 /** A saved account whose vendor the brain no longer offers still opens, under its own name. */
@@ -442,7 +450,7 @@ function ProviderForm({ mode, vendors, existing }: ProviderFormProps) {
             setBaseUrl(e.target.value);
             resetTest();
           }}
-          placeholder={selectedMeta.defaultBaseUrl ?? "https://api.example.com"}
+          placeholder={baseUrlPlaceholder(selectedMeta)}
         />
 
         <Radio.Group

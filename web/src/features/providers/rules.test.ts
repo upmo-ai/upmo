@@ -74,6 +74,7 @@ describe("baseUrlRequired", () => {
     expect(baseUrlRequired("ollama", "http://localhost:11434")).toBe(true);
     expect(baseUrlRequired("lmstudio", "http://localhost:1234")).toBe(true);
     expect(baseUrlRequired("deepseek")).toBe(true);
+    expect(baseUrlRequired("openai_compat", undefined)).toBe(true);
   });
 
   it("does not require one when the provider has a hosted default", () => {

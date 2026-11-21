@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway"
 	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
+	openaiadapter "github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	knowledgegateway "github.com/upmo-ai/upmo/internal/knowledge/adapters/gateway"
@@ -711,6 +713,114 @@ func TestFeature_UPM353_EachSourceWritesItsSourceAndPayer(t *testing.T) {
 		if got[source] != attribution {
 			t.Errorf("%s attribution = %+v, want %+v", source, got[source], attribution)
 		}
+	}
+}
+
+type endpointRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f endpointRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestMantleEmbeddingSkipsWithoutLedgerOrCooldown(t *testing.T) {
+	w := newPinWorld(t, nil)
+	ctx := context.Background()
+	const openAIAccount = "018f3b2c-7a10-7c4a-8e11-000000000005"
+	if _, err := w.pool.Exec(ctx, `
+		UPDATE gateway.provider_accounts
+		SET provider = 'bedrock-mantle', adapter = $2,
+		    base_url = 'https://bedrock-mantle.us-east-1.api.aws/v1'
+		WHERE id = $1::uuid`, pinHouse, domain.AdapterOpenAI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts
+			(id, owner_user_id, provider, name, adapter, credential_ref, plan_kind, house, base_url, visibility)
+		VALUES ($1::uuid, NULL, 'openai', 'pin-openai', $2, 'pin_openai', 'metered', true,
+			'https://api.openai.com', 'everyone')`, openAIAccount, domain.AdapterOpenAI); err != nil {
+		t.Fatal(err)
+	}
+	insertRoute := func(name, capability string, accounts ...string) {
+		t.Helper()
+		var id string
+		if err := w.pool.QueryRow(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ($1, $2, true) RETURNING id::text`, name, capability).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		for i, account := range accounts {
+			if _, err := w.pool.Exec(ctx, `
+				INSERT INTO gateway.route_links (route_id, position, provider_account_id, model, retry_budget)
+				VALUES ($1::uuid, $2, $3::uuid, $4, 0)`, id, i+1, account, []string{"mantle-model", "openai-embed"}[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	insertRoute("mantle-fallback", "embed", pinHouse, openAIAccount)
+	insertRoute("mantle-only", "embed", pinHouse)
+	insertRoute("mantle-chat", "chat", pinHouse)
+
+	var mantleHits, openAIEmbedHits, openAIChatHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/embeddings"):
+			openAIEmbedHits.Add(1)
+			vector := make([]float32, domain.EmbedDim)
+			vector[0] = 1
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"index": 0, "embedding": vector}},
+				"usage": map[string]int{"prompt_tokens": 1},
+			})
+		default:
+			openAIChatHits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]string{"content": "from mantle"}}},
+				"usage": map[string]int{"prompt_tokens": 1, "completion_tokens": 1},
+			})
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	transport := endpointRoundTrip(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Hostname(), "bedrock-mantle.") {
+			mantleHits.Add(1)
+		}
+		moved := req.Clone(req.Context())
+		moved.URL.Scheme = "http"
+		moved.URL.Host = strings.TrimPrefix(upstream.URL, "http://")
+		moved.Host = ""
+		return http.DefaultTransport.RoundTrip(moved)
+	})
+	adapter := openaiadapter.Adapter{Client: &http.Client{Transport: transport}}
+	w.disp.Secrets = pinSecrets{"pin_house": "mantle-key", "pin_openai": "openai-key"}
+	w.disp.Gates = app.NewGates()
+	w.disp.Chat[domain.AdapterOpenAI] = adapter
+	w.disp.Stream[domain.AdapterOpenAI] = adapter
+	w.disp.Embed[domain.AdapterOpenAI] = adapter
+
+	model, vectors, err := w.disp.EmbedCall(ctx, "mantle-fallback", "", domain.Principal{}, []string{"query"})
+	if err != nil || model != "openai-embed" || len(vectors) != 1 || len(vectors[0]) != domain.EmbedDim {
+		t.Fatalf("model=%q vectors=%d err=%v", model, len(vectors), err)
+	}
+	if mantleHits.Load() != 0 || openAIEmbedHits.Load() != 1 {
+		t.Fatalf("Mantle hits=%d OpenAI embed hits=%d", mantleHits.Load(), openAIEmbedHits.Load())
+	}
+	var mantleLedger int
+	if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger WHERE provider_account_id = $1::uuid`, pinHouse).Scan(&mantleLedger); err != nil {
+		t.Fatal(err)
+	}
+	if mantleLedger != 0 || !w.disp.Gates.Closed("pin_house") {
+		t.Fatalf("Mantle ledger rows=%d key available=%t", mantleLedger, w.disp.Gates.Closed("pin_house"))
+	}
+
+	if _, err := w.disp.ChatCall(ctx, "mantle-chat", "", domain.Principal{}, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "hello"}}}); err != nil {
+		t.Fatalf("Mantle chat after embed skip: %v", err)
+	}
+	if mantleHits.Load() != 1 || openAIChatHits.Load() != 1 || !w.disp.Gates.Closed("pin_house") {
+		t.Fatalf("after Mantle chat: Mantle hits=%d OpenAI chat hits=%d key available=%t", mantleHits.Load(), openAIChatHits.Load(), w.disp.Gates.Closed("pin_house"))
+	}
+
+	mux := http.NewServeMux()
+	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, httpapi.PathEmbed, strings.NewReader(`{"route":"mantle-only","inputs":["query"]}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Mantle-only embedding status=%d body=%s, want 400", rec.Code, rec.Body.String())
 	}
 }
 

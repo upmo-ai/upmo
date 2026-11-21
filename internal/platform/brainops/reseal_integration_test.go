@@ -731,6 +731,46 @@ func TestResealCountsAMalformedEmailFailedAndNeverPrintsIt(t *testing.T) {
 	}
 }
 
+func TestResealCountsPlainPasswordHashFailedInDryRunAndLiveRun(t *testing.T) {
+	owner := newResealDB(t)
+	ctx := context.Background()
+	ring1 := reseedRing(t, "k1")
+	id := seedPerson(t, owner, ring1, "ada@example.com", "sealed-password")
+	cleared := seedPerson(t, owner, ring1, "ben@example.com", "sealed-password")
+	const plain = "plain-password-hash-marker"
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, id, plain); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET password_hash = NULL WHERE id = $1`, cleared); err != nil {
+		t.Fatal(err)
+	}
+
+	ring2 := reseedRing(t, "k2", "k1")
+	for _, dryRun := range []bool{true, false} {
+		var out bytes.Buffer
+		result, err := Reseal(ctx, owner, ring2, ResealOptions{DryRun: dryRun, Out: &out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := storeCount(t, result, StorePasswords); got.Failed != 1 {
+			t.Fatalf("dry run %t password tally = %+v, want Failed=1", dryRun, got)
+		}
+		label := "resealed"
+		if dryRun {
+			label = "would_reseal"
+		}
+		if !strings.Contains(out.String(), StorePasswords+": "+label+"=0 current=0 unknown_key=0 failed=1") {
+			t.Fatalf("dry run %t output = %q", dryRun, out.String())
+		}
+		if strings.Contains(out.String(), plain) {
+			t.Fatalf("dry run %t printed the stored hash", dryRun)
+		}
+		if got := readPerson(t, owner, id).passwordHash; got != plain {
+			t.Fatalf("dry run %t changed the password hash to %q", dryRun, got)
+		}
+	}
+}
+
 // Two people sharing an address across key generations collide on the index
 // hash when the second is resealed: that row is counted Failed and left as it
 // is, the batch still commits the other rows, and the next run ends the same

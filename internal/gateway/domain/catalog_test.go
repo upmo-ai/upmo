@@ -116,9 +116,13 @@ func TestParseCatalogFixture(t *testing.T) {
 		t.Fatalf("gemini flash = %+v (ok=%v)", gemFlash, ok)
 	}
 
-	// Unmapped provider ("amazon-bedrock") contributes only to fallback.
+	// Exact amazon-bedrock IDs map to Mantle and still contribute to fallback.
+	mantle, ok := findRow(rows, "bedrock-mantle", "bedrock-only-model")
+	if !ok || mantle.Price.InputPerMTok == nil || *mantle.Price.InputPerMTok != 2 {
+		t.Fatalf("Mantle bedrock-only-model = %+v (ok=%v)", mantle, ok)
+	}
 	if _, ok := findRow(rows, "amazon-bedrock", "bedrock-only-model"); ok {
-		t.Fatal("unmapped provider must not emit vendor row")
+		t.Fatal("models.dev provider id must map to the picker vendor key")
 	}
 	if _, ok := findRow(rows, "", "bedrock-only-model"); !ok {
 		t.Fatal("missing fallback row for bedrock-only-model")

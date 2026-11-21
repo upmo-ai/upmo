@@ -47,6 +47,17 @@ func target(attempt app.Attempt) (base string, paths domain.Vendor, ok bool) {
 	return base, domain.CompatPaths(base), true
 }
 
+func authorize(req *http.Request, style domain.AuthStyle, secret string) {
+	if secret == "" {
+		return
+	}
+	if style == domain.AuthAPIKey {
+		req.Header.Set("api-key", secret)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+}
+
 // Probe asks for the model list, the cheapest call that needs the key. It
 // returns the discovered models and the failure class of the answer. A
 // malformed or oversized list keeps ClassOK when the auth call succeeded and
@@ -60,9 +71,7 @@ func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) ([]domain.SeenM
 	if err != nil {
 		return nil, domain.ClassCaller, err
 	}
-	if attempt.Secret != "" {
-		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
-	}
+	authorize(req, paths.AuthStyle, attempt.Secret)
 	res, err := a.client(attempt).Do(req)
 	if err != nil {
 		return nil, classForErr(err), err
@@ -282,9 +291,7 @@ func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req d
 		return domain.ChatResult{}, domain.ClassCaller, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if attempt.Secret != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+attempt.Secret)
-	}
+	authorize(httpReq, paths.AuthStyle, attempt.Secret)
 	res, err := a.client(attempt).Do(httpReq)
 	if err != nil {
 		return domain.ChatResult{}, classForErr(err), err
@@ -776,9 +783,7 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 		return domain.ChatResult{}, domain.ClassCaller, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if attempt.Secret != "" {
-		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
-	}
+	authorize(req, paths.AuthStyle, attempt.Secret)
 	res, err := a.client(attempt).Do(req)
 	if err != nil {
 		return domain.ChatResult{}, classForErr(err), err
@@ -858,6 +863,9 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 	if !ok {
 		return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
+	if paths.EmbedPath == "" {
+		return nil, domain.Usage{}, domain.ClassModelAccess, domain.ErrCapability
+	}
 	body, err := json.Marshal(struct {
 		Model string   `json:"model"`
 		Input []string `json:"input"`
@@ -870,9 +878,7 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 		return nil, domain.Usage{}, domain.ClassCaller, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if attempt.Secret != "" {
-		req.Header.Set("Authorization", "Bearer "+attempt.Secret)
-	}
+	authorize(req, paths.AuthStyle, attempt.Secret)
 	res, err := a.client(attempt).Do(req)
 	if err != nil {
 		return nil, domain.Usage{}, classForErr(err), err

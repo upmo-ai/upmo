@@ -13,6 +13,7 @@ import (
 var pickerVendors = []string{
 	"anthropic", "openai", "gemini", "nebius", "ollama", "deepseek", "groq", "xai",
 	"openrouter", "mistral", "together", "cerebras", "fireworks", "perplexity", "cohere", "lmstudio",
+	"azure", "bedrock-mantle",
 }
 
 func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
@@ -33,12 +34,21 @@ func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
 		if v.Local {
 			plan = PlanLocal
 		}
-		if clean, err := CleanBaseURL(plan, v.BaseURL); err != nil || clean != v.BaseURL {
-			t.Errorf("%s: base URL %q is not one an account may save: %q, %v", key, v.BaseURL, clean, err)
+		base := v.BaseURL
+		if base == "" {
+			if len(v.HostPatterns) == 0 {
+				t.Errorf("%s: empty base URL without host patterns", key)
+				continue
+			}
+			base = savedBases(v)[0]
+		} else if clean, err := CleanBaseURL(plan, base); err != nil || clean != base {
+			t.Errorf("%s: base URL %q is not one an account may save: %q, %v", key, base, clean, err)
 		}
 		paths := []string{v.ChatPath, v.ModelsPath}
 		if v.Adapter == AdapterOpenAI {
-			paths = append(paths, v.EmbedPath)
+			if v.EmbedPath != "" {
+				paths = append(paths, v.EmbedPath)
+			}
 		} else if v.EmbedPath != "" {
 			t.Errorf("%s: a native adapter has no embed path, got %q", key, v.EmbedPath)
 		}
@@ -46,34 +56,49 @@ func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
 			if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "?#") || strings.HasSuffix(p, "/") {
 				t.Errorf("%s: path %q is not a clean absolute path", key, p)
 			}
-			u, err := url.Parse(v.BaseURL + p)
+			u, err := url.Parse(base + p)
 			if err != nil || u.Host == "" || u.RawQuery != "" {
-				t.Errorf("%s: %q does not join into a URL: %v", key, v.BaseURL+p, err)
+				t.Errorf("%s: %q does not join into a URL: %v", key, base+p, err)
 			}
 		}
 	}
 }
 
-// savedBases is every base URL an account of v may be saved on: the vendor's
-// default plus one per legacy host from before a move.
+// savedBases gives a representative base URL for every way an account of v
+// may be saved: its default, or one documented base per host pattern.
 func savedBases(v Vendor) []string {
-	bases := []string{v.BaseURL}
-	for _, h := range v.LegacyHosts {
-		bases = append(bases, "https://"+h)
+	if v.BaseURL != "" {
+		return []string{v.BaseURL}
+	}
+	var bases []string
+	for _, pattern := range v.HostPatterns {
+		base := "https://" + strings.Replace(string(pattern), "*", "sample", 1)
+		switch v.Key {
+		case "azure":
+			base += "/openai/v1"
+		case "bedrock-mantle":
+			base += "/v1"
+		}
+		bases = append(bases, base)
 	}
 	return bases
 }
 
 func TestHostedVendorHostsAreUnique(t *testing.T) {
-	// The host is how the compatible adapter tells hosted vendors apart, so two
-	// of them may not share one, and a legacy host may not collide with any
-	// host another vendor answers on. A local runtime is judged by no host.
+	// The host is how the compatible adapter tells hosted vendors apart, so
+	// their base hosts and representative pattern hosts must all be distinct.
 	seen := map[string]string{}
 	for _, v := range Vendors() {
 		if v.Local {
 			continue
 		}
-		hosts := append([]string{hostOf(v.BaseURL)}, v.LegacyHosts...)
+		var hosts []string
+		if v.BaseURL != "" {
+			hosts = append(hosts, hostOf(v.BaseURL))
+		}
+		for _, pattern := range v.HostPatterns {
+			hosts = append(hosts, strings.Replace(string(pattern), "*", "sample", 1))
+		}
 		for _, host := range hosts {
 			if host == "" {
 				t.Errorf("%s: empty host among %v", v.Key, hosts)
@@ -106,44 +131,44 @@ func TestVendorsReturnsACopy(t *testing.T) {
 	}
 }
 
-func TestLegacyHostsAreCopiedWhenAVendorIsHandedOut(t *testing.T) {
+func TestHostPatternsAreCopiedWhenAVendorIsHandedOut(t *testing.T) {
 	// Vendors, VendorFor and CompatPaths hand Vendor values out of the table.
-	// Their LegacyHosts must be copies, or a caller editing a returned slice
-	// would rewrite the alias data every later call reads.
+	// Their HostPatterns must be copies, or a caller editing a returned slice
+	// would rewrite the matching data every later call reads.
 	checked := 0
 	for _, v := range Vendors() {
-		if len(v.LegacyHosts) == 0 {
+		if len(v.HostPatterns) == 0 {
 			continue
 		}
 		checked++
-		want := slices.Clone(v.LegacyHosts)
+		want := slices.Clone(v.HostPatterns)
 
-		v.LegacyHosts[0] = "mutated.example.com"
-		if again, ok := VendorFor(v.Key); !ok || !slices.Equal(again.LegacyHosts, want) {
-			t.Errorf("%s: VendorFor legacy hosts = %v after editing the Vendors() copy, want %v", v.Key, again.LegacyHosts, want)
+		v.HostPatterns[0] = "*.mutated.example.com"
+		if again, ok := VendorFor(v.Key); !ok || !slices.Equal(again.HostPatterns, want) {
+			t.Errorf("%s: VendorFor host patterns = %v after editing the Vendors() copy, want %v", v.Key, again.HostPatterns, want)
 		}
 
 		fromLookup, ok := VendorFor(v.Key)
 		if !ok {
 			t.Fatalf("%s disappeared from the table", v.Key)
 		}
-		fromLookup.LegacyHosts[0] = "mutated.example.com"
-		if again, ok := VendorFor(v.Key); !ok || !slices.Equal(again.LegacyHosts, want) {
-			t.Errorf("%s: VendorFor legacy hosts = %v after editing a returned vendor, want %v", v.Key, again.LegacyHosts, want)
+		fromLookup.HostPatterns[0] = "*.mutated.example.com"
+		if again, ok := VendorFor(v.Key); !ok || !slices.Equal(again.HostPatterns, want) {
+			t.Errorf("%s: VendorFor host patterns = %v after editing a returned vendor, want %v", v.Key, again.HostPatterns, want)
 		}
 
-		base := "https://" + want[0]
+		base := "https://" + strings.Replace(string(want[0]), "*", "sample", 1)
 		paths := CompatPaths(base)
 		if paths.Key != v.Key {
 			t.Fatalf("CompatPaths(%q) = %q, want %s", base, paths.Key, v.Key)
 		}
-		paths.LegacyHosts[0] = "mutated.example.com"
-		if got := CompatPaths(base); got.Key != v.Key || slices.Contains(got.LegacyHosts, "mutated.example.com") {
+		paths.HostPatterns[0] = "*.mutated.example.com"
+		if got := CompatPaths(base); got.Key != v.Key || slices.Contains(got.HostPatterns, HostPattern("*.mutated.example.com")) {
 			t.Errorf("%s: CompatPaths(%q) after editing a returned vendor = %+v, want %s with %v", v.Key, base, got, v.Key, want)
 		}
 	}
-	if checked == 0 {
-		t.Fatal("no vendor carries a legacy host, so the copies went untested")
+	if checked != 2 {
+		t.Fatalf("checked %d pattern vendors, want Azure and Mantle", checked)
 	}
 }
 
@@ -167,7 +192,7 @@ func TestAnthropicIsTheNativeVendor(t *testing.T) {
 }
 
 func TestCompatPathsFollowTheHost(t *testing.T) {
-	legacy := legacyPaths
+	generic := genericPaths
 	cases := []struct {
 		name, base string
 		chat       string
@@ -182,12 +207,26 @@ func TestCompatPathsFollowTheHost(t *testing.T) {
 		{"perplexity", "https://api.perplexity.ai", "/chat/completions", "/v1/models", "/v1/embeddings"},
 		{"upper case and a port", "https://API.Deepseek.com:443/", "/chat/completions", "/models", "/embeddings"},
 		{"a root dot", "https://api.deepseek.com./", "/chat/completions", "/models", "/embeddings"},
-		{"anthropic keeps the compatible endpoint", "https://api.anthropic.com", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
-		{"a proxy", "https://llm.example.com", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
-		{"a local runtime", "http://localhost:11434", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
-		{"a private address", "http://10.0.0.5:8080", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
-		{"no base", "", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
-		{"not a URL", "::", legacy.ChatPath, legacy.ModelsPath, legacy.EmbedPath},
+		{"azure resource", "https://my-resource.openai.azure.com/openai/v1", "/chat/completions", "/models", "/embeddings"},
+		{"azure Foundry with case port and root dot", "https://MY-RESOURCE.SERVICES.AI.AZURE.COM.:443/openai/v1", "/chat/completions", "/models", "/embeddings"},
+		{"mantle region", "https://bedrock-mantle.us-east-1.api.aws/v1", "/chat/completions", "/models", ""},
+		{"mantle region with case port and root dot", "https://BEDROCK-MANTLE.EU-WEST-1.API.AWS.:443/v1", "/chat/completions", "/models", ""},
+		{"bare azure suffix", "https://openai.azure.com/openai/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"bare Foundry suffix", "https://services.ai.azure.com/openai/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"azure attacker suffix", "https://evil-openai.azure.com.attacker.net/openai/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"azure substring", "https://evilopenai.azure.com/openai/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"azure empty label", "https://.openai.azure.com/openai/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"azure multiple labels", "https://two.labels.openai.azure.com/openai/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"mantle attacker suffix", "https://bedrock-mantle.us-east-1.api.aws.attacker.net/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"mantle substring", "https://notbedrock-mantle.us-east-1.api.aws/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"mantle empty region", "https://bedrock-mantle..api.aws/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"mantle multiple region labels", "https://bedrock-mantle.us.east-1.api.aws/v1", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"anthropic uses generic compatible paths", "https://api.anthropic.com", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"a proxy", "https://llm.example.com", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"a local runtime", "http://localhost:11434", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"a private address", "http://10.0.0.5:8080", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"no base", "", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
+		{"not a URL", "::", generic.ChatPath, generic.ModelsPath, generic.EmbedPath},
 	}
 	for _, tc := range cases {
 		got := CompatPaths(tc.base)
@@ -208,52 +247,35 @@ func TestCompatPathsKnowEveryHostedCompatibleVendor(t *testing.T) {
 				continue
 			}
 			if got.Key != "" {
-				t.Errorf("%s: base URL %q resolves to vendor %q, want the legacy paths", v.Key, base, got.Key)
+				t.Errorf("%s: base URL %q resolves to vendor %q, want the generic paths", v.Key, base, got.Key)
 			}
 		}
 	}
 }
 
-func TestAMovedVendorStillAnswersOnItsLegacyHost(t *testing.T) {
-	// Nebius moved from api.studio.nebius.ai to api.tokenfactory.nebius.com.
-	// Accounts saved on the old host keep the vendor's compat paths and pricing
-	// vendor, so the move cannot silently drop pricing for them.
-	moved, ok := VendorFor("nebius")
-	if !ok || moved.BaseURL != "https://api.tokenfactory.nebius.com" {
-		t.Fatalf("nebius = %+v, ok = %v", moved, ok)
-	}
-	now := CompatPaths(moved.BaseURL)
-	for _, host := range moved.LegacyHosts {
-		base := "https://" + host
-		if got := CompatPaths(base); got.Key != moved.Key || got.ChatPath != now.ChatPath ||
-			got.ModelsPath != now.ModelsPath || got.EmbedPath != now.EmbedPath {
-			t.Errorf("CompatPaths(%q) = %+v, want the %s paths %+v", base, got, moved.Key, now)
+func TestRemovedHostsUseGenericPathsAndNoPricing(t *testing.T) {
+	// Pinned with literal hosts so putting either one back in the vendor table
+	// fails this test.
+	for _, base := range []string{"https://api.studio.nebius.ai", "https://api.together.xyz"} {
+		got := CompatPaths(base)
+		if got.Key != "" || got.ChatPath != genericPaths.ChatPath ||
+			got.ModelsPath != genericPaths.ModelsPath || got.EmbedPath != genericPaths.EmbedPath {
+			t.Errorf("CompatPaths(%q) = %+v, want the generic paths %+v", base, got, genericPaths)
 		}
-		if got := PricingVendorFor(AdapterOpenAI, base); got != moved.Key {
-			t.Errorf("PricingVendorFor(%q) = %q, want %q", base, got, moved.Key)
+		if got := PricingVendorFor(AdapterOpenAI, base); got != "" {
+			t.Errorf("PricingVendorFor(%q) = %q, want empty", base, got)
 		}
 	}
 }
 
-func TestSavedLegacyHostsKeepTheirVendorPathsAndPricing(t *testing.T) {
-	// Pinned with literal hosts, not LegacyHosts, so removing a legacy host
-	// from the vendor table fails here.
-	cases := []struct{ vendor, legacy, current string }{
-		{"nebius", "https://api.studio.nebius.ai", "https://api.tokenfactory.nebius.com"},
-		{"together", "https://api.together.xyz", "https://api.together.ai"},
-	}
-	for _, tc := range cases {
-		want := CompatPaths(tc.current)
-		if want.Key != tc.vendor {
-			t.Fatalf("%s: current host %q resolves to %q", tc.vendor, tc.current, want.Key)
-		}
-		got := CompatPaths(tc.legacy)
-		if got.Key != tc.vendor || got.ChatPath != want.ChatPath ||
-			got.ModelsPath != want.ModelsPath || got.EmbedPath != want.EmbedPath {
-			t.Errorf("%s: CompatPaths(%q) = %+v, want the paths of %q: %+v", tc.vendor, tc.legacy, got, tc.current, want)
-		}
-		if got, want := PricingVendorFor(AdapterOpenAI, tc.legacy), PricingVendorFor(AdapterOpenAI, tc.current); got != tc.vendor || got != want {
-			t.Errorf("%s: PricingVendorFor(%q) = %q, current host gives %q, want %q", tc.vendor, tc.legacy, got, want, tc.vendor)
+func TestPatternVendorsResolvePricingByHost(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{"https://one.openai.azure.com/openai/v1", "azure"},
+		{"https://one.services.ai.azure.com/openai/v1", "azure"},
+		{"https://bedrock-mantle.us-east-1.api.aws/v1", "bedrock-mantle"},
+	} {
+		if got := PricingVendorFor(AdapterOpenAI, tc.base); got != tc.want {
+			t.Errorf("PricingVendorFor(%q) = %q, want %q", tc.base, got, tc.want)
 		}
 	}
 }
@@ -276,7 +298,8 @@ func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 		"google":       "gemini",
 		"togetherai":   "together",
 		"fireworks-ai": "fireworks",
-		"openrouter":   "openrouter",
+		"openrouter":     "openrouter",
+		"amazon-bedrock": "bedrock-mantle",
 	}
 	for md, want := range cases {
 		got, ok := VendorForModelsDev(md)
@@ -284,7 +307,7 @@ func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 			t.Errorf("VendorForModelsDev(%q) = (%q, %v), want (%q, true)", md, got, ok, want)
 		}
 	}
-	for _, unmapped := range []string{"amazon-bedrock", "gemini", "together", "fireworks"} {
+	for _, unmapped := range []string{"azure", "gemini", "together", "fireworks"} {
 		if got, ok := VendorForModelsDev(unmapped); ok || got != "" {
 			t.Fatalf("unmapped models.dev provider %q mapped to (%q, %v)", unmapped, got, ok)
 		}
@@ -292,8 +315,8 @@ func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 }
 
 func TestPricingVendor(t *testing.T) {
-	// Hosted OpenAI-compatible vendors resolve by host, on their default base
-	// URL and on every legacy host, ignoring the mutable Provider label.
+	// Hosted OpenAI-compatible vendors resolve by base host or host pattern,
+	// ignoring the mutable Provider label.
 	for _, v := range Vendors() {
 		for _, base := range savedBases(v) {
 			acct := Account{Provider: "openai", Adapter: v.Adapter, BaseURL: base}
@@ -340,6 +363,16 @@ func TestPricingVendor(t *testing.T) {
 		{
 			name:    "openai label on custom host",
 			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: "https://llm.example.com/v1"},
+			want:    "",
+		},
+		{
+			name:    "azure attacker host",
+			account: Account{Provider: "azure", Adapter: AdapterOpenAI, BaseURL: "https://evil-openai.azure.com.attacker.net/openai/v1"},
+			want:    "",
+		},
+		{
+			name:    "mantle multiple region labels",
+			account: Account{Provider: "bedrock-mantle", Adapter: AdapterOpenAI, BaseURL: "https://bedrock-mantle.us.east-1.api.aws/v1"},
 			want:    "",
 		},
 		{

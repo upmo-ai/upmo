@@ -39,4 +39,4 @@ An archive wrapped by the master key cannot be restored without that key. A pass
 
 ## Development keys
 
-`UPMO_ENV` selects the environment: `production` by default, or `development`. Production refuses the keys and passwords `compose.yml` embeds, any all-equal-byte key, empty database passwords, and an empty `UPMO_MASTER_KEY` on brain and gateway. `UPMO_ENV=development` is refused with a public https `UPMO_PUBLIC_URL`.
+`UPMO_ENV` selects the environment: `production` by default, or `development`. Brain, gateway, and secret-using `upmo` commands require `UPMO_MASTER_KEY` in every environment. Production also refuses the keys and passwords `compose.yml` embeds, any all-equal-byte key, and empty database passwords. `UPMO_ENV=development` is refused with a public https `UPMO_PUBLIC_URL`.
