@@ -293,11 +293,11 @@ func TestVendorMetadataAndModelsDevMapping(t *testing.T) {
 		}
 	}
 	cases := map[string]string{
-		"anthropic":    "anthropic",
-		"openai":       "openai",
-		"google":       "gemini",
-		"togetherai":   "together",
-		"fireworks-ai": "fireworks",
+		"anthropic":      "anthropic",
+		"openai":         "openai",
+		"google":         "gemini",
+		"togetherai":     "together",
+		"fireworks-ai":   "fireworks",
 		"openrouter":     "openrouter",
 		"amazon-bedrock": "bedrock-mantle",
 	}
