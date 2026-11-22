@@ -937,8 +937,8 @@ func TestFeature_UPM353_UnpricedCallUsesProviderCatalogEstimate(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(costs) != 2 || costs[0] != 20 || costs[1] != 820 {
-		t.Fatalf("estimate costs = %v, want [20, 820]", costs)
+	if len(costs) != 2 || costs[0] != 20 || costs[1] != 1250 {
+		t.Fatalf("estimate costs = %v, want [20, 1250]", costs)
 	}
 }
 

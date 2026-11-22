@@ -8,15 +8,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	chatgateway "github.com/upmo-ai/upmo/internal/chat/adapters/gateway"
 	chatapp "github.com/upmo-ai/upmo/internal/chat/app"
 	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
+	openaiadapter "github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/kernel"
@@ -171,5 +175,100 @@ func TestFeature_UPM310a_ChatTurnsRefusedBySpendLimitBeforeTheAdapter(t *testing
 	}
 	if adapter.calls != 0 {
 		t.Fatalf("adapter calls = %d, want 0", adapter.calls)
+	}
+}
+
+func TestFeature_UPM414_CoreToolsSendRetrieveOutputPagingSchemaToProvider(t *testing.T) {
+	w := newPinWorld(t, nil)
+	seedFakeVendorRate(t, &w, 75.0)
+	if _, err := w.pool.Exec(context.Background(), `UPDATE gateway.provider_accounts SET base_url = 'https://api.openai.com' WHERE id = $1::uuid`, pinHouse); err != nil {
+		t.Fatal(err)
+	}
+
+	var providerBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		providerBody = body
+		rw.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(rw,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"+
+				"data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	t.Cleanup(upstream.Close)
+
+	transport := endpointRoundTrip(func(req *http.Request) (*http.Response, error) {
+		moved := req.Clone(req.Context())
+		moved.URL.Scheme = "http"
+		moved.URL.Host = strings.TrimPrefix(upstream.URL, "http://")
+		moved.Host = ""
+		return http.DefaultTransport.RoundTrip(moved)
+	})
+	w.disp.Stream[domain.AdapterOpenAI] = openaiadapter.Adapter{Client: &http.Client{Transport: transport}}
+
+	mux := http.NewServeMux()
+	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	secret := "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	client, err := chatgateway.Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := chatgateway.Turns{Client: client}.Bind(chatapp.TurnRoute{
+		Route:  "pin-house",
+		ChatID: "018f3b2c-7a10-7c4a-8e11-0000000000c4",
+	}, nil, nil)
+	if _, err := model.Complete(context.Background(), agentloop.PromptRequest{
+		UserID:   pinAuthor,
+		AgentID:  "018f3b2c-7a10-7c4a-8e11-0000000000a4",
+		RunID:    "018f3b2c-7a10-7c4a-8e11-0000000000b4",
+		Messages: []agentloop.Message{{Role: agentloop.RoleUser, Text: "page it"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(providerBody, &payload); err != nil {
+		t.Fatalf("unmarshal provider body: %v (%s)", err, providerBody)
+	}
+	wantCore := agentloop.CoreTools()
+	if len(payload.Tools) != len(wantCore) {
+		t.Fatalf("tools sent = %d, want %d (%s)", len(payload.Tools), len(wantCore), providerBody)
+	}
+	gotRetrieve := payload.Tools[0].Function
+	if payload.Tools[0].Type != "function" || gotRetrieve.Name != "retrieve_output" || gotRetrieve.Description != wantCore[0].Description {
+		t.Fatalf("retrieve_output tool = %+v", payload.Tools[0])
+	}
+	var params struct {
+		Type       string         `json:"type"`
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(gotRetrieve.Parameters, &params); err != nil {
+		t.Fatal(err)
+	}
+	wantProps := map[string]any{
+		"id":     map[string]any{"type": "string"},
+		"offset": map[string]any{"type": "integer", "minimum": float64(0)},
+		"limit":  map[string]any{"type": "integer", "minimum": float64(1)},
+	}
+	if params.Type != "object" || !reflect.DeepEqual(params.Required, []string{"id"}) || !reflect.DeepEqual(params.Properties, wantProps) {
+		t.Fatalf("retrieve_output parameters = %s", gotRetrieve.Parameters)
 	}
 }

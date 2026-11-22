@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 )
 
 // DefaultOffload is the token estimate at which a tool result is replaced
@@ -280,26 +282,20 @@ func Build(in Input) (Request, error) {
 }
 
 func coreTools() ([]Tool, error) {
-	retrieveSchema, err := CanonicalSchema(json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`))
-	if err != nil {
-		return nil, err
+	defs := agentloop.CoreTools()
+	out := make([]Tool, 0, len(defs))
+	for _, def := range defs {
+		schema, err := CanonicalSchema(def.Schema)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Tool{
+			Name:        def.Name,
+			Description: def.Description,
+			Schema:      schema,
+		})
 	}
-	findSchema, err := CanonicalSchema(json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`))
-	if err != nil {
-		return nil, err
-	}
-	return []Tool{
-		{
-			Name:        retrieveOutput,
-			Description: "fetch an offloaded tool result",
-			Schema:      retrieveSchema,
-		},
-		{
-			Name:        findTool,
-			Description: "search available tools by name or description",
-			Schema:      findSchema,
-		},
-	}, nil
+	return out, nil
 }
 
 func normalizeToolChoice(tc ToolChoice) (ToolChoice, error) {

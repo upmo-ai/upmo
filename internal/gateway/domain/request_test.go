@@ -2,8 +2,11 @@ package domain
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 )
 
 func TestBuildOrderIsToolsSystemMessages(t *testing.T) {
@@ -186,6 +189,47 @@ func TestCoreToolsOptionWithoutCustomTools(t *testing.T) {
 	}
 	if !turnN.Messages[1].IsError || !turnN.Messages[1].Offload {
 		t.Fatalf("expected IsError and Offload preserved: %+v", turnN.Messages[1])
+	}
+}
+
+func TestCoreToolsAdoptsAgentloopRetrieveOutputSchema(t *testing.T) {
+	req, err := Build(Input{
+		CoreTools: true,
+		Messages:  []Message{{Role: RoleUser, Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDefs := agentloop.CoreTools()
+	if len(req.Tools) != len(wantDefs) {
+		t.Fatalf("tools = %d, want %d", len(req.Tools), len(wantDefs))
+	}
+	for i, want := range wantDefs {
+		wantSchema, err := CanonicalSchema(want.Schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := req.Tools[i]
+		if got.Name != want.Name || got.Description != want.Description || string(got.Schema) != string(wantSchema) {
+			t.Fatalf("tools[%d] = %+v (schema=%s), want name=%q desc=%q schema=%s",
+				i, got, got.Schema, want.Name, want.Description, wantSchema)
+		}
+	}
+	var parsed struct {
+		Type       string         `json:"type"`
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(req.Tools[0].Schema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	wantProps := map[string]any{
+		"id":     map[string]any{"type": "string"},
+		"offset": map[string]any{"type": "integer", "minimum": float64(0)},
+		"limit":  map[string]any{"type": "integer", "minimum": float64(1)},
+	}
+	if parsed.Type != "object" || !reflect.DeepEqual(parsed.Required, []string{"id"}) || !reflect.DeepEqual(parsed.Properties, wantProps) {
+		t.Fatalf("retrieve_output schema = %s", req.Tools[0].Schema)
 	}
 }
 
