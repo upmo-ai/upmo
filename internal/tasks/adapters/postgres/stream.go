@@ -21,11 +21,12 @@ const Channel = "task_stream"
 // Tail returns what a task gained after the event id after ("" for from the
 // start): its events and chat lines in id order, at most limit, mapped as the
 // detail read model maps them, and the task's status. It runs in one
-// transaction under row security, and reads the status before the events, so a
-// task seen as Done comes with its last event. A task this person cannot see
-// is ErrGone.
+// transaction under row security. A task this person cannot see is ErrGone.
 func (s Store) Tail(ctx context.Context, access app.Access, taskID, after string, limit int) (app.Tail, error) {
-	tx, err := s.begin(ctx, access)
+	// One snapshot for every read: under read committed a step that commits
+	// between the status read and the events read gave its last event with
+	// the old status, and the stream never showed Done.
+	tx, err := s.beginWith(ctx, access, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return app.Tail{}, err
 	}

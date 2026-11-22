@@ -230,10 +230,14 @@ func (s Store) Queued(ctx context.Context, access app.Access) ([]string, error) 
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
+	return s.beginWith(ctx, access, pgx.TxOptions{})
+}
+
+func (s Store) beginWith(ctx context.Context, access app.Access, opts pgx.TxOptions) (pgx.Tx, error) {
 	if s.Pool == nil {
 		return nil, fmt.Errorf("tasks: no database")
 	}
-	tx, err := s.Pool.Begin(ctx)
+	tx, err := s.Pool.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
