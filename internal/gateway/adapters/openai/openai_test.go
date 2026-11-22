@@ -466,7 +466,7 @@ func TestChatStreamCutMidStreamKeepsPartialText(t *testing.T) {
 	}
 }
 
-func TestChatStreamStopsOnCancelledContext(t *testing.T) {
+func TestChatStreamStopsOnCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -492,9 +492,9 @@ func TestChatStreamStopsOnCancelledContext(t *testing.T) {
 	}
 }
 
-func TestChatStreamCancelDuringTheReadIsCancelledAndEndsTheWalk(t *testing.T) {
+func TestChatStreamCancelDuringTheReadIsCanceledAndEndsTheWalk(t *testing.T) {
 	// The provider sends one delta and then stalls; the caller cancels while
-	// the adapter is reading. The row and the failure say cancelled, the
+	// the adapter is reading. The row and the failure say canceled, the
 	// partial text stays, and the second link is never tried.
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -527,13 +527,13 @@ func TestChatStreamCancelDuringTheReadIsCancelledAndEndsTheWalk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sink.fail == nil || sink.fail.Class != domain.ClassCancelled || sink.fail.Model != "m1" {
+	if sink.fail == nil || sink.fail.Class != domain.ClassCanceled || sink.fail.Model != "m1" {
 		t.Fatalf("fail = %+v", sink.fail)
 	}
 	if sink.text != "Hel" {
 		t.Fatalf("text = %q", sink.text)
 	}
-	if len(led.classes) != 1 || led.classes[0] != domain.ClassCancelled {
+	if len(led.classes) != 1 || led.classes[0] != domain.ClassCanceled {
 		t.Fatalf("ledger = %v", led.classes)
 	}
 	if hits.Load() != 1 {
@@ -555,7 +555,7 @@ func (s *cancelOnDeltaSink) Delta(text string) error {
 	return nil
 }
 
-func TestReadStreamEndedWhileCancelledIsCancelled(t *testing.T) {
+func TestReadStreamEndedWhileCanceledIsCanceled(t *testing.T) {
 	// A body can end with EOF or a plain error once the context is done,
 	// without the error naming the cancellation.
 	for name, tail := range map[string]error{"eof": io.EOF, "reset": errors.New("connection reset")} {
@@ -568,7 +568,7 @@ func TestReadStreamEndedWhileCancelledIsCancelled(t *testing.T) {
 				got = append(got, text)
 				return nil
 			})
-			if err == nil || class != domain.ClassCancelled {
+			if err == nil || class != domain.ClassCanceled {
 				t.Fatalf("class=%s err=%v", class, err)
 			}
 			if len(got) != 1 || got[0] != "Hel" {
@@ -643,9 +643,9 @@ func (s *failSink) Notice(app.StreamNotice) error { return nil }
 func (s *failSink) Done(app.StreamDone)           {}
 func (s *failSink) Fail(f app.StreamFail)         { s.fail = &f }
 
-func TestChatStreamCancelledContextIsCancelledAndEndsTheWalk(t *testing.T) {
-	// The context is cancelled before the call, so the provider is never
-	// reached: the row says cancelled and the second link is never tried.
+func TestChatStreamCanceledContextIsCanceledAndEndsTheWalk(t *testing.T) {
+	// The context is canceled before the call, so the provider is never
+	// reached: the row says canceled and the second link is never tried.
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -673,10 +673,10 @@ func TestChatStreamCancelledContextIsCancelledAndEndsTheWalk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sink.fail == nil || sink.fail.Class != domain.ClassCancelled || sink.fail.Model != "m1" {
+	if sink.fail == nil || sink.fail.Class != domain.ClassCanceled || sink.fail.Model != "m1" {
 		t.Fatalf("fail = %+v", sink.fail)
 	}
-	if len(led.classes) != 1 || led.classes[0] != domain.ClassCancelled {
+	if len(led.classes) != 1 || led.classes[0] != domain.ClassCanceled {
 		t.Fatalf("ledger = %v", led.classes)
 	}
 	if hits.Load() != 0 {
@@ -690,7 +690,7 @@ func TestChatStreamStopsWhenEmitFails(t *testing.T) {
 	a := Adapter{Client: srv.Client()}
 	attempt, req := streamRequest(srv)
 	_, class, err := a.ChatStream(context.Background(), attempt, req, func(string) error { return gone })
-	if !errors.Is(err, gone) || class != domain.ClassCancelled {
+	if !errors.Is(err, gone) || class != domain.ClassCanceled {
 		t.Fatalf("class=%s err=%v", class, err)
 	}
 }

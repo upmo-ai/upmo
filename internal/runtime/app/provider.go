@@ -123,7 +123,7 @@ type Endpoint struct {
 	URL string
 }
 
-// CheckSpec returns spec normalised, or ErrSpec when admission refuses it.
+// CheckSpec returns spec normalized, or ErrSpec when admission refuses it.
 // Allow entries follow the egress rules of the domain, and every credential
 // is injected only toward a host on the allow-list.
 func CheckSpec(spec Spec) (Spec, error) {
@@ -174,7 +174,7 @@ func CheckSpec(spec Spec) (Spec, error) {
 	return Spec{Task: task.String(), Image: image, Tier: tier, TTL: spec.TTL, Allow: allow, Credentials: creds}, nil
 }
 
-// allowEntry normalises a host name through the domain egress rule: a listed
+// allowEntry normalizes a host name through the domain egress rule: a listed
 // name with no port, never an address or a name that means the host.
 func allowEntry(entry string) (string, bool) {
 	d, err := domain.AdmitEgress(entry, []string{entry})

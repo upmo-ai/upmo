@@ -41,7 +41,7 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_budget_single_unit_check CHECK (NOT (budget > 0 AND budget_micro_usd > 0)),
   CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
   CONSTRAINT tasks_cause_check CHECK (
-    cause = '' OR (cause = 'parent_cancelled' AND status = 'Failed')
+    cause = '' OR (cause = 'parent_canceled' AND status = 'Failed')
   ),
   CONSTRAINT tasks_worktree_check CHECK (char_length(worktree) <= 80)
 );
@@ -519,7 +519,7 @@ BEGIN
     RAISE EXCEPTION 'tasks: writer';
   END IF;
   IF TG_OP = 'UPDATE' AND NEW.cause IS DISTINCT FROM OLD.cause THEN
-    IF OLD.cause <> '' OR NEW.cause <> 'parent_cancelled' OR NEW.status <> 'Failed' THEN
+    IF OLD.cause <> '' OR NEW.cause <> 'parent_canceled' OR NEW.status <> 'Failed' THEN
       RAISE EXCEPTION 'tasks: cause';
     END IF;
   END IF;

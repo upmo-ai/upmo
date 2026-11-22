@@ -11,7 +11,7 @@ func CanaryQuestions() []Question {
 	}
 }
 
-// CanaryClaims is the stored text for that set, plus neighbours that no
+// CanaryClaims is the stored text for that set, plus neighbors that no
 // question asks for.
 func CanaryClaims() []string {
 	return []string{

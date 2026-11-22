@@ -114,8 +114,8 @@ func filingIntegrationAccess() decisions.Access {
 	}
 }
 
-func filingIntegrationCases() []decisions.Labelled {
-	return []decisions.Labelled{{
+func filingIntegrationCases() []decisions.Labeled {
+	return []decisions.Labeled{{
 		Prompt:  "A source excerpt",
 		Options: []string{filingIntegrationFolderA, filingIntegrationFolderB},
 		Label:   filingIntegrationFolderA,

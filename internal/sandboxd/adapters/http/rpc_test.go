@@ -289,7 +289,7 @@ func TestExecRefusesUnknownStream(t *testing.T) {
 // must outlive both timeouts.
 func TestExecStreamsPastServerTimeouts(t *testing.T) {
 	release := make(chan struct{})
-	var cancelled atomic.Bool
+	var canceled atomic.Bool
 	p := fake{Driver: stub.New(nil), exec: func(ctx context.Context, _ string, _ runtime.Command, out func(runtime.Output) error) (runtime.Exit, error) {
 		if err := out(runtime.Output{Stream: "stdout", Data: []byte("first\n")}); err != nil {
 			return runtime.Exit{}, err
@@ -301,7 +301,7 @@ func TestExecStreamsPastServerTimeouts(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			cancelled.Store(true)
+			canceled.Store(true)
 			return runtime.Exit{}, ctx.Err()
 		case <-time.After(600 * time.Millisecond):
 		}
@@ -338,8 +338,8 @@ func TestExecStreamsPastServerTimeouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	fr := frames(t, rest.Bytes())
-	if cancelled.Load() {
-		t.Fatal("the server timeouts cancelled the command")
+	if canceled.Load() {
+		t.Fatal("the server timeouts canceled the command")
 	}
 	if len(fr) != 2 || string(fr[0].Data) != "second\n" || fr[1].Type != "exit" {
 		t.Fatalf("rest = %s", rest.Bytes())

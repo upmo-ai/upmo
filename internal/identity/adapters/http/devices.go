@@ -59,7 +59,7 @@ func (d Devices) end(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !owned {
-		writeRaw(w, http.StatusNotFound, unauthorised)
+		writeRaw(w, http.StatusNotFound, unauthorized)
 		return
 	}
 	if err := d.Sessions.End(r.Context(), id); err != nil {
@@ -79,13 +79,13 @@ func (d Devices) session(w http.ResponseWriter, r *http.Request) (app.Session, b
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	session, err := d.Sessions.Lookup(r.Context(), cookie.Value)
 	if err != nil {
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	markActor(r, session)

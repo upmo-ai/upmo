@@ -7,7 +7,7 @@ import (
 )
 
 // HostPattern is a hostname pattern whose * covers exactly one non-empty DNS
-// label. Patterns are matched after hostOf normalisation.
+// label. Patterns are matched after hostOf normalization.
 type HostPattern string
 
 func (p HostPattern) match(host string) bool {
@@ -88,7 +88,7 @@ var vendors = []Vendor{
 
 // modelsDevVendors maps models.dev top-level provider ids to picker vendor
 // keys. Providers not in this table contribute only to the model-only fallback
-// row in the catalogue.
+// row in the catalog.
 var modelsDevVendors = map[string]string{
 	"anthropic":      "anthropic",
 	"openai":         "openai",
@@ -117,7 +117,7 @@ func VendorForModelsDev(providerID string) (string, bool) {
 	return key, ok
 }
 
-// VendorKey normalises a provider label into a canonical vendor key.
+// VendorKey normalizes a provider label into a canonical vendor key.
 func VendorKey(raw string) string {
 	key := strings.ToLower(strings.TrimSpace(raw))
 	if v, ok := VendorFor(key); ok {
@@ -200,19 +200,19 @@ func CompatPaths(baseURL string) Vendor {
 	return genericPaths
 }
 
-// PricingVendor returns the canonical catalogue vendor key for the endpoint
+// PricingVendor returns the canonical catalog vendor key for the endpoint
 // actually called by account, never trusting its mutable provider label.
 func PricingVendor(account Account) string {
 	return PricingVendorFor(account.Adapter, account.BaseURL)
 }
 
-// PricingVendorFor returns the canonical catalogue vendor key for the endpoint
+// PricingVendorFor returns the canonical catalog vendor key for the endpoint
 // actually called by adapter and baseURL:
 //   - AdapterOpenAI resolves to the hosted vendor whose base host or exact
 //     host pattern matches baseURL, regardless of that vendor's default
 //     adapter;
 //   - AdapterAnthropic resolves to "anthropic" only on Anthropic's host;
-//   - local vendors, unrecognised hosts, and other adapters return "".
+//   - local vendors, unrecognized hosts, and other adapters return "".
 func PricingVendorFor(adapter, baseURL string) string {
 	host := hostOf(baseURL)
 	if host == "" {

@@ -509,8 +509,8 @@ func wireMessage(class domain.FailureClass) string {
 		return "the model was not available"
 	case domain.ClassCaller:
 		return "the provider refused the request"
-	case domain.ClassCancelled:
-		return "the request was cancelled"
+	case domain.ClassCanceled:
+		return "the request was canceled"
 	case domain.ClassInternal:
 		return "the gateway failed"
 	default:

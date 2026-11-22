@@ -28,7 +28,7 @@ func TestReasonNamesEveryClassWithoutProviderWords(t *testing.T) {
 		"model_access": "model unavailable",
 		"overloaded":   "model unavailable",
 		"timeout":      "timed out",
-		"cancelled":    "stopped",
+		"canceled":     "stopped",
 		"internal":     "stopped",
 		"caller":       "stopped",
 		"anything":     "stopped",

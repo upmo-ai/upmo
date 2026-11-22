@@ -71,7 +71,7 @@ func Note(decision Decision) (Request, error) {
 	return Request{Host: decision.Host, Port: decision.Port, Verdict: decision.Verdict, Reason: decision.Reason}, nil
 }
 
-// newChange checks the person and host, and normalises the host through AdmitEgress.
+// newChange checks the person and host, and normalizes the host through AdmitEgress.
 func newChange(op, person, host string) (Change, error) {
 	person = strings.TrimSpace(person)
 	if person == "" || len(person) > 64 || strings.ContainsAny(person, " \t/") {

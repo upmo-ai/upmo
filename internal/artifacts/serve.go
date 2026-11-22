@@ -50,7 +50,7 @@ func Serve(name, media string) (Headers, error) {
 		return Headers{}, ErrArtifact
 	}
 
-	kind := normalise(media)
+	kind := normalize(media)
 	disposition := "attachment"
 	switch {
 	case !wellFormed(kind), markup[kind]:
@@ -66,8 +66,8 @@ func Serve(name, media string) (Headers, error) {
 	}, nil
 }
 
-// normalise trims and lowercases a media value and drops its parameters.
-func normalise(media string) string {
+// normalize trims and lowercases a media value and drops its parameters.
+func normalize(media string) string {
 	media = strings.ToLower(strings.TrimSpace(media))
 	if i := strings.IndexByte(media, ';'); i >= 0 {
 		media = media[:i]

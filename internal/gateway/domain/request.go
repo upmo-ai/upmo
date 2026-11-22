@@ -143,7 +143,7 @@ type Message struct {
 	Offload   bool       `json:"offload,omitempty"`
 }
 
-// ChatResult is the normalised result of one non-streamed chat call.
+// ChatResult is the normalized result of one non-streamed chat call.
 type ChatResult struct {
 	Text          string     `json:"text"`
 	ToolCalls     []ToolCall `json:"tool_calls,omitempty"`

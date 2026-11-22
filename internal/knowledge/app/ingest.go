@@ -61,8 +61,8 @@ type Result struct {
 	Skipped  bool
 }
 
-// Summariser proposes a ranking prefix for one chunk. The prefix is not evidence.
-type Summariser interface {
+// Summarizer proposes a ranking prefix for one chunk. The prefix is not evidence.
+type Summarizer interface {
 	Prefix(ctx context.Context, body string) (string, error)
 }
 
@@ -101,13 +101,13 @@ type Store interface {
 }
 
 // Ingest stores a source, then its chunks. The same hash on a published
-// revision does not call the summariser or the embedder. An empty source
+// revision does not call the summarizer or the embedder. An empty source
 // stores nothing.
 func Ingest(
 	ctx context.Context,
 	store Store,
 	access Access,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	draft Draft,
 ) (Result, error) {
@@ -143,7 +143,7 @@ func Ingest(
 				return nil
 			}
 		}
-		ready, err := prepare(ctx, summariser, embedder, pieces)
+		ready, err := prepare(ctx, summarizer, embedder, pieces)
 		if err != nil {
 			return err
 		}
@@ -189,11 +189,11 @@ func chunkBodies(body string) ([]Piece, error) {
 	return pieces, nil
 }
 
-func prepare(ctx context.Context, summariser Summariser, embedder Embedder, pieces []Piece) ([]Piece, error) {
+func prepare(ctx context.Context, summarizer Summarizer, embedder Embedder, pieces []Piece) ([]Piece, error) {
 	texts := make([]string, len(pieces))
 	for i := range pieces {
-		if summariser != nil {
-			prefix, err := summariser.Prefix(ctx, pieces[i].Body)
+		if summarizer != nil {
+			prefix, err := summarizer.Prefix(ctx, pieces[i].Body)
 			if err != nil {
 				prefix = ""
 			}

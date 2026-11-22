@@ -59,7 +59,7 @@ func TestIngestPublishesVerbatimChunksAndSkipsTheSameHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !second.Skipped || second.Revision != 1 || sum.calls != first.Chunks {
-		t.Fatalf("second = %+v summariser=%d chunks=%d", second, sum.calls, first.Chunks)
+		t.Fatalf("second = %+v summarizer=%d chunks=%d", second, sum.calls, first.Chunks)
 	}
 }
 

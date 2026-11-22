@@ -17,7 +17,7 @@ func TestNextActionTable(t *testing.T) {
 		{ClassCredential, 9, ActionNext},
 		{ClassModelAccess, 0, ActionNext},
 		{ClassCaller, 9, ActionFail},
-		{ClassCancelled, 9, ActionFail},
+		{ClassCanceled, 9, ActionFail},
 		{ClassInternal, 9, ActionFail},
 		{FailureClass("unknown"), 1, ActionFail},
 	}

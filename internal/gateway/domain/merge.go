@@ -54,7 +54,7 @@ type ModelSources struct {
 }
 
 // MergedModel is one account model with each field resolved in precedence order
-// (override, provider's account_models_seen, models.dev catalogue) alongside
+// (override, provider's account_models_seen, models.dev catalog) alongside
 // each field's recorded source.
 type MergedModel struct {
 	Model          string       `json:"model"`

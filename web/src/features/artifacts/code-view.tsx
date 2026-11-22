@@ -88,19 +88,19 @@ export function CodeView({ name, text }: { name: string; text: string }) {
   useEffect(() => {
     const element = host.current;
     if (!element) return;
-    let cancelled = false;
+    let canceled = false;
     let mounted: CodeSurface | undefined;
     loadSurface()
       .then((module) => {
-        if (cancelled) return;
+        if (canceled) return;
         mounted = module.mountCode(element, { ...takeFile(), theme: takeTheme() });
         setSurface(mounted);
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!canceled) setFailed(true);
       });
     return () => {
-      cancelled = true;
+      canceled = true;
       mounted?.dispose();
       setSurface(null);
     };
@@ -134,19 +134,19 @@ export function DiffView({ files }: { files: ArtifactDiffFile[] }) {
   useEffect(() => {
     const element = host.current;
     if (!element) return;
-    let cancelled = false;
+    let canceled = false;
     let mounted: DiffSurface | undefined;
     loadSurface()
       .then((module) => {
-        if (cancelled) return;
+        if (canceled) return;
         mounted = module.mountDiff(element, { sideBySide: takeLayout(), theme: takeTheme() });
         setSurface(mounted);
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!canceled) setFailed(true);
       });
     return () => {
-      cancelled = true;
+      canceled = true;
       mounted?.dispose();
       setSurface(null);
     };

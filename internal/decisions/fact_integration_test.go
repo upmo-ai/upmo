@@ -45,7 +45,7 @@ func TestFactKeepStoresPassingRecall(t *testing.T) {
 	}
 }
 
-func TestFirstFactKeepWithoutLabelledYesStoresNoRoute(t *testing.T) {
+func TestFirstFactKeepWithoutLabeledYesStoresNoRoute(t *testing.T) {
 	pool := up(t)
 	store := decisions.Store{Pool: pgtest.App(t, pool)}
 	err := decisions.FactKeep(

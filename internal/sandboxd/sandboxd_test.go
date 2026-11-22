@@ -528,7 +528,7 @@ func TestOpenPicksTheDriver(t *testing.T) {
 	}
 }
 
-func TestSweepRunsUntilCancelled(t *testing.T) {
+func TestSweepRunsUntilCanceled(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := swept{Driver: Stub(), n: make(chan struct{}, 8)}
 	ctx, cancel := context.WithCancel(context.Background())

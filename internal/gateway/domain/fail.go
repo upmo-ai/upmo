@@ -13,7 +13,7 @@ const (
 	ClassCredential  FailureClass = "credential"
 	ClassModelAccess FailureClass = "model_access"
 	ClassCaller      FailureClass = "caller"
-	ClassCancelled   FailureClass = "cancelled"
+	ClassCanceled    FailureClass = "canceled"
 	// ClassInternal is a gateway fault, such as a panic in an adapter; it
 	// is never retried and never advances the route.
 	ClassInternal FailureClass = "internal"
@@ -35,7 +35,7 @@ func NextAction(class FailureClass, retriesLeft int) Action {
 	switch class {
 	case ClassOK:
 		return ActionFail
-	case ClassCaller, ClassCancelled, ClassInternal:
+	case ClassCaller, ClassCanceled, ClassInternal:
 		return ActionFail
 	case ClassCredential, ClassModelAccess:
 		return ActionNext

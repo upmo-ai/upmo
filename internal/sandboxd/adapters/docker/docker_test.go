@@ -749,7 +749,7 @@ func TestExecDefaultsToTheCap(t *testing.T) {
 	}
 }
 
-func TestExecHonoursTimeout(t *testing.T) {
+func TestExecHonorsTimeout(t *testing.T) {
 	d, f, _ := setup(t)
 	box := create(t, d)
 	f.script = nil // never ends on its own

@@ -21,12 +21,12 @@ type ClipDraft struct {
 }
 
 // IngestClip stores a clip synchronously. A second clip with the same
-// normalised URL revises the existing clip source.
+// normalized URL revises the existing clip source.
 func IngestClip(
 	ctx context.Context,
 	store Store,
 	access Access,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	draft ClipDraft,
 ) (Result, error) {
@@ -36,7 +36,7 @@ func IngestClip(
 	if _, err := uuid.Parse(draft.FolderID); err != nil {
 		return Result{}, ErrFolder
 	}
-	ref, err := normaliseClipRef(draft.URL)
+	ref, err := normalizeClipRef(draft.URL)
 	if err != nil {
 		return Result{}, err
 	}
@@ -76,7 +76,7 @@ func IngestClip(
 				return nil
 			}
 		}
-		ready, err := prepare(ctx, summariser, embedder, pieces)
+		ready, err := prepare(ctx, summarizer, embedder, pieces)
 		if err != nil {
 			return err
 		}
@@ -94,7 +94,7 @@ func IngestClip(
 	return result, err
 }
 
-func normaliseClipRef(raw string) (string, error) {
+func normalizeClipRef(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", ErrURL

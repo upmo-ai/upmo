@@ -41,7 +41,7 @@ describe("listed prices", () => {
     expect(seenRateMicro(undefined, "prompt")).toBeNull();
   });
 
-  it("round catalogue rates to whole micro-USD", () => {
+  it("round catalog rates to whole micro-USD", () => {
     expect(catalogMicro(0.075)).toBe(75_000);
     expect(catalogMicro(2.5)).toBe(2_500_000);
     expect(catalogMicro(null)).toBeNull();

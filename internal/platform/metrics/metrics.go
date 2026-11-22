@@ -410,7 +410,7 @@ func Server(addr string, reg *Registry) *http.Server {
 	}
 }
 
-// ListenAndServe serves GET /metrics on addr until ctx is cancelled, then
+// ListenAndServe serves GET /metrics on addr until ctx is canceled, then
 // shuts down gracefully within timeout.
 func ListenAndServe(ctx context.Context, addr string, reg *Registry, timeout time.Duration, log *slog.Logger) error {
 	return httpserver.Run(ctx, Server(addr, reg), timeout, log)

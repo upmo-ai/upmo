@@ -17,7 +17,7 @@ const password = "correct horse battery";
 // The chats e2e/seed-tasks.sql gives the person, newest first. The brain
 // derives each title from the chat's first user line.
 const closeTitle = "What should the October close check first?";
-const pricesTitle = "Summarise the supplier prices";
+const pricesTitle = "Summarize the supplier prices";
 
 const viewport = { width: 1280, height: 900 };
 

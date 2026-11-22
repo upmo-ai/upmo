@@ -116,7 +116,7 @@ func TestAdmitRangeRefusesOutsideBudget(t *testing.T) {
 	}
 }
 
-func TestSeenMatchesNormalisedHash(t *testing.T) {
+func TestSeenMatchesNormalizedHash(t *testing.T) {
 	hash := strings.Repeat("ab", 32)
 	known := []string{strings.Repeat("0", 64), "  " + strings.ToUpper(hash) + "\n"}
 

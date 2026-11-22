@@ -637,7 +637,7 @@ describe("providers from the brain", () => {
     expect(await within(dialog).findByText("Used by route chat, agent-dispatch")).toBeTruthy();
     expect(screen.getByTestId("provider-card-p1")).toBeTruthy();
 
-    // Cancelled, then another account goes.
+    // Canceled, then another account goes.
     click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
@@ -655,7 +655,7 @@ describe("providers from the brain", () => {
   it("does not hide a 401 on the provider list behind the sample accounts", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ providers: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
+      brain({ providers: () => Response.json({ error: "unauthorized" }, { status: 401 }) }).fetcher,
     );
     const history = renderAt("/settings/providers");
 
@@ -668,7 +668,7 @@ describe("providers from the brain", () => {
   it("does not hide a 401 from the brain's first answer behind the sample accounts", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ tasks: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
+      brain({ tasks: () => Response.json({ error: "unauthorized" }, { status: 401 }) }).fetcher,
     );
     const history = renderAt("/settings/providers");
 

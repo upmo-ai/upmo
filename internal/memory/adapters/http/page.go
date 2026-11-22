@@ -123,12 +123,12 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (string, bool) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.User == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	userID, ok := h.User(r)
 	if !ok || userID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	return userID, true

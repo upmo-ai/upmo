@@ -14,7 +14,7 @@ const RouteRerank = "rerank"
 
 var rerankIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
-// Passage is one offered text and its labelled relevance.
+// Passage is one offered text and its labeled relevance.
 type Passage struct {
 	ID        string
 	Text      string

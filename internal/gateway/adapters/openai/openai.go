@@ -703,12 +703,12 @@ func readStreamTools(ctx context.Context, model string, body io.Reader, events a
 					}
 				}
 				if ctx.Err() != nil {
-					return state.result(), domain.ClassCancelled, ctx.Err()
+					return state.result(), domain.ClassCanceled, ctx.Err()
 				}
 				return state.result(), domain.ClassTransient, errors.New("gateway: stream ended without [DONE]")
 			}
 			if ctx.Err() != nil {
-				return state.result(), domain.ClassCancelled, rerr
+				return state.result(), domain.ClassCanceled, rerr
 			}
 			return state.result(), classForErr(rerr), rerr
 		}
@@ -731,7 +731,7 @@ func oneChunk(payload string, state *streamState, events app.StreamEvents) (doma
 			state.text.WriteString(choice.Delta.Content)
 			if events.Text != nil {
 				if err := events.Text(choice.Delta.Content); err != nil {
-					return domain.ClassCancelled, err
+					return domain.ClassCanceled, err
 				}
 			}
 		}
@@ -761,7 +761,7 @@ func oneChunk(payload string, state *streamState, events app.StreamEvents) (doma
 					Name:           tc.Function.Name,
 					ArgumentsDelta: tc.Function.Arguments,
 				}); err != nil {
-					return domain.ClassCancelled, err
+					return domain.ClassCanceled, err
 				}
 			}
 		}

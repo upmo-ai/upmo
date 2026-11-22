@@ -38,7 +38,7 @@ func TestAddFactRejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestAddFactStoresTheNormalisedHash(t *testing.T) {
+func TestAddFactStoresTheNormalizedHash(t *testing.T) {
 	ed := &pageEditor{person: &pagePerson{id: "018f3b2c-7a10-7c4a-8e11-222222222222"}}
 	id, err := AddFact(context.Background(), ed, testUser, "  Ada prefers tea. ", time.Now())
 	if err != nil {

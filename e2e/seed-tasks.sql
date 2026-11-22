@@ -30,7 +30,7 @@
 --
 -- The person's chats are seeded below too, so the chat page reads live rows:
 --   ...c101  What should the October close check first?  user line, assistant line at $0.0031
---   ...c102  Summarise the supplier prices              assistant line, cost unknown
+--   ...c102  Summarize the supplier prices              assistant line, cost unknown
 --   ...c103  New chat                                   empty
 --
 -- A user line carries no model and no cost, an assistant line names its model,
@@ -198,13 +198,13 @@ SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'plan', 'Preparing',
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'advance', 'Planning', 'Working', now() - interval '48 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'pause', 'Working', 'Needs approval', now() - interval '47 minutes');
 
--- 0004: Failed. The only cause the schema allows is a cancelled parent, and it
+-- 0004: Failed. The only cause the schema allows is a canceled parent, and it
 -- may be set once the task is Failed.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000004', :'ada'::uuid, NULL,
   'Close the week for Kodeeo Limited', 500, 85, now() - interval '45 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000004', 'advance', 'Preparing', 'Working', now() - interval '44 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000004', 'fail', 'Working', 'Failed', now() - interval '43 minutes');
-UPDATE tasks.tasks SET cause = 'parent_cancelled' WHERE id = 'e2e00000-0000-7000-8000-000000000004';
+UPDATE tasks.tasks SET cause = 'parent_canceled' WHERE id = 'e2e00000-0000-7000-8000-000000000004';
 
 -- 0005: the parent. Its children hold 300 + 200 of its 1000.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000005', :'ada'::uuid, NULL,
@@ -278,7 +278,7 @@ INSERT INTO chat.lines (chat_id, seq, body, role, at, model, tokens, cost_micro_
     now() - interval '12 minutes', NULL, 0, NULL),
   ('e2e00000-0000-7000-8000-00000000c101', 2, 'Start with the supplier statements, then reconcile the ledger.', 'assistant',
     now() - interval '11 minutes', 'claude-opus-5-5', 412, 3100),
-  ('e2e00000-0000-7000-8000-00000000c102', 1, 'Summarise the supplier prices', 'user',
+  ('e2e00000-0000-7000-8000-00000000c102', 1, 'Summarize the supplier prices', 'user',
     now() - interval '18 minutes', NULL, 0, NULL),
   ('e2e00000-0000-7000-8000-00000000c102', 2, 'Prices are stable to the year end; lead times are the open question.', 'assistant',
     now() - interval '17 minutes', 'llama3.3:70b', 58, NULL);

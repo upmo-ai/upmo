@@ -892,7 +892,7 @@ func TestStreamRefusesBeforeItStarts(t *testing.T) {
 	}{
 		{"invisible task", "other", path, nil, 404, `{"error":"no such task"}`},
 		{"bearer token", "owner", path, http.Header{"Authorization": {"Bearer upmo_pat_secret"}}, 403, `{"error":"needs a signed-in person"}`},
-		{"no session", "", path, nil, 401, `{"error":"unauthorised"}`},
+		{"no session", "", path, nil, 401, `{"error":"unauthorized"}`},
 		{"bad id", "owner", "/api/tasks/not-an-id/stream", nil, 400, `{"error":"the task input was refused"}`},
 		{"bad cursor", "owner", path + "?after=nope", nil, 400, `{"error":"the event id is not valid"}`},
 		{"bad header", "owner", path, http.Header{"Last-Event-Id": {"nope"}}, 400, `{"error":"the event id is not valid"}`},

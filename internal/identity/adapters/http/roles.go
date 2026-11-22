@@ -142,13 +142,13 @@ func (h Roles) session(w http.ResponseWriter, r *http.Request) (app.Session, boo
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	session, err := h.Sessions.Lookup(r.Context(), cookie.Value)
 	if err != nil {
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	markActor(r, session)
@@ -200,7 +200,7 @@ func roleStatus(err error) (int, string, bool) {
 	case errors.Is(err, domain.ErrNoSuchRole):
 		return http.StatusNotFound, "no such role", true
 	case errors.Is(err, app.ErrNotSignedIn):
-		return http.StatusUnauthorized, "unauthorised", true
+		return http.StatusUnauthorized, "unauthorized", true
 	case errors.Is(err, domain.ErrNoSuchMember):
 		return http.StatusNotFound, "no such member", true
 	default:

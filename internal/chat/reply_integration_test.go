@@ -346,7 +346,7 @@ func TestReplyRescuesACrashedRunFromItsDeltas(t *testing.T) {
 	if reply.Status != "failed" || reply.Body != "half an answer" || reply.ID != queued.Args.ReplyID {
 		t.Fatalf("reply = %+v", reply)
 	}
-	want := []domain.Attempt{{Model: "m1", Class: "timeout"}, {Model: "m2", Class: "cancelled"}}
+	want := []domain.Attempt{{Model: "m1", Class: "timeout"}, {Model: "m2", Class: "canceled"}}
 	if len(reply.Attempts) != 2 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] {
 		t.Fatalf("attempts = %+v", reply.Attempts)
 	}

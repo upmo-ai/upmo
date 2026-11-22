@@ -170,7 +170,7 @@ func Fail(w http.ResponseWriter, log *slog.Logger, msg string, status int, err .
 	http.Error(w, msg, status)
 }
 
-// Run serves srv until ctx is cancelled, then shuts down within timeout.
+// Run serves srv until ctx is canceled, then shuts down within timeout.
 func Run(ctx context.Context, srv *http.Server, timeout time.Duration, log *slog.Logger) error {
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {

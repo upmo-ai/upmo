@@ -9,13 +9,13 @@ import (
 // RouteFact is the decide route that checks whether a fact is worth keeping.
 const RouteFact = "fact-keep"
 
-// Fact is one claim labelled with whether it is worth keeping.
+// Fact is one claim labeled with whether it is worth keeping.
 type Fact struct {
 	Claim string
 	Yes   bool
 }
 
-// FactKeep accepts a fact-keep config when its labelled recall meets the bar.
+// FactKeep accepts a fact-keep config when its labeled recall meets the bar.
 func FactKeep(ctx context.Context, book Gates, access Access, hops []Hop, bar int, facts []Fact, run Runner) error {
 	if len(facts) == 0 {
 		return ErrConfig

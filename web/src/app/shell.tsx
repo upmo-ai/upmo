@@ -383,7 +383,7 @@ function ShellFooter({ user }: { user: ShellUser }) {
     return (
       <>
         <IconButton
-          aria-label="Toggle colour scheme"
+          aria-label="Toggle color scheme"
           size="lg"
           tooltipPosition="right"
           onClick={() => setChoice(resolvedTheme === "dark" ? "light" : "dark")}

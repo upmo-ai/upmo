@@ -28,6 +28,49 @@ var retiredWords = []string{
 	"destinations",
 }
 
+var britishSpellings = map[string]string{
+	"unauthorised":  "unauthorized",
+	"authorised":    "authorized",
+	"authorise":     "authorize",
+	"cancelled":     "canceled",
+	"cancelling":    "canceling",
+	"labelled":      "labeled",
+	"labelling":     "labeling",
+	"catalogue":     "catalog",
+	"catalogues":    "catalogs",
+	"catalogued":    "cataloged",
+	"colour":        "color",
+	"colours":       "colors",
+	"summarise":     "summarize",
+	"summarised":    "summarized",
+	"summariser":    "summarizer",
+	"normalise":     "normalize",
+	"normalised":    "normalized",
+	"normalisation": "normalization",
+	"organisation":  "organization",
+	"organisations": "organizations",
+	"organise":      "organize",
+	"organised":     "organized",
+	"serialise":     "serialize",
+	"serialised":    "serialized",
+	"recognise":     "recognize",
+	"recognised":    "recognized",
+	"sanitise":      "sanitize",
+	"prioritise":    "prioritize",
+	"neighbour":     "neighbor",
+	"neighbours":    "neighbors",
+	"centred":       "centered",
+	"behaviour":     "behavior",
+	"behaviours":    "behaviors",
+	"honours":       "honors",
+	"defence":       "defense",
+	"judgement":     "judgment",
+	"licence":       "license",
+	"licences":      "licenses",
+	"analyse":       "analyze",
+	"fulfil":        "fulfill",
+}
+
 // termToken is one word in a line, with byte offsets into that line.
 type termToken struct {
 	text       string
@@ -108,6 +151,16 @@ func retiredInLine(line string) []string {
 	return hits
 }
 
+func britishInLine(line string) []string {
+	var hits []string
+	for _, token := range letterTokens(line) {
+		if _, ok := britishSpellings[strings.ToLower(token.text)]; ok {
+			hits = append(hits, token.text)
+		}
+	}
+	return hits
+}
+
 func longestRetired(line string, toks []termToken, i int) (next int, text string, ok bool) {
 	bestLen := 0
 	bestNext := 0
@@ -145,6 +198,18 @@ func retiredPartsMatch(line string, toks []termToken, parts []string) bool {
 
 func normalTermsPath(path string) string {
 	return strings.TrimPrefix(filepath.ToSlash(path), "./")
+}
+
+// britishSkipped reports paths the British spelling check must not read.
+// GitHub's own status value is cancelled, and the password list holds real
+// passwords such as cancelled.
+func britishSkipped(path string) bool {
+	switch normalTermsPath(path) {
+	case ".github/workflows/ci.yml", "internal/identity/domain/common_passwords.go":
+		return true
+	default:
+		return false
+	}
 }
 
 // termsSkipped reports paths the glossary check must not read. The word list
@@ -199,6 +264,12 @@ func scanTermsFile(path string) (hits []string, checked bool, err error) {
 	for n, line := range strings.Split(string(data), "\n") {
 		for _, word := range retiredInLine(line) {
 			hits = append(hits, fmt.Sprintf("%s:%d: retired word %q", path, n+1, word))
+		}
+		if !britishSkipped(path) {
+			for _, word := range britishInLine(line) {
+				us := britishSpellings[strings.ToLower(word)]
+				hits = append(hits, fmt.Sprintf("%s:%d: British spelling %q, use %q", path, n+1, word, us))
+			}
 		}
 	}
 	return hits, true, nil

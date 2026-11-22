@@ -23,7 +23,7 @@ type Message struct {
 	Label string
 }
 
-// Triage accepts a channel-triage config when its labelled accuracy meets the bar.
+// Triage accepts a channel-triage config when its labeled accuracy meets the bar.
 func Triage(ctx context.Context, book Gates, access Access, hops []Hop, bar int, messages []Message, run Runner) error {
 	if len(messages) == 0 {
 		return ErrConfig

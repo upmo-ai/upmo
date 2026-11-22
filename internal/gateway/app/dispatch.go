@@ -1464,7 +1464,7 @@ func (d Dispatch) filterSupportedInputs(ctx context.Context, links []domain.Link
 }
 
 func (d Dispatch) missingInput(ctx context.Context, link domain.Link, required []string) (string, error) {
-	// A model with no catalogue row counts as chat with text input only.
+	// A model with no catalog row counts as chat with text input only.
 	var inputs []string
 	if checker, ok := d.Prices.(InputSupport); ok {
 		have, found, err := checker.ModelInputs(ctx, link.Account.ID, domain.PricingVendor(link.Account), link.Model)

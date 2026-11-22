@@ -238,7 +238,7 @@ describe("approvals and notifications from the brain", () => {
   it("does not hide a 401 behind the sample notifications", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ refuseNotices: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
+      brain({ refuseNotices: () => Response.json({ error: "unauthorized" }, { status: 401 }) }).fetcher,
     );
     const history = renderAt("/tasks");
 

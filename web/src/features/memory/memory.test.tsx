@@ -219,7 +219,7 @@ describe("Personalisation page", () => {
     expect(calls.some((call) => call.method === "PUT" && call.url.endsWith(`/facts/${sampleFacts[0]!.id}`))).toBe(true);
   });
 
-  it("restores the row when an edit is cancelled", async () => {
+  it("restores the row when an edit is canceled", async () => {
     renderAt("/personalisation");
     const text = sampleFacts[0]!.text;
     await screen.findByText(text);
@@ -241,7 +241,7 @@ describe("Personalisation page", () => {
     expect(calls.some((call) => call.method === "PUT")).toBe(false);
   });
 
-  it("keeps the fact when forgetting is cancelled", async () => {
+  it("keeps the fact when forgetting is canceled", async () => {
     renderAt("/personalisation");
     const text = sampleFacts[0]!.text;
     await screen.findByText(text);

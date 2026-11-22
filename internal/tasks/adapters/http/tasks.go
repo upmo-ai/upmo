@@ -243,16 +243,16 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, boo
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return app.Access{}, false
 	}
 	access, ok := h.Access(r)
 	if !ok || access.UserID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return app.Access{}, false
 	}
 	if access.Allow == "" {
-		writeError(w, http.StatusForbidden, "unauthorised")
+		writeError(w, http.StatusForbidden, "unauthorized")
 		return app.Access{}, false
 	}
 	return access, true
@@ -289,7 +289,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, runtime.ErrRepo):
 		writeError(w, http.StatusBadRequest, "the repository must be owner/name or an https URL")
 	case errors.Is(err, app.ErrAccess):
-		writeError(w, http.StatusForbidden, "unauthorised")
+		writeError(w, http.StatusForbidden, "unauthorized")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "no such task")
 	case errors.Is(err, app.ErrPreparing):

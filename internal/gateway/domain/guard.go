@@ -78,7 +78,7 @@ func (g Gate) Note(now time.Time, class FailureClass, retryAfter time.Duration) 
 	switch class {
 	case ClassOK:
 		return Gate{}
-	case ClassCaller, ClassCancelled:
+	case ClassCaller, ClassCanceled:
 		return g
 	case ClassCredential, ClassModelAccess:
 		g.Until = later(g.Until, now.Add(DefaultCool))

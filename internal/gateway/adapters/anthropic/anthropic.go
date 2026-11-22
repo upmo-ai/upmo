@@ -653,12 +653,12 @@ func readStreamTools(ctx context.Context, model string, body io.Reader, events a
 					}
 				}
 				if ctx.Err() != nil {
-					return state.result(), domain.ClassCancelled, ctx.Err()
+					return state.result(), domain.ClassCanceled, ctx.Err()
 				}
 				return state.result(), domain.ClassTransient, errors.New("gateway: stream ended without message_stop")
 			}
 			if ctx.Err() != nil {
-				return state.result(), domain.ClassCancelled, rerr
+				return state.result(), domain.ClassCanceled, rerr
 			}
 			return state.result(), wire.ClassForErr(rerr), rerr
 		}
@@ -690,7 +690,7 @@ func oneEvent(joined string, state *streamState, events app.StreamEvents) (class
 					ID:    ev.ContentBlock.ID,
 					Name:  ev.ContentBlock.Name,
 				}); err != nil {
-					return domain.ClassCancelled, err, true
+					return domain.ClassCanceled, err, true
 				}
 			}
 		}
@@ -704,7 +704,7 @@ func oneEvent(joined string, state *streamState, events app.StreamEvents) (class
 				state.text.WriteString(ev.Delta.Text)
 				if events.Text != nil {
 					if err := events.Text(ev.Delta.Text); err != nil {
-						return domain.ClassCancelled, err, true
+						return domain.ClassCanceled, err, true
 					}
 				}
 			}
@@ -720,7 +720,7 @@ func oneEvent(joined string, state *streamState, events app.StreamEvents) (class
 						Index:          toolIdx,
 						ArgumentsDelta: ev.Delta.PartialJSON,
 					}); err != nil {
-						return domain.ClassCancelled, err, true
+						return domain.ClassCanceled, err, true
 					}
 				}
 			}

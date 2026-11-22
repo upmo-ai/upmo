@@ -50,7 +50,7 @@ func TestRequireSessionRefusesUnauthenticated(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	if rec.Body.String() != "{\"error\":\"unauthorised\"}\n" {
-		t.Fatalf("body = %q, want unauthorised", rec.Body.String())
+	if rec.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+		t.Fatalf("body = %q, want unauthorized", rec.Body.String())
 	}
 }

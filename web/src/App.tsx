@@ -6,13 +6,13 @@ import { ApiProvider, BrainError, type ApiClient } from "./app/api";
 import { createBrainApi } from "./app/brain-api";
 import { createAppRouter, type RouterHistory } from "./app/router";
 
-function isUnauthorised(error: unknown): boolean {
+function isUnauthorized(error: unknown): boolean {
   if (error instanceof BrainError) {
-    return error.status === 401 && error.error === "unauthorised";
+    return error.status === 401 && error.error === "unauthorized";
   }
   if (error && typeof error === "object" && "status" in error && (error as { status: unknown }).status === 401) {
     const errorProp = "error" in error ? (error as { error: unknown }).error : undefined;
-    return errorProp === "unauthorised";
+    return errorProp === "unauthorized";
   }
   return false;
 }
@@ -31,7 +31,7 @@ export function App({
       new QueryClient({
         queryCache: new QueryCache({
           onError: (error) => {
-            if (!isUnauthorised(error)) return;
+            if (!isUnauthorized(error)) return;
             const path = router.state.location.pathname;
             if (path === "/login" || path === "/login/link" || path === "/terms" || path === "/privacy") {
               return;

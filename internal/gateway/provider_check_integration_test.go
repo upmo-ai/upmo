@@ -314,7 +314,7 @@ func (r *checkRig) waitJobState(jobID int64, allowRetry bool, timeout time.Durat
 			switch state {
 			case "completed":
 				return
-			case "discarded", "cancelled":
+			case "discarded", "canceled":
 				r.t.Fatalf("job %d ended in state %s: %s", jobID, state, errorsText)
 			case "retryable":
 				if !allowRetry {

@@ -1668,8 +1668,8 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         } catch {
           // not json
         }
-        if (body.error === "unauthorised") {
-          throw new BrainError(401, "unauthorised");
+        if (body.error === "unauthorized") {
+          throw new BrainError(401, "unauthorized");
         }
       }
       if (response.ok) {

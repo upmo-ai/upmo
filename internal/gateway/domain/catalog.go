@@ -36,7 +36,7 @@ const (
 	OutputAudio = "audio"
 )
 
-// Allowed lifecycle states on a catalogue model.
+// Allowed lifecycle states on a catalog model.
 const (
 	LifecycleActive     = "active"
 	LifecycleAlpha      = "alpha"
@@ -45,7 +45,7 @@ const (
 	LifecycleRetired    = "retired"
 )
 
-// VendorModel keys a catalogue lookup by picker vendor and model id.
+// VendorModel keys a catalog lookup by picker vendor and model id.
 // An empty Vendor names the model-only fallback row.
 type VendorModel struct {
 	Vendor string

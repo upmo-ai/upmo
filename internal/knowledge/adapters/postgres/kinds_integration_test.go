@@ -166,7 +166,7 @@ func TestFileMarkdownPendingThenReady(t *testing.T) {
 	}
 }
 
-func TestClipDedupesByNormalisedURL(t *testing.T) {
+func TestClipDedupesByNormalizedURL(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()

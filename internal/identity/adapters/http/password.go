@@ -117,7 +117,7 @@ func writePasswordErr(w http.ResponseWriter, retry time.Duration, err error) boo
 	switch {
 	case errors.Is(err, app.ErrNotSignedIn):
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 	case errors.Is(err, app.ErrWrong):
 		writeRaw(w, http.StatusUnauthorized, wrongPassword)
 	case errors.Is(err, domain.ErrSSORequired):

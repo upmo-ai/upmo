@@ -74,7 +74,7 @@ func IngestURL(ctx context.Context, store PendingStore, access Access, draft URL
 	if _, err := uuid.Parse(draft.FolderID); err != nil {
 		return PendingResult{}, ErrFolder
 	}
-	ref, title, err := normaliseURL(draft.URL, draft.Title)
+	ref, title, err := normalizeURL(draft.URL, draft.Title)
 	if err != nil {
 		return PendingResult{}, err
 	}
@@ -100,7 +100,7 @@ func ProcessURL(
 	access Access,
 	fetcher URLFetcher,
 	converter BodyConverter,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	folderID, sourceID, rawURL, title string,
 ) error {
@@ -128,9 +128,9 @@ func ProcessURL(
 		return fail("conversion failed")
 	}
 	if strings.TrimSpace(title) == "" {
-		_, title, _ = normaliseURL(rawURL, "")
+		_, title, _ = normalizeURL(rawURL, "")
 	}
-	_, err = Ingest(ctx, store, access, summariser, embedder, Draft{
+	_, err = Ingest(ctx, store, access, summarizer, embedder, Draft{
 		FolderID: folderID,
 		SourceID: sourceID,
 		Title:    title,
@@ -161,7 +161,7 @@ func (PassThroughText) ToMarkdown(_ context.Context, contentType string, body []
 	}
 }
 
-func normaliseURL(raw, title string) (ref, named string, err error) {
+func normalizeURL(raw, title string) (ref, named string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", "", ErrURL

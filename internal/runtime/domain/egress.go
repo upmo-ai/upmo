@@ -66,7 +66,7 @@ func AdmitEgress(host string, allow []string) (Decision, error) {
 	return decision, nil
 }
 
-// parseEgress splits raw into a normalised name and an optional port.
+// parseEgress splits raw into a normalized name and an optional port.
 // It reports false for anything that is neither an address nor a valid DNS name.
 func parseEgress(raw string) (name, port string, ok bool) {
 	s := strings.TrimSpace(raw)
@@ -107,7 +107,7 @@ func parseEgress(raw string) (name, port string, ok bool) {
 	return name, port, true
 }
 
-// isAddress recognises a literal address, including the shortened, octal and
+// isAddress recognizes a literal address, including the shortened, octal and
 // hexadecimal IPv4 forms that resolvers still accept. The name is already lowercase.
 func isAddress(name string) bool {
 	if _, err := netip.ParseAddr(name); err == nil {

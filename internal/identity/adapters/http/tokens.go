@@ -88,13 +88,13 @@ func (h Tokens) session(w http.ResponseWriter, r *http.Request) (app.Session, bo
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	session, err := h.Sessions.Lookup(r.Context(), cookie.Value)
 	if err != nil {
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	markActor(r, session)

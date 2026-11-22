@@ -25,7 +25,7 @@ var (
 	ErrAccess = errors.New("decisions: access")
 	// ErrConfig is a decide route the gate cannot fingerprint.
 	ErrConfig = errors.New("decisions: config")
-	// ErrGate is a model change the labelled cases did not pass.
+	// ErrGate is a model change the labeled cases did not pass.
 	ErrGate = errors.New("decisions: gate")
 )
 
@@ -45,7 +45,7 @@ type Config struct {
 	Hops []Hop  `json:"hops"`
 }
 
-// Example is one labelled case. Yes is read for yesno. Choice is read for choice.
+// Example is one labeled case. Yes is read for yesno. Choice is read for choice.
 type Example struct {
 	Prompt  string
 	Options []string
@@ -106,7 +106,7 @@ func Verdict(hit, total, bar int) (string, error) {
 	return VerdictFail, nil
 }
 
-// Evaluate runs the labelled cases. A runner error stops the gate and counts as nothing.
+// Evaluate runs the labeled cases. A runner error stops the gate and counts as nothing.
 func Evaluate(ctx context.Context, run Runner, kind string, examples []Example) (hit, total int, err error) {
 	if run == nil || len(examples) == 0 || (kind != KindYesNo && kind != KindChoice) {
 		return 0, 0, ErrConfig
@@ -155,7 +155,7 @@ type Gate struct {
 	Bar         int
 }
 
-// Accept stores the route when its fingerprint is unchanged, or when the labelled cases pass for the new one.
+// Accept stores the route when its fingerprint is unchanged, or when the labeled cases pass for the new one.
 // A failed gate leaves the stored fingerprint as it was.
 func Accept(ctx context.Context, book Gates, access Access, cfg Config, bar int, examples []Example, run Runner) error {
 	next, unchanged, err := prepared(ctx, book, access, cfg)

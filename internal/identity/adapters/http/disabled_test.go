@@ -55,7 +55,7 @@ func request(mux http.Handler, method, path, session string, body []byte) *httpt
 
 func assertSignedOut(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
-	if rec.Code != http.StatusUnauthorized || rec.Body.String() != unauthorised {
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != unauthorized {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
 	cleared := false

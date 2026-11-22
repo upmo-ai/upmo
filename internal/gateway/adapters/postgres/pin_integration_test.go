@@ -119,13 +119,13 @@ func (a *pinAdapter) ChatStream(_ context.Context, attempt app.Attempt, _ domain
 	if class, bad := a.fail[attempt.Model]; bad {
 		if text, ok := a.streamBeforeFail[attempt.Model]; ok {
 			if err := emit(text); err != nil {
-				return domain.Usage{}, domain.ClassCancelled, err
+				return domain.Usage{}, domain.ClassCanceled, err
 			}
 		}
 		return a.popUsage(domain.Usage{}), class, fmt.Errorf("pin test: %s", class)
 	}
 	if err := emit("from " + attempt.Model); err != nil {
-		return domain.Usage{}, domain.ClassCancelled, err
+		return domain.Usage{}, domain.ClassCanceled, err
 	}
 	return a.popUsage(domain.Usage{Arrived: true, Input: 1, Output: 1}), domain.ClassOK, nil
 }
@@ -964,7 +964,7 @@ func TestFeature_UPM353_FailedAttemptIsKnownZero(t *testing.T) {
 }
 
 func TestFeature_UPM353_FailedAttemptWithOutputIsEstimated(t *testing.T) {
-	w := newPinWorld(t, map[string]domain.FailureClass{"m1": domain.ClassCancelled})
+	w := newPinWorld(t, map[string]domain.FailureClass{"m1": domain.ClassCanceled})
 	seedFakeVendorRate(t, &w, 75.0)
 	w.adapter.streamBeforeFail = map[string]string{"m1": "partial "}
 	sink := &pinSink{}
@@ -972,7 +972,7 @@ func TestFeature_UPM353_FailedAttemptWithOutputIsEstimated(t *testing.T) {
 	if err := w.disp.ChatStreamPinned(context.Background(), "pin-house", "", domain.Principal{User: pinAuthor, Source: domain.SourceChat}, in, domain.Pin{}, 0, sink); err != nil {
 		t.Fatal(err)
 	}
-	if sink.text.String() != "partial " || sink.done != nil || sink.fail == nil || sink.fail.Class != domain.ClassCancelled {
+	if sink.text.String() != "partial " || sink.done != nil || sink.fail == nil || sink.fail.Class != domain.ClassCanceled {
 		t.Fatalf("sink text=%q done=%+v fail=%+v", sink.text.String(), sink.done, sink.fail)
 	}
 	rows, err := w.pool.Query(context.Background(), `SELECT cost_micro_usd, estimated, price_source FROM gateway.ledger`)

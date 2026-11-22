@@ -200,7 +200,7 @@ describe("sign in", () => {
     });
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
-      "The passkey prompt was cancelled. Try again.",
+      "The passkey prompt was canceled. Try again.",
     );
     expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
 
@@ -241,7 +241,7 @@ describe("sign in", () => {
       "fetch",
       vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async (input) => {
         if (String(input).includes("/api/session")) {
-          return new Response(JSON.stringify({ error: "unauthorised" }), {
+          return new Response(JSON.stringify({ error: "unauthorized" }), {
             status: 401,
             headers: { "content-type": "application/json" },
           });

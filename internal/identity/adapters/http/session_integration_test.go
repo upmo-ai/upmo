@@ -60,11 +60,11 @@ func TestSessionHTTP(t *testing.T) {
 
 	t.Run("missing", func(t *testing.T) {
 		rec := call(protected, http.MethodGet, "/api/session", "")
-		assertUnauthorised(t, rec, false)
+		assertUnauthorized(t, rec, false)
 	})
 	t.Run("malformed", func(t *testing.T) {
 		rec := call(protected, http.MethodGet, "/api/session", "nope")
-		assertUnauthorised(t, rec, true)
+		assertUnauthorized(t, rec, true)
 	})
 	t.Run("unknown", func(t *testing.T) {
 		other, _, err := domain.NewToken()
@@ -72,7 +72,7 @@ func TestSessionHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 		rec := call(protected, http.MethodGet, "/api/session", domain.EncodeToken(other))
-		assertUnauthorised(t, rec, true)
+		assertUnauthorized(t, rec, true)
 	})
 	t.Run("current", func(t *testing.T) {
 		rec := call(protected, http.MethodGet, "/api/session", text)
@@ -93,7 +93,7 @@ func TestSessionHTTP(t *testing.T) {
 	httpapi.Handler{Sessions: idle, Log: h.Log}.Mount(idleMux)
 	t.Run("idle", func(t *testing.T) {
 		rec := call(idleMux, http.MethodGet, "/api/session", text)
-		assertUnauthorised(t, rec, true)
+		assertUnauthorized(t, rec, true)
 	})
 
 	fresh, _, err := svc.Start(ctx, uid, "passkey", "")
@@ -106,7 +106,7 @@ func TestSessionHTTP(t *testing.T) {
 	httpapi.Handler{Sessions: absolute, Log: h.Log}.Mount(absMux)
 	t.Run("expired", func(t *testing.T) {
 		rec := call(absMux, http.MethodGet, "/api/session", fresh)
-		assertUnauthorised(t, rec, true)
+		assertUnauthorized(t, rec, true)
 	})
 
 	t.Run("cross-site delete", func(t *testing.T) {
@@ -132,9 +132,9 @@ func call(h http.Handler, method, path, cookie string) *httptest.ResponseRecorde
 	return rec
 }
 
-func assertUnauthorised(t *testing.T, rec *httptest.ResponseRecorder, cleared bool) {
+func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder, cleared bool) {
 	t.Helper()
-	if rec.Code != http.StatusUnauthorized || rec.Body.String() != "{\"error\":\"unauthorised\"}\n" {
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != "{\"error\":\"unauthorized\"}\n" {
 		t.Fatalf("status %d body %q", rec.Code, rec.Body.String())
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {

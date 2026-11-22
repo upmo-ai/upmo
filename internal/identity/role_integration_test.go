@@ -15,7 +15,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
-// upmo_app is cluster-wide while migrations are serialised per database only,
+// upmo_app is cluster-wide while migrations are serialized per database only,
 // so parallel test packages migrate fresh databases of one cluster at once.
 func TestParallelMigrationsShareOneAppRole(t *testing.T) {
 	const databases = 8

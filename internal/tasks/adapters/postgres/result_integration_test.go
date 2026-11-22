@@ -44,7 +44,7 @@ func TestParentCancelSetsTheCauseOnOpenChildren(t *testing.T) {
 	if status := taskStatus(t, owner, second.ID); status != string(domain.Failed) {
 		t.Fatalf("child status = %s", status)
 	}
-	if cause := taskText(t, owner, `SELECT cause FROM tasks.tasks WHERE id = $1`, second.ID); cause != domain.ParentCancelled {
+	if cause := taskText(t, owner, `SELECT cause FROM tasks.tasks WHERE id = $1`, second.ID); cause != domain.ParentCanceled {
 		t.Fatalf("propagated cause = %q", cause)
 	}
 }

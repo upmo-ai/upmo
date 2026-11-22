@@ -18,31 +18,31 @@ const (
 
 var intentName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,39}$`)
 
-// Labelled is one prompt, its choices, and the expected choice.
-type Labelled struct {
+// Labeled is one prompt, its choices, and the expected choice.
+type Labeled struct {
 	Prompt  string
 	Options []string
 	Label   string
 }
 
-// Dispatch accepts an agent dispatch config when its labelled accuracy meets the bar.
-func Dispatch(ctx context.Context, book Gates, access Access, hops []Hop, bar int, cases []Labelled, run Runner) error {
-	return acceptLabelled(ctx, book, access, RouteDispatch, hops, bar, cases, run, validAgentID)
+// Dispatch accepts an agent dispatch config when its labeled accuracy meets the bar.
+func Dispatch(ctx context.Context, book Gates, access Access, hops []Hop, bar int, cases []Labeled, run Runner) error {
+	return acceptLabeled(ctx, book, access, RouteDispatch, hops, bar, cases, run, validAgentID)
 }
 
-// Intent accepts an intent route config when its labelled accuracy meets the bar.
-func Intent(ctx context.Context, book Gates, access Access, hops []Hop, bar int, cases []Labelled, run Runner) error {
-	return acceptLabelled(ctx, book, access, RouteIntent, hops, bar, cases, run, validIntentName)
+// Intent accepts an intent route config when its labeled accuracy meets the bar.
+func Intent(ctx context.Context, book Gates, access Access, hops []Hop, bar int, cases []Labeled, run Runner) error {
+	return acceptLabeled(ctx, book, access, RouteIntent, hops, bar, cases, run, validIntentName)
 }
 
-func acceptLabelled(
+func acceptLabeled(
 	ctx context.Context,
 	book Gates,
 	access Access,
 	route string,
 	hops []Hop,
 	bar int,
-	cases []Labelled,
+	cases []Labeled,
 	run Runner,
 	validOption func(string) bool,
 ) error {
@@ -50,17 +50,17 @@ func acceptLabelled(
 		return ErrConfig
 	}
 	examples := make([]Example, len(cases))
-	for i, labelled := range cases {
-		prompt := strings.TrimSpace(labelled.Prompt)
+	for i, labeled := range cases {
+		prompt := strings.TrimSpace(labeled.Prompt)
 		if runes := utf8.RuneCountInString(prompt); runes < 1 || runes > 2000 {
 			return ErrConfig
 		}
-		if len(labelled.Options) < 2 || len(labelled.Options) > 8 {
+		if len(labeled.Options) < 2 || len(labeled.Options) > 8 {
 			return ErrConfig
 		}
-		options := make([]string, len(labelled.Options))
-		seen := make(map[string]struct{}, len(labelled.Options))
-		for j, option := range labelled.Options {
+		options := make([]string, len(labeled.Options))
+		seen := make(map[string]struct{}, len(labeled.Options))
+		for j, option := range labeled.Options {
 			option = strings.TrimSpace(option)
 			if runes := utf8.RuneCountInString(option); runes < 1 || runes > 80 || !validOption(option) {
 				return ErrConfig
@@ -71,7 +71,7 @@ func acceptLabelled(
 			seen[option] = struct{}{}
 			options[j] = option
 		}
-		label := strings.TrimSpace(labelled.Label)
+		label := strings.TrimSpace(labeled.Label)
 		if _, ok := seen[label]; !ok {
 			return ErrConfig
 		}

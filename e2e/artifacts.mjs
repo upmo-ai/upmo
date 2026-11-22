@@ -73,8 +73,8 @@ async function expectReadOnly(page, region, lines, what) {
   }
 }
 
-// The colour a design token has on the page now, as a computed colour.
-function tokenColour(page, token) {
+// The color a design token has on the page now, as a computed color.
+function tokenColor(page, token) {
   return page.evaluate((name) => {
     const probe = document.createElement("div");
     probe.style.backgroundColor = `var(${name})`;
@@ -166,13 +166,13 @@ try {
   await expectShown(page, codeLines, "def over_threshold(invoices, limit=1000):", "the code file");
   const tokenClasses = () =>
     code.locator(".view-line span span").evaluateAll((spans) => new Set(spans.map((span) => span.className)).size);
-  let colourClasses = await tokenClasses();
-  for (let tries = 0; colourClasses < 3 && tries < 20; tries += 1) {
+  let colorClasses = await tokenClasses();
+  for (let tries = 0; colorClasses < 3 && tries < 20; tries += 1) {
     await page.waitForTimeout(500);
-    colourClasses = await tokenClasses();
+    colorClasses = await tokenClasses();
   }
-  if (colourClasses < 3) {
-    fail77(`the code file is not highlighted, it has ${colourClasses} token classes`);
+  if (colorClasses < 3) {
+    fail77(`the code file is not highlighted, it has ${colorClasses} token classes`);
   }
   await expectReadOnly(page, code, codeLines, "the code file");
   if ((await code.locator(".monaco-editor").count()) !== 1) {
@@ -182,7 +182,7 @@ try {
   // The editor follows the app theme.
   const themeSwitch = page.getByTestId("theme-switch");
   const lightBackground = await editorBackground(code);
-  if (lightBackground !== (await tokenColour(page, "--surface-200"))) {
+  if (lightBackground !== (await tokenColor(page, "--surface-200"))) {
     fail77(`the light editor background ${lightBackground} is not --surface-200`);
   }
   await themeSwitch.getByText("Dark", { exact: true }).click();
@@ -193,7 +193,7 @@ try {
       await page.waitForTimeout(100);
       dark = await editorBackground(code);
     }
-    if (dark === lightBackground || dark !== (await tokenColour(page, "--surface-200"))) {
+    if (dark === lightBackground || dark !== (await tokenColor(page, "--surface-200"))) {
       fail77(`the dark editor background ${dark} did not follow --surface-200`);
     }
   }

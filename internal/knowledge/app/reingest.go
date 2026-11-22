@@ -46,7 +46,7 @@ func Reingest(
 	access Access,
 	fetcher URLFetcher,
 	converter BodyConverter,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	blobs FileBlobs,
 	folderID, sourceID string,
@@ -100,7 +100,7 @@ func Reingest(
 				access,
 				fetcher,
 				converter,
-				summariser,
+				summarizer,
 				embedder,
 				folderID,
 				sourceID,
@@ -112,12 +112,12 @@ func Reingest(
 
 	case "file":
 		if strings.TrimSpace(source.BlobKey) != "" {
-			return reingestFileBlob(ctx, book, access, converter, summariser, embedder, blobs, folderID, source, runAsync)
+			return reingestFileBlob(ctx, book, access, converter, summarizer, embedder, blobs, folderID, source, runAsync)
 		}
-		return reingestFromBody(ctx, book, access, summariser, embedder, folderID, sourceID, source)
+		return reingestFromBody(ctx, book, access, summarizer, embedder, folderID, sourceID, source)
 
 	case "markdown", "clip":
-		return reingestFromBody(ctx, book, access, summariser, embedder, folderID, sourceID, source)
+		return reingestFromBody(ctx, book, access, summarizer, embedder, folderID, sourceID, source)
 
 	default:
 		return ReingestResult{}, ErrReingest
@@ -128,7 +128,7 @@ func reingestFromBody(
 	ctx context.Context,
 	book ReingestStore,
 	access Access,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	folderID, sourceID string,
 	source SourceDetail,
@@ -137,7 +137,7 @@ func reingestFromBody(
 	if strings.TrimSpace(body) == "" {
 		return ReingestResult{}, ErrReingest
 	}
-	result, err := Ingest(ctx, book, access, summariser, embedder, Draft{
+	result, err := Ingest(ctx, book, access, summarizer, embedder, Draft{
 		FolderID:   folderID,
 		SourceID:   sourceID,
 		Title:      source.Title,
@@ -162,7 +162,7 @@ func reingestFileBlob(
 	book ReingestStore,
 	access Access,
 	converter BodyConverter,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	blobs FileBlobs,
 	folderID string,
@@ -200,7 +200,7 @@ func reingestFileBlob(
 			book,
 			access,
 			converter,
-			summariser,
+			summarizer,
 			embedder,
 			folderID,
 			sourceID,

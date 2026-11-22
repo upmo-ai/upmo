@@ -64,7 +64,7 @@ type Principal struct {
 	AutomationID string
 }
 
-// Usage is the normalised token counts for one attempt. Arrived is false
+// Usage is the normalized token counts for one attempt. Arrived is false
 // when the provider returned no usage block. ReportedCostMicroUSD holds an
 // optional validated provider-reported call cost in micro-USD and stays runtime-only.
 type Usage struct {

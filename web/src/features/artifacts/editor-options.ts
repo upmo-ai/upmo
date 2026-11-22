@@ -60,7 +60,7 @@ export function diffOptions(read: TokenReader, sideBySide: boolean): editor.IDif
     useInlineViewWhenSpaceIsLimited: false,
     enableSplitViewResizing: false,
     renderOverviewRuler: false,
-    // +/- marks next to the lines, so the change is not told by colour alone.
+    // +/- marks next to the lines, so the change is not told by color alone.
     renderIndicators: true,
     ignoreTrimWhitespace: false,
     hideUnchangedRegions: { enabled: false },

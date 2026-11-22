@@ -13,5 +13,5 @@ How you tested the change. Paste the end of `make ci` or name the tests you adde
 ## Checklist
 
 - [ ] `make ci` passes.
-- [ ] Tests cover the change in behaviour.
+- [ ] Tests cover the change in behavior.
 - [ ] I have signed the [Contributor License Agreement](../CLA.md).

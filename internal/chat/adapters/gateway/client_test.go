@@ -248,7 +248,7 @@ func TestChatStreamRefusalBeforeTheStreamIsAPlainError(t *testing.T) {
 	}
 }
 
-func TestChatStreamStopsOnCancelledContext(t *testing.T) {
+func TestChatStreamStopsOnCanceledContext(t *testing.T) {
 	secret := serviceKey(t, 'k')
 	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")

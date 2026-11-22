@@ -24,8 +24,8 @@ type Handler struct {
 	Delete  app.SourceDeleter
 	Finder  app.Finder
 	Access  func(r *http.Request) (app.Access, bool)
-	// Summariser and Embedder are optional. Nil still stores verbatim chunks.
-	Summariser app.Summariser
+	// Summarizer and Embedder are optional. Nil still stores verbatim chunks.
+	Summarizer app.Summarizer
 	Embedder   app.Embedder
 	// EmbedFor binds a gateway embed client to the signed-in person when set.
 	// It takes precedence over Embedder so the ledger records that user id.
@@ -120,7 +120,7 @@ func (h Handler) reingest(w http.ResponseWriter, r *http.Request) {
 		access,
 		h.Fetcher,
 		h.Converter,
-		h.Summariser,
+		h.Summarizer,
 		h.embedder(access.UserID),
 		h.Blobs,
 		r.PathValue("id"),
@@ -301,7 +301,7 @@ func (h Handler) ingest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a source needs a title and body")
 		return
 	}
-	result, err := app.Ingest(r.Context(), h.Store, access, h.Summariser, h.embedder(access.UserID), app.Draft{
+	result, err := app.Ingest(r.Context(), h.Store, access, h.Summarizer, h.embedder(access.UserID), app.Draft{
 		FolderID: r.PathValue("id"),
 		SourceID: input.SourceID,
 		Title:    *input.Title,
@@ -366,7 +366,7 @@ func (h Handler) ingestURL(w http.ResponseWriter, r *http.Request) {
 			access,
 			h.Fetcher,
 			h.Converter,
-			h.Summariser,
+			h.Summarizer,
 			embedder,
 			folderID,
 			sourceID,
@@ -444,7 +444,7 @@ func (h Handler) ingestFile(w http.ResponseWriter, r *http.Request) {
 			h.Store,
 			access,
 			h.Converter,
-			h.Summariser,
+			h.Summarizer,
 			embedder,
 			folderID,
 			sourceID,
@@ -473,7 +473,7 @@ func (h Handler) ingestClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a clip needs a url and markdown")
 		return
 	}
-	result, err := app.IngestClip(r.Context(), h.Store, access, h.Summariser, h.embedder(access.UserID), app.ClipDraft{
+	result, err := app.IngestClip(r.Context(), h.Store, access, h.Summarizer, h.embedder(access.UserID), app.ClipDraft{
 		FolderID: r.PathValue("id"),
 		URL:      *input.URL,
 		Title:    input.Title,
@@ -528,16 +528,16 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, boo
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return app.Access{}, false
 	}
 	access, ok := h.Access(r)
 	if !ok || access.UserID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return app.Access{}, false
 	}
 	if access.Allow == "" {
-		writeError(w, http.StatusForbidden, "unauthorised")
+		writeError(w, http.StatusForbidden, "unauthorized")
 		return app.Access{}, false
 	}
 	return access, true
@@ -549,7 +549,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 	}
 	switch {
 	case errors.Is(err, app.ErrAccess):
-		writeError(w, http.StatusForbidden, "unauthorised")
+		writeError(w, http.StatusForbidden, "unauthorized")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, app.ErrFolder), errors.Is(err, app.ErrTitle), errors.Is(err, app.ErrName), errors.Is(err, app.ErrQuery), errors.Is(err, app.ErrURL), errors.Is(err, app.ErrURLBlocked), errors.Is(err, app.ErrFile), errors.Is(err, app.ErrFileSize), errors.Is(err, app.ErrReingest), errors.Is(err, domain.ErrEmpty):

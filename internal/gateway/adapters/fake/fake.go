@@ -195,14 +195,14 @@ func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req d
 			case <-time.After(a.StreamDelay):
 			case <-ctx.Done():
 				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
-					domain.ClassCancelled, ctx.Err()
+					domain.ClassCanceled, ctx.Err()
 			}
 		}
 		chunk := word + " "
 		if events.Text != nil {
 			if err := events.Text(chunk); err != nil {
 				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
-					domain.ClassCancelled, err
+					domain.ClassCanceled, err
 			}
 		}
 		text.WriteString(chunk)
@@ -217,7 +217,7 @@ func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req d
 		if events.ToolCall != nil {
 			if err := events.ToolCall(app.ToolCallDelta{Index: i, ID: tc.ID, Name: tc.Name}); err != nil {
 				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
-					domain.ClassCancelled, err
+					domain.ClassCanceled, err
 			}
 			args := strings.TrimSpace(string(tc.Arguments))
 			if args == "" {
@@ -225,7 +225,7 @@ func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req d
 			}
 			if err := events.ToolCall(app.ToolCallDelta{Index: i, ArgumentsDelta: args}); err != nil {
 				return domain.ChatResult{Text: text.String(), Usage: part(sent), Model: attempt.Model},
-					domain.ClassCancelled, err
+					domain.ClassCanceled, err
 			}
 		}
 	}

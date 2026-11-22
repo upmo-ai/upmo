@@ -37,7 +37,7 @@ func uuidv7LowerBound(t time.Time) uuid.UUID {
 	return id
 }
 
-// lockUsageDaily serialises the roll-up and an erasure, so neither reads the
+// lockUsageDaily serializes the roll-up and an erasure, so neither reads the
 // ledger while the other is moving its rows.
 func lockUsageDaily(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(pg_catalog.hashtext('gateway.usage_daily'))`)

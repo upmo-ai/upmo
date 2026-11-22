@@ -216,7 +216,7 @@ func Place(tier, platform string) (Placement, error) {
 	return domain.Place(tier, platform)
 }
 
-// CheckSpec returns spec normalised, or ErrSpec when admission refuses it.
+// CheckSpec returns spec normalized, or ErrSpec when admission refuses it.
 func CheckSpec(spec Spec) (Spec, error) { return app.CheckSpec(spec) }
 
 // ResourceShape returns the one shape every sandbox gets.

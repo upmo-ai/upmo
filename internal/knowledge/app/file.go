@@ -81,7 +81,7 @@ func ProcessFile(
 	store Store,
 	access Access,
 	converter BodyConverter,
-	summariser Summariser,
+	summarizer Summarizer,
 	embedder Embedder,
 	folderID, sourceID, name, title string,
 	raw []byte,
@@ -116,7 +116,7 @@ func ProcessFile(
 			title = name
 		}
 	}
-	_, err = Ingest(ctx, store, access, summariser, embedder, Draft{
+	_, err = Ingest(ctx, store, access, summarizer, embedder, Draft{
 		FolderID: folderID,
 		SourceID: sourceID,
 		Title:    title,

@@ -156,12 +156,12 @@ func (h ProvidersHandler) person(w http.ResponseWriter, r *http.Request) (string
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
-		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
+		writeRouteError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	userID, ok := h.Access(r)
 	if !ok || userID == "" {
-		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
+		writeRouteError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	return userID, true
@@ -250,7 +250,7 @@ func (h ProvidersHandler) vendors(w http.ResponseWriter, r *http.Request) {
 	writeRouteJSON(w, http.StatusOK, out)
 }
 
-// catalog returns the stored catalogue rows for the requested vendor.
+// catalog returns the stored catalog rows for the requested vendor.
 func (h ProvidersHandler) catalog(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.person(w, r); !ok {
 		return

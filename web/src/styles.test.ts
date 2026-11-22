@@ -38,10 +38,10 @@ describe("styles", () => {
     expect(main).toContain("@fontsource/fira-code/400.css");
   });
 
-  it("has no colour literals under web/src", () => {
-    const colour = /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/;
+  it("has no color literals under web/src", () => {
+    const color = /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/;
     for (const path of sourceFiles(src)) {
-      const hit = readFileSync(path, "utf8").match(colour);
+      const hit = readFileSync(path, "utf8").match(color);
       expect(hit ? `${path} ${hit[0]}` : "").toBe("");
     }
   });

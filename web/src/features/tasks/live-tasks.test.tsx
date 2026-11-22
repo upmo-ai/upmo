@@ -102,7 +102,7 @@ function brain(options: { list?: () => Response; refuseCreate?: boolean } = {}) 
     if (path === "/api/tasks" && method === "POST" && options.refuseCreate) {
       // Like the real brain with no sandbox: the task is made and marked Failed, then the answer is 503.
       const goal = (body as { goal: string }).goal;
-      tasks.push(stored(failedId, goal, "Failed", "Preparing", { detail: "parent_cancelled" }));
+      tasks.push(stored(failedId, goal, "Failed", "Preparing", { detail: "parent_canceled" }));
       return Response.json({ error: "no sandbox is configured" }, { status: 503 });
     }
     const match = /^\/api\/tasks\/([^/]+)$/.exec(path);
@@ -258,7 +258,7 @@ describe("tasks from the brain", () => {
   it("does not hide a 401 behind the sample tasks", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ list: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
+      brain({ list: () => Response.json({ error: "unauthorized" }, { status: 401 }) }).fetcher,
     );
     const history = renderAt("/tasks");
 

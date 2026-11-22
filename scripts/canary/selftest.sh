@@ -81,8 +81,8 @@ if [[ -v CANARY_GOAL ]]; then
 fi
 
 assert_json \
-  '{"goal":"Summarise the synthetic note.","verdict":"pass","tokens":12,"cost":"0.0100","duration":"1.25s"}' \
-  'Summarise the synthetic note.' pass 12 '0.0100' '1.25s'
+  '{"goal":"Summarize the synthetic note.","verdict":"pass","tokens":12,"cost":"0.0100","duration":"1.25s"}' \
+  'Summarize the synthetic note.' pass 12 '0.0100' '1.25s'
 
 assert_json \
   '{"goal":"say \"hi\" \\ path","verdict":"fail","tokens":0,"cost":"0","duration":"0s"}' \
@@ -112,10 +112,10 @@ default_out=$(
 
 hook_out=$(
   bash --noprofile --norc -c \
-    'source "$1"; canary_on_exit() { printf "%s\n" cancelled; }; exit 0' \
+    'source "$1"; canary_on_exit() { printf "%s\n" canceled; }; exit 0' \
     bash "${script_dir}/lib.sh"
 )
-[[ "$hook_out" == "cancelled" ]] || fail "EXIT trap did not run the cancel hook"
+[[ "$hook_out" == "canceled" ]] || fail "EXIT trap did not run the cancel hook"
 
 if [[ -v CANARY_GOAL ]]; then
   fail "CANARY_GOAL is still set"

@@ -130,9 +130,9 @@ func TestBackupOptionalOutAndReservation(t *testing.T) {
 				t.Fatalf("archive permissions: %v %v", info, err)
 			}
 			// A repeated timestamp path must fail before even querying Postgres.
-			cancelled, cancel := context.WithCancel(ctx)
+			canceled, cancel := context.WithCancel(ctx)
 			cancel()
-			if _, err := backup.Backup(cancelled, owner, backup.BackupOptions{OutPath: path, NoEncrypt: true}); !errors.Is(err, os.ErrExist) {
+			if _, err := backup.Backup(canceled, owner, backup.BackupOptions{OutPath: path, NoEncrypt: true}); !errors.Is(err, os.ErrExist) {
 				t.Fatalf("existing archive: %v", err)
 			}
 			if err := backupCommand([]string{"--out", path}, io.Discard); !errors.Is(err, os.ErrExist) {

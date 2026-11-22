@@ -438,7 +438,7 @@ func TestProviderModelsReadSealsAndRefusesInvisibleAccount(t *testing.T) {
 		return serveWithAudit(t, mux, appPool)
 	}
 
-	// An authorised read succeeds and seals one provider.models.read event.
+	// An authorized read succeeds and seals one provider.models.read event.
 	rec := httptest.NewRecorder()
 	mountAs(providerOwnerID).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers/"+made.ID+"/models", nil))
 	if rec.Code != http.StatusOK {

@@ -682,11 +682,11 @@ describe("editor options", () => {
 
 describe("editor theme", () => {
   const themes = ["light", "dark", "hc"] as const;
-  // The colour check over web/src allows no colour literals, so the test colours are built.
+  // The color check over web/src allows no color literals, so the test colors are built.
   const hex = (digits: string) => `#${digits}`;
   const call = (name: string, ...channels: number[]) => `${name}(${channels.join(", ")})`;
 
-  /** A page whose every token is a different colour, so a colour in the theme can be traced to its token. */
+  /** A page whose every token is a different color, so a color in the theme can be traced to its token. */
   function paint(): { read: TokenReader; byToken: Map<string, string> } {
     const byToken = new Map<string, string>();
     const read: TokenReader = (token) => {
@@ -707,7 +707,7 @@ describe("editor theme", () => {
     expect(Object.keys(baseOf).sort()).toEqual([...themes].sort());
   });
 
-  it("UPM-77 takes every colour from a design token and hard-codes none", () => {
+  it("UPM-77 takes every color from a design token and hard-codes none", () => {
     for (const theme of themes) {
       const { read, byToken } = paint();
       const data = themeData(theme, read);
@@ -732,7 +732,7 @@ describe("editor theme", () => {
     expect(themeData("dark", dark).colors["editor.background"]).toBe(hex("000000"));
   });
 
-  it("UPM-77 leaves a colour to Monaco when its token is not a plain colour", () => {
+  it("UPM-77 leaves a color to Monaco when its token is not a plain color", () => {
     const data = themeData("light", () => "");
     expect(data.colors).toEqual({});
     expect(data.rules).toEqual([]);
@@ -765,7 +765,7 @@ describe("editor theme", () => {
       themeData(theme, (token) => values[token.slice(2)]?.[theme] ?? "");
     for (const theme of themes) {
       const data = themeOf(theme);
-      // A token that is missing from a theme would leave a colour out.
+      // A token that is missing from a theme would leave a color out.
       expect(Object.keys(data.colors)).toHaveLength(uiColors.length);
       expect(data.rules).toHaveLength(syntaxColors.length);
       expect(data.colors["editor.background"]).toBe(values["surface-200"]?.[theme]);

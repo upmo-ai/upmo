@@ -37,8 +37,8 @@ func TestClassForErr(t *testing.T) {
 	if got := ClassForErr(nil); got != domain.ClassOK {
 		t.Errorf("nil: %q", got)
 	}
-	if got := ClassForErr(context.Canceled); got != domain.ClassCancelled {
-		t.Errorf("cancelled: %q", got)
+	if got := ClassForErr(context.Canceled); got != domain.ClassCanceled {
+		t.Errorf("canceled: %q", got)
 	}
 	if got := ClassForErr(errors.New("i/o Timeout")); got != domain.ClassTimeout {
 		t.Errorf("timeout: %q", got)

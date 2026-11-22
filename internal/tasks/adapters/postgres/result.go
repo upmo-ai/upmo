@@ -13,7 +13,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
-// Cancel fails the task. When it has open children, those fail with cause parent_cancelled.
+// Cancel fails the task. When it has open children, those fail with cause parent_canceled.
 func (s Store) Cancel(ctx context.Context, access app.Access, taskID string) (app.Task, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
@@ -73,7 +73,7 @@ func (s Store) Cancel(ctx context.Context, access app.Access, taskID string) (ap
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks.tasks
 			SET cause = $2
-			WHERE id = $1::uuid`, childID, domain.ParentCancelled)
+			WHERE id = $1::uuid`, childID, domain.ParentCanceled)
 		if err != nil {
 			return app.Task{}, fmt.Errorf("tasks: cause: %w", err)
 		}

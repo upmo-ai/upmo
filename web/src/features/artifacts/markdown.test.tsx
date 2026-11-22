@@ -27,7 +27,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("markdown sanitiser", () => {
+describe("markdown sanitizer", () => {
   it("UPM-74 shows a script payload as text and emits no markup from it", () => {
     const out = html(payload);
     expect(out).not.toMatch(/<script/i);

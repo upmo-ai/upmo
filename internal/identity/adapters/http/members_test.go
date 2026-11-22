@@ -54,7 +54,7 @@ func TestMemberRefusals(t *testing.T) {
 		status int
 		error  string
 	}{
-		{name: "signed out", method: http.MethodGet, path: "/api/members", status: http.StatusUnauthorized, error: "unauthorised"},
+		{name: "signed out", method: http.MethodGet, path: "/api/members", status: http.StatusUnauthorized, error: "unauthorized"},
 		{name: "stale", method: http.MethodPost, path: "/api/members", cookie: true, body: body, setup: func(f *memberFake) { f.signedIn = now.Add(-11 * time.Minute) }, status: http.StatusForbidden, error: "sign in again"},
 		{name: "member cannot invite", method: http.MethodPost, path: "/api/members", cookie: true, body: body, setup: func(f *memberFake) { f.system = "member" }, status: http.StatusForbidden, error: "only owners and admins manage members"},
 		{name: "admin cannot invite an owner", method: http.MethodPost, path: "/api/members", cookie: true, body: map[string]string{"email": "a@example.com", "name": "A", "role_id": ownerRole.String()}, setup: func(f *memberFake) { f.system = "admin" }, status: http.StatusForbidden, error: "only an owner can change the owner role"},

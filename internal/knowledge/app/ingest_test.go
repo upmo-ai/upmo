@@ -62,9 +62,9 @@ func TestIngestEmbedsPrefixAndBodyNotTheTitle(t *testing.T) {
 	}
 }
 
-func TestIngestQuarantinesThePrefixWhenTheSummariserFails(t *testing.T) {
+func TestIngestQuarantinesThePrefixWhenTheSummarizerFails(t *testing.T) {
 	store := &ingestStore{}
-	sum := &scriptPrefix{err: errors.New("summariser failed"), text: "should not store"}
+	sum := &scriptPrefix{err: errors.New("summarizer failed"), text: "should not store"}
 	_, err := Ingest(context.Background(), store, allowAll, sum, nil, Draft{
 		FolderID: folderID, Title: "Notes", Body: "Ada prefers oolong tea",
 	})

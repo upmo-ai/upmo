@@ -60,7 +60,7 @@ function fixtures(now: Date): StoredChat[] {
         {
           id: "roadmap-1",
           role: "user",
-          body: "Summarise the launch notes and highlight anything that needs a decision.",
+          body: "Summarize the launch notes and highlight anything that needs a decision.",
           model: null,
           tokens: 18,
           cost_usd: 0.0002,
@@ -135,7 +135,7 @@ function fixtures(now: Date): StoredChat[] {
         {
           id: "supplier-1",
           role: "user",
-          body: "Which questions should we prioritise before the supplier meeting?",
+          body: "Which questions should we prioritize before the supplier meeting?",
           model: null,
           tokens: 16,
           cost_usd: null,
@@ -156,7 +156,7 @@ function fixtures(now: Date): StoredChat[] {
   ];
 }
 
-function summarise(chat: StoredChat): ChatSummary {
+function summarize(chat: StoredChat): ChatSummary {
   const last = chat.lines.at(-1);
   return {
     id: chat.id,
@@ -216,7 +216,7 @@ export function createChatsStub(
 
     async list() {
       return chats
-        .map(summarise)
+        .map(summarize)
         .sort((a, b) => Date.parse(b.last_activity) - Date.parse(a.last_activity))
         .map((item) => copy(item));
     },
@@ -229,7 +229,7 @@ export function createChatsStub(
         lines: [],
       };
       chats.push(chat);
-      return copy(summarise(chat));
+      return copy(summarize(chat));
     },
     async get(id): Promise<Chat> {
       return copy({ id, lines: find(id).lines });

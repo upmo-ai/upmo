@@ -95,7 +95,7 @@ func TestAccountKeyHidesEmail(t *testing.T) {
 		t.Fatalf("key = %s", key)
 	}
 	if AccountKey(" ada@example.com ") != key {
-		t.Fatal("email is not normalised")
+		t.Fatal("email is not normalized")
 	}
 	if !strings.HasPrefix(AccountIPKey("ada@example.com", "198.51.100.9"), "account-ip:") {
 		t.Fatal(AccountIPKey("ada@example.com", "198.51.100.9"))

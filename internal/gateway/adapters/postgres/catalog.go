@@ -348,7 +348,7 @@ func (s Store) Capabilities(ctx context.Context, model string) ([]string, bool, 
 	return caps, true, nil
 }
 
-// VendorCatalog returns the catalogue rows for vendor in model order.
+// VendorCatalog returns the catalog rows for vendor in model order.
 // An empty vendor returns an empty slice rather than the internal fallback rows.
 func (s Store) VendorCatalog(ctx context.Context, vendor string) ([]domain.CatalogRow, error) {
 	if s.Pool == nil {
@@ -381,7 +381,7 @@ func (s Store) VendorCatalog(ctx context.Context, vendor string) ([]domain.Catal
 	return out, rows.Err()
 }
 
-// CatalogModel returns the catalogue row for (vendor, model), falling back to
+// CatalogModel returns the catalog row for (vendor, model), falling back to
 // the model-only row (empty vendor).
 func (s Store) CatalogModel(ctx context.Context, vendor, model string) (domain.CatalogRow, bool, error) {
 	if s.Pool == nil {
@@ -407,8 +407,8 @@ func (s Store) CatalogModel(ctx context.Context, vendor, model string) (domain.C
 	return row, true, nil
 }
 
-// ModelKinds resolves the catalogue kind for each (vendor, model) pair,
-// falling back to the model-only row (empty vendor). Pairs absent from the catalogue
+// ModelKinds resolves the catalog kind for each (vendor, model) pair,
+// falling back to the model-only row (empty vendor). Pairs absent from the catalog
 // are omitted from the returned map.
 func (s Store) ModelKinds(ctx context.Context, pairs []domain.VendorModel) (map[domain.VendorModel]domain.ModelKind, error) {
 	if s.Pool == nil || len(pairs) == 0 {
@@ -465,7 +465,7 @@ func (s Store) ModelKinds(ctx context.Context, pairs []domain.VendorModel) (map[
 }
 
 // ModelInputs returns the accepted input modalities for an account's model:
-// the account's discovered provider list first, then the catalogue (vendor
+// the account's discovered provider list first, then the catalog (vendor
 // row then fallback row). ok is false when neither has a row.
 func (s Store) ModelInputs(ctx context.Context, accountID, vendor, model string) ([]string, bool, error) {
 	if s.Pool == nil {
@@ -587,7 +587,7 @@ func (s Store) SuggestModelForInput(ctx context.Context, accountID, vendor, need
 		if !ok {
 			info, ok = catByKey[domain.VendorModel{Vendor: "", Model: c.model}]
 		}
-		// Uncatalogued models count as chat with text input.
+		// Uncataloged models count as chat with text input.
 		kind := domain.KindChat
 		if ok && info.kind != "" {
 			kind = info.kind

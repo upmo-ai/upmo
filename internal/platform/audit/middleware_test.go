@@ -16,7 +16,7 @@ func TestEventForPicksTheOutcome(t *testing.T) {
 		want   Outcome
 		reason string
 	}{
-		{"unauthorised", 401, Denied, ""},
+		{"unauthorized", 401, Denied, ""},
 		{"forbidden", 403, Denied, ""},
 		{"throttled", 429, Denied, ""},
 		{"broken", 500, Failure, ""},
@@ -47,7 +47,7 @@ func TestEventForPicksTheOutcome(t *testing.T) {
 	}
 }
 
-func TestEventForHonoursRecordedEvents(t *testing.T) {
+func TestEventForHonorsRecordedEvents(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	route := Route{Action: AuthSignOut}
 
