@@ -1,0 +1,5 @@
+# DL3008: the sandbox image installs ca-certificates and git from the Debian
+# release the base image pins, so security fixes arrive with the base image
+# digest bump. Pinning apt versions would break every Debian point release.
+ignored:
+  - DL3008

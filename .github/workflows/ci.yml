@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -18,107 +22,375 @@ jobs:
   go:
     name: Go Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make build test
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Go Tests
+        run: |
+          mkdir -p reports
+          make build test 2>&1 | tee reports/go.log
+      - name: Upload Go Coverage
+        if: always()
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: reports/go-unit.cover
+          flags: go-unit
+          disable_search: true
+          fail_ci_if_error: false
+      - name: Upload Web Coverage
+        if: always()
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/lcov.info
+          flags: web
+          disable_search: true
+          fail_ci_if_error: false
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Go Tests
+          status: ${{ job.status }}
+          files: reports/go-unit.xml reports/go-unit.cover reports/web.xml web/coverage/lcov.info reports/go.log
 
   go-integration:
     name: Go Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make test-integration
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Go Integration Tests
+        run: |
+          mkdir -p reports
+          make test-integration 2>&1 | tee reports/go-integration.log
+      - name: Upload Coverage
+        if: always()
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: reports/go-integration.cover
+          flags: go-integration
+          disable_search: true
+          fail_ci_if_error: false
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Go Integration Tests
+          status: ${{ job.status }}
+          files: reports/go-integration.xml reports/go-integration.cover reports/go-integration.log
 
   regression:
     name: Regression Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make test-regression
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Regression Tests
+        run: |
+          mkdir -p reports
+          make test-regression 2>&1 | tee reports/regression.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Regression Tests
+          status: ${{ job.status }}
+          files:  reports/regression.log
 
   canary:
     name: Canary
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make canary
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Canary
+        run: |
+          mkdir -p reports
+          make canary 2>&1 | tee reports/canary.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Canary
+          status: ${{ job.status }}
+          files:  reports/canary.log
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make lint
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Lint
+        run: |
+          mkdir -p reports
+          make lint 2>&1 | tee reports/lint.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Lint
+          status: ${{ job.status }}
+          files:  reports/lint.log
 
   arch:
     name: Architecture Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make arch
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Architecture Check
+        run: |
+          mkdir -p reports
+          make arch 2>&1 | tee reports/arch.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Architecture Check
+          status: ${{ job.status }}
+          files:  reports/arch.log
 
   web:
     name: Web Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make web
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Web Checks
+        run: |
+          mkdir -p reports
+          make web 2>&1 | tee reports/web.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Web Checks
+          status: ${{ job.status }}
+          files: reports/web.xml reports/web.log
 
   e2e:
     name: End-to-End Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make e2e
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run End-to-End Tests
+        run: |
+          mkdir -p reports
+          make e2e 2>&1 | tee reports/e2e.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: End-to-End Tests
+          status: ${{ job.status }}
+          files:  reports/e2e.log
 
   vuln:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make vuln
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Vulnerability Scan
+        run: |
+          mkdir -p reports
+          make vuln 2>&1 | tee reports/vuln.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Vulnerability Scan
+          status: ${{ job.status }}
+          files:  reports/vuln.log
 
   secrets:
     name: Secret Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - run: make secrets
+          persist-credentials: false
+      - name: Run Secret Scan
+        run: |
+          mkdir -p reports
+          make secrets 2>&1 | tee reports/secrets.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Secret Scan
+          status: ${{ job.status }}
+          files:  reports/secrets.log
 
   commits:
     name: Commit Messages
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       # A pull request checkout is a synthetic merge commit; check the head
       # commits against the base branch instead. A push to main has nothing
       # newer than main to check.
-      - if: github.event_name == 'pull_request'
-        run: make commits COMMITS_RANGE=origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}
-      - if: github.event_name != 'pull_request'
-        run: make commits COMMITS_RANGE=origin/main..HEAD
+      - name: Run Commit Messages
+        env:
+          RANGE: ${{ github.event_name == 'pull_request' && format('origin/{0}..{1}', github.base_ref, github.event.pull_request.head.sha) || 'origin/main..HEAD' }}
+        run: |
+          mkdir -p reports
+          make commits COMMITS_RANGE="$RANGE" 2>&1 | tee reports/commits.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Commit Messages
+          status: ${{ job.status }}
+          files:  reports/commits.log
 
   docs:
     name: Docs Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make docs
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Docs Check
+        run: |
+          mkdir -p reports
+          make docs 2>&1 | tee reports/docs.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Docs Check
+          status: ${{ job.status }}
+          files:  reports/docs.log
 
   fuzz:
     name: Fuzz Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make fuzz
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Fuzz Tests
+        run: |
+          mkdir -p reports
+          make fuzz 2>&1 | tee reports/fuzz.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Fuzz Tests
+          status: ${{ job.status }}
+          files:  reports/fuzz.log
+
+  workflows:
+    name: Workflow Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Workflow Security
+        run: |
+          mkdir -p reports
+          make workflows 2>&1 | tee reports/workflows.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Workflow Security
+          status: ${{ job.status }}
+          files:  reports/workflows.log
+
+  images:
+    name: Container Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Container Images
+        run: |
+          mkdir -p reports
+          make images 2>&1 | tee reports/images.log
+      - name: Write Summary
+        if: always()
+        uses: ./.github/actions/summary
+        with:
+          title: Container Images
+          status: ${{ job.status }}
+          files:  reports/images.log
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check Out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Review Dependencies
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development
+          # Licenses that cannot ship inside an AGPL-3.0 program.
+          deny-licenses: GPL-2.0-only, SSPL-1.0, BUSL-1.1
+          comment-summary-in-pr: never
 
   ci-ok:
     name: CI Result
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: always()
     needs:
       - go
@@ -134,9 +406,26 @@ jobs:
       - commits
       - docs
       - fuzz
+      - workflows
+      - images
+      - dependency-review
     steps:
-      - name: Fail unless every job passed or was skipped on purpose
+      - name: Write Summary
+        if: always()
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          case '${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}' in
-            true) echo "A required job did not pass."; exit 1 ;;
+          {
+            echo "## CI Result"
+            echo
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "$NEEDS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail Unless Every Job Passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*) echo "A required job did not pass."; exit 1 ;;
           esac

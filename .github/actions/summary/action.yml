@@ -1,0 +1,28 @@
+name: Write Summary
+description: Write a Markdown summary of one CI job to the run page.
+
+inputs:
+  title:
+    description: Job name shown in the summary heading.
+    required: true
+  status:
+    description: Job status, from job.status.
+    required: true
+  files:
+    description: Space-separated report files (.xml, .cover, .info, .log).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Write Summary
+      shell: bash
+      env:
+        TITLE: ${{ inputs.title }}
+        STATUS: ${{ inputs.status }}
+        FILES: ${{ inputs.files }}
+      run: |
+        args=(-title "$TITLE" -status "$STATUS")
+        for f in $FILES; do args+=(-file "$f"); done
+        docker compose run --rm -T go go run ./tools/repolint summary "${args[@]}" >> "$GITHUB_STEP_SUMMARY"

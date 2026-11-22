@@ -33,7 +33,7 @@ LDFLAGS := -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$(VERS
 	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$(COMMIT) \
 	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: help build test test-integration test-live test-regression lint fmt up down ci web e2e arch vuln secrets commits docs fuzz canary
+.PHONY: help build test test-integration test-live test-regression lint fmt up down ci web e2e arch vuln secrets commits docs fuzz canary workflows images
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -42,13 +42,16 @@ build: ## Build the Go module and the web app
 	$(GO) go build -ldflags "$(LDFLAGS)" ./...
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm build"
 
+# Reports (JUnit and coverage) land in reports/ for the CI run summary and Codecov.
 test: ## Run Go unit tests with the race detector and the web tests
-	$(GO) go test -race ./...
+	mkdir -p reports
+	$(GO) go tool gotestsum --junitfile reports/go-unit.xml -- -race -coverprofile=reports/go-unit.cover ./...
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm test"
 
 test-integration: ## Run Go integration tests against the compose postgres and the Docker engine
+	mkdir -p reports
 	$(COMPOSE) up -d --wait postgres
-	$(COMPOSE) run --rm -v "$(UPMO_DOCKER_SOCKET):/var/run/docker.sock" -e UPMO_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" -e UPMO_TEST_DOCKER_HOST=unix:///var/run/docker.sock go go test -tags integration ./...
+	$(COMPOSE) run --rm -v "$(UPMO_DOCKER_SOCKET):/var/run/docker.sock" -e UPMO_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" -e UPMO_TEST_DOCKER_HOST=unix:///var/run/docker.sock go go tool gotestsum --junitfile reports/go-integration.xml -- -tags integration -coverprofile=reports/go-integration.cover ./...
 
 test-live: ## Run tests that call a real model provider
 	$(GO) go test -tags live ./...
@@ -81,6 +84,17 @@ vuln: ## Scan for known vulnerabilities with govulncheck and osv-scanner
 secrets: ## Scan the full git history for secrets with gitleaks
 	$(TOOL) gitleaks
 
+workflows: ## Lint the workflow files with actionlint and zizmor
+	$(TOOL) actionlint
+	$(TOOL) zizmor
+
+# Builds the two images, then lints their Dockerfiles and scans the images.
+images: ## Lint the Dockerfiles with hadolint and scan the built images with trivy
+	$(COMPOSE) build --pull markitdown sandbox-image
+	$(TOOL) hadolint
+	$(TOOL) trivy upmo/markitdown:dev
+	$(TOOL) trivy upmo/sandbox:base
+
 commits: ## Check Conventional Commit subjects on this branch
 	$(GO) go run ./tools/repolint commits -range $(COMMITS_RANGE)
 
@@ -105,7 +119,7 @@ fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(GO) go test -fuzz=FuzzCheck -fuzztime=30s ./internal/identity/domain
 	$(GO) go test -fuzz=FuzzParsePHC -fuzztime=30s ./internal/identity/domain
 
-ci: build lint test test-regression canary arch vuln secrets commits docs ## Run the same steps as CI
+ci: build lint test test-regression canary arch vuln secrets commits docs workflows images ## Run the same steps as CI
 
 web: ## Install, lint, test and build the web app
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build"

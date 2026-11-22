@@ -12,3 +12,15 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+  - package-ecosystem: pip
+    directory: /deploy/markitdown
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /deploy/markitdown
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /deploy/sandbox
+    schedule:
+      interval: weekly

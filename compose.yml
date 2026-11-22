@@ -201,6 +201,7 @@ services:
   # markitdown-compatible conversion for knowledge file and URL bodies.
   # Internal only: no published ports. Start with `--profile docs`.
   markitdown:
+    image: upmo/markitdown:dev
     profiles: ["docs"]
     build:
       context: ./deploy/markitdown
@@ -322,6 +323,43 @@ services:
       - ./scripts:/scripts:ro
     command: ["canary/lib.sh", "canary/selftest.sh"]
 
+  # Workflow files: actionlint checks syntax and shell steps, zizmor checks
+  # for security mistakes (unpinned actions, token scope, injection).
+  actionlint:
+    image: rhysd/actionlint:1.7.7
+    profiles: ["tools"]
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+    command: ["-color"]
+
+  zizmor:
+    image: ghcr.io/zizmorcore/zizmor:1.5.2
+    profiles: ["tools"]
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+    command: ["--no-progress", "--persona", "auditor", ".github"]
+
+  # Dockerfiles: hadolint lints the files, trivy scans the images built by
+  # `make images`. trivy reads them through the engine socket.
+  hadolint:
+    image: hadolint/hadolint:v2.12.0-alpine
+    profiles: ["tools"]
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+    command: ["hadolint", "deploy/markitdown/Dockerfile", "deploy/sandbox/Dockerfile"]
+
+  trivy:
+    image: aquasec/trivy:0.58.1
+    profiles: ["tools"]
+    volumes:
+      - ${UPMO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - upmo-trivy-cache:/root/.cache/trivy
+    # The image name is the run argument: `docker compose run --rm trivy <image>`.
+    entrypoint: ["trivy", "image", "--no-progress", "--exit-code", "1", "--severity", "HIGH,CRITICAL", "--ignore-unfixed"]
+
   bash:
     image: bash:5.3.15-alpine3.24
     profiles: ["tools"]
@@ -360,6 +398,7 @@ volumes:
   upmo-gomodcache:
   upmo-gocache:
   upmo-golangci-cache:
+  upmo-trivy-cache:
   upmo-pnpm-store:
   upmo-pnpm-cache:
   upmo-web-node-modules:
