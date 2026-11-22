@@ -35,6 +35,14 @@ We add more entries as we bundle more assets and libraries.
 - Used in: the web build (`monaco-editor` 0.57.0), which bundles the editor, its worker, its icon font and its language tokenizers. The Artifacts tab uses them to show code, text files and diffs, read only. It loads when needed, from the app's own files, never from a CDN.
 - The package carries further notices for the code it incorporates (the `marked` Markdown parser, MIT, and language grammars adapted from other projects) in its `ThirdPartyNotices.txt`. It depends on [marked](https://github.com/markedjs/marked) 14.0.0 (MIT) and [DOMPurify](https://github.com/cure53/DOMPurify) 3.4.17 (MPL-2.0 or Apache-2.0).
 
+## Data
+
+### models.dev model catalog
+
+- Project: [models.dev](https://github.com/sst/models.dev) by models.dev and contributors
+- License: MIT
+- Used in: `internal/gateway/snapshot/models_dev.json.gz`, a pinned snapshot of the models.dev catalog (models, context windows and prices). `models_dev.version` records when it was taken. Migrations load it to seed the model catalog.
+
 ## Password lists
 
 ### SecLists common credentials
