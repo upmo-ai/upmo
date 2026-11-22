@@ -324,9 +324,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"gateway.provider_accounts": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"adapter", "base_url", "checked_at", "credential_ref", "enabled", "house", "id", "key_changed_at", "key_changed_by", "key_hint", "name", "notified_causes", "owner_user_id", "plan_kind", "pricing_models", "pricing_provider", "provider", "status", "team_ids", "updated_at", "visibility"},
-			Insert: []string{"adapter", "base_url", "checked_at", "credential_ref", "enabled", "house", "id", "key_changed_at", "key_changed_by", "key_hint", "name", "notified_causes", "owner_user_id", "plan_kind", "pricing_models", "pricing_provider", "provider", "status", "team_ids", "updated_at", "visibility"},
-			Update: []string{"base_url", "checked_at", "enabled", "key_changed_at", "key_changed_by", "key_hint", "name", "plan_kind", "status", "team_ids", "updated_at", "visibility"},
+			Select: []string{"adapter", "base_url", "checked_at", "credential_ref", "enabled", "house", "id", "key_changed_at", "key_changed_by", "key_hint", "name", "notified_causes", "owner_user_id", "plan_kind", "pricing_models", "pricing_provider", "provider", "status", "status_started_at", "team_ids", "updated_at", "visibility"},
+			Insert: []string{"adapter", "base_url", "checked_at", "credential_ref", "enabled", "house", "id", "key_changed_at", "key_changed_by", "key_hint", "name", "notified_causes", "owner_user_id", "plan_kind", "pricing_models", "pricing_provider", "provider", "status", "status_started_at", "team_ids", "updated_at", "visibility"},
+			Update: []string{"base_url", "checked_at", "enabled", "key_changed_at", "key_changed_by", "key_hint", "name", "plan_kind", "status", "status_started_at", "team_ids", "updated_at", "visibility"},
 		},
 		"gateway.provider_models": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},

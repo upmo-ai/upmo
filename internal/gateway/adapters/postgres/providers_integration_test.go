@@ -117,6 +117,19 @@ func TestALaterOutcomeOfARunningCallStillLands(t *testing.T) {
 	if got.Status != domain.StatusConnected {
 		t.Fatalf("the answer of the next hop was dropped: status = %q, want %q", got.Status, domain.StatusConnected)
 	}
+
+	// A slow call that started before the answer and ends after it says
+	// nothing newer: Connected stays.
+	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusOffline, firstHop); err != nil {
+		t.Fatal(err)
+	}
+	got, err = providers.Get(ctx, app.Caller{User: staleOwner}, made.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusConnected {
+		t.Fatalf("an older call overwrote a newer outcome: status = %q, want %q", got.Status, domain.StatusConnected)
+	}
 }
 
 // TestAnUnchangedStatusIsSkippedUntilAReset walks the write the recorder

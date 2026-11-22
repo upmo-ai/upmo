@@ -25,6 +25,9 @@ CREATE TABLE gateway.provider_accounts (
   base_url text NOT NULL DEFAULT '',
   status text NOT NULL DEFAULT 'Not connected',
   checked_at timestamptz,
+  -- When the call behind the stored status started. A slower, older call
+  -- never overwrites the outcome of a newer one.
+  status_started_at timestamptz,
   enabled boolean NOT NULL DEFAULT true,
   key_hint text NOT NULL DEFAULT '',
   key_changed_at timestamptz,
@@ -921,7 +924,7 @@ CREATE POLICY usage_daily_state_select ON gateway.usage_daily_state
 GRANT USAGE ON SCHEMA gateway TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.provider_accounts TO upmo_app;
 GRANT UPDATE (
-  name, plan_kind, base_url, status, checked_at, enabled,
+  name, plan_kind, base_url, status, checked_at, status_started_at, enabled,
   key_hint, key_changed_at, key_changed_by, updated_at, visibility, team_ids
 ) ON gateway.provider_accounts TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.provider_models TO upmo_app;
