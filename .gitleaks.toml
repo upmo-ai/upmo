@@ -55,3 +55,10 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^internal/agents/domain/pack\.go$''']
 regexes = ['''^M8f2p4x7N5qR8vT1wZ3yB6dF9hJ2kL5mP8sV1xY4zA0=$''']
+
+[[allowlists]]
+description = "run token fuzz finding: the test claims (sub u, run r) signed with the fixed test key, not a secret"
+targetRules = ["jwt"]
+condition = "AND"
+paths = ['''^internal/platform/runjwt/testdata/fuzz/FuzzVerify/43ea63883b9c6ba2$''']
+regexes = ['''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJhdWQiOiJjb25uZWN0b3JzIiwiZXhwIjoxNzAwMDAwOTAwLCJpYXQiOjE3MDAwMDAwMDAsImlzcyI6InVwbW8iLCJuYmYiOjE3MDAwMDAwMDAsInJ1biI6InIiLCJzdWIiOiJ1In0\.''']
