@@ -553,8 +553,10 @@ func TestChatStreamRefusesNonUUIDRunOrAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, req := range map[string]Request{
-		"run":   {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", RunID: "r1"},
-		"agent": {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", AgentID: "a1"},
+		"run":       {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", RunID: "r1"},
+		"agent":     {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", AgentID: "a1"},
+		"urn run":   {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", RunID: "urn:uuid:018f3b2c-7a10-7c4a-8e11-0000000000b2"},
+		"urn agent": {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", AgentID: "urn:uuid:018f3b2c-7a10-7c4a-8e11-0000000000b2"},
 	} {
 		if _, err := client.ChatStream(t.Context(), req, nil, nil); err == nil {
 			t.Fatalf("%s id was sent", name)

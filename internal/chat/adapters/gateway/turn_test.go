@@ -43,7 +43,9 @@ func TestTurnsCompleteMapsPromptAndResponse(t *testing.T) {
 		deltas = append(deltas, delta)
 	}, nil)
 	prompt := agentloop.PromptRequest{
-		UserID: "u",
+		UserID:  "u",
+		AgentID: "018f3b2c-7a10-7c4a-8e11-0000000000a1",
+		RunID:   "018f3b2c-7a10-7c4a-8e11-0000000000b2",
 		Tools: []agentloop.ToolDef{{
 			Name:        "lookup",
 			Description: "find",
@@ -81,6 +83,9 @@ func TestTurnsCompleteMapsPromptAndResponse(t *testing.T) {
 	tool, _ := tools[0].(map[string]any)
 	if len(tool) != 3 || tool["name"] != "lookup" || tool["description"] != "find" || tool["schema"] == nil {
 		t.Fatalf("tools[0] = %#v, want only name, description and schema", tool)
+	}
+	if body["agent_id"] != "018f3b2c-7a10-7c4a-8e11-0000000000a1" || body["run_id"] != "018f3b2c-7a10-7c4a-8e11-0000000000b2" {
+		t.Fatalf("agent_id = %v, run_id = %v", body["agent_id"], body["run_id"])
 	}
 	if body["core_tools"] != true {
 		t.Fatalf("core_tools = %v", body["core_tools"])

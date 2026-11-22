@@ -157,12 +157,13 @@ func Open(baseURL, serviceKey string) (Client, error) {
 	}, nil
 }
 
-// isUUID reports whether v parses as a UUID. The gateway books agent_id and
+// isUUID reports whether v is a UUID in the standard 36-character form. The gateway books agent_id and
 // run_id into uuid ledger columns and checks nothing, so a bad id fails only
 // after the provider was paid; the client refuses it before the call.
 func isUUID(v string) bool {
+	// uuid.Parse also takes urn: and braced forms that Postgres rejects.
 	_, err := uuid.Parse(v)
-	return err == nil
+	return err == nil && len(v) == 36
 }
 
 // ChatStream streams one chat turn on the request's route. onDelta receives
