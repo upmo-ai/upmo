@@ -290,6 +290,11 @@ func checkVerify(derived [][]byte, audience, method, path string) error {
 }
 
 func parseBearer(bearer, prefix string) (audience string, unix int64, nonce string, mac []byte, err error) {
+	// The base64 decoder skips \r and \n, so without this a bearer with a
+	// line break in its MAC would verify as a second spelling of the same token.
+	if strings.ContainsAny(bearer, "\r\n") {
+		return "", 0, "", nil, errBearer
+	}
 	rest, ok := strings.CutPrefix(bearer, prefix)
 	if !ok {
 		return "", 0, "", nil, errBearer
@@ -303,7 +308,9 @@ func parseBearer(bearer, prefix string) (audience string, unix int64, nonce stri
 		return "", 0, "", nil, errBearer
 	}
 	unix, err = strconv.ParseInt(unixText, 10, 64)
-	if err != nil {
+	// The MAC covers the canonical number, so "+1700000000" or "01700000000"
+	// would otherwise verify too.
+	if err != nil || strconv.FormatInt(unix, 10) != unixText {
 		return "", 0, "", nil, errBearer
 	}
 	nonce, macText, ok := strings.Cut(rest, ".")

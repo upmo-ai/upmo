@@ -79,6 +79,12 @@ func TestVerifyRejects(t *testing.T) {
 	if _, err := New(nil); !errors.Is(err, ErrNoKey) {
 		t.Fatalf("empty = %v", err)
 	}
+	for _, brk := range []string{"\n", "\r"} {
+		split := token[:len(token)-10] + brk + token[len(token)-10:]
+		if _, err := k.Verify(AudienceConnectors, split, now); !errors.Is(err, errToken) {
+			t.Fatalf("line break %q in signature = %v", brk, err)
+		}
+	}
 }
 
 func TestRotation(t *testing.T) {
@@ -164,7 +170,8 @@ func independentMAC(key []byte, audience, token string, now time.Time) bool {
 		return false
 	}
 	got, err := base64.RawURLEncoding.Strict().DecodeString(parts[2])
-	if err != nil || len(got) != sha256.Size {
+	// Only the canonical spelling of the signature counts.
+	if err != nil || len(got) != sha256.Size || base64.RawURLEncoding.EncodeToString(got) != parts[2] {
 		return false
 	}
 	body := parts[0] + "." + parts[1]

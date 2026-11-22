@@ -73,4 +73,10 @@ func TestVerifyRejects(t *testing.T) {
 	if _, err := New(nil); !errors.Is(err, ErrNoKey) {
 		t.Fatalf("empty = %v", err)
 	}
+	for _, brk := range []string{"\n", "\r"} {
+		split := token[:len(token)-10] + brk + token[len(token)-10:]
+		if _, err := k.Verify(split, now); !errors.Is(err, errToken) {
+			t.Fatalf("line break %q in signature = %v", brk, err)
+		}
+	}
 }

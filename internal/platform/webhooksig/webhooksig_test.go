@@ -138,6 +138,8 @@ func TestStandardFailures(t *testing.T) {
 		{"no secret", stdID, ts, stdSig, nil, body, when},
 		{"oversized body", stdID, ts, stdSig, []string{stdSecret}, bytes.Repeat([]byte("a"), MaxBody+1), when},
 		{"timestamp not a number", stdID, "yesterday", stdSig, []string{stdSecret}, body, when},
+		{"timestamp plus sign", stdID, "+" + ts, stdSig, []string{stdSecret}, body, when},
+		{"timestamp leading zero", stdID, "0" + ts, stdSig, []string{stdSecret}, body, when},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

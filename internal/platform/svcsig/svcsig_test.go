@@ -115,6 +115,10 @@ func TestVerifyRejects(t *testing.T) {
 		{"empty", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", "", now, errBearer},
 		{"no keys", nil, AudienceGateway, http.MethodPost, "/chat", token, now, errNoKey},
 		{"empty method", [][]byte{gw}, AudienceGateway, "", "/chat", token, now, errMethodPath},
+		{"newline in mac", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token[:len(token)-10] + "\n" + token[len(token)-10:], now, errBearer},
+		{"carriage return in mac", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", token[:len(token)-10] + "\r" + token[len(token)-10:], now, errBearer},
+		{"plus sign time", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", strings.Replace(token, ".1700000000.", ".+1700000000.", 1), now, errBearer},
+		{"leading zero time", [][]byte{gw}, AudienceGateway, http.MethodPost, "/chat", strings.Replace(token, ".1700000000.", ".01700000000.", 1), now, errBearer},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -238,6 +242,8 @@ func FuzzVerify(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(good, AudienceGateway, http.MethodPost, "/chat", now.Unix())
+	// CI found this one: a line break inside the MAC.
+	f.Add(good[:len(good)-10]+"\n"+good[len(good)-10:], AudienceGateway, http.MethodPost, "/chat", now.Unix())
 	f.Add("", AudienceGateway, http.MethodGet, "/", int64(0))
 	f.Add("upmo_pat_abc", "sandboxd", "PUT", "/x", int64(-1))
 	f.Fuzz(func(t *testing.T, bearer, audience, method, path string, unix int64) {
@@ -383,6 +389,8 @@ func TestSignVerifyRequestV2(t *testing.T) {
 		{"empty bearer", keys, http.MethodPost, "/api/v1/provision/members", "", body, "", now, -1, errBearer},
 		{"no keys", nil, http.MethodPost, "/api/v1/provision/members", "", body, token, now, -1, errNoKey},
 		{"empty method", keys, "", "/api/v1/provision/members", "", body, token, now, -1, errMethodPath},
+		{"newline in mac", keys, http.MethodPost, "/api/v1/provision/members", "", body, token[:len(token)-10] + "\n" + token[len(token)-10:], now, -1, errBearer},
+		{"plus sign time", keys, http.MethodPost, "/api/v1/provision/members", "", body, strings.Replace(token, ".1700000000.", ".+1700000000.", 1), now, -1, errBearer},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

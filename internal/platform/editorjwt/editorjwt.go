@@ -113,7 +113,9 @@ func (k Keys) Verify(token string, now time.Time) (Claims, error) {
 		return Claims{}, errToken
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != headerB64 || parts[1] == "" || parts[2] == "" {
+	// The base64 decoder skips \r and \n, so a line break in the signature
+	// would otherwise verify as a second spelling of the same token.
+	if len(parts) != 3 || parts[0] != headerB64 || parts[1] == "" || parts[2] == "" || strings.ContainsAny(token, "\r\n") {
 		return Claims{}, errToken
 	}
 	got, err := base64.RawURLEncoding.Strict().DecodeString(parts[2])

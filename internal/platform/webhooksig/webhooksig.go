@@ -115,7 +115,9 @@ func Verify(secrets []string, id, timestamp, signature string, body []byte, now 
 		keys = append(keys, k)
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
+	// The signed content uses the canonical number, so "+1614265330" or
+	// "01614265330" would otherwise verify too.
+	if err != nil || strconv.FormatInt(ts, 10) != timestamp {
 		return "", errTimestamp
 	}
 	if d := now.Sub(time.Unix(ts, 0)); d > tolerance || d < -tolerance {
