@@ -37,16 +37,21 @@ func (m Model) Stream(ctx context.Context, req app.ModelRequest, onDelta func(st
 		}
 	})
 	if err != nil {
-		var failure *Failure
-		if errors.As(err, &failure) {
-			return app.ModelDone{}, &app.ModelError{Class: failure.Class, Model: failure.Model}
-		}
-		return app.ModelDone{}, err
+		return app.ModelDone{}, modelError(err)
 	}
 	return app.ModelDone{
 		Model:        done.Model,
 		InputTokens:  done.InputTokens,
 		OutputTokens: done.OutputTokens,
-		CostUSD:      done.CostUSD,
+		CostMicroUSD: done.CostMicroUSD,
 	}, nil
+}
+
+// modelError maps a gateway failure onto *app.ModelError and keeps any other error.
+func modelError(err error) error {
+	var failure *Failure
+	if errors.As(err, &failure) {
+		return &app.ModelError{Class: failure.Class, Model: failure.Model}
+	}
+	return err
 }

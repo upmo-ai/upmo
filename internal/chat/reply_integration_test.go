@@ -76,7 +76,7 @@ func TestReplyStreamsDeltasThenStoresTheLineAndDropsTheDeltas(t *testing.T) {
 		s.delta("Hello ")
 		s.hold(release)
 		s.delta("world")
-		s.done("m1", 3, 4, f64(0.0125))
+		s.done("m1", 3, 4, i64(12500))
 	})
 	chatID := r.open()
 	r.say(chatID, "hi", "")

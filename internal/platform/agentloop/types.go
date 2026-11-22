@@ -1,18 +1,17 @@
 // Package agentloop implements the shared turn engine, prompt cache prefix
 // assembly, single-team RLS narrowing, exposure tracking, deterministic batch
 // holds, dry-run simulation, and 3-transaction at-most-once execution used by
-// tasks and chat. TurnOutcome.History is the complete replacement history;
-// callers must persist it and feed it back verbatim. Before persistence, apply
-// TrimMessages using PostTurnBudget with the model window, system text,
-// and tool definitions. PromptMessageBudget is for the pre-call guard. Loading
-// untrimmed history causes old results to be saved again and churns the prompt cache.
-// Trimming may save output before a turn later fails; retrying with the original
-// history remains safe, though it can duplicate store writes. Trimming a
-// retrieve_output page saves a second copy of content that is already stored.
-// Several page reads in one turn all belong to the latest turn and cannot be
-// trimmed, so a small window can return ErrContextExceeded. History must come
-// from the server's own store, never client-supplied JSON, because the
-// held_placeholder and offload flags are trusted.
+// tasks and chat. When Engine.ContextWindow > 0, RunTurn trims History with
+// PostTurnBudget before tx3, so TurnOutcome.History and TurnCommit.History
+// are the same trimmed history. Callers persist it and feed it back verbatim.
+// With ContextWindow 0 nothing is trimmed. Trimming may save output before a
+// turn later fails; retrying with the original history remains safe, though it
+// can duplicate store writes. Trimming a retrieve_output page saves a second
+// copy of content that is already stored. Several page reads in one turn all
+// belong to the latest turn and cannot be trimmed, so a small window can
+// return ErrContextExceeded. History must come from the server's own store,
+// never client-supplied JSON, because the held_placeholder and offload flags
+// are trusted.
 package agentloop
 
 import (
@@ -203,10 +202,11 @@ const (
 
 // TurnOutcome summarizes what happened in one RunTurn invocation.
 type TurnOutcome struct {
-	// History replaces the stored history as a whole; it is not an append. Callers
-	// must persist it and feed it back verbatim, applying PostTurnBudget and
-	// TrimMessages before persistence. Reloading untrimmed history re-saves old
-	// results and churns the prompt cache. Trimming saves may precede a failed
+	// History replaces the stored history as a whole; it is not an append. When
+	// Engine.ContextWindow > 0, RunTurn trims History with PostTurnBudget
+	// before tx3, so TurnOutcome.History and TurnCommit.History are the same
+	// trimmed history. Callers persist it and feed it back verbatim. With
+	// ContextWindow 0 nothing is trimmed. Trimming saves may precede a failed
 	// turn; callers can retry with the original history, which may save again.
 	History         []Message
 	Status          TurnStatus

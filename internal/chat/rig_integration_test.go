@@ -463,8 +463,8 @@ func (s *frames) attempt(failed, class, next string) {
 	s.line(map[string]any{"attempt": map[string]string{"failed_model": failed, "failure_class": class, "next_model": next}})
 }
 
-func (s *frames) done(model string, in, out int, cost *float64) {
-	s.line(map[string]any{"done": map[string]any{"model": model, "input_tokens": in, "output_tokens": out, "cost_usd": cost}})
+func (s *frames) done(model string, in, out int, cost *int64) {
+	s.line(map[string]any{"done": map[string]any{"model": model, "input_tokens": in, "output_tokens": out, "cost_micro_usd": cost}})
 }
 
 func (s *frames) fail(class, model string) {
@@ -479,7 +479,7 @@ func (s *frames) hold(release <-chan struct{}) {
 	}
 }
 
-func f64(v float64) *float64 { return &v }
+func i64(v int64) *int64 { return &v }
 
 func serviceKey(b byte) string {
 	raw := make([]byte, 32)

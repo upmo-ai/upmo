@@ -30,7 +30,10 @@ type Engine struct {
 	OffloadAtTokens      int
 	// ContextWindow is per Engine because each Engine serves one model.
 	ContextWindow int
-	Now           func() time.Time
+	// MaxToolCallsPerRound caps the calls of one model response that are run;
+	// later calls get an error result only. 0 is off.
+	MaxToolCallsPerRound int
+	Now                  func() time.Time
 }
 
 // RunTurn executes a single model turn and its tool calls, enforcing micro-USD
@@ -129,7 +132,17 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 
 	approvedCalls := maps.Clone(run.ApprovedCalls)
 	var heldCalls []HeldCall
-	for _, call := range resp.ToolCalls {
+	for i, call := range resp.ToolCalls {
+		if e.MaxToolCallsPerRound > 0 && i >= e.MaxToolCallsPerRound {
+			appended = append(appended, Message{
+				Role:     RoleTool,
+				ToolName: call.Name,
+				ToolID:   call.ID,
+				Text:     fmt.Sprintf("skipped: more than %d tool calls in one round", e.MaxToolCallsPerRound),
+				IsError:  true,
+			})
+			continue
+		}
 		def, ok := run.Catalog.Get(call.Name)
 		if !ok {
 			action, preview := RenderCallPreview(call.Name, ToolOp("unknown"), call.Arguments)
@@ -340,6 +353,18 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 	outcome.Appended = appended
 	outcome.History = append(outcome.History, appended...)
 
+	// The tools are read after the loop so discovered tools count. The newest
+	// assistant message holds this turn's calls, so the trim keeps this turn's
+	// results; it may save outputs, which all return before tx3 opens.
+	if e.ContextWindow > 0 {
+		budget := PostTurnBudget(e.ContextWindow, system, run.Catalog.PromptTools())
+		trimmed, err := TrimMessages(ctx, e.Outputs, run, outcome.History, e.ContextWindow, budget)
+		if err != nil {
+			return TurnOutcome{}, err
+		}
+		outcome.History = trimmed
+	}
+
 	enqueueNext := false
 	switch {
 	case len(heldCalls) > 0:
@@ -357,22 +382,25 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 
 	if e.TurnStore != nil {
 		commit := TurnCommit{
-			RunID:           run.RunID,
-			ObjectID:        run.ObjectID,
-			UserID:          run.UserID,
-			SeqStart:        run.Seq + 1,
-			Messages:        appended,
-			Model:           resp.Model,
-			InputTokens:     int(resp.Usage.InputTokens),
-			OutputTokens:    int(resp.Usage.OutputTokens),
-			CostMicroUSD:    charge,
-			SpentMicroUSD:   run.SpentMicroUSD,
-			Paused:          run.Paused,
-			Exposure:        run.Exposure,
-			Hold:            outcome.Hold,
-			BlockedEvents:   outcome.BlockedEvents,
-			SimulatedEvents: outcome.SimulatedEvents,
-			EnqueueNext:     enqueueNext,
+			RunID:                run.RunID,
+			ObjectID:             run.ObjectID,
+			UserID:               run.UserID,
+			SeqStart:             run.Seq + 1,
+			Messages:             appended,
+			History:              outcome.History,
+			Status:               outcome.Status,
+			Model:                resp.Model,
+			InputTokens:          int(resp.Usage.InputTokens),
+			OutputTokens:         int(resp.Usage.OutputTokens),
+			CostMicroUSD:         charge,
+			SpentMicroUSD:        run.SpentMicroUSD,
+			Paused:               run.Paused,
+			Exposure:             run.Exposure,
+			Hold:                 outcome.Hold,
+			BlockedEvents:        outcome.BlockedEvents,
+			SimulatedEvents:      outcome.SimulatedEvents,
+			EnqueueNext:          enqueueNext,
+			ReportedCostMicroUSD: resp.CostMicroUSD,
 		}
 		if err := e.TurnStore.CommitTurnAndEnqueue(ctx, commit); err != nil {
 			return TurnOutcome{}, err
