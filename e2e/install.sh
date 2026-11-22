@@ -14,13 +14,17 @@ if [ -f "$pkg" ]; then
 fi
 
 # pg reads the ledger for e2e/composer.mjs, the one fact no API shows. The
-# versions and hashes come from e2e/package-lock.json.
+# versions and hashes come from e2e/package-lock.json. The stamp is the
+# lockfile of the last install that finished, so a broken one runs again.
+stamp="$prefix/.installed-lock"
 if [ "$installed" != "$version" ] || [ ! -d "$prefix/node_modules/pg" ] ||
-  ! cmp -s /src/e2e/package-lock.json "$prefix/package-lock.json"; then
+  ! cmp -s /src/e2e/package-lock.json "$stamp"; then
   mkdir -p "$prefix"
+  rm -f "$stamp"
   cp /src/e2e/package.json /src/e2e/package-lock.json "$prefix/"
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci \
     --prefix "$prefix" \
     --no-fund \
     --no-audit
+  cp /src/e2e/package-lock.json "$stamp"
 fi
