@@ -95,13 +95,17 @@ func DeriveIdempotencyKey(scopeID, callID string) string {
 }
 
 // TurnCommit carries everything persisted atomically in tx3 at the end of a turn.
-// Messages contains only the messages appended by this turn.
+// Messages are the messages this turn appended. History is the complete history
+// after the turn, already trimmed with PostTurnBudget when the engine has a
+// context window; a store persists it verbatim.
 type TurnCommit struct {
 	RunID           string
 	ObjectID        string
 	UserID          string
 	SeqStart        int
 	Messages        []Message
+	History         []Message
+	Status          TurnStatus
 	Model           string
 	InputTokens     int
 	OutputTokens    int
@@ -113,6 +117,8 @@ type TurnCommit struct {
 	BlockedEvents   []TimelineEvent
 	SimulatedEvents []TimelineEvent
 	EnqueueNext     bool
+	// ReportedCostMicroUSD is the gateway's cost of this turn: nil unknown, 0 known free.
+	ReportedCostMicroUSD *int64
 }
 
 // TurnStore commits tx3 (turn transcript row + state + batch hold + next River job).
