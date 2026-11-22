@@ -42,9 +42,10 @@ func (s Store) Find(ctx context.Context, access app.Access, taskID string) (app.
 }
 
 // View returns one task this person can see under row security, with its
-// events, subtasks and result.
+// events, subtasks and result. One snapshot for every read, so the status
+// always matches the events, as in Tail.
 func (s Store) View(ctx context.Context, access app.Access, taskID string) (app.TaskView, error) {
-	tx, err := s.begin(ctx, access)
+	tx, err := s.beginWith(ctx, access, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return app.TaskView{}, err
 	}

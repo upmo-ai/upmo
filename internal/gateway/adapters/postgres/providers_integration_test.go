@@ -77,6 +77,62 @@ func TestStaleOutcomeDoesNotOverwriteAReset(t *testing.T) {
 	}
 }
 
+// TestALaterOutcomeOfARunningCallStillLands is a fallback: the first hop is
+// rate limited, the next hop starts before that outcome is stored and then
+// answers. The answer is newer and must win, so the account reads Connected.
+func TestALaterOutcomeOfARunningCallStillLands(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.New(t)
+	if err := migrate.Up(ctx, pool, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	providers := postgres.Providers{Pool: pgtest.App(t, pool)}
+	store := postgres.Store{Pool: pool}
+	made, err := providers.Create(ctx, app.Caller{User: staleOwner}, domain.Provider{
+		Provider:      "fake",
+		Name:          "fallback-check",
+		Adapter:       domain.AdapterFake,
+		PlanKind:      domain.PlanLocal,
+		Status:        domain.StatusNotConnected,
+		Models:        []string{"m1"},
+		Own:           true,
+		CredentialRef: "own_fallback",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstHop := time.Now()
+	// A millisecond apart, so the two starts never round to one stored value.
+	nextHop := firstHop.Add(time.Millisecond)
+	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusRateLimited, firstHop); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusConnected, nextHop); err != nil {
+		t.Fatal(err)
+	}
+	got, err := providers.Get(ctx, app.Caller{User: staleOwner}, made.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusConnected {
+		t.Fatalf("the answer of the next hop was dropped: status = %q, want %q", got.Status, domain.StatusConnected)
+	}
+
+	// A slow call that started before the answer and ends after it says
+	// nothing newer: Connected stays.
+	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusOffline, firstHop); err != nil {
+		t.Fatal(err)
+	}
+	got, err = providers.Get(ctx, app.Caller{User: staleOwner}, made.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.StatusConnected {
+		t.Fatalf("an older call overwrote a newer outcome: status = %q, want %q", got.Status, domain.StatusConnected)
+	}
+}
+
 // TestAnUnchangedStatusIsSkippedUntilAReset walks the write the recorder
 // makes: the same outcome inside a minute is skipped, an edit resets the
 // account to Not connected, and then the same outcome lands again.
