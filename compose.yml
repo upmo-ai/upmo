@@ -284,7 +284,7 @@ services:
     working_dir: /src
     volumes:
       - .:/src:ro
-    command: ["scan", "source", "--no-call-analysis=go", "-L", "go.mod", "-L", "web/pnpm-lock.yaml"]
+    command: ["scan", "source", "--no-call-analysis=go", "-L", "go.mod", "-L", "web/pnpm-lock.yaml", "-L", "e2e/package-lock.json", "-L", "deploy/markitdown/requirements.txt"]
 
   gitleaks:
     image: ghcr.io/gitleaks/gitleaks:v8.30.1

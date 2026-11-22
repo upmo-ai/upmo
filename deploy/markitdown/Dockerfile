@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 # Pull in Debian security fixes the base image has not picked up yet.
 RUN apt-get update \
@@ -10,7 +10,9 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# requirements.txt is compiled from requirements.in with every hash:
+# pip-compile --generate-hashes --strip-extras requirements.in
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY main.py .
 

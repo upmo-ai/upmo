@@ -24,3 +24,11 @@ updates:
     directory: /deploy/sandbox
     schedule:
       interval: weekly
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule:
+      interval: weekly
+    # playwright moves with the mcr.microsoft.com/playwright image tag in
+    # compose.yml and e2e/install.sh, by hand.
+    ignore:
+      - dependency-name: playwright
