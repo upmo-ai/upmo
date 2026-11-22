@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,69 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWriteOuterArchiveAtomicReplacesReservation(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, "backup.tar.gz")
+	reservation, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	payload := filepath.Join(root, "payload")
+	if err := os.WriteFile(payload, []byte("payload bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOuterArchiveAtomic(out, []byte("{}"), payloadPlainEntryName, payload, 13); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(out) //nolint:gosec // test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gz.Close() }()
+	tr := tar.NewReader(gz)
+	for _, want := range []struct {
+		name string
+		body string
+	}{
+		{manifestEntryName, "{}"},
+		{payloadPlainEntryName, "payload bytes"},
+	} {
+		hdr, err := tr.Next()
+		if err != nil || hdr.Name != want.name {
+			t.Fatalf("archive header = %v, %v", hdr, err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil || string(body) != want.body {
+			t.Fatalf("%s = %q, %v", want.name, body, err)
+		}
+	}
+	if _, err := tr.Next(); err != io.EOF {
+		t.Fatalf("archive end = %v", err)
+	}
+	if err := writeOuterArchiveAtomic(filepath.Join(root, "failed.tar.gz"), []byte("{}"), payloadPlainEntryName, filepath.Join(root, "missing"), 13); err == nil {
+		t.Fatal("accepted missing payload")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if !slices.Equal(names, []string{"backup.tar.gz", "payload"}) {
+		t.Fatalf("temporary output leaked: %v", names)
+	}
+}
 
 type stubKeyring struct {
 	current string
