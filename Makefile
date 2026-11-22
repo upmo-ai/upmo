@@ -105,19 +105,24 @@ docs: ## Check markdown style and links
 canary: ## Run the canary library self-test
 	$(TOOL) bash
 
+# A Go fuzz run can end in "context deadline exceeded" when the time limit
+# lands mid-input, a known engine flake. Each target retries once: a real
+# find is saved under testdata/fuzz and fails the retry on replay.
+FUZZ = $(GO) sh -c 'go test -fuzz=$$0 -fuzztime=30s $$1 || go test -fuzz=$$0 -fuzztime=30s $$1'
+
 fuzz: ## Fuzz the safety libraries for 30 seconds each
-	$(GO) go test -fuzz=FuzzWrap -fuzztime=30s ./internal/platform/trustfence
-	$(GO) go test -fuzz=FuzzNeutralizeSlot -fuzztime=30s ./internal/platform/trustfence
-	$(GO) go test -fuzz=FuzzBlockedAddr -fuzztime=30s ./internal/platform/netguard
-	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/webhooksig
-	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/svcsig
-	$(GO) go test -fuzz=FuzzVerify -fuzztime=30s ./internal/platform/runjwt
-	$(GO) go test -fuzz=FuzzWrite -fuzztime=30s ./internal/platform/writeguard
-	$(GO) go test -fuzz=FuzzParseToken -fuzztime=30s ./internal/identity/domain
-	$(GO) go test -fuzz=FuzzParseLinkToken -fuzztime=30s ./internal/identity/domain
-	$(GO) go test -fuzz=FuzzParseChallengeID -fuzztime=30s ./internal/identity/domain
-	$(GO) go test -fuzz=FuzzCheck -fuzztime=30s ./internal/identity/domain
-	$(GO) go test -fuzz=FuzzParsePHC -fuzztime=30s ./internal/identity/domain
+	$(FUZZ) FuzzWrap ./internal/platform/trustfence
+	$(FUZZ) FuzzNeutralizeSlot ./internal/platform/trustfence
+	$(FUZZ) FuzzBlockedAddr ./internal/platform/netguard
+	$(FUZZ) FuzzVerify ./internal/platform/webhooksig
+	$(FUZZ) FuzzVerify ./internal/platform/svcsig
+	$(FUZZ) FuzzVerify ./internal/platform/runjwt
+	$(FUZZ) FuzzWrite ./internal/platform/writeguard
+	$(FUZZ) FuzzParseToken ./internal/identity/domain
+	$(FUZZ) FuzzParseLinkToken ./internal/identity/domain
+	$(FUZZ) FuzzParseChallengeID ./internal/identity/domain
+	$(FUZZ) FuzzCheck ./internal/identity/domain
+	$(FUZZ) FuzzParsePHC ./internal/identity/domain
 
 ci: build lint test test-regression canary arch vuln secrets commits docs workflows images ## Run the same steps as CI
 
