@@ -103,7 +103,8 @@ func TestALaterOutcomeOfARunningCallStillLands(t *testing.T) {
 	}
 
 	firstHop := time.Now()
-	nextHop := time.Now()
+	// A millisecond apart, so the two starts never round to one stored value.
+	nextHop := firstHop.Add(time.Millisecond)
 	if err := store.RecordStatus(ctx, made.CredentialRef, domain.StatusRateLimited, firstHop); err != nil {
 		t.Fatal(err)
 	}

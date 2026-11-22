@@ -17,28 +17,28 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
-// commitBetween runs step once, right after the second SELECT on its pool:
-// the first is begin's set_config, the second the task row. step commits on
-// another pool, so it lands between the task row and the events.
+// commitBetween runs step once, right after the first read of the task row
+// on its pool. step commits on another pool, so it lands between the task
+// row and the events.
 type commitBetween struct {
-	mu      sync.Mutex
-	selects int
-	ran     bool
-	step    func()
+	mu   sync.Mutex
+	ran  bool
+	step func()
 }
 
-func (c *commitBetween) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
-	return ctx
+type taskRowKey struct{}
+
+func (c *commitBetween) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, taskRowKey{}, strings.Contains(data.SQL, "FROM tasks.tasks"))
 }
 
-func (c *commitBetween) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
-	if !strings.HasPrefix(data.CommandTag.String(), "SELECT") {
+func (c *commitBetween) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if row, _ := ctx.Value(taskRowKey{}).(bool); !row {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.selects++
-	if c.selects == 2 && c.step != nil {
+	if !c.ran {
 		c.ran = true
 		c.step()
 	}
