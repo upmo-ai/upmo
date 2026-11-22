@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	// ParentCancelled is the cause stored when a parent cancel fails a child.
-	ParentCancelled = "parent_cancelled"
+	// ParentCanceled is the cause stored when a parent cancel fails a child.
+	ParentCanceled = "parent_canceled"
 	// ResultSummaryRunes is the longest result summary.
 	ResultSummaryRunes = 200
 	// ResultDetailRunes is the longest result detail.

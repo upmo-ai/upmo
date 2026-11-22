@@ -20,11 +20,11 @@ var dispatchHops = []Hop{
 func TestDispatchRejectsInvalidCasesBeforeRunning(t *testing.T) {
 	tests := []struct {
 		name  string
-		cases []Labelled
+		cases []Labeled
 	}{
 		{
 			name: "label outside options",
-			cases: []Labelled{{
+			cases: []Labeled{{
 				Prompt:  "Choose",
 				Options: []string{dispatchAgentA, dispatchAgentB},
 				Label:   "018f3b2c-7a10-7c4a-8e11-cccccccccccc",
@@ -32,7 +32,7 @@ func TestDispatchRejectsInvalidCasesBeforeRunning(t *testing.T) {
 		},
 		{
 			name: "non UUID option",
-			cases: []Labelled{{
+			cases: []Labeled{{
 				Prompt:  "Choose",
 				Options: []string{dispatchAgentA, "not-an-agent"},
 				Label:   dispatchAgentA,
@@ -40,7 +40,7 @@ func TestDispatchRejectsInvalidCasesBeforeRunning(t *testing.T) {
 		},
 		{
 			name: "one option",
-			cases: []Labelled{{
+			cases: []Labeled{{
 				Prompt:  "Choose",
 				Options: []string{dispatchAgentA},
 				Label:   dispatchAgentA,
@@ -48,7 +48,7 @@ func TestDispatchRejectsInvalidCasesBeforeRunning(t *testing.T) {
 		},
 		{
 			name: "duplicate options",
-			cases: []Labelled{{
+			cases: []Labeled{{
 				Prompt:  "Choose",
 				Options: []string{dispatchAgentA, dispatchAgentA},
 				Label:   dispatchAgentA,
@@ -73,7 +73,7 @@ func TestDispatchRejectsInvalidCasesBeforeRunning(t *testing.T) {
 func TestIntentRejectsOptionWithSpaceBeforeRunning(t *testing.T) {
 	book := &dispatchGates{}
 	run := &dispatchRunner{choice: "write"}
-	err := Intent(context.Background(), book, dispatchAccess(), dispatchHops, 100, []Labelled{{
+	err := Intent(context.Background(), book, dispatchAccess(), dispatchHops, 100, []Labeled{{
 		Prompt:  "Choose",
 		Options: []string{"write", "read later"},
 		Label:   "write",
@@ -105,7 +105,7 @@ func TestDispatchSavesChoiceRoute(t *testing.T) {
 func TestIntentSavesRoute(t *testing.T) {
 	book := &dispatchGates{}
 	run := &dispatchRunner{choice: "write"}
-	err := Intent(context.Background(), book, dispatchAccess(), dispatchHops, 100, []Labelled{{
+	err := Intent(context.Background(), book, dispatchAccess(), dispatchHops, 100, []Labeled{{
 		Prompt:  "Choose",
 		Options: []string{"read", "write"},
 		Label:   "write",
@@ -160,12 +160,12 @@ func TestDispatchRefusesCallerWithoutSettingsManage(t *testing.T) {
 
 func TestDispatchTrimsCopiesWithoutMutatingCases(t *testing.T) {
 	options := []string{" " + dispatchAgentA + " ", "\t" + dispatchAgentB}
-	cases := []Labelled{{
+	cases := []Labeled{{
 		Prompt:  " Choose an agent ",
 		Options: options,
 		Label:   "\t" + dispatchAgentA + " ",
 	}}
-	wantCases := []Labelled{{
+	wantCases := []Labeled{{
 		Prompt:  cases[0].Prompt,
 		Options: append([]string(nil), options...),
 		Label:   cases[0].Label,
@@ -186,8 +186,8 @@ func dispatchAccess() Access {
 	return Access{UserID: dispatchUser, Allow: "settings:manage"}
 }
 
-func dispatchCases() []Labelled {
-	return []Labelled{{
+func dispatchCases() []Labeled {
+	return []Labeled{{
 		Prompt:  "Choose an agent",
 		Options: []string{dispatchAgentA, dispatchAgentB},
 		Label:   dispatchAgentA,

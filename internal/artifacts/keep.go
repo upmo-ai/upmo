@@ -50,7 +50,7 @@ type KeepRecord struct {
 	Size  int64  // >= 0
 }
 
-// Keep checks and normalises an artifact. Owner and task come back in
+// Keep checks and normalizes an artifact. Owner and task come back in
 // canonical UUID form.
 func Keep(owner, task, name, store, key string) (Artifact, error) {
 	owner, ok := canonical(owner)
@@ -76,7 +76,7 @@ func Keep(owner, task, name, store, key string) (Artifact, error) {
 	return Artifact{Owner: owner, Task: task, Name: name, Store: store, Key: key}, nil
 }
 
-// CheckRecord validates and normalises a record before it is stored.
+// CheckRecord validates and normalizes a record before it is stored.
 // Owner, task, name, store and key go through Keep. An empty kind comes from
 // KindFor and an empty mime from Media. A bad kind is ErrKind. A bad mime or
 // a negative size is ErrArtifact.
@@ -122,7 +122,7 @@ func recordMime(media, name string) (string, error) {
 	if strings.ContainsAny(media, "\r\n") {
 		return "", ErrArtifact
 	}
-	media = normalise(media)
+	media = normalize(media)
 	if n := utf8.RuneCountInString(media); n < 1 || n > 200 || !wellFormed(media) {
 		return "", ErrArtifact
 	}

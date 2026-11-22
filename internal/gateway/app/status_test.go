@@ -19,7 +19,7 @@ func TestClassStatus(t *testing.T) {
 		domain.ClassTimeout:     domain.StatusOffline,
 		domain.ClassOverloaded:  domain.StatusOffline,
 		domain.ClassCaller:      "",
-		domain.ClassCancelled:   "",
+		domain.ClassCanceled:    "",
 		domain.ClassModelAccess: "",
 	}
 	for class, want := range tests {

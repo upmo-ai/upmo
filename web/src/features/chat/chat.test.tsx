@@ -177,7 +177,7 @@ describe("Chat page", () => {
     const log = await screen.findByRole("log", { name: "Messages" });
 
     expect(await within(log).findAllByRole("button", { name: "Copy reply" })).toHaveLength(1);
-    expect(within(log).getByText(/Summarise the launch notes/)).toBeTruthy();
+    expect(within(log).getByText(/Summarize the launch notes/)).toBeTruthy();
     // The composer sits outside the log, so only the thread scrolls.
     expect(within(log).queryByRole("form", { name: "Chat composer" })).toBeNull();
   });
@@ -185,7 +185,7 @@ describe("Chat page", () => {
   it("UPM-196 returns to the newest message when a message is sent from further up", async () => {
     renderChat();
     const log = await screen.findByRole("log", { name: "Messages" });
-    await within(log).findByText(/Summarise the launch notes/);
+    await within(log).findByText(/Summarize the launch notes/);
     const scroll = scrollable(log);
 
     // The reader scrolls up: the thread lets go of the newest message.
@@ -299,7 +299,7 @@ describe("UPM-201 chats from the API", () => {
 
     expect(await screen.findByRole("heading", { level: 2, name: "Research summary" })).toBeTruthy();
     expect(await within(messageLog()).findByText(/What did the interviews tell us/)).toBeTruthy();
-    expect(within(messageLog()).queryByText(/Summarise the launch notes/)).toBeNull();
+    expect(within(messageLog()).queryByText(/Summarize the launch notes/)).toBeNull();
     expect(within(list).getByRole("button", { name: /Research summary/ }).getAttribute("aria-current")).toBe("page");
     expect(within(list).getByRole("button", { name: /Roadmap priorities/ }).getAttribute("aria-current")).toBeNull();
   });

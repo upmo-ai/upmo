@@ -117,7 +117,7 @@ type Provider struct {
 	Disabled      bool
 	Models        []string
 	EnabledModels []EnabledModel
-	// ModelKinds holds the catalogue kind for Models when known. A model
+	// ModelKinds holds the catalog kind for Models when known. A model
 	// absent from ModelKinds counts as KindChat with text input.
 	ModelKinds map[string]ModelKind
 	Own        bool

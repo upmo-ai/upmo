@@ -368,7 +368,7 @@ func (w *replyWorker) Work(ctx context.Context, job *river.Job[ReplyJobArgs]) er
 			Status:   domain.StatusFailed,
 			Body:     turn.Partial,
 			Model:    turn.Model,
-			Attempts: closeAttempts(turn.Attempts, &ModelError{Class: "cancelled", Model: turn.Model}),
+			Attempts: closeAttempts(turn.Attempts, &ModelError{Class: "canceled", Model: turn.Model}),
 		})
 	}
 	return w.stream(ctx, access, args, turn.Lines)
@@ -628,7 +628,7 @@ func failureOf(ctx context.Context, err error) *ModelError {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return &ModelError{Class: "timeout"}
 	case ctx.Err() != nil:
-		return &ModelError{Class: "cancelled"}
+		return &ModelError{Class: "canceled"}
 	default:
 		return &ModelError{Class: "transient"}
 	}
@@ -654,7 +654,7 @@ func truncate(text string, runes int) string {
 
 // history turns the lines of a chat into the messages of a call. It keeps the
 // newest lines that fit the budget of characters, and always the last one, so
-// the trim comes off the oldest end. Neighbouring lines of one role, which a
+// the trim comes off the oldest end. Neighboring lines of one role, which a
 // failed reply leaves behind, are joined.
 func history(lines []Line, budget int) []ModelMessage {
 	kept := 0

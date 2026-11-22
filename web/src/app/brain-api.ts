@@ -181,7 +181,7 @@ function clock(stamp: string): string {
 }
 
 const causeSentences: Readonly<Record<string, string>> = {
-  parent_cancelled: "The parent task was cancelled.",
+  parent_canceled: "The parent task was canceled.",
 };
 
 /** The brain sends the cause of a failed task as a code. Known codes read as a sentence; an unknown one is shown as sent. */
@@ -549,7 +549,7 @@ export function toSeenModel(value: unknown): SeenModel {
 
 /** One models.dev row of GET /api/providers/catalog. */
 export function toCatalogModel(value: unknown): CatalogModel {
-  const source = record(value, "catalogue row");
+  const source = record(value, "catalog row");
   const row: CatalogModel = {
     model: text(source, "model"),
     kind: typeof source.kind === "string" ? source.kind : "",
@@ -1267,7 +1267,7 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async catalog(vendor) {
         if ((await chosen()) === "stub") return stub.providers.catalog(vendor);
         const path = `/api/providers/catalog?vendor=${encodeURIComponent(vendor)}`;
-        return list(await call(path), "catalogue").map(toCatalogModel);
+        return list(await call(path), "catalog").map(toCatalogModel);
       },
       async models(id) {
         if ((await chosen()) === "stub") return stub.providers.models(id);

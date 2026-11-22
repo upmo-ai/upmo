@@ -125,7 +125,7 @@ const sourceSeed: Record<string, StoredSource[]> = {
       "Terms.md",
       "markdown",
       "2026-10-11T10:00:00.000Z",
-      "The terms apply to everyone who signs in to a workspace.\n\nMaterial you add belongs to your organisation.",
+      "The terms apply to everyone who signs in to a workspace.\n\nMaterial you add belongs to your organization.",
     ),
     source(
       "src-privacy",

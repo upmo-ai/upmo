@@ -115,7 +115,7 @@ func (s Store) Record(ctx context.Context, access app.Access, taskID string, che
 	return passes, nil
 }
 
-// Admit serialises admission for one person and creates or admits one run.
+// Admit serializes admission for one person and creates or admits one run.
 func (s Store) Admit(ctx context.Context, access app.Access, taskID, runID string) (app.Run, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {

@@ -249,7 +249,7 @@ describe("task shares from the brain", () => {
   it("shows the owner-only message on a 403 and keeps the dialog usable", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ refusePut: () => Response.json({ error: "unauthorised" }, { status: 403 }) }).fetcher,
+      brain({ refusePut: () => Response.json({ error: "unauthorized" }, { status: 403 }) }).fetcher,
     );
     const { history, dialog } = await openShare();
 
@@ -343,7 +343,7 @@ describe("task shares from the brain", () => {
   it("does not hide a 401 behind the sample share", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ list: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
+      brain({ list: () => Response.json({ error: "unauthorized" }, { status: 401 }) }).fetcher,
     );
     const history = renderAt(`/tasks/${taskId}`);
 

@@ -30,7 +30,7 @@ function statTile(label: string): HTMLElement {
     (element) => element.querySelector(".upmo-stat-tile__label")?.textContent === label,
   );
   if (!tile) {
-    throw new Error(`no stat tile labelled ${label}`);
+    throw new Error(`no stat tile labeled ${label}`);
   }
   return tile;
 }
@@ -1014,7 +1014,7 @@ describe("Usage page refusals", () => {
     const history = renderAt("/usage", {
       ...client,
       workspaceUsage: async () => {
-        throw new BrainError(401, "unauthorised");
+        throw new BrainError(401, "unauthorized");
       },
     });
     fireEvent.click(await screen.findByRole("tab", { name: "Workspace" }));
@@ -1085,7 +1085,7 @@ describe("Usage page money and kinds of work", () => {
     cleanup();
     renderAt("/usage", withUsage((usage) => ({ ...usage, list_price_micro_usd: null })));
     await screen.findByRole("table", { name: "Kind of work" });
-    expect(() => statTile("Not billed")).toThrow("no stat tile labelled Not billed");
+    expect(() => statTile("Not billed")).toThrow("no stat tile labeled Not billed");
   });
 
   it("UPM-359 kind of work: lists chat, tasks and automations from the API, and says so with none", async () => {
@@ -1101,7 +1101,7 @@ describe("Usage page money and kinds of work", () => {
     expect(await screen.findByText("No usage by kind of work in this range.")).toBeTruthy();
   });
 
-  it("UPM-359 time: Today's buckets are labelled with the hour the server sent, on a day the clocks change", async () => {
+  it("UPM-359 time: Today's buckets are labeled with the hour the server sent, on a day the clocks change", async () => {
     renderAt(
       "/usage?range=today",
       withUsage((usage) => ({

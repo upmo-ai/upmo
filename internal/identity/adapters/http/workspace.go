@@ -150,13 +150,13 @@ func (h Workspace) session(w http.ResponseWriter, r *http.Request) (app.Session,
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	session, err := h.Sessions.Lookup(r.Context(), cookie.Value)
 	if err != nil {
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	markActor(r, session)
@@ -170,7 +170,7 @@ func refuseWorkspace(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, domain.ErrNoSuchMember):
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 	case errors.Is(err, domain.ErrSettingsOnly):
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "you cannot manage workspace settings"})
 	case errors.Is(err, domain.ErrInvalidWorkspace):

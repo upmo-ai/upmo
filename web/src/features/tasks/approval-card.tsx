@@ -33,7 +33,7 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
 
 /**
  * Announces approvals that arrive after the first render. The cards are
- * labelled groups, not alerts, so screen readers hear new ones from here.
+ * labeled groups, not alerts, so screen readers hear new ones from here.
  * Pass undefined until the approvals have loaded.
  */
 export function ApprovalAnnouncer({ pending }: { pending: Approval[] | undefined }) {

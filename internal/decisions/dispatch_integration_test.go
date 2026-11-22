@@ -141,16 +141,16 @@ func integrationAccess() decisions.Access {
 	return decisions.Access{UserID: integrationUser, Allow: "settings:manage"}
 }
 
-func integrationDispatchCases() []decisions.Labelled {
-	return []decisions.Labelled{{
+func integrationDispatchCases() []decisions.Labeled {
+	return []decisions.Labeled{{
 		Prompt:  "Choose an agent",
 		Options: []string{integrationAgentA, integrationAgentB},
 		Label:   integrationAgentA,
 	}}
 }
 
-func integrationIntentCases() []decisions.Labelled {
-	return []decisions.Labelled{{
+func integrationIntentCases() []decisions.Labeled {
+	return []decisions.Labeled{{
 		Prompt:  "Choose an intent",
 		Options: []string{"read", "write"},
 		Label:   "write",

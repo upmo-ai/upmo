@@ -1,13 +1,13 @@
 // Package decisions is the decisions context. It embeds this context's SQL.
-// A decide route changes model only when the labelled gate passes.
-// Agent dispatch and route intent are choice routes scored on labelled accuracy.
+// A decide route changes model only when the labeled gate passes.
+// Agent dispatch and route intent are choice routes scored on labeled accuracy.
 // A memory check is a yes-or-no route scored on precision.
 // A fact worth keeping is a yes-or-no route scored on recall.
 // A tool surface is a filter route that must keep every tool the turn calls.
 // A permission second opinion is a choice route that may escalate and must never relax.
 // A model tier route is a choice route scored on canary success parity.
-// Folder filing is a choice route scored on labelled accuracy.
-// Channel triage is a choice route scored on labelled accuracy.
+// Folder filing is a choice route scored on labeled accuracy.
+// Channel triage is a choice route scored on labeled accuracy.
 // A rerank route is scored on NDCG.
 // A result confidence route is a yes-or-no route scored on precision.
 package decisions

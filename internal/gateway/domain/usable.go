@@ -26,7 +26,7 @@ func accountHasModel(p Provider, model string) bool {
 	return false
 }
 
-// kindOf returns the model's catalogue kind on p. A model with no catalogue row
+// kindOf returns the model's catalog kind on p. A model with no catalog row
 // counts as chat with text input.
 func (p Provider) kindOf(model string) ModelKind {
 	if p.ModelKinds != nil {
@@ -39,7 +39,7 @@ func (p Provider) kindOf(model string) ModelKind {
 
 // UsableModel reports whether one model of an account can be used in a chat,
 // agent, or route picker now: the account is Connected, lists the model, and
-// the model's kind is chat. A model with no catalogue row counts as chat with
+// the model's kind is chat. A model with no catalog row counts as chat with
 // text input.
 func UsableModel(p Provider, model string) bool {
 	return accountHasModel(p, model) && p.kindOf(model) == KindChat
@@ -74,8 +74,8 @@ type UsableRouteView struct {
 // UsableRoute reports whether the route can carry a call: at least one hop
 // names an account the person can use — one of the accounts given, their own
 // and the workspace's — whose status is Connected and which lists the hop's
-// model. Embed routes accept embedding models (and uncatalogued models); all
-// other routes require a chat model (where no catalogue row counts as chat). A
+// model. Embed routes accept embedding models (and uncataloged models); all
+// other routes require a chat model (where no catalog row counts as chat). A
 // hop naming an account outside the list is one of another person's, and never
 // counts.
 func UsableRoute(r UsableRouteView, accounts []Provider) bool {

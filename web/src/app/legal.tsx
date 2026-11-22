@@ -17,7 +17,7 @@ function contact(about: string) {
   return (
     <>
       Questions about {about} on upmo.ai: <Anchor href="mailto:security@upmo.ai">security@upmo.ai</Anchor>. For a
-      copy your organisation runs, contact the person who runs it.
+      copy your organization runs, contact the person who runs it.
     </>
   );
 }
@@ -26,13 +26,13 @@ const terms: Section[] = [
   {
     heading: "These terms",
     paragraphs: [
-      "These terms cover use of an Upmo workspace. Upmo runs tasks for the people in that workspace. The workspace may be the managed service at upmo.ai, or a copy that an organisation runs for itself. By logging in, you agree to these terms.",
+      "These terms cover use of an Upmo workspace. Upmo runs tasks for the people in that workspace. The workspace may be the managed service at upmo.ai, or a copy that an organization runs for itself. By logging in, you agree to these terms.",
     ],
   },
   {
     heading: "The workspace",
     paragraphs: [
-      "One workspace serves one organisation. The person who runs it chooses who may join, what each person may do, and which outside services it may use.",
+      "One workspace serves one organization. The person who runs it chooses who may join, what each person may do, and which outside services it may use.",
     ],
   },
   {
@@ -44,19 +44,19 @@ const terms: Section[] = [
   {
     heading: "Acceptable use",
     paragraphs: [
-      "Use the workspace for the organisation's work. Do not break the law with it, harm other people, or try to enter an account or a workspace that is not yours. Do not interfere with the service, or try to get around a limit that protects it.",
+      "Use the workspace for the organization's work. Do not break the law with it, harm other people, or try to enter an account or a workspace that is not yours. Do not interfere with the service, or try to get around a limit that protects it.",
     ],
   },
   {
     heading: "Your material",
     paragraphs: [
-      "Tasks, chat, files, knowledge and the other material you add belong to the organisation, not to Upmo. Upmo does not claim ownership of it. The workspace stores and processes that material so it can do the work you ask for. When a task or a chat uses a model, or a connector reaches an outside service, the part needed for that work is sent there.",
+      "Tasks, chat, files, knowledge and the other material you add belong to the organization, not to Upmo. Upmo does not claim ownership of it. The workspace stores and processes that material so it can do the work you ask for. When a task or a chat uses a model, or a connector reaches an outside service, the part needed for that work is sent there.",
     ],
   },
   {
     heading: "Who provides the workspace",
     paragraphs: [
-      "On upmo.ai, Upmo provides the workspace and may suspend it if these terms are broken or if other people are at risk. If your organisation runs its own copy, the person who runs that copy provides the workspace, and these terms apply between that person and the people who use it.",
+      "On upmo.ai, Upmo provides the workspace and may suspend it if these terms are broken or if other people are at risk. If your organization runs its own copy, the person who runs that copy provides the workspace, and these terms apply between that person and the people who use it.",
     ],
   },
   {
@@ -68,7 +68,7 @@ const terms: Section[] = [
   {
     heading: "Stopping",
     paragraphs: [
-      "You may stop using the workspace at any time. The person who runs it may disable an account. On upmo.ai, Upmo may close a workspace that breaks these terms. Disabling an account does not by itself delete material the organisation still needs.",
+      "You may stop using the workspace at any time. The person who runs it may disable an account. On upmo.ai, Upmo may close a workspace that breaks these terms. Disabling an account does not by itself delete material the organization still needs.",
     ],
   },
   {
@@ -93,7 +93,7 @@ const privacy: Section[] = [
   {
     heading: "This policy",
     paragraphs: [
-      "This policy describes the personal information an Upmo workspace keeps so people can use it. The person who runs the workspace decides why that information is kept and is responsible for it. On upmo.ai, that is Upmo. If your organisation runs its own copy, the person who runs that copy is responsible.",
+      "This policy describes the personal information an Upmo workspace keeps so people can use it. The person who runs the workspace decides why that information is kept and is responsible for it. On upmo.ai, that is Upmo. If your organization runs its own copy, the person who runs that copy is responsible.",
     ],
   },
   {
@@ -150,12 +150,12 @@ const privacy: Section[] = [
   {
     heading: "Your choices",
     paragraphs: [
-      "You can ask for your name or email to be corrected, for a copy of the personal information the workspace holds about you, or for your account to be removed. On upmo.ai, email security@upmo.ai. For a copy your organisation runs, ask the person who runs it. You can remove a passkey or a password in the security settings, as long as one way to log in remains. You can log out of another browser from those settings.",
+      "You can ask for your name or email to be corrected, for a copy of the personal information the workspace holds about you, or for your account to be removed. On upmo.ai, email security@upmo.ai. For a copy your organization runs, ask the person who runs it. You can remove a passkey or a password in the security settings, as long as one way to log in remains. You can log out of another browser from those settings.",
     ],
   },
   {
     heading: "Children",
-    paragraphs: ["The workspace is for an organisation's work. It is not directed at children."],
+    paragraphs: ["The workspace is for an organization's work. It is not directed at children."],
   },
   {
     heading: "Changes",

@@ -66,7 +66,7 @@ func Middleware(routes Table, mux *http.ServeMux, pool *pgxpool.Pool, service st
 			event, write := eventFor(route, status, s, log)
 			if write {
 				// ServeHTTP has returned, so the request context is already
-				// cancelled and the write runs on one that only carries its
+				// canceled and the write runs on one that only carries its
 				// values. The response has gone; a failed write can only be
 				// logged.
 				writeEvent(context.WithoutCancel(r.Context()), pool, event, log)

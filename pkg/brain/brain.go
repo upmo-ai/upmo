@@ -341,7 +341,7 @@ func (a *App) Deps() Deps {
 }
 
 // Serve runs the HTTP server (and optional metrics server) until ctx is
-// cancelled, then gracefully drains background jobs and sandbox provisioning.
+// canceled, then gracefully drains background jobs and sandbox provisioning.
 func (a *App) Serve(ctx context.Context) error {
 	cfg := a.deps.Config
 	log := a.deps.Logger
@@ -415,7 +415,7 @@ func (a *App) stopWorkAndBoxes() {
 }
 
 // Run loads configuration from the environment, composes the brain server,
-// serves until ctx is cancelled, and closes resources cleanly.
+// serves until ctx is canceled, and closes resources cleanly.
 func Run(ctx context.Context, opts ...Option) error {
 	cfg, err := LoadConfig()
 	if err != nil {

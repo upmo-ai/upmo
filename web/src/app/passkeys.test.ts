@@ -18,7 +18,7 @@ describe("passkey step-up and fresh()", () => {
     vi.unstubAllGlobals();
   });
 
-  it("fresh() on a cancelled prompt does not surface an error and does not run the change", async () => {
+  it("fresh() on a canceled prompt does not surface an error and does not run the change", async () => {
     let runs = 0;
     const action = vi.fn<() => Promise<never>>(async () => {
       runs += 1;
@@ -38,14 +38,14 @@ describe("passkey step-up and fresh()", () => {
       }),
     );
 
-    // Mock navigator.credentials.get to simulate cancelled prompt
+    // Mock navigator.credentials.get to simulate canceled prompt
     vi.stubGlobal("navigator", {
       credentials: {
         get: vi.fn<() => Promise<Credential | null>>(async () => null),
       },
     });
 
-    // fresh() catches the cancelled prompt and returns undefined without throwing
+    // fresh() catches the canceled prompt and returns undefined without throwing
     const result = await fresh(action);
     expect(result).toBeUndefined();
     // The action ran once, failed, and did not run again after cancellation

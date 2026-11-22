@@ -22,7 +22,7 @@ func validSpec() Spec {
 	}
 }
 
-func TestCheckSpecNormalises(t *testing.T) {
+func TestCheckSpecNormalizes(t *testing.T) {
 	spec := validSpec()
 	spec.Tier = " GVisor "
 	spec.Allow = append(spec.Allow, "github.com")

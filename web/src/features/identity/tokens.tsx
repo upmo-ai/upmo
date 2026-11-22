@@ -477,7 +477,7 @@ function LiveCreate({
       await client.invalidateQueries({ queryKey: ["tokens-live-list"] });
     },
     onError: (cause: Error) => {
-      if (cause.message !== "cancelled") setError(cause.message);
+      if (cause.message !== "canceled") setError(cause.message);
     },
   });
   if (!opened) return null;
@@ -579,6 +579,6 @@ async function tokenWrite(path: string, method: string, body: unknown): Promise<
     return payload;
   };
   const result = await fresh(send);
-  if (result === undefined) throw new Error("cancelled");
+  if (result === undefined) throw new Error("canceled");
   return result;
 }

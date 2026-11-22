@@ -37,7 +37,7 @@ export function SignInPage() {
         await navigate({ to: "/" });
       })
       .catch(() => {
-        // A missing passkey or a cancelled prompt leaves the person on this page.
+        // A missing passkey or a canceled prompt leaves the person on this page.
       });
   }, [navigate, queryClient]);
 
@@ -103,7 +103,7 @@ export function SignInPage() {
       queryClient.clear();
       await navigate({ to: "/" });
     } catch {
-      setMessage("The passkey prompt was cancelled. Try again.");
+      setMessage("The passkey prompt was canceled. Try again.");
       rearmConditional();
     } finally {
       setBusy(false);

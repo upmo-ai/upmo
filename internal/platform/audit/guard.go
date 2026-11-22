@@ -46,7 +46,7 @@ func Guard(callers Callers) func(http.Handler) http.Handler {
 					return
 				}
 				if !ok {
-					httpserver.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorised"})
+					httpserver.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 					return
 				}
 				caller = person

@@ -16,9 +16,9 @@ const rgb = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/;
 const alias = /^var\(\s*(--[\w-]+)\s*\)$/;
 
 /**
- * A token's colour as #rrggbb. Monaco takes hex colours, not var(), so the
+ * A token's color as #rrggbb. Monaco takes hex colors, not var(), so the
  * editor is given the value the page's theme has for the token. A token that
- * is not a plain colour gives undefined and Monaco keeps its own default.
+ * is not a plain color gives undefined and Monaco keeps its own default.
  */
 export function tokenColor(read: TokenReader, token: string, depth = 0): string | undefined {
   const value = read(token);
@@ -34,7 +34,7 @@ export function tokenColor(read: TokenReader, token: string, depth = 0): string 
     .join("")}`;
 }
 
-/** A UI colour: Monaco colour id, design token, optional alpha as two hex digits. */
+/** A UI color: Monaco color id, design token, optional alpha as two hex digits. */
 export type ColorSpec = readonly [id: string, token: string, alpha?: string];
 
 export const uiColors: readonly ColorSpec[] = [
@@ -79,10 +79,10 @@ export const uiColors: readonly ColorSpec[] = [
   ["diffEditor.border", "--border"],
 ];
 
-/** A syntax colour: Monarch token, design token, optional font style. */
+/** A syntax color: Monarch token, design token, optional font style. */
 export type SyntaxSpec = readonly [token: string, color: string, fontStyle?: string];
 
-// The same token to colour choices as the design system's code block.
+// The same token to color choices as the design system's code block.
 export const syntaxColors: readonly SyntaxSpec[] = [
   ["", "--ink"],
   ["comment", "--ink-muted", "italic"],
@@ -113,7 +113,7 @@ export const baseOf: Record<UpmoThemeName, editor.BuiltinTheme> = {
 };
 
 /**
- * The editor theme for an app theme. Every colour is read from a design token,
+ * The editor theme for an app theme. Every color is read from a design token,
  * so light, dark and high contrast follow the tokens and nothing is hard-coded.
  */
 export function themeData(theme: UpmoThemeName, read: TokenReader): editor.IStandaloneThemeData {

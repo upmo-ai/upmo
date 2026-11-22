@@ -359,7 +359,7 @@ describe("connectors", () => {
     expect(within(dialog).getByText("Deleting always asks first. This rule is fixed and cannot be changed.")).toBeTruthy();
   });
 
-  it("UPM-103 leaves the saved rules alone when the editor is cancelled", async () => {
+  it("UPM-103 leaves the saved rules alone when the editor is canceled", async () => {
     const client = createStubApi();
     renderAt("/connectors", client);
 
@@ -381,7 +381,7 @@ describe("connectors", () => {
 
   it.each([
     [403, "forbidden", "You are not allowed to change these rules. Nothing was saved."],
-    [401, "unauthorised", "You are not allowed to change these rules. Nothing was saved."],
+    [401, "unauthorized", "You are not allowed to change these rules. Nothing was saved."],
     [500, "server", "Rules could not be saved. Nothing changed. Try again."],
   ])("UPM-103 explains a failed save (%i) and keeps the person signed in", async (status, code, message) => {
     const stub = createStubApi();

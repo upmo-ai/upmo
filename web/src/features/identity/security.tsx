@@ -92,10 +92,10 @@ export function SecurityPage() {
         await queryClient.invalidateQueries({ queryKey: ["live-sessions"] });
       },
       onError: (err) => {
-        const cancelled =
+        const canceled =
           err instanceof Error &&
-          (err.message === "cancelled" || err.name === "NotAllowedError" || err.name === "AbortError");
-        setNotice(cancelled ? "The passkey prompt was cancelled. Try again." : "Try again.");
+          (err.message === "canceled" || err.name === "NotAllowedError" || err.name === "AbortError");
+        setNotice(canceled ? "The passkey prompt was canceled. Try again." : "Try again.");
       },
     },
   );

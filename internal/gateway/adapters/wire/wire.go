@@ -121,7 +121,7 @@ func ClassForErr(err error) domain.FailureClass {
 		return domain.ClassOK
 	}
 	if errors.Is(err, context.Canceled) {
-		return domain.ClassCancelled
+		return domain.ClassCanceled
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "timeout") {
 		return domain.ClassTimeout

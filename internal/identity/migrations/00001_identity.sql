@@ -7,7 +7,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   -- Two owner changes already hold row locks, so a table lock at commit
-  -- deadlocks them. This lock serialises the check instead.
+  -- deadlocks them. This lock serializes the check instead.
   PERFORM pg_advisory_xact_lock(7480199);
   IF EXISTS (SELECT 1 FROM identity.users)
      AND NOT EXISTS (

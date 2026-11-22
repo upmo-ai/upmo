@@ -22,7 +22,7 @@ interface RecordedRequest {
   body: Record<string, unknown> | null;
 }
 
-// The vendors, catalogue and model list the brain answers with. The ids are
+// The vendors, catalog and model list the brain answers with. The ids are
 // made up: the screens read them from the brain and know none of their own.
 const vendors: ProviderVendor[] = [
   { key: "anthropic", name: "Anthropic", adapter: "anthropic", default_base_url: "https://api.anthropic.com", suggested_plan: "metered" },

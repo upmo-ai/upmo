@@ -69,7 +69,7 @@ func ReaderFrom(ctx context.Context) (Reader, bool) {
 // order, each event exactly as the sealer wrote it. The guard resolves the
 // caller and refuses anyone without audit:view; the read itself runs as the
 // app role with the caller's allow list set for the row policy, a second line
-// of defence behind the guard.
+// of defense behind the guard.
 type ReadHandler struct {
 	// Pool is the request pool, which runs as upmo_app.
 	Pool *pgxpool.Pool

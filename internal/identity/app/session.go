@@ -16,7 +16,7 @@ var (
 	ErrNotFound    = errors.New("identity: session not found")
 	ErrEnded       = errors.New("identity: session ended")
 	ErrMalformed   = errors.New("identity: malformed session")
-	ErrNotSignedIn = errors.New("identity: unauthorised")
+	ErrNotSignedIn = errors.New("identity: unauthorized")
 )
 
 // Session is a live server-side session.

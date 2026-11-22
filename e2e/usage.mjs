@@ -360,7 +360,7 @@ try {
   }
   await page.setViewportSize({ width: 1280, height: 800 });
 
-  // Ranges: the URL keeps the range, the tiles follow the ledger for it, and Today is labelled by the hour the server cut.
+  // Ranges: the URL keeps the range, the tiles follow the ledger for it, and Today is labeled by the hour the server cut.
   const tilesMatchLedger = async (range) => {
     const usage = await readJSON(page, `/api/usage?range=${range}`);
     const want = {

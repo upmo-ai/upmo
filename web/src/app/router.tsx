@@ -79,8 +79,8 @@ const shellRoute = createRoute({
       });
     } catch (err) {
       if (
-        (err instanceof BrainError && err.status === 401 && err.error === "unauthorised") ||
-        (err && typeof err === "object" && (err as { status?: unknown }).status === 401 && (err as { error?: unknown }).error === "unauthorised")
+        (err instanceof BrainError && err.status === 401 && err.error === "unauthorized") ||
+        (err && typeof err === "object" && (err as { status?: unknown }).status === 401 && (err as { error?: unknown }).error === "unauthorized")
       ) {
         throw redirect({ to: "/login" });
       }

@@ -1,6 +1,6 @@
 import type { DecisionBinding, DecisionGate, Scope } from "./types";
 
-/** Whole percent of the labelled cases the route got right, rounded down. */
+/** Whole percent of the labeled cases the route got right, rounded down. */
 export function gatePercent(gate: Pick<DecisionGate, "hit" | "total">): number {
   if (gate.total <= 0) return 0;
   return Math.floor((gate.hit * 100) / gate.total);

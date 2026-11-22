@@ -85,10 +85,10 @@ describe("toTask", () => {
   });
 
   it("reads the cause code of a failed task as a sentence, and leaves other details alone", () => {
-    expect(toTask({ ...head, status: "Failed", detail: "parent_cancelled" }).detail).toBe(
-      "The parent task was cancelled.",
+    expect(toTask({ ...head, status: "Failed", detail: "parent_canceled" }).detail).toBe(
+      "The parent task was canceled.",
     );
-    expect(toTask({ ...head, status: "Done", detail: "parent_cancelled" }).detail).toBe("parent_cancelled");
+    expect(toTask({ ...head, status: "Done", detail: "parent_canceled" }).detail).toBe("parent_canceled");
   });
 });
 
@@ -147,7 +147,7 @@ describe("toNotification", () => {
 
 describe("causeSentence", () => {
   it("turns a known cause code into a sentence", () => {
-    expect(causeSentence("parent_cancelled")).toBe("The parent task was cancelled.");
+    expect(causeSentence("parent_canceled")).toBe("The parent task was canceled.");
   });
 
   it("shows an unknown code as it is, including names that exist on every object", () => {
@@ -416,7 +416,7 @@ describe("toProvider", () => {
   });
 });
 
-describe("provider catalogue and prices", () => {
+describe("provider catalog and prices", () => {
   it("reads a vendor and drops a plan the web does not know", () => {
     const row = { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434" };
     expect(toVendor({ ...row, suggested_plan: "local" })).toEqual({ ...row, suggested_plan: "local" });
@@ -431,7 +431,7 @@ describe("provider catalogue and prices", () => {
     expect(toSeenModel({ id: "model-b", display_name: "" })).toEqual({ id: "model-b" });
   });
 
-  it("reads a catalogue row with absent rates as null", () => {
+  it("reads a catalog row with absent rates as null", () => {
     expect(
       toCatalogModel({ model: "model-a", kind: "chat", context_window: 8000, input_usd_per_mtok: 0.5, retires_at: "2027-01-01" }),
     ).toEqual({

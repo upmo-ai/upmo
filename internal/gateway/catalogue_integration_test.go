@@ -100,7 +100,7 @@ func insertProviderAndRoute(t *testing.T, r *rig, routeName, vendor, acctName, r
 }
 
 func TestFeature_UPM363_SameModelDifferentProviderPrices(t *testing.T) {
-	// Given a refreshed catalogue with gpt-4o priced differently under openai ($2.50/$10)
+	// Given a refreshed catalog with gpt-4o priced differently under openai ($2.50/$10)
 	// and openrouter ($2.75/$11), and two metered accounts pointing at those two vendors.
 	ctx := context.Background()
 	r := newRig(t, masterKeys(t, 'a'))
@@ -163,7 +163,7 @@ func TestFeature_UPM363_SameModelDifferentProviderPrices(t *testing.T) {
 }
 
 func TestFeature_UPM363_UnknownVendorFallsBackToModelOnlyRow(t *testing.T) {
-	// Given a catalogue where "bedrock-only-model" comes from a models.dev provider
+	// Given a catalog where "bedrock-only-model" comes from a models.dev provider
 	// with no picker vendor (so only the '' fallback row exists at $2/$8 per MTok),
 	// and an account whose vendor label ("custom-proxy") is unknown to models.dev.
 	ctx := context.Background()
@@ -207,7 +207,7 @@ func TestFeature_UPM363_UnknownVendorFallsBackToModelOnlyRow(t *testing.T) {
 }
 
 func TestFeature_UPM363_MergeSourcePrecedenceRead(t *testing.T) {
-	// Given a catalogue row for gpt-4o under openrouter, a stored account_models_seen
+	// Given a catalog row for gpt-4o under openrouter, a stored account_models_seen
 	// entry for the same model with provider pricing and context_length, and an
 	// optional override on input_usd_per_mtok.
 	ctx := context.Background()
@@ -262,7 +262,7 @@ func TestFeature_UPM363_MergeSourcePrecedenceRead(t *testing.T) {
 }
 
 func TestFeature_UPM363_EmbeddingExcludedAndUnsupportedImageRefused(t *testing.T) {
-	// Given a refreshed catalogue with text-embedding-3-small (embedding), gpt-3.5-turbo
+	// Given a refreshed catalog with text-embedding-3-small (embedding), gpt-3.5-turbo
 	// (text-only chat), and gpt-4o (image-input chat), and a Connected openai account
 	// listing all three models.
 	ctx := context.Background()

@@ -40,7 +40,7 @@ func TestOpenListRefusesPublicName(t *testing.T) {
 	wantRefusedAllowlist(t, "api.github.com", list)
 }
 
-func TestGrantNormalisesHostAndAllows(t *testing.T) {
+func TestGrantNormalizesHostAndAllows(t *testing.T) {
 	backing := []string{"example.com", "spare", "spare"}
 	want := append([]string(nil), backing...)
 	list := backing[:1]

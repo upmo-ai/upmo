@@ -4,7 +4,7 @@
 # A caller may set CANARY_GOAL to pin one goal from the pool.
 
 # canary_on_exit is the cancel hook. The EXIT trap runs it.
-# The default behaviour is to do nothing. Redefine the function after
+# The default behavior is to do nothing. Redefine the function after
 # sourcing this file to cancel work when the script exits.
 canary_on_exit() {
   :
@@ -15,7 +15,7 @@ trap 'canary_on_exit' EXIT
 # canary_goals writes the pool, one synthetic goal per line.
 canary_goals() {
   printf '%s\n' \
-    'Summarise the synthetic project note for workspace Aster.' \
+    'Summarize the synthetic project note for workspace Aster.' \
     'List the open synthetic tasks tagged amber in workspace Birch.' \
     'Draft a checklist for synthetic onboarding in workspace Cedar.'
 }

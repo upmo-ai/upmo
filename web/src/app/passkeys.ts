@@ -66,7 +66,7 @@ export async function signInWithPasskey(): Promise<void> {
   const options = await postJSON<PublicKeyOptions>("/api/passkeys/sign-in/options", {});
   const credential = await navigator.credentials.get({ publicKey: requestOptions(options) });
   if (!credential) {
-    throw new Error("cancelled");
+    throw new Error("canceled");
   }
   await postRaw("/api/passkeys/sign-in/finish", credentialJSON(credential));
 }
@@ -182,12 +182,12 @@ async function stepUp(): Promise<void> {
     credential = await navigator.credentials.get({ publicKey: requestOptions(options) });
   } catch (err) {
     if (err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "AbortError")) {
-      throw new Error("cancelled", { cause: err });
+      throw new Error("canceled", { cause: err });
     }
     throw err;
   }
   if (!credential) {
-    throw new Error("cancelled");
+    throw new Error("canceled");
   }
   await postRaw("/api/passkeys/step-up/finish", credentialJSON(credential));
 }
@@ -265,9 +265,9 @@ function isStale(err: unknown): boolean {
   return false;
 }
 
-function isCancelled(err: unknown): boolean {
+function isCanceled(err: unknown): boolean {
   if (err instanceof Error) {
-    return err.message === "cancelled" || err.name === "NotAllowedError" || err.name === "AbortError";
+    return err.message === "canceled" || err.name === "NotAllowedError" || err.name === "AbortError";
   }
   return false;
 }
@@ -282,7 +282,7 @@ export async function fresh<T>(action: () => Promise<T>): Promise<T | undefined>
     try {
       await stepUp();
     } catch (stepUpErr) {
-      if (isCancelled(stepUpErr)) {
+      if (isCanceled(stepUpErr)) {
         return undefined;
       }
       throw stepUpErr;

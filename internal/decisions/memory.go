@@ -9,13 +9,13 @@ import (
 // RouteMemory is the decide route that checks whether a turn should read memory.
 const RouteMemory = "memory-check"
 
-// Turn is one prompt labelled with whether it should read memory.
+// Turn is one prompt labeled with whether it should read memory.
 type Turn struct {
 	Prompt string
 	Yes    bool
 }
 
-// MemoryCheck accepts a memory-check config when its labelled precision meets the bar.
+// MemoryCheck accepts a memory-check config when its labeled precision meets the bar.
 func MemoryCheck(ctx context.Context, book Gates, access Access, hops []Hop, bar int, turns []Turn, run Runner) error {
 	if len(turns) == 0 {
 		return ErrConfig

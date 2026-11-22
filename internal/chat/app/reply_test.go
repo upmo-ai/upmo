@@ -31,7 +31,7 @@ func TestHistoryKeepsTheNewestLinesThatFitAndAlwaysTheLast(t *testing.T) {
 	}
 }
 
-func TestHistoryJoinsNeighbouringLinesOfOneRole(t *testing.T) {
+func TestHistoryJoinsNeighboringLinesOfOneRole(t *testing.T) {
 	got := history([]Line{
 		{Role: "user", Body: "q1"},
 		{Role: "user", Body: "q2"},

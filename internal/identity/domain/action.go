@@ -11,7 +11,7 @@ type ActionRules struct {
 // DecideAction applies the grant scope, then any per-action rule, for one
 // action on one resource. Out of scope always blocks. Delete in scope always
 // asks, whatever rules.Delete says. An empty rule falls back to
-// ConnectorDecide. An unknown action or an unrecognised policy blocks.
+// ConnectorDecide. An unknown action or an unrecognized policy blocks.
 func DecideAction(grant ConnectorGrant, rules ActionRules, action ConnectorAction, resource string) ConnectorVerdict {
 	if !inScope(grant, resource) {
 		return ConnectorBlock

@@ -80,7 +80,7 @@ func (h Passkeys) limited(next http.HandlerFunc) http.HandlerFunc {
 func (h Passkeys) signInOptions(w http.ResponseWriter, r *http.Request) {
 	cookie, options, err := h.Pass.BeginSignIn(r.Context())
 	if err != nil {
-		writeRaw(w, http.StatusBadRequest, unauthorised)
+		writeRaw(w, http.StatusBadRequest, unauthorized)
 		return
 	}
 	setChallenge(w, cookie)
@@ -99,7 +99,7 @@ func (h Passkeys) signInFinish(w http.ResponseWriter, r *http.Request) {
 			writeRaw(w, http.StatusForbidden, ssoRequired)
 			return
 		}
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return
 	}
 	clearChallenge(w)
@@ -195,7 +195,7 @@ func (h Passkeys) stepUpOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeRaw(w, http.StatusBadRequest, unauthorised)
+		writeRaw(w, http.StatusBadRequest, unauthorized)
 		return
 	}
 	setChallenge(w, cookie)
@@ -213,7 +213,7 @@ func (h Passkeys) stepUpFinish(w http.ResponseWriter, r *http.Request) {
 		if refuseSignedOut(w, err) {
 			return
 		}
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return
 	}
 	clearChallenge(w)
@@ -253,7 +253,7 @@ func (h Passkeys) addOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeRaw(w, http.StatusBadRequest, unauthorised)
+		writeRaw(w, http.StatusBadRequest, unauthorized)
 		return
 	}
 	setChallenge(w, cookie)
@@ -271,7 +271,7 @@ func (h Passkeys) addFinish(w http.ResponseWriter, r *http.Request) {
 		if refuseSignedOut(w, err) {
 			return
 		}
-		writeRaw(w, http.StatusBadRequest, unauthorised)
+		writeRaw(w, http.StatusBadRequest, unauthorized)
 		return
 	}
 	clearChallenge(w)
@@ -287,11 +287,11 @@ func (h Passkeys) rename(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Name == "" {
-		writeRaw(w, http.StatusBadRequest, unauthorised)
+		writeRaw(w, http.StatusBadRequest, unauthorized)
 		return
 	}
 	if err := h.Pass.Store.RenamePasskey(r.Context(), session.UserID, r.PathValue("id"), input.Name); err != nil {
-		writeRaw(w, http.StatusNotFound, unauthorised)
+		writeRaw(w, http.StatusNotFound, unauthorized)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -308,7 +308,7 @@ func (h Passkeys) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeRaw(w, http.StatusNotFound, unauthorised)
+		writeRaw(w, http.StatusNotFound, unauthorized)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -323,13 +323,13 @@ func (h Passkeys) session(w http.ResponseWriter, r *http.Request) (app.Session, 
 	w.Header().Set("Cache-Control", "no-store")
 	cookie, err := r.Cookie(CookieName)
 	if err != nil {
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	session, err := h.Pass.Sessions.Lookup(r.Context(), cookie.Value)
 	if err != nil {
 		ClearCookie(w)
-		writeRaw(w, http.StatusUnauthorized, unauthorised)
+		writeRaw(w, http.StatusUnauthorized, unauthorized)
 		return app.Session{}, false
 	}
 	markActor(r, session)
@@ -353,7 +353,7 @@ func refuseSignedOut(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	ClearCookie(w)
-	writeRaw(w, http.StatusUnauthorized, unauthorised)
+	writeRaw(w, http.StatusUnauthorized, unauthorized)
 	return true
 }
 

@@ -220,7 +220,7 @@ type Prober interface {
 // Providers is the use case behind a person's provider settings.
 type Providers struct {
 	Accounts Accounts
-	// Catalog reads model kinds and vendor catalogue rows from gateway.prices.
+	// Catalog reads model kinds and vendor catalog rows from gateway.prices.
 	Catalog CatalogReader
 	// Keys seals and opens the keys a person adds.
 	Keys domain.Keyring
@@ -753,7 +753,7 @@ func (s Providers) SeenModels(ctx context.Context, user, id string) ([]domain.Se
 	return s.Accounts.SeenModels(ctx, who, id)
 }
 
-// VendorCatalog returns the catalogue rows stored for vendor. Unknown or empty
+// VendorCatalog returns the catalog rows stored for vendor. Unknown or empty
 // vendors return an empty slice.
 func (s Providers) VendorCatalog(ctx context.Context, vendor string) ([]domain.CatalogRow, error) {
 	if s.Catalog == nil {
@@ -771,7 +771,7 @@ func (s Providers) VendorCatalog(ctx context.Context, vendor string) ([]domain.C
 
 // MergedModel resolves the merged model view for one account model across
 // optional override, stored provider discovery (account_models_seen), and the
-// models.dev catalogue.
+// models.dev catalog.
 func (s Providers) MergedModel(ctx context.Context, user, accountID, model string, override *domain.ModelOverride) (domain.MergedModel, error) {
 	who, err := s.caller(ctx, user)
 	if err != nil {
@@ -895,7 +895,7 @@ func (s Providers) DeletePriceOverride(ctx context.Context, user, accountID, mod
 	return s.buildModelPricingView(ctx, who, account, cleanModel, nil)
 }
 
-// SetPricingMap changes the catalogue mapping for an account. Requires settings:manage.
+// SetPricingMap changes the catalog mapping for an account. Requires settings:manage.
 func (s Providers) SetPricingMap(ctx context.Context, user, accountID string, vendor *string, models map[string]string) error {
 	who, err := s.caller(ctx, user)
 	if err != nil {
@@ -1180,7 +1180,7 @@ func ProbeMessage(class domain.FailureClass) string {
 		return "The key was rejected."
 	case domain.ClassRateLimit:
 		return "Rate limited."
-	case domain.ClassTransient, domain.ClassTimeout, domain.ClassOverloaded, domain.ClassCancelled:
+	case domain.ClassTransient, domain.ClassTimeout, domain.ClassOverloaded, domain.ClassCanceled:
 		return "Could not reach the provider."
 	default:
 		return "The provider did not accept the request."

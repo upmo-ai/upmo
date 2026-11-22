@@ -97,9 +97,9 @@ func TestUsableAgentModelMatchesTheProviderOwnAccountsFirst(t *testing.T) {
 		t.Fatal("the provider matched case-insensitively failed")
 	}
 	// An account with no provider label counts as its adapter.
-	labelled := connected
-	labelled.Provider = ""
-	if !UsableAgentModel("Fake", "m1", []Provider{labelled}) {
+	labeled := connected
+	labeled.Provider = ""
+	if !UsableAgentModel("Fake", "m1", []Provider{labeled}) {
 		t.Fatal("an account of the adapter's name did not resolve")
 	}
 
@@ -180,13 +180,13 @@ func TestUsableAgentResolvesTheModelTheRouteOrTheDefault(t *testing.T) {
 	}
 }
 
-func TestUsableListsOnlyChatModelsAndCountsUncataloguedAsChat(t *testing.T) {
+func TestUsableListsOnlyChatModelsAndCountsUncatalogedAsChat(t *testing.T) {
 	mixed := Provider{
 		ID:       "acc-mix",
 		Provider: "OpenAI",
 		Adapter:  AdapterOpenAI,
 		Status:   StatusConnected,
-		Models:   []string{"gpt-4o", "text-embedding-3-small", "dall-e-3", "rerank-1", "custom-uncatalogued"},
+		Models:   []string{"gpt-4o", "text-embedding-3-small", "dall-e-3", "rerank-1", "custom-uncataloged"},
 		ModelKinds: map[string]ModelKind{
 			"gpt-4o":                 KindChat,
 			"text-embedding-3-small": KindEmbedding,
@@ -196,15 +196,15 @@ func TestUsableListsOnlyChatModelsAndCountsUncataloguedAsChat(t *testing.T) {
 	}
 
 	got := UsableModels(mixed)
-	want := []string{"gpt-4o", "custom-uncatalogued"}
+	want := []string{"gpt-4o", "custom-uncataloged"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("UsableModels = %v, want %v", got, want)
 	}
 	if UsableModel(mixed, "text-embedding-3-small") || UsableModel(mixed, "dall-e-3") || UsableModel(mixed, "rerank-1") {
 		t.Fatal("non-chat model was marked usable for chat")
 	}
-	if !UsableModel(mixed, "custom-uncatalogued") {
-		t.Fatal("uncatalogued model should count as chat")
+	if !UsableModel(mixed, "custom-uncataloged") {
+		t.Fatal("uncataloged model should count as chat")
 	}
 	if UsableAgentModel("OpenAI", "text-embedding-3-small", []Provider{mixed}) {
 		t.Fatal("embedding model was usable for an agent")

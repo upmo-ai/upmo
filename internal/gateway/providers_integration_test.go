@@ -1759,7 +1759,7 @@ func TestFeature_UPM362_MalformedOrOversizedListStoresNothingAndKeyWorks(t *test
 	}
 }
 
-func TestFeature_UPM362_UnauthorisedPersonCannotReadStoredModels(t *testing.T) {
+func TestFeature_UPM362_UnauthorizedPersonCannotReadStoredModels(t *testing.T) {
 	// Given Ada's private account and an admin's Finance-team account, both with stored models.
 	r := newRig(t, masterKeys(t, 'a'))
 	ctx := context.Background()
@@ -2308,7 +2308,7 @@ func (s *disabledStreamRecorder) ChatStream(_ context.Context, attempt app.Attem
 		return domain.Usage{}, domain.ClassTransient, errors.New("boom")
 	}
 	if err := emit("ok"); err != nil {
-		return domain.Usage{}, domain.ClassCancelled, err
+		return domain.Usage{}, domain.ClassCanceled, err
 	}
 	return domain.Usage{Arrived: true, Input: 1, Output: 1}, domain.ClassOK, nil
 }

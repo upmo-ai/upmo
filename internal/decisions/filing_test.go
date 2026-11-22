@@ -19,7 +19,7 @@ var filingHops = []Hop{
 func TestFileSourceRejectsLabelOutsideOptionsBeforeRunning(t *testing.T) {
 	book := &filingGates{}
 	run := &filingRunner{choice: filingFolderA}
-	err := FileSource(context.Background(), book, filingAccess(), filingHops, 100, []Labelled{{
+	err := FileSource(context.Background(), book, filingAccess(), filingHops, 100, []Labeled{{
 		Prompt:  "A source excerpt",
 		Options: []string{filingFolderA, filingFolderB},
 		Label:   "018f3b2c-7a10-7c4a-8e11-cccccccccccc",
@@ -35,7 +35,7 @@ func TestFileSourceRejectsLabelOutsideOptionsBeforeRunning(t *testing.T) {
 func TestFileSourceRejectsNonUUIDOptionBeforeRunning(t *testing.T) {
 	book := &filingGates{}
 	run := &filingRunner{choice: filingFolderA}
-	err := FileSource(context.Background(), book, filingAccess(), filingHops, 100, []Labelled{{
+	err := FileSource(context.Background(), book, filingAccess(), filingHops, 100, []Labeled{{
 		Prompt:  "A source excerpt",
 		Options: []string{filingFolderA, "not-a-folder"},
 		Label:   filingFolderA,
@@ -107,8 +107,8 @@ func filingAccess() Access {
 	return Access{UserID: filingUser, Allow: "settings:manage"}
 }
 
-func filingCases() []Labelled {
-	return []Labelled{{
+func filingCases() []Labeled {
+	return []Labeled{{
 		Prompt:  "A source excerpt",
 		Options: []string{filingFolderA, filingFolderB},
 		Label:   filingFolderA,

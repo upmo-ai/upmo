@@ -131,7 +131,7 @@ func TestFactKeepFailedRecallSavesNothing(t *testing.T) {
 	}
 }
 
-func TestFactKeepWithoutLabelledYesReturnsGateError(t *testing.T) {
+func TestFactKeepWithoutLabeledYesReturnsGateError(t *testing.T) {
 	book := &factGates{}
 	run := &factRunner{answers: []bool{true, true}}
 	err := FactKeep(context.Background(), book, factAccess(), factHops, 1, []Fact{

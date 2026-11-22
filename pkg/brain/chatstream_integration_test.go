@@ -293,12 +293,12 @@ func TestChatStreamClientCancelStopsTheProvider(t *testing.T) {
 	if err == nil || deltas != 1 {
 		t.Fatalf("err = %v deltas = %d", err, deltas)
 	}
-	// The cancelled call still wrote its attempt row: the provider stopped,
+	// The canceled call still wrote its attempt row: the provider stopped,
 	// the ledger did not.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		classes := led.classes()
-		if len(classes) == 1 && classes[0] == domain.ClassCancelled {
+		if len(classes) == 1 && classes[0] == domain.ClassCanceled {
 			return
 		}
 		if time.Now().After(deadline) {

@@ -5,7 +5,7 @@ import type { UsageLimits } from "../../app/api";
 import { limitUse, limitWarnPercent } from "./figures";
 import { formatDay, formatMicroUsd } from "./format";
 
-/** One limit as a bar, with the words that carry the 80% and the over-the-limit states so colour is not the only signal. */
+/** One limit as a bar, with the words that carry the 80% and the over-the-limit states so color is not the only signal. */
 function LimitBar({ label, limit, spent, held }: { label: string; limit: number; spent: number; held: number }) {
   const { percent, state } = limitUse(spent, limit);
   return (

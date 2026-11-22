@@ -82,12 +82,12 @@ func (h RoutesHandler) person(w http.ResponseWriter, r *http.Request) (string, b
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
-		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
+		writeRouteError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	userID, ok := h.Access(r)
 	if !ok || userID == "" {
-		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
+		writeRouteError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	return userID, true

@@ -102,7 +102,7 @@ try {
     }
   }
   if (head.themeColor.length !== 1 || !/^#[0-9a-f]{6}$/i.test(head.themeColor[0] ?? "")) {
-    fail(`head theme-color is ${JSON.stringify(head.themeColor)}, want one hex colour`);
+    fail(`head theme-color is ${JSON.stringify(head.themeColor)}, want one hex color`);
   }
 
   // Every linked file resolves, so the head and the server cannot drift apart.

@@ -420,7 +420,7 @@ export function ModelsPage() {
         ) : gates.isError || decisions.isError ? null : (
           <EmptyState
             title="No decision gates yet"
-            description="A gate shows up here once a decide route passes its labelled test."
+            description="A gate shows up here once a decide route passes its labeled test."
             icon={<ShellIcon concept="nav.settings" size={24} />}
           />
         )}

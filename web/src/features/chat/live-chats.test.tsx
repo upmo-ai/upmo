@@ -64,7 +64,7 @@ function brain(options: { readOnlyChat?: string; tasks?: () => Response } = {}) 
       id: pricesId,
       createdAt: minutesAgo(18),
       lines: [
-        line("l201", "user", "Summarise the supplier prices", { at: minutesAgo(18) }),
+        line("l201", "user", "Summarize the supplier prices", { at: minutesAgo(18) }),
         line("l202", "assistant", "Prices are stable to the year end; lead times are the open question.", {
           model: "llama3.3:70b",
           tokens: 58,
@@ -183,7 +183,7 @@ describe("chats from the brain", () => {
 
     const list = await chatList();
     const first = await within(list).findByRole("button", { name: /What should the October close check first\?/ });
-    const second = within(list).getByRole("button", { name: /Summarise the supplier prices/ });
+    const second = within(list).getByRole("button", { name: /Summarize the supplier prices/ });
     // The head's New chat button also begins with those words, so the item is the second match.
     const [, third] = within(list).getAllByRole("button", { name: /^New chat/ });
     expect(first.compareDocumentPosition(second)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -209,7 +209,7 @@ describe("chats from the brain", () => {
     expect(within(log).getByText("0 tokens · Unknown")).toBeTruthy();
 
     const list = await chatList();
-    fireEvent.click(within(list).getByRole("button", { name: /Summarise the supplier prices/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /Summarize the supplier prices/ }));
     await within(log).findByText(/Prices are stable to the year end/);
     expect(within(log).getByText("llama3.3:70b · 58 tokens · Unknown")).toBeTruthy();
     expect(log.textContent).not.toMatch(/\$0\.00(?!\d)/);
@@ -277,7 +277,7 @@ describe("chats from the brain", () => {
     vi.stubGlobal("fetch", brain({ readOnlyChat: pricesId }).fetcher);
     renderChatAt("/chat");
     const list = await chatList();
-    fireEvent.click(await within(list).findByRole("button", { name: /Summarise the supplier prices/ }));
+    fireEvent.click(await within(list).findByRole("button", { name: /Summarize the supplier prices/ }));
     const box = await type("One more question");
     await within(messageLog()).findByText(/Prices are stable to the year end/);
 
@@ -291,7 +291,7 @@ describe("chats from the brain", () => {
   it("does not hide a 401 behind the sample chats", async () => {
     vi.stubGlobal(
       "fetch",
-      brain({ tasks: () => Response.json({ error: "unauthorised" }, { status: 401 }) }).fetcher,
+      brain({ tasks: () => Response.json({ error: "unauthorized" }, { status: 401 }) }).fetcher,
     );
     const history = renderChatAt("/chat");
 

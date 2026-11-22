@@ -82,13 +82,13 @@ func RequireSession(sessions app.Service, next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		cookie, err := r.Cookie(httpapi.CookieName)
 		if err != nil {
-			refuseUnauthorised(w)
+			refuseUnauthorized(w)
 			return
 		}
 		session, err := sessions.Lookup(r.Context(), cookie.Value)
 		if err != nil {
 			httpapi.ClearCookie(w)
-			refuseUnauthorised(w)
+			refuseUnauthorized(w)
 			return
 		}
 		p := Principal{
@@ -132,10 +132,10 @@ func Recheck(ctx context.Context, sessions app.Service, r *http.Request) (Princi
 	}, true, nil
 }
 
-func refuseUnauthorised(w http.ResponseWriter) {
+func refuseUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte("{\"error\":\"unauthorised\"}\n"))
+	_, _ = w.Write([]byte("{\"error\":\"unauthorized\"}\n"))
 }
 
 // WorkspaceService is the workspace settings use case.

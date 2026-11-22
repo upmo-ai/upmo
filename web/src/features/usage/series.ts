@@ -9,7 +9,7 @@ export const chartTasks = 8;
 
 type SeriesColor = LineSeries["colorIndex"];
 
-/** The chart palette has six colours. The same row keeps its colour in every chart; later rows fall to the chart's own order. */
+/** The chart palette has six colors. The same row keeps its color in every chart; later rows fall to the chart's own order. */
 function colorAt(index: number): SeriesColor {
   return index < 6 ? ((index + 1) as SeriesColor) : undefined;
 }

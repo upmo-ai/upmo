@@ -341,7 +341,7 @@ func TestPinToATeamAccountWorksForItsMembersAndNoOthers(t *testing.T) {
 }
 
 func TestProviderPinPrefersOwnThenTeamThenWorkspace(t *testing.T) {
-	// Every account lists "common" and is labelled acme.
+	// Every account lists "common" and is labeled acme.
 	pin := domain.Pin{Provider: "ACME", Model: "common"}
 	for name, tc := range map[string]struct {
 		user func(shareWorld) string

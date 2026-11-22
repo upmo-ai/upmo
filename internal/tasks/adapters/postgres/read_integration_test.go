@@ -313,8 +313,8 @@ func TestViewRendersResultAndDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	view, err = app.ViewTask(ctx, store, ownerAccess, child.ID)
-	if err != nil || view.Detail != domain.ParentCancelled || view.Status != domain.ShownFailed {
-		t.Fatalf("cancelled child = %q %q %v", view.Detail, view.Status, err)
+	if err != nil || view.Detail != domain.ParentCanceled || view.Status != domain.ShownFailed {
+		t.Fatalf("canceled child = %q %q %v", view.Detail, view.Status, err)
 	}
 }
 

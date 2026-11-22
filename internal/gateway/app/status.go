@@ -18,7 +18,7 @@ type Statuses interface {
 
 // ClassStatus is the account status an attempt outcome leaves behind. It is
 // empty for an outcome that says nothing about the account, such as a caller
-// fault or a cancelled call.
+// fault or a canceled call.
 func ClassStatus(class domain.FailureClass) string {
 	switch class {
 	case domain.ClassOK:

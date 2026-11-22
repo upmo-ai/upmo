@@ -704,7 +704,7 @@ func TestFeature_UPM354_MigrateSeedsSnapshotIdempotently(t *testing.T) {
 		t.Fatal("repeat SeedCatalog wiped sentinel row")
 	}
 
-	// 3. Upgrade with a newer snapshot over an older refreshed catalogue: replaces catalogue.
+	// 3. Upgrade with a newer snapshot over an older refreshed catalog: replaces catalog.
 	olderRefreshed := snapAsOf.Add(-48 * time.Hour)
 	if _, err := r.owner.Exec(ctx, `UPDATE gateway.catalog_meta SET version = 'old-refreshed', as_of = $1, refreshed_at = $1 WHERE id = 1`, olderRefreshed); err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestFeature_UPM354_MigrateSeedsSnapshotIdempotently(t *testing.T) {
 		t.Fatal("upgrade did not replace older prices")
 	}
 
-	// 4. Older snapshot under a newer refreshed catalogue: does NOT overwrite newer refreshed catalogue.
+	// 4. Older snapshot under a newer refreshed catalog: does NOT overwrite newer refreshed catalog.
 	newerRefreshed := snapAsOf.Add(48 * time.Hour)
 	if _, err := r.owner.Exec(ctx, `UPDATE gateway.catalog_meta SET version = 'newer-refreshed', as_of = $1, refreshed_at = $1 WHERE id = 1`, newerRefreshed); err != nil {
 		t.Fatal(err)
@@ -1965,7 +1965,7 @@ func TestFeature_UPM354_MultiProviderPricingAndEstimates(t *testing.T) {
 		}
 	}
 
-	// Parse a multi-provider models.dev catalogue where:
+	// Parse a multi-provider models.dev catalog where:
 	// - "shared-dual" is under openai ($2/$10) and openrouter ($4/$12).
 	// - "cross-only" is under openrouter ($6 input, $10 output, $0.8 cache_read, $2 cache_write)
 	//   and groq ($3 input, $20 output, $0.4 cache_read, $8 cache_write), so '' holds ($6, $20, $0.8, $8).
@@ -2102,7 +2102,7 @@ func TestFeature_UPM354_MultiProviderPricingAndEstimates(t *testing.T) {
 		t.Fatalf("r-anth-cross ledger = %+v, want 24_800_000 estimate estimated=true", got)
 	}
 
-	// 3. 5b: Known provider (openai) with unknown model -> estimated at openai's highest catalogue rate ($30/MTok).
+	// 3. 5b: Known provider (openai) with unknown model -> estimated at openai's highest catalog rate ($30/MTok).
 	// 1M * $30 + 0.5M * $30 = 45_000_000. No 5c notice sent.
 	chatter.usage = domain.Usage{Arrived: true, Input: 1_000_000, Output: 500_000}
 	if _, err := disp.ChatCall(ctx, "r-oai-unknown", "", who, in); err != nil {
@@ -2488,7 +2488,7 @@ func TestFeature_UPM354_PricingVendorFollowsEndpointAndDiscovery(t *testing.T) {
 	}))
 	t.Cleanup(unsavedSrv.Close)
 
-	// 1. Account labelled "openai" whose base_url was edited to OpenRouter's host is priced with OpenRouter's vendor rows.
+	// 1. Account labeled "openai" whose base_url was edited to OpenRouter's host is priced with OpenRouter's vendor rows.
 	editedAcct := r.mustAdd(bob, map[string]any{
 		"provider": "openai", "name": "Edited To OR", "adapter": domain.AdapterOpenAI,
 		"plan_kind": domain.PlanMetered, "base_url": "https://openrouter.ai/api", "api_key": newKey,
@@ -2502,7 +2502,7 @@ func TestFeature_UPM354_PricingVendorFollowsEndpointAndDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 2. Metered account labelled "openai" on a custom host is never models_dev (uses 5a '' estimate or unknown).
+	// 2. Metered account labeled "openai" on a custom host is never models_dev (uses 5a '' estimate or unknown).
 	customAcct := r.mustAdd(bob, map[string]any{
 		"provider": "openai", "name": "Custom Host", "adapter": domain.AdapterOpenAI,
 		"plan_kind": domain.PlanMetered, "base_url": "https://custom-proxy.example.com", "api_key": newKey,

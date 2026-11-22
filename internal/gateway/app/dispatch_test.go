@@ -473,11 +473,11 @@ func (s *scriptStream) ChatStream(ctx context.Context, _ Attempt, _ domain.Reque
 			select {
 			case <-time.After(s.delay):
 			case <-ctx.Done():
-				return part(sent), domain.ClassCancelled, ctx.Err()
+				return part(sent), domain.ClassCanceled, ctx.Err()
 			}
 		}
 		if err := emit(word + " "); err != nil {
-			return part(sent), domain.ClassCancelled, err
+			return part(sent), domain.ClassCanceled, err
 		}
 		sent++
 	}
@@ -665,7 +665,7 @@ func TestDispatchChatStreamCancelStopsTheAdapter(t *testing.T) {
 	if sink.deltas != 1 || sink.text.String() != "one " {
 		t.Fatalf("deltas = %d text = %q", sink.deltas, sink.text.String())
 	}
-	if sink.fail == nil || sink.fail.Class != domain.ClassCancelled || sink.fail.Model != "m1" {
+	if sink.fail == nil || sink.fail.Class != domain.ClassCanceled || sink.fail.Model != "m1" {
 		t.Fatalf("fail = %+v", sink.fail)
 	}
 }
@@ -1077,7 +1077,7 @@ func (s *scriptToolStream) ChatStreamTools(_ context.Context, attempt Attempt, _
 		if events.ToolCall != nil {
 			if err := events.ToolCall(d); err != nil {
 				return domain.ChatResult{Usage: domain.Usage{Arrived: true, Input: 10, Output: i}, Model: attempt.Model},
-					domain.ClassCancelled, err
+					domain.ClassCanceled, err
 			}
 		}
 	}

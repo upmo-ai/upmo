@@ -14,7 +14,7 @@ import (
 const (
 	// LexicalCandidates is the FTS body match list. A prefix match alone is not on it.
 	LexicalCandidates = 50
-	// DenseCandidates is the halfvec neighbour list when embeddings exist.
+	// DenseCandidates is the halfvec neighbor list when embeddings exist.
 	DenseCandidates = 50
 	// SearchLimit is how many fused hits a call returns after optional rerank.
 	SearchLimit = 8

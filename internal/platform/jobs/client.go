@@ -120,7 +120,7 @@ func jobOutcome(err error) string {
 	}
 	var cancelErr *rivertype.JobCancelError
 	if errors.As(err, &cancelErr) {
-		return "cancelled"
+		return "canceled"
 	}
 	var snoozeErr *rivertype.JobSnoozeError
 	if errors.As(err, &snoozeErr) {

@@ -171,7 +171,7 @@ function brain(
       id: failedChatId,
       at: failedAt,
       lines: [
-        stored("u2", "user", "Summarise the prices"),
+        stored("u2", "user", "Summarize the prices"),
         stored("f1", "assistant", "No model could answer.", {
           status: "failed",
           reply_to: "u2",
@@ -198,11 +198,11 @@ function brain(
       return Response.json({ error: "down" }, { status: options.listsFail });
     }
     if (path === "/api/gateway/routes" && method === "GET") {
-      if (options.routesRefused) return Response.json({ error: "unauthorised" }, { status: 401 });
+      if (options.routesRefused) return Response.json({ error: "unauthorized" }, { status: 401 });
       return Response.json(sampleRoutes.map(({ scope: _scope, ...route }) => route));
     }
     if ((path === "/api/agents" || path === "/api/providers") && method === "GET") {
-      if (options.listsRefused) return Response.json({ error: "unauthorised" }, { status: 401 });
+      if (options.listsRefused) return Response.json({ error: "unauthorized" }, { status: 401 });
       return Response.json(path === "/api/agents" ? (options.agents ?? []) : (options.accounts ?? []));
     }
     if (path === "/api/chats" && method === "GET") {
@@ -286,7 +286,7 @@ const pause = (ms: number) => act(async () => new Promise<void>((resolve) => set
 
 // The stream opens once the thread has loaded.
 async function openStream() {
-  await within(await screen.findByRole("log", { name: "Messages" })).findByText(/Plan the offsite|Summarise the prices/);
+  await within(await screen.findByRole("log", { name: "Messages" })).findByText(/Plan the offsite|Summarize the prices/);
   await waitFor(() => {
     expect(FakeEventSource.instances.length).toBeGreaterThan(0);
   });
@@ -450,7 +450,7 @@ describe("chat stream page", () => {
     const list = await screen.findByRole("navigation", { name: "Chat list" });
     fireEvent.click(await within(list).findByRole("button", { name: /Plan the offsite/ }));
     await within(log()).findByText("Plan the offsite");
-    fireEvent.click(within(list).getByRole("button", { name: /Summarise the prices/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /Summarize the prices/ }));
 
     expect(await within(log()).findByText("No model could answer.")).toBeTruthy();
     expect(within(log()).getByText("Tried gpt-x (rate limited), then claude-y (timed out).")).toBeTruthy();
@@ -552,7 +552,7 @@ describe("chat stream page", () => {
     // The first chat's stream is open.
     await openStream();
     const list = await screen.findByRole("navigation", { name: "Chat list" });
-    fireEvent.click(within(list).getByRole("button", { name: /Summarise the prices/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /Summarize the prices/ }));
     await within(log()).findByText("No model could answer.");
     await waitFor(() => {
       expect(FakeEventSource.instances.length).toBeGreaterThan(1);
@@ -814,7 +814,7 @@ describe("chat composer picks", () => {
     vi.stubGlobal("fetch", fetcher);
     renderChat();
     const list = await screen.findByRole("navigation", { name: "Chat list" });
-    fireEvent.click(await within(list).findByRole("button", { name: /Summarise the prices/ }));
+    fireEvent.click(await within(list).findByRole("button", { name: /Summarize the prices/ }));
     await within(log()).findByText("No model could answer.");
     await choose("Route", "chat");
     await choose("Model", "gpt-x");
@@ -833,7 +833,7 @@ describe("chat composer picks", () => {
     vi.stubGlobal("fetch", fetcher);
     renderChat();
     const list = await screen.findByRole("navigation", { name: "Chat list" });
-    fireEvent.click(await within(list).findByRole("button", { name: /Summarise the prices/ }));
+    fireEvent.click(await within(list).findByRole("button", { name: /Summarize the prices/ }));
     await within(log()).findByText("No model could answer.");
 
     fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));

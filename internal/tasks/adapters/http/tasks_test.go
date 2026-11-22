@@ -127,7 +127,7 @@ func TestGetReturnsATask(t *testing.T) {
 			SpentCents: 120, LimitCents: 500, UpdatedAt: at,
 		},
 		Result:   "All filed",
-		Detail:   "parent_cancelled",
+		Detail:   "parent_canceled",
 		Subtasks: []app.SubtaskView{{ID: "sub-1", Title: "Sort the mail", Status: domain.ShownDone}},
 		Events:   []app.Event{{ID: "ev-1", Time: at, Phase: domain.Working, Type: "pause", Message: "Waiting for approval"}},
 	}}
@@ -142,7 +142,7 @@ func TestGetReturnsATask(t *testing.T) {
 	want := map[string]any{
 		"id": taskID, "title": "File the receipts", "status": "Needs approval", "phase": "Working",
 		"spent_cents": float64(120), "limit_cents": float64(500), "updated_at": "2026-11-07T09:30:00Z",
-		"result": "All filed", "detail": "parent_cancelled",
+		"result": "All filed", "detail": "parent_canceled",
 		"subtasks": []any{map[string]any{"id": "sub-1", "title": "Sort the mail", "status": "Done"}},
 		"events": []any{map[string]any{
 			"id": "ev-1", "time": "2026-11-07T09:30:00Z", "phase": "Working", "type": "pause", "message": "Waiting for approval",

@@ -61,12 +61,12 @@ func signedInPerson(w http.ResponseWriter, r *http.Request, access func(r *http.
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if access == nil {
-		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
+		writeRouteError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	userID, ok := access(r)
 	if !ok || userID == "" {
-		writeRouteError(w, http.StatusUnauthorized, "unauthorised")
+		writeRouteError(w, http.StatusUnauthorized, "unauthorized")
 		return "", false
 	}
 	return userID, true

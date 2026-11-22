@@ -39,7 +39,7 @@ export function formatMicro(micro: number): string {
   return `$${whole}.${fraction.padEnd(2, "0")}`;
 }
 
-/** A catalogue rate (USD per million tokens) as micro-USD, or null when it is not set. */
+/** A catalog rate (USD per million tokens) as micro-USD, or null when it is not set. */
 export function catalogMicro(usd: number | null | undefined): number | null {
   if (usd == null || !Number.isFinite(usd) || usd < 0) return null;
   return Math.round(usd * 1_000_000);

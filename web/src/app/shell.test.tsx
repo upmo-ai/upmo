@@ -401,7 +401,7 @@ describe("app shell", () => {
     expect(rail().getAttribute("data-rail")).toBe("true");
     expect(within(header).getByRole("button", { name: "Expand navigation" })).toBeTruthy();
     expect(screen.queryByText("Kodeeo Limited")).toBeNull();
-    expect(screen.getByRole("button", { name: "Toggle colour scheme" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Toggle color scheme" })).toBeTruthy();
     expect(screen.queryByTestId("theme-switch")).toBeNull();
     expect(screen.getByRole("link", { name: "Home" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Management" })).toBeTruthy();
@@ -1314,7 +1314,7 @@ describe("app shell", () => {
     expect(within(sidebar()).queryByRole("button", { name: "Management" })).toBeNull();
   });
 
-  it("unauthorised 401 sends a signed-in route to /login and does not retry; /login still renders with no session", async () => {
+  it("unauthorized 401 sends a signed-in route to /login and does not retry; /login still renders with no session", async () => {
     let sessionFetches = 0;
     const stub = createStubApi();
     const client: ApiClient = {
@@ -1322,14 +1322,14 @@ describe("app shell", () => {
       session: {
         async get() {
           sessionFetches += 1;
-          throw new BrainError(401, "unauthorised");
+          throw new BrainError(401, "unauthorized");
         },
       },
       me: {
         ...stub.me,
         async current() {
           sessionFetches += 1;
-          throw new BrainError(401, "unauthorised");
+          throw new BrainError(401, "unauthorized");
         },
       },
     };
@@ -1359,7 +1359,7 @@ describe("app shell", () => {
       members: {
         ...stub.members,
         async list() {
-          throw new BrainError(403, "unauthorised");
+          throw new BrainError(403, "unauthorized");
         },
       },
     };
@@ -1369,14 +1369,14 @@ describe("app shell", () => {
     expect(sessionFetches).toBe(1);
   });
 
-  it("a 401 unauthorised query error redirects a signed-in person", async () => {
+  it("a 401 unauthorized query error redirects a signed-in person", async () => {
     const stub = createStubApi();
     const client: ApiClient = {
       ...stub,
       session: { async get() { return { ...signedOut, memberId: "ada" }; } },
       members: {
         ...stub.members,
-        async list() { throw new BrainError(401, "unauthorised"); },
+        async list() { throw new BrainError(401, "unauthorized"); },
       },
     };
     renderAt("/", client);

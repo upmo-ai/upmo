@@ -526,7 +526,7 @@ func TestAppCannotWriteRolesDirectly(t *testing.T) {
 	}
 }
 
-func TestRoleFunctionsRefuseUnprovenOrUnauthorised(t *testing.T) {
+func TestRoleFunctionsRefuseUnprovenOrUnauthorized(t *testing.T) {
 	w := upRoleWorld(t)
 	spare := w.seedCustomRole(t, "Spare", []string{"task:view", "task:edit"})
 

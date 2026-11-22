@@ -21,7 +21,7 @@ import (
 // Path=/ and no Domain.
 const CookieName = "__Host-upmo_session"
 
-const unauthorised = `{"error":"unauthorised"}` + "\n"
+const unauthorized = `{"error":"unauthorized"}` + "\n"
 
 // Handler is the session endpoints.
 type Handler struct {
@@ -237,7 +237,7 @@ func (h Handler) log(err error) {
 func refuse(w http.ResponseWriter, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(unauthorised))
+	_, _ = w.Write([]byte(unauthorized))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

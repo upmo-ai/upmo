@@ -129,16 +129,16 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (Access, bool) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if h.Access == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return Access{}, false
 	}
 	access, ok := h.Access(r)
 	if !ok || access.UserID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorised")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return Access{}, false
 	}
 	if access.Allow == "" {
-		writeError(w, http.StatusForbidden, "unauthorised")
+		writeError(w, http.StatusForbidden, "unauthorized")
 		return Access{}, false
 	}
 	return access, true
@@ -150,7 +150,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 	}
 	switch {
 	case errors.Is(err, ErrArtifact):
-		writeError(w, http.StatusForbidden, "unauthorised")
+		writeError(w, http.StatusForbidden, "unauthorized")
 	case errors.Is(err, ErrGone), errors.Is(err, ErrNoBlob), errors.Is(err, ErrBlob):
 		writeError(w, http.StatusNotFound, "no such artifact")
 	case errors.Is(err, ErrTooLarge):

@@ -246,7 +246,7 @@ func TestSignOutSealsOneChainedEvent(t *testing.T) {
 	}
 }
 
-func TestUnauthorisedSignOutRecordsDenied(t *testing.T) {
+func TestUnauthorizedSignOutRecordsDenied(t *testing.T) {
 	owner, app := setup(t)
 	served, _, _ := signOutServer(t, owner, app)
 

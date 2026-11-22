@@ -51,16 +51,16 @@ func AdmitRange(start, end int) error {
 	return nil
 }
 
-// Seen reports whether hash is among known. It compares normalised digests,
+// Seen reports whether hash is among known. It compares normalized digests,
 // refuses a hash that is not 64 hexadecimal characters and skips any known
 // entry that is not one either.
 func Seen(hash string, known []string) (bool, error) {
-	hash, ok := normaliseHash(hash)
+	hash, ok := normalizeHash(hash)
 	if !ok {
 		return false, ErrFile
 	}
 	for _, entry := range known {
-		entry, ok := normaliseHash(entry)
+		entry, ok := normalizeHash(entry)
 		if ok && entry == hash {
 			return true, nil
 		}
@@ -68,8 +68,8 @@ func Seen(hash string, known []string) (bool, error) {
 	return false, nil
 }
 
-// normaliseHash trims and lowercases a digest and reports whether it is 64 hexadecimal characters.
-func normaliseHash(hash string) (string, bool) {
+// normalizeHash trims and lowercases a digest and reports whether it is 64 hexadecimal characters.
+func normalizeHash(hash string) (string, bool) {
 	hash = strings.ToLower(strings.TrimSpace(hash))
 	if len(hash) != hashLength {
 		return "", false

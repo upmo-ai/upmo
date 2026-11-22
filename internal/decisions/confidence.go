@@ -9,14 +9,14 @@ import (
 // RouteConfidence is the decide route that checks whether child outputs are sound.
 const RouteConfidence = "result-confidence"
 
-// Output is one child output labelled with whether it is sound.
+// Output is one child output labeled with whether it is sound.
 type Output struct {
 	Summary string
 	Detail  string
 	Yes     bool
 }
 
-// Confidence accepts a result-confidence config when its labelled precision meets the bar.
+// Confidence accepts a result-confidence config when its labeled precision meets the bar.
 func Confidence(ctx context.Context, book Gates, access Access, hops []Hop, bar int, outputs []Output, run Runner) error {
 	if len(outputs) == 0 {
 		return ErrConfig

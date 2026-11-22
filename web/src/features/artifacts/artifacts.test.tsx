@@ -283,7 +283,7 @@ describe("task artifacts", () => {
     expect(frame.getAttribute("sandbox") ?? "").not.toMatch(/allow-/);
     expect(frame.getAttribute("srcdoc")).toContain("<h1>Finance digest</h1>");
     // The file's markup stays inside the frame, not in the page. That a sandboxed
-    // script does not run is a browser behaviour, which e2e/artifacts.mjs checks.
+    // script does not run is a browser behavior, which e2e/artifacts.mjs checks.
     expect(screen.queryByRole("heading", { name: "Finance digest" })).toBeNull();
     expect(view.querySelector("script")).toBeNull();
   });

@@ -83,7 +83,7 @@ func (a *limitAdapter) ChatStream(_ context.Context, attempt app.Attempt, _ doma
 		return domain.Usage{}, a.fail, fmt.Errorf("limit test: %s", a.fail)
 	}
 	if err := emit("from " + attempt.Model); err != nil {
-		return domain.Usage{}, domain.ClassCancelled, err
+		return domain.Usage{}, domain.ClassCanceled, err
 	}
 	return a.currentUsage(), domain.ClassOK, nil
 }
@@ -785,7 +785,7 @@ func TestFeature_UPM355_NonChargedCallsSkipLimitsAndCounters(t *testing.T) {
 	}
 }
 
-func TestFeature_UPM355_CancelledCallSettlesAndClearsHold(t *testing.T) {
+func TestFeature_UPM355_CanceledCallSettlesAndClearsHold(t *testing.T) {
 	w := newPinWorld(t, nil)
 	ctx := context.Background()
 	store := postgres.Store{Pool: w.pool}

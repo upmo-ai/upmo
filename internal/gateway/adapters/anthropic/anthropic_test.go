@@ -707,12 +707,12 @@ func TestChatStreamStopsWhenEmitFails(t *testing.T) {
 	rec := newRecorder(t, streamReply(fixture(t, "stream_text.sse")))
 	a := Adapter{Client: rec.srv.Client()}
 	_, class, err := a.ChatStream(context.Background(), attemptFor(rec), hi(), func(string) error { return gone })
-	if !errors.Is(err, gone) || class != domain.ClassCancelled {
+	if !errors.Is(err, gone) || class != domain.ClassCanceled {
 		t.Fatalf("class=%s err=%v", class, err)
 	}
 }
 
-func TestChatStreamStopsOnCancelledContext(t *testing.T) {
+func TestChatStreamStopsOnCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -737,12 +737,12 @@ func TestChatStreamStopsOnCancelledContext(t *testing.T) {
 	}
 }
 
-func TestReadStreamEndedWhileCancelledIsCancelled(t *testing.T) {
+func TestReadStreamEndedWhileCanceledIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	body := strings.NewReader("event: ping\ndata: {\"type\":\"ping\"}\n\n")
 	_, class, err := readStream(ctx, body, func(string) error { return nil })
-	if err == nil || class != domain.ClassCancelled {
+	if err == nil || class != domain.ClassCanceled {
 		t.Fatalf("class=%s err=%v", class, err)
 	}
 }

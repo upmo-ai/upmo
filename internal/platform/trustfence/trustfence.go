@@ -3,7 +3,7 @@
 //
 // Closer and control-sequence matching folds the fullwidth forms ＜ ＞ ／ to
 // ASCII and ignores the zero-width joiner and variation selectors, so a
-// lookalike or a split token is still recognised.
+// lookalike or a split token is still recognized.
 package trustfence
 
 import (
@@ -35,7 +35,7 @@ var escapes = [][2]string{
 	{"\uFF0F", "&#xFF0F;"},
 }
 
-// Wrap returns body escaped and fenced in tag, labelled with source. It
+// Wrap returns body escaped and fenced in tag, labeled with source. It
 // panics on an unknown tag or a source that does not match ^[a-z0-9_.-]+$.
 func Wrap(tag, source, body string) string {
 	mustTag(tag)
