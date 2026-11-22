@@ -1,36 +1,60 @@
 # Contributing
 
-Thanks for helping. This file covers how to work on the repository and what a pull request needs.
+Read this file before you open an issue or a pull request.
 
-## Before you start
+## Report a bug or request a feature
 
-- Sign the [Contributor License Agreement](CLA.md). CLA Assistant asks you once, on your first pull request. You keep the copyright in your work; the agreement lets the maintainer ship it under the AGPL and in the hosted Upmo service.
-- Read the [Code of Conduct](CODE_OF_CONDUCT.md).
+Use the [GitHub issue tracker](https://github.com/upmo-ai/upmo/issues). Check for an existing issue first.
 
-## Development runs in Docker
+Include:
 
-Do not install Node, Go or pnpm on your machine for this repository. Every `make` target wraps Docker Compose, so the toolchain lives in the containers.
+- the steps to reproduce the problem
+- the commit or version
+- your environment
 
-```sh
-make build    # build the Go module and the web app
-make up       # start the stack
-make test     # run the tests
-make lint     # run the linters
-make ci       # run the same checks as CI
-```
+## Open a pull request
 
-Run `make ci` before you open a pull request. CI runs the same checks.
+1. Sign the [Contributor License Agreement](CLA.md). CLA Assistant asks you once, on your first pull request. You keep the copyright in your work. The agreement lets the maintainer ship it under the AGPL and in the hosted Upmo service.
+2. For a big change, open an issue first and agree on the plan.
+3. Fork the repository and make your change.
+4. Run `make ci`. CI runs the same checks. See [docs/development.md](docs/development.md) for setup.
+5. Open the pull request and watch CI.
 
-## Tasks
-
-Internal changes reference their task ID (`UPM-n`) in the pull request. As an outside contributor, open an issue first and reference that issue instead.
+Internal changes reference their task ID (`UPM-n`) in the pull request. As an outside contributor, reference your issue instead.
 
 ## Commits
 
-- Use [Conventional Commits](https://www.conventionalcommits.org): `<type>[optional scope]: <description>`, with types `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `build`, `ci`, `revert`. Subject in lower case, 72 characters at most, no trailing period. The body says why.
-- The CLA covers your rights in the contribution, so a `Signed-off-by` line is not needed.
-- Do not add per-file licence headers. `LICENSE`, the licence section of the README and the `license` field of `web/package.json` carry the notice.
+- Use [Conventional Commits](https://www.conventionalcommits.org): `<type>[optional scope]: <description>`. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `build`, `ci`, `revert`.
+- Write the subject in lower case. Keep it to 72 characters. Do not end it with a period. The body says why.
+- Do not add a `Signed-off-by` line. The CLA already covers your rights.
+- Do not add a license header to each file. `LICENSE`, the license section of the README and the `license` field of `web/package.json` carry the notice.
 
 ## Writing style
 
-Write plain, direct sentences. Use sentence case for headings. Use no em dashes and no emoji. Use one word for one concept, following the glossary in the design system: [design.upmo.dev](https://design.upmo.dev). The `repolint terms` check fails the build on a retired word, and the fix is to reword, not to skip the file.
+Our readers often read English as a second language. Write for them.
+
+- Use short sentences. One idea each.
+- Say the point first, then the reason.
+- Use common words. Write "use", not "utilize".
+- Give an example instead of an adjective.
+- Do not use idioms or metaphors.
+- Do not use em dashes or emoji.
+- Write numbers as digits. Write dates like 11 September 2026.
+- Use US spelling.
+- Use sentence case for headings.
+
+Use one word for one concept. Follow the glossary in the design system: [design.upmo.dev](https://design.upmo.dev).
+
+The `repolint terms` check fails the build on a retired word. Fix it by rewording. Do not skip the file.
+
+## Code of Conduct
+
+Read the [Code of Conduct](CODE_OF_CONDUCT.md). It applies to all project spaces.
+
+## Report a security issue
+
+Do not open a public issue, pull request or discussion. Email **security@upmo.ai**. See [SECURITY.md](SECURITY.md).
+
+## License
+
+Code and documentation are under the [GNU Affero General Public License v3.0](LICENSE). See [Open a pull request](#open-a-pull-request) for the CLA.

@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 on:
   push:
@@ -16,60 +16,70 @@ concurrency:
 
 jobs:
   go:
+    name: Go Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make build test
 
   go-integration:
+    name: Go Integration Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make test-integration
 
   regression:
+    name: Regression Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make test-regression
 
   canary:
+    name: Canary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make canary
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make lint
 
   arch:
+    name: Architecture Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make arch
 
   web:
+    name: Web Checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make web
 
   e2e:
+    name: End-to-End Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make e2e
 
   vuln:
+    name: Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make vuln
 
   secrets:
+    name: Secret Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,6 +88,7 @@ jobs:
       - run: make secrets
 
   commits:
+    name: Commit Messages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,18 +103,21 @@ jobs:
         run: make commits COMMITS_RANGE=origin/main..HEAD
 
   docs:
+    name: Docs Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make docs
 
   fuzz:
+    name: Fuzz Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make fuzz
 
   codeql:
+    name: CodeQL Scan (${{ matrix.language }})
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     permissions:
@@ -124,6 +138,7 @@ jobs:
           category: /language:${{ matrix.language }}
 
   ci-ok:
+    name: CI Result
     runs-on: ubuntu-latest
     if: always()
     needs:

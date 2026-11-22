@@ -16,7 +16,7 @@ Once the repository is public, you can also use GitHub private vulnerability rep
 
 - We acknowledge your report within 3 working days.
 - We confirm or reject the problem and tell you our plan within 10 working days.
-- We fix confirmed problems and publish an advisory. We aim to disclose within 90 days of your report, sooner when a fix ships earlier, and we agree the date with you.
+- We fix confirmed problems and publish an advisory. We aim to disclose within 90 days of your report. If a fix ships earlier, we disclose earlier. We agree on the date with you.
 - We credit you in the advisory unless you ask us not to.
 
 ## Supported versions
@@ -33,12 +33,20 @@ This table changes when the first release ships.
 
 In scope: the code in this repository, the web build and the scripts in this repository.
 
-Out of scope: problems in a dependency that do not depend on how Upmo uses it (report those upstream), and findings that need a compromised host or administrator access to begin with.
+Out of scope:
+
+- problems in a dependency that do not depend on how Upmo uses it (report those upstream)
+- findings that need a compromised host or administrator access to begin with
 
 ## Running Upmo securely
 
-Operational hardening — volume encryption, backup encryption and key handling — is covered in [docs/operations/data-at-rest.md](docs/operations/data-at-rest.md).
+How Upmo protects data is in [docs/security.md](docs/security.md). Volume encryption, backup encryption and key handling are in [docs/operations/data-at-rest.md](docs/operations/data-at-rest.md).
 
-## Safe harbour
+## Safe harbor
 
-We will not take legal action against research done in good faith under this policy: you avoid harm to users and their data, stop testing once you have proof, do not access more data than you need, and give us a reasonable time to fix the problem before you disclose it.
+We will not take legal action against good-faith research under this policy. In return, we ask you to:
+
+- avoid harm to users and their data
+- stop testing once you have proof
+- not access more data than you need
+- give us enough time to fix the problem before you disclose it

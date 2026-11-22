@@ -5,6 +5,8 @@ exclude = [
   # Badge images depend on external services, not on this repository.
   'badge\.svg$',
   'goreportcard\.com',
+  # The self-host site is not live yet.
+  '^https://upmo\.dev/?$',
   # Links back into this repository cannot be checked while it is private.
   '^https://github\.com/upmo-ai/',
 ]
