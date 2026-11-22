@@ -34,7 +34,7 @@ Name each GitHub workflow, job and step in words, in title case. Examples: `CI`,
 
 Every pull request and every push to `main` runs the `CI` workflow. The `CI Result` job lists every other job and fails when one fails or is canceled. It is the only check the `main` ruleset requires, so a new job must be added to its `needs` list.
 
-Each job writes a summary on the run page, pass or fail: test counts, the names of failed tests, coverage and, on failure, the last lines of its output. `repolint summary` builds it from the reports in `reports/`.
+Each job writes a summary on the run page, pass or fail. Jobs that run tests with a report add test counts, the names of failed tests and coverage. A failed job adds the last lines of its output. `repolint summary` builds it from the reports in `reports/`.
 
 - **Coverage.** Go unit tests, Go integration tests and the web tests write coverage. Codecov receives it under the flags `go-unit`, `go-integration` and `web`. A Codecov outage never fails a job. Pull requests from forks upload without a token.
 - **Security.** Vulnerability Scan (govulncheck, osv-scanner), Secret Scan (gitleaks), Dependency Review (pull requests only, fails on high severity and on GPL-2.0-only, SSPL-1.0 and BUSL-1.1), Workflow Security (actionlint, zizmor) and Container Images (hadolint, then Trivy on the built images, failing on high or critical findings that have a fix). GitHub's default setup runs CodeQL. The `Scorecard` workflow runs OpenSSF Scorecard on `main` and weekly.

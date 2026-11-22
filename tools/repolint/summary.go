@@ -64,6 +64,10 @@ func statusWord(status string) string {
 }
 
 func writeReport(w io.Writer, path string, passed bool) {
+	// A passing job's log is never shown, so it is not read.
+	if passed && filepath.Ext(path) == ".log" {
+		return
+	}
 	data, err := os.ReadFile(filepath.Clean(path))
 	if errors.Is(err, fs.ErrNotExist) {
 		printf(w, "- `%s`: not found, the job stopped before writing it.\n", path)
