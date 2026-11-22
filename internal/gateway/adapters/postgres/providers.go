@@ -1083,10 +1083,12 @@ func (s Store) SealedCredential(ctx context.Context, ref string) (domain.Sealed,
 // costs a write a minute; the wait is kept in the row itself, so an edit that
 // resets the account clears it at once and the next outcome is heard even
 // when it repeats the last one. It is best-effort and called off the calling
-// path.
+// path. It leaves updated_at alone: updated_at marks an edit, and a status
+// write that moved it dropped the outcome of every call already running, so
+// a fallback that answered left the account Rate limited.
 func (s Store) RecordStatus(ctx context.Context, ref, status string, started time.Time) error {
 	_, err := s.Pool.Exec(ctx, `
-		UPDATE gateway.provider_accounts SET status = $2, checked_at = now(), updated_at = now()
+		UPDATE gateway.provider_accounts SET status = $2, checked_at = now()
 		WHERE credential_ref = $1 AND updated_at <= $3
 			AND (status IS DISTINCT FROM $2 OR checked_at IS NULL OR checked_at <= now() - interval '1 minute')`,
 		ref, status, started)
