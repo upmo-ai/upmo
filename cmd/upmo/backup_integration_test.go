@@ -36,6 +36,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/backup"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
+	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
@@ -48,6 +49,165 @@ func poolURL(t *testing.T, pool *pgxpool.Pool) string {
 	}
 	u.Path = "/" + pool.Config().ConnConfig.Database
 	return u.String()
+}
+
+func mustBackupKeyring(t *testing.T) backup.Keyring {
+	t.Helper()
+	ring, err := loadBackupKeyring()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ring
+}
+
+func TestBackupOptionalOutAndReservation(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, 32)))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	ctx := context.Background()
+	owner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, owner))
+	// Exercise the parser's default parameter without writing to /var/upmo.
+	artDir, err := config.DirFromEnv("", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowDir, err := config.DirFromEnv(" \t", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_ARTIFACTS_DIR", artDir)
+	t.Setenv("UPMO_KNOWLEDGE_DIR", knowDir)
+	for _, dir := range []string{artDir, knowDir} {
+		if err := os.WriteFile(filepath.Join(dir, "saved.txt"), []byte("volume bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"unset", nil},
+		{"blank", []string{"--out", " \t"}},
+		{"explicit", []string{"--out", "chosen.tar.gz"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			before := time.Now().UTC().Truncate(time.Second)
+			var out bytes.Buffer
+			if err := backupCommand(tc.args, &out); err != nil {
+				t.Fatal(err)
+			}
+			after := time.Now().UTC().Truncate(time.Second)
+			entries, err := os.ReadDir(".")
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("output entries = %v, %v", entries, err)
+			}
+			path := entries[0].Name()
+			if tc.name == "explicit" {
+				if path != "chosen.tar.gz" {
+					t.Fatalf("explicit path = %q", path)
+				}
+			} else {
+				stamp := strings.TrimSuffix(strings.TrimPrefix(path, "upmo-backup-"), ".tar.gz")
+				created, err := time.Parse("20060102T150405Z", stamp)
+				if err != nil || created.Before(before) || created.After(after) || path != "upmo-backup-"+stamp+".tar.gz" {
+					t.Fatalf("default path = %q, timestamp = %v, err = %v", path, created, err)
+				}
+			}
+			if !strings.Contains(out.String(), "backup complete: "+path+" (") || !strings.Contains(out.String(), "2 volume files,") {
+				t.Fatalf("success output = %q", out.String())
+			}
+			original, err := os.ReadFile(path) //nolint:gosec // test temp path
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("archive permissions: %v %v", info, err)
+			}
+			// A repeated timestamp path must fail before even querying Postgres.
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, err := backup.Backup(cancelled, owner, backup.BackupOptions{OutPath: path, NoEncrypt: true}); !errors.Is(err, os.ErrExist) {
+				t.Fatalf("existing archive: %v", err)
+			}
+			if err := backupCommand([]string{"--out", path}, io.Discard); !errors.Is(err, os.ErrExist) {
+				t.Fatalf("explicit collision: %v", err)
+			}
+			if tc.name != "explicit" {
+				// Cover the next minute so the collision check does not depend on test speed.
+				now := time.Now().UTC()
+				for i := 0; i < 60; i++ {
+					candidate := "upmo-backup-" + now.Add(time.Duration(i)*time.Second).Format("20060102T150405Z") + ".tar.gz"
+					if candidate != path {
+						if err := os.WriteFile(candidate, original, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if err := backupCommand(tc.args, io.Discard); !errors.Is(err, os.ErrExist) {
+					t.Fatalf("default timestamp collision: %v", err)
+				}
+			}
+			got, err := os.ReadFile(path) //nolint:gosec // test temp path
+			if err != nil || !bytes.Equal(got, original) {
+				t.Fatalf("first archive changed: %v", err)
+			}
+		})
+	}
+	// Explicit missing dirs still fail, and any failed backup removes its reservation.
+	t.Setenv("UPMO_ARTIFACTS_DIR", filepath.Join(t.TempDir(), "missing"))
+	failedPath := filepath.Join(t.TempDir(), "failed.tar.gz")
+	if err := backupCommand([]string{"--out", failedPath}, io.Discard); err == nil {
+		t.Fatal("accepted missing explicit volume")
+	}
+	if _, err := os.Stat(failedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed backup left output reservation: %v", err)
+	}
+}
+
+func TestBackupMissingDefaultVolumesAndRestoreDefaults(t *testing.T) {
+	for _, dir := range []string{config.DefaultArtifactsDir, config.DefaultKnowledgeDir} {
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Skip("requires absent default volume directories")
+		}
+	}
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_ARTIFACTS_DIR", "")
+	if err := os.Unsetenv("UPMO_ARTIFACTS_DIR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_KNOWLEDGE_DIR", " \t")
+	if err := os.Unsetenv("UPMO_KNOWLEDGE_DIR"); err != nil {
+		t.Fatal(err)
+	}
+	owner := pgtest.New(t)
+	if err := brainops.MigrateAll(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, owner))
+	env, err := loadBackupEnv(true)
+	if err != nil || env.artifactsDir != "" || env.knowledgeDir != "" {
+		t.Fatalf("backup defaults = %+v, %v", env, err)
+	}
+	t.Chdir(t.TempDir())
+	var out bytes.Buffer
+	if err := backupCommand(nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "0 volume files,") {
+		t.Fatalf("volumes not omitted: %q", out.String())
+	}
+	env, err = loadBackupEnv(false)
+	if err != nil || env.artifactsDir != "/var/upmo/artifacts" || env.knowledgeDir != "/var/upmo/knowledge" {
+		t.Fatalf("restore defaults = %+v, %v", env, err)
+	}
 }
 
 func TestBackupRestoreFullRoundTrip(t *testing.T) {
@@ -521,8 +681,8 @@ func TestBackupRestoreVersion1ArchiveToEmptyTarget(t *testing.T) {
 	}
 
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
-	t.Setenv("UPMO_ARTIFACTS_DIR", "")
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	archivePath := filepath.Join(t.TempDir(), "v1-backup.tar.gz")
 	var out bytes.Buffer
@@ -1026,8 +1186,8 @@ func TestRestoreRejectsTamperedAndFutureManifestBeforeMutation(t *testing.T) {
 	t.Setenv(gateway.EnvMasterKey, key1B64)
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
-	t.Setenv("UPMO_ARTIFACTS_DIR", "")
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	encArchive := filepath.Join(t.TempDir(), "enc.tar.gz")
 	var out bytes.Buffer
@@ -1154,7 +1314,7 @@ func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	badArchive := filepath.Join(t.TempDir(), "corrupt-audit.tar.gz")
 	var out bytes.Buffer
@@ -1178,7 +1338,7 @@ func TestRestoreCatchesCorruptAuditChainInTxBeforeCommit(t *testing.T) {
 	}
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, liveOwner))
 	t.Setenv("UPMO_ARTIFACTS_DIR", liveArt)
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	var sink bytes.Buffer
 	err := restoreCommand([]string{"--in", badArchive}, &sink)
@@ -1221,8 +1381,8 @@ func TestRestoreOntoPopulatedDifferentHeadTargetStagingAndDrop(t *testing.T) {
 	t.Setenv(gateway.EnvMasterKey, key1B64)
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
-	t.Setenv("UPMO_ARTIFACTS_DIR", "")
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	archivePath := filepath.Join(t.TempDir(), "case-c.tar.gz")
 	var out bytes.Buffer
@@ -1292,8 +1452,8 @@ func TestBackupRestoreRejectsNonBypassRLSRole(t *testing.T) {
 	key1B64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x51}, 32))
 	t.Setenv(gateway.EnvMasterKey, key1B64)
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
-	t.Setenv("UPMO_ARTIFACTS_DIR", "")
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	// First create a valid archive as owner.
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, owner))
@@ -1327,13 +1487,12 @@ func TestRestore_UPM375_ArchiveWithoutVolumeLeavesLiveVolumeUnchanged(t *testing
 	t.Setenv(gateway.EnvMasterKey, key1B64)
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
-	t.Setenv("UPMO_ARTIFACTS_DIR", "")
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
-	// Given: an archive taken while both volume dirs were empty, so it holds no volume entries.
+	// Given: an archive taken without configured volume dirs, so it holds no volume entries.
 	emptyVolArchive := filepath.Join(t.TempDir(), "empty-volumes.tar.gz")
-	var backupOut bytes.Buffer
-	if err := backupCommand([]string{"--out", emptyVolArchive}, &backupOut); err != nil {
+	if _, err := backup.Backup(ctx, srcOwner, backup.BackupOptions{OutPath: emptyVolArchive, Keyring: mustBackupKeyring(t)}); err != nil {
 		t.Fatalf("backupCommand(empty volumes): %v", err)
 	}
 
@@ -1378,10 +1537,9 @@ func TestRestore_UPM375_ArchiveWithoutVolumeLeavesLiveVolumeUnchanged(t *testing
 	}
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
 	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 	mixedArchive := filepath.Join(t.TempDir(), "mixed.tar.gz")
-	var mixedBackupOut bytes.Buffer
-	if err := backupCommand([]string{"--out", mixedArchive}, &mixedBackupOut); err != nil {
+	if _, err := backup.Backup(ctx, srcOwner, backup.BackupOptions{OutPath: mixedArchive, ArtifactsDir: srcArt, Keyring: mustBackupKeyring(t)}); err != nil {
 		t.Fatalf("backupCommand(mixed): %v", err)
 	}
 
@@ -1435,11 +1593,9 @@ func TestRestore_UPM377_EmptyConfiguredVolumeRestoresAsEmpty(t *testing.T) {
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
 	// Given: a backup taken with a configured but empty artifacts dir and no knowledge dir.
-	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	srcArt := t.TempDir()
 	archive := filepath.Join(t.TempDir(), "empty-artifacts.tar.gz")
-	var backupOut bytes.Buffer
-	if err := backupCommand([]string{"--out", archive}, &backupOut); err != nil {
+	if _, err := backup.Backup(ctx, srcOwner, backup.BackupOptions{OutPath: archive, ArtifactsDir: srcArt, Keyring: mustBackupKeyring(t)}); err != nil {
 		t.Fatalf("backupCommand: %v", err)
 	}
 
@@ -1756,7 +1912,7 @@ func TestRestore_UPM375_LiveFailureOnEmptyTargetReturnsItToEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("UPMO_ARTIFACTS_DIR", srcArt)
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	archivePath := filepath.Join(t.TempDir(), "upm375-empty-target.tar.gz")
 	var backupOut bytes.Buffer
@@ -1845,8 +2001,8 @@ func TestRestore_UPM375_CaseCFailureLeavesLiveDatabaseUntouched(t *testing.T) {
 	t.Setenv(gateway.EnvMasterKey, key1B64)
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
-	t.Setenv("UPMO_ARTIFACTS_DIR", "")
-	t.Setenv("UPMO_KNOWLEDGE_DIR", "")
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
 
 	archivePath := filepath.Join(t.TempDir(), "upm375-case-c.tar.gz")
 	var backupOut bytes.Buffer

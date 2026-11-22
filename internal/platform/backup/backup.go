@@ -88,6 +88,22 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, opts BackupOptions) (Backup
 	if encrypt && opts.Passphrase == "" && (opts.Keyring == nil || !opts.Keyring.Ready()) {
 		return BackupResult{}, errors.New("backup: encryption requires UPMO_MASTER_KEY, --passphrase-env, or --no-encrypt")
 	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o750); err != nil {
+		return BackupResult{}, fmt.Errorf("backup: create output directory: %w", err)
+	}
+	reserved, err := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // caller-selected output path
+	if err != nil {
+		return BackupResult{}, fmt.Errorf("backup: reserve output archive: %w", err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.Remove(outPath)
+		}
+	}()
+	if err := reserved.Close(); err != nil {
+		return BackupResult{}, fmt.Errorf("backup: close output reservation: %w", err)
+	}
 	if err := checkPrivileges(ctx, pool); err != nil {
 		return BackupResult{}, err
 	}
@@ -171,6 +187,7 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, opts BackupOptions) (Backup
 	if err := writeOuterArchiveAtomic(outPath, manifestBytes, payloadEntryName, payloadSrcPath, payloadSize); err != nil {
 		return BackupResult{}, err
 	}
+	complete = true
 	return BackupResult{
 		OutPath:        outPath,
 		MasterKeyID:    masterKeyID,
@@ -412,6 +429,7 @@ func hashFile(filePath string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// Backup reserves outPath before dumping; the rename replaces that reservation.
 func writeOuterArchiveAtomic(outPath string, manifestBytes []byte, payloadName, payloadPath string, payloadSize int64) error {
 	parent := filepath.Dir(outPath)
 	if err := os.MkdirAll(parent, 0o750); err != nil {

@@ -488,6 +488,16 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	if err := config.CheckConfig(internal, true, os.LookupEnv, os.Environ()); err != nil {
 		return nil, err
 	}
+	if cfg.ArtifactsDir != "" {
+		if err := os.MkdirAll(cfg.ArtifactsDir, 0o700); err != nil {
+			return nil, fmt.Errorf("brain: create artifacts directory: %w", err)
+		}
+	}
+	if cfg.KnowledgeDir != "" {
+		if err := os.MkdirAll(cfg.KnowledgeDir, 0o700); err != nil {
+			return nil, fmt.Errorf("brain: create knowledge directory: %w", err)
+		}
+	}
 
 	var o options
 	for _, opt := range opts {

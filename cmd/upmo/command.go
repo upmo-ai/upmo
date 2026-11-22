@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -233,7 +234,7 @@ type backupEnv struct {
 	knowledgeDir string
 }
 
-func loadBackupEnv() (backupEnv, error) {
+func loadBackupEnv(forBackup bool) (backupEnv, error) {
 	dbURL := strings.TrimSpace(os.Getenv("UPMO_DATABASE_URL"))
 	if dbURL == "" {
 		return backupEnv{}, errors.New("config: UPMO_DATABASE_URL is required")
@@ -244,13 +245,25 @@ func loadBackupEnv() (backupEnv, error) {
 	if err := checkEnvGuard(dbURL); err != nil {
 		return backupEnv{}, err
 	}
-	artDir := strings.TrimSpace(os.Getenv("UPMO_ARTIFACTS_DIR"))
-	if artDir != "" && (strings.ContainsAny(artDir, "\x00") || !strings.HasPrefix(artDir, "/")) {
-		return backupEnv{}, errors.New("config: UPMO_ARTIFACTS_DIR must be an absolute path")
+	artDir, err := config.DirFromEnv(os.Getenv("UPMO_ARTIFACTS_DIR"), config.DefaultArtifactsDir)
+	if err != nil {
+		return backupEnv{}, fmt.Errorf("config: UPMO_ARTIFACTS_DIR %w", err)
 	}
-	knowDir := strings.TrimSpace(os.Getenv("UPMO_KNOWLEDGE_DIR"))
-	if knowDir != "" && (strings.ContainsAny(knowDir, "\x00") || !strings.HasPrefix(knowDir, "/")) {
-		return backupEnv{}, errors.New("config: UPMO_KNOWLEDGE_DIR must be an absolute path")
+	knowDir, err := config.DirFromEnv(os.Getenv("UPMO_KNOWLEDGE_DIR"), config.DefaultKnowledgeDir)
+	if err != nil {
+		return backupEnv{}, fmt.Errorf("config: UPMO_KNOWLEDGE_DIR %w", err)
+	}
+	if forBackup {
+		if strings.TrimSpace(os.Getenv("UPMO_ARTIFACTS_DIR")) == "" {
+			if _, err := os.Stat(config.DefaultArtifactsDir); errors.Is(err, os.ErrNotExist) {
+				artDir = ""
+			}
+		}
+		if strings.TrimSpace(os.Getenv("UPMO_KNOWLEDGE_DIR")) == "" {
+			if _, err := os.Stat(config.DefaultKnowledgeDir); errors.Is(err, os.ErrNotExist) {
+				knowDir = ""
+			}
+		}
 	}
 	return backupEnv{
 		databaseURL:  dbURL,
@@ -341,8 +354,9 @@ func backupCommand(args []string, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	*outPath = strings.TrimSpace(*outPath)
 	if *outPath == "" {
-		return errors.New("brain: backup requires --out")
+		*outPath = "upmo-backup-" + time.Now().UTC().Format("20060102T150405Z") + ".tar.gz"
 	}
 	if *noEncrypt {
 		// Checked before the env guard and before any pool or keyring opens, so
@@ -355,7 +369,7 @@ func backupCommand(args []string, stdout io.Writer) error {
 			return errors.New("brain: backup --no-encrypt is refused when UPMO_ENV=production")
 		}
 	}
-	env, err := loadBackupEnv()
+	env, err := loadBackupEnv(true)
 	if err != nil {
 		return err
 	}
@@ -402,7 +416,7 @@ func restoreCommand(args []string, stdout io.Writer) error {
 	if *inPath == "" {
 		return errors.New("brain: restore requires --in")
 	}
-	env, err := loadBackupEnv()
+	env, err := loadBackupEnv(false)
 	if err != nil {
 		return err
 	}

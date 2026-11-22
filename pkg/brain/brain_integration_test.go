@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -25,6 +27,72 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
+
+func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
+	ctx := context.Background()
+	owner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	appPool := pgtest.App(t, owner)
+	root := t.TempDir()
+	cfg := Config{
+		Env:          "development",
+		PublicURL:    "http://localhost:5173",
+		WebAuthnRPID: "localhost",
+		ArtifactsDir: filepath.Join(root, "artifacts"),
+		KnowledgeDir: filepath.Join(root, "knowledge"),
+	}
+	for start := 0; start < 2; start++ {
+		app, err := New(ctx, cfg,
+			WithPools(owner, appPool),
+			WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		)
+		if err != nil {
+			t.Fatalf("start %d: %v", start, err)
+		}
+		app.Close()
+		for _, dir := range []string{cfg.ArtifactsDir, cfg.KnowledgeDir} {
+			info, err := os.Stat(dir)
+			wantMode := os.FileMode(0o700)
+			if start == 1 {
+				wantMode = 0o750
+			}
+			if err != nil || !info.IsDir() || info.Mode().Perm() != wantMode {
+				t.Fatalf("start %d directory %s = %v, %v; want mode %o", start, dir, info, err, wantMode)
+			}
+			if start == 0 {
+				if err := os.Chmod(dir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
+func TestBrainNewVolumeDirFailureBeforePools(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, volume := range []string{"artifacts", "knowledge"} {
+		cfg := Config{Env: "development", PublicURL: "http://localhost:5173"}
+		if volume == "artifacts" {
+			cfg.ArtifactsDir = filepath.Join(file, "child")
+		} else {
+			cfg.KnowledgeDir = filepath.Join(file, "child")
+		}
+		app, err := New(context.Background(), cfg)
+		if app != nil {
+			app.Close()
+		}
+		if err == nil || !strings.Contains(err.Error(), "brain: create "+volume+" directory:") {
+			t.Fatalf("%s: expected directory error before opening pools, got %v", volume, err)
+		}
+	}
+}
 
 func TestBrainNewAndExtensionOptions(t *testing.T) {
 	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))

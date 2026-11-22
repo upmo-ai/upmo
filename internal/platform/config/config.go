@@ -2,17 +2,38 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	netmail "net/mail"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
+
+const (
+	// DefaultArtifactsDir is the artifact volume root when unset.
+	DefaultArtifactsDir = "/var/upmo/artifacts"
+	// DefaultKnowledgeDir is the knowledge volume root when unset.
+	DefaultKnowledgeDir = "/var/upmo/knowledge"
+)
+
+// DirFromEnv trims a directory environment value and uses def when it is empty.
+func DirFromEnv(name, def string) (string, error) {
+	dir := strings.TrimSpace(name)
+	if dir == "" {
+		dir = def
+	}
+	if strings.ContainsRune(dir, '\x00') || !filepath.IsAbs(dir) {
+		return "", errors.New("must be an absolute path without NUL")
+	}
+	return dir, nil
+}
 
 // Config holds the settings brain reads at start.
 type Config struct {
@@ -70,13 +91,13 @@ type Config struct {
 	// skips the sidecar and passes original text through.
 	MarkitdownURL string
 	// KnowledgeDir is the Compose volume root for original knowledge file bytes
-	// (UPMO_KNOWLEDGE_DIR). Empty refuses new file uploads that need storage.
+	// (UPMO_KNOWLEDGE_DIR). Defaults to DefaultKnowledgeDir.
 	KnowledgeDir string
 	// SandboxImage is the image a task sandbox starts from (UPMO_SANDBOX_IMAGE).
 	// Empty means the runtime default (upmo/sandbox:base).
 	SandboxImage string
 	// ArtifactsDir is the Compose volume root for artifact bytes (UPMO_ARTIFACTS_DIR).
-	// Empty refuses volume downloads until set.
+	// Defaults to DefaultArtifactsDir.
 	ArtifactsDir string
 	// AuditRetentionDays is how long sealed audit events are kept before their
 	// whole expired month is dropped (UPMO_AUDIT_RETENTION_DAYS). 365 by
@@ -339,19 +360,15 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.SandboxImage = v
 	}
-	if v, ok := lookup("UPMO_ARTIFACTS_DIR"); ok && strings.TrimSpace(v) != "" {
-		v = strings.TrimSpace(v)
-		if strings.ContainsAny(v, "\x00") || !strings.HasPrefix(v, "/") {
-			return Config{}, fmt.Errorf("config: UPMO_ARTIFACTS_DIR must be an absolute path")
-		}
-		cfg.ArtifactsDir = v
+	artDir, _ := lookup("UPMO_ARTIFACTS_DIR")
+	cfg.ArtifactsDir, err = DirFromEnv(artDir, DefaultArtifactsDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: UPMO_ARTIFACTS_DIR %w", err)
 	}
-	if v, ok := lookup("UPMO_KNOWLEDGE_DIR"); ok && strings.TrimSpace(v) != "" {
-		v = strings.TrimSpace(v)
-		if strings.ContainsAny(v, "\x00") || !strings.HasPrefix(v, "/") {
-			return Config{}, fmt.Errorf("config: UPMO_KNOWLEDGE_DIR must be an absolute path")
-		}
-		cfg.KnowledgeDir = v
+	knowDir, _ := lookup("UPMO_KNOWLEDGE_DIR")
+	cfg.KnowledgeDir, err = DirFromEnv(knowDir, DefaultKnowledgeDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: UPMO_KNOWLEDGE_DIR %w", err)
 	}
 	smtp, err := loadSMTP(lookup)
 	if err != nil {

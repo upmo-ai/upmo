@@ -46,6 +46,64 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MetricsAddr != "" {
 		t.Errorf("MetricsAddr = %q, want empty", cfg.MetricsAddr)
 	}
+	if cfg.ArtifactsDir != "/var/upmo/artifacts" || cfg.KnowledgeDir != "/var/upmo/knowledge" {
+		t.Fatalf("volume defaults = %q %q", cfg.ArtifactsDir, cfg.KnowledgeDir)
+	}
+}
+
+func TestDirFromEnv(t *testing.T) {
+	def := t.TempDir()
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{"", def},
+		{" \t\n", def},
+		{" /tmp/upmo-custom ", "/tmp/upmo-custom"},
+	} {
+		got, err := DirFromEnv(tc.value, def)
+		if err != nil || got != tc.want {
+			t.Errorf("DirFromEnv(%q) = %q, %v; want %q", tc.value, got, err, tc.want)
+		}
+	}
+	for _, value := range []string{"relative/path", "/tmp/bad\x00path"} {
+		if _, err := DirFromEnv(value, def); err == nil {
+			t.Errorf("accepted %q", value)
+		}
+	}
+}
+
+func TestLoadVolumeDirs(t *testing.T) {
+	for _, name := range []string{"UPMO_ARTIFACTS_DIR", "UPMO_KNOWLEDGE_DIR"} {
+		for _, value := range []string{"", " \t", " /tmp/custom-volume ", "relative", "/tmp/bad\x00path"} {
+			env := map[string]string{
+				"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+				"UPMO_PUBLIC_URL":   "http://localhost:5173",
+				name:                value,
+			}
+			cfg, err := load(lookupFrom(env))
+			if value == "relative" || strings.ContainsRune(value, '\x00') {
+				if err == nil || !strings.Contains(err.Error(), name) {
+					t.Errorf("%s=%q: error = %v", name, value, err)
+				}
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantArt, wantKnow := "/var/upmo/artifacts", "/var/upmo/knowledge"
+			if strings.TrimSpace(value) != "" {
+				if name == "UPMO_ARTIFACTS_DIR" {
+					wantArt = "/tmp/custom-volume"
+				} else {
+					wantKnow = "/tmp/custom-volume"
+				}
+			}
+			if cfg.ArtifactsDir != wantArt || cfg.KnowledgeDir != wantKnow {
+				t.Errorf("%s=%q: dirs = %q %q", name, value, cfg.ArtifactsDir, cfg.KnowledgeDir)
+			}
+		}
+	}
 }
 
 func TestLoadGatewayURL(t *testing.T) {
