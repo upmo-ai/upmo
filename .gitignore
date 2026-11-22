@@ -8,6 +8,7 @@
 *.test
 *.out
 coverage.txt
+/reports/
 
 # Node and web
 node_modules/

@@ -6,9 +6,10 @@
 //	repolint commits [-range base..head]
 //	repolint terms
 //	repolint public [-dir path]
+//	repolint summary -title name -status status [-file path]...
 //
 // Commands exit non-zero when a check fails. terms reads file paths on stdin,
-// one per line.
+// one per line. summary writes a Markdown job summary and exits 0.
 package main
 
 import (
@@ -31,7 +32,7 @@ func printf(w io.Writer, format string, args ...any) {
 // 0 for success, 1 for a failed check, 2 for a usage or runtime error.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printf(stderr, "usage: repolint commits [-range base..head] | repolint terms | repolint public [-dir path]\n")
+		printf(stderr, "usage: repolint commits [-range base..head] | repolint terms | repolint public [-dir path] | repolint summary -title name -status status [-file path]...\n")
 		return 2
 	}
 	switch args[0] {
@@ -41,6 +42,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runTerms(args[1:], stdin, stdout, stderr)
 	case "public":
 		return runPublic(args[1:], stdout, stderr)
+	case "summary":
+		return runSummary(args[1:], stdout, stderr)
 	default:
 		printf(stderr, "repolint: unknown command %q\n", args[0])
 		return 2

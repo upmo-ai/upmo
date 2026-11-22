@@ -53,5 +53,14 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
+    // JUnit and lcov feed the CI run summary and Codecov. They land in
+    // reports/ and web/coverage/, both ignored by git.
+    reporters: ["default", "junit"],
+    outputFile: { junit: "../reports/web.xml" },
+    coverage: {
+      provider: "v8",
+      reporter: ["lcov", "text-summary"],
+      reportsDirectory: "coverage",
+    },
   },
 });
