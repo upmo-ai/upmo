@@ -1,5 +1,15 @@
 name: upmo
 
+# Shared by every Go service. A service with its own environment merges this
+# in, because a YAML merge key replaces nested maps instead of merging them.
+x-go-env: &go-env
+  GOMODCACHE: /go/pkg/mod
+  GOCACHE: /root/.cache/go-build
+  GOTOOLCHAIN: local
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+
 x-go: &go
   image: golang:1.26.11-bookworm
   working_dir: /src
@@ -11,13 +21,7 @@ x-go: &go
     # common git directory when the checkout is a worktree; otherwise it is
     # the checkout's own .git.
     - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
-  environment:
-    GOMODCACHE: /go/pkg/mod
-    GOCACHE: /root/.cache/go-build
-    GOTOOLCHAIN: local
-    GIT_CONFIG_COUNT: "1"
-    GIT_CONFIG_KEY_0: safe.directory
-    GIT_CONFIG_VALUE_0: "*"
+  environment: *go-env
   networks:
     - dev
 
@@ -50,6 +54,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      <<: *go-env
       # The local stack runs with the development-only keys and passwords
       # embedded below, so it says so.
       UPMO_ENV: development
@@ -110,6 +115,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      <<: *go-env
       # The local stack runs with the development-only keys and passwords
       # embedded below, so it says so.
       UPMO_ENV: development
@@ -157,6 +163,7 @@ services:
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - ${UPMO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
     environment:
+      <<: *go-env
       # The local stack runs with the development-only service key embedded
       # below, so it says so.
       UPMO_ENV: development

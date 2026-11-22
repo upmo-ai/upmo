@@ -153,7 +153,7 @@ func TestBrainClientOverDocker(t *testing.T) {
 // the real sandboxd routes and the Docker driver: a task without a
 // repository reaches ready, and a task with one fails in the clone phase,
 // because a task sandbox's allow-list is empty and no egress proxy serves this test
-// (and the default image has no git).
+// (and the test image has no git).
 func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	host := os.Getenv("UPMO_TEST_DOCKER_HOST")
 	if host == "" {
@@ -178,7 +178,8 @@ func TestBrainSeatsProvisionOverDocker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boxes := &runtime.TaskSandboxes{Provider: provider, Store: &tasksandbox.Memory{}, TTL: 5 * time.Minute}
+	// A pulled image, not the locally built default, so a fresh CI runner has it.
+	boxes := &runtime.TaskSandboxes{Provider: provider, Store: &tasksandbox.Memory{}, TTL: 5 * time.Minute, Image: "debian:bookworm-slim"}
 	if v := os.Getenv("UPMO_TEST_SANDBOX_IMAGE"); v != "" {
 		boxes.Image = v
 	}
