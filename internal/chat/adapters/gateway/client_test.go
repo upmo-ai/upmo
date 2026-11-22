@@ -33,7 +33,7 @@ func TestChatStreamParsesAttemptDeltaAndDoneFrames(t *testing.T) {
 			`{"attempt":{"failed_model":"m1","failure_class":"transient","next_model":"m2"}}`,
 			`{"delta":"one "}`,
 			`{"delta":"two"}`,
-			`{"done":{"model":"m2","input_tokens":1,"output_tokens":2,"cost_usd":0.01}}`)
+			`{"done":{"model":"m2","input_tokens":1,"output_tokens":2,"cost_micro_usd":10000}}`)
 	})))
 	t.Cleanup(srv.Close)
 	client, err := Open(srv.URL, secret)
@@ -72,7 +72,7 @@ func TestChatStreamParsesAttemptDeltaAndDoneFrames(t *testing.T) {
 	if text.String() != "one two" {
 		t.Fatalf("text = %q", text.String())
 	}
-	if done.Model != "m2" || done.InputTokens != 1 || done.OutputTokens != 2 || done.CostUSD == nil || *done.CostUSD != 0.01 {
+	if done.Model != "m2" || done.InputTokens != 1 || done.OutputTokens != 2 || done.CostMicroUSD == nil || *done.CostMicroUSD != 10000 {
 		t.Fatalf("done = %+v", done)
 	}
 }
@@ -308,6 +308,262 @@ func TestChatStreamRejectsEmptyInput(t *testing.T) {
 	}
 	if _, err := client.ChatStream(t.Context(), Request{Route: "draft"}, nil, nil); err == nil {
 		t.Fatal("empty input")
+	}
+}
+
+func TestChatStreamSendsToolsAndToolHistory(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	var body map[string]any
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintf(w, "%s\n", `{"done":{"model":"m","input_tokens":1,"output_tokens":1}}`)
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		agentID = "018f3b2c-7a10-7c4a-8e11-0000000000a1"
+		runID   = "018f3b2c-7a10-7c4a-8e11-0000000000b2"
+	)
+	_, err = client.ChatStream(t.Context(), Request{
+		Route:      "draft",
+		ChatID:     "chat-1",
+		UserID:     "u",
+		Tools:      []Tool{{Name: "lookup", Description: "find", Schema: json.RawMessage(`{"type":"object"}`)}},
+		AllowTools: []string{"lookup"},
+		CoreTools:  true,
+		ToolChoice: ToolChoice{Mode: "tool", Name: "lookup"},
+		RunID:      runID,
+		AgentID:    agentID,
+		Messages: []Message{
+			{Role: "user", Text: "q"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "c0", Name: "lookup", Arguments: json.RawMessage(`{"q":1}`), ThoughtSignature: "sig"}}},
+			{Role: "tool", Text: "boom", ToolName: "lookup", ToolID: "c0", IsError: true, Offload: true},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"tools":       []any{map[string]any{"name": "lookup", "description": "find", "schema": map[string]any{"type": "object"}}},
+		"allow_tools": []any{"lookup"},
+		"core_tools":  true,
+		"tool_choice": map[string]any{"mode": "tool", "name": "lookup"},
+		"run_id":      runID,
+		"agent_id":    agentID,
+		"messages": []any{
+			map[string]any{"role": "user", "text": "q"},
+			map[string]any{"role": "assistant", "text": "", "tool_calls": []any{
+				map[string]any{"id": "c0", "name": "lookup", "arguments": map[string]any{"q": float64(1)}, "thought_signature": "sig"},
+			}},
+			map[string]any{"role": "tool", "text": "boom", "tool_name": "lookup", "tool_id": "c0", "is_error": true, "offload": true},
+		},
+	}
+	for _, key := range []string{"tools", "allow_tools", "core_tools", "tool_choice", "run_id", "agent_id", "messages"} {
+		if !reflect.DeepEqual(body[key], want[key]) {
+			t.Fatalf("%s = %#v, want %#v", key, body[key], want[key])
+		}
+	}
+}
+
+func TestChatStreamTakesToolCallFramesAndDoneToolCalls(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintf(w, "%s\n%s\n%s\n%s\n%s\n%s\n",
+			`{"delta":"a "}`,
+			`{"tool_call":{"index":0,"id":"t1","name":"lookup"}}`,
+			`{"tool_call":{"index":0,"arguments_delta":"{\"q\":1}"}}`,
+			`{"tool_call":{"index":1,"id":"t2","name":"search"}}`,
+			`{"tool_call":{"index":1,"arguments_delta":"{\"q\":2}"}}`,
+			`{"done":{"model":"m","input_tokens":1,"output_tokens":2,"tool_calls":[{"id":"t1","name":"lookup","arguments":{"q":1}},{"id":"t2","name":"search","arguments":{"q":2},"thought_signature":"s2"}],"stop_reason":"tool_calls"}}`)
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deltas []string
+	done, err := client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(delta string) {
+		deltas = append(deltas, delta)
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(deltas, []string{"a "}) {
+		t.Fatalf("deltas = %v", deltas)
+	}
+	want := []ToolCall{
+		{ID: "t1", Name: "lookup", Arguments: json.RawMessage(`{"q":1}`)},
+		{ID: "t2", Name: "search", Arguments: json.RawMessage(`{"q":2}`), ThoughtSignature: "s2"},
+	}
+	if !reflect.DeepEqual(done.ToolCalls, want) || done.StopReason != "tool_calls" {
+		t.Fatalf("done = %+v", done)
+	}
+}
+
+func TestChatStreamDecodesCostMicroUSD(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		done string
+		cost *int64
+		err  string
+	}{
+		{name: "integer", done: `{"done":{"model":"m","input_tokens":1,"output_tokens":1,"cost_micro_usd":17}}`, cost: i64p(17)},
+		{name: "null", done: `{"done":{"model":"m","input_tokens":1,"output_tokens":1,"cost_micro_usd":null}}`, cost: nil},
+		{name: "absent", done: `{"done":{"model":"m","input_tokens":1,"output_tokens":1}}`, cost: nil},
+		{name: "zero", done: `{"done":{"model":"m","input_tokens":1,"output_tokens":1,"cost_micro_usd":0}}`, cost: i64p(0)},
+		{name: "float", done: `{"done":{"model":"m","input_tokens":1,"output_tokens":1,"cost_micro_usd":17.5}}`, err: "chat: gateway frame"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			secret := serviceKey(t, 'k')
+			srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = fmt.Fprintf(w, "%s\n", tc.done)
+			})))
+			t.Cleanup(srv.Close)
+			client, err := Open(srv.URL, secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done, err := client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, nil, nil)
+			if tc.err != "" {
+				if err == nil || err.Error() != tc.err {
+					t.Fatalf("err = %v, want %s", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(done.CostMicroUSD, tc.cost) {
+				t.Fatalf("cost = %v, want %v", done.CostMicroUSD, tc.cost)
+			}
+		})
+	}
+}
+
+func TestChatStreamDecodesDoneCountersAndWindow(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintf(w, "%s\n", `{"done":{"model":"m","input_tokens":100,"output_tokens":50,"cache_read":25,"cache_write":10,"reasoning":5,"context_window":200000}}`)
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Done{Model: "m", InputTokens: 100, OutputTokens: 50, CacheRead: 25, CacheWrite: 10, Reasoning: 5, ContextWindow: 200000}
+	if !reflect.DeepEqual(done, want) {
+		t.Fatalf("done = %+v, want %+v", done, want)
+	}
+}
+
+func TestChatStreamLimitReachedBeforeTheStreamIsAFailure(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, "gateway: person monthly spend limit reached\n")
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deltas := 0
+	done, err := client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(string) {
+		deltas++
+	}, nil)
+	var failure *Failure
+	if !errors.As(err, &failure) {
+		t.Fatalf("err = %v", err)
+	}
+	if failure.Class != ClassLimitReached || failure.Message != "gateway: person monthly spend limit reached" {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if deltas != 0 || done.Model != "" {
+		t.Fatalf("deltas = %d done = %+v", deltas, done)
+	}
+
+	bad := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	})))
+	t.Cleanup(bad.Close)
+	refused, err := Open(bad.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := refused.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, nil, nil); err == nil || errors.As(err, &failure) {
+		t.Fatalf("400 err = %v", err)
+	}
+}
+
+func TestChatStreamLimitReachedFrameKeepsEarlierDeltas(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintf(w, "%s\n%s\n",
+			`{"delta":"x"}`,
+			`{"error":{"failure_class":"limit_reached","model":"","message":"gateway: person monthly spend limit reached"}}`)
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas []string
+	_, err = client.ChatStream(t.Context(), Request{Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi"}, func(delta string) {
+		deltas = append(deltas, delta)
+	}, nil)
+	var failure *Failure
+	if !errors.As(err, &failure) {
+		t.Fatalf("err = %v", err)
+	}
+	if failure.Class != "limit_reached" || failure.Model != "" {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if !reflect.DeepEqual(deltas, []string{"x"}) {
+		t.Fatalf("deltas = %v", deltas)
+	}
+}
+
+func TestChatStreamRefusesNonUUIDRunOrAgent(t *testing.T) {
+	secret := serviceKey(t, 'k')
+	hits := 0
+	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintf(w, "%s\n", `{"done":{"model":"m","input_tokens":1,"output_tokens":1}}`)
+	})))
+	t.Cleanup(srv.Close)
+	client, err := Open(srv.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, req := range map[string]Request{
+		"run":       {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", RunID: "r1"},
+		"agent":     {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", AgentID: "a1"},
+		"urn run":   {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", RunID: "urn:uuid:018f3b2c-7a10-7c4a-8e11-0000000000b2"},
+		"urn agent": {Route: "draft", ChatID: "chat-1", UserID: "u", Prompt: "hi", AgentID: "urn:uuid:018f3b2c-7a10-7c4a-8e11-0000000000b2"},
+	} {
+		if _, err := client.ChatStream(t.Context(), req, nil, nil); err == nil {
+			t.Fatalf("%s id was sent", name)
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("stub hits = %d, want 0", hits)
 	}
 }
 

@@ -24,6 +24,24 @@ import (
 
 func int64Ptr(v int64) *int64 { return &v }
 
+// orderOutputs records every save on the order slice the turn store also
+// records its commit on, so a test can tell which came first.
+type orderOutputs struct {
+	*memOutputs
+	order *[]string
+}
+
+func (o orderOutputs) SaveOutput(ctx context.Context, run *RunState, title, body string, untrusted bool) (string, error) {
+	*o.order = append(*o.order, "save")
+	return o.memOutputs.SaveOutput(ctx, run, title, body, untrusted)
+}
+
+type namePolicy struct{ verdicts map[string]string }
+
+func (p namePolicy) Decide(_ context.Context, _, toolName string, _ ToolOp, _ json.RawMessage) (PolicyDecision, error) {
+	return PolicyDecision{Verdict: p.verdicts[toolName], Resource: "acct-1"}, nil
+}
+
 type fakeModel struct {
 	fn func(ctx context.Context, req PromptRequest) (PromptResponse, error)
 }
@@ -1702,5 +1720,218 @@ func TestFeature_UPM314_TrimUsesRealisticOutputIDLength(t *testing.T) {
 	got, err := TrimMessages(context.Background(), store, nil, input, 100, 1)
 	if err != nil || store.seq != 0 || got[1].Text != input[1].Text || got[3].Text != "current" {
 		t.Fatalf("older result was saved despite realistic reference length: saves=%d err=%v messages=%+v", store.seq, err, got)
+	}
+}
+
+func TestFeature_UPM310a_CommitCarriesTrimmedHistoryAndStatus(t *testing.T) {
+	const window = 1000
+	store := &memOutputs{}
+	var order []string
+	run := &RunState{RunID: "r-upm310a", Catalog: NewToolCatalog(nil, nil)}
+	tools := run.Catalog.PromptTools()
+	input := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}},
+		{Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 2800)},
+		{Role: RoleUser, Text: "next"},
+	}
+	// The input fits the prompt guard, and the turn appended outgrows the
+	// post-turn budget, so exactly the old result is trimmed.
+	budget := PostTurnBudget(window, "s", tools)
+	prompt := PromptMessageBudget(window, "s", tools)
+	if estimate := estimateMessages(input) + 2; budget >= estimate || estimate > prompt {
+		t.Fatalf("fixture: post-turn=%d prompt=%d estimate=%d", budget, prompt, estimate)
+	}
+	turnStore := &testTurnStore{order: &order}
+	eng := Engine{
+		ContextWindow: window,
+		Outputs:       orderOutputs{memOutputs: store, order: &order},
+		TurnStore:     turnStore,
+		Model: fakeModel{fn: func(_ context.Context, _ PromptRequest) (PromptResponse, error) {
+			return PromptResponse{Text: "ok"}, nil
+		}},
+		Executor: DefaultExecutor{},
+	}
+	out, err := eng.RunTurn(context.Background(), run, input, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.seq != 1 || len(turnStore.commits) != 1 {
+		t.Fatalf("saves = %d commits = %d", store.seq, len(turnStore.commits))
+	}
+	commit := turnStore.commits[0]
+	if !strings.HasPrefix(commit.History[1].Text, "retrieve_output:lookup-1\n") {
+		t.Fatalf("trimmed history[1] = %q", commit.History[1].Text)
+	}
+	if !reflect.DeepEqual(commit.History, out.History) {
+		t.Fatal("commit history differs from the outcome history")
+	}
+	if commit.Status != TurnDone {
+		t.Fatalf("status = %s", commit.Status)
+	}
+	if !slices.Equal(order, []string{"save", "tx3:commit"}) {
+		t.Fatalf("order = %v", order)
+	}
+}
+
+func TestFeature_UPM310a_CommitStatusFollowsTheTurn(t *testing.T) {
+	exec := DefaultExecutor{Direct: map[string]ToolHandler{
+		"read1": func(context.Context, *RunState, ToolCall) (ToolResult, error) {
+			return ToolResult{Output: "ran"}, nil
+		},
+	}}
+	withCalls := &testTurnStore{}
+	out, err := (Engine{
+		Model: fakeModel{fn: func(_ context.Context, _ PromptRequest) (PromptResponse, error) {
+			return PromptResponse{Model: "m1", ToolCalls: []ToolCall{{ID: "c1", Name: "read1", Arguments: json.RawMessage(`{}`)}}}, nil
+		}},
+		Executor:  exec,
+		TurnStore: withCalls,
+	}).RunTurn(context.Background(), &RunState{RunID: "r", ObjectID: "o", UserID: "u", Catalog: NewToolCatalog([]ToolDef{{Name: "read1", Op: OpRead}}, nil)}, []Message{{Role: RoleUser, Text: "go"}}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != TurnContinue || len(withCalls.commits) != 1 || withCalls.commits[0].Status != TurnContinue || !withCalls.commits[0].EnqueueNext {
+		t.Fatalf("turn with a call: out=%+v commit=%+v", out, withCalls.commits)
+	}
+
+	textOnly := &testTurnStore{}
+	out, err = (Engine{
+		Model: fakeModel{fn: func(_ context.Context, _ PromptRequest) (PromptResponse, error) {
+			return PromptResponse{Model: "m1", Text: "done"}, nil
+		}},
+		Executor:  exec,
+		TurnStore: textOnly,
+	}).RunTurn(context.Background(), &RunState{RunID: "r", ObjectID: "o", UserID: "u", Catalog: NewToolCatalog(nil, nil)}, []Message{{Role: RoleUser, Text: "go"}}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != TurnDone || len(textOnly.commits) != 1 || textOnly.commits[0].Status != TurnDone || textOnly.commits[0].EnqueueNext {
+		t.Fatalf("text only: out=%+v commit=%+v", out, textOnly.commits)
+	}
+}
+
+func TestFeature_UPM310a_CommitKeepsReportedCost(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cost *int64
+	}{
+		{name: "nil"},
+		{name: "zero", cost: int64Ptr(0)},
+		{name: "seventeen", cost: int64Ptr(17)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &testTurnStore{}
+			eng := Engine{
+				Model: fakeModel{fn: func(_ context.Context, _ PromptRequest) (PromptResponse, error) {
+					return PromptResponse{Model: "m1", Text: "ok", CostMicroUSD: tc.cost}, nil
+				}},
+				Executor:  DefaultExecutor{},
+				TurnStore: store,
+			}
+			run := &RunState{RunID: "r-cost", ObjectID: "o1", UserID: "u1", Catalog: NewToolCatalog(nil, nil)}
+			if _, err := eng.RunTurn(context.Background(), run, []Message{{Role: RoleUser, Text: "go"}}, "s"); err != nil {
+				t.Fatal(err)
+			}
+			commit := store.commits[0]
+			if tc.cost == nil {
+				if commit.ReportedCostMicroUSD != nil || commit.CostMicroUSD != 0 {
+					t.Fatalf("unknown cost: reported=%v charge=%d", commit.ReportedCostMicroUSD, commit.CostMicroUSD)
+				}
+				return
+			}
+			if commit.ReportedCostMicroUSD == nil || *commit.ReportedCostMicroUSD != *tc.cost || commit.CostMicroUSD != *tc.cost {
+				t.Fatalf("cost %d: reported=%v charge=%d", *tc.cost, commit.ReportedCostMicroUSD, commit.CostMicroUSD)
+			}
+		})
+	}
+}
+
+func cappedCallEngine(t *testing.T, cap int) (Engine, *RunState, *[]string, *testActionLog) {
+	t.Helper()
+	catalog := NewToolCatalog([]ToolDef{
+		{Name: "read1", Op: OpRead},
+		{Name: "ext", Category: CategoryConnector, Op: OpChange, External: true},
+		{Name: "askme", Category: CategoryConnector, Op: OpChange, External: true},
+	}, nil)
+	executed := &[]string{}
+	record := func() ToolHandler {
+		return func(_ context.Context, _ *RunState, call ToolCall) (ToolResult, error) {
+			*executed = append(*executed, call.ID)
+			return ToolResult{Output: "ran"}, nil
+		}
+	}
+	log := newTestActionLog()
+	eng := Engine{
+		Model: fakeModel{fn: func(_ context.Context, _ PromptRequest) (PromptResponse, error) {
+			return PromptResponse{Model: "m1", ToolCalls: []ToolCall{
+				{ID: "r1", Name: "read1", Arguments: json.RawMessage(`{}`)},
+				{ID: "e1", Name: "ext", Arguments: json.RawMessage(`{}`)},
+				{ID: "e2", Name: "ext", Arguments: json.RawMessage(`{}`)},
+				{ID: "a1", Name: "askme", Arguments: json.RawMessage(`{}`)},
+			}}, nil
+		}},
+		Executor: DefaultExecutor{Direct: map[string]ToolHandler{
+			"read1": record(),
+			"ext":   record(),
+			"askme": record(),
+		}},
+		WritePolicy:          namePolicy{verdicts: map[string]string{"ext": "allow", "askme": "ask"}},
+		ActionLog:            log,
+		MaxToolCallsPerRound: cap,
+	}
+	return eng, &RunState{RunID: "r-cap", ObjectID: "o1", UserID: "u1", Catalog: catalog}, executed, log
+}
+
+func TestFeature_UPM310a_ToolCallCapSkipsLaterCalls(t *testing.T) {
+	eng, run, executed, log := cappedCallEngine(t, 2)
+	out, err := eng.RunTurn(context.Background(), run, []Message{{Role: RoleUser, Text: "go"}}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*executed, []string{"r1", "e1"}) {
+		t.Fatalf("executed = %v", *executed)
+	}
+	if len(log.records) != 1 {
+		t.Fatalf("action log = %d records, want only e1", len(log.records))
+	}
+	if _, ok := log.records[testActionKey("r-cap", ScopedCallID(0, "e1"))]; !ok {
+		t.Fatalf("action log holds %+v", log.records)
+	}
+	if out.Hold != nil || out.Status != TurnContinue {
+		t.Fatalf("hold = %+v status = %s", out.Hold, out.Status)
+	}
+	if len(out.Appended) != 5 {
+		t.Fatalf("appended = %+v", out.Appended)
+	}
+	for _, tc := range []struct {
+		index int
+		want  Message
+	}{
+		{3, Message{Role: RoleTool, ToolName: "ext", ToolID: "e2", Text: "skipped: more than 2 tool calls in one round", IsError: true}},
+		{4, Message{Role: RoleTool, ToolName: "askme", ToolID: "a1", Text: "skipped: more than 2 tool calls in one round", IsError: true}},
+	} {
+		if !reflect.DeepEqual(out.Appended[tc.index], tc.want) {
+			t.Fatalf("appended[%d] = %+v, want %+v", tc.index, out.Appended[tc.index], tc.want)
+		}
+	}
+	if len(out.BlockedEvents) != 0 {
+		t.Fatalf("blocked events = %+v", out.BlockedEvents)
+	}
+}
+
+func TestFeature_UPM310a_ToolCallCapZeroRunsEverything(t *testing.T) {
+	eng, run, executed, _ := cappedCallEngine(t, 0)
+	out, err := eng.RunTurn(context.Background(), run, []Message{{Role: RoleUser, Text: "go"}}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*executed, []string{"r1", "e1", "e2"}) {
+		t.Fatalf("executed = %v", *executed)
+	}
+	if out.Hold == nil || len(out.Hold.Calls) != 1 || out.Hold.Calls[0].CallID != "a1" {
+		t.Fatalf("hold = %+v", out.Hold)
+	}
+	if out.Status != TurnWaitingApproval {
+		t.Fatalf("status = %s", out.Status)
 	}
 }

@@ -49,6 +49,8 @@ func Reason(class string) string {
 	switch class {
 	case "rate_limit":
 		return "rate limited"
+	case "limit_reached":
+		return "spend limit reached"
 	case "transient":
 		return "not reachable"
 	case "credential":

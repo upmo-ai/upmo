@@ -276,7 +276,7 @@ func TestStreamLineEventFollowsTheLastDeltaItsClientHolds(t *testing.T) {
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	r.stub.reply(func(_ int, s *frames) { s.delta("Hello"); s.done("m1", 3, 4, f64(0.5)) })
+	r.stub.reply(func(_ int, s *frames) { s.delta("Hello"); s.done("m1", 3, 4, i64(500000)) })
 
 	live := r.stream("owner", chatID, nil, "")
 	if err := r.run(queued, 1); err != nil {

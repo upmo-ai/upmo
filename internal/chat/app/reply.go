@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -203,7 +202,7 @@ type ModelDone struct {
 	Model        string
 	InputTokens  int
 	OutputTokens int
-	CostUSD      *float64
+	CostMicroUSD *int64
 }
 
 // ModelError is a reply that broke off: the failure class and the model that
@@ -554,10 +553,7 @@ func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobAr
 		reply.Status = domain.StatusDone
 		reply.Model = done.Model
 		reply.Tokens = done.InputTokens + done.OutputTokens
-		if done.CostUSD != nil {
-			micro := int64(math.Round(*done.CostUSD * 1e6))
-			reply.CostMicroUSD = &micro
-		}
+		reply.CostMicroUSD = done.CostMicroUSD
 	default:
 		reply.Status = domain.StatusFailed
 		failure := failureOf(ctx, err)
