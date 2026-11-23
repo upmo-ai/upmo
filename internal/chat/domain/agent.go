@@ -98,16 +98,6 @@ func AgentModel(provider, model string) (string, string, error) {
 	return provider, model, nil
 }
 
-// AgentSystem is the system text an agent adds to a reply: its name and its
-// instructions. An agent with no instructions adds nothing.
-func AgentSystem(name, overlay string) string {
-	overlay = strings.TrimSpace(overlay)
-	if overlay == "" {
-		return ""
-	}
-	return "# Agent: " + name + "\n\n" + overlay
-}
-
 // Picked is what the composer gave a reply: the route, and the model pinned as
 // a provider account and a model id. Empty means no pick.
 type Picked struct {

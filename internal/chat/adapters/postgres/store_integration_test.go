@@ -43,6 +43,7 @@ func TestOpenLeavesTheSession(t *testing.T) {
 	if err := app.Say(ctx, store, ownerAccess, id, " hello ", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
+	settle(t, owner, id)
 	if err := app.Say(ctx, store, ownerAccess, id, "again", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +86,16 @@ func TestOpenLeavesTheSession(t *testing.T) {
 func quietStore(t *testing.T, owner *pgxpool.Pool) postgres.Store {
 	t.Helper()
 	return postgres.Store{Pool: pgtest.App(t, owner), Enqueuer: &recorder{}, ReplyRoute: "chat"}
+}
+
+// settle fails the running run of a chat, as a process death would leave it.
+func settle(t *testing.T, owner *pgxpool.Pool, chatID string) {
+	t.Helper()
+	if _, err := owner.Exec(context.Background(), `
+		UPDATE chat.runs SET state = 'failed', claim = NULL, history = NULL, finished_at = now()
+		WHERE chat_id = $1::uuid AND state = 'running'`, chatID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSayWithRepliesOffStoresAFailedReplyInTheSameTransaction(t *testing.T) {
@@ -149,25 +160,23 @@ func TestTailReadsOneSnapshotSoARepliesDeltasAndLineNeverComeTogether(t *testing
 	if err := app.Say(ctx, store, ownerAccess, opened.ID, "hello", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
-	chatBefore, err := app.Read(ctx, store, ownerAccess, opened.ID)
-	if err != nil {
+	var runID, runLineID string
+	if err := owner.QueryRow(ctx, `SELECT id::text, line_id::text FROM chat.runs WHERE chat_id = $1::uuid`, opened.ID).Scan(&runID, &runLineID); err != nil {
 		t.Fatal(err)
 	}
-	user := chatBefore.Lines[0].ID
-	const reply = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
-	for seq, body := range []string{"", "partial"} {
-		if err := store.PutDelta(ctx, ownerAccess, opened.ID, reply, seq, "text", body); err != nil {
-			t.Fatal(err)
-		}
+	c, err := store.Claim(ctx, ownerAccess, app.ReplyJobArgs{ChatID: opened.ID, LineID: runLineID, ReplyID: runID, Round: 1, UserID: ownerUser}, "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01")
+	if err != nil || c.State != app.ClaimGo {
+		t.Fatalf("claim = %+v %v", c, err)
+	}
+	if err := store.PutDelta(ctx, ownerAccess, c, 1, "text", "partial"); err != nil {
+		t.Fatal(err)
 	}
 
 	// The reply finishes between the two reads of a tail. Under one snapshot
 	// the tail still shows the deltas and not the line; read again, it shows
 	// the line and not the deltas.
 	reader := postgres.WithBetweenReads(store, func() {
-		err := store.Finish(ctx, ownerAccess, app.Reply{
-			ChatID: opened.ID, LineID: reply, ReplyTo: user, Status: "done", Body: "partial", Model: "m1",
-		})
+		err := store.Finish(ctx, ownerAccess, c, app.ReplyEnd{Model: "m1", Attempts: []domain.Attempt{{Model: "m1", Class: "transient"}}})
 		if err != nil {
 			t.Error(err)
 		}
@@ -182,7 +191,7 @@ func TestTailReadsOneSnapshotSoARepliesDeltasAndLineNeverComeTogether(t *testing
 		case app.EventDelta:
 			deltas++
 		case app.EventLine:
-			if e.LineID == reply {
+			if e.LineID == runID {
 				lines++
 			}
 		}
@@ -200,7 +209,7 @@ func TestTailReadsOneSnapshotSoARepliesDeltasAndLineNeverComeTogether(t *testing
 		case app.EventDelta:
 			deltas++
 		case app.EventLine:
-			if e.LineID == reply {
+			if e.LineID == runID {
 				lines++
 			}
 		}

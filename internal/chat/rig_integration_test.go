@@ -58,9 +58,10 @@ type rig struct {
 	worker river.Worker[app.ReplyJobArgs]
 	deps   app.ReplyDeps
 
-	mu        sync.Mutex
-	people    map[string]chat.Access
-	lookupErr error
+	agentLookup *agentLookup
+	mu          sync.Mutex
+	people      map[string]chat.Access
+	lookupErr   error
 }
 
 // setAccess changes what a person may do, as a role or a share changing would.
@@ -113,7 +114,7 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 	}
 	pool := pgtest.App(t, owner)
 	stub := newStubGateway(t)
-	model, err := chat.OpenModel(stub.URL, serviceKey('k'))
+	turns, err := chat.OpenTurns(stub.URL, serviceKey('k'))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 		people: map[string]chat.Access{ownerUser: ownerAccess, otherUser: otherAccess},
 	}
 	deps := app.ReplyDeps{
-		Model: model,
+		Turns: turns,
 		Access: func(_ context.Context, userID string) (chat.Access, bool, error) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -148,7 +149,10 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 	r.store.ReplyRoute = "chat"
 	r.agents = agents.NewStore(pool)
 	deps.Rows = r.store
-	deps.Agents = agentLookup{store: r.agents}
+	al := &agentLookup{store: r.agents}
+	deps.Agents = al
+	deps.Lessons = lessonLookup{store: r.agents}
+	r.agentLookup = al
 	if err := chat.AddReplyWorker(workers, deps); err != nil {
 		t.Fatal(err)
 	}
@@ -162,15 +166,33 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 
 // agentLookup is how production reads an agent for a reply: through the agents
 // context, as the person who wrote the line.
-type agentLookup struct{ store agents.Store }
+type agentLookup struct {
+	store agents.Store
+	block bool
+}
 
-func (l agentLookup) Agent(ctx context.Context, access chat.Access, id string) (chat.Agent, error) {
+func (l *agentLookup) Agent(ctx context.Context, access chat.Access, id string) (chat.Agent, error) {
+	if l.block {
+		select {
+		case <-ctx.Done():
+		case <-time.After(3 * time.Second):
+		}
+		return chat.Agent{}, errors.New("agents: blocked")
+	}
 	a, inline, err := l.store.AgentForUse(ctx, agentsAccess(access), id)
 	if errors.Is(err, agents.ErrAgentNotFound) {
 		return chat.Agent{}, chat.ErrAgentNotFound
 	}
 	if err != nil {
 		return chat.Agent{}, err
+	}
+	cards, err := agents.Index(ctx, l.store, agentsAccess(access), id)
+	if err != nil {
+		return chat.Agent{}, err
+	}
+	lessonCards := make([]chat.LessonCard, 0, len(cards))
+	for _, c := range cards {
+		lessonCards = append(lessonCards, chat.LessonCard{ID: c.ID, Title: c.Title, Cue: c.Cue})
 	}
 	return chat.Agent{
 		ID:            a.ID,
@@ -181,7 +203,19 @@ func (l agentLookup) Agent(ctx context.Context, access chat.Access, id string) (
 		ModelProvider: a.DefaultModelProvider,
 		ModelID:       a.DefaultModelID,
 		Enabled:       a.Enabled,
+		Cards:         lessonCards,
 	}, nil
+}
+
+// lessonLookup opens a house rule through the agents facade, like brain.
+type lessonLookup struct{ store agents.Store }
+
+func (l lessonLookup) OpenLesson(ctx context.Context, access chat.Access, agentID, lessonID string) (chat.Lesson, error) {
+	got, err := agents.Open(ctx, l.store, agentsAccess(access), agentID, lessonID)
+	if err != nil {
+		return chat.Lesson{}, err
+	}
+	return chat.Lesson{ID: got.ID, Title: got.Title, Cue: got.Cue, Body: got.Body, AlwaysInline: got.AlwaysInline}, nil
 }
 
 func agentsAccess(access chat.Access) agents.Access {
@@ -340,6 +374,51 @@ func (r *rig) deltas(chatID string) []deltaRow {
 	return out
 }
 
+// settle fails the running run of a chat as the owner, as a process death
+// would leave it, so the next Say or Retry can reserve a fresh one.
+func (r *rig) settle(chatID string) {
+	r.t.Helper()
+	if _, err := r.owner.Exec(context.Background(), `
+		UPDATE chat.runs SET state = 'failed', claim = NULL, history = NULL, finished_at = now()
+		WHERE chat_id = $1::uuid AND state = 'running'`, chatID); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// putDelta writes one delta as the owner, past the claim fence, like a crash
+// that already wrote.
+func (r *rig) putDelta(chatID, lineID string, seq int, kind, body string) {
+	r.t.Helper()
+	if _, err := r.owner.Exec(context.Background(), `
+		INSERT INTO chat.deltas (chat_id, line_id, seq, kind, body)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5)`, chatID, lineID, seq, kind, body); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// runRow is the run row a test reads by reply id.
+type runRow struct {
+	State      string
+	Round      int
+	ClaimRound int
+	Tokens     int
+	Cost       *int64
+	CostKnown  bool
+	HistoryNil bool
+}
+
+func (r *rig) runRow(replyID string) runRow {
+	r.t.Helper()
+	var row runRow
+	if err := r.owner.QueryRow(context.Background(), `
+		SELECT state, round, claim_round, tokens, cost_micro_usd, cost_known, history IS NULL
+		FROM chat.runs WHERE id = $1::uuid`, replyID).Scan(
+		&row.State, &row.Round, &row.ClaimRound, &row.Tokens, &row.Cost, &row.CostKnown, &row.HistoryNil); err != nil {
+		r.t.Fatal(err)
+	}
+	return row
+}
+
 // runAsync works a job in the background and returns the channel of its result.
 func (r *rig) runAsync(j job, attempt int) <-chan error {
 	out := make(chan error, 1)
@@ -385,14 +464,25 @@ type stubCall struct {
 	UserID          string `json:"user_id"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
 	System          string `json:"system"`
-	Pin             *struct {
+	RunID           string `json:"run_id"`
+	TeamID          string `json:"team_id"`
+	Tools           []struct {
+		Name string `json:"name"`
+	} `json:"tools"`
+	Pin *struct {
 		AccountID string `json:"account_id"`
 		Provider  string `json:"provider"`
 		Model     string `json:"model"`
 	} `json:"pin"`
 	Messages []struct {
-		Role string `json:"role"`
-		Text string `json:"text"`
+		Role      string `json:"role"`
+		Text      string `json:"text"`
+		ToolName  string `json:"tool_name"`
+		ToolID    string `json:"tool_id"`
+		ToolCalls []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"tool_calls"`
 	} `json:"messages"`
 }
 
@@ -465,6 +555,23 @@ func (s *frames) attempt(failed, class, next string) {
 
 func (s *frames) done(model string, in, out int, cost *int64) {
 	s.line(map[string]any{"done": map[string]any{"model": model, "input_tokens": in, "output_tokens": out, "cost_micro_usd": cost}})
+}
+
+// stubTool is one tool call the model asks for in a done frame.
+type stubTool struct {
+	ID   string
+	Name string
+	Args string
+}
+
+// doneCalls writes a done frame that asks for tools, then continues to the
+// next round.
+func (s *frames) doneCalls(model string, in, out int, cost *int64, calls ...stubTool) {
+	callsJSON := make([]map[string]any, 0, len(calls))
+	for _, c := range calls {
+		callsJSON = append(callsJSON, map[string]any{"id": c.ID, "name": c.Name, "arguments": json.RawMessage(c.Args)})
+	}
+	s.line(map[string]any{"done": map[string]any{"model": model, "input_tokens": in, "output_tokens": out, "cost_micro_usd": cost, "tool_calls": callsJSON}})
 }
 
 func (s *frames) fail(class, model string) {

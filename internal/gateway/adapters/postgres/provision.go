@@ -344,8 +344,8 @@ func QueryMonthlyUsage(ctx context.Context, owner *pgxpool.Pool, month string, s
 		SELECT
 			model,
 			CASE
+				WHEN source = 'chat' THEN 'chat'
 				WHEN parent_run_id IS NOT NULL OR run_id IS NOT NULL THEN 'task'
-				WHEN agent_id IS NOT NULL THEN 'chat'
 				ELSE 'direct'
 			END AS kind,
 			COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,

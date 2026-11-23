@@ -279,6 +279,12 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Select: []string{"agent_id", "at", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
 			Insert: []string{"agent_id", "at", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
 		},
+		"chat.runs": {
+			Table:  []string{"INSERT", "SELECT"},
+			Select: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
+			Insert: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
+			Update: []string{"claim", "claim_round", "cost_known", "cost_micro_usd", "finished_at", "history", "model", "round", "round_seq", "state", "tokens"},
+		},
 		"chat.turns": {
 			Table:  []string{"INSERT", "SELECT"},
 			Select: []string{"body", "chat_id", "cost_micro_usd", "created_at", "id", "input_tokens", "is_error", "line_id", "model", "offloaded", "output_tokens", "private_read", "role", "seq", "tainted", "tool_calls", "tool_id", "tool_name"},

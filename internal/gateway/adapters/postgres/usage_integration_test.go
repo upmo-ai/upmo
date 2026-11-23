@@ -277,6 +277,20 @@ func TestFeature_UPM220_PersonalUsageOwnRowsOnly(t *testing.T) {
 	}
 }
 
+// TestFeature_UPM310_PersonalUsageTasksLeaveOutChatRuns has a chat call whose
+// run id is set; the personal task rollup must not list it as a task.
+func TestFeature_UPM310_PersonalUsageTasksLeaveOutChatRuns(t *testing.T) {
+	r := newUsageRig(t)
+	at := usageNow.Add(-time.Hour)
+	r.call(t, usageCall{at: at, user: usageAdmin, account: usageHouse, model: "claude-x", source: domain.SourceChat, run: usageOther, in: 10, cost: micro(100)})
+	r.call(t, usageCall{at: at, user: usageAdmin, account: usageHouse, model: "claude-x", source: domain.SourceTask, run: usageParent, in: 20, cost: micro(200)})
+
+	got := personal(t, r.service(), usageAdmin, domain.UsageWeek)
+	if len(got.Tasks) != 1 || got.Tasks[0].TaskID != usageParent {
+		t.Fatalf("tasks = %+v, want only the task run", got.Tasks)
+	}
+}
+
 // TestFeature_UPM220_PersonalReadIsScopedToCaller has a usage:view holder
 // read their own usage with two other people's rows and a system row in the
 // window. The personal read runs with an empty allow list, so row security

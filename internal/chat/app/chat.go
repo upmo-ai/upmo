@@ -27,7 +27,7 @@ var (
 	// ErrRetry is a line that is not a failed reply, or one that a later
 	// reply has already answered.
 	ErrRetry = errors.New("chat: retry")
-	// ErrBusy is a line with a reply already on its way.
+	// ErrBusy is a chat with a reply already running in it.
 	ErrBusy = errors.New("chat: reply under way")
 	// ErrReplies is a chat that gets no replies in this install.
 	ErrReplies = errors.New("chat: replies are off")

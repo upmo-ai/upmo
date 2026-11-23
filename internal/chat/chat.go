@@ -15,6 +15,7 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/chat/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 )
 
@@ -56,6 +57,9 @@ type (
 	StreamHub    = app.StreamHub
 	StreamConfig = app.StreamConfig
 	Stream       = app.Stream
+	LessonLookup = app.LessonLookup
+	Lesson       = agentloop.Lesson
+	LessonCard   = agentloop.LessonCard
 )
 
 // ReplyQueue is the River queue of reply jobs; give it workers of its own.
@@ -66,14 +70,14 @@ func NewStore(pool *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
 	return postgres.Store{Pool: pool, Enqueuer: enqueuer}
 }
 
-// OpenModel returns the model a reply is streamed from, which is the gateway
-// at baseURL, signed with serviceKey.
-func OpenModel(baseURL, serviceKey string) (app.Model, error) {
+// OpenTurns returns the model of a multi-round reply: the gateway at baseURL,
+// signed with serviceKey.
+func OpenTurns(baseURL, serviceKey string) (app.Turns, error) {
 	client, err := gateway.Open(baseURL, serviceKey)
 	if err != nil {
 		return nil, err
 	}
-	return gateway.Model{Client: client}, nil
+	return gateway.Turns{Client: client}, nil
 }
 
 // AddReplyWorker registers the worker that answers chat lines on workers.

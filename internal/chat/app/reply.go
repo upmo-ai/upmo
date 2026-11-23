@@ -16,54 +16,65 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/kernel"
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 )
 
 // ReplyQueue is the River queue of reply jobs. It has workers of its own, so
 // a stream never holds up the scout or the extract.
 const ReplyQueue = "chat_reply"
 
-// Defaults of a reply.
+// Defaults and limits of a reply.
 const (
-	// DefaultHistoryChars is how much of a chat a reply sends to the model.
+	// DefaultHistoryChars is how much of a chat the first round of a reply
+	// sends to the model.
 	DefaultHistoryChars = 48000
-	// DefaultMaxOutputTokens caps one reply.
+	// DefaultMaxOutputTokens caps one round.
 	DefaultMaxOutputTokens = 4096
-	// DefaultReplyTimeout is how long one reply job may run.
-	DefaultReplyTimeout = 5 * time.Minute
+	// DefaultReplyTimeout bounds the whole reply, every round of it, from
+	// chat.runs.created_at.
+	DefaultReplyTimeout = 10 * time.Minute
 	// DefaultFlushEvery and DefaultFlushBytes are how often text becomes a
 	// delta row: after the time, or at the size, whichever comes first.
 	DefaultFlushEvery = 75 * time.Millisecond
 	DefaultFlushBytes = 2048
-	// DefaultWait is how long a reply waits before it looks again when the
-	// chat is busy with another.
-	DefaultWait = 2 * time.Second
 	// DefaultAccessEvery is how often a streaming reply looks its author's
 	// access up again.
 	DefaultAccessEvery = 30 * time.Second
+	// MaxRounds is the most rounds one reply may take; a round after it that
+	// still asks for a tool fails the reply.
+	MaxRounds = 15
+	// MaxToolCallsPerRound is the most tool calls one round runs; the rest are
+	// skipped with an error result.
+	MaxToolCallsPerRound = 8
+	// ToolTimeout bounds one tool call.
+	ToolTimeout = 60 * time.Second
 )
 
-// LiveFor is how long a reply that wrote nothing new still counts as running.
-// It is longer than the job timeout, so a reply whose process died stops
-// holding up the chat.
+// LiveFor is how long a reserved reply counts as running. It is longer than
+// the reply timeout, so a reply whose process died stops holding the chat.
 const LiveFor = DefaultReplyTimeout + time.Minute
 
 // finishTimeout bounds the write of a line after the reply's own context has
 // ended.
 const finishTimeout = 15 * time.Second
 
-// ReplyJobArgs is the River payload for the reply to one user line. LineID is
-// that user line. ReplyID is the id the assistant line will get; it is chosen
-// when the job is enqueued, so a rerun finds the deltas of the run before it.
-// A job is unique by LineID while one is waiting or running, so a line has one
-// reply on its way at a time. PinAccount and PinModel, both or neither, are
-// the model pinned for this reply; AgentID is the agent picked. The agent is
-// loaded when the reply is written: the agent adds its instructions and, where
-// the composer picked none, its route and its model. Route is the composer's
-// pick when RoutePicked, and the install's default route otherwise.
+// ReplyJobArgs is the River payload of one round of the reply to a user line.
+// LineID is that user line. ReplyID is the id the assistant line will get and
+// the id of the run in chat.runs; it is chosen when the reply is reserved, so
+// every round of one reply carries the same one. Round is the round this job
+// runs, from 1. A job is unique by ReplyID and Round while one is waiting or
+// running, so every skipped insert is an error and no round runs twice.
+// PinAccount and PinModel, both or neither, are the model pinned for this
+// reply; AgentID is the agent picked. The agent is loaded each round: the
+// agent adds its instructions and, where the composer picked none, its route
+// and its model. Route is the composer's pick when RoutePicked, and the
+// install's default route otherwise.
 type ReplyJobArgs struct {
 	ChatID      string `json:"chat_id"`
-	LineID      string `json:"line_id" river:"unique"`
-	ReplyID     string `json:"reply_id"`
+	LineID      string `json:"line_id"`
+	ReplyID     string `json:"reply_id" river:"unique"`
+	Round       int    `json:"round" river:"unique"`
 	UserID      string `json:"user_id"`
 	Route       string `json:"route"`
 	RoutePicked bool   `json:"route_picked,omitempty"`
@@ -94,47 +105,6 @@ func (ReplyJobArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// ReplyState is what Begin found.
-type ReplyState int
-
-const (
-	// ReplyGo means the reply may start; the turn carries the lines to send.
-	ReplyGo ReplyState = iota + 1
-	// ReplyWait means another reply is running in the chat, or an earlier line
-	// has none yet.
-	ReplyWait
-	// ReplyDone means the reply's line is already stored.
-	ReplyDone
-	// ReplyRescue means an earlier run began this reply and did not finish it.
-	ReplyRescue
-)
-
-// ReplyTurn is what a reply reads before it starts.
-type ReplyTurn struct {
-	State ReplyState
-	// Lines are the lines to send, oldest first, up to and including the user
-	// line: no failed reply and no reply that a later one replaced.
-	Lines []Line
-	// Partial, Attempts and Model are what an earlier run left in deltas, for
-	// ReplyRescue.
-	Partial  string
-	Attempts []domain.Attempt
-	Model    string
-}
-
-// Reply is the assistant line to store.
-type Reply struct {
-	ChatID       string
-	LineID       string
-	ReplyTo      string
-	Status       string
-	Body         string
-	Model        string
-	Tokens       int
-	CostMicroUSD *int64
-	Attempts     []domain.Attempt
-}
-
 // Notice is the body of a status delta: a model failed before any text and
 // the reply goes on with the next.
 type Notice struct {
@@ -146,22 +116,28 @@ type Notice struct {
 // ReplyRows is what the reply job reads and writes, as the person who wrote
 // the line.
 type ReplyRows interface {
-	// Begin checks the chat and the line, finds what an earlier run left, and
-	// otherwise marks the reply as started. ErrGone and ErrSay mean the person
-	// can no longer write to the chat; ErrNoLine that the line is not there.
-	Begin(ctx context.Context, access Access, job ReplyJobArgs) (ReplyTurn, error)
-	// PutDelta stores one row of the reply as it streams.
-	PutDelta(ctx context.Context, access Access, chatID, replyID string, seq int, kind, body string) error
-	// Finish stores the assistant line and deletes the reply's deltas in one
-	// transaction.
-	Finish(ctx context.Context, access Access, reply Reply) error
+	// Claim takes the run's current round under the chat's lock and hands the
+	// worker the round: the messages to send and the state the earlier rounds
+	// left. ErrGone and ErrSay mean the person can no longer write to the
+	// chat; ErrNoLine that the run or its line is not there.
+	Claim(ctx context.Context, access Access, job ReplyJobArgs, token string) (Claim, error)
+	// PutDelta stores one row of the reply as it streams, fenced by the claim.
+	PutDelta(ctx context.Context, access Access, claim Claim, seq int, kind, body string) error
+	// CommitRound stores one round: its turns, the run's history and its
+	// costs, and the line when the round ends the reply.
+	CommitRound(ctx context.Context, access Access, claim Claim, round RoundCommit) error
+	// Finish stores the failed line of a reply whose round did not commit,
+	// and deletes the reply's deltas in one transaction.
+	Finish(ctx context.Context, access Access, claim Claim, end ReplyEnd) error
+	// Outputs stores the tool output of this reply, scoped to its chat.
+	Outputs(chatID, replyID string, access func() (Access, error)) agentloop.OutputStore
+	// FailReply stores the failed reply of a run for an author who can no
+	// longer write to the chat, or for a job that could not start, and
+	// deletes the reply's deltas. why is access or unwritten. It runs without
+	// the author's access and reports false when the run fenced it out.
+	FailReply(ctx context.Context, job ReplyJobArgs, token, why string) (bool, error)
 	// Sweep deletes deltas older than age whose line never arrived.
 	Sweep(ctx context.Context) (int64, error)
-	// FailReply stores the failed reply to a user line for an author who can
-	// no longer write to the chat, or for a job that could not start, and
-	// deletes the reply's deltas. why is access or unwritten. It runs without
-	// the author's access.
-	FailReply(ctx context.Context, userLine, replyID, why string) (bool, error)
 	// CanWrite reports ErrGone or ErrSay when the person can no longer write
 	// to the chat.
 	CanWrite(ctx context.Context, access Access, chatID string) error
@@ -173,36 +149,11 @@ type ModelMessage struct {
 	Text string
 }
 
-// ModelRequest is one reply's call to the gateway. The pin is a provider
-// account and a model, or a provider name and a model that the gateway
-// resolves for the person (PinProvider), never both.
-type ModelRequest struct {
-	Route           string
-	ChatID          string
-	CredentialRef   string
-	UserID          string
-	System          string
-	Messages        []ModelMessage
-	MaxOutputTokens int
-	PinAccount      string
-	PinProvider     string
-	PinModel        string
-	AgentID         string
-}
-
 // ModelAttempt is a model that failed before any text, and the next one.
 type ModelAttempt struct {
 	FailedModel string
 	Class       string
 	NextModel   string
-}
-
-// ModelDone is the successful end of a reply.
-type ModelDone struct {
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	CostMicroUSD *int64
 }
 
 // ModelError is a reply that broke off: the failure class and the model that
@@ -216,22 +167,109 @@ func (e *ModelError) Error() string {
 	return fmt.Sprintf("chat: model %s on %s", e.Class, e.Model)
 }
 
-// Model streams a reply. onDelta gets each piece of text in order and
-// onAttempt each failover; both may be nil. A failure comes back as a
-// *ModelError.
-type Model interface {
-	Stream(ctx context.Context, req ModelRequest, onDelta func(string), onAttempt func(ModelAttempt)) (ModelDone, error)
+// Failures of the reply's own writes, beyond what the model did.
+var (
+	// ErrFenced means another worker took the round over.
+	ErrFenced = errors.New("chat: reply taken over")
+	// ErrHold means a round asked for an approval hold, which chat cannot
+	// serve yet.
+	ErrHold = errors.New("chat: approval holds are not supported")
+	// ErrUnwritten means a write of the reply did not go through.
+	ErrUnwritten = errors.New("chat: reply could not be written")
+)
+
+// ClaimState is what Claim found.
+type ClaimState int
+
+const (
+	// ClaimGo means this worker owns the round: the claim carries what the
+	// round needs.
+	ClaimGo ClaimState = iota + 1
+	// ClaimDone means the run finished, or this round already committed: the
+	// job has nothing to do.
+	ClaimDone
+	// ClaimRescue means an earlier attempt claimed this round: the reply ends
+	// here, failed as canceled, with the text the deltas hold.
+	ClaimRescue
+)
+
+// Pending is reply text the sink took but never confirmed written: the batch
+// whose write failed, or what was still buffered at the end. Seq is the delta
+// seq it has or would have had.
+type Pending struct {
+	Seq  int
+	Text string
+}
+
+// Claim is one round of one reply in the worker's hands.
+type Claim struct {
+	State ClaimState
+	Job   ReplyJobArgs
+	Token string
+	// Scope is the chat's visibility, for the gateway call only (team_id).
+	Scope     agentloop.AccessScope
+	CreatedAt time.Time // chat.runs.created_at
+	// Lines are today's transcript, for round 1.
+	Lines []Line
+	// History is the model history of the earlier rounds, for round 2 and on.
+	History []agentloop.Message
+	// TurnSeq is the highest chat.turns seq of the chat; the round's turns
+	// start after it.
+	TurnSeq int
+	// DeltaSeq is the highest delta seq of this reply; its text goes on
+	// after it. BodyRunes is how many runes the reply streamed already.
+	DeltaSeq  int
+	BodyRunes int
+	// Model is the next model of the current round's last status notice, else
+	// the last committed round's.
+	Model string
+	// Attempts are the status notices of this reply, in seq order.
+	Attempts []domain.Attempt
+}
+
+// ReplyEnd is the failed end of a reply: which model was writing, the notices
+// that led up to it, and the text that was never confirmed written.
+type ReplyEnd struct {
+	Model    string
+	Attempts []domain.Attempt
+	Tail     Pending
+}
+
+// RoundEnd is how one round ended.
+type RoundEnd int
+
+const (
+	// RoundNext means the model asked for tools and the reply has a round
+	// left: the next round is queued.
+	RoundNext RoundEnd = iota + 1
+	// RoundDone means the final answer has text: the done line is stored.
+	RoundDone
+	// RoundFailed means the reply ends failed: too many rounds (D2), or a
+	// final answer with no text at all.
+	RoundFailed
+)
+
+// RoundCommit is one round to store: the engine's commit, the sink's tail and
+// how the round ends.
+type RoundCommit struct {
+	Turn agentloop.TurnCommit
+	Tail Pending
+	End  RoundEnd
+	// Fail is the failed end, RoundFailed only; its Tail is RoundCommit.Tail.
+	Fail ReplyEnd
 }
 
 // ReplyConfig holds the caps of a reply. A zero field takes its default.
 type ReplyConfig struct {
 	HistoryChars    int
 	MaxOutputTokens int
-	Timeout         time.Duration
+	Timeout         time.Duration // whole reply and each River job
 	FlushEvery      time.Duration
 	FlushBytes      int
-	Wait            time.Duration
 	AccessEvery     time.Duration
+	// OffloadAtTokens is when tool output is stored rather than sent; the
+	// ceiling is agentloop.DefaultOffloadTokens.
+	OffloadAtTokens int
 }
 
 func (c ReplyConfig) withDefaults() ReplyConfig {
@@ -253,8 +291,8 @@ func (c ReplyConfig) withDefaults() ReplyConfig {
 	if c.AccessEvery <= 0 {
 		c.AccessEvery = DefaultAccessEvery
 	}
-	if c.Wait <= 0 {
-		c.Wait = DefaultWait
+	if c.OffloadAtTokens <= 0 || c.OffloadAtTokens > agentloop.DefaultOffloadTokens {
+		c.OffloadAtTokens = agentloop.DefaultOffloadTokens
 	}
 	return c
 }
@@ -276,6 +314,8 @@ type Agent struct {
 	ModelProvider string
 	ModelID       string
 	Enabled       bool
+	// Cards are the house rules the model may open by id.
+	Cards []agentloop.LessonCard
 }
 
 // Defaults are what the agent contributes to the choice of route and model.
@@ -290,17 +330,24 @@ type AgentLookup interface {
 	Agent(ctx context.Context, access Access, id string) (Agent, error)
 }
 
+// LessonLookup opens one house rule of the reply's agent, as the person who
+// wrote the line.
+type LessonLookup interface {
+	OpenLesson(ctx context.Context, access Access, agentID, lessonID string) (agentloop.Lesson, error)
+}
+
 // ReplyDeps is what the reply worker needs. Access resolves the person who
 // wrote the line, as a request would; false means the person may no longer
-// use chats. Agents is required: building the worker without it is an error.
-// Log may be nil.
+// use chats. Agents, Lessons and Turns are required: building the worker
+// without any of them is an error. Log may be nil.
 type ReplyDeps struct {
-	Rows   ReplyRows
-	Agents AgentLookup
-	Model  Model
-	Access func(ctx context.Context, userID string) (Access, bool, error)
-	Config ReplyConfig
-	Log    *slog.Logger
+	Rows    ReplyRows
+	Agents  AgentLookup
+	Lessons LessonLookup
+	Turns   Turns
+	Access  func(ctx context.Context, userID string) (Access, bool, error)
+	Config  ReplyConfig
+	Log     *slog.Logger
 }
 
 type replyWorker struct {
@@ -321,10 +368,17 @@ func AddReplyWorker(workers *river.Workers, deps ReplyDeps) error {
 }
 
 // NewReplyWorker returns the chat reply worker, or ErrNoAgents when deps has
-// no agent lookup.
+// no agent lookup, and an error when the model or the lesson lookup is
+// missing.
 func NewReplyWorker(deps ReplyDeps) (river.Worker[ReplyJobArgs], error) {
 	if deps.Agents == nil {
 		return nil, ErrNoAgents
+	}
+	if deps.Turns == nil {
+		return nil, errors.New("chat: reply worker needs a model")
+	}
+	if deps.Lessons == nil {
+		return nil, errors.New("chat: reply worker needs a lesson lookup")
 	}
 	log := deps.Log
 	if log == nil {
@@ -343,58 +397,56 @@ func (w *replyWorker) Work(ctx context.Context, job *river.Job[ReplyJobArgs]) er
 	}
 	access, ok, err := w.deps.Access(ctx, args.UserID)
 	if err != nil {
-		return w.giveUp(ctx, args, last, err)
+		return w.giveUp(ctx, args, "", last, err)
 	}
 	if !ok {
-		return w.refuse(ctx, args)
+		return w.refuse(ctx, args, "")
 	}
-	turn, err := w.deps.Rows.Begin(ctx, access, args)
+	claim, err := w.deps.Rows.Claim(ctx, access, args, uuid.NewString())
 	switch {
 	case errors.Is(err, ErrGone), errors.Is(err, ErrSay):
-		return w.refuse(ctx, args)
+		return w.refuse(ctx, args, "")
 	case errors.Is(err, ErrNoLine):
 		return river.JobCancel(err)
 	case err != nil:
-		return w.giveUp(ctx, args, last, err)
+		return w.giveUp(ctx, args, "", last, err)
 	}
-	switch turn.State {
-	case ReplyDone:
+	switch claim.State {
+	case ClaimDone:
 		return nil
-	case ReplyWait:
-		return river.JobSnooze(w.cfg.Wait)
-	case ReplyRescue:
-		return w.store(ctx, access, args, Reply{
-			Status:   domain.StatusFailed,
-			Body:     turn.Partial,
-			Model:    turn.Model,
-			Attempts: closeAttempts(turn.Attempts, &ModelError{Class: "canceled", Model: turn.Model}),
-		})
+	case ClaimRescue:
+		return w.finish(ctx, access, claim, ReplyEnd{Model: claim.Model,
+			Attempts: closeAttempts(claim.Attempts, &ModelError{Class: "canceled", Model: claim.Model})})
 	}
-	return w.stream(ctx, access, args, turn.Lines)
+	if !time.Now().Before(claim.CreatedAt.Add(w.cfg.Timeout)) {
+		return w.finish(ctx, access, claim, ReplyEnd{Model: claim.Model,
+			Attempts: closeAttempts(claim.Attempts, &ModelError{Class: "timeout", Model: claim.Model})})
+	}
+	return w.round(ctx, access, claim)
 }
 
 // refuse ends a reply whose author may no longer write to the chat, so the
 // line is not left without one: a failed reply that keeps what the deltas
 // hold. Row security would refuse their own write, so it goes through the
 // function made for it.
-func (w *replyWorker) refuse(ctx context.Context, args ReplyJobArgs) error {
-	return w.failed(ctx, args, "access", nil)
+func (w *replyWorker) refuse(ctx context.Context, args ReplyJobArgs, token string) error {
+	return w.failed(ctx, args, token, "access", nil)
 }
 
-// giveUp is for an error before the reply began. It is returned for River to
+// giveUp is for an error before the round began. It is returned for River to
 // try again, until the last attempt, which stores the failed reply instead.
-func (w *replyWorker) giveUp(ctx context.Context, args ReplyJobArgs, last bool, cause error) error {
+func (w *replyWorker) giveUp(ctx context.Context, args ReplyJobArgs, token string, last bool, cause error) error {
 	if !last {
 		return cause
 	}
 	w.log.Warn("chat reply could not begin", "chat", args.ChatID, "line", args.ReplyID, "err", cause)
-	return w.failed(ctx, args, "unwritten", cause)
+	return w.failed(ctx, args, token, "unwritten", cause)
 }
 
-func (w *replyWorker) failed(ctx context.Context, args ReplyJobArgs, why string, cause error) error {
+func (w *replyWorker) failed(ctx context.Context, args ReplyJobArgs, token, why string, cause error) error {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancel()
-	if _, err := w.deps.Rows.FailReply(wctx, args.LineID, args.ReplyID, why); err != nil {
+	if _, err := w.deps.Rows.FailReply(wctx, args, token, why); err != nil {
 		if cause != nil {
 			return cause
 		}
@@ -453,44 +505,52 @@ func (w *replyWorker) refresh(ctx context.Context, live *liveAccess, args ReplyJ
 	}
 }
 
-// stream asks the model and stores the outcome: a done line, or a failed one
-// that keeps the text written so far. A failed line is stored whatever went
-// wrong, so no line goes without a reply; only a write that fails as well
-// returns an error, and the second attempt then finds the deltas. The author's
-// access is looked up again every AccessEvery and before the line is stored;
-// when edit access is gone the call is stopped and the reply fails.
-func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobArgs, lines []Line) error {
+// round runs one round of a reply on the shared agent loop: the model call,
+// its tool calls, and the round's commit. Whatever ends the round, its line is
+// stored; only a write that fails as well returns an error, and the second
+// attempt then finds the deltas. The author's access is looked up again every
+// AccessEvery and before every write; when edit access is gone the call is
+// stopped and the reply fails.
+func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) error {
+	args := claim.Job
+	replyCtx, stopReply := context.WithDeadline(ctx, claim.CreatedAt.Add(w.cfg.Timeout))
+	defer stopReply()
 	var agent *Agent
 	if args.AgentID != "" {
-		got, err := w.deps.Agents.Agent(ctx, access, args.AgentID)
+		got, err := w.deps.Agents.Agent(replyCtx, access, args.AgentID)
 		switch {
 		case errors.Is(err, ErrAgentNotFound):
 			// An agent that is gone, switched off or not theirs is never
 			// skipped: the reply fails and says so.
-			return w.store(ctx, access, args, Reply{
-				Status:   domain.StatusFailed,
-				Attempts: []domain.Attempt{{Class: domain.ClassAgent}},
-			})
+			return w.finish(ctx, access, claim, ReplyEnd{Attempts: []domain.Attempt{{Class: domain.ClassAgent}}})
+		case err != nil && replyCtx.Err() != nil:
+			// The lookup itself ran out of the reply's time: a timeout, or a
+			// stop on shutdown.
+			failure := &ModelError{Class: failureOf(replyCtx, err).Class, Model: claim.Model}
+			return w.finish(ctx, access, claim, ReplyEnd{Model: claim.Model, Attempts: closeAttempts(claim.Attempts, failure)})
 		case err != nil:
-			return err
+			return err // River retries; attempt 2 is a Rescue
 		}
 		agent = &got
 	}
 	live := &liveAccess{access: access}
+	callCtx, cancel := context.WithCancel(replyCtx)
+	defer cancel()
 	sink := &deltaSink{
 		put: func(seq int, kind, body string) error {
 			current, ok := live.get()
 			if !ok {
 				return errRevoked
 			}
-			return w.deps.Rows.PutDelta(ctx, current, args.ChatID, args.ReplyID, seq, kind, body)
+			return w.deps.Rows.PutDelta(replyCtx, current, claim, seq, kind, body)
 		},
 		every: w.cfg.FlushEvery,
 		bytes: w.cfg.FlushBytes,
+		stop:  cancel,
+		room:  domain.ReplyRunes - claim.BodyRunes,
+		sep:   claim.BodyRunes > 0,
+		seq:   claim.DeltaSeq,
 	}
-	callCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	sink.stop = cancel
 
 	watching := make(chan struct{})
 	watched := make(chan struct{})
@@ -513,64 +573,55 @@ func (w *replyWorker) stream(ctx context.Context, access Access, args ReplyJobAr
 	}()
 
 	var attempts []domain.Attempt
-	req := w.request(args, agent)
-	req.Messages = history(lines, w.cfg.HistoryChars)
-	done, err := w.deps.Model.Stream(callCtx, req, sink.add, func(a ModelAttempt) {
+	// writing is the model this round is on: the last committed round's, then
+	// the next model of each failover this round announces.
+	writing := claim.Model
+	onAttempt := func(a ModelAttempt) {
 		attempts = append(attempts, domain.Attempt{Model: a.FailedModel, Class: a.Class})
+		if a.NextModel != "" {
+			writing = a.NextModel
+		}
 		sink.notice(Notice(a))
-	})
-	text, werr := sink.finish()
+	}
+	turnRoute, system := w.route(args, agent)
+	outs := outputs{inner: w.deps.Rows.Outputs(args.ChatID, args.ReplyID, func() (Access, error) {
+		current, ok := live.get()
+		if !ok {
+			return Access{}, errRevoked
+		}
+		return current, nil
+	})}
+	store := &roundStore{w: w, ctx: ctx, claim: claim, live: live, sink: sink, attempts: &attempts}
+	engine := agentloop.Engine{
+		Model: w.deps.Turns.Bind(turnRoute, sink.add, onAttempt),
+		Executor: timedExecutor{limit: ToolTimeout, inner: agentloop.DefaultExecutor{
+			Lessons: lessonOpener{lookup: w.deps.Lessons, live: live}, Outputs: outs, OffloadAtTokens: w.cfg.OffloadAtTokens}},
+		TurnStore:            store,
+		Outputs:              outs,
+		OffloadAtTokens:      w.cfg.OffloadAtTokens,
+		MaxToolCallsPerRound: MaxToolCallsPerRound,
+		// ContextWindow 0: no trim, no guard (310b2)
+	}
+	run := &agentloop.RunState{RunID: args.ReplyID, ObjectID: args.ChatID, ObjectType: "chat",
+		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: catalog(agent), Seq: claim.TurnSeq}
+	messages := claim.History
+	if args.Round == 1 {
+		messages = toMessages(history(claim.Lines, w.cfg.HistoryChars))
+	}
+	_, err := engine.RunTurn(callCtx, run, messages, system)
+	tail, werr := sink.finish()
 	close(watching)
 	<-watched
-
-	// Whatever ended the reply, its line is stored under the access as it is
-	// now. A timeout or a shutdown does not cut this look-up short.
-	if _, ok := live.get(); ok {
-		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
-		w.refresh(rctx, live, args)
-		rcancel()
+	if store.done {
+		return nil
 	}
-	if _, ok := live.get(); !ok {
-		return w.refuse(ctx, args)
-	}
-	current, _ := live.get()
-
-	reply := Reply{Body: truncate(text, domain.ReplyRunes)}
-	switch {
-	case werr != nil:
-		w.log.Warn("chat reply could not write a delta", "chat", args.ChatID, "line", args.ReplyID, "err", werr)
-		reply.Status = domain.StatusFailed
-		failure := failureOf(ctx, werr)
-		if ctx.Err() == nil {
-			failure = &ModelError{Class: "unwritten"}
-		}
-		reply.Model = failure.Model
-		reply.Attempts = closeAttempts(attempts, failure)
-		if reply.Model == "" && len(attempts) > 0 {
-			reply.Model = attempts[len(attempts)-1].Model
-		}
-	case err == nil:
-		reply.Status = domain.StatusDone
-		reply.Model = done.Model
-		reply.Tokens = done.InputTokens + done.OutputTokens
-		reply.CostMicroUSD = done.CostMicroUSD
-	default:
-		reply.Status = domain.StatusFailed
-		failure := failureOf(ctx, err)
-		reply.Model = failure.Model
-		reply.Attempts = closeAttempts(attempts, failure)
-		if reply.Model == "" && len(attempts) > 0 {
-			reply.Model = attempts[len(attempts)-1].Model
-		}
-		w.log.Info("chat reply failed", "chat", args.ChatID, "line", args.ReplyID, "class", failure.Class, "model", failure.Model)
-	}
-	return w.store(ctx, current, args, reply)
+	return w.end(ctx, replyCtx, live, claim, tail, werr, err, attempts, writing)
 }
 
-// request is the call a reply makes, without its messages: the route and the
-// pin settled between the composer's picks and the agent's defaults, and the
+// route is where every round of this reply goes: the route and the pin
+// settled between the composer's picks and the agent's defaults, and the
 // agent's instructions as the system text.
-func (w *replyWorker) request(args ReplyJobArgs, agent *Agent) ModelRequest {
+func (w *replyWorker) route(args ReplyJobArgs, agent *Agent) (TurnRoute, string) {
 	picked := domain.Picked{PinAccount: args.PinAccount, PinModel: args.PinModel}
 	install := ""
 	if args.RoutePicked {
@@ -583,39 +634,86 @@ func (w *replyWorker) request(args ReplyJobArgs, agent *Agent) ModelRequest {
 	if agent != nil {
 		d := agent.Defaults()
 		defaults = &d
-		system = domain.AgentSystem(agent.Name, agent.PromptOverlay)
+		system = agentloop.AssembleSystemPrefix("", agent.Name, agent.PromptOverlay, nil, agent.Cards)
 	}
 	resolved := domain.Resolve(picked, defaults, install)
-	return ModelRequest{
+	return TurnRoute{
 		Route:           resolved.Route,
 		ChatID:          args.ChatID,
-		UserID:          args.UserID,
-		System:          system,
-		MaxOutputTokens: w.cfg.MaxOutputTokens,
 		PinAccount:      resolved.PinAccount,
 		PinProvider:     resolved.PinProvider,
 		PinModel:        resolved.PinModel,
-		AgentID:         args.AgentID,
-	}
+		MaxOutputTokens: w.cfg.MaxOutputTokens,
+	}, system
 }
 
-// store writes the assistant line, on a context that outlives a timeout or a
+// end stores what a round that did not commit leaves behind: the reply's text
+// so far and why it broke off, as a failed line.
+func (w *replyWorker) end(ctx, replyCtx context.Context, live *liveAccess, claim Claim, tail Pending, werr, err error, attempts []domain.Attempt, writing string) error {
+	args := claim.Job
+	// Whatever ended the round, the line is stored under the access as it is
+	// now. A look-up cut short by the reply's own end decides nothing.
+	if _, ok := live.get(); ok {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+		w.refresh(rctx, live, args)
+		rcancel()
+	}
+	current, ok := live.get()
+	switch {
+	case !ok, errors.Is(werr, errRevoked), errors.Is(err, errRevoked),
+		errors.Is(werr, ErrGone), errors.Is(werr, ErrSay), errors.Is(err, ErrGone), errors.Is(err, ErrSay):
+		return w.refuse(ctx, args, claim.Token)
+	case errors.Is(werr, ErrFenced), errors.Is(err, ErrFenced):
+		w.log.Info("chat reply taken over", "chat", args.ChatID, "line", args.ReplyID, "round", args.Round)
+		return nil
+	}
+	var failure *ModelError
+	if werr != nil {
+		w.log.Warn("chat reply could not write a delta", "chat", args.ChatID, "line", args.ReplyID, "err", werr)
+		failure = failureOf(replyCtx, werr)
+		if replyCtx.Err() == nil {
+			failure = &ModelError{Class: "unwritten"}
+		}
+	} else {
+		failure = failureOf(replyCtx, err)
+	}
+	all := append(append([]domain.Attempt{}, claim.Attempts...), attempts...)
+	// Without the gateway's word, the model is the one this round was last
+	// writing with; earlier rounds' notices never name it.
+	model := failure.Model
+	if model == "" {
+		model = writing
+	}
+	if model == "" && len(attempts) > 0 {
+		model = attempts[len(attempts)-1].Model
+	}
+	last := failure
+	if last.Model == "" {
+		last = &ModelError{Class: failure.Class, Model: model}
+	}
+	return w.finish(ctx, current, claim, ReplyEnd{Model: model, Attempts: closeAttempts(all, last), Tail: tail})
+}
+
+// finish writes the failed line, on a context that outlives a timeout or a
 // shutdown of the job so the person is not left without a reply. If their
-// access is gone by then, the reply is failed through refuse instead.
-func (w *replyWorker) store(ctx context.Context, access Access, args ReplyJobArgs, reply Reply) error {
-	reply.ChatID, reply.LineID, reply.ReplyTo = args.ChatID, args.ReplyID, args.LineID
+// access is gone by then, the reply is failed through refuse instead; a
+// worker whose round was taken over returns nil.
+func (w *replyWorker) finish(ctx context.Context, access Access, claim Claim, end ReplyEnd) error {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancel()
-	err := w.deps.Rows.Finish(wctx, access, reply)
+	err := w.deps.Rows.Finish(wctx, access, claim, end)
 	if errors.Is(err, ErrGone) || errors.Is(err, ErrSay) {
-		return w.refuse(ctx, args)
+		return w.refuse(ctx, claim.Job, claim.Token)
+	}
+	if errors.Is(err, ErrFenced) {
+		return nil
 	}
 	return err
 }
 
-// failureOf names why a reply broke off. A job context that ended is a
-// timeout or a stop; any error that is not the gateway's own words is a
-// connection that failed.
+// failureOf names why a reply broke off. The gateway's own words come first,
+// then the reply's deadline, then the reply's own write failures; any other
+// error is a connection that failed.
 func failureOf(ctx context.Context, err error) *ModelError {
 	var failure *ModelError
 	switch {
@@ -625,6 +723,12 @@ func failureOf(ctx context.Context, err error) *ModelError {
 		return &ModelError{Class: "timeout"}
 	case ctx.Err() != nil:
 		return &ModelError{Class: "canceled"}
+	case errors.Is(err, ErrHold):
+		return &ModelError{Class: "hold"}
+	case errors.Is(err, kernel.ErrExhausted):
+		return &ModelError{Class: "limit_reached"}
+	case errors.Is(err, ErrUnwritten):
+		return &ModelError{Class: "unwritten"}
 	default:
 		return &ModelError{Class: "transient"}
 	}
@@ -646,6 +750,15 @@ func truncate(text string, runes int) string {
 		return text
 	}
 	return string([]rune(text)[:runes])
+}
+
+// toMessages maps the history of stored lines onto loop messages.
+func toMessages(messages []ModelMessage) []agentloop.Message {
+	out := make([]agentloop.Message, 0, len(messages))
+	for _, m := range messages {
+		out = append(out, agentloop.Message{Role: agentloop.MessageRole(m.Role), Text: m.Text})
+	}
+	return out
 }
 
 // history turns the lines of a chat into the messages of a call. It keeps the
@@ -674,32 +787,46 @@ func history(lines []Line, budget int) []ModelMessage {
 	return out
 }
 
-// deltaSink coalesces the text of a reply into delta rows: one row per batch,
-// written when the batch is old enough or large enough. A notice is written
-// at once, after the text before it. The first write to fail stops the
-// reply's model call and is kept.
+// deltaSink coalesces the text of one round into delta rows: one row per
+// batch, written when the batch is old enough or large enough. A notice is
+// written at once, after the text before it. The first write to fail stops
+// the round's model call and the failed batch is kept for the line. room is
+// the runes the whole reply may still take; on a later round "\n\n" goes
+// before the first text of the round.
 type deltaSink struct {
 	put   func(seq int, kind, body string) error
 	every time.Duration
 	bytes int
 	stop  context.CancelFunc
+	room  int  // runes this reply may still stream
+	sep   bool // "\n\n" goes before this round's first text
 
 	mu      sync.Mutex
-	all     strings.Builder
 	pending strings.Builder
 	timer   *time.Timer
-	seq     int
+	seq     int // starts at the claim's highest delta seq
 	err     error
+	failed  Pending
+	any     bool // some text was taken this round
 	closed  bool
 }
 
 func (s *deltaSink) add(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.err != nil || s.closed {
+	if s.err != nil || s.closed || text == "" {
 		return
 	}
-	s.all.WriteString(text)
+	if s.sep {
+		text = "\n\n" + text
+		s.sep = false
+	}
+	text = truncate(text, s.room)
+	s.room -= utf8.RuneCountInString(text)
+	if text == "" {
+		return
+	}
+	s.any = true
 	s.pending.WriteString(text)
 	if s.pending.Len() >= s.bytes {
 		s.flushLocked()
@@ -751,13 +878,17 @@ func (s *deltaSink) writeLocked(kind, body string) {
 	s.seq++
 	if err := s.put(s.seq, kind, body); err != nil {
 		s.err = err
+		if kind == "text" {
+			s.failed = Pending{Seq: s.seq, Text: body}
+		}
 		s.stop()
 	}
 }
 
-// finish ends the sink and returns all the text that came in, and the first
-// write error. Text that was never written as a delta is part of the text.
-func (s *deltaSink) finish() (string, error) {
+// finish ends the sink and returns the text that was taken but not confirmed
+// written: the batch whose write failed, or what was still buffered. It
+// writes nothing itself.
+func (s *deltaSink) finish() (Pending, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
@@ -765,7 +896,20 @@ func (s *deltaSink) finish() (string, error) {
 		s.timer.Stop()
 		s.timer = nil
 	}
-	return s.all.String(), s.err
+	if s.err != nil {
+		return s.failed, s.err
+	}
+	if s.pending.Len() > 0 {
+		return Pending{Seq: s.seq + 1, Text: s.pending.String()}, nil
+	}
+	return Pending{}, nil
+}
+
+// wrote reports whether any text was taken this round.
+func (s *deltaSink) wrote() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.any
 }
 
 // SweepJobArgs is the River payload of the periodic delete of deltas whose

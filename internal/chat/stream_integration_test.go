@@ -229,12 +229,10 @@ func (s *sse) expectLine(lineID string) (frame, map[string]any) {
 	return f, line
 }
 
-// put writes one delta of a reply the way the job does.
+// put writes one delta of a reply the way the job does, as the owner.
 func (r *streamRig) put(chatID, replyID string, seq int, kind, body string) {
 	r.t.Helper()
-	if err := r.store.PutDelta(context.Background(), ownerAccess, chatID, replyID, seq, kind, body); err != nil {
-		r.t.Fatal(err)
-	}
+	r.putDelta(chatID, replyID, seq, kind, body)
 }
 
 const replyID = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa"
@@ -244,7 +242,7 @@ func TestStreamSendsDeltasAsTheyAreWrittenThenTheLine(t *testing.T) {
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	release := make(chan struct{})
+	release, closeRelease := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("Hello ")
 		s.hold(release)
@@ -260,7 +258,7 @@ func TestStreamSendsDeltasAsTheyAreWrittenThenTheLine(t *testing.T) {
 	live.expectDelta(queued.Args.ReplyID, 0, "")
 	live.expectDelta(queued.Args.ReplyID, 1, "Hello ")
 	live.expectQuiet(100 * time.Millisecond)
-	close(release)
+	closeRelease()
 	live.expectDelta(queued.Args.ReplyID, 2, "world")
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
@@ -406,6 +404,7 @@ func TestStreamWithNoCursorSeesAReplyUnderWayFromItsStartEvenAfterANewerUserLine
 	r.put(chatID, replyID, 1, "status", `{"failed_model":"m1","class":"timeout","next_model":"m2"}`)
 	r.put(chatID, replyID, 2, "text", "going")
 	// A follow-up is sent after the reply began: its line sorts after the deltas.
+	r.settle(chatID)
 	r.say(chatID, "second", "")
 	second := r.lines(chatID)[1]
 

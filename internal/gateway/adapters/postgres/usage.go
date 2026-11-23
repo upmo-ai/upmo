@@ -364,7 +364,7 @@ func usageTasks(ctx context.Context, q querier, user string, w domain.UsageWindo
 			COALESCE(sum(l.cache_write), 0)::bigint,
 			(sum(l.cost_micro_usd) FILTER (WHERE l.plan_kind = 'metered'))::bigint
 		FROM gateway.ledger AS l
-		WHERE l.user_id = $1::uuid AND l.at >= $2 AND l.at < $3 AND l.run_id IS NOT NULL
+		WHERE l.user_id = $1::uuid AND l.at >= $2 AND l.at < $3 AND l.run_id IS NOT NULL AND l.source <> 'chat'
 		GROUP BY 1, 2`, user, w.Start, w.End)
 	if err != nil {
 		return nil, err

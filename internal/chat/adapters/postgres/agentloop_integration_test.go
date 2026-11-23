@@ -146,7 +146,7 @@ func TestChatSingleTeamRLSNarrowingHoldsTurnsAndActionLog(t *testing.T) {
 	}
 }
 
-func TestChatActionLogScopedAndCommitTurnAndEnqueue(t *testing.T) {
+func TestChatActionLogIsScopedPerChat(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := audit.Up(ctx, owner); err != nil {
@@ -191,59 +191,6 @@ func TestChatActionLogScopedAndCommitTurnAndEnqueue(t *testing.T) {
 	}
 	if err := alog1.BeginDial(ctx, rec1); !errors.Is(err, agentloop.ErrDuplicateAction) {
 		t.Fatalf("chat1 replay = %v, want ErrDuplicateAction", err)
-	}
-
-	// ChatTurnStore.CommitTurnAndEnqueue persists turns, holds, and invokes EnqueueNext.
-	var enqueued int
-	turnStore := postgres.ChatTurnStore{
-		Store: store,
-		Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: chat1.ID},
-		EnqueueNext: func(_ context.Context, _ pgx.Tx, commit agentloop.TurnCommit) error {
-			enqueued++
-			if commit.ObjectID != chat1.ID {
-				t.Fatalf("commit ObjectID = %q, want %q", commit.ObjectID, chat1.ID)
-			}
-			return nil
-		},
-	}
-
-	if err := turnStore.CommitTurnAndEnqueue(ctx, agentloop.TurnCommit{
-		ObjectID:    chat1.ID,
-		UserID:      ownerUser,
-		SeqStart:    1,
-		Messages:    []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "checking"}, {Role: agentloop.RoleTool, ToolName: "search", ToolID: "t1", Text: "found"}},
-		Model:       "m1",
-		EnqueueNext: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if enqueued != 1 {
-		t.Fatalf("enqueued = %d, want 1", enqueued)
-	}
-
-	hold := agentloop.BuildBatchHold("ask", []agentloop.HeldCall{
-		agentloop.BuildHeldCall(agentloop.ToolCall{ID: "ch2", Name: "send_email", Arguments: json.RawMessage(`{"to":"a@b.com"}`)}, agentloop.ToolDef{Op: agentloop.OpChange}, "email", true),
-	})
-	if err := turnStore.CommitTurnAndEnqueue(ctx, agentloop.TurnCommit{
-		ObjectID: chat1.ID,
-		UserID:   ownerUser,
-		SeqStart: 3,
-		Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "approval needed"}, {Role: agentloop.RoleTool, ToolName: "send_email", ToolID: "ch2", Text: "awaiting approval"}},
-		Model:    "m1",
-		Exposure: agentloop.ExposureState{Tainted: true},
-		Hold:     &hold,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var turnCount, holdCount int
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM chat.turns WHERE chat_id = $1::uuid`, chat1.ID).Scan(&turnCount); err != nil {
-		t.Fatal(err)
-	}
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chat1.ID).Scan(&holdCount); err != nil {
-		t.Fatal(err)
-	}
-	if turnCount != 4 || holdCount != 1 || enqueued != 1 {
-		t.Fatalf("after chat commit: turns=%d holds=%d enqueued=%d", turnCount, holdCount, enqueued)
 	}
 }
 

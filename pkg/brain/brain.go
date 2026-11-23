@@ -844,22 +844,24 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			func(userID string) memory.Proposer { return gw.For(userID) },
 			func(userID string) memory.Embedder { return gw.For(userID) },
 		)
-		chatModel, err := chat.OpenModel(cfg.GatewayURL, cfg.ServiceKey)
+		chatTurns, err := chat.OpenTurns(cfg.GatewayURL, cfg.ServiceKey)
 		if err != nil {
 			cleanupPools()
 			return nil, fmt.Errorf("brain: chat gateway: %w", err)
 		}
+		agentWho := func(ctx context.Context, userID string) (agents.Access, error) {
+			person, err := identity.ParseUserID(userID)
+			if err != nil {
+				return agents.Access{}, err
+			}
+			who, _, err := agentAccess(ctx, members, person)
+			return who, err
+		}
 		if err := chat.AddReplyWorker(workers, chat.ReplyDeps{
-			Rows: chat.NewStore(pool, nil),
-			Agents: chatAgentLookup{store: agentStore, access: func(ctx context.Context, userID string) (agents.Access, error) {
-				person, err := identity.ParseUserID(userID)
-				if err != nil {
-					return agents.Access{}, err
-				}
-				who, _, err := agentAccess(ctx, members, person)
-				return who, err
-			}},
-			Model: chatModel,
+			Rows:    chat.NewStore(pool, lazy),
+			Agents:  chatAgentLookup{store: agentStore, access: agentWho},
+			Lessons: chatLessons{store: agentStore, access: agentWho},
+			Turns:   chatTurns,
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -901,11 +903,11 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		cleanupPools()
 		return nil, err
 	}
+	lazy.set(work)
 	if err := work.Start(ctx); err != nil {
 		cleanupPools()
 		return nil, err
 	}
-	lazy.set(work)
 	deps.Jobs = work
 
 	boxes, err := taskSandboxes(internalCfg, pool, log)
@@ -1459,6 +1461,17 @@ func (l chatAgentLookup) Agent(ctx context.Context, access chat.Access, id strin
 	if err != nil {
 		return chat.Agent{}, err
 	}
+	cards, err := agents.Index(ctx, l.store, who, id)
+	if errors.Is(err, agents.ErrAgentNotFound) {
+		return chat.Agent{}, chat.ErrAgentNotFound
+	}
+	if err != nil {
+		return chat.Agent{}, err
+	}
+	lessonCards := make([]chat.LessonCard, 0, len(cards))
+	for _, c := range cards {
+		lessonCards = append(lessonCards, chat.LessonCard{ID: c.ID, Title: c.Title, Cue: c.Cue})
+	}
 	return chat.Agent{
 		ID:            a.ID,
 		Name:          a.Name,
@@ -1468,7 +1481,26 @@ func (l chatAgentLookup) Agent(ctx context.Context, access chat.Access, id strin
 		ModelProvider: a.DefaultModelProvider,
 		ModelID:       a.DefaultModelID,
 		Enabled:       a.Enabled,
+		Cards:         lessonCards,
 	}, nil
+}
+
+// chatLessons opens a house rule for a chat reply, through the agents facade.
+type chatLessons struct {
+	store  agents.Store
+	access func(ctx context.Context, userID string) (agents.Access, error)
+}
+
+func (l chatLessons) OpenLesson(ctx context.Context, access chat.Access, agentID, lessonID string) (chat.Lesson, error) {
+	who, err := l.access(ctx, access.UserID)
+	if err != nil {
+		return chat.Lesson{}, err
+	}
+	got, err := agents.Open(ctx, l.store, who, agentID, lessonID)
+	if err != nil {
+		return chat.Lesson{}, err
+	}
+	return chat.Lesson{ID: got.ID, Title: got.Title, Cue: got.Cue, Body: got.Body, AlwaysInline: got.AlwaysInline}, nil
 }
 
 type agentTeamLookup struct {

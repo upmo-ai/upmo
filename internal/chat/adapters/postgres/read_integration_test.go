@@ -109,6 +109,7 @@ func TestListDerivesTitleAndPreview(t *testing.T) {
 	if err := app.Say(ctx, store, ownerAccess, answered.ID, "first words", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
+	settle(t, owner, answered.ID)
 	if err := app.Say(ctx, store, ownerAccess, answered.ID, "later words", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +223,7 @@ func TestSharingLetsAViewerReadAndAnEditorWrite(t *testing.T) {
 		t.Fatalf("viewer say = %v", err)
 	}
 
+	settle(t, owner, opened.ID)
 	if err := app.Say(ctx, store, editor, opened.ID, "hi there", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +256,7 @@ func TestRecentLinesReadsASharedChatForAnEditorAndNotAStranger(t *testing.T) {
 		t.Fatal(err)
 	}
 	editor := app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + opened.ID + "}", SharedEdit: "{" + opened.ID + "}"}
+	settle(t, owner, opened.ID)
 	if err := app.Say(ctx, store, editor, opened.ID, "hi there", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +446,7 @@ func TestHTTPServesTheChats(t *testing.T) {
 		t.Fatalf("viewer say = %d %s", code, body)
 	}
 	editor := serve(app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: share, SharedEdit: share}, true)
+	settle(t, owner, created.ID)
 	if code, body := do(editor, http.MethodPost, path, `{"body":"yes"}`); code != http.StatusAccepted {
 		t.Fatalf("editor say = %d %s", code, body)
 	}
@@ -606,6 +610,7 @@ func TestRead_UPM251_PendingMarksAUserLineWithNoStoredReply(t *testing.T) {
 		if err := app.Say(ctx, store, ownerAccess, opened.ID, body, app.Picks{}); err != nil {
 			t.Fatal(err)
 		}
+		settle(t, owner, opened.ID)
 	}
 	// Given a done reply to the first line and a failed reply to the second,
 	// and none to the third.

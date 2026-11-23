@@ -19,8 +19,9 @@ import (
 // RescueStuckAfter is how long a job may sit in the running state before River
 // takes it back and runs it again, which is what rescues a job whose process
 // died. It is above the longest job timeout of any worker: the chat reply
-// worker's five minutes; every other worker keeps River's one minute.
-const RescueStuckAfter = 10 * time.Minute
+// worker's ten minutes plus its finish write; every other worker keeps River's
+// one minute.
+const RescueStuckAfter = 15 * time.Minute
 
 // Client wraps River for transactional enqueue and in-process workers.
 type Client struct {
