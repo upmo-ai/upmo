@@ -45,13 +45,16 @@ type holdJSON struct {
 
 // lineJSON is one line of a chat in full.
 type lineJSON struct {
-	ID      string   `json:"id"`
-	Role    string   `json:"role"`
-	Body    string   `json:"body"`
-	Model   *string  `json:"model"`
-	Tokens  int      `json:"tokens"`
-	CostUSD *float64 `json:"cost_usd"`
-	At      string   `json:"at"`
+	ID           string   `json:"id"`
+	Role         string   `json:"role"`
+	Body         string   `json:"body"`
+	AuthorID     *string  `json:"author_id"`
+	AuthorName   *string  `json:"author_name"`
+	AuthorAvatar *string  `json:"author_avatar"`
+	Model        *string  `json:"model"`
+	Tokens       int      `json:"tokens"`
+	CostUSD      *float64 `json:"cost_usd"`
+	At           string   `json:"at"`
 	// Status is done, failed, or stopped. ReplyTo is the user line a reply answers.
 	// Attempts, on a failed line, are the models tried and why each failed.
 	Status      string           `json:"status"`
@@ -144,20 +147,23 @@ func lineBody(line app.Line) lineJSON {
 		}
 	}
 	return lineJSON{
-		ID:          line.ID,
-		Role:        line.Role,
-		Body:        line.Body,
-		Model:       line.Model,
-		Tokens:      line.Tokens,
-		CostUSD:     cost,
-		At:          line.At.UTC().Format(time.RFC3339Nano),
-		Status:      line.Status,
-		ReplyTo:     line.ReplyTo,
-		Attempts:    attempts,
-		Attachments: attachments,
-		Route:       line.Route,
-		Pin:         pin,
-		AgentID:     line.AgentID,
-		Pending:     line.Pending,
+		ID:           line.ID,
+		Role:         line.Role,
+		Body:         line.Body,
+		AuthorID:     line.AuthorID,
+		AuthorName:   line.AuthorName,
+		AuthorAvatar: line.AuthorAvatar,
+		Model:        line.Model,
+		Tokens:       line.Tokens,
+		CostUSD:      cost,
+		At:           line.At.UTC().Format(time.RFC3339Nano),
+		Status:       line.Status,
+		ReplyTo:      line.ReplyTo,
+		Attempts:     attempts,
+		Attachments:  attachments,
+		Route:        line.Route,
+		Pin:          pin,
+		AgentID:      line.AgentID,
+		Pending:      line.Pending,
 	}
 }

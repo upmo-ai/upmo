@@ -21,6 +21,8 @@ import (
 // up again for the streams that stay open.
 type Handler struct {
 	Book      app.Book
+	Shares    app.ShareBook
+	Grants    app.ShareGrants
 	Converter app.BodyConverter
 	Stream    *app.StreamHub
 	Metrics   *metrics.Registry
@@ -44,6 +46,8 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/chats/{id}/holds/{hold}/deny", wrap(http.HandlerFunc(h.denyHold)))
 	mux.Handle("DELETE /api/chats/{id}", wrap(http.HandlerFunc(h.delete)))
 	mux.Handle("GET /api/chats/{id}", wrap(http.HandlerFunc(h.read)))
+	mux.Handle("GET /api/chats/{id}/share", wrap(http.HandlerFunc(h.share)))
+	mux.Handle("PUT /api/chats/{id}/share", wrap(http.HandlerFunc(h.putShare)))
 	mux.Handle("POST /api/chats/{id}/lines/{line}/retry", wrap(http.HandlerFunc(h.retry)))
 	mux.Handle("GET /api/chats/{id}/stream", wrap(http.HandlerFunc(h.stream)))
 }
@@ -330,6 +334,11 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, boo
 func refuse(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false
+	}
+	var refusal domain.ShareRefusal
+	if errors.As(err, &refusal) {
+		writeError(w, http.StatusUnprocessableEntity, refusal.Text)
+		return true
 	}
 	switch {
 	case errors.Is(err, app.ErrAccess):

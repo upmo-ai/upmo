@@ -15,6 +15,7 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/chat/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 )
@@ -38,9 +39,13 @@ func Migrations() fs.FS {
 // Handler serves chats to a signed-in person. Access is who asks, and Store
 // keeps chats in the chat schema.
 type (
-	Handler = httpapi.Handler
-	Access  = app.Access
-	Store   = postgres.Store
+	Handler     = httpapi.Handler
+	Access      = app.Access
+	Store       = postgres.Store
+	ShareBook   = app.ShareBook
+	ShareGrants = app.ShareGrants
+	ShareMember = app.ShareMember
+	ShareGrant  = domain.ShareGrant
 )
 
 // Agent is the profile a reply runs as.

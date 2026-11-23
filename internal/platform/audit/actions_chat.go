@@ -15,6 +15,8 @@ const (
 	ChatDelete      Action = "chat.delete"
 	ChatHoldApprove Action = "chat.hold_approve"
 	ChatHoldDeny    Action = "chat.hold_deny"
+	// ChatShare replaces one chat's share.
+	ChatShare Action = "chat.share"
 	// AgentCreate stores one agent profile.
 	AgentCreate Action = "agent.create"
 	// AgentUpdate changes one agent profile's fields. The prompt text is
@@ -35,6 +37,7 @@ func init() {
 	register(ChatDelete, "chat", classAPIActivity, activityUnknown)
 	register(ChatHoldApprove, "hold", classAPIActivity, activityUnknown, "state", "allow_for_chat")
 	register(ChatHoldDeny, "hold", classAPIActivity, activityUnknown, "state")
+	register(ChatShare, "chat", classAPIActivity, activityUnknown, "grants", "visibility")
 	register(AgentCreate, "agent", classAPIActivity, activityUnknown, "enabled", "route", "model_provider", "model_id", "visibility", "team_ids")
 	register(AgentUpdate, "agent", classAPIActivity, activityUnknown, "enabled", "route", "model_provider", "model_id", "visibility", "team_ids")
 	register(AgentShare, "agent", classAPIActivity, activityUnknown, "visibility", "team_ids")

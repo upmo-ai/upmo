@@ -317,6 +317,7 @@ export function toTaskShare(value: unknown): TaskShare {
     members: list(source.members, "members").map(toShareMember),
   };
   if (typeof source.team_id === "string") share.team_id = source.team_id;
+  if (typeof source.private_read === "boolean") share.private_read = source.private_read;
   return share;
 }
 
@@ -361,6 +362,11 @@ export function toChatLine(value: unknown): ChatLine {
     cost_usd: cost,
     at: text(source, "at"),
   };
+  if (source.author_id === null || typeof source.author_id === "string") parsed.author_id = source.author_id;
+  if (source.author_name === null || typeof source.author_name === "string") parsed.author_name = source.author_name;
+  if (source.author_avatar === null || typeof source.author_avatar === "string") {
+    parsed.author_avatar = source.author_avatar;
+  }
   // The reply fields are sent by a brain that writes replies; an older one omits them.
   const status = source.status;
   if (status === "done" || status === "failed") parsed.status = status;
@@ -428,7 +434,10 @@ export function toGatewayRoute(value: unknown): GatewayRoute {
 /** A chat in full, as GET /api/chats/{id} sends it: lines oldest first. */
 export function toChat(value: unknown): Chat {
   const source = record(value, "chat");
-  return { id: text(source, "id"), lines: list(source.lines, "lines").map(toChatLine) };
+  const chat: Chat = { id: text(source, "id"), lines: list(source.lines, "lines").map(toChatLine) };
+  if (typeof source.tainted === "boolean") chat.tainted = source.tainted;
+  if (typeof source.private_read === "boolean") chat.private_read = source.private_read;
+  return chat;
 }
 
 const planKinds: readonly ProviderPlanKind[] = ["metered", "subscription", "local"];
@@ -1375,6 +1384,14 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async retry(id, lineId, picks) {
         if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, picks);
         await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: { ...picks } });
+      },
+      async getShare(id) {
+        if ((await chosen()) === "stub") return stub.chats.getShare(id);
+        return toTaskShare(await call(`${chatPath(id)}/share`));
+      },
+      async putShare(id, update) {
+        if ((await chosen()) === "stub") return stub.chats.putShare(id, update);
+        return toTaskShare(await call(`${chatPath(id)}/share`, { method: "PUT", body: shareBody(update) }));
       },
     },
     async usage(range) {

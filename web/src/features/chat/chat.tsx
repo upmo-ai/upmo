@@ -4,12 +4,13 @@ import { IconLayoutSidebar, IconPlus, IconSearch, IconServer } from "@tabler/ico
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
-import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert } from "@upmo-ai/components";
+import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert, Wordmark } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
 
 import {
   agentsQueryKey,
   chatQueryKey,
+  chatShareQueryKey,
   chatsQueryKey,
   gatewayRoutesQueryKey,
   providersQueryKey,
@@ -22,6 +23,7 @@ import {
   type ChatSummary,
   type ProviderAccount,
 } from "../../app/api";
+import { ShareDialog } from "../identity/share-dialog";
 import type { GatewayRoute } from "../models/types";
 import { ShellIcon } from "../../ui/icons";
 import { awaitingReply, formatCost, groupByDay, sendRefusal } from "./format";
@@ -118,6 +120,7 @@ export function ChatPage() {
   // Where focus goes once the list has opened or shut.
   const focusAfter = useRef<"list" | "toggle">(undefined);
   const [selectedId, setSelectedId] = useState<string>();
+  const [sharingId, setSharingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -202,6 +205,7 @@ export function ChatPage() {
   const activeChat = pinned ?? list[0];
   const activeId = activeChat?.id;
   if (!pinned && activeChat) setSelectedId(activeChat.id);
+  const sharing = sharingId !== null && sharingId === activeId;
 
   // The stub brain has no stream and jsdom has no EventSource: the page polls as before.
   const streams = api.chatStream && typeof EventSource !== "undefined";
@@ -526,6 +530,11 @@ export function ChatPage() {
                 {activeChat?.title ?? "Chat"}
               </Title>
             </div>
+            {activeChat ? (
+              <Button variant="subtle" size="xs" onClick={() => setSharingId(activeChat.id)}>
+                Share
+              </Button>
+            ) : null}
           </div>
 
           <ChatThread
@@ -553,18 +562,30 @@ export function ChatPage() {
                   </ChatMessage>
                 );
               }
-              if (line.role === "user" && line.attachments && line.attachments.length > 0) {
+              if (line.role === "user" && (line.author_name || (line.attachments && line.attachments.length > 0))) {
                 return (
-                  <ChatMessage key={line.id} role="user">
+                  <ChatMessage key={line.id} role="user" tokens={line.tokens} cost={formatCost(line.cost_usd)}>
                     <div className="chat-user-with-attachments">
+                      {line.author_name ? (
+                        <div className="chat-user-author">
+                          {line.author_avatar == null ? (
+                            <span className="chat-user-avatar">
+                              <Wordmark compact height={14} label={line.author_name} />
+                            </span>
+                          ) : null}
+                          <span className="chat-user-author-name">{line.author_name}</span>
+                        </div>
+                      ) : null}
                       <div className="chat-user-body">{line.body}</div>
-                      <div className="chat-line-attachments" aria-label="Attachments">
-                        {line.attachments.map((att, index) => (
-                          <span className="chat-attachment-badge" key={`${att.name}-${index}`}>
-                            {att.name}
-                          </span>
-                        ))}
-                      </div>
+                      {line.attachments && line.attachments.length > 0 ? (
+                        <div className="chat-line-attachments" aria-label="Attachments">
+                          {line.attachments.map((att, index) => (
+                            <span className="chat-attachment-badge" key={`${att.name}-${index}`}>
+                              {att.name}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </ChatMessage>
                 );
@@ -649,6 +670,17 @@ export function ChatPage() {
           </div>
         </article>
       </div>
+      {activeChat ? (
+        <ShareDialog
+          opened={sharing}
+          objectId={activeChat.id}
+          objectLabel="chat"
+          onClose={() => setSharingId(null)}
+          queryKey={chatShareQueryKey(activeChat.id)}
+          loadShare={(id) => api.chats.getShare(id)}
+          saveShare={(id, update) => api.chats.putShare(id, update)}
+        />
+      ) : null}
     </section>
   );
 }

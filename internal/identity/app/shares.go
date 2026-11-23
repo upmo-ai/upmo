@@ -44,6 +44,24 @@ func (m Members) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID stri
 	return m.Store.ReplaceTaskGrantsTx(ctx, tx, taskID, grants, grantedBy)
 }
 
+// ChatGrants returns the person and team grants of one chat with the names of
+// their subjects. Role grants are not listed.
+func (m Members) ChatGrants(ctx context.Context, chatID string) ([]TaskGrant, error) {
+	return m.Store.ChatGrants(ctx, chatID)
+}
+
+// ReplaceChatGrants replaces the person and team grants of one chat: grants
+// not listed are deleted, new ones are inserted with grantedBy, and the level
+// changes where it differs. Role grants are untouched.
+func (m Members) ReplaceChatGrants(ctx context.Context, chatID string, grants []GrantWrite, grantedBy domain.UserID) error {
+	return m.Store.ReplaceChatGrants(ctx, chatID, grants, grantedBy)
+}
+
+// ReplaceChatGrantsTx is ReplaceChatGrants inside a transaction the caller owns.
+func (m Members) ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID string, grants []GrantWrite, grantedBy domain.UserID) error {
+	return m.Store.ReplaceChatGrantsTx(ctx, tx, chatID, grants, grantedBy)
+}
+
 // NamesOf returns the display names of the enabled people in persons and the
 // names of the teams in teams. An id that is no enabled member, or no team,
 // is missing from the answer: that is how a caller refuses an unknown one.

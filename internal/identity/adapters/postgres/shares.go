@@ -12,6 +12,16 @@ import (
 // TaskGrants returns the person and team grants of one task with the names of
 // their subjects, in the order they were made. Role grants are not listed.
 func (p Passkeys) TaskGrants(ctx context.Context, taskID string) ([]app.TaskGrant, error) {
+	return p.objectGrants(ctx, "task", taskID)
+}
+
+// ChatGrants returns the person and team grants of one chat with the names of
+// their subjects, in the order they were made. Role grants are not listed.
+func (p Passkeys) ChatGrants(ctx context.Context, chatID string) ([]app.TaskGrant, error) {
+	return p.objectGrants(ctx, "chat", chatID)
+}
+
+func (p Passkeys) objectGrants(ctx context.Context, objectType, objectID string) ([]app.TaskGrant, error) {
 	rows, err := p.Pool.Query(ctx, `
 		SELECT CASE WHEN share.user_id IS NOT NULL THEN 'person' ELSE 'team' END,
 		       COALESCE(share.user_id::text, share.team_id::text),
@@ -20,10 +30,10 @@ func (p Passkeys) TaskGrants(ctx context.Context, taskID string) ([]app.TaskGran
 		FROM identity.shares AS share
 		LEFT JOIN identity.users AS person ON person.id = share.user_id
 		LEFT JOIN identity.teams AS team ON team.id = share.team_id
-		WHERE share.object_type = 'task'
-		  AND share.object_id = $1::uuid
+		WHERE share.object_type = $1
+		  AND share.object_id = $2::uuid
 		  AND share.grantee_role_id IS NULL
-		ORDER BY share.id`, taskID)
+		ORDER BY share.id`, objectType, objectID)
 	if err != nil {
 		return nil, err
 	}
@@ -43,30 +53,47 @@ func (p Passkeys) TaskGrants(ctx context.Context, taskID string) ([]app.TaskGran
 // transaction: grants not listed are deleted, new ones are inserted with the
 // grantor, and the level changes where it differs. Role grants are untouched.
 func (p Passkeys) ReplaceTaskGrants(ctx context.Context, taskID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
-	tx, err := p.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := p.replaceTaskGrants(ctx, tx, taskID, grants, grantedBy); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return p.replaceObjectGrantsInTx(ctx, "task", taskID, grants, grantedBy)
 }
 
 // ReplaceTaskGrantsTx replaces the person and team grants inside a transaction
 // the caller already opened, for example when tasks seals task.share in the
 // same commit as the visibility write.
 func (p Passkeys) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
-	return p.replaceTaskGrants(ctx, tx, taskID, grants, grantedBy)
+	return p.replaceObjectGrants(ctx, tx, "task", taskID, grants, grantedBy)
 }
 
-func (p Passkeys) replaceTaskGrants(ctx context.Context, tx pgx.Tx, taskID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
-	// A task with no grants has no rows to lock, so two replacements would
+// ReplaceChatGrants replaces the person and team grants of one chat in one
+// transaction: grants not listed are deleted, new ones are inserted with the
+// grantor, and the level changes where it differs. Role grants are untouched.
+func (p Passkeys) ReplaceChatGrants(ctx context.Context, chatID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
+	return p.replaceObjectGrantsInTx(ctx, "chat", chatID, grants, grantedBy)
+}
+
+// ReplaceChatGrantsTx replaces the person and team grants of one chat inside a
+// transaction the caller already opened.
+func (p Passkeys) ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
+	return p.replaceObjectGrants(ctx, tx, "chat", chatID, grants, grantedBy)
+}
+
+func (p Passkeys) replaceObjectGrantsInTx(ctx context.Context, objectType, objectID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := p.replaceObjectGrants(ctx, tx, objectType, objectID, grants, grantedBy); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (p Passkeys) replaceObjectGrants(ctx context.Context, tx pgx.Tx, objectType, objectID string, grants []app.GrantWrite, grantedBy domain.UserID) error {
+	// An object with no grants has no rows to lock, so two replacements would
 	// both insert and the loser would fail the unique index: one advisory
-	// lock per task makes the second wait and then converge.
+	// lock per object makes the second wait and then converge.
 	if _, err := tx.Exec(ctx, `
-		SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`, taskID); err != nil {
+		SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`, objectID); err != nil {
 		return err
 	}
 
@@ -77,9 +104,9 @@ func (p Passkeys) replaceTaskGrants(ctx context.Context, tx pgx.Tx, taskID strin
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, COALESCE(user_id::text, ''), COALESCE(team_id::text, ''), level
 		FROM identity.shares
-		WHERE object_type = 'task' AND object_id = $1::uuid AND grantee_role_id IS NULL
+		WHERE object_type = $1 AND object_id = $2::uuid AND grantee_role_id IS NULL
 		ORDER BY id
-		FOR UPDATE`, taskID)
+		FOR UPDATE`, objectType, objectID)
 	if err != nil {
 		return err
 	}
@@ -129,11 +156,11 @@ func (p Passkeys) replaceTaskGrants(ctx context.Context, tx pgx.Tx, taskID strin
 		if grant.SubjectType == "person" {
 			_, err = tx.Exec(ctx, `
 				INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by)
-				VALUES ('task', $1::uuid, $2::uuid, $3, $4)`, taskID, grant.SubjectID, grant.Level, grantedBy)
+				VALUES ($1, $2::uuid, $3::uuid, $4, $5)`, objectType, objectID, grant.SubjectID, grant.Level, grantedBy)
 		} else {
 			_, err = tx.Exec(ctx, `
 				INSERT INTO identity.shares (object_type, object_id, team_id, level, granted_by)
-				VALUES ('task', $1::uuid, $2::uuid, $3, $4)`, taskID, grant.SubjectID, grant.Level, grantedBy)
+				VALUES ($1, $2::uuid, $3::uuid, $4, $5)`, objectType, objectID, grant.SubjectID, grant.Level, grantedBy)
 		}
 		if err != nil {
 			return err

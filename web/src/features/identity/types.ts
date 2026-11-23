@@ -66,6 +66,8 @@ export interface TaskShare {
   visibility: TaskVisibility;
   /** The team a team visibility names. Absent for private and everyone. */
   team_id?: string;
+  /** Present on chat shares when earlier replies read personal memory or private knowledge. */
+  private_read?: boolean;
   members: ShareMember[];
 }
 

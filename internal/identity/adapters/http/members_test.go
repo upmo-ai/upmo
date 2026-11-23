@@ -178,6 +178,15 @@ func (f *memberFake) ReplaceTaskGrants(context.Context, string, []app.GrantWrite
 func (f *memberFake) ReplaceTaskGrantsTx(context.Context, pgx.Tx, string, []app.GrantWrite, domain.UserID) error {
 	return nil
 }
+func (f *memberFake) ChatGrants(context.Context, string) ([]app.TaskGrant, error) {
+	return nil, nil
+}
+func (f *memberFake) ReplaceChatGrants(context.Context, string, []app.GrantWrite, domain.UserID) error {
+	return nil
+}
+func (f *memberFake) ReplaceChatGrantsTx(context.Context, pgx.Tx, string, []app.GrantWrite, domain.UserID) error {
+	return nil
+}
 func (f *memberFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
 	return nil, nil, nil
 }

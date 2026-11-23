@@ -16,6 +16,7 @@ import {
   type ShareMember,
   type ShareUpdate,
   type Task,
+  type TaskShare,
   type TaskVisibility,
   type Team,
 } from "../../app/api";
@@ -49,11 +50,19 @@ function isVisibility(value: string): value is TaskVisibility {
 }
 
 /** A refusal is shown in plain words. It never ends the session. */
-function problemText(cause: unknown, action: "load" | "save"): string {
+function problemText(cause: unknown, action: "load" | "save", objectLabel: "task" | "chat"): string {
   if (cause instanceof BrainError && cause.status === 403) {
     return action === "save"
       ? "Only the owner can change sharing."
-      : "You do not have access to this task's sharing.";
+      : `You do not have access to this ${objectLabel}'s sharing.`;
+  }
+  if (cause instanceof BrainError && cause.status === 409) {
+    return cause.message !== ""
+      ? cause.message
+      : "A reply is already on its way. Wait for it to finish or stop it before changing who has access.";
+  }
+  if (cause instanceof BrainError && cause.status === 404) {
+    return objectLabel === "chat" ? "This chat is no longer available." : "This task is no longer available.";
   }
   // A refused share update is a 422 whose message is written for the person.
   if (cause instanceof BrainError && cause.status === 422 && cause.message !== "") {
@@ -70,29 +79,69 @@ function subjectKey(member: Pick<ShareMember, "subject_type" | "subject_id">) {
   return `${member.subject_type}:${member.subject_id}`;
 }
 
+export type ShareDialogProps =
+  | {
+      opened: boolean;
+      task: Task;
+      onClose: () => void;
+      objectLabel?: "task";
+      queryKey?: readonly unknown[];
+      loadShare?: (id: string) => Promise<TaskShare>;
+      saveShare?: (id: string, update: ShareUpdate) => Promise<TaskShare>;
+    }
+  | {
+      opened: boolean;
+      objectId: string;
+      objectLabel: "chat";
+      onClose: () => void;
+      queryKey: readonly unknown[];
+      loadShare: (id: string) => Promise<TaskShare>;
+      saveShare: (id: string, update: ShareUpdate) => Promise<TaskShare>;
+    };
+
 /**
  * The body is mounted only while the dialog is open, so a picked person, a
  * pending removal or an old error never carries over to the next opening.
  */
-export function ShareDialog({
-  opened,
-  task,
-  onClose,
-}: {
-  opened: boolean;
-  task: Task;
-  onClose: () => void;
-}) {
-  if (!opened) return null;
-  return <ShareDialogBody task={task} onClose={onClose} />;
+export function ShareDialog(props: ShareDialogProps) {
+  if (!props.opened) return null;
+  const objectId = "objectId" in props ? props.objectId : props.task.id;
+  const objectLabel = props.objectLabel ?? "task";
+  return (
+    <ShareDialogBody
+      objectId={objectId}
+      objectLabel={objectLabel}
+      queryKey={props.queryKey}
+      loadShare={props.loadShare}
+      saveShare={props.saveShare}
+      onClose={props.onClose}
+    />
+  );
 }
 
-function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void }) {
+function ShareDialogBody({
+  objectId,
+  objectLabel,
+  queryKey,
+  loadShare,
+  saveShare,
+  onClose,
+}: {
+  objectId: string;
+  objectLabel: "task" | "chat";
+  queryKey?: readonly unknown[];
+  loadShare?: (id: string) => Promise<TaskShare>;
+  saveShare?: (id: string, update: ShareUpdate) => Promise<TaskShare>;
+  onClose: () => void;
+}) {
   const api = useApi();
+  const key = queryKey ?? shareQueryKey(objectId);
+  const load = loadShare ?? ((id: string) => api.shares.get(id));
+  const saveFn = saveShare ?? ((id: string, update: ShareUpdate) => api.shares.put(id, update));
   const me = useQuery({ queryKey: meQueryKey(), queryFn: () => api.me.current() });
   const share = useQuery({
-    queryKey: shareQueryKey(task.id),
-    queryFn: () => api.shares.get(task.id),
+    queryKey: key,
+    queryFn: () => load(objectId),
   });
   const editable = canEditSharing(shareRole(share.data, me.data?.memberId));
   // The roster and the teams are only needed to add access, which is owner only.
@@ -112,10 +161,10 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
   const [removeKey, setRemoveKey] = useState<string | null>(null);
   const [problem, setProblem] = useState("");
 
-  const save = useWrite((update: ShareUpdate) => api.shares.put(task.id, update), [shareQueryKey(task.id)], {
+  const save = useWrite((update: ShareUpdate) => saveFn(objectId, update), [key], {
     shown: true,
     onSuccess: () => setProblem(""),
-    onError: (cause) => setProblem(problemText(cause, "save")),
+    onError: (cause) => setProblem(problemText(cause, "save", objectLabel)),
   });
 
   const current = share.data;
@@ -188,9 +237,9 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
   };
 
   const loadProblem = share.isError
-    ? problemText(share.error, "load")
+    ? problemText(share.error, "load", objectLabel)
     : me.isError
-      ? problemText(me.error, "load")
+      ? problemText(me.error, "load", objectLabel)
       : "";
   const choicesProblem =
     editable && (members.isError || teams.isError)
@@ -210,12 +259,18 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
           {problem ? <StatusAlert tone="critical">{problem}</StatusAlert> : null}
           {current && me.data ? (
             <>
+              {current.private_read ? (
+                <StatusAlert tone="attention">
+                  Earlier replies in this chat used personal memory or private knowledge. Consider branching this chat instead of sharing the full thread.
+                </StatusAlert>
+              ) : null}
               {editable ? null : (
                 <Text size="sm" c="dimmed">
                   Only the owner can change who has access. You can see it here.
                 </Text>
               )}
               <Visibility
+                objectLabel={objectLabel}
                 visibility={current.visibility}
                 editable={editable}
                 busy={save.isPending}
@@ -310,7 +365,7 @@ function ShareDialogBody({ task, onClose }: { task: Task; onClose: () => void })
           removing
             ? removing.subject_type === "team"
               ? `People in ${removing.name} will lose the access they get through the team.`
-              : `${removing.name} will lose access to this task.`
+              : `${removing.name} will lose access to this ${objectLabel}.`
             : ""
         }
         action="Remove access"
@@ -330,12 +385,14 @@ function personLabel(member: Member) {
 }
 
 function Visibility({
+  objectLabel,
   visibility,
   editable,
   busy,
   teamWaiting,
   onChange,
 }: {
+  objectLabel: "task" | "chat";
   visibility: TaskVisibility;
   editable: boolean;
   busy: boolean;
@@ -343,11 +400,12 @@ function Visibility({
   onChange: (visibility: TaskVisibility) => void;
 }) {
   const shown = visibilityOptions.find((option) => option.value === visibility);
+  const heading = `Who can open this ${objectLabel}`;
 
   if (!editable) {
     return (
       <Stack gap={4}>
-        <Text fw={600}>Who can open this task</Text>
+        <Text fw={600}>{heading}</Text>
         <Text>{shown?.label}</Text>
         <Text size="sm" c="dimmed">
           {shown?.description}
@@ -358,7 +416,7 @@ function Visibility({
 
   return (
     <Radio.Group
-      label="Who can open this task"
+      label={heading}
       value={visibility}
       onChange={(value) => {
         if (isVisibility(value)) onChange(value);

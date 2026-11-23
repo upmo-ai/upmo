@@ -1211,3 +1211,133 @@ func TestHoldAtRound14ResumesOnRound15AndNeverRunsRound16(t *testing.T) {
 		t.Fatalf("round 15 hold added a job: %d", len(r.jobs()))
 	}
 }
+
+func TestSharedChatReplyRunsAsAuthorStripsPersonalMemoryAndIsolatesHolds(t *testing.T) {
+	r, tools := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+
+	// Seed private Task A owned by ownerUser and private Task B owned by otherUser.
+	ownerTaskAccess := tasks.Access{UserID: ownerUser, Allow: "task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	otherTaskAccess := tasks.Access{UserID: otherUser, Allow: "task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	if _, err := tasks.OpenTask(ctx, tools.tasks, nil, ownerTaskAccess, tasks.Opening{Goal: "Owner secret task"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.OpenTask(ctx, tools.tasks, nil, otherTaskAccess, tasks.Opening{Goal: "Editor private task"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner opens a chat and shares it with otherUser as editor.
+	ownerFull := chat.Access{
+		UserID: ownerUser,
+		Allow:  "chat:create,chat:view,chat:edit,task:create,task:view,task:edit,agent:view",
+		Teams:  "{" + toolsTeamA + "}",
+	}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by)
+		VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, chatID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+
+	editorFull := chat.Access{
+		UserID:     otherUser,
+		Allow:      "chat:create,chat:view,chat:edit,task:create,task:view,task:edit,agent:view",
+		Teams:      "{" + toolsTeamA + "}",
+		SharedView: "{" + chatID + "}",
+		SharedEdit: "{" + chatID + "}",
+	}
+	r.setAccess(otherUser, editorFull)
+
+	// User B (editor) sends a message in User A's shared chat.
+	if err := app.Say(ctx, r.store, editorFull, chatID, "list my tasks then automate", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	job1 := r.lastJob()
+
+	// Verify chat.runs.author_id = otherUser.
+	var runAuthor string
+	if err := r.owner.QueryRow(ctx, `SELECT author_id::text FROM chat.runs WHERE id = $1::uuid`, job1.Args.ReplyID).Scan(&runAuthor); err != nil {
+		t.Fatal(err)
+	}
+	if runAuthor != otherUser {
+		t.Fatalf("run author_id = %s, want %s", runAuthor, otherUser)
+	}
+
+	start := len(r.stub.seen())
+	r.stub.reply(func(call int, s *frames) {
+		round := call - start
+		if round == 1 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: "lt1", Name: "list_tasks", Args: `{"limit":20}`})
+			return
+		}
+		if round == 2 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{
+				ID:   "ca1",
+				Name: "create_automation",
+				Args: `{"goal":"Weekly summary","agent_id":"","kind":"cron","spec":"0 9 * * 1","budget_cents":500}`,
+			})
+			return
+		}
+		s.delta("done")
+		s.done("m1", 1, 1, nil)
+	})
+
+	if err := r.run(job1, 1); err != nil {
+		t.Fatal(err)
+	}
+	job2 := r.lastJob()
+	if err := r.run(job2, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := r.stub.seen()[start:]
+	if len(calls) != 2 {
+		t.Fatalf("gateway calls = %d, want 2", len(calls))
+	}
+	// Personal memory tools must be absent in a shared chat.
+	for _, tool := range calls[0].Tools {
+		if tool.Name == "search_memory" || tool.Name == "save_memory" {
+			t.Fatalf("personal memory tool %q offered in shared chat", tool.Name)
+		}
+	}
+	// list_tasks must return only User B's task and never User A's private task.
+	var tasksOut []chat.TaskItem
+	for _, msg := range calls[1].Messages {
+		if msg.Role == "tool" && msg.ToolName == "list_tasks" {
+			if err := json.Unmarshal([]byte(msg.Text), &tasksOut); err != nil {
+				t.Fatalf("list_tasks output = %q (%v)", msg.Text, err)
+			}
+		}
+	}
+	if len(tasksOut) != 1 || tasksOut[0].Title != "Editor private task" {
+		t.Fatalf("list_tasks = %+v, want only Editor private task", tasksOut)
+	}
+
+	// Round 2 held on create_automation: only author_id (otherUser) sees hold preview and can decide it.
+	ownerView, err := app.Read(ctx, r.store, ownerFull, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerView.Hold != nil {
+		t.Fatalf("owner saw editor hold = %+v, want nil", ownerView.Hold)
+	}
+	editorView, err := app.Read(ctx, r.store, editorFull, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if editorView.Hold == nil || editorView.Hold.ID == "" {
+		t.Fatalf("editor hold = %+v, want pending hold", editorView.Hold)
+	}
+	holdID := editorView.Hold.ID
+	if err := app.ApproveHold(ctx, r.store, ownerFull, chatID, holdID, false); !errors.Is(err, app.ErrAccess) {
+		t.Fatalf("owner ApproveHold = %v, want ErrAccess", err)
+	}
+	if err := app.DenyHold(ctx, r.store, ownerFull, chatID, holdID); !errors.Is(err, app.ErrAccess) {
+		t.Fatalf("owner DenyHold = %v, want ErrAccess", err)
+	}
+	if err := app.DenyHold(ctx, r.store, editorFull, chatID, holdID); err != nil {
+		t.Fatalf("editor DenyHold = %v", err)
+	}
+}

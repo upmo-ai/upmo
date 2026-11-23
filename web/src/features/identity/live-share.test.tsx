@@ -372,4 +372,98 @@ describe("task shares from the brain", () => {
       ),
     ).toEqual([]);
   });
+
+  it("UPM-321: loads and saves chat shares against /api/chats/{id}/share with private_read and 409 handling", async () => {
+    const chatId = "01990000-0000-7000-8000-0000000000c9";
+    let failWith409 = true;
+    let savedShare = {
+      visibility: "private",
+      private_read: true,
+      members: [{ ...ownerGrant, name: "Ada Lovelace" }],
+    };
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      if (method === "GET" && path === "/api/session") {
+        return Response.json({ user_id: adaId, sign_in_method: "password", has_password: true, passkey_count: 1 });
+      }
+      if (method === "GET" && (path === "/api/tasks" || path === "/api/approvals" || path.startsWith("/api/notifications"))) {
+        return Response.json([]);
+      }
+      if (method === "GET" && (path === "/api/gateway/routes" || path === "/api/agents" || path === "/api/providers")) {
+        return Response.json([]);
+      }
+      if (method === "GET" && path === "/api/members") {
+        return Response.json([
+          { id: adaId, name: "Ada Lovelace", email: "ada@example.com", invited: false, teams: ["Finance"], role: { id: "r1", name: "owner", system: "owner" } },
+          { id: leeId, name: "Lee Chen", email: "lee@example.com", invited: false, teams: [], role: { id: "r2", name: "member", system: "member" } },
+        ]);
+      }
+      if (method === "GET" && path === "/api/teams") return Response.json(teams);
+      if (method === "GET" && path === "/api/chats") {
+        return Response.json([{ id: chatId, title: "Shared plan", preview: "Hi", last_activity: "2026-11-23T10:00:00Z" }]);
+      }
+      if (method === "GET" && path === `/api/chats/${chatId}`) {
+        return Response.json({
+          id: chatId,
+          tainted: false,
+          private_read: true,
+          lines: [
+            {
+              id: "line-1",
+              role: "user",
+              body: "Shared plan",
+              author_id: adaId,
+              author_name: "Ada Lovelace",
+              author_avatar: null,
+              model: null,
+              tokens: 5,
+              cost_usd: null,
+              at: "2026-11-23T10:00:00Z",
+            },
+          ],
+        });
+      }
+      if (method === "GET" && path === `/api/chats/${chatId}/share`) {
+        return Response.json(savedShare);
+      }
+      if (method === "PUT" && path === `/api/chats/${chatId}/share`) {
+        if (failWith409) {
+          return Response.json({ error: "a reply is already on its way" }, { status: 409 });
+        }
+        const update = JSON.parse(String(init?.body)) as { visibility: string; members: Grant[] };
+        savedShare = {
+          visibility: update.visibility,
+          private_read: true,
+          members: update.members.map((m) => ({ ...m, name: m.subject_id === adaId ? "Ada Lovelace" : "Lee Chen" })),
+        };
+        return Response.json(savedShare);
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    renderAt("/chat");
+    expect(await screen.findByRole("heading", { level: 2, name: "Shared plan" })).toBeTruthy();
+
+    act(() => {
+      screen.getByRole("button", { name: "Share" }).click();
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Share" });
+    expect(await within(dialog).findByText(/Earlier replies in this chat used personal memory or private knowledge/i)).toBeTruthy();
+
+    act(() => {
+      within(dialog).getByRole("radio", { name: "Everyone" }).click();
+    });
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("a reply is already on its way");
+
+    failWith409 = false;
+    act(() => {
+      within(dialog).getByRole("radio", { name: "Everyone" }).click();
+    });
+    await waitFor(() => {
+      expect(within(dialog).getByRole("radio", { name: "Everyone" })).toHaveProperty("checked", true);
+    });
+  });
 });

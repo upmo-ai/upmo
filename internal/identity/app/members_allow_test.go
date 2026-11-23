@@ -106,6 +106,13 @@ func (f allowFake) ReplaceTaskGrants(context.Context, string, []GrantWrite, doma
 func (f allowFake) ReplaceTaskGrantsTx(context.Context, pgx.Tx, string, []GrantWrite, domain.UserID) error {
 	return nil
 }
+func (f allowFake) ChatGrants(context.Context, string) ([]TaskGrant, error) { return nil, nil }
+func (f allowFake) ReplaceChatGrants(context.Context, string, []GrantWrite, domain.UserID) error {
+	return nil
+}
+func (f allowFake) ReplaceChatGrantsTx(context.Context, pgx.Tx, string, []GrantWrite, domain.UserID) error {
+	return nil
+}
 func (f allowFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
 	return nil, nil, nil
 }

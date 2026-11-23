@@ -25,6 +25,10 @@ export interface ChatLine {
   id: string;
   role: LineRole;
   body: string;
+  /** The person who sent a user line. Null for an assistant line. */
+  author_id?: string | null;
+  author_name?: string | null;
+  author_avatar?: string | null;
   /** The model that wrote an assistant line. Null for a user line. */
   model: string | null;
   tokens: number;
@@ -64,6 +68,8 @@ export interface ChatNotice {
 export interface Chat {
   id: string;
   lines: ChatLine[];
+  tainted?: boolean;
+  private_read?: boolean;
   /** Switch notices for replies still pending. Never read from the server. */
   notices?: ChatNotice[];
 }

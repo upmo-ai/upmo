@@ -106,6 +106,7 @@ CREATE TABLE identity.users (
   passkey_offered_at timestamptz,
   time_zone text,
   locale text,
+  avatar_key text,
   CONSTRAINT users_name_check CHECK (name <> ''),
   CONSTRAINT users_email_hash_len CHECK (octet_length(email_hash) = 32)
 );

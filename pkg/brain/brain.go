@@ -1090,11 +1090,14 @@ func buildHandler(
 	}
 
 	chatBook := chat.NewStore(pool, work)
+	chatBook.ReplaceChatGrants = chatGrants{members: members}.ReplaceChatGrantsTx
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
 		chatBook.ReplyRoute = cfg.ChatRoute
 	}
 	chat.Handler{
 		Book:      chatBook,
+		Shares:    chatBook,
+		Grants:    chatGrants{members: members},
 		Converter: knowledgeConverter,
 		Stream:    chatStreams,
 		Metrics:   reg,

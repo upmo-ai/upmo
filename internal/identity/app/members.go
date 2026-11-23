@@ -24,6 +24,9 @@ type MemberStore interface {
 	TaskGrants(ctx context.Context, taskID string) ([]TaskGrant, error)
 	ReplaceTaskGrants(ctx context.Context, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
 	ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
+	ChatGrants(ctx context.Context, chatID string) ([]TaskGrant, error)
+	ReplaceChatGrants(ctx context.Context, chatID string, grants []GrantWrite, grantedBy domain.UserID) error
+	ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID string, grants []GrantWrite, grantedBy domain.UserID) error
 	NamesOf(ctx context.Context, persons, teams []string) (personNames, teamNames map[string]string, err error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)

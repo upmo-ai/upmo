@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../../App";
-import { createStubApi, type ApiClient, type Chat, type ChatSummary } from "../../app/api";
+import { BrainError, createStubApi, type ApiClient, type Chat, type ChatSummary } from "../../app/api";
 import { AppProviders } from "../../theme";
 
 // A reply that lands at once, so most tests do not wait for the stub's delay.
@@ -899,5 +899,109 @@ describe("UPM-318 chat attachments", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove file-10.txt" }));
     expect(screen.queryByText(/at most 10 files/i)).toBeNull();
+  });
+
+  it("UPM-321: shows private_read caution banner in chat Share modal", async () => {
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async getShare() {
+          return {
+            visibility: "private",
+            private_read: true,
+            members: [{ subject_type: "person", subject_id: "sam", name: "Sam Rivera", role: "owner" }],
+          };
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    const dialog = await screen.findByRole("dialog", { name: "Share" });
+    expect(await within(dialog).findByText(/Earlier replies in this chat used personal memory or private knowledge/i)).toBeTruthy();
+    expect(within(dialog).getByText(/branching this chat/i)).toBeTruthy();
+  });
+
+  it("UPM-321: shows 409 conflict inside chat Share modal without closing or signing out", async () => {
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async putShare() {
+          throw new BrainError(409, "a reply is already on its way");
+        },
+      },
+    };
+    const history = renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    const dialog = await screen.findByRole("dialog", { name: "Share" });
+    await within(dialog).findByRole("list", { name: "Who has access" });
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Everyone" }));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("a reply is already on its way");
+    expect(history.location.pathname).toBe("/chat");
+    expect(screen.getByRole("dialog", { name: "Share" })).toBeTruthy();
+  });
+
+  it("UPM-321: shows read-only message when a non-owner opens the chat Share modal", async () => {
+    const base = quick();
+    const lee = async () => ({ ...(await base.me.current()), memberId: "lee" });
+    const client: ApiClient = {
+      ...base,
+      session: { get: lee },
+      me: { ...base.me, current: lee },
+      chats: {
+        ...base.chats,
+        async getShare() {
+          return {
+            visibility: "private",
+            private_read: false,
+            members: [
+              { subject_type: "person", subject_id: "sam", name: "Sam Rivera", role: "owner" },
+              { subject_type: "person", subject_id: "lee", name: "Lee Chen", role: "editor" },
+            ],
+          };
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    const dialog = await screen.findByRole("dialog", { name: "Share" });
+    expect(await within(dialog).findByText(/Only the owner can change who has access\./)).toBeTruthy();
+  });
+
+  it("UPM-321: renders default Upmo avatar with author name when author_avatar is null", async () => {
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async get(id): Promise<Chat> {
+          const chat = await base.chats.get(id);
+          return {
+            ...chat,
+            lines: chat.lines.map((line) =>
+              line.role === "user"
+                ? { ...line, author_id: "u-ada", author_name: "Ada Lovelace", author_avatar: null }
+                : line,
+            ),
+          };
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+    const log = messageLog();
+    expect(await within(log).findByText("Ada Lovelace")).toBeTruthy();
+    expect(within(log).getByRole("img", { name: "Ada Lovelace" })).toBeTruthy();
   });
 });

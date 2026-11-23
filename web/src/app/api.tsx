@@ -753,6 +753,10 @@ export interface ApiClient {
      * picks made now (202).
      */
     retry(id: string, lineId: string, picks: ChatPicks): Promise<void>;
+    /** GET /api/chats/{id}/share. Owner first, with names and private_read flag. */
+    getShare(id: string): Promise<TaskShare>;
+    /** PUT /api/chats/{id}/share. Owner only; 409 while a reply run is active. */
+    putShare(id: string, update: ShareUpdate): Promise<TaskShare>;
     /**
      * True while an assistant line is written on its own after a send, so a
      * reply is worth waiting for: the stub's is, the brain's is not yet.
@@ -932,6 +936,10 @@ export function chatsQueryKey() {
 
 export function chatQueryKey(id: string) {
   return ["chat", id] as const;
+}
+
+export function chatShareQueryKey(chatId: string) {
+  return ["chat-share", chatId] as const;
 }
 
 export const ARTIFACTS_KEY = ["artifacts"] as const;

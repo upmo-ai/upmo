@@ -31,6 +31,10 @@ type Store struct {
 	// names none. Empty turns replies off: a line is stored and nothing
 	// answers it.
 	ReplyRoute string
+	// ReplaceChatGrants runs identity's grant replacement inside a transaction
+	// the chat store owns, so grants, visibility and chat.share commit or roll
+	// back together.
+	ReplaceChatGrants func(ctx context.Context, tx pgx.Tx, chatID string, grants []domain.ShareGrant, grantedBy string) error
 	// betweenReads, when set, runs inside Tail between its two reads. It is a
 	// seam for tests of a read that races a write, set through export_test.go.
 	betweenReads func()
@@ -547,7 +551,11 @@ func writeErr(err error) error {
 // author of a line gets the account and agent they picked back, anyone else
 // gets the route and the model name alone.
 func lineColumnsFor(viewer string) string {
-	return `line.id::text, line.seq, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
+	return `line.id::text, line.seq, line.role, line.body,
+	line.author_id::text,
+	(SELECT person.name FROM identity.users AS person WHERE person.id = line.author_id),
+	(SELECT person.avatar_key FROM identity.users AS person WHERE person.id = line.author_id),
+	line.model, line.tokens, line.cost_micro_usd, line.at,
 	line.status, line.reply_to::text, line.attempts, line.attachments,
 	line.route,
 	CASE WHEN line.author_id = ` + viewer + ` THEN line.pin_account_id::text END,
@@ -569,7 +577,9 @@ func scanLine(rows pgx.Rows, lead ...any) (app.Line, error) {
 	var line app.Line
 	var attempts []byte
 	var attachments []byte
-	dest := append(lead, &line.ID, &line.Seq, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
+	dest := append(lead, &line.ID, &line.Seq, &line.Role, &line.Body,
+		&line.AuthorID, &line.AuthorName, &line.AuthorAvatar,
+		&line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
 		&line.Status, &line.ReplyTo, &attempts, &attachments, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID, &line.Pending)
 	if err := rows.Scan(dest...); err != nil {
 		return app.Line{}, fmt.Errorf("chat: line: %w", err)

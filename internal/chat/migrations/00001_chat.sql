@@ -100,11 +100,17 @@ CREATE POLICY lines_select ON chat.lines
 
 CREATE POLICY lines_insert ON chat.lines
   FOR INSERT
-  WITH CHECK (EXISTS (
-    SELECT 1 FROM chat.chats AS chat
-    WHERE chat.id = chat_id
-      AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
-  ));
+  WITH CHECK (
+    (
+      role = 'assistant'
+      OR author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
+  );
 
 CREATE POLICY lines_owner_select ON chat.lines
   FOR SELECT

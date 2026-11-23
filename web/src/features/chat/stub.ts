@@ -1,4 +1,4 @@
-import type { ApiClient } from "../../app/api";
+import { BrainError, type ApiClient, type ShareUpdate, type TaskShare } from "../../app/api";
 import type { Chat, ChatLine, ChatSummary } from "./types";
 
 // How long the stub takes to answer. A real model takes longer.
@@ -15,6 +15,8 @@ interface StoredChat {
   title: string;
   createdAt: string;
   lines: ChatLine[];
+  privateRead?: boolean;
+  share?: TaskShare;
 }
 
 /** JSON round-trip so a caller cannot change the stored record. */
@@ -254,6 +256,33 @@ export function createChatsStub(
     },
     async retry() {
       throw new Error("The sample chats have no failed replies.");
+    },
+    async getShare(id): Promise<TaskShare> {
+      const chat = find(id);
+      const share: TaskShare = chat.share ?? {
+        visibility: "private",
+        private_read: Boolean(chat.privateRead),
+        members: [{ subject_type: "person", subject_id: "sam", name: "Sam Rivera", role: "owner" }],
+      };
+      return copy(share);
+    },
+    async putShare(id, update: ShareUpdate): Promise<TaskShare> {
+      const chat = find(id);
+      const last = chat.lines.at(-1);
+      if (last?.role === "user" || last?.status === "pending") {
+        throw new BrainError(409, "a reply is already on its way");
+      }
+      const next: TaskShare = {
+        visibility: update.visibility,
+        ...(update.visibility === "team" && update.team_id ? { team_id: update.team_id } : {}),
+        private_read: Boolean(chat.privateRead),
+        members: update.members.map((member) => ({
+          ...member,
+          name: member.subject_id === "sam" ? "Sam Rivera" : member.subject_id,
+        })),
+      };
+      chat.share = next;
+      return copy(next);
     },
   };
 }

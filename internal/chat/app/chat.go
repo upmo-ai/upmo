@@ -85,6 +85,9 @@ type Line struct {
 	Seq          int
 	Role         string
 	Body         string
+	AuthorID     *string
+	AuthorName   *string
+	AuthorAvatar *string
 	Model        *string
 	Tokens       int
 	CostMicroUSD *int64
