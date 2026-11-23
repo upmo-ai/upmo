@@ -63,6 +63,7 @@ func (p Picks) None() bool { return p == Picks{} }
 // each failed.
 type Line struct {
 	ID           string
+	Seq          int
 	Role         string
 	Body         string
 	Model        *string

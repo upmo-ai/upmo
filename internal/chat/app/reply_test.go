@@ -10,39 +10,6 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 )
 
-func TestHistoryKeepsTheNewestLinesThatFitAndAlwaysTheLast(t *testing.T) {
-	lines := []Line{
-		{Role: "user", Body: "aaaaaaaa"},
-		{Role: "assistant", Body: "bbbb"},
-		{Role: "user", Body: "cc"},
-	}
-	got := history(lines, 6)
-	want := []ModelMessage{{Role: "assistant", Text: "bbbb"}, {Role: "user", Text: "cc"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("history = %+v", got)
-	}
-	// The last line is sent even when it alone is over the budget.
-	if got := history(lines, 1); !reflect.DeepEqual(got, []ModelMessage{{Role: "user", Text: "cc"}}) {
-		t.Fatalf("tiny budget history = %+v", got)
-	}
-	// The budget counts characters, not bytes.
-	if got := history([]Line{{Role: "user", Body: "ééé"}, {Role: "user", Body: "ü"}}, 4); len(got) != 1 || got[0].Text != "ééé\n\nü" {
-		t.Fatalf("multibyte history = %+v", got)
-	}
-}
-
-func TestHistoryJoinsNeighboringLinesOfOneRole(t *testing.T) {
-	got := history([]Line{
-		{Role: "user", Body: "q1"},
-		{Role: "user", Body: "q2"},
-		{Role: "assistant", Body: "a"},
-	}, 100)
-	want := []ModelMessage{{Role: "user", Text: "q1\n\nq2"}, {Role: "assistant", Text: "a"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("history = %+v", got)
-	}
-}
-
 func TestCloseAttemptsDoesNotListTheLastFailureTwice(t *testing.T) {
 	notices := []domain.Attempt{{Model: "m1", Class: "rate_limit"}, {Model: "m2", Class: "transient"}}
 	got := closeAttempts(notices, &ModelError{Class: "transient", Model: "m2"})

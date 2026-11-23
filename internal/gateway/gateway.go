@@ -30,12 +30,13 @@ const Schema = "gateway"
 // Ledger source constants are exposed through the gateway facade for callers
 // in other contexts; validation and persistence use the domain values.
 const (
-	SourceChat       = domain.SourceChat
-	SourceTask       = domain.SourceTask
-	SourceAutomation = domain.SourceAutomation
-	SourceKnowledge  = domain.SourceKnowledge
-	SourceMemory     = domain.SourceMemory
-	SourceSystem     = domain.SourceSystem
+	SourceChat           = domain.SourceChat
+	SourceTask           = domain.SourceTask
+	SourceAutomation     = domain.SourceAutomation
+	SourceKnowledge      = domain.SourceKnowledge
+	SourceMemory         = domain.SourceMemory
+	SourceSystem         = domain.SourceSystem
+	DefaultContextWindow = domain.DefaultContextWindow
 )
 
 // ProviderCaller is the provider settings caller passed to composition ports.

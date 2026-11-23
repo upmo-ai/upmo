@@ -66,6 +66,8 @@ func Reason(class string) string {
 		return "the reply needed an approval, which chat cannot ask for yet"
 	case "empty":
 		return "the model gave no answer"
+	case "context_exceeded":
+		return "this chat is too long for this model"
 	case "access":
 		return "you no longer have access to this chat"
 	case "unwritten":

@@ -253,8 +253,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.chats": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "tainted", "visibility", "visibility_team_id"},
-			Insert: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "tainted", "visibility", "visibility_team_id"},
+			Select: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "rolling_summary", "summary_up_to_line_id", "summary_up_to_seq", "tainted", "visibility", "visibility_team_id"},
+			Insert: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "rolling_summary", "summary_up_to_line_id", "summary_up_to_seq", "tainted", "visibility", "visibility_team_id"},
 			Update: []string{"id", "object_type", "visibility", "visibility_team_id"},
 		},
 		"chat.deltas": {

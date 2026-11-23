@@ -488,7 +488,7 @@ func writeErr(err error) error {
 // author of a line gets the account and agent they picked back, anyone else
 // gets the route and the model name alone.
 func lineColumnsFor(viewer string) string {
-	return `line.id::text, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
+	return `line.id::text, line.seq, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
 	line.status, line.reply_to::text, line.attempts,
 	line.route,
 	CASE WHEN line.author_id = ` + viewer + ` THEN line.pin_account_id::text END,
@@ -509,7 +509,7 @@ const superseded = `line.status IN ('failed', 'stopped') AND EXISTS (
 func scanLine(rows pgx.Rows, lead ...any) (app.Line, error) {
 	var line app.Line
 	var attempts []byte
-	dest := append(lead, &line.ID, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
+	dest := append(lead, &line.ID, &line.Seq, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
 		&line.Status, &line.ReplyTo, &attempts, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID, &line.Pending)
 	if err := rows.Scan(dest...); err != nil {
 		return app.Line{}, fmt.Errorf("chat: line: %w", err)

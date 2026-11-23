@@ -22,20 +22,21 @@ func TestRouteTrimsAndRefusesWhatIsNoName(t *testing.T) {
 
 func TestReasonNamesEveryClassWithoutProviderWords(t *testing.T) {
 	want := map[string]string{
-		"rate_limit":    "rate limited",
-		"limit_reached": "spend limit reached",
-		"transient":     "not reachable",
-		"credential":    "key rejected",
-		"model_access":  "model unavailable",
-		"overloaded":    "model unavailable",
-		"timeout":       "timed out",
-		"rounds":        "the reply took too many steps",
-		"hold":          "the reply needed an approval, which chat cannot ask for yet",
-		"empty":         "the model gave no answer",
-		"canceled":      "stopped",
-		"internal":      "stopped",
-		"caller":        "stopped",
-		"anything":      "stopped",
+		"rate_limit":       "rate limited",
+		"limit_reached":    "spend limit reached",
+		"transient":        "not reachable",
+		"credential":       "key rejected",
+		"model_access":     "model unavailable",
+		"overloaded":       "model unavailable",
+		"timeout":          "timed out",
+		"rounds":           "the reply took too many steps",
+		"hold":             "the reply needed an approval, which chat cannot ask for yet",
+		"empty":            "the model gave no answer",
+		"context_exceeded": "this chat is too long for this model",
+		"canceled":         "stopped",
+		"internal":         "stopped",
+		"caller":           "stopped",
+		"anything":         "stopped",
 	}
 	for class, reason := range want {
 		if got := Reason(class); got != reason {

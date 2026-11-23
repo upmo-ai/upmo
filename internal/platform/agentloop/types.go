@@ -154,13 +154,14 @@ type PromptRequest struct {
 
 // PromptResponse is the model's output for one turn.
 type PromptResponse struct {
-	Text         string
-	ToolCalls    []ToolCall
-	StopReason   string
-	Model        string
-	Usage        kernel.TokenUsage
-	CostMicroUSD *int64
-	Price        *kernel.TokenPrice
+	Text          string
+	ToolCalls     []ToolCall
+	StopReason    string
+	Model         string
+	Usage         kernel.TokenUsage
+	CostMicroUSD  *int64
+	Price         *kernel.TokenPrice
+	ContextWindow int
 }
 
 // ModelClient executes one turn completion against the gateway.

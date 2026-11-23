@@ -61,7 +61,7 @@ func (m turnModel) Complete(ctx context.Context, req agentloop.PromptRequest) (a
 		TeamID:          req.TeamID,
 		System:          req.System,
 		Tools:           tools,
-		CoreTools:       true,
+		CoreTools:       !m.route.DisableCoreTools,
 		Messages:        messages,
 		MaxOutputTokens: m.route.MaxOutputTokens,
 		PinAccount:      m.route.PinAccount,
@@ -96,7 +96,8 @@ func (m turnModel) Complete(ctx context.Context, req agentloop.PromptRequest) (a
 			CacheWriteTokens: int64(done.CacheWrite),
 			ReasoningTokens:  int64(done.Reasoning),
 		},
-		CostMicroUSD: done.CostMicroUSD,
+		CostMicroUSD:  done.CostMicroUSD,
+		ContextWindow: done.ContextWindow,
 	}, nil
 }
 

@@ -197,6 +197,7 @@ type roundStore struct {
 	live     *liveAccess
 	sink     *deltaSink
 	attempts *[]domain.Attempt
+	summary  *SummaryUpdate
 	done     bool
 }
 
@@ -214,7 +215,7 @@ func (s *roundStore) CommitTurnAndEnqueue(_ context.Context, commit agentloop.Tu
 	if !ok {
 		return errRevoked
 	}
-	rc := RoundCommit{Turn: commit, Tail: tail, End: RoundDone}
+	rc := RoundCommit{Turn: commit, Summary: s.summary, Tail: tail, End: RoundDone}
 	round := s.claim.Job.Round
 	switch {
 	case commit.Status == agentloop.TurnBudgetExhausted:

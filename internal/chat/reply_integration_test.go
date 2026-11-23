@@ -698,8 +698,8 @@ func TestHistoryDropsADoneReplyAReplacementSuperseded(t *testing.T) {
 	}
 }
 
-func TestHistoryTrimsFromTheOldestEndToTheBudget(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{HistoryChars: 8})
+func TestReplyHistoryKeepsEarlierLinesBeforeRollingSummaryThreshold(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
 	r.stub.reply(func(_ int, s *frames) { s.delta("ok"); s.done("m1", 1, 1, nil) })
 	chatID := r.open()
 	for _, body := range []string{"aaaaaaaa", "bbbb", "cc"} {
@@ -708,12 +708,10 @@ func TestHistoryTrimsFromTheOldestEndToTheBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The third reply takes the lines newest first while they fit in 8
-	// characters: "cc", the answer "ok" before it, then "bbbb", and not the
-	// answer before that.
+	// The round keeps the full transcript until token-based compaction is needed.
 	calls := r.stub.seen()
 	sent := calls[2].Messages
-	if len(sent) != 3 || sent[0].Text != "bbbb" || sent[1].Text != "ok" || sent[2].Text != "cc" {
+	if len(sent) != 5 || sent[0].Text != "aaaaaaaa" || sent[1].Text != "ok" || sent[2].Text != "bbbb" || sent[3].Text != "ok" || sent[4].Text != "cc" {
 		t.Fatalf("history = %+v", sent)
 	}
 }

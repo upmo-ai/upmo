@@ -9,10 +9,17 @@ CREATE TABLE chat.chats (
   created_at timestamptz NOT NULL DEFAULT now(),
   tainted boolean NOT NULL DEFAULT false,
   private_read boolean NOT NULL DEFAULT false,
+  rolling_summary text NOT NULL DEFAULT '',
+  summary_up_to_line_id uuid,
+  summary_up_to_seq int NOT NULL DEFAULT 0,
   CONSTRAINT chats_type_check CHECK (object_type = 'chat'),
   CONSTRAINT chats_visibility_check CHECK (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
+  ),
+  CONSTRAINT chats_summary_seq_check CHECK (
+    (summary_up_to_seq = 0 AND summary_up_to_line_id IS NULL AND rolling_summary = '')
+    OR (summary_up_to_seq > 0 AND summary_up_to_line_id IS NOT NULL)
   )
 );
 
@@ -127,7 +134,7 @@ CREATE TRIGGER chat_keep_line
 GRANT SELECT, INSERT ON chat.lines TO upmo_app;
 
 SELECT identity.protect('chat.chats');
-REVOKE UPDATE (created_at, tainted, private_read) ON chat.chats FROM upmo_app;
+REVOKE UPDATE (created_at, tainted, private_read, rolling_summary, summary_up_to_line_id, summary_up_to_seq) ON chat.chats FROM upmo_app;
 DROP POLICY IF EXISTS may_delete ON chat.chats;
 CREATE POLICY may_delete ON chat.chats FOR DELETE USING (
   owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
@@ -208,6 +215,13 @@ BEGIN
      AND NOT is_table_owner THEN
     RAISE EXCEPTION 'chat: taint';
   END IF;
+  IF (NEW.rolling_summary IS DISTINCT FROM OLD.rolling_summary
+      OR NEW.summary_up_to_line_id IS DISTINCT FROM OLD.summary_up_to_line_id
+      OR NEW.summary_up_to_seq IS DISTINCT FROM OLD.summary_up_to_seq) THEN
+    IF NEW.summary_up_to_seq < OLD.summary_up_to_seq OR NOT is_table_owner THEN
+      RAISE EXCEPTION 'chat: summary';
+    END IF;
+  END IF;
   IF (NEW.visibility IS DISTINCT FROM OLD.visibility
       OR NEW.visibility_team_id IS DISTINCT FROM OLD.visibility_team_id)
      AND NOT (is_owner OR is_table_owner) THEN
@@ -217,6 +231,53 @@ BEGIN
 END;
 $$;
 -- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE FUNCTION chat.advance_chat_summary(
+  target_chat_id uuid,
+  active_run_id uuid,
+  job_claim uuid,
+  new_summary text,
+  up_to_line uuid,
+  up_to_seq int
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  c chat.chats%ROWTYPE;
+BEGIN
+  SELECT * INTO c FROM chat.chats WHERE id = target_chat_id FOR NO KEY UPDATE;
+  IF NOT FOUND OR NOT identity.may('edit', c.object_type, c.owner_user_id, c.visibility, c.visibility_team_id, c.id) THEN
+    RAISE EXCEPTION 'chat: access' USING ERRCODE = '42501';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM chat.runs AS r
+    WHERE r.id = active_run_id AND r.chat_id = target_chat_id
+      AND r.state = 'running' AND r.claim = job_claim
+  ) THEN
+    RAISE EXCEPTION 'chat: fenced' USING ERRCODE = '42501';
+  END IF;
+  IF up_to_seq <= c.summary_up_to_seq OR COALESCE(new_summary, '') = '' THEN
+    RETURN;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM chat.lines AS l
+    WHERE l.chat_id = target_chat_id AND l.id = up_to_line AND l.seq = up_to_seq
+  ) THEN
+    RAISE EXCEPTION 'chat: summary' USING ERRCODE = '22023';
+  END IF;
+  UPDATE chat.chats
+  SET rolling_summary = new_summary, summary_up_to_line_id = up_to_line,
+      summary_up_to_seq = up_to_seq
+  WHERE id = target_chat_id;
+END;
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION chat.advance_chat_summary(uuid, uuid, uuid, text, uuid, int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.advance_chat_summary(uuid, uuid, uuid, text, uuid, int) TO upmo_app;
 
 CREATE TRIGGER chat_keep_chat
   BEFORE UPDATE ON chat.chats
@@ -929,5 +990,6 @@ DROP TABLE IF EXISTS chat.lines;
 DROP TABLE IF EXISTS chat.chats;
 DROP FUNCTION IF EXISTS chat.keep_line();
 DROP FUNCTION IF EXISTS chat.advance_chat_exposure(uuid, boolean, boolean);
+DROP FUNCTION IF EXISTS chat.advance_chat_summary(uuid, uuid, uuid, text, uuid, int);
 DROP TRIGGER IF EXISTS chat_keep_chat ON chat.chats;
 DROP FUNCTION IF EXISTS chat.keep_chat();

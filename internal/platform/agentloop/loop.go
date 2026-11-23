@@ -93,6 +93,9 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 	if err != nil {
 		return TurnOutcome{}, err
 	}
+	if resp.ContextWindow > 0 {
+		e.ContextWindow = resp.ContextWindow
+	}
 
 	price := resp.Price
 	if price == nil {

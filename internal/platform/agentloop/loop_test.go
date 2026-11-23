@@ -1649,6 +1649,21 @@ func TestFeature_UPM314_PreCallTrimSaveFailureFailsTurn(t *testing.T) {
 	}
 }
 
+func TestResponseContextWindowControlsPostTurnTrim(t *testing.T) {
+	store := &memOutputs{}
+	turnStore := &testTurnStore{}
+	engine := Engine{ContextWindow: 1000, Outputs: store, TurnStore: turnStore, Executor: DefaultExecutor{}, Model: fakeModel{fn: func(context.Context, PromptRequest) (PromptResponse, error) {
+		return PromptResponse{Text: "done", ContextWindow: 100}, nil
+	}}}
+	input := []Message{{Role: RoleTool, ToolName: "lookup", ToolID: "old", Text: strings.Repeat("x", 600)}, {Role: RoleUser, Text: "current"}}
+	if _, err := engine.RunTurn(context.Background(), &RunState{Catalog: NewToolCatalog(nil, nil)}, input, ""); err != nil {
+		t.Fatal(err)
+	}
+	if store.seq != 1 || len(turnStore.commits) != 1 || !strings.HasPrefix(turnStore.commits[0].History[0].Text, "retrieve_output:") {
+		t.Fatalf("post-turn trim = saves %d commits %+v", store.seq, turnStore.commits)
+	}
+}
+
 func TestTrimMessagesRules(t *testing.T) {
 	input := []Message{{Role: RoleUser, Text: "user"}, {Role: RoleAssistant, Text: "assistant", ToolCalls: []ToolCall{{ID: "old", Name: "lookup"}}}, {Role: RoleTool, ToolID: "old", ToolName: "lookup", Text: strings.Repeat("x", 500)}, {Role: RoleUser, Text: "latest"}, {Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "new", Name: "lookup"}}}, {Role: RoleTool, ToolID: "new", ToolName: "lookup", Text: strings.Repeat("y", 500)}}
 	store := &memOutputs{}

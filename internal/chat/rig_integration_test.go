@@ -463,6 +463,7 @@ type stubCall struct {
 	CredentialRef   string `json:"credential_ref"`
 	UserID          string `json:"user_id"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
+	CoreTools       bool   `json:"core_tools"`
 	System          string `json:"system"`
 	RunID           string `json:"run_id"`
 	TeamID          string `json:"team_id"`

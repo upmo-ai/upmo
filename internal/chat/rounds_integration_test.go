@@ -1295,6 +1295,174 @@ func TestAnEmptyFinalAnswerFails(t *testing.T) {
 	}
 }
 
+func seedSummaryHistory(t *testing.T, r *rig, chatID string) []string {
+	t.Helper()
+	ids := make([]string, 8)
+	for i := 0; i < 4; i++ {
+		seq := i*2 + 1
+		body := strings.Repeat(fmt.Sprintf("user%d", i+1), 140)
+		if err := r.owner.QueryRow(context.Background(), `INSERT INTO chat.lines (chat_id, seq, body, role, author_id) VALUES ($1::uuid, $2, $3, 'user', $4::uuid) RETURNING id::text`, chatID, seq, body, ownerUser).Scan(&ids[i*2]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.owner.Exec(context.Background(), `INSERT INTO chat.lines (chat_id, seq, body, role, model, reply_to) VALUES ($1::uuid, $2, 'historical answer', 'assistant', 'm1', $3::uuid)`, chatID, seq+1, ids[i*2]); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.owner.QueryRow(context.Background(), `SELECT id::text FROM chat.lines WHERE chat_id = $1::uuid AND seq = $2`, chatID, seq+1).Scan(&ids[i*2+1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ids
+}
+
+func TestCrossingSixtyPercentContextWindowCompactsRollingSummaryAndKeepsLinesIntact(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{ContextWindow: 1000, FlushBytes: 1})
+	chatID := r.open()
+	ids := seedSummaryHistory(t, r, chatID)
+	r.say(chatID, "current question", "")
+	job := r.lastJob()
+	streamed := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.delta("Summary of turns 1-6")
+			s.done("m1", 10, 5, i64(7))
+			return
+		}
+		s.delta("Final answer")
+		close(streamed)
+		select {
+		case <-release:
+		case <-s.ctx.Done():
+			return
+		}
+		s.done("m1", 20, 3, i64(11))
+	})
+	runDone := make(chan error, 1)
+	go func() { runDone <- r.run(job, 1) }()
+	select {
+	case <-streamed:
+	case err := <-runDone:
+		t.Fatalf("reply finished before streaming: %v", err)
+	case <-time.After(wait):
+		t.Fatal("reply did not stream")
+	}
+	deadline := time.Now().Add(wait)
+	var deltaText strings.Builder
+	for time.Now().Before(deadline) {
+		deltaText.Reset()
+		for _, d := range r.deltas(chatID) {
+			if d.Kind == "text" {
+				deltaText.WriteString(d.Body)
+			}
+		}
+		if deltaText.String() == "Final answer" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if deltaText.String() != "Final answer" {
+		t.Fatalf("live text deltas = %q", deltaText.String())
+	}
+	releaseOnce.Do(func() { close(release) })
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	calls := r.stub.seen()
+	if len(calls) != 2 || calls[0].CoreTools || calls[0].MaxOutputTokens != app.SummaryMaxOutputTokens {
+		t.Fatalf("calls = %+v", calls)
+	}
+	var replyPrompt strings.Builder
+	for _, message := range calls[1].Messages {
+		replyPrompt.WriteString(message.Text)
+		replyPrompt.WriteByte('\n')
+	}
+	if strings.Contains(replyPrompt.String(), "user1") || strings.Contains(replyPrompt.String(), "user3") || !strings.Contains(replyPrompt.String(), "Summary of turns 1-6") || !strings.Contains(replyPrompt.String(), "user4") {
+		t.Fatalf("reply prompt = %+v", calls[1].Messages)
+	}
+	if !strings.Contains(calls[0].Messages[0].Text, "user1") || !strings.Contains(calls[0].Messages[0].Text, "user3") || strings.Contains(calls[0].Messages[0].Text, "user4") {
+		t.Fatalf("summary transcript = %q", calls[0].Messages[0].Text)
+	}
+	var summary, lineID string
+	var upTo int
+	if err := r.owner.QueryRow(context.Background(), `SELECT rolling_summary, summary_up_to_line_id::text, summary_up_to_seq FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&summary, &lineID, &upTo); err != nil {
+		t.Fatal(err)
+	}
+	if summary != "Summary of turns 1-6" || lineID != ids[5] || upTo != 6 {
+		t.Fatalf("summary cursor = %q %q %d", summary, lineID, upTo)
+	}
+	lines := r.lines(chatID)
+	if len(lines) != 10 {
+		t.Fatalf("stored lines = %d, want 10", len(lines))
+	}
+	read, err := app.Read(context.Background(), r.store, ownerAccess, chatID)
+	if err != nil || len(read.Lines) != 10 {
+		t.Fatalf("read lines = %d, err = %v", len(read.Lines), err)
+	}
+	for i := 0; i < 8; i++ {
+		if lines[i].ID != ids[i] {
+			t.Fatalf("line %d changed: %+v", i+1, lines[i])
+		}
+		if read.Lines[i].ID != ids[i] {
+			t.Fatalf("read line %d changed: %+v", i+1, read.Lines[i])
+		}
+	}
+	if lines[9].Body != "Final answer" || strings.Contains(lines[9].Body, "Summary") {
+		t.Fatalf("final line = %+v", lines[9])
+	}
+	run := r.runRow(job.Args.ReplyID)
+	if run.Tokens != 38 || run.Cost == nil || *run.Cost != 18 || lines[9].Tokens != 38 || lines[9].Cost == nil || *lines[9].Cost != 18 {
+		t.Fatalf("accounting run=%+v assistant=%+v", run, lines[9])
+	}
+	r.completed(job)
+	r.say(chatID, "second question", "")
+	r.stub.reply(func(_ int, s *frames) {
+		s.delta("Second answer")
+		s.done("m1", 20, 3, i64(11))
+	})
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	calls = r.stub.seen()
+	var laterPrompt strings.Builder
+	for _, call := range calls[2:] {
+		for _, message := range call.Messages {
+			laterPrompt.WriteString(message.Text)
+			laterPrompt.WriteByte('\n')
+		}
+	}
+	if strings.Contains(laterPrompt.String(), "user1") || strings.Contains(laterPrompt.String(), "user3") || !strings.Contains(laterPrompt.String(), "Summary of turns 1-6") || !strings.Contains(laterPrompt.String(), "user4") {
+		t.Fatalf("later prompts = %+v", calls[2:])
+	}
+}
+
+func TestRollingSummaryOnTaintedChatWrapsSummaryInTrustfence(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{ContextWindow: 1000})
+	chatID := r.open()
+	seedSummaryHistory(t, r, chatID)
+	if _, err := r.owner.Exec(context.Background(), `UPDATE chat.chats SET tainted = true WHERE id = $1::uuid`, chatID); err != nil {
+		t.Fatal(err)
+	}
+	r.say(chatID, "current question", "")
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.delta("Summary of turns 1-6")
+			s.done("m1", 10, 5, i64(7))
+			return
+		}
+		s.delta("Final answer")
+		s.done("m1", 20, 3, i64(11))
+	})
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	calls := r.stub.seen()
+	if len(calls) != 2 || !strings.Contains(calls[1].Messages[0].Text, `<untrust source="rolling_summary">Summary of turns 1-6</untrust>`) {
+		t.Fatalf("calls = %+v", calls)
+	}
+}
+
 func TestARoundSendsTheReplyAsItsRunAndATeamChatsTeam(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	ctx := context.Background()

@@ -11,6 +11,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
@@ -34,44 +35,49 @@ func lockChat(ctx context.Context, tx pgx.Tx, chatID string) error {
 // historyLinesTx loads the transcript a round-1 reply sends: every earlier
 // exchange, each answer right after the user line it answers, without failed
 // or replaced replies. ErrNoLine when the user line is not there.
-func historyLinesTx(ctx context.Context, tx pgx.Tx, chatID, lineID string) ([]app.Line, error) {
+func historyLinesTx(ctx context.Context, tx pgx.Tx, chatID, lineID string, summaryUpToSeq int) ([]app.Line, bool, error) {
 	var userSeq int
 	err := tx.QueryRow(ctx, `
 		SELECT seq FROM chat.lines
 		WHERE id = $1::uuid AND chat_id = $2::uuid AND role = 'user'`, lineID, chatID).Scan(&userSeq)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, app.ErrNoLine
+		return nil, false, app.ErrNoLine
 	}
 	if err != nil {
-		return nil, fmt.Errorf("chat: reply line: %w", err)
+		return nil, false, fmt.Errorf("chat: reply line: %w", err)
 	}
+	oldLine := userSeq <= summaryUpToSeq
 
-	rows, err := tx.Query(ctx, `
-		SELECT `+lineColumnsFor("NULL::uuid")+`
+	query := `
+		SELECT ` + lineColumnsFor("NULL::uuid") + `
 		FROM chat.lines AS line
 		LEFT JOIN chat.lines AS asked ON asked.id = line.reply_to
-		WHERE line.chat_id = $1::uuid
-		  AND COALESCE(asked.seq, line.seq) <= $2
+		WHERE line.chat_id = $1::uuid`
+	if !oldLine {
+		query += ` AND COALESCE(asked.seq, line.seq) > $3`
+	}
+	query += ` AND COALESCE(asked.seq, line.seq) <= $2
 		  AND NOT (line.status IN ('failed', 'stopped') OR EXISTS (
 		        SELECT 1 FROM chat.lines AS later
 		        WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq))
-		ORDER BY COALESCE(asked.seq, line.seq), (line.role = 'assistant'), line.seq`, chatID, userSeq)
+		ORDER BY COALESCE(asked.seq, line.seq), (line.role = 'assistant'), line.seq`
+	rows, err := tx.Query(ctx, query, chatID, userSeq, summaryUpToSeq)
 	if err != nil {
-		return nil, fmt.Errorf("chat: reply history: %w", err)
+		return nil, false, fmt.Errorf("chat: reply history: %w", err)
 	}
 	defer rows.Close()
 	var lines []app.Line
 	for rows.Next() {
 		line, err := scanLine(rows)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		lines = append(lines, line)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("chat: reply history: %w", err)
+		return nil, false, fmt.Errorf("chat: reply history: %w", err)
 	}
-	return lines, nil
+	return lines, oldLine, nil
 }
 
 // Claim takes the run's current round under the chat's lock and hands the
@@ -90,14 +96,19 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 	var vis, team string
 	var private bool
 	var exposure agentloop.ExposureState
-	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, ''), tainted, private_read, visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares WHERE object_type = 'chat' AND object_id = chat.chats.id) FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team, &exposure.Tainted, &exposure.PrivateRead, &private); err != nil {
+	var rollingSummary, summaryLineID string
+	var summarySeq int
+	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, ''), tainted, private_read, visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares WHERE object_type = 'chat' AND object_id = chat.chats.id), rolling_summary, COALESCE(summary_up_to_line_id::text, ''), summary_up_to_seq FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team, &exposure.Tainted, &exposure.PrivateRead, &private, &rollingSummary, &summaryLineID, &summarySeq); err != nil {
 		return app.Claim{}, fmt.Errorf("chat: claim scope: %w", err)
 	}
 	claim := app.Claim{
-		Job:      job,
-		Token:    token,
-		Exposure: exposure,
-		Private:  private,
+		Job:               job,
+		Token:             token,
+		Exposure:          exposure,
+		RollingSummary:    rollingSummary,
+		SummaryUpToLineID: summaryLineID,
+		SummaryUpToSeq:    summarySeq,
+		Private:           private,
 		Scope: agentloop.AccessScope{
 			UserID:           access.UserID,
 			Allow:            access.Allow,
@@ -168,6 +179,18 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 	if model != "" {
 		claim.Model = model
 	}
+	lookupModel := job.PinModel
+	if lookupModel == "" {
+		lookupModel = claim.Model
+	}
+	if lookupModel == "" {
+		if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT model FROM chat.lines WHERE chat_id = $1::uuid AND role = 'assistant' ORDER BY seq DESC LIMIT 1), '')`, job.ChatID).Scan(&lookupModel); err != nil {
+			return app.Claim{}, fmt.Errorf("chat: latest model: %w", err)
+		}
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT context_window FROM gateway.prices WHERE model = $1 AND context_window > 0 ORDER BY vendor LIMIT 1), $2)`, lookupModel, gateway.DefaultContextWindow).Scan(&claim.ContextWindow); err != nil {
+		return app.Claim{}, fmt.Errorf("chat: context window: %w", err)
+	}
 	if claim.State == app.ClaimGo {
 		claim.AllowedTools = map[string]bool{}
 		if !claim.Exposure.Tainted {
@@ -197,11 +220,14 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 			return app.Claim{}, fmt.Errorf("chat: claim turns: %w", err)
 		}
 		if job.Round == 1 {
-			lines, err := historyLinesTx(ctx, tx, job.ChatID, job.LineID)
+			lines, oldLine, err := historyLinesTx(ctx, tx, job.ChatID, job.LineID, claim.SummaryUpToSeq)
 			if err != nil {
 				return app.Claim{}, err
 			}
 			claim.Lines = lines
+			if oldLine {
+				claim.RollingSummary = ""
+			}
 		} else if history != nil {
 			if err := json.Unmarshal(history, &claim.History); err != nil {
 				return app.Claim{}, fmt.Errorf("chat: claim history: %w", err)
@@ -332,6 +358,12 @@ func (s Store) CommitRound(ctx context.Context, access app.Access, claim app.Cla
 			return fmt.Errorf("chat: exposure: %w", err)
 		}
 	}
+	if rc.Summary != nil && rc.Summary.UpToSeq > 0 {
+		if _, err := tx.Exec(ctx, `SELECT chat.advance_chat_summary($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6)`,
+			claim.Job.ChatID, claim.Job.ReplyID, claim.Token, rc.Summary.Text, rc.Summary.UpToLineID, rc.Summary.UpToSeq); err != nil {
+			return fmt.Errorf("chat: advance summary: %w", err)
+		}
+	}
 	history := rc.Turn.History
 	if history == nil {
 		history = []agentloop.Message{}
@@ -340,12 +372,26 @@ func (s Store) CommitRound(ctx context.Context, access app.Access, claim app.Cla
 	if err != nil {
 		return err
 	}
+	roundTokens := rc.Turn.InputTokens + rc.Turn.OutputTokens
+	roundCost := int64(0)
+	roundCostKnown := rc.Turn.ReportedCostMicroUSD != nil
+	if rc.Turn.ReportedCostMicroUSD != nil {
+		roundCost += *rc.Turn.ReportedCostMicroUSD
+	}
+	if rc.Summary != nil {
+		roundTokens += rc.Summary.Tokens
+		if rc.Summary.ReportedCostMicroUSD != nil {
+			roundCost += *rc.Summary.ReportedCostMicroUSD
+		} else {
+			roundCostKnown = false
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE chat.runs SET round = $2, history = $3::jsonb, tokens = tokens + $4,
-		  cost_micro_usd = cost_micro_usd + COALESCE($5::bigint, 0),
-		  cost_known = cost_known AND $5::bigint IS NOT NULL, model = $6
+		  cost_micro_usd = cost_micro_usd + $5,
+		  cost_known = cost_known AND $6, model = $7
 		WHERE id = $1::uuid`, claim.Job.ReplyID, claim.Job.Round, rawHistory,
-		rc.Turn.InputTokens+rc.Turn.OutputTokens, rc.Turn.ReportedCostMicroUSD, rc.Turn.Model); err != nil {
+		roundTokens, roundCost, roundCostKnown, rc.Turn.Model); err != nil {
 		return fmt.Errorf("chat: commit round: %w", err)
 	}
 	switch rc.End {

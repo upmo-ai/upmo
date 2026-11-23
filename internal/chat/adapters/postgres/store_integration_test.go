@@ -14,6 +14,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
+	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -159,6 +160,9 @@ func up(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Up(ctx, pool, gateway.Schema, gateway.Migrations()); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate.Up(ctx, pool, chat.Schema, chat.Migrations()); err != nil {
