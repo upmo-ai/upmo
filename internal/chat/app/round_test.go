@@ -15,12 +15,17 @@ func TestCatalogExcludesPrivateSearchToolsWhenShared(t *testing.T) {
 	for _, tc := range []struct {
 		private                   bool
 		wantMemory, wantKnowledge bool
-	}{{true, true, true}, {false, false, false}} {
-		got := catalog(nil, tc.private, true, true)
+		wantSaveMemory            bool
+	}{{true, true, true, true}, {false, false, false, false}} {
+		got, err := catalog(nil, tc.private, true, true, true)
+		if err != nil {
+			t.Fatalf("private=%v catalog error: %v", tc.private, err)
+		}
 		_, memoryOK := got.Get("search_memory")
 		_, knowledgeOK := got.Get("search_knowledge")
-		if memoryOK != tc.wantMemory || knowledgeOK != tc.wantKnowledge {
-			t.Fatalf("private=%v tools: memory=%v knowledge=%v", tc.private, memoryOK, knowledgeOK)
+		_, saveMemoryOK := got.Get("save_memory")
+		if memoryOK != tc.wantMemory || knowledgeOK != tc.wantKnowledge || saveMemoryOK != tc.wantSaveMemory {
+			t.Fatalf("private=%v tools: memory=%v knowledge=%v save_memory=%v", tc.private, memoryOK, knowledgeOK, saveMemoryOK)
 		}
 	}
 }

@@ -58,7 +58,16 @@ func SearchMemory(ctx context.Context, store RetrievalStore, embedder Embedder, 
 }
 
 // ErrRetry reports a gateway failure worth retrying.
-var ErrRetry = app.ErrRetry
+var (
+	ErrRetry     = app.ErrRetry
+	ErrClaim     = app.ErrClaim
+	ErrDuplicate = app.ErrDuplicate
+)
+
+// AddFact stores a user-confirmed personal fact (trust = 'user').
+func AddFact(ctx context.Context, editor Editor, userID, claim string, at time.Time) (string, error) {
+	return app.AddFact(ctx, editor, userID, claim, at)
+}
 
 // NewFacts returns the memory Facts on pool.
 func NewFacts(pool *pgxpool.Pool) Facts { return postgres.Facts{Pool: pool} }

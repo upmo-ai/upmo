@@ -60,10 +60,27 @@ type (
 	LessonLookup    = app.LessonLookup
 	MemoryLookup    = app.MemoryLookup
 	KnowledgeLookup = app.KnowledgeLookup
+	ActionTools     = app.ActionTools
+	NewTaskInput    = app.NewTaskInput
+	TaskItem        = app.TaskItem
+	AgentItem       = app.AgentItem
+	AutomationInput = app.AutomationInput
+	AccessScope     = agentloop.AccessScope
 	KnowledgeHit    = agentloop.KnowledgeHit
 	Lesson          = agentloop.Lesson
 	LessonCard      = agentloop.LessonCard
 )
+
+// NarrowTeamLiteral computes the narrowed Postgres UUID array literal for upmo.teams
+// on a cross-context tool call from chat.
+func NarrowTeamLiteral(scope AccessScope, rawTeamsLiteral string) string {
+	return app.NarrowTeamLiteral(scope, rawTeamsLiteral)
+}
+
+// ValidateChatTool enforces the hard chat tool boundary.
+func ValidateChatTool(def agentloop.ToolDef) error {
+	return app.ValidateChatTool(def)
+}
 
 // ReplyQueue is the River queue of reply jobs; give it workers of its own.
 const ReplyQueue = app.ReplyQueue

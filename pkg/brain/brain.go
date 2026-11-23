@@ -865,6 +865,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			Turns:     chatTurns,
 			Memory:    chatMemoryLookup{facts: memoryFacts, embed: func(userID string) memory.Embedder { return gw.For(userID) }},
 			Knowledge: chatKnowledgeLookup{folders: knowledgeBook, finder: knowledgeBook, embedFor: func(userID string) knowledge.Embedder { return gw.For(userID) }, members: members},
+			Tools:     chatActionTools{tasks: tasks.NewStore(pool, lazy), agents: agentStore, memory: memoryFacts, members: members},
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -1607,7 +1608,7 @@ type chatKnowledgeLookup struct {
 	members  identity.MemberService
 }
 
-func (s chatKnowledgeLookup) SearchKnowledge(ctx context.Context, chatAccess chat.Access, folderID, query string) ([]chat.KnowledgeHit, error) {
+func (s chatKnowledgeLookup) SearchKnowledge(ctx context.Context, chatAccess chat.Access, scope chat.AccessScope, folderID, query string) ([]chat.KnowledgeHit, error) {
 	person, err := identity.ParseUserID(chatAccess.UserID)
 	if err != nil {
 		return nil, err
@@ -1620,7 +1621,13 @@ func (s chatKnowledgeLookup) SearchKnowledge(ctx context.Context, chatAccess cha
 	if err != nil {
 		return nil, err
 	}
-	access := knowledge.Access{UserID: chatAccess.UserID, Allow: allow, Teams: shares.Teams, SharedView: shares.SharedView, SharedEdit: shares.SharedEdit}
+	access := knowledge.Access{
+		UserID:     chatAccess.UserID,
+		Allow:      allow,
+		Teams:      chat.NarrowTeamLiteral(scope, shares.Teams),
+		SharedView: "{}",
+		SharedEdit: "{}",
+	}
 	folders := []knowledge.Folder{}
 	if folderID != "" {
 		folders = append(folders, knowledge.Folder{ID: folderID})
@@ -1651,6 +1658,144 @@ func (s chatKnowledgeLookup) SearchKnowledge(ctx context.Context, chatAccess cha
 		}
 	}
 	return out, nil
+}
+
+type chatActionTools struct {
+	tasks   tasks.Store
+	agents  agents.Store
+	memory  memory.Editor
+	members identity.MemberService
+}
+
+func (t chatActionTools) taskAccess(ctx context.Context, userID string, scope chat.AccessScope, needCreate bool) (tasks.Access, error) {
+	person, err := identity.ParseUserID(userID)
+	if err != nil {
+		return tasks.Access{}, err
+	}
+	allow, err := t.members.TaskAllow(ctx, person)
+	if err != nil {
+		return tasks.Access{}, err
+	}
+	if allow == "" || (needCreate && !slices.Contains(strings.Split(allow, ","), "task:create")) {
+		return tasks.Access{}, tasks.ErrAccess
+	}
+	shares, err := t.members.ShareAccess(ctx, person, identity.TypeTask)
+	if err != nil {
+		return tasks.Access{}, err
+	}
+	return tasks.Access{
+		UserID:     userID,
+		Allow:      allow,
+		Teams:      chat.NarrowTeamLiteral(scope, shares.Teams),
+		SharedView: "{}",
+		SharedEdit: "{}",
+	}, nil
+}
+
+func (t chatActionTools) ListTasks(ctx context.Context, current chat.Access, scope chat.AccessScope, limit int) ([]chat.TaskItem, error) {
+	access, err := t.taskAccess(ctx, current.UserID, scope, false)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tasks.ListTasks(ctx, t.tasks, access)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	out := make([]chat.TaskItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, chat.TaskItem{
+			ID:        row.ID,
+			Title:     row.Title,
+			Status:    string(row.Status),
+			Phase:     string(row.Phase),
+			UpdatedAt: row.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+func (t chatActionTools) OpenTask(ctx context.Context, current chat.Access, scope chat.AccessScope, in chat.NewTaskInput) (chat.TaskItem, error) {
+	access, err := t.taskAccess(ctx, current.UserID, scope, true)
+	if err != nil {
+		return chat.TaskItem{}, err
+	}
+	created, err := tasks.OpenTask(ctx, t.tasks, nil, access, tasks.Opening{Goal: in.Goal})
+	if err != nil {
+		return chat.TaskItem{}, err
+	}
+	return chat.TaskItem{
+		ID:     created.ID,
+		Title:  created.Goal,
+		Status: string(created.Status),
+		Phase:  string(created.Status),
+	}, nil
+}
+
+func (t chatActionTools) SaveMemory(ctx context.Context, userID, claim string) (string, error) {
+	return memory.AddFact(ctx, t.memory, userID, claim, time.Now().UTC())
+}
+
+func (t chatActionTools) ListAgents(ctx context.Context, current chat.Access, scope chat.AccessScope) ([]chat.AgentItem, error) {
+	person, err := identity.ParseUserID(current.UserID)
+	if err != nil {
+		return nil, err
+	}
+	allow, err := t.members.EffectiveAllow(ctx, person)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(strings.Split(allow, ","), "agent:view") {
+		return nil, agents.ErrAccess
+	}
+	shares, err := t.members.ShareAccess(ctx, person, identity.TypeAgent)
+	if err != nil {
+		return nil, err
+	}
+	// Strip settings:manage so team-scoped chats never bypass narrow team RLS via may_manage.
+	access := agents.Access{
+		UserID: current.UserID,
+		Allow:  "agent:view",
+		Teams:  chat.NarrowTeamLiteral(scope, shares.Teams),
+	}
+	rows, err := agents.ListAgents(ctx, t.agents, access)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]chat.AgentItem, 0, len(rows))
+	for _, a := range rows {
+		if !a.Enabled || !a.Share.CanUse {
+			continue
+		}
+		out = append(out, chat.AgentItem{
+			ID:          a.ID,
+			Name:        a.Name,
+			Description: a.Description,
+		})
+	}
+	return out, nil
+}
+
+func (t chatActionTools) CreateAutomation(ctx context.Context, current chat.Access, scope chat.AccessScope, in chat.AutomationInput) (string, string, error) {
+	access, err := t.taskAccess(ctx, current.UserID, scope, true)
+	if err != nil {
+		return "", "", err
+	}
+	templateID, err := tasks.SaveTemplate(ctx, t.tasks, access, "", tasks.Template{
+		Goal:    in.Goal,
+		AgentID: in.AgentID,
+		Budget:  in.BudgetCents,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	automationID, err := tasks.SaveAutomation(ctx, t.tasks, access, templateID, in.Kind, in.Spec)
+	if err != nil {
+		return "", "", err
+	}
+	return templateID, automationID, nil
 }
 
 func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query string, limit int) ([]tasks.KnowledgeHit, error) {

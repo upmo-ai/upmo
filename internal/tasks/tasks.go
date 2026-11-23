@@ -42,9 +42,51 @@ type (
 	Handler      = httpapi.Handler
 	Access       = app.Access
 	Store        = postgres.Store
+	Book         = app.Book
+	Lister       = app.Lister
+	TemplateBook = app.TemplateBook
+	Automations  = app.Automations
+	Sandboxes    = app.Sandboxes
+	Opening      = app.Opening
+	Task         = app.Task
+	TaskSummary  = app.TaskSummary
+	Template     = domain.Template
+	Input        = domain.Input
 	EditorSigner = app.EditorSigner
 	EditorTokens = app.EditorTokens
 )
+
+// Open is the task transition input kind that opens a new task.
+const Open = domain.Open
+
+// ErrAccess is a missing person or an empty allow list.
+var ErrAccess = app.ErrAccess
+
+// OpenTask opens a task in Preparing (delegating to app.OpenTask -> app.ApplyTransition).
+// Passing boxes == nil opens a task that does not provision a sandbox at open time.
+func OpenTask(ctx context.Context, book Book, boxes Sandboxes, access Access, open Opening) (Task, error) {
+	return app.OpenTask(ctx, book, boxes, access, open)
+}
+
+// ApplyTransition validates the caller and applies one task transition.
+func ApplyTransition(ctx context.Context, book Book, access Access, taskID string, input Input) (Task, error) {
+	return app.ApplyTransition(ctx, book, access, taskID, input)
+}
+
+// ListTasks validates the caller and returns visible tasks newest update first.
+func ListTasks(ctx context.Context, book Lister, access Access) ([]TaskSummary, error) {
+	return app.ListTasks(ctx, book, access)
+}
+
+// SaveTemplate validates the caller and template and stores it under row security.
+func SaveTemplate(ctx context.Context, book TemplateBook, access Access, id string, in Template) (string, error) {
+	return app.SaveTemplate(ctx, book, access, id, in)
+}
+
+// SaveAutomation validates the caller and trigger and records an active automation for templateID.
+func SaveAutomation(ctx context.Context, book Automations, access Access, templateID, kind, spec string) (string, error) {
+	return app.SaveAutomation(ctx, book, access, templateID, kind, spec)
+}
 
 // The task share port and what it carries. Another context's data sits behind
 // ShareGrants, so cmd wires an adapter to it.

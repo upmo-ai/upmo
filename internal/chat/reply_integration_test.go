@@ -159,7 +159,7 @@ func (replyMemory) SearchMemory(context.Context, chat.Access, string) (string, b
 
 type replyKnowledge struct{}
 
-func (replyKnowledge) SearchKnowledge(context.Context, chat.Access, string, string) ([]chat.KnowledgeHit, error) {
+func (replyKnowledge) SearchKnowledge(context.Context, chat.Access, chat.AccessScope, string, string) ([]chat.KnowledgeHit, error) {
 	return []chat.KnowledgeHit{{SourceID: "source", Seq: 1, Body: "curated knowledge"}}, nil
 }
 
@@ -172,7 +172,7 @@ func (m *countingReplyMemory) SearchMemory(context.Context, chat.Access, string)
 
 type countingReplyKnowledge struct{ calls int }
 
-func (k *countingReplyKnowledge) SearchKnowledge(context.Context, chat.Access, string, string) ([]chat.KnowledgeHit, error) {
+func (k *countingReplyKnowledge) SearchKnowledge(context.Context, chat.Access, chat.AccessScope, string, string) ([]chat.KnowledgeHit, error) {
 	k.calls++
 	return []chat.KnowledgeHit{{SourceID: "source", Seq: 1, Body: "private knowledge"}}, nil
 }

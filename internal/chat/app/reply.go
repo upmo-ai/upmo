@@ -153,7 +153,7 @@ type MemoryLookup interface {
 	SearchMemory(context.Context, Access, string) (string, bool, bool, error)
 }
 type KnowledgeLookup interface {
-	SearchKnowledge(context.Context, Access, string, string) ([]agentloop.KnowledgeHit, error)
+	SearchKnowledge(context.Context, Access, agentloop.AccessScope, string, string) ([]agentloop.KnowledgeHit, error)
 }
 
 // ModelMessage is one turn sent to the model.
@@ -365,6 +365,7 @@ type ReplyDeps struct {
 	Turns     Turns
 	Memory    MemoryLookup
 	Knowledge KnowledgeLookup
+	Tools     ActionTools
 	Access    func(ctx context.Context, userID string) (Access, bool, error)
 	Config    ReplyConfig
 	Log       *slog.Logger
@@ -611,11 +612,23 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		}
 		return current, nil
 	})}
+	cat, err := catalog(agent, claim.Private, w.deps.Memory != nil, w.deps.Knowledge != nil, w.deps.Tools != nil)
+	if err != nil {
+		close(watching)
+		<-watched
+		return err
+	}
 	store := &roundStore{w: w, ctx: ctx, claim: claim, live: live, sink: sink, attempts: &attempts}
 	engine := agentloop.Engine{
 		Model: w.deps.Turns.Bind(turnRoute, sink.add, onAttempt),
 		Executor: timedExecutor{limit: ToolTimeout, inner: agentloop.DefaultExecutor{
-			Lessons: lessonOpener{lookup: w.deps.Lessons, live: live}, Memory: memorySearcher{lookup: w.deps.Memory, rows: w.deps.Rows, live: live, chatID: args.ChatID}, Knowledge: knowledgeSearcher{lookup: w.deps.Knowledge, rows: w.deps.Rows, live: live, chatID: args.ChatID}, Outputs: outs, OffloadAtTokens: w.cfg.OffloadAtTokens}},
+			Lessons:         lessonOpener{lookup: w.deps.Lessons, live: live},
+			Memory:          memorySearcher{lookup: w.deps.Memory, rows: w.deps.Rows, live: live, chatID: args.ChatID},
+			Knowledge:       knowledgeSearcher{lookup: w.deps.Knowledge, rows: w.deps.Rows, live: live, scope: claim.Scope, chatID: args.ChatID},
+			Outputs:         outs,
+			OffloadAtTokens: w.cfg.OffloadAtTokens,
+			Direct:          directTools(w, claim, live),
+		}},
 		TurnStore:            store,
 		ActionLog:            w.deps.Rows.ActionLog(claim.Scope),
 		Outputs:              outs,
@@ -624,7 +637,7 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		// ContextWindow 0: no trim, no guard (310b2)
 	}
 	run := &agentloop.RunState{RunID: args.ReplyID, ObjectID: args.ChatID, ObjectType: "chat",
-		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: catalog(agent, claim.Private, w.deps.Memory != nil, w.deps.Knowledge != nil), Seq: claim.TurnSeq,
+		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: cat, Seq: claim.TurnSeq,
 		Exposure: claim.Exposure}
 	engine.WritePolicy = ChatWritePolicy{ChatID: args.ChatID, Run: run, Allowed: claim.AllowedTools,
 		Allowances: w.deps.Rows, Access: func() (Access, error) {
@@ -638,7 +651,7 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 	if args.Round == 1 {
 		messages = toMessages(history(claim.Lines, w.cfg.HistoryChars))
 	}
-	_, err := engine.RunTurn(callCtx, run, messages, system)
+	_, err = engine.RunTurn(callCtx, run, messages, system)
 	tail, werr := sink.finish()
 	close(watching)
 	<-watched
