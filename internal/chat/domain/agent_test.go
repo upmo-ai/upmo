@@ -108,15 +108,6 @@ func TestAgentModelNeedsProviderAndModelOrNeither(t *testing.T) {
 	}
 }
 
-func TestAgentSystemIsTheNameAndTheInstructions(t *testing.T) {
-	if got := AgentSystem("Research", "  Answer as a researcher.\n"); got != "# Agent: Research\n\nAnswer as a researcher." {
-		t.Fatalf("system = %q", got)
-	}
-	if got := AgentSystem("Fast", " \n"); got != "" {
-		t.Fatalf("an agent with no instructions added %q", got)
-	}
-}
-
 func TestResolveSettlesTheRouteAndTheModelEachOnItsOwn(t *testing.T) {
 	agent := &Defaults{Route: "deep", ModelProvider: "OpenAI", ModelID: "gpt-x"}
 	routeOnly := &Defaults{Route: "deep"}

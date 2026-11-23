@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
@@ -97,4 +98,13 @@ func (m turnModel) Complete(ctx context.Context, req agentloop.PromptRequest) (a
 		},
 		CostMicroUSD: done.CostMicroUSD,
 	}, nil
+}
+
+// modelError maps a gateway failure onto *app.ModelError and keeps any other error.
+func modelError(err error) error {
+	var failure *Failure
+	if errors.As(err, &failure) {
+		return &app.ModelError{Class: failure.Class, Model: failure.Model}
+	}
+	return err
 }

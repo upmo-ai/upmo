@@ -67,31 +67,33 @@ func TestTruncateCutsOnRunes(t *testing.T) {
 func TestAReplyAsksWithTheRouteTheModelAndTheSystemTextTheAgentLeavesOpen(t *testing.T) {
 	w := &replyWorker{cfg: ReplyConfig{}.withDefaults()}
 	agent := &Agent{Name: "Research", PromptOverlay: "Be brief.", Route: "deep", ModelProvider: "OpenAI", ModelID: "gpt-x"}
+	system := "# Agent: Research\n\nBe brief."
 
 	// The composer picked no route: the line carries the install's default.
-	got := w.request(ReplyJobArgs{UserID: "u", Route: "chat", AgentID: "a"}, agent)
-	want := ModelRequest{
-		Route: "deep", UserID: "u", System: "# Agent: Research\n\nBe brief.", MaxOutputTokens: DefaultMaxOutputTokens,
-		PinProvider: "OpenAI", PinModel: "gpt-x", AgentID: "a",
+	route, got := w.route(ReplyJobArgs{UserID: "u", Route: "chat", AgentID: "a"}, agent)
+	if want := (TurnRoute{Route: "deep", PinProvider: "OpenAI", PinModel: "gpt-x", MaxOutputTokens: DefaultMaxOutputTokens}); !reflect.DeepEqual(route, want) {
+		t.Fatalf("route = %+v, want %+v", route, want)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("request = %+v, want %+v", got, want)
+	if got != system {
+		t.Fatalf("system = %q, want %q", got, system)
 	}
 
 	// The composer picked a route and a model: both win, the text stays.
-	got = w.request(ReplyJobArgs{UserID: "u", Route: "fast", RoutePicked: true, PinAccount: "acct", PinModel: "gpt-y", AgentID: "a"}, agent)
-	want = ModelRequest{
-		Route: "fast", UserID: "u", System: "# Agent: Research\n\nBe brief.", MaxOutputTokens: DefaultMaxOutputTokens,
-		PinAccount: "acct", PinModel: "gpt-y", AgentID: "a",
+	route, got = w.route(ReplyJobArgs{UserID: "u", Route: "fast", RoutePicked: true, PinAccount: "acct", PinModel: "gpt-y", AgentID: "a"}, agent)
+	if want := (TurnRoute{Route: "fast", PinAccount: "acct", PinModel: "gpt-y", MaxOutputTokens: DefaultMaxOutputTokens}); !reflect.DeepEqual(route, want) {
+		t.Fatalf("route = %+v, want %+v", route, want)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("request = %+v, want %+v", got, want)
+	if got != system {
+		t.Fatalf("system = %q, want %q", got, system)
 	}
 
 	// No agent: the line's own route, no system text, no pin.
-	got = w.request(ReplyJobArgs{UserID: "u", Route: "chat"}, nil)
-	if want := (ModelRequest{Route: "chat", UserID: "u", MaxOutputTokens: DefaultMaxOutputTokens}); !reflect.DeepEqual(got, want) {
-		t.Fatalf("request = %+v, want %+v", got, want)
+	route, got = w.route(ReplyJobArgs{UserID: "u", Route: "chat"}, nil)
+	if want := (TurnRoute{Route: "chat", MaxOutputTokens: DefaultMaxOutputTokens}); !reflect.DeepEqual(route, want) {
+		t.Fatalf("route = %+v, want %+v", route, want)
+	}
+	if got != "" {
+		t.Fatalf("system = %q, want empty", got)
 	}
 }
 

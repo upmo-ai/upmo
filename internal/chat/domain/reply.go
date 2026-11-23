@@ -59,6 +59,12 @@ func Reason(class string) string {
 		return "model unavailable"
 	case "timeout":
 		return "timed out"
+	case "rounds":
+		return "the reply took too many steps"
+	case "hold":
+		return "the reply needed an approval, which chat cannot ask for yet"
+	case "empty":
+		return "the model gave no answer"
 	case "access":
 		return "you no longer have access to this chat"
 	case "unwritten":

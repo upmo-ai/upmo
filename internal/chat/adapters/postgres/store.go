@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/chat/app"
@@ -72,13 +73,8 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var one int
-	err = tx.QueryRow(ctx, `SELECT 1 FROM chat.chats WHERE id = $1::uuid FOR UPDATE`, chatID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return goneOrSay(ctx, tx, chatID)
-	}
-	if err != nil {
-		return fmt.Errorf("chat: lock: %w", err)
+	if err := lockChat(ctx, tx, chatID); err != nil {
+		return err
 	}
 	var seq int
 	var lineID string
@@ -120,7 +116,7 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string, 
 		}
 	}
 	if s.replying() {
-		if _, err := s.enqueueReply(ctx, tx, access, chatID, lineID, picks); err != nil {
+		if err := s.reserveRun(ctx, tx, access, chatID, lineID, picks); err != nil {
 			return err
 		}
 	} else if err := noReply(ctx, tx, chatID, lineID); err != nil {
@@ -147,22 +143,62 @@ func noReply(ctx context.Context, tx pgx.Tx, chatID, lineID string) error {
 	return nil
 }
 
-// enqueueReply asks for the reply to the user line lineID, in the caller's
-// transaction, with the picks it is to be answered with. It reports false
-// when a reply to that line is already on its way, or when replies are off.
-func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID string, picks app.Picks) (bool, error) {
+// reserveRun reserves the reply to the user line lineID, in the caller's
+// transaction, with the picks it is to be answered with. It fails any run of
+// the chat that outlived LiveFor, inserts the run row, and queues round 1.
+// A run already running in the chat is ErrBusy.
+func (s Store) reserveRun(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID string, picks app.Picks) error {
+	rows, err := tx.Query(ctx, `
+		SELECT id::text FROM chat.runs
+		WHERE chat_id = $1::uuid AND state = 'running'
+		  AND created_at <= now() - make_interval(secs => $2::float8)
+		FOR UPDATE`, chatID, app.LiveFor.Seconds())
+	if err != nil {
+		return fmt.Errorf("chat: stale runs: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("chat: stale runs: %w", err)
+		}
+		stale = append(stale, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("chat: stale runs: %w", err)
+	}
+	for _, id := range stale {
+		if err := failRunTx(ctx, tx, chatID, id, app.ReplyEnd{Attempts: []domain.Attempt{{Model: "", Class: "timeout"}}}, false); err != nil {
+			return err
+		}
+	}
+
+	replyID, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.runs (id, chat_id, line_id, author_id)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid)`,
+		replyID, chatID, lineID, access.UserID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == "runs_one_running" {
+			return app.ErrBusy
+		}
+		return fmt.Errorf("chat: reserve run: %w", err)
+	}
+
 	route := picks.Route
 	if route == "" {
 		route = s.ReplyRoute
-	}
-	replyID, err := uuid.NewV7()
-	if err != nil {
-		return false, err
 	}
 	res, err := s.Enqueuer.InsertTx(ctx, tx, app.ReplyJobArgs{
 		ChatID:      chatID,
 		LineID:      lineID,
 		ReplyID:     replyID.String(),
+		Round:       1,
 		UserID:      access.UserID,
 		Route:       route,
 		RoutePicked: picks.Route != "",
@@ -171,9 +207,12 @@ func (s Store) enqueueReply(ctx context.Context, tx pgx.Tx, access app.Access, c
 		AgentID:     picks.AgentID,
 	}, nil)
 	if err != nil {
-		return false, fmt.Errorf("chat: reply enqueue: %w", err)
+		return fmt.Errorf("chat: reply enqueue: %w", err)
 	}
-	return !res.UniqueSkippedAsDuplicate, nil
+	if res.UniqueSkippedAsDuplicate {
+		return fmt.Errorf("chat: reply was not queued")
+	}
+	return nil
 }
 
 // orNull binds an empty pick as NULL.

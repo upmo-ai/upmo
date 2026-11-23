@@ -174,38 +174,6 @@ func (l ChatActionLog) RecordSimulated(ctx context.Context, rec agentloop.Action
 	})
 }
 
-// ChatTurnStore implements agentloop.TurnStore against chat.turns, chat.holds,
-// and an optional next-turn enqueue callback.
-type ChatTurnStore struct {
-	Store       Store
-	Scope       agentloop.AccessScope
-	EnqueueNext func(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit) error
-}
-
-// CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.
-func (s ChatTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloop.TurnCommit) error {
-	return s.Store.NarrowedTx(ctx, s.Scope, func(tx pgx.Tx) error {
-		if err := InsertTurnRows(ctx, tx, commit); err != nil {
-			return err
-		}
-		if commit.Hold != nil {
-			userID := commit.UserID
-			if userID == "" {
-				userID = s.Scope.UserID
-			}
-			if _, err := insertHoldTx(ctx, tx, commit.ObjectID, commit.RunID, userID, *commit.Hold); err != nil {
-				return err
-			}
-		}
-		if commit.EnqueueNext && s.EnqueueNext != nil {
-			if err := s.EnqueueNext(ctx, tx, commit); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 // InsertTurnRows writes turn transcript entries into chat.turns inside tx.
 func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit) error {
 	seq := commit.SeqStart
@@ -219,9 +187,8 @@ func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit)
 			toolCalls = raw
 		}
 		var cost *int64
-		if msg.Role == agentloop.RoleAssistant && commit.CostMicroUSD > 0 {
-			c := commit.CostMicroUSD
-			cost = &c
+		if msg.Role == agentloop.RoleAssistant {
+			cost = commit.ReportedCostMicroUSD
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO chat.turns (

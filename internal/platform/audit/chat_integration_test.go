@@ -124,6 +124,11 @@ func TestChatRetrySealsTheLineItAnswers(t *testing.T) {
 		FROM chat.lines WHERE chat_id = $1::uuid`, opened.ID, userLine); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := owner.Exec(ctx, `
+		UPDATE chat.runs SET state = 'failed', claim = NULL, history = NULL, finished_at = now()
+		WHERE chat_id = $1::uuid`, opened.ID); err != nil {
+		t.Fatal(err)
+	}
 	// The retry names the failed assistant line; the user line it answers is
 	// the event's target.
 	if err := owner.QueryRow(ctx, `

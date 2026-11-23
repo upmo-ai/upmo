@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
@@ -41,14 +42,16 @@ func (q *pickJobs) last(t *testing.T) app.ReplyJobArgs {
 	return q.replies[len(q.replies)-1]
 }
 
-func failReply(t *testing.T, store postgres.Store, chatID, replyID, userLine string) {
+func failReply(t *testing.T, owner *pgxpool.Pool, chatID, replyID, userLine string) {
 	t.Helper()
-	err := store.Finish(context.Background(), ownerAccess, app.Reply{
-		ChatID: chatID, LineID: replyID, ReplyTo: userLine, Status: "failed", Model: "m1",
-	})
-	if err != nil {
+	ctx := context.Background()
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO chat.lines (id, chat_id, seq, role, body, model, status, reply_to, attempts)
+		SELECT $1::uuid, $2::uuid, COALESCE(MAX(seq), 0) + 1, 'assistant', '', 'm1', 'failed', $3::uuid, '[]'::jsonb
+		FROM chat.lines WHERE chat_id = $2::uuid`, replyID, chatID, userLine); err != nil {
 		t.Fatal(err)
 	}
+	settle(t, owner, chatID)
 }
 
 func TestSayStoresThePicksOnTheUserLineAndTheReplyJobCarriesThem(t *testing.T) {
@@ -68,6 +71,7 @@ func TestSayStoresThePicksOnTheUserLineAndTheReplyJobCarriesThem(t *testing.T) {
 	if job.Route != "fast" || job.PinAccount != pickAccount || job.PinModel != "gpt-x" || job.AgentID != pickAgent {
 		t.Fatalf("job = %+v", job)
 	}
+	settle(t, owner, opened.ID)
 	if err := app.Say(ctx, store, ownerAccess, opened.ID, "without", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +112,7 @@ func TestRetryWithNothingGivenReusesTheStoredPicksAndGivenPicksOverride(t *testi
 		t.Fatal(err)
 	}
 	user := chat.Lines[0].ID
-	failReply(t, store, opened.ID, pickReply1, user)
+	failReply(t, owner, opened.ID, pickReply1, user)
 
 	// Nothing given: the picks stored on the user line are asked for again.
 	if err := app.Retry(ctx, store, ownerAccess, opened.ID, pickReply1, nil); err != nil {
@@ -120,6 +124,7 @@ func TestRetryWithNothingGivenReusesTheStoredPicksAndGivenPicksOverride(t *testi
 	}
 
 	// Picks given replace the stored ones as a whole.
+	settle(t, owner, opened.ID)
 	override := app.Picks{Route: "slow", PinAccount: pickAccount2, PinModel: "other"}
 	if err := app.Retry(ctx, store, ownerAccess, opened.ID, pickReply1, &override); err != nil {
 		t.Fatal(err)
@@ -128,6 +133,7 @@ func TestRetryWithNothingGivenReusesTheStoredPicksAndGivenPicksOverride(t *testi
 	if job.Route != "slow" || job.PinAccount != pickAccount2 || job.PinModel != "other" || job.AgentID != "" {
 		t.Fatalf("retry with picks = %+v", job)
 	}
+	settle(t, owner, opened.ID)
 	if err := app.Retry(ctx, store, ownerAccess, opened.ID, pickReply1, &app.Picks{Route: "slow"}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +143,7 @@ func TestRetryWithNothingGivenReusesTheStoredPicksAndGivenPicksOverride(t *testi
 	}
 
 	// An explicit empty override is Auto on every axis, not a reuse.
+	settle(t, owner, opened.ID)
 	if err := app.Retry(ctx, store, ownerAccess, opened.ID, pickReply1, &app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +179,7 @@ func TestRetryOfALineSentWithoutPicksUsesTheInstallRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failReply(t, store, opened.ID, pickReply2, chat.Lines[0].ID)
+	failReply(t, owner, opened.ID, pickReply2, chat.Lines[0].ID)
 	if err := app.Retry(ctx, store, ownerAccess, opened.ID, pickReply2, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +202,7 @@ func TestOnlyTheAuthorOfALineGetsItsAccountAndAgentBack(t *testing.T) {
 	if err := app.Say(ctx, store, ownerAccess, opened.ID, "mine", picks); err != nil {
 		t.Fatal(err)
 	}
+	settle(t, owner, opened.ID)
 	editor := app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + opened.ID + "}", SharedEdit: "{" + opened.ID + "}"}
 	theirs := app.Picks{PinAccount: pickAccount2, PinModel: "theirs-m", AgentID: pickAgent}
 	if err := app.Say(ctx, store, editor, opened.ID, "theirs", theirs); err != nil {
@@ -250,7 +258,7 @@ func TestOnlyTheAuthorOfALineGetsItsAccountAndAgentBack(t *testing.T) {
 	// The editor retrying the owner's line reuses its route and nothing of the
 	// owner's account or agent.
 	chat := read(ownerAccess)
-	failReply(t, store, opened.ID, pickReply1, chat.Lines[0].ID)
+	failReply(t, owner, opened.ID, pickReply1, chat.Lines[0].ID)
 	if err := app.Retry(ctx, store, editor, opened.ID, pickReply1, nil); err != nil {
 		t.Fatal(err)
 	}

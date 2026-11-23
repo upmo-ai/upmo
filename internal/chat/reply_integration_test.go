@@ -11,50 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 )
-
-func TestSayQueuesOneReplyOnItsOwnQueueUniqueByLine(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{})
-	chatID := r.open()
-	r.say(chatID, "hello", "")
-
-	var queue string
-	var attempts int
-	if err := r.owner.QueryRow(context.Background(),
-		`SELECT queue, max_attempts FROM platform.river_job WHERE kind = 'chat_reply'`).Scan(&queue, &attempts); err != nil {
-		t.Fatal(err)
-	}
-	if queue != "chat_reply" || attempts != 2 {
-		t.Fatalf("queue %q max attempts %d", queue, attempts)
-	}
-	queued := r.lastJob()
-	user := r.lines(chatID)[0]
-	if queued.Args.LineID != user.ID || queued.Args.ChatID != chatID || queued.Args.UserID != ownerUser || queued.Args.Route != "chat" {
-		t.Fatalf("args = %+v, user line %s", queued.Args, user.ID)
-	}
-
-	// The same user line cannot be queued twice while a reply to it is open.
-	tx, err := r.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	again := queued.Args
-	again.ReplyID = "018f3b2c-7a10-7c4a-8e11-999999999999"
-	res, err := r.work.InsertTx(context.Background(), tx, again, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.UniqueSkippedAsDuplicate {
-		t.Fatal("a second reply job for the same line was queued")
-	}
-}
 
 func TestSayQueuesNoReplyWhenRepliesAreOff(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
@@ -128,23 +90,32 @@ func TestFinishRollsBackTheLineAndTheDeltaDeleteTogether(t *testing.T) {
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
 	ctx := context.Background()
-	if _, err := r.store.Begin(ctx, ownerAccess, queued.Args); err != nil {
-		t.Fatal(err)
+	c, err := r.store.Claim(ctx, ownerAccess, queued.Args, token1)
+	if err != nil || c.State != app.ClaimGo {
+		t.Fatalf("claim = %+v %v", c, err)
 	}
 
-	// A body over the limit fails the insert; the delete must not stand alone.
-	err := r.store.Finish(ctx, ownerAccess, app.Reply{
-		ChatID: chatID, LineID: queued.Args.ReplyID, ReplyTo: queued.Args.LineID,
-		Status: domain.StatusDone, Body: strings.Repeat("x", domain.ReplyRunes+1), Model: "m1",
-	})
+	// A line with the reply id already stored in another chat fails the insert;
+	// the delete must not stand alone.
+	other := r.open()
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO chat.lines (id, chat_id, seq, role, body, model)
+		SELECT $1::uuid, $2::uuid, COALESCE(MAX(seq), 0) + 1, 'assistant', 'x', 'm1'
+		FROM chat.lines WHERE chat_id = $2::uuid`, queued.Args.ReplyID, other); err != nil {
+		t.Fatal(err)
+	}
+	err = r.store.Finish(ctx, ownerAccess, c, app.ReplyEnd{Model: "m1"})
 	if err == nil {
-		t.Fatal("an over-long reply was stored")
+		t.Fatal("a finish over an existing line was stored")
 	}
 	if got := r.deltas(chatID); len(got) != 1 {
 		t.Fatalf("deltas after a failed finish = %+v", got)
 	}
 	if got := r.lines(chatID); len(got) != 1 {
 		t.Fatalf("lines after a failed finish = %+v", got)
+	}
+	if row := r.runRow(queued.Args.ReplyID); row.State != "running" {
+		t.Fatalf("run row = %+v", row)
 	}
 }
 
@@ -315,152 +286,6 @@ func TestReplyOfAllFailedLinksListsEveryModelAndWritesNoticesAsStatusRows(t *tes
 	}
 }
 
-func TestReplyRescuesACrashedRunFromItsDeltas(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{})
-	chatID := r.open()
-	r.say(chatID, "hi", "")
-	queued := r.lastJob()
-	ctx := context.Background()
-
-	// The first run got as far as two text deltas and a notice, then died.
-	if turn, err := r.store.Begin(ctx, ownerAccess, queued.Args); err != nil || turn.State != app.ReplyGo {
-		t.Fatalf("begin = %+v %v", turn, err)
-	}
-	for seq, d := range []struct{ kind, body string }{
-		{"text", "half an "},
-		{"text", "answer"},
-		{"status", `{"failed_model":"m1","class":"timeout","next_model":"m2"}`},
-	} {
-		if err := r.store.PutDelta(ctx, ownerAccess, chatID, queued.Args.ReplyID, seq+1, d.kind, d.body); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := r.run(queued, 2); err != nil {
-		t.Fatal(err)
-	}
-	if calls := r.stub.seen(); len(calls) != 0 {
-		t.Fatalf("the rerun called the model: %+v", calls)
-	}
-	reply := r.lines(chatID)[1]
-	if reply.Status != "failed" || reply.Body != "half an answer" || reply.ID != queued.Args.ReplyID {
-		t.Fatalf("reply = %+v", reply)
-	}
-	want := []domain.Attempt{{Model: "m1", Class: "timeout"}, {Model: "m2", Class: "canceled"}}
-	if len(reply.Attempts) != 2 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] {
-		t.Fatalf("attempts = %+v", reply.Attempts)
-	}
-	if reply.Model == nil || *reply.Model != "m2" {
-		t.Fatalf("model = %v", reply.Model)
-	}
-	if left := r.deltas(chatID); len(left) != 0 {
-		t.Fatalf("deltas = %+v", left)
-	}
-
-	// A third run, after the line is stored, does nothing.
-	if err := r.run(queued, 2); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.lines(chatID); len(got) != 2 {
-		t.Fatalf("lines = %+v", got)
-	}
-}
-
-func TestOneReplyStreamsPerChatAtATime(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{})
-	release := make(chan struct{})
-	r.stub.reply(func(call int, s *frames) {
-		s.delta("text")
-		if call == 1 {
-			s.hold(release)
-		}
-		s.done("m1", 1, 1, nil)
-	})
-	chatID := r.open()
-	r.say(chatID, "first", "")
-	first := r.lastJob()
-	other := r.open()
-	r.say(other, "elsewhere", "")
-	elsewhere := r.lastJob()
-
-	running := r.runAsync(first, 1)
-	eventually(t, "the first reply to start", func() bool { return len(r.stub.seen()) == 1 })
-
-	// A newer line of the same chat waits; it does not call the model.
-	r.say(chatID, "second", "")
-	second := r.lastJob()
-	var snooze *rivertype.JobSnoozeError
-	if err := r.run(second, 1); !errors.As(err, &snooze) {
-		t.Fatalf("second reply error = %v, want a snooze", err)
-	}
-	if calls := len(r.stub.seen()); calls != 1 {
-		t.Fatalf("model calls = %d", calls)
-	}
-
-	// Another chat is not held up by it.
-	if err := r.run(elsewhere, 1); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.lines(other); len(got) != 2 || got[1].Status != "done" {
-		t.Fatalf("other chat lines = %+v", got)
-	}
-
-	close(release)
-	if err := result(t, running); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.run(second, 1); err != nil {
-		t.Fatal(err)
-	}
-	// The second reply was written after the first answer, which sits behind
-	// the follow-up in the chat, and still sees the whole exchange in order.
-	calls := r.stub.seen()
-	sent := calls[len(calls)-1].Messages
-	if len(sent) != 3 || sent[0].Text != "first" || sent[1].Role != "assistant" || sent[1].Text != "text" || sent[2].Text != "second" {
-		t.Fatalf("history of the second reply = %+v", sent)
-	}
-	lines := r.lines(chatID)
-	if len(lines) != 4 || lines[2].ReplyTo == nil || *lines[2].ReplyTo != lines[0].ID ||
-		lines[3].ReplyTo == nil || *lines[3].ReplyTo != lines[1].ID {
-		t.Fatalf("lines = %+v", lines)
-	}
-}
-
-func TestAReplyThatWroteNothingForTooLongStopsHoldingTheChat(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{})
-	chatID := r.open()
-	r.say(chatID, "first", "")
-	first := r.lastJob()
-	if _, err := r.store.Begin(context.Background(), ownerAccess, first.Args); err != nil {
-		t.Fatal(err)
-	}
-	r.say(chatID, "second", "")
-	second := r.lastJob()
-	var snooze *rivertype.JobSnoozeError
-	if err := r.run(second, 1); !errors.As(err, &snooze) {
-		t.Fatalf("error = %v, want a snooze", err)
-	}
-
-	// The process behind the first reply died long ago.
-	if _, err := r.owner.Exec(context.Background(),
-		`UPDATE chat.deltas SET at = now() - interval '1 hour'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.owner.Exec(context.Background(), `
-		ALTER TABLE chat.lines DISABLE TRIGGER chat_keep_line;
-		UPDATE chat.lines SET at = now() - interval '1 hour';
-		ALTER TABLE chat.lines ENABLE TRIGGER chat_keep_line`); err != nil {
-		t.Fatal(err)
-	}
-	r.stub.reply(func(_ int, s *frames) { s.delta("ok"); s.done("m1", 1, 1, nil) })
-	if err := r.run(second, 1); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.lines(chatID); got[len(got)-1].Status != "done" {
-		t.Fatalf("lines = %+v", got)
-	}
-}
-
 func TestReplyAsksTheRouteOfTheLineAndNoOtherKey(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	r.stub.reply(func(_ int, s *frames) { s.delta("ok"); s.done("m1", 1, 1, nil) })
@@ -555,6 +380,7 @@ func TestHistoryDropsADoneReplyAReplacementSuperseded(t *testing.T) {
 		}
 	}
 	r.stub.reply(func(_ int, s *frames) { s.delta("ok"); s.done("m1", 1, 1, nil) })
+	r.settle(chatID)
 	r.say(chatID, "q2", "")
 	if err := r.run(r.lastJob(), 1); err != nil {
 		t.Fatal(err)
@@ -655,9 +481,7 @@ func TestDeltasAreUnderRowSecurity(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	ctx := context.Background()
 	chatID := r.open()
-	if err := r.store.PutDelta(ctx, ownerAccess, chatID, "018f3b2c-7a10-7c4a-8e11-999999999999", 1, "text", "secret"); err != nil {
-		t.Fatal(err)
-	}
+	r.putDelta(chatID, "018f3b2c-7a10-7c4a-8e11-999999999999", 1, "text", "secret")
 
 	as := func(access app.Access) pgx.Tx {
 		tx, err := r.pool.Begin(ctx)
@@ -722,9 +546,7 @@ func TestSweepDeletesOnlyDeltasOlderThanTwoHours(t *testing.T) {
 	r.say(chatID, "hi", "")
 
 	put := func(line string, seq int) {
-		if err := r.store.PutDelta(ctx, ownerAccess, chatID, line, seq, "text", "x"); err != nil {
-			t.Fatal(err)
-		}
+		r.putDelta(chatID, line, seq, "text", "x")
 	}
 	const stale, hourOld, fresh = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaaaa", "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb", "018f3b2c-7a10-7c4a-8e11-cccccccccccc"
 	put(stale, 1)
@@ -751,6 +573,33 @@ func TestSweepDeletesOnlyDeltasOlderThanTwoHours(t *testing.T) {
 			t.Fatalf("the stale delta survived: %+v", left)
 		}
 	}
+
+	// A finding and a run are not deltas: the sweep leaves both alone.
+	var findingID string
+	if err := r.owner.QueryRow(ctx, `
+		INSERT INTO chat.findings (chat_id, line_id, kind, title, body)
+		VALUES ($1::uuid, $2::uuid, 'tool_output', 'T', 'x') RETURNING id::text`,
+		chatID, r.lastJob().Args.ReplyID).Scan(&findingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.findings SET created_at = now() - interval '3 hours' WHERE id = $1::uuid`, findingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.runs SET created_at = now() - interval '3 hours' WHERE id = $1::uuid`, r.lastJob().Args.ReplyID); err != nil {
+		t.Fatal(err)
+	}
+	swept, err = r.store.Sweep(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.runs WHERE id = $1::uuid`, r.lastJob().Args.ReplyID).Scan(&runs); err != nil || runs != 1 {
+		t.Fatalf("runs = %d %v", runs, err)
+	}
+	var findings int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.findings WHERE id = $1::uuid`, findingID).Scan(&findings); err != nil || findings != 1 {
+		t.Fatalf("findings = %d %v", findings, err)
+	}
 }
 
 func TestSweepTakesNoAgeSoACallerCannotWidenIt(t *testing.T) {
@@ -758,9 +607,7 @@ func TestSweepTakesNoAgeSoACallerCannotWidenIt(t *testing.T) {
 	ctx := context.Background()
 	chatID := r.open()
 	r.say(chatID, "hi", "")
-	if err := r.store.PutDelta(ctx, ownerAccess, chatID, replyID, 1, "text", "live"); err != nil {
-		t.Fatal(err)
-	}
+	r.putDelta(chatID, replyID, 1, "text", "live")
 	// The request role may call the function, with no argument and only so.
 	for _, call := range []string{
 		`SELECT chat.sweep_deltas(interval '-1 year')`,
@@ -907,28 +754,24 @@ func TestFailReplyIsNarrow(t *testing.T) {
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
 	user := r.lines(chatID)[0]
-	if err := r.store.PutDelta(ctx, ownerAccess, chatID, queued.Args.ReplyID, 1, "text", "partial"); err != nil {
-		t.Fatal(err)
-	}
+	r.putDelta(chatID, queued.Args.ReplyID, 1, "text", "partial")
 	// An unrelated reply's delta must survive.
-	if err := r.store.PutDelta(ctx, ownerAccess, chatID, replyID, 1, "text", "other"); err != nil {
-		t.Fatal(err)
-	}
+	r.putDelta(chatID, replyID, 1, "text", "other")
 
-	if _, err := r.store.FailReply(ctx, user.ID, queued.Args.ReplyID, "anything"); err == nil {
+	if _, err := r.store.FailReply(ctx, queued.Args, "", "anything"); err == nil {
 		t.Fatal("a free reason was accepted")
 	}
-	if stored, err := r.store.FailReply(ctx, "018f3b2c-7a10-7c4a-8e11-999999999999", queued.Args.ReplyID, "access"); err == nil || stored {
-		t.Fatalf("a missing user line: stored %v %v", stored, err)
+	if stored, err := r.store.FailReply(ctx, app.ReplyJobArgs{ChatID: chatID, LineID: user.ID, ReplyID: "018f3b2c-7a10-7c4a-8e11-777777777777", Round: 1}, "", "access"); err == nil || stored {
+		t.Fatalf("a reply id with no run: stored %v %v", stored, err)
 	}
-	// Only a reply id that a job for that line holds may be failed.
-	if stored, err := r.store.FailReply(ctx, user.ID, "018f3b2c-7a10-7c4a-8e11-777777777777", "access"); err == nil || stored {
-		t.Fatalf("a reply id no job holds: stored %v %v", stored, err)
+	// A round that is not the run's next round is fenced out.
+	if stored, err := r.store.FailReply(ctx, app.ReplyJobArgs{ChatID: chatID, LineID: user.ID, ReplyID: queued.Args.ReplyID, Round: 2}, "", "access"); err != nil || stored {
+		t.Fatalf("a wrong round: stored %v %v", stored, err)
 	}
 	if got := r.lines(chatID); len(got) != 1 {
 		t.Fatalf("a refused call stored a line: %+v", got)
 	}
-	if stored, err := r.store.FailReply(ctx, user.ID, queued.Args.ReplyID, "access"); err != nil || !stored {
+	if stored, err := r.store.FailReply(ctx, queued.Args, "", "access"); err != nil || !stored {
 		t.Fatalf("stored %v %v", stored, err)
 	}
 	reply := failedReply(t, r, chatID)
@@ -938,8 +781,7 @@ func TestFailReplyIsNarrow(t *testing.T) {
 	if left := r.deltas(chatID); len(left) != 1 || left[0].LineID != replyID {
 		t.Fatalf("deltas = %+v", left)
 	}
-	// An answered line takes no second reply, and the same reply id no second line.
-	if stored, err := r.store.FailReply(ctx, user.ID, queued.Args.ReplyID, "access"); err != nil || stored {
+	if stored, err := r.store.FailReply(ctx, queued.Args, "", "access"); err != nil || stored {
 		t.Fatalf("again: stored %v %v", stored, err)
 	}
 	r.completed(queued)
@@ -953,7 +795,7 @@ func TestFailReplyIsNarrow(t *testing.T) {
 	if err := r.run(r.lastJob(), 1); err != nil {
 		t.Fatal(err)
 	}
-	if stored, err := r.store.FailReply(ctx, user.ID, r.lastJob().Args.ReplyID, "unwritten"); err != nil || stored {
+	if stored, err := r.store.FailReply(ctx, r.lastJob().Args, "", "unwritten"); err != nil || stored {
 		t.Fatalf("a done line was failed: stored %v %v", stored, err)
 	}
 }
@@ -1011,17 +853,21 @@ type failingRows struct {
 	mu     sync.Mutex
 	writes int
 	from   int
+	commit bool // write to the store, then fail
 }
 
-func (f *failingRows) PutDelta(ctx context.Context, access app.Access, chatID, replyID string, seq int, kind, body string) error {
+func (f *failingRows) PutDelta(ctx context.Context, access app.Access, claim app.Claim, seq int, kind, body string) error {
 	f.mu.Lock()
 	f.writes++
 	n := f.writes
 	f.mu.Unlock()
 	if n >= f.from {
+		if f.commit {
+			_ = f.ReplyRows.PutDelta(ctx, access, claim, seq, kind, body)
+		}
 		return errors.New("the database went away")
 	}
-	return f.ReplyRows.PutDelta(ctx, access, chatID, replyID, seq, kind, body)
+	return f.ReplyRows.PutDelta(ctx, access, claim, seq, kind, body)
 }
 
 func TestAFailedDeltaWriteEndsInAFailedLineWithTheTextSoFar(t *testing.T) {
@@ -1046,10 +892,30 @@ func TestAFailedDeltaWriteEndsInAFailedLineWithTheTextSoFar(t *testing.T) {
 	if left := r.deltas(chatID); len(left) != 0 {
 		t.Fatalf("deltas = %+v", left)
 	}
+
+	// A batch that committed before its error is not doubled.
+	t.Run("a committed batch is not doubled", func(t *testing.T) {
+		r := newRig(t, app.ReplyConfig{FlushBytes: 3})
+		deps := r.deps
+		deps.Rows = &failingRows{ReplyRows: r.store, from: 2, commit: true}
+		var err error
+		if r.worker, err = app.NewReplyWorker(deps); err != nil {
+			t.Fatal(err)
+		}
+		r.stub.reply(func(_ int, s *frames) { s.delta("abc"); s.delta("def"); s.done("m1", 1, 1, nil) })
+		chatID := r.open()
+		r.say(chatID, "hi", "")
+		if err := r.run(r.lastJob(), 1); err != nil {
+			t.Fatal(err)
+		}
+		if reply := failedReply(t, r, chatID); reply.Body != "abcdef" {
+			t.Fatalf("reply = %+v", reply)
+		}
+	})
 }
 
 func TestAJobTimeoutEndsInAFailedLineThatKeepsTheText(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{})
+	r := newRig(t, app.ReplyConfig{FlushEvery: time.Hour})
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("so far")
 		s.hold(nil)
@@ -1068,7 +934,7 @@ func TestAJobTimeoutEndsInAFailedLineThatKeepsTheText(t *testing.T) {
 }
 
 func TestAGracefulShutdownEndsInAFailedLineThatKeepsTheText(t *testing.T) {
-	r := newRig(t, app.ReplyConfig{})
+	r := newRig(t, app.ReplyConfig{FlushEvery: time.Hour})
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("so far")
 		s.hold(nil)
@@ -1138,17 +1004,10 @@ func TestAReplyIdWhoseDeltasBelongToAnotherChatIsNeitherAdoptedNorDeleted(t *tes
 	r := newRig(t, app.ReplyConfig{})
 	ctx := context.Background()
 	other := r.open()
-	if err := r.store.PutDelta(ctx, ownerAccess, other, replyID, 5, "text", "b-secret"); err != nil {
-		t.Fatal(err)
-	}
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	queued.Args.ReplyID = replyID
-	// The job row is the one FailReply checks for; name the reply id there too.
-	if _, err := r.owner.Exec(ctx, `UPDATE platform.river_job SET args = jsonb_set(args, '{reply_id}', to_jsonb($1::text)) WHERE id = $2`, replyID, queued.ID); err != nil {
-		t.Fatal(err)
-	}
+	r.putDelta(other, queued.Args.ReplyID, 5, "text", "b-secret")
 	r.stub.reply(func(_ int, s *frames) { s.delta("mine"); s.done("m1", 1, 1, nil) })
 	if err := r.run(queued, 1); err != nil {
 		t.Fatal(err)
@@ -1162,18 +1021,11 @@ func TestAReplyIdWhoseDeltasBelongToAnotherChatIsNeitherAdoptedNorDeleted(t *tes
 	}
 
 	// The same through fail_reply: it neither reads nor deletes them.
-	const second = "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
-	if err := r.store.PutDelta(ctx, ownerAccess, other, second, 5, "text", "c-secret"); err != nil {
-		t.Fatal(err)
-	}
 	third := r.open()
 	r.say(third, "again", "")
 	j := r.lastJob()
-	if _, err := r.owner.Exec(ctx, `UPDATE platform.river_job SET args = jsonb_set(args, '{reply_id}', to_jsonb($1::text)) WHERE id = $2`, second, j.ID); err != nil {
-		t.Fatal(err)
-	}
-	user := r.lines(third)[0]
-	if stored, err := r.store.FailReply(ctx, user.ID, second, "access"); err != nil || !stored {
+	r.putDelta(other, j.Args.ReplyID, 6, "text", "c-secret")
+	if stored, err := r.store.FailReply(ctx, j.Args, "", "access"); err != nil || !stored {
 		t.Fatalf("stored %v %v", stored, err)
 	}
 	if got := r.lines(third)[1]; got.Body != "" {
@@ -1189,20 +1041,19 @@ func TestAWorkerThatCannotStoreAFailedReplyReturnsAnError(t *testing.T) {
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	// A job for a line that is not there: nothing can be stored for it.
-	queued.Args.LineID = "018f3b2c-7a10-7c4a-8e11-999999999999"
+	// A job for a reply id that has no run: nothing can be stored for it.
+	queued.Args.ReplyID = "018f3b2c-7a10-7c4a-8e11-999999999999"
 	r.dropAccess(ownerUser)
 	if err := r.run(queued, 1); err == nil {
 		t.Fatal("the job reported success without storing a reply")
 	}
 }
 
-func TestFailReplyRefusesAReplyIdNoJobHolds(t *testing.T) {
+func TestFailReplyRefusesAReplyIdWithNoRun(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
 	r.say(chatID, "hi", "")
-	user := r.lines(chatID)[0]
-	if stored, err := r.store.FailReply(context.Background(), user.ID, replyID, "access"); err == nil || stored {
+	if stored, err := r.store.FailReply(context.Background(), app.ReplyJobArgs{ChatID: chatID, ReplyID: replyID, Round: 1}, "", "access"); err == nil || stored {
 		t.Fatalf("stored %v %v", stored, err)
 	}
 	if got := r.lines(chatID); len(got) != 1 {
@@ -1311,10 +1162,7 @@ func TestFailReply_UPM252_WorksForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *t
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	user := r.lines(chatID)[0]
-	if err := r.store.PutDelta(ctx, ownerAccess, chatID, queued.Args.ReplyID, 1, "text", "partial"); err != nil {
-		t.Fatal(err)
-	}
+	r.putDelta(chatID, queued.Args.ReplyID, 1, "text", "partial")
 	const role = "chat_fail_owner"
 	if _, err := r.owner.Exec(ctx, `DROP ROLE IF EXISTS `+role); err != nil {
 		t.Fatal(err)
@@ -1332,7 +1180,8 @@ func TestFailReply_UPM252_WorksForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *t
 		`ALTER TABLE chat.chats OWNER TO ` + role,
 		`ALTER TABLE chat.lines OWNER TO ` + role,
 		`ALTER TABLE chat.deltas OWNER TO ` + role,
-		`ALTER FUNCTION chat.fail_reply(uuid, uuid, text) OWNER TO ` + role,
+		`ALTER TABLE chat.runs OWNER TO ` + role,
+		`ALTER FUNCTION chat.fail_reply(uuid, int, uuid, text) OWNER TO ` + role,
 		`GRANT USAGE ON SCHEMA chat, identity, platform TO ` + role,
 		`GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO ` + role,
 		`GRANT SELECT ON platform.river_job TO ` + role,
@@ -1343,7 +1192,7 @@ func TestFailReply_UPM252_WorksForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *t
 	}
 
 	// The request role has no access to the chat's rows itself.
-	if stored, err := r.store.FailReply(ctx, user.ID, queued.Args.ReplyID, "access"); err != nil || !stored {
+	if stored, err := r.store.FailReply(ctx, queued.Args, "", "access"); err != nil || !stored {
 		t.Fatalf("stored %v %v", stored, err)
 	}
 	if reply := failedReply(t, r, chatID); reply.Body != "partial" {

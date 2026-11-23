@@ -139,8 +139,8 @@ CREATE POLICY chats_owner_lock_select ON chat.chats
       (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.chats'::regclass))
   );
 
--- SELECT ... FOR UPDATE needs an UPDATE policy to lock the row. WITH CHECK
--- (false) lets it lock and refuses any real update.
+-- SELECT ... FOR NO KEY UPDATE needs an UPDATE policy to lock the row. WITH
+-- CHECK (false) lets it lock and refuses any real update.
 CREATE POLICY chats_owner_lock_update ON chat.chats
   FOR UPDATE
   USING (
@@ -151,8 +151,9 @@ CREATE POLICY chats_owner_lock_update ON chat.chats
 
 -- Text a reply has written so far, and the notices of models that failed
 -- before it. A reply writes its deltas while it streams and deletes them in
--- the transaction that stores its line. line_id is the id that line will get.
--- A text row with seq 0 and no text marks the reply as started.
+-- the transaction that stores its line. line_id is the run id (chat.runs.id).
+-- A text row with seq 0 and no text, written once by the round-1 claim, marks
+-- the reply as started. seq goes on across the rounds of one reply.
 CREATE TABLE chat.deltas (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
@@ -230,6 +231,100 @@ CREATE POLICY deltas_owner_delete ON chat.deltas
 
 GRANT SELECT, INSERT, DELETE ON chat.deltas TO upmo_app;
 
+-- A reply in progress and its fence. id is the id the assistant line will
+-- get and the run id the gateway ledger books. One running row per chat at
+-- most. claim is the token of the worker that owns the current round, and
+-- claim_round that round; every write of a reply checks them under this
+-- row's lock. history is the model history after the last committed round.
+CREATE TABLE chat.runs (
+  id uuid PRIMARY KEY,
+  chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
+  line_id uuid NOT NULL REFERENCES chat.lines (id) ON DELETE CASCADE,
+  author_id uuid NOT NULL,
+  state text NOT NULL DEFAULT 'running',
+  round int NOT NULL DEFAULT 0,
+  claim uuid,
+  claim_round int NOT NULL DEFAULT 0,
+  history jsonb,
+  tokens int NOT NULL DEFAULT 0,
+  cost_micro_usd bigint NOT NULL DEFAULT 0,
+  cost_known boolean NOT NULL DEFAULT true,
+  model text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  CONSTRAINT runs_state_check CHECK (state IN ('running', 'done', 'failed')),
+  CONSTRAINT runs_round_check CHECK (round BETWEEN 0 AND 15 AND claim_round BETWEEN round AND round + 1),
+  CONSTRAINT runs_tokens_check CHECK (tokens >= 0),
+  CONSTRAINT runs_cost_check CHECK (cost_micro_usd >= 0),
+  CONSTRAINT runs_finished_check CHECK ((state = 'running') = (finished_at IS NULL)),
+  CONSTRAINT runs_history_check CHECK (state = 'running' OR (history IS NULL AND claim IS NULL)),
+  CONSTRAINT runs_history_type_check CHECK (history IS NULL OR jsonb_typeof(history) = 'array')
+);
+
+CREATE UNIQUE INDEX runs_one_running ON chat.runs (chat_id) WHERE state = 'running';
+CREATE INDEX runs_chat_idx ON chat.runs (chat_id);
+CREATE INDEX runs_line_idx ON chat.runs (line_id);
+
+ALTER TABLE chat.runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat.runs FORCE ROW LEVEL SECURITY;
+
+-- history holds tool output, so a viewer reads none of it: edit for all.
+CREATE POLICY runs_select ON chat.runs
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM chat.chats AS chat
+    WHERE chat.id = chat_id
+      AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+  ));
+
+CREATE POLICY runs_insert ON chat.runs
+  FOR INSERT
+  WITH CHECK (
+    author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
+  );
+
+-- Also what SELECT ... FOR UPDATE / FOR SHARE on a run needs.
+CREATE POLICY runs_update ON chat.runs
+  FOR UPDATE
+  USING (EXISTS (
+    SELECT 1 FROM chat.chats AS chat
+    WHERE chat.id = chat_id
+      AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM chat.chats AS chat
+    WHERE chat.id = chat_id
+      AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+  ));
+
+-- For chat.fail_reply only, owner-wide like deltas_owner_delete.
+CREATE POLICY runs_owner_select ON chat.runs
+  FOR SELECT
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.runs'::regclass))
+  );
+
+CREATE POLICY runs_owner_update ON chat.runs
+  FOR UPDATE
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.runs'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.runs'::regclass))
+  );
+
+GRANT SELECT, INSERT ON chat.runs TO upmo_app;
+GRANT UPDATE (state, round, claim, claim_round, history, tokens, cost_micro_usd, cost_known, model, finished_at)
+  ON chat.runs TO upmo_app;
+
 -- A delta or a line announces itself to the stream hub of every brain
 -- process. The payload carries ids only: the hub reads the rows. NOTIFY is
 -- queued in the writing transaction and sent when it commits, so a rollback
@@ -280,8 +375,13 @@ $$;
 REVOKE ALL ON FUNCTION chat.sweep_deltas() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION chat.sweep_deltas() TO upmo_app;
 
+-- chat.fail_reply stores the failed reply of a run for an author who can no
+-- longer write the chat, or for a job that could not start. It fails only the
+-- run named and only for the job that owns its current round: the round is
+-- next, and either nobody claimed it or the caller holds the claim. An older
+-- worker is refused. It runs as the table owner; see chats_owner_lock_select.
 -- +goose StatementBegin
-CREATE FUNCTION chat.fail_reply(user_line uuid, reply uuid, why text)
+CREATE FUNCTION chat.fail_reply(reply uuid, job_round int, job_claim uuid, why text)
 RETURNS text
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -289,44 +389,46 @@ SET search_path = pg_catalog
 AS $$
 DECLARE
   in_chat uuid;
+  asked uuid;
+  spent int;
 BEGIN
   IF why NOT IN ('access', 'unwritten') THEN
     RAISE EXCEPTION 'chat: fail_reply';
   END IF;
-  SELECT line.chat_id INTO in_chat
-  FROM chat.lines AS line
-  WHERE line.id = user_line AND line.role = 'user';
-  IF in_chat IS NULL OR NOT EXISTS (
-       SELECT 1 FROM platform.river_job AS job
-       WHERE job.kind = 'chat_reply'
-         AND job.state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
-         AND job.args ->> 'line_id' = user_line::text
-         AND job.args ->> 'reply_id' = reply::text
-         AND job.args ->> 'chat_id' = in_chat::text) THEN
+  SELECT run.chat_id INTO in_chat FROM chat.runs AS run WHERE run.id = reply;
+  IF in_chat IS NULL THEN
     RETURN 'none';
   END IF;
-  PERFORM 1 FROM chat.chats WHERE id = in_chat FOR UPDATE;
-  IF EXISTS (SELECT 1 FROM chat.lines AS line WHERE line.id = reply)
-     OR EXISTS (SELECT 1 FROM chat.lines AS line WHERE line.reply_to = user_line AND line.status = 'done') THEN
-    RETURN 'answered';
+  PERFORM 1 FROM chat.chats WHERE id = in_chat FOR NO KEY UPDATE;
+  SELECT run.line_id, run.tokens INTO asked, spent
+  FROM chat.runs AS run
+  WHERE run.id = reply AND run.state = 'running'
+    AND run.round = job_round - 1
+    AND (run.claim_round < job_round OR run.claim = job_claim)
+  FOR UPDATE;
+  IF asked IS NULL THEN
+    RETURN 'fenced';
   END IF;
-  INSERT INTO chat.lines (id, chat_id, seq, role, body, model, status, reply_to, attempts)
+  INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, status, reply_to, attempts)
   SELECT reply, in_chat, COALESCE(max(line.seq), 0) + 1, 'assistant',
          left(COALESCE((SELECT string_agg(delta.body, '' ORDER BY delta.seq)
                         FROM chat.deltas AS delta
                         WHERE delta.chat_id = in_chat AND delta.line_id = reply
                           AND delta.kind = 'text'), ''), 32000),
-         '', 'failed', user_line,
+         '', spent, 'failed', asked,
          jsonb_build_array(jsonb_build_object('model', '', 'class', why))
   FROM chat.lines AS line WHERE line.chat_id = in_chat;
   DELETE FROM chat.deltas WHERE chat_id = in_chat AND line_id = reply;
+  UPDATE chat.runs
+  SET state = 'failed', claim = NULL, history = NULL, finished_at = now()
+  WHERE id = reply;
   RETURN 'stored';
 END;
 $$;
 -- +goose StatementEnd
 
-REVOKE ALL ON FUNCTION chat.fail_reply(uuid, uuid, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION chat.fail_reply(uuid, uuid, text) TO upmo_app;
+REVOKE ALL ON FUNCTION chat.fail_reply(uuid, int, uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.fail_reply(uuid, int, uuid, text) TO upmo_app;
 
 CREATE TABLE chat.turns (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -537,7 +639,8 @@ CREATE TABLE chat.findings (
   source_ref text NOT NULL DEFAULT '',
   untrusted boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT chat_findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output'))
+  CONSTRAINT chat_findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output')),
+  CONSTRAINT chat_findings_body_check CHECK (octet_length(body) <= 262144)
 );
 
 CREATE INDEX chat_findings_chat_idx ON chat.findings (chat_id, created_at);
@@ -580,11 +683,12 @@ DROP TABLE IF EXISTS chat.findings;
 DROP TABLE IF EXISTS chat.action_logs;
 DROP TABLE IF EXISTS chat.holds;
 DROP TABLE IF EXISTS chat.turns;
-DROP FUNCTION IF EXISTS chat.fail_reply(uuid, uuid, text);
+DROP FUNCTION IF EXISTS chat.fail_reply(uuid, int, uuid, text);
 DROP FUNCTION IF EXISTS chat.sweep_deltas();
 DROP TRIGGER IF EXISTS chat_lines_stream_notify ON chat.lines;
 DROP TRIGGER IF EXISTS chat_deltas_stream_notify ON chat.deltas;
 DROP FUNCTION IF EXISTS chat.stream_notify();
+DROP TABLE IF EXISTS chat.runs;
 DROP TABLE IF EXISTS chat.deltas;
 DROP TABLE IF EXISTS chat.lines;
 DROP TABLE IF EXISTS chat.chats;
