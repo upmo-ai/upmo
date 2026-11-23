@@ -9,9 +9,11 @@ coverage:
       default:
         informational: true
 
+# CI skips the Go or web jobs when a change does not touch them, so a flag
+# keeps its last upload until its job runs again.
 flag_management:
   default_rules:
-    carryforward: false
+    carryforward: true
   individual_flags:
     - name: go-unit
     - name: go-integration
