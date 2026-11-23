@@ -62,3 +62,10 @@ targetRules = ["jwt"]
 condition = "AND"
 paths = ['''^internal/platform/runjwt/testdata/fuzz/FuzzVerify/43ea63883b9c6ba2$''']
 regexes = ['''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJhdWQiOiJjb25uZWN0b3JzIiwiZXhwIjoxNzAwMDAwOTAwLCJpYXQiOjE3MDAwMDAwMDAsImlzcyI6InVwbW8iLCJuYmYiOjE3MDAwMDAwMDAsInJ1biI6InIiLCJzdWIiOiJ1In0\.''']
+
+[[allowlists]]
+description = "fake plain API key the Vertex key test feeds in to prove it is refused"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/gateway/domain/provider_test\.go$''']
+regexes = ['''^sk-123456789012$''']
