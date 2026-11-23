@@ -475,6 +475,7 @@ func (d Dispatch) writeCost(baseCtx context.Context, route string, link domain.L
 				"cost_micro_usd", costLog,
 				"estimated", priced.estimated,
 				"price_source", priced.priceSource,
+				"service_tier", usage.ServiceTier,
 				"input_tokens", usage.Input,
 				"output_tokens", usage.Output,
 				"cache_read", usage.CacheRead,
@@ -665,7 +666,7 @@ func (d Dispatch) priceCost(ctx context.Context, link domain.Link, usage domain.
 		priceSource:        res.Source,
 		version:            version,
 		ctxWindow:          ctxWindow,
-		notifyUnknownPrice: res.Source == "unknown" && !lookupFailed,
+		notifyUnknownPrice: res.Source == "unknown" && !lookupFailed && !domain.IsNonStandardServiceTier(usage.ServiceTier),
 	}, nil
 }
 

@@ -225,6 +225,7 @@ func (n EstimateNotifier) NotifyEstimatedModel(ctx context.Context, account doma
 			WHERE provider_account_id = $1::uuid
 			  AND model = $2
 			  AND price_source = 'unknown'
+			  AND service_tier IN ('', 'standard')
 			  AND unknown_notified_at IS NULL
 			ORDER BY at DESC, id DESC
 			LIMIT 1

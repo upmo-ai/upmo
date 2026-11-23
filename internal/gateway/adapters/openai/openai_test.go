@@ -1264,3 +1264,179 @@ func TestOpenAIUsage_CachedTokensAndDeepSeek(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceTierDecoding(t *testing.T) {
+	// 1. Non-streaming complete decodes and normalizes service_tier, including
+	// when usage is absent.
+	for _, tc := range []struct {
+		name        string
+		body        string
+		wantTier    string
+		wantArrived bool
+	}{
+		{
+			name:        "omitted",
+			body:        `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantTier:    "",
+			wantArrived: true,
+		},
+		{
+			name:        "default normalizes to standard",
+			body:        `{"service_tier":"default","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantTier:    domain.ServiceTierStandard,
+			wantArrived: true,
+		},
+		{
+			name:        "priority",
+			body:        `{"service_tier":"priority","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantTier:    domain.ServiceTierPriority,
+			wantArrived: true,
+		},
+		{
+			name:        "flex",
+			body:        `{"service_tier":"flex","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantTier:    domain.ServiceTierFlex,
+			wantArrived: true,
+		},
+		{
+			name:        "auto normalizes to other",
+			body:        `{"service_tier":"auto","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantTier:    domain.ServiceTierOther,
+			wantArrived: true,
+		},
+		{
+			name:        "scale normalizes to other",
+			body:        `{"service_tier":"scale","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantTier:    domain.ServiceTierOther,
+			wantArrived: true,
+		},
+		{
+			name:        "priority preserved without usage block",
+			body:        `{"service_tier":"priority","choices":[{"message":{"content":"ok"}}]}`,
+			wantTier:    domain.ServiceTierPriority,
+			wantArrived: false,
+		},
+	} {
+		t.Run("complete/"+tc.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			res, class, err := Adapter{Client: s.Client()}.Chat(context.Background(), app.Attempt{BaseURL: s.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+				Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+			})
+			s.Close()
+			if err != nil || class != domain.ClassOK {
+				t.Fatalf("class=%s err=%v", class, err)
+			}
+			if res.Usage.ServiceTier != tc.wantTier || res.Usage.Arrived != tc.wantArrived {
+				t.Fatalf("usage = %+v, want service_tier=%q arrived=%v", res.Usage, tc.wantTier, tc.wantArrived)
+			}
+		})
+	}
+
+	// 2. Streaming: tier on earlier chunk survives final usage-only chunk omitting service_tier.
+	t.Run("stream/preserved across usage-only final chunk", func(t *testing.T) {
+		srv := sseServer(t, false,
+			`{"service_tier":"priority","choices":[{"delta":{"content":"hi"}}]}`,
+			`{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}`,
+		)
+		res, class, err := Adapter{Client: srv.Client()}.ChatStreamTools(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+			Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		}, app.StreamEvents{})
+		if err != nil || class != domain.ClassOK {
+			t.Fatalf("class=%s err=%v", class, err)
+		}
+		if !res.Usage.Arrived || res.Usage.Input != 100 || res.Usage.Output != 20 || res.Usage.ServiceTier != domain.ServiceTierPriority {
+			t.Fatalf("usage = %+v, want priority with 100/20", res.Usage)
+		}
+	})
+
+	// 3. Streaming: tier appearing only on final usage chunk, and multiple usage chunks.
+	t.Run("stream/tier only on final usage chunk", func(t *testing.T) {
+		srv := sseServer(t, false,
+			`{"choices":[{"delta":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":1}}`,
+			`{"service_tier":"flex","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}`,
+		)
+		res, class, err := Adapter{Client: srv.Client()}.ChatStreamTools(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+			Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		}, app.StreamEvents{})
+		if err != nil || class != domain.ClassOK {
+			t.Fatalf("class=%s err=%v", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierFlex || res.Usage.Input != 100 || res.Usage.Output != 20 {
+			t.Fatalf("usage = %+v, want flex with 100/20", res.Usage)
+		}
+	})
+
+	// 4. Streaming: interrupted by EOF without [DONE] still preserves service_tier.
+	t.Run("stream/eof before done preserves tier", func(t *testing.T) {
+		srv := sseServer(t, true,
+			`{"service_tier":"priority","choices":[{"delta":{"content":"partial"}}]}`,
+		)
+		res, class, err := Adapter{Client: srv.Client()}.ChatStreamTools(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+			Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		}, app.StreamEvents{})
+		if err == nil || class != domain.ClassTransient {
+			t.Fatalf("class=%s err=%v, want transient EOF error", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierPriority || res.Text != "partial" {
+			t.Fatalf("res = %+v, want service_tier=priority text=partial", res)
+		}
+	})
+
+	// 5. Streaming: malformed later chunk preserves tier seen in earlier chunk.
+	t.Run("stream/malformed later chunk preserves tier", func(t *testing.T) {
+		srv := sseServer(t, false,
+			`{"service_tier":"flex","choices":[{"delta":{"content":"hi"}}]}`,
+			`{not-json`,
+		)
+		res, class, err := Adapter{Client: srv.Client()}.ChatStreamTools(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+			Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		}, app.StreamEvents{})
+		if err == nil || class != domain.ClassCaller {
+			t.Fatalf("class=%s err=%v, want caller malformed body error", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierFlex {
+			t.Fatalf("usage = %+v, want service_tier=flex", res.Usage)
+		}
+	})
+
+	// 6. Streaming: text callback cancellation on the same chunk still preserves tier
+	// because service_tier is recorded before callbacks run.
+	t.Run("stream/callback cancel on same chunk preserves tier", func(t *testing.T) {
+		srv := sseServer(t, false,
+			`{"service_tier":"priority","choices":[{"delta":{"content":"hi"}}]}`,
+		)
+		cancelErr := errors.New("caller gone")
+		res, class, err := Adapter{Client: srv.Client()}.ChatStreamTools(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+			Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		}, app.StreamEvents{
+			Text: func(string) error { return cancelErr },
+		})
+		if !errors.Is(err, cancelErr) || class != domain.ClassCanceled {
+			t.Fatalf("class=%s err=%v, want canceled", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierPriority {
+			t.Fatalf("usage = %+v, want service_tier=priority", res.Usage)
+		}
+	})
+
+	// 7. Streaming: tool callback cancellation on the same chunk preserves tier.
+	t.Run("stream/tool callback cancel on same chunk preserves tier", func(t *testing.T) {
+		srv := sseServer(t, false,
+			`{"service_tier":"batch","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`,
+		)
+		cancelErr := errors.New("tool caller gone")
+		res, class, err := Adapter{Client: srv.Client()}.ChatStreamTools(context.Background(), app.Attempt{BaseURL: srv.URL, Model: "gpt-4o", Secret: "s"}, domain.Request{
+			Messages: []domain.Message{{Role: domain.RoleUser, Text: "hi"}},
+		}, app.StreamEvents{
+			ToolCall: func(app.ToolCallDelta) error { return cancelErr },
+		})
+		if !errors.Is(err, cancelErr) || class != domain.ClassCanceled {
+			t.Fatalf("class=%s err=%v, want canceled", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierBatch {
+			t.Fatalf("usage = %+v, want service_tier=batch", res.Usage)
+		}
+	})
+}

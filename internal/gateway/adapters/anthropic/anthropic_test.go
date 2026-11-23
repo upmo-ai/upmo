@@ -1038,3 +1038,113 @@ func TestUsageBlockEmptyBreakdownPreservesExistingCacheWritesAndClampsNegative(t
 		t.Fatalf("negative cache-creation fallback = %+v, want clamped zeros", negative)
 	}
 }
+
+func TestServiceTierDecoding(t *testing.T) {
+	// 1. Non-streaming complete decodes and normalizes usage.service_tier.
+	for _, tc := range []struct {
+		name     string
+		body     string
+		wantTier string
+	}{
+		{
+			name:     "omitted",
+			body:     `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5}}`,
+			wantTier: "",
+		},
+		{
+			name:     "standard",
+			body:     `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"service_tier":"standard"}}`,
+			wantTier: domain.ServiceTierStandard,
+		},
+		{
+			name:     "priority",
+			body:     `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"service_tier":"priority"}}`,
+			wantTier: domain.ServiceTierPriority,
+		},
+		{
+			name:     "batch",
+			body:     `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"service_tier":"batch"}}`,
+			wantTier: domain.ServiceTierBatch,
+		},
+		{
+			name:     "unknown tier normalizes to other",
+			body:     `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"service_tier":"dedicated"}}`,
+			wantTier: domain.ServiceTierOther,
+		},
+	} {
+		t.Run("complete/"+tc.name, func(t *testing.T) {
+			rec := newRecorder(t, jsonReply([]byte(tc.body)))
+			res, class, err := (Adapter{Client: rec.srv.Client()}).Chat(context.Background(), attemptFor(rec), hi())
+			if err != nil || class != domain.ClassOK {
+				t.Fatalf("class=%s err=%v", class, err)
+			}
+			if res.Usage.ServiceTier != tc.wantTier {
+				t.Fatalf("service_tier = %q, want %q", res.Usage.ServiceTier, tc.wantTier)
+			}
+		})
+	}
+
+	// 2. Streaming: message_start tier is preserved when message_delta omits or nulls service_tier.
+	t.Run("stream/start tier preserved across delta without tier", func(t *testing.T) {
+		stream := strings.Join([]string{
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":50,"service_tier":"priority"}}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12,"service_tier":null}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")
+		rec := newRecorder(t, streamReply([]byte(stream)))
+		res, class, err := (Adapter{Client: rec.srv.Client()}).ChatStreamTools(context.Background(), attemptFor(rec), hi(), app.StreamEvents{})
+		if err != nil || class != domain.ClassOK {
+			t.Fatalf("class=%s err=%v", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierPriority || res.Usage.Input != 50 || res.Usage.Output != 12 {
+			t.Fatalf("usage = %+v, want priority 50/12", res.Usage)
+		}
+	})
+
+	// 3. Streaming: delta-only service_tier reporting.
+	t.Run("stream/delta-only tier", func(t *testing.T) {
+		stream := strings.Join([]string{
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":50}}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+			``,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12,"service_tier":"batch"}}`,
+			``,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")
+		rec := newRecorder(t, streamReply([]byte(stream)))
+		res, class, err := (Adapter{Client: rec.srv.Client()}).ChatStreamTools(context.Background(), attemptFor(rec), hi(), app.StreamEvents{})
+		if err != nil || class != domain.ClassOK {
+			t.Fatalf("class=%s err=%v", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierBatch || res.Usage.Input != 50 || res.Usage.Output != 12 {
+			t.Fatalf("usage = %+v, want batch 50/12", res.Usage)
+		}
+	})
+
+	// 4. Streaming: start tier survives an in-stream error event.
+	t.Run("stream/start tier preserved on error event", func(t *testing.T) {
+		stream := strings.Join([]string{
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":50,"service_tier":"priority"}}}`,
+			``,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
+			``,
+			`data: {"type":"error","error":{"type":"overloaded_error"}}`,
+			``,
+		}, "\n")
+		rec := newRecorder(t, streamReply([]byte(stream)))
+		res, class, err := (Adapter{Client: rec.srv.Client()}).ChatStreamTools(context.Background(), attemptFor(rec), hi(), app.StreamEvents{})
+		if err == nil || class != domain.ClassOverloaded {
+			t.Fatalf("class=%s err=%v, want overloaded error", class, err)
+		}
+		if res.Usage.ServiceTier != domain.ServiceTierPriority || res.Text != "partial" {
+			t.Fatalf("res = %+v, want service_tier=priority text=partial", res)
+		}
+	})
+}

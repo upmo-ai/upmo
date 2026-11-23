@@ -421,7 +421,8 @@ type usageBlock struct {
 		FiveMinute *int `json:"ephemeral_5m_input_tokens"`
 		OneHour    *int `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
-	CacheRead *int `json:"cache_read_input_tokens"`
+	CacheRead   *int    `json:"cache_read_input_tokens"`
+	ServiceTier *string `json:"service_tier"`
 }
 
 // into records the counts that arrived. Anthropic counts input tokens apart
@@ -461,6 +462,11 @@ func (u usageBlock) into(usage *domain.Usage) {
 	} else if u.CacheCreation != nil {
 		usage.CacheWrite = max(usage.CacheWrite, clamp(*u.CacheCreation))
 		usage.CacheWrite1h = min(usage.CacheWrite1h, usage.CacheWrite)
+	}
+	if u.ServiceTier != nil {
+		if tier := domain.NormalizeServiceTier(*u.ServiceTier); tier != "" {
+			usage.ServiceTier = tier
+		}
 	}
 }
 

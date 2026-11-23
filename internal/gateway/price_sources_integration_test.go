@@ -3945,3 +3945,493 @@ func TestFeature_UPM388_ConcurrentCatalogRefreshesSerialize(t *testing.T) {
 		t.Fatalf("refresh rows = %s/%d", model, threshold)
 	}
 }
+
+type countingEstimateNotice struct {
+	inner app.EstimateNotifier
+	calls atomic.Int32
+}
+
+func (c *countingEstimateNotice) NotifyEstimatedModel(ctx context.Context, account domain.Account, model string) error {
+	c.calls.Add(1)
+	return c.inner.NotifyEstimatedModel(ctx, account, model)
+}
+
+func TestFeature_UPM395_ServiceTierGuardEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, masterKeys(t, 'c'))
+	if err := notices.Up(ctx, r.owner); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.Store{Pool: r.owner}
+	for _, p := range []struct {
+		id, email, name, roleKey string
+	}{
+		{bob, "bob@example.com", "Bob", "owner"},
+		{ada, "ada@example.com", "Ada", "member"},
+	} {
+		if _, err := r.owner.Exec(ctx, `
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+			VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $3, (SELECT id FROM identity.roles WHERE key = $4), now())
+			ON CONFLICT (id) DO UPDATE SET role_id = EXCLUDED.role_id, joined_at = now(), disabled_at = NULL`,
+			p.id, p.email, p.name, p.roleKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Seed standard catalog rates for OpenAI and Anthropic, plus a flat override on OpenAI.
+	if err := store.ReplaceCatalog(ctx, "upm395-cat-v1", []domain.CatalogRow{
+		{
+			Vendor:  "openai",
+			Model:   "gpt-4o",
+			Version: "upm395-cat-v1",
+			Price: domain.Price{
+				Version:                   "upm395-cat-v1",
+				InputMicroUSDPerMTok:      ptrInt64(5_000_000),
+				OutputMicroUSDPerMTok:     ptrInt64(15_000_000),
+				CacheReadMicroUSDPerMTok:  ptrInt64(1_000_000),
+				CacheWriteMicroUSDPerMTok: ptrInt64(5_000_000),
+			},
+		},
+		{
+			Vendor:  "anthropic",
+			Model:   "claude-3-7-sonnet",
+			Version: "upm395-cat-v1",
+			Price: domain.Price{
+				Version:                   "upm395-cat-v1",
+				InputMicroUSDPerMTok:      ptrInt64(3_000_000),
+				OutputMicroUSDPerMTok:     ptrInt64(15_000_000),
+				CacheReadMicroUSDPerMTok:  ptrInt64(300_000),
+				CacheWriteMicroUSDPerMTok: ptrInt64(3_750_000),
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake OpenAI server: responds according to the prompt tag.
+	openAISrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body struct {
+			Stream   bool `json:"stream"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode openai request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		tag := ""
+		if len(body.Messages) > 0 {
+			tag = body.Messages[len(body.Messages)-1].Content
+		}
+		if body.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			switch tag {
+			case "stream-flex":
+				_, _ = fmt.Fprint(w,
+					"data: {\"service_tier\":\"flex\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"+
+						"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100000,\"completion_tokens\":50000}}\n\n"+
+						"data: [DONE]\n\n",
+				)
+			case "stream-priority-partial-eof":
+				_, _ = fmt.Fprint(w,
+					"data: {\"service_tier\":\"priority\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+				)
+			case "stream-priority-empty-eof":
+				_, _ = fmt.Fprint(w,
+					"data: {\"service_tier\":\"priority\",\"choices\":[{\"delta\":{}}]}\n\n",
+				)
+			default:
+				_, _ = fmt.Fprint(w,
+					"data: {\"service_tier\":\"default\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"+
+						"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100000,\"completion_tokens\":50000}}\n\n"+
+						"data: [DONE]\n\n",
+				)
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch tag {
+		case "default":
+			_, _ = w.Write([]byte(`{"service_tier":"default","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}`))
+		case "priority":
+			_, _ = w.Write([]byte(`{"service_tier":"priority","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}`))
+		case "scale":
+			_, _ = w.Write([]byte(`{"service_tier":"scale","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}`))
+		case "auto":
+			_, _ = w.Write([]byte(`{"service_tier":"auto","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}`))
+		case "priority-reported":
+			_, _ = w.Write([]byte(`{"service_tier":"priority","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100000,"completion_tokens":50000,"cost":0.0042}}`))
+		case "custom-priority":
+			_, _ = w.Write([]byte(`{"service_tier":"priority","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100,"completion_tokens":50}}`))
+		case "custom-standard":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100,"completion_tokens":50}}`))
+		default:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}`))
+		}
+	}))
+	t.Cleanup(openAISrv.Close)
+
+	// Fake Anthropic server: responds according to the prompt tag.
+	anthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body struct {
+			Stream   bool `json:"stream"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode anthropic request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		tag := ""
+		if len(body.Messages) > 0 {
+			tag = body.Messages[len(body.Messages)-1].Content
+		}
+		if body.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w,
+				"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100000,\"service_tier\":\"batch\"}}}\n\n"+
+					"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"+
+					"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":50000}}\n\n"+
+					"data: {\"type\":\"message_stop\"}\n\n",
+			)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch tag {
+		case "anth-standard":
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":100000,"output_tokens":50000,"service_tier":"standard"}}`))
+		case "anth-priority":
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":100000,"output_tokens":50000,"service_tier":"priority"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":100000,"output_tokens":50000}}`))
+		}
+	}))
+	t.Cleanup(anthSrv.Close)
+
+	// Accounts & routes:
+	// - metered OpenAI with catalog + flat override
+	// - metered Anthropic with catalog
+	// - metered unknown-host custom model (to test NotifyEstimatedModel isolation)
+	// - subscription OpenAI (to test ListCostMicroUSD nil on non-standard tier)
+	openAIAcct := insertProviderAndRoute(t, r, "r-395-openai", "openai", "OpenAI Metered", "ref_395_openai", "gpt-4o", true)
+	if _, err := r.owner.Exec(ctx, `UPDATE gateway.provider_accounts SET house = true, owner_user_id = NULL, visibility = 'everyone' WHERE id = $1::uuid`, openAIAcct); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO gateway.price_overrides (account_id, model, input_micro_usd_per_mtok, output_micro_usd_per_mtok, updated_by)
+		VALUES ($1::uuid, 'gpt-4o', 2000000, 8000000, $2::uuid)`, openAIAcct, bob); err != nil {
+		t.Fatal(err)
+	}
+	anthAcct := insertProviderAndRoute(t, r, "r-395-anth", "anthropic", "Anthropic Metered", "ref_395_anth", "claude-3-7-sonnet", true)
+	if _, err := r.owner.Exec(ctx, `UPDATE gateway.provider_accounts SET house = true, owner_user_id = NULL, visibility = 'everyone' WHERE id = $1::uuid`, anthAcct); err != nil {
+		t.Fatal(err)
+	}
+	customAcct := insertProviderAndRoute(t, r, "r-395-custom", "custom", "Unknown Custom", "ref_395_custom", "private-model-395", true)
+	if _, err := r.owner.Exec(ctx, `UPDATE gateway.provider_accounts SET adapter = $2, base_url = $3 WHERE id = $1::uuid`, customAcct, domain.AdapterOpenAI, openAISrv.URL); err != nil {
+		t.Fatal(err)
+	}
+	subAcct := insertProviderAndRoute(t, r, "r-395-sub", "openai", "OpenAI Sub", "ref_395_sub", "gpt-4o", true)
+	if _, err := r.owner.Exec(ctx, `UPDATE gateway.provider_accounts SET plan_kind = 'subscription' WHERE id = $1::uuid`, subAcct); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set a workspace limit so reservations and settlements exercise usage_holds + usage_spend.
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.usage_limits (kind, amount_micro_usd) VALUES ('workspace', 100000000)`); err != nil {
+		t.Fatal(err)
+	}
+
+	notifier := postgres.EstimateNotifier{
+		Pool: r.owner,
+		SettingsManagers: func(ctx context.Context) ([]string, error) {
+			return identity.SettingsManagers(ctx, r.owner)
+		},
+		Notify: func(ctx context.Context, tx pgx.Tx, userID, title string) error {
+			uid, err := uuid.Parse(userID)
+			if err != nil {
+				return err
+			}
+			_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
+			return err
+		},
+	}
+
+	countedNotice := &countingEstimateNotice{inner: notifier}
+	openAIAdapter := openai.Adapter{Client: rewriteHostClient(openAISrv)}
+	anthAdapter := anthropic.Adapter{Client: rewriteHostClient(anthSrv)}
+	disp := app.Dispatch{
+		Routes: store,
+		Teams:  store,
+		Prices: store,
+		Ledger: store,
+		Limits: store,
+		Secrets: staticSecrets{
+			"ref_395_openai": "sk-openai",
+			"ref_395_anth":   "sk-anth",
+			"ref_395_custom": "sk-custom",
+			"ref_395_sub":    "sk-sub",
+		},
+		Chat: map[string]app.Chatter{
+			domain.AdapterOpenAI:    openAIAdapter,
+			domain.AdapterAnthropic: anthAdapter,
+		},
+		Stream: map[string]app.StreamChatter{
+			domain.AdapterOpenAI:    openAIAdapter,
+			domain.AdapterAnthropic: anthAdapter,
+		},
+		EstimateNotice: countedNotice,
+	}
+	who := domain.Principal{User: ada, Source: domain.SourceChat}
+
+	type rowSnap struct {
+		cost        *int64
+		listCost    *int64
+		estimated   bool
+		priceSource *string
+		serviceTier string
+		notified    bool
+	}
+	latestRow := func(route string) rowSnap {
+		t.Helper()
+		var s rowSnap
+		if err := r.owner.QueryRow(ctx, `
+			SELECT cost_micro_usd, list_cost_micro_usd, estimated, price_source, service_tier, unknown_notified_at IS NOT NULL
+			FROM gateway.ledger
+			WHERE route = $1
+			ORDER BY id DESC LIMIT 1`, route).Scan(&s.cost, &s.listCost, &s.estimated, &s.priceSource, &s.serviceTier, &s.notified); err != nil {
+			t.Fatalf("query latest ledger for %s: %v", route, err)
+		}
+		return s
+	}
+	srcStr := func(p *string) string {
+		if p == nil {
+			return "<nil>"
+		}
+		return *p
+	}
+
+	// 1. OpenAI "default" -> stored 'standard', billed at flat override (100k*2 + 50k*8 = 600_000 micro-USD).
+	if _, err := disp.ChatCall(ctx, "r-395-openai", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "default"}}}); err != nil {
+		t.Fatalf("openai default: %v", err)
+	}
+	got := latestRow("r-395-openai")
+	if got.serviceTier != domain.ServiceTierStandard || got.cost == nil || *got.cost != 600_000 || got.estimated || srcStr(got.priceSource) != "override" {
+		t.Fatalf("openai default row = %+v (source=%s), want standard 600000 override", got, srcStr(got.priceSource))
+	}
+
+	// 2. OpenAI "priority", "scale", "auto" -> refuse override/catalog/estimate -> NULL cost, price_source='unknown',
+	//    estimated=false, hold released, spend unchanged, ZERO unknown-price notices.
+	for _, tc := range []struct {
+		tag      string
+		wantTier string
+	}{
+		{"priority", domain.ServiceTierPriority},
+		{"scale", domain.ServiceTierOther},
+		{"auto", domain.ServiceTierOther},
+	} {
+		if _, err := disp.ChatCall(ctx, "r-395-openai", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: tc.tag}}}); err != nil {
+			t.Fatalf("openai %s: %v", tc.tag, err)
+		}
+		got = latestRow("r-395-openai")
+		if got.serviceTier != tc.wantTier || got.cost != nil || got.estimated || srcStr(got.priceSource) != "unknown" || got.notified {
+			t.Fatalf("openai %s row = %+v (source=%s), want tier=%q cost=nil unknown notified=false", tc.tag, got, srcStr(got.priceSource), tc.wantTier)
+		}
+	}
+	if n := r.count(`SELECT count(*) FROM notices.notifications WHERE user_id = $1::uuid`, bob); n != 0 {
+		t.Fatalf("bob notices after non-standard OpenAI calls = %d, want 0", n)
+	}
+	if calls := countedNotice.calls.Load(); calls != 0 {
+		t.Fatalf("EstimateNotice calls after non-standard OpenAI calls = %d, want 0", calls)
+	}
+
+	// 3. OpenAI streaming "flex" (tier on first chunk, omitted on final usage-only chunk).
+	sink := &collectSink{}
+	if err := disp.ChatStreamCall(ctx, "r-395-openai", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "stream-flex"}}}, 0, sink); err != nil {
+		t.Fatalf("openai stream-flex: %v", err)
+	}
+	got = latestRow("r-395-openai")
+	if got.serviceTier != domain.ServiceTierFlex || got.cost != nil || got.estimated || srcStr(got.priceSource) != "unknown" {
+		t.Fatalf("openai stream-flex row = %+v (source=%s), want flex cost=nil unknown", got, srcStr(got.priceSource))
+	}
+
+	// 4. OpenAI streaming interrupted after emitting text with "priority" (no usage) -> unknown, NOT byte-estimated!
+	sink = &collectSink{}
+	if err := disp.ChatStreamCall(ctx, "r-395-openai", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "stream-priority-partial-eof"}}}, 0, sink); err != nil {
+		t.Fatalf("openai stream-priority-partial-eof setup err: %v", err)
+	}
+	if sink.fail == nil || sink.text.String() != "partial" {
+		t.Fatalf("stream-priority-partial-eof sink fail=%v text=%q, want fail and text=partial", sink.fail, sink.text.String())
+	}
+	got = latestRow("r-395-openai")
+	if got.serviceTier != domain.ServiceTierPriority || got.cost != nil || got.estimated || srcStr(got.priceSource) != "unknown" {
+		t.Fatalf("openai stream-priority-partial-eof row = %+v (source=%s), want priority cost=nil unknown", got, srcStr(got.priceSource))
+	}
+
+	// 5. OpenAI streaming interrupted with "priority" BEFORE any output or usage -> KnownZero -> 0 / not_billed.
+	sink = &collectSink{}
+	if err := disp.ChatStreamCall(ctx, "r-395-openai", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "stream-priority-empty-eof"}}}, 0, sink); err != nil {
+		t.Fatalf("openai stream-priority-empty-eof setup err: %v", err)
+	}
+	if sink.fail == nil || sink.text.String() != "" {
+		t.Fatalf("stream-priority-empty-eof sink fail=%v text=%q, want fail and empty text", sink.fail, sink.text.String())
+	}
+	got = latestRow("r-395-openai")
+	if got.serviceTier != domain.ServiceTierPriority || got.cost == nil || *got.cost != 0 || got.estimated || srcStr(got.priceSource) != "not_billed" {
+		t.Fatalf("openai stream-priority-empty-eof row = %+v (source=%s), want priority 0 not_billed", got, srcStr(got.priceSource))
+	}
+
+	// 6. OpenAI "priority" WITH provider-reported cost ($0.0042 = 4200 micro-USD) -> accepted as 'provider', beating flat override.
+	if _, err := disp.ChatCall(ctx, "r-395-openai", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "priority-reported"}}}); err != nil {
+		t.Fatalf("openai priority-reported: %v", err)
+	}
+	got = latestRow("r-395-openai")
+	if got.serviceTier != domain.ServiceTierPriority || got.cost == nil || *got.cost != 4_200 || got.estimated || srcStr(got.priceSource) != "provider" {
+		t.Fatalf("openai priority-reported row = %+v (source=%s), want priority 4200 provider", got, srcStr(got.priceSource))
+	}
+
+	// 7. Anthropic non-streaming ("standard" vs "priority") + streaming ("batch" on message_start only).
+	if _, err := disp.ChatCall(ctx, "r-395-anth", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "anth-standard"}}}); err != nil {
+		t.Fatalf("anth standard: %v", err)
+	}
+	got = latestRow("r-395-anth")
+	// 100k*3 + 50k*15 = 1_050_000 micro-USD
+	if got.serviceTier != domain.ServiceTierStandard || got.cost == nil || *got.cost != 1_050_000 || got.estimated || srcStr(got.priceSource) != "models_dev" {
+		t.Fatalf("anth standard row = %+v (source=%s), want standard 1050000 models_dev", got, srcStr(got.priceSource))
+	}
+	if _, err := disp.ChatCall(ctx, "r-395-anth", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "anth-priority"}}}); err != nil {
+		t.Fatalf("anth priority: %v", err)
+	}
+	got = latestRow("r-395-anth")
+	if got.serviceTier != domain.ServiceTierPriority || got.cost != nil || got.estimated || srcStr(got.priceSource) != "unknown" {
+		t.Fatalf("anth priority row = %+v (source=%s), want priority cost=nil unknown", got, srcStr(got.priceSource))
+	}
+	sink = &collectSink{}
+	if err := disp.ChatStreamCall(ctx, "r-395-anth", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "anth-stream-batch"}}}, 0, sink); err != nil {
+		t.Fatalf("anth stream batch: %v", err)
+	}
+	got = latestRow("r-395-anth")
+	if got.serviceTier != domain.ServiceTierBatch || got.cost != nil || got.estimated || srcStr(got.priceSource) != "unknown" {
+		t.Fatalf("anth stream batch row = %+v (source=%s), want batch cost=nil unknown", got, srcStr(got.priceSource))
+	}
+
+	// 8. NotifyEstimatedModel isolation: on an unpriced custom account, a non-standard
+	//    unknown-price call never invokes EstimateNotice (0 calls, 0 notices); a
+	//    subsequent standard unknown-price call invokes EstimateNotice once and stamps
+	//    ONLY the standard row. Then verify the concurrent race order where a newer
+	//    priority row sits ahead of an older standard row: NotifyEstimatedModel must
+	//    still stamp ONLY the older standard row, never the newer priority row.
+	if _, err := disp.ChatCall(ctx, "r-395-custom", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "custom-priority"}}}); err != nil {
+		t.Fatalf("custom priority: %v", err)
+	}
+	if calls := countedNotice.calls.Load(); calls != 0 {
+		t.Fatalf("EstimateNotice calls after all non-standard calls = %d, want 0", calls)
+	}
+	if n := r.count(`SELECT count(*) FROM notices.notifications WHERE user_id = $1::uuid`, bob); n != 0 {
+		t.Fatalf("bob notices after custom priority = %d, want 0", n)
+	}
+	if _, err := disp.ChatCall(ctx, "r-395-custom", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "custom-standard"}}}); err != nil {
+		t.Fatalf("custom standard: %v", err)
+	}
+	if calls := countedNotice.calls.Load(); calls != 1 {
+		t.Fatalf("EstimateNotice calls after custom standard = %d, want 1", calls)
+	}
+	if n := r.count(`SELECT count(*) FROM notices.notifications WHERE user_id = $1::uuid`, bob); n != 1 {
+		t.Fatalf("bob notices after custom standard = %d, want 1", n)
+	}
+	if n := r.count(`SELECT count(*) FROM gateway.ledger WHERE provider_account_id = $1::uuid AND service_tier = 'priority' AND unknown_notified_at IS NOT NULL`, customAcct); n != 0 {
+		t.Fatalf("priority row unexpectedly stamped with unknown_notified_at (count=%d)", n)
+	}
+	if n := r.count(`SELECT count(*) FROM gateway.ledger WHERE provider_account_id = $1::uuid AND service_tier = '' AND unknown_notified_at IS NOT NULL`, customAcct); n != 1 {
+		t.Fatalf("standard unknown row not stamped with unknown_notified_at (count=%d)", n)
+	}
+	customRaceAcct := insertProviderAndRoute(t, r, "r-395-custom-race", "custom", "Race Custom", "ref_395_race", "race-model-395", true)
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO gateway.ledger (at, route, link_position, provider_account_id, model, plan_kind, failure_class, user_id, source, price_source, service_tier)
+		VALUES
+			(now() - interval '1 minute', 'r-395-custom-race', 0, $1::uuid, 'race-model-395', 'metered', '', $2::uuid, 'chat', 'unknown', ''),
+			(now(), 'r-395-custom-race', 0, $1::uuid, 'race-model-395', 'metered', '', $2::uuid, 'chat', 'unknown', 'priority')`,
+		customRaceAcct, ada); err != nil {
+		t.Fatal(err)
+	}
+	if err := notifier.NotifyEstimatedModel(ctx, domain.Account{ID: customRaceAcct, Provider: "custom"}, "race-model-395"); err != nil {
+		t.Fatalf("NotifyEstimatedModel race: %v", err)
+	}
+	if n := r.count(`SELECT count(*) FROM gateway.ledger WHERE provider_account_id = $1::uuid AND service_tier = 'priority' AND unknown_notified_at IS NOT NULL`, customRaceAcct); n != 0 {
+		t.Fatalf("newer priority row was stamped by NotifyEstimatedModel (count=%d)", n)
+	}
+	if n := r.count(`SELECT count(*) FROM gateway.ledger WHERE provider_account_id = $1::uuid AND service_tier = '' AND unknown_notified_at IS NOT NULL`, customRaceAcct); n != 1 {
+		t.Fatalf("older standard row was not stamped by NotifyEstimatedModel (count=%d)", n)
+	}
+	if n := r.count(`SELECT count(*) FROM notices.notifications WHERE user_id = $1::uuid`, bob); n != 2 {
+		t.Fatalf("bob notices after race notify = %d, want 2", n)
+	}
+
+	// 9. Subscription plan: "default" computes list_cost_micro_usd; "priority" leaves list_cost_micro_usd NULL.
+	if _, err := disp.ChatCall(ctx, "r-395-sub", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "default"}}}); err != nil {
+		t.Fatalf("sub default: %v", err)
+	}
+	got = latestRow("r-395-sub")
+	// Catalog: 100k*5 + 50k*15 = 1_250_000 micro-USD
+	if got.serviceTier != domain.ServiceTierStandard || got.cost != nil || got.priceSource != nil || got.listCost == nil || *got.listCost != 1_250_000 {
+		t.Fatalf("sub default row = %+v, want standard list_cost=1250000", got)
+	}
+	if _, err := disp.ChatCall(ctx, "r-395-sub", "", who, domain.Input{Messages: []domain.Message{{Role: domain.RoleUser, Text: "priority"}}}); err != nil {
+		t.Fatalf("sub priority: %v", err)
+	}
+	got = latestRow("r-395-sub")
+	if got.serviceTier != domain.ServiceTierPriority || got.cost != nil || got.priceSource != nil || got.listCost != nil {
+		t.Fatalf("sub priority row = %+v, want priority cost=nil price_source=nil list_cost=nil", got)
+	}
+
+	// 10. Holds released, exact spend recorded (600_000 + 4_200 + 1_050_000 = 1_654_200),
+	//     and spend reconciliation reports zero mismatches.
+	var held, spent int64
+	if err := r.owner.QueryRow(ctx, `SELECT COALESCE(sum(held_micro_usd), 0), COALESCE(sum(spent_micro_usd), 0) FROM gateway.usage_spend WHERE kind = 'workspace'`).Scan(&held, &spent); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 || spent != 1_654_200 {
+		t.Fatalf("workspace spend = held:%d spent:%d, want held:0 spent:1654200", held, spent)
+	}
+	if openHolds := r.count(`SELECT count(*) FROM gateway.usage_holds`); openHolds != 0 {
+		t.Fatalf("open holds = %d, want 0", openHolds)
+	}
+	mismatches, err := postgres.CheckSpend(ctx, r.owner, "UTC")
+	if err != nil {
+		t.Fatalf("CheckSpend: %v", err)
+	}
+	if len(mismatches) != 0 {
+		t.Fatalf("spend mismatches = %+v, want none", mismatches)
+	}
+
+	// 11. DB CHECK constraint rejects invalid service_tier values.
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO gateway.ledger (route, link_position, model, plan_kind, failure_class, user_id, source, price_source, service_tier)
+		VALUES ('r-395-bad-tier', 0, 'gpt-4o', 'metered', '', $1::uuid, 'chat', 'unknown', 'bogus')`, ada); err == nil {
+		t.Fatal("expected CHECK constraint error for invalid service_tier 'bogus'")
+	}
+
+	// 12. Daily usage rollup counts non-standard unknown-price metered calls in unpriced_calls.
+	if _, err := r.owner.Exec(ctx, `
+		UPDATE gateway.ledger SET at = now() - interval '2 days'
+		WHERE route = 'r-395-anth' AND service_tier = 'batch'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupUsageOnce(ctx, r.owner, zone("UTC"), time.Now(), nil); err != nil {
+		t.Fatalf("RollupUsageOnce: %v", err)
+	}
+	var unpricedCalls int64
+	var dailyCost *int64
+	var dailyEstimated bool
+	if err := r.owner.QueryRow(ctx, `
+		SELECT unpriced_calls, cost_micro_usd, estimated
+		FROM gateway.usage_daily
+		WHERE provider_account_id = $1::uuid AND model = 'claude-3-7-sonnet'`, anthAcct).Scan(&unpricedCalls, &dailyCost, &dailyEstimated); err != nil {
+		t.Fatal(err)
+	}
+	if unpricedCalls != 1 || dailyCost != nil || dailyEstimated {
+		t.Fatalf("usage_daily for non-standard batch row = unpriced:%d cost:%v estimated:%v, want 1 / nil / false", unpricedCalls, dailyCost, dailyEstimated)
+	}
+}

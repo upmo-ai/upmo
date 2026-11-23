@@ -35,6 +35,44 @@ const (
 	SourceSystem     = "system"
 )
 
+// Canonical provider response service tiers stored on gateway.ledger.
+// Empty string means the provider did not report a service tier.
+const (
+	ServiceTierStandard = "standard"
+	ServiceTierFlex     = "flex"
+	ServiceTierPriority = "priority"
+	ServiceTierBatch    = "batch"
+	ServiceTierOther    = "other"
+)
+
+// NormalizeServiceTier maps a provider-reported response service_tier value to
+// its canonical form. Only empty, "standard", and "default" are standard; any
+// other non-empty value (including "auto", "scale", or future provider tiers)
+// maps to a non-standard tier so standard rates are never applied blindly.
+func NormalizeServiceTier(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return ""
+	case "standard", "default":
+		return ServiceTierStandard
+	case "flex":
+		return ServiceTierFlex
+	case "priority":
+		return ServiceTierPriority
+	case "batch":
+		return ServiceTierBatch
+	default:
+		return ServiceTierOther
+	}
+}
+
+// IsNonStandardServiceTier reports whether tier indicates a non-standard
+// provider service tier whose billing rates differ from standard list rates.
+func IsNonStandardServiceTier(tier string) bool {
+	norm := NormalizeServiceTier(tier)
+	return norm != "" && norm != ServiceTierStandard
+}
+
 // AnonymousUserID is the user id an erased person's usage rows carry. It is
 // the nil UUID: non-null, so a non-system row keeps a payer, and never the id
 // of a real person.
@@ -75,6 +113,7 @@ type Usage struct {
 	CacheWrite           int    `json:"cache_write"`
 	CacheWrite1h         int    `json:"-"`
 	Reasoning            int    `json:"reasoning"`
+	ServiceTier          string `json:"-"`
 	ReportedCostMicroUSD *int64 `json:"-"`
 }
 
@@ -177,6 +216,19 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 	if in.KnownZero {
 		zero := int64(0)
 		return CallPriceResult{CostMicroUSD: &zero, Source: "not_billed"}
+	}
+	// Non-standard service tiers (flex, priority, batch, other) have different
+	// provider rates. Accept a valid provider-reported call cost; otherwise
+	// refuse standard overrides, catalog rates, and estimates rather than
+	// silently misbilling at standard rates.
+	if IsNonStandardServiceTier(in.Usage.ServiceTier) {
+		if in.Usage.Arrived && in.Usage.ReportedCostMicroUSD != nil {
+			rc := *in.Usage.ReportedCostMicroUSD
+			if rc >= 0 && rc <= MaxMicroUSD && (rc > 0 || in.ZeroCostAllowed) {
+				return CallPriceResult{CostMicroUSD: &rc, Source: "provider"}
+			}
+		}
+		return CallPriceResult{Source: "unknown"}
 	}
 	var vendorEst *int64
 	if in.EstimateRateKnown && in.EstimateRate > 0 {
@@ -357,9 +409,10 @@ func ResolveCallCost(in CallPriceInput) CallPriceResult {
 }
 
 // ListCostMicroUSD prices subscription/local usage from its record-time catalog snapshot.
-// A nil result means at least one used dimension had no known rate.
+// A nil result means at least one used dimension had no known rate or the
+// response reported a non-standard service tier.
 func ListCostMicroUSD(usage Usage, catalog Price) *int64 {
-	if !usage.Arrived {
+	if !usage.Arrived || IsNonStandardServiceTier(usage.ServiceTier) {
 		return nil
 	}
 	if usage.CacheWrite1h < 0 {

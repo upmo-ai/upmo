@@ -280,11 +280,13 @@ CREATE TABLE gateway.ledger (
   charged_to_limit boolean NOT NULL DEFAULT false,
   price_source text,
   price_version text,
+  service_tier text NOT NULL DEFAULT '',
   unknown_notified_at timestamptz,
   hold_id uuid,
   CONSTRAINT ledger_route_check CHECK (route <> ''),
   CONSTRAINT ledger_model_check CHECK (model <> ''),
   CONSTRAINT ledger_plan_check CHECK (plan_kind IN ('metered', 'subscription', 'local')),
+  CONSTRAINT ledger_service_tier_check CHECK (service_tier IN ('', 'standard', 'flex', 'priority', 'batch', 'other')),
   CONSTRAINT ledger_position_check CHECK (link_position >= 0),
   CONSTRAINT ledger_tokens_nonneg CHECK (
     input_tokens >= 0 AND output_tokens >= 0 AND cache_read >= 0

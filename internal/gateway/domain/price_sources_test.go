@@ -732,3 +732,191 @@ func TestResolveCallCostSelectsLargestMatchingContextTier(t *testing.T) {
 		t.Fatalf("largest matching tier = %+v, want 1000 micro-USD at tier 200", got)
 	}
 }
+
+func TestNormalizeServiceTierAndNonStandard(t *testing.T) {
+	cases := []struct {
+		raw        string
+		want       string
+		nonStdWant bool
+	}{
+		{"", "", false},
+		{"   ", "", false},
+		{"standard", ServiceTierStandard, false},
+		{"default", ServiceTierStandard, false},
+		{"  DEFAULT ", ServiceTierStandard, false},
+		{"flex", ServiceTierFlex, true},
+		{"FLEX", ServiceTierFlex, true},
+		{"priority", ServiceTierPriority, true},
+		{"batch", ServiceTierBatch, true},
+		{"auto", ServiceTierOther, true},
+		{"scale", ServiceTierOther, true},
+		{"dedicated", ServiceTierOther, true},
+	}
+	for _, tc := range cases {
+		if got := NormalizeServiceTier(tc.raw); got != tc.want {
+			t.Errorf("NormalizeServiceTier(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+		if got := IsNonStandardServiceTier(tc.raw); got != tc.nonStdWant {
+			t.Errorf("IsNonStandardServiceTier(%q) = %v, want %v", tc.raw, got, tc.nonStdWant)
+		}
+	}
+}
+
+func TestResolveCallCost_ServiceTierGuard(t *testing.T) {
+	catalog := Price{
+		Version:                  "2026-11-23",
+		InputMicroUSDPerMTok:     microRate(3_000_000),
+		OutputMicroUSDPerMTok:    microRate(10_000_000),
+		CacheReadMicroUSDPerMTok: microRate(300_000),
+	}
+	provList := &Price{
+		InputMicroUSDPerMTok:  microRate(4_000_000),
+		OutputMicroUSDPerMTok: microRate(12_000_000),
+	}
+	override := &PriceOverride{
+		Model:                 "gpt-4o",
+		InputMicroUSDPerMTok:  microRate(2_000_000),
+		OutputMicroUSDPerMTok: microRate(8_000_000),
+	}
+	cross := &Price{
+		InputMicroUSDPerMTok:  microRate(5_000_000),
+		OutputMicroUSDPerMTok: microRate(15_000_000),
+	}
+
+	// Standard tiers ("", "standard", "default") continue to bill normally.
+	for _, tier := range []string{"", ServiceTierStandard, "default"} {
+		res := ResolveCallCost(CallPriceInput{
+			PlanKind:     PlanMetered,
+			Model:        "gpt-4o",
+			Usage:        Usage{Arrived: true, Input: 1_000_000, Output: 500_000, ServiceTier: tier},
+			Catalog:      catalog,
+			CatalogFound: true,
+		})
+		if res.CostMicroUSD == nil || *res.CostMicroUSD != 8_000_000 || res.Estimated || res.Source != "models_dev" {
+			t.Fatalf("standard tier %q = %+v, want 8_000_000 models_dev", tier, res)
+		}
+	}
+
+	// Non-standard tiers without reported cost refuse override, provider_list,
+	// catalog, cross-provider, vendor estimate, and byte-estimate fallback.
+	for _, tier := range []string{ServiceTierFlex, ServiceTierPriority, ServiceTierBatch, ServiceTierOther, "auto", "scale"} {
+		res := ResolveCallCost(CallPriceInput{
+			PlanKind:          PlanMetered,
+			Model:             "gpt-4o",
+			Usage:             Usage{Arrived: true, Input: 1_000_000, Output: 500_000, ServiceTier: tier},
+			Override:          override,
+			ProviderList:      provList,
+			Catalog:           catalog,
+			CatalogFound:      true,
+			CrossProvider:     cross,
+			EstimateRate:      20_000_000,
+			EstimateRateKnown: true,
+			InputBytes:        400,
+			OutputBytes:       200,
+		})
+		if res.CostMicroUSD != nil || res.Estimated || res.Source != "unknown" {
+			t.Fatalf("non-standard tier %q = %+v, want nil unknown", tier, res)
+		}
+		if !NeedsEstimate(PlanMetered, Usage{Arrived: true, Input: 100, Output: 50, ServiceTier: tier}, catalog, true, false) {
+			t.Fatalf("NeedsEstimate(%q) = false, want true", tier)
+		}
+
+		// Without Usage.Arrived (byte-estimate path), non-standard tier still refuses standard rates.
+		resNoUsage := ResolveCallCost(CallPriceInput{
+			PlanKind:          PlanMetered,
+			Model:             "gpt-4o",
+			Usage:             Usage{Arrived: false, ServiceTier: tier},
+			Override:          override,
+			Catalog:           catalog,
+			CatalogFound:      true,
+			EstimateRate:      20_000_000,
+			EstimateRateKnown: true,
+			InputBytes:        400,
+			OutputBytes:       200,
+		})
+		if resNoUsage.CostMicroUSD != nil || resNoUsage.Estimated || resNoUsage.Source != "unknown" {
+			t.Fatalf("non-standard tier %q without usage = %+v, want nil unknown", tier, resNoUsage)
+		}
+	}
+
+	// KnownZero still returns 0 / not_billed even when non-standard tier was seen.
+	resKnownZero := ResolveCallCost(CallPriceInput{
+		PlanKind:     PlanMetered,
+		Model:        "gpt-4o",
+		Usage:        Usage{ServiceTier: ServiceTierPriority},
+		Catalog:      catalog,
+		CatalogFound: true,
+		KnownZero:    true,
+	})
+	if resKnownZero.CostMicroUSD == nil || *resKnownZero.CostMicroUSD != 0 || resKnownZero.Estimated || resKnownZero.Source != "not_billed" {
+		t.Fatalf("KnownZero non-standard = %+v, want 0 not_billed", resKnownZero)
+	}
+
+	// Non-standard tier accepts valid provider-reported cost (beating flat standard override),
+	// and rejects invalid reported cost bounds (-1, 0 without ZeroCostAllowed, MaxMicroUSD+1, unarrived).
+	reportedCases := []struct {
+		name        string
+		arrived     bool
+		reported    int64
+		zeroAllowed bool
+		wantCost    *int64
+		wantSource  string
+	}{
+		{"positive reported beats flat override", true, 123_456, false, microRate(123_456), "provider"},
+		{"max micro usd allowed", true, MaxMicroUSD, false, microRate(MaxMicroUSD), "provider"},
+		{"zero allowed when model allows zero", true, 0, true, microRate(0), "provider"},
+		{"zero rejected when not allowed", true, 0, false, nil, "unknown"},
+		{"negative rejected", true, -1, true, nil, "unknown"},
+		{"above max rejected", true, MaxMicroUSD + 1, false, nil, "unknown"},
+		{"unarrived usage ignores reported cost", false, 123_456, false, nil, "unknown"},
+	}
+	for _, tc := range reportedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := tc.reported
+			res := ResolveCallCost(CallPriceInput{
+				PlanKind:          PlanMetered,
+				Model:             "gpt-4o",
+				Usage:             Usage{Arrived: tc.arrived, Input: 1_000_000, Output: 500_000, ServiceTier: ServiceTierPriority, ReportedCostMicroUSD: &rc},
+				Override:          override,
+				ProviderList:      provList,
+				Catalog:           catalog,
+				CatalogFound:      true,
+				ZeroCostAllowed:   tc.zeroAllowed,
+				EstimateRate:      20_000_000,
+				EstimateRateKnown: true,
+			})
+			if (res.CostMicroUSD == nil) != (tc.wantCost == nil) || (tc.wantCost != nil && *res.CostMicroUSD != *tc.wantCost) || res.Estimated || res.Source != tc.wantSource {
+				t.Fatalf("got %+v, want cost=%v source=%q estimated=false", res, tc.wantCost, tc.wantSource)
+			}
+		})
+	}
+
+	// Non-metered plans remain nil cost and empty source.
+	for _, plan := range []string{PlanSubscription, PlanLocal} {
+		res := ResolveCallCost(CallPriceInput{
+			PlanKind:     plan,
+			Model:        "gpt-4o",
+			Usage:        Usage{Arrived: true, Input: 100, ServiceTier: ServiceTierPriority},
+			Catalog:      catalog,
+			CatalogFound: true,
+		})
+		if res.CostMicroUSD != nil || res.Estimated || res.Source != "" {
+			t.Fatalf("plan %q non-standard = %+v, want empty", plan, res)
+		}
+	}
+}
+
+func TestListCostMicroUSDNonStandardServiceTierIsNil(t *testing.T) {
+	price := Price{InputMicroUSDPerMTok: microRate(2_000_000), OutputMicroUSDPerMTok: microRate(4_000_000)}
+	for _, tier := range []string{"", ServiceTierStandard, "default"} {
+		got := ListCostMicroUSD(Usage{Arrived: true, Input: 1_000_000, ServiceTier: tier}, price)
+		if got == nil || *got != 2_000_000 {
+			t.Fatalf("standard tier %q list cost = %v, want 2_000_000", tier, got)
+		}
+	}
+	for _, tier := range []string{ServiceTierFlex, ServiceTierPriority, ServiceTierBatch, ServiceTierOther, "auto", "scale"} {
+		if got := ListCostMicroUSD(Usage{Arrived: true, Input: 1_000_000, ServiceTier: tier}, price); got != nil {
+			t.Fatalf("non-standard tier %q list cost = %d, want nil", tier, *got)
+		}
+	}
+}

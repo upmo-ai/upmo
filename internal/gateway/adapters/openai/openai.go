@@ -603,7 +603,8 @@ type streamToolCall struct {
 
 // streamChunk is one SSE data payload of a streamed completion.
 type streamChunk struct {
-	Choices []struct {
+	ServiceTier string `json:"service_tier"`
+	Choices     []struct {
 		FinishReason string `json:"finish_reason"`
 		Delta        struct {
 			Content      string           `json:"content"`
@@ -622,12 +623,13 @@ type streamToolAcc struct {
 }
 
 type streamState struct {
-	model      string
-	usage      domain.Usage
-	text       strings.Builder
-	stopReason string
-	byIndex    map[int]int
-	tools      []streamToolAcc
+	model       string
+	serviceTier string
+	usage       domain.Usage
+	text        strings.Builder
+	stopReason  string
+	byIndex     map[int]int
+	tools       []streamToolAcc
 }
 
 func (s *streamState) result() domain.ChatResult {
@@ -651,11 +653,15 @@ func (s *streamState) result() domain.ChatResult {
 			}
 		}
 	}
+	usage := s.usage
+	if s.serviceTier != "" {
+		usage.ServiceTier = s.serviceTier
+	}
 	return domain.ChatResult{
 		Text:       s.text.String(),
 		ToolCalls:  calls,
 		StopReason: s.stopReason,
-		Usage:      s.usage,
+		Usage:      usage,
 		Model:      s.model,
 	}
 }
@@ -726,6 +732,9 @@ func oneChunk(payload string, state *streamState, events app.StreamEvents) (doma
 	var chunk streamChunk
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 		return domain.ClassCaller, fmt.Errorf("gateway: provider body")
+	}
+	if tier := domain.NormalizeServiceTier(chunk.ServiceTier); tier != "" {
+		state.serviceTier = tier
 	}
 	if chunk.Usage != nil {
 		state.usage = chunk.Usage.toDomain()
@@ -804,7 +813,8 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 		return domain.ChatResult{}, class, err
 	}
 	var parsed struct {
-		Choices []struct {
+		ServiceTier string `json:"service_tier"`
+		Choices     []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
 				Content   string `json:"content"`
@@ -828,6 +838,7 @@ func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain
 	if parsed.Usage != nil {
 		usage = parsed.Usage.toDomain()
 	}
+	usage.ServiceTier = domain.NormalizeServiceTier(parsed.ServiceTier)
 	choice := parsed.Choices[0]
 	var calls []domain.ToolCall
 	if len(choice.Message.ToolCalls) > 0 {

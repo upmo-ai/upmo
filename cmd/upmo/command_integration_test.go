@@ -306,7 +306,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		"gateway.goose_db_version": {},
 		"gateway.ledger": {
 			Table:  []string{"SELECT"},
-			Select: []string{"agent_id", "at", "automation_id", "cache_read", "cache_write", "cache_write_1h", "charged_to_limit", "cost_micro_usd", "estimated", "failure_class", "hold_id", "id", "input_tokens", "latency_ms", "link_position", "list_cost_micro_usd", "model", "output_tokens", "owner_team_id", "parent_run_id", "plan_kind", "price_source", "price_version", "provider_account_id", "reasoning", "route", "run_id", "source", "source_id", "unknown_notified_at", "usage_arrived", "user_id"},
+			Select: []string{"agent_id", "at", "automation_id", "cache_read", "cache_write", "cache_write_1h", "charged_to_limit", "cost_micro_usd", "estimated", "failure_class", "hold_id", "id", "input_tokens", "latency_ms", "link_position", "list_cost_micro_usd", "model", "output_tokens", "owner_team_id", "parent_run_id", "plan_kind", "price_source", "price_version", "provider_account_id", "reasoning", "route", "run_id", "service_tier", "source", "source_id", "unknown_notified_at", "usage_arrived", "user_id"},
 		},
 		"gateway.price_overrides": {
 			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},
