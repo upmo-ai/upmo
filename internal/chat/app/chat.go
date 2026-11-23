@@ -94,6 +94,10 @@ type ChatSummary struct {
 type Chat struct {
 	ID    string
 	Lines []Line
+	// Tainted and PrivateRead are what the chat has read so far: untrusted
+	// text, and another person's private data. They only turn on.
+	Tainted     bool
+	PrivateRead bool
 }
 
 // Book stores chats and their lines.

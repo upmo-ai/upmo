@@ -17,8 +17,10 @@ type summaryJSON struct {
 
 // chatJSON is one chat in full.
 type chatJSON struct {
-	ID    string     `json:"id"`
-	Lines []lineJSON `json:"lines"`
+	ID          string     `json:"id"`
+	Lines       []lineJSON `json:"lines"`
+	Tainted     bool       `json:"tainted"`
+	PrivateRead bool       `json:"private_read"`
 }
 
 // lineJSON is one line of a chat in full.
@@ -67,7 +69,7 @@ func summaryBody(summary app.ChatSummary) summaryJSON {
 }
 
 func chatBody(chat app.Chat) chatJSON {
-	body := chatJSON{ID: chat.ID, Lines: make([]lineJSON, 0, len(chat.Lines))}
+	body := chatJSON{ID: chat.ID, Lines: make([]lineJSON, 0, len(chat.Lines)), Tainted: chat.Tainted, PrivateRead: chat.PrivateRead}
 	for _, line := range chat.Lines {
 		body.Lines = append(body.Lines, lineBody(line))
 	}

@@ -334,8 +334,8 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var one int
-	err = tx.QueryRow(ctx, `SELECT 1 FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&one)
+	var tainted, privateRead bool
+	err = tx.QueryRow(ctx, `SELECT tainted, private_read FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&tainted, &privateRead)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Chat{}, app.ErrGone
 	}
@@ -366,7 +366,7 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	if err := tx.Commit(ctx); err != nil {
 		return app.Chat{}, err
 	}
-	return app.Chat{ID: chatID, Lines: lines}, nil
+	return app.Chat{ID: chatID, Lines: lines, Tainted: tainted, PrivateRead: privateRead}, nil
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {

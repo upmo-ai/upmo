@@ -88,12 +88,14 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		return app.Claim{}, err
 	}
 	var vis, team string
-	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, '') FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team); err != nil {
+	var exposure agentloop.ExposureState
+	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, ''), tainted, private_read FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team, &exposure.Tainted, &exposure.PrivateRead); err != nil {
 		return app.Claim{}, fmt.Errorf("chat: claim scope: %w", err)
 	}
 	claim := app.Claim{
-		Job:   job,
-		Token: token,
+		Job:      job,
+		Token:    token,
+		Exposure: exposure,
 		Scope: agentloop.AccessScope{
 			UserID:           access.UserID,
 			Allow:            access.Allow,
@@ -165,6 +167,25 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		claim.Model = model
 	}
 	if claim.State == app.ClaimGo {
+		claim.AllowedTools = map[string]bool{}
+		if !claim.Exposure.Tainted {
+			rows, err := tx.Query(ctx, `SELECT tool FROM chat.tool_allowances WHERE chat_id = $1::uuid AND user_id = $2::uuid`, job.ChatID, access.UserID)
+			if err != nil {
+				return app.Claim{}, fmt.Errorf("chat: claim allowances: %w", err)
+			}
+			for rows.Next() {
+				var tool string
+				if err := rows.Scan(&tool); err != nil {
+					rows.Close()
+					return app.Claim{}, fmt.Errorf("chat: claim allowance: %w", err)
+				}
+				claim.AllowedTools[tool] = true
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return app.Claim{}, fmt.Errorf("chat: claim allowances: %w", err)
+			}
+		}
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(seq), 0) FROM chat.turns WHERE chat_id = $1::uuid`, job.ChatID).Scan(&claim.TurnSeq); err != nil {
 			return app.Claim{}, fmt.Errorf("chat: claim turns: %w", err)
 		}
@@ -297,6 +318,12 @@ func (s Store) CommitRound(ctx context.Context, access app.Access, claim app.Cla
 	}
 	if err := InsertTurnRows(ctx, tx, rc.Turn); err != nil {
 		return err
+	}
+	if rc.Turn.Exposure.Tainted || rc.Turn.Exposure.PrivateRead {
+		if _, err := tx.Exec(ctx, `SELECT chat.advance_chat_exposure($1::uuid, $2, $3)`,
+			claim.Job.ChatID, rc.Turn.Exposure.Tainted, rc.Turn.Exposure.PrivateRead); err != nil {
+			return fmt.Errorf("chat: exposure: %w", err)
+		}
 	}
 	history := rc.Turn.History
 	if history == nil {

@@ -253,8 +253,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.chats": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"created_at", "id", "object_type", "owner_user_id", "visibility", "visibility_team_id"},
-			Insert: []string{"created_at", "id", "object_type", "owner_user_id", "visibility", "visibility_team_id"},
+			Select: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "tainted", "visibility", "visibility_team_id"},
+			Insert: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "tainted", "visibility", "visibility_team_id"},
 			Update: []string{"id", "object_type", "visibility", "visibility_team_id"},
 		},
 		"chat.deltas": {
@@ -284,6 +284,11 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Select: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
 			Insert: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
 			Update: []string{"claim", "claim_round", "cost_known", "cost_micro_usd", "finished_at", "history", "model", "round", "round_seq", "state", "tokens"},
+		},
+		"chat.tool_allowances": {
+			Table:  []string{"DELETE", "INSERT", "SELECT"},
+			Select: []string{"chat_id", "created_at", "tool", "user_id"},
+			Insert: []string{"chat_id", "created_at", "tool", "user_id"},
 		},
 		"chat.turns": {
 			Table:  []string{"INSERT", "SELECT"},

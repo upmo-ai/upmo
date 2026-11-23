@@ -7,6 +7,8 @@ CREATE TABLE chat.chats (
   visibility text NOT NULL,
   visibility_team_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
+  tainted boolean NOT NULL DEFAULT false,
+  private_read boolean NOT NULL DEFAULT false,
   CONSTRAINT chats_type_check CHECK (object_type = 'chat'),
   CONSTRAINT chats_visibility_check CHECK (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
@@ -124,7 +126,7 @@ CREATE TRIGGER chat_keep_line
 GRANT SELECT, INSERT ON chat.lines TO upmo_app;
 
 SELECT identity.protect('chat.chats');
-REVOKE UPDATE (created_at) ON chat.chats FROM upmo_app;
+REVOKE UPDATE (created_at, tainted, private_read) ON chat.chats FROM upmo_app;
 
 -- chat.fail_reply runs for a person who can no longer write the chat, so no
 -- policy that asks for their access lets it through. It runs as the owner of
@@ -139,15 +141,89 @@ CREATE POLICY chats_owner_lock_select ON chat.chats
       (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.chats'::regclass))
   );
 
--- SELECT ... FOR NO KEY UPDATE needs an UPDATE policy to lock the row. WITH
--- CHECK (false) lets it lock and refuses any real update.
+-- SELECT ... FOR NO KEY UPDATE needs an UPDATE policy to lock the row.
+-- chat.advance_chat_exposure also writes as the owner, so the check admits the
+-- owner; chat.keep_chat then refuses anything but a monotonic exposure change.
 CREATE POLICY chats_owner_lock_update ON chat.chats
   FOR UPDATE
   USING (
     current_user = pg_catalog.pg_get_userbyid(
       (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.chats'::regclass))
   )
-  WITH CHECK (false);
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.chats'::regclass))
+  );
+
+-- tainted and private_read only ever turn on, and only chat.advance_chat_exposure
+-- (which runs as the table owner) turns them on. visibility is the owner's.
+-- +goose StatementBegin
+CREATE FUNCTION chat.keep_chat()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  actor uuid := NULLIF(current_setting('upmo.user_id', true), '')::uuid;
+  is_owner boolean := (actor IS NOT NULL AND actor = OLD.owner_user_id);
+  is_table_owner boolean := (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.chats'::regclass))
+  );
+BEGIN
+  IF (OLD.tainted AND NOT NEW.tainted) OR (OLD.private_read AND NOT NEW.private_read) THEN
+    RAISE EXCEPTION 'chat: taint';
+  END IF;
+  IF (NEW.tainted IS DISTINCT FROM OLD.tainted OR NEW.private_read IS DISTINCT FROM OLD.private_read)
+     AND NOT is_table_owner THEN
+    RAISE EXCEPTION 'chat: taint';
+  END IF;
+  IF (NEW.visibility IS DISTINCT FROM OLD.visibility
+      OR NEW.visibility_team_id IS DISTINCT FROM OLD.visibility_team_id)
+     AND NOT (is_owner OR is_table_owner) THEN
+    RAISE EXCEPTION 'chat: owner';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER chat_keep_chat
+  BEFORE UPDATE ON chat.chats
+  FOR EACH ROW
+  EXECUTE FUNCTION chat.keep_chat();
+
+-- +goose StatementBegin
+CREATE FUNCTION chat.advance_chat_exposure(
+  target_chat_id uuid,
+  add_tainted boolean,
+  add_private_read boolean
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  c chat.chats%ROWTYPE;
+BEGIN
+  IF NOT COALESCE(add_tainted, false) AND NOT COALESCE(add_private_read, false) THEN
+    RETURN;
+  END IF;
+  SELECT * INTO c FROM chat.chats WHERE id = target_chat_id FOR NO KEY UPDATE;
+  IF NOT FOUND OR NOT identity.may('edit', c.object_type, c.owner_user_id, c.visibility, c.visibility_team_id, c.id) THEN
+    RAISE EXCEPTION 'chat: access' USING ERRCODE = '42501';
+  END IF;
+  UPDATE chat.chats
+  SET tainted = tainted OR COALESCE(add_tainted, false),
+      private_read = private_read OR COALESCE(add_private_read, false)
+  WHERE id = target_chat_id;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION chat.advance_chat_exposure(uuid, boolean, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.advance_chat_exposure(uuid, boolean, boolean) TO upmo_app;
 
 -- Text a reply has written so far, and the notices of models that failed
 -- before it. A reply writes its deltas while it streams and deletes them in
@@ -681,8 +757,70 @@ CREATE POLICY chat_findings_insert ON chat.findings
 
 GRANT SELECT, INSERT ON chat.findings TO upmo_app;
 
+-- What a person allowed for one chat: a tool of change that then runs without a
+-- hold while the chat is untainted. One row per chat, person and tool.
+CREATE TABLE chat.tool_allowances (
+  chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
+  user_id uuid NOT NULL,
+  tool text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (chat_id, user_id, tool),
+  CONSTRAINT tool_allowances_tool_check CHECK (char_length(tool) BETWEEN 1 AND 120)
+);
+
+ALTER TABLE chat.tool_allowances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat.tool_allowances FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tool_allowances_owner ON chat.tool_allowances
+  FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.tool_allowances'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.tool_allowances'::regclass))
+  );
+
+CREATE POLICY tool_allowances_select ON chat.tool_allowances
+  FOR SELECT
+  USING (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND identity.may('view', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
+  );
+
+CREATE POLICY tool_allowances_insert ON chat.tool_allowances
+  FOR INSERT
+  WITH CHECK (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND NOT chat.tainted
+        AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
+  );
+
+CREATE POLICY tool_allowances_delete ON chat.tool_allowances
+  FOR DELETE
+  USING (
+    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
+  );
+
+GRANT SELECT, INSERT, DELETE ON chat.tool_allowances TO upmo_app;
+
 -- +goose Down
 
+DROP TABLE IF EXISTS chat.tool_allowances;
 DROP TABLE IF EXISTS chat.findings;
 DROP TABLE IF EXISTS chat.action_logs;
 DROP TABLE IF EXISTS chat.holds;
@@ -697,3 +835,6 @@ DROP TABLE IF EXISTS chat.deltas;
 DROP TABLE IF EXISTS chat.lines;
 DROP TABLE IF EXISTS chat.chats;
 DROP FUNCTION IF EXISTS chat.keep_line();
+DROP FUNCTION IF EXISTS chat.advance_chat_exposure(uuid, boolean, boolean);
+DROP TRIGGER IF EXISTS chat_keep_chat ON chat.chats;
+DROP FUNCTION IF EXISTS chat.keep_chat();

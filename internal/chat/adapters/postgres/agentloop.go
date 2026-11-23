@@ -81,6 +81,69 @@ func (s Store) SaveFinding(ctx context.Context, scope agentloop.AccessScope, cha
 	return id, err
 }
 
+// ActionLog is the chat's log of tool calls that act outside it.
+func (s Store) ActionLog(scope agentloop.AccessScope) agentloop.ActionLog {
+	return ChatActionLog{Store: s, Scope: scope}
+}
+
+func hasAllowanceTx(ctx context.Context, tx pgx.Tx, chatID, userID, toolName string) (bool, error) {
+	var allowed bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM chat.tool_allowances AS a
+			JOIN chat.chats AS c ON c.id = a.chat_id
+			WHERE a.chat_id = $1::uuid
+			  AND a.user_id = $2::uuid
+			  AND a.tool = $3
+			  AND NOT c.tainted
+		)`, chatID, userID, toolName).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("chat: allowance: %w", err)
+	}
+	return allowed, nil
+}
+
+// HasAllowance reports whether the person allowed the tool for the chat and
+// the chat is untainted.
+func (s Store) HasAllowance(ctx context.Context, access app.Access, chatID, toolName string) (bool, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	allowed, err := hasAllowanceTx(ctx, tx, chatID, access.UserID, toolName)
+	if err != nil {
+		return false, err
+	}
+	return allowed, tx.Commit(ctx)
+}
+
+func allowToolForChatTx(ctx context.Context, tx pgx.Tx, chatID, userID, toolName string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO chat.tool_allowances (chat_id, user_id, tool)
+		VALUES ($1::uuid, $2::uuid, $3)
+		ON CONFLICT (chat_id, user_id, tool) DO NOTHING`, chatID, userID, toolName)
+	if err != nil {
+		return fmt.Errorf("chat: allow tool: %w", err)
+	}
+	return nil
+}
+
+// AllowToolForChat lets the person's calls of the tool run without a hold in
+// this chat while it stays untainted.
+func (s Store) AllowToolForChat(ctx context.Context, access app.Access, chatID, toolName string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := allowToolForChatTx(ctx, tx, chatID, access.UserID, toolName); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // ChatActionLog implements agentloop.ActionLog against chat.action_logs.
 type ChatActionLog struct {
 	Store Store

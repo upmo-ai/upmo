@@ -141,6 +141,11 @@ type ReplyRows interface {
 	// CanWrite reports ErrGone or ErrSay when the person can no longer write
 	// to the chat.
 	CanWrite(ctx context.Context, access Access, chatID string) error
+	// HasAllowance reports whether the person allowed the tool for the chat
+	// and the chat is untainted.
+	HasAllowance(ctx context.Context, access Access, chatID, toolName string) (bool, error)
+	// ActionLog is the chat's log of tool calls that act outside it.
+	ActionLog(scope agentloop.AccessScope) agentloop.ActionLog
 }
 
 // ModelMessage is one turn sent to the model.
@@ -225,6 +230,10 @@ type Claim struct {
 	Model string
 	// Attempts are the status notices of this reply, in seq order.
 	Attempts []domain.Attempt
+	// Exposure is what the chat has read so far. AllowedTools are the tools
+	// the author allowed for this chat; empty when the chat is tainted.
+	Exposure     agentloop.ExposureState
+	AllowedTools map[string]bool
 }
 
 // ReplyEnd is the failed end of a reply: which model was writing, the notices
@@ -597,13 +606,23 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		Executor: timedExecutor{limit: ToolTimeout, inner: agentloop.DefaultExecutor{
 			Lessons: lessonOpener{lookup: w.deps.Lessons, live: live}, Outputs: outs, OffloadAtTokens: w.cfg.OffloadAtTokens}},
 		TurnStore:            store,
+		ActionLog:            w.deps.Rows.ActionLog(claim.Scope),
 		Outputs:              outs,
 		OffloadAtTokens:      w.cfg.OffloadAtTokens,
 		MaxToolCallsPerRound: MaxToolCallsPerRound,
 		// ContextWindow 0: no trim, no guard (310b2)
 	}
 	run := &agentloop.RunState{RunID: args.ReplyID, ObjectID: args.ChatID, ObjectType: "chat",
-		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: catalog(agent), Seq: claim.TurnSeq}
+		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: catalog(agent), Seq: claim.TurnSeq,
+		Exposure: claim.Exposure}
+	engine.WritePolicy = ChatWritePolicy{ChatID: args.ChatID, Run: run, Allowed: claim.AllowedTools,
+		Allowances: w.deps.Rows, Access: func() (Access, error) {
+			current, ok := live.get()
+			if !ok {
+				return Access{}, errRevoked
+			}
+			return current, nil
+		}}
 	messages := claim.History
 	if args.Round == 1 {
 		messages = toMessages(history(claim.Lines, w.cfg.HistoryChars))
