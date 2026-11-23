@@ -163,11 +163,12 @@ func memberJSON(members []domain.Member) []map[string]any {
 			teams = []string{}
 		}
 		out = append(out, map[string]any{
-			"id":      member.ID.String(),
-			"email":   member.Email,
-			"name":    member.Name,
-			"invited": member.Invited,
-			"teams":   teams,
+			"id":         member.ID.String(),
+			"email":      member.Email,
+			"name":       member.Name,
+			"invited":    member.Invited,
+			"teams":      teams,
+			"avatar_url": member.AvatarURL,
 			"role": map[string]string{
 				"id":     member.RoleID.String(),
 				"name":   member.RoleName,

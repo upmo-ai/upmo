@@ -134,6 +134,15 @@ func (f allowFake) ReplaceMemberLink(context.Context, domain.UserID, string, []b
 func (f allowFake) Profile(context.Context, domain.UserID) (string, string, error) {
 	return "", "", nil
 }
+func (f allowFake) SetAvatar(context.Context, []byte, domain.UserID, string) (string, error) {
+	return "", nil
+}
+func (f allowFake) ClearAvatar(context.Context, []byte, domain.UserID) (string, error) {
+	return "", nil
+}
+func (f allowFake) LookupAvatarKey(context.Context, domain.UserID) (string, error) {
+	return "", domain.ErrAvatarNotFound
+}
 
 func TestArtifactAllowUsesTheMembersArtifactPermissions(t *testing.T) {
 	members := Members{Store: &allowFake{system: "member", joined: true}}

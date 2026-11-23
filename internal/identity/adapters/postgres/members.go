@@ -55,7 +55,8 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 	rows, err := p.Pool.Query(ctx, `
 		SELECT person.id::text, person.email, person.email_hash, person.name,
 		       role.id::text, role.name, COALESCE(role.key, ''),
-		       person.joined_at IS NULL, COALESCE(team.name, '')
+		       person.joined_at IS NULL, COALESCE(team.name, ''),
+		       COALESCE(person.avatar_key, '')
 		FROM identity.users AS person
 		JOIN identity.roles AS role ON role.id = person.role_id
 		LEFT JOIN identity.team_members AS membership ON membership.user_id = person.id
@@ -68,11 +69,11 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 	defer rows.Close()
 	var out []domain.Member
 	for rows.Next() {
-		var id, name, roleID, roleName, system, team string
+		var id, name, roleID, roleName, system, team, avatarKey string
 		var stored string
 		var hash []byte
 		var invited bool
-		if err := rows.Scan(&id, &stored, &hash, &name, &roleID, &roleName, &system, &invited, &team); err != nil {
+		if err := rows.Scan(&id, &stored, &hash, &name, &roleID, &roleName, &system, &invited, &team, &avatarKey); err != nil {
 			return nil, err
 		}
 		userID, err := domain.ParseUserID(id)
@@ -96,6 +97,7 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 		member := domain.Member{
 			ID: userID, Email: email, Name: name,
 			RoleID: parsedRole, RoleName: roleName, System: system, Invited: invited,
+			AvatarURL: domain.AvatarURL(userID, avatarKey),
 		}
 		if team != "" {
 			member.Teams = []string{team}
@@ -206,6 +208,13 @@ func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email
 		return domain.Member{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var oldAvatarKey string
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(avatar_key, '')
+		FROM identity.users
+		WHERE email_hash = ANY($1) AND disabled_at IS NOT NULL`, hashes).Scan(&oldAvatarKey); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Member{}, err
+	}
 	var idText string
 	err = tx.QueryRow(ctx, `
 		SELECT identity.member_invite($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)::text`,
@@ -228,7 +237,13 @@ func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email
 	}); err != nil {
 		return domain.Member{}, err
 	}
-	return member, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Member{}, err
+	}
+	if oldAvatarKey != "" && p.Blobs != nil {
+		_ = p.Blobs.Remove(ctx, oldAvatarKey)
+	}
+	return member, nil
 }
 
 // RemoveMember disables a person and clears their access, inside one
@@ -364,17 +379,17 @@ func mapIdentityDefinerError(err error) error {
 
 func (p Passkeys) memberByID(ctx context.Context, tx pgx.Tx, id domain.UserID) (domain.Member, error) {
 	var member domain.Member
-	var idText, roleText string
+	var idText, roleText, avatarKey string
 	var stored string
 	var hash []byte
 	err := tx.QueryRow(ctx, `
 		SELECT person.id::text, person.email, person.email_hash, person.name,
 		       role.id::text, role.name, COALESCE(role.key, ''),
-		       person.joined_at IS NULL
+		       person.joined_at IS NULL, COALESCE(person.avatar_key, '')
 		FROM identity.users AS person
 		JOIN identity.roles AS role ON role.id = person.role_id
 		WHERE person.id = $1`, id).Scan(
-		&idText, &stored, &hash, &member.Name, &roleText, &member.RoleName, &member.System, &member.Invited)
+		&idText, &stored, &hash, &member.Name, &roleText, &member.RoleName, &member.System, &member.Invited, &avatarKey)
 	if err != nil {
 		return domain.Member{}, err
 	}
@@ -390,7 +405,74 @@ func (p Passkeys) memberByID(ctx context.Context, tx pgx.Tx, id domain.UserID) (
 	if err != nil {
 		return domain.Member{}, err
 	}
+	member.AvatarURL = domain.AvatarURL(member.ID, avatarKey)
 	return member, nil
+}
+
+// SetAvatar updates the caller's avatar_key via identity.avatar_set and records
+// the avatar.set audit event in the same transaction, returning the previous key.
+func (p Passkeys) SetAvatar(ctx context.Context, actorTokenHash []byte, user domain.UserID, avatarKey string) (string, error) {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var oldKey string
+	if err := tx.QueryRow(ctx, `SELECT identity.avatar_set($1, $2)`, actorTokenHash, avatarKey).Scan(&oldKey); err != nil {
+		return "", mapIdentityDefinerError(err)
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AvatarSet,
+		Outcome:  audit.Success,
+		TargetID: user.String(),
+	}); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return oldKey, nil
+}
+
+// ClearAvatar clears the caller's avatar_key to NULL via identity.avatar_set
+// and records the avatar.remove audit event in the same transaction.
+func (p Passkeys) ClearAvatar(ctx context.Context, actorTokenHash []byte, user domain.UserID) (string, error) {
+	tx, err := p.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var oldKey string
+	if err := tx.QueryRow(ctx, `SELECT identity.avatar_set($1, NULL)`, actorTokenHash).Scan(&oldKey); err != nil {
+		return "", mapIdentityDefinerError(err)
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.AvatarRemove,
+		Outcome:  audit.Success,
+		TargetID: user.String(),
+	}); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return oldKey, nil
+}
+
+// LookupAvatarKey returns the current avatar_key for an active user.
+func (p Passkeys) LookupAvatarKey(ctx context.Context, user domain.UserID) (string, error) {
+	var key string
+	err := p.Pool.QueryRow(ctx, `
+		SELECT COALESCE(avatar_key, '')
+		FROM identity.users
+		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && key == "") {
+		return "", domain.ErrAvatarNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func mapLastOwner(err error) error {

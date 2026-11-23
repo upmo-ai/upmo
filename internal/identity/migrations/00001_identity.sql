@@ -492,7 +492,8 @@ RETURNS TABLE (
   expires_at timestamptz,
   sign_in_method text,
   signed_in_at timestamptz,
-  role_id uuid
+  role_id uuid,
+  avatar_key text
 )
 LANGUAGE sql
 STABLE
@@ -501,7 +502,7 @@ SET search_path = pg_catalog
 AS $$
   SELECT session.id, session.user_id, session.created_at, session.last_seen_at,
          session.expires_at, session.sign_in_method, session.signed_in_at,
-         person.role_id
+         person.role_id, COALESCE(person.avatar_key, '')
   FROM identity.sessions AS session
   JOIN identity.users AS person ON person.id = session.user_id
   WHERE session.token_hash = hash
@@ -906,6 +907,59 @@ REVOKE ALL ON FUNCTION identity.member_disable(bytea, uuid, timestamptz) FROM PU
 GRANT EXECUTE ON FUNCTION identity.member_disable(bytea, uuid, timestamptz) TO upmo_app;
 
 -- +goose StatementBegin
+CREATE FUNCTION identity.avatar_set(
+  actor_token_hash bytea,
+  p_avatar_key text
+)
+RETURNS text
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+  v_old_key text;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_avatar_key IS NOT NULL THEN
+    IF pg_catalog.btrim(p_avatar_key) = ''
+       OR pg_catalog.char_length(p_avatar_key) > 64
+       OR p_avatar_key !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+      RAISE EXCEPTION 'identity: invalid avatar key' USING ERRCODE = '22023';
+    END IF;
+  END IF;
+
+  SELECT person.id, person.avatar_key
+  INTO v_actor_id, v_old_key
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL
+  FOR NO KEY UPDATE OF person;
+
+  IF v_actor_id IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE identity.users
+  SET avatar_key = p_avatar_key
+  WHERE id = v_actor_id;
+
+  RETURN COALESCE(v_old_key, '');
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.avatar_set(bytea, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.avatar_set(bytea, text) TO upmo_app;
+
+-- +goose StatementBegin
 CREATE FUNCTION identity.member_invite(
   actor_token_hash bytea,
   p_email text,              -- sealed value
@@ -1015,7 +1069,8 @@ BEGIN
     UPDATE identity.users
     SET email = p_email, email_hash = p_email_hashes[1], email_hash_key_id = p_email_hash_key_id,
         name = p_name, role_id = p_role_id, invited_at = p_now, joined_at = NULL, disabled_at = NULL,
-        webauthn_handle = p_handle, password_hash = NULL, passkey_offered_at = NULL, external_id = NULL
+        webauthn_handle = p_handle, password_hash = NULL, passkey_offered_at = NULL, external_id = NULL,
+        avatar_key = NULL
     WHERE id = v_user_id;
   ELSE
     INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, webauthn_handle)
@@ -1516,6 +1571,7 @@ DROP FUNCTION IF EXISTS identity.role_change(bytea, uuid, text, text[]);
 DROP FUNCTION IF EXISTS identity.role_create(bytea, text, text[]);
 DROP FUNCTION IF EXISTS identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz);
 DROP FUNCTION IF EXISTS identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz);
+DROP FUNCTION IF EXISTS identity.avatar_set(bytea, text);
 DROP FUNCTION IF EXISTS identity.member_disable(bytea, uuid, timestamptz);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);

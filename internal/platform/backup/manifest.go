@@ -27,6 +27,7 @@ const (
 	dbTablesPrefix           = "db/tables/"
 	artifactsVolumePrefix    = "volumes/artifacts/"
 	knowledgeVolumePrefix    = "volumes/knowledge/"
+	avatarsVolumePrefix      = "volumes/avatars/"
 
 	maxMetadataBytes = 64 << 20 // 64 MiB cap for JSON metadata reads
 )

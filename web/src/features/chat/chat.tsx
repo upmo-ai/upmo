@@ -98,6 +98,25 @@ function SetupGuide() {
   );
 }
 
+function ChatAuthorAvatar({ avatarUrl, name }: { avatarUrl?: string | null; name: string }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showImage = Boolean(avatarUrl) && failedUrl !== avatarUrl;
+  return (
+    <span className="chat-user-avatar">
+      {showImage ? (
+        <img
+          className="chat-user-avatar-img"
+          src={avatarUrl!}
+          alt={name}
+          onError={() => setFailedUrl(avatarUrl ?? null)}
+        />
+      ) : (
+        <Wordmark compact height={14} label={name} />
+      )}
+    </span>
+  );
+}
+
 export function ChatPage() {
   const api = useApi();
   const queryClient = useQueryClient();
@@ -667,11 +686,7 @@ export function ChatPage() {
                     <div className="chat-user-with-attachments">
                       {line.author_name ? (
                         <div className="chat-user-author">
-                          {line.author_avatar == null ? (
-                            <span className="chat-user-avatar">
-                              <Wordmark compact height={14} label={line.author_name} />
-                            </span>
-                          ) : null}
+                          <ChatAuthorAvatar avatarUrl={line.author_avatar} name={line.author_name} />
                           <span className="chat-user-author-name">{line.author_name}</span>
                         </div>
                       ) : null}

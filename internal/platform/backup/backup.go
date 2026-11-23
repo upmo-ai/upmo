@@ -30,6 +30,7 @@ type BackupOptions struct {
 	TempDir      string
 	ArtifactsDir string
 	KnowledgeDir string
+	AvatarsDir   string
 	Keyring      Keyring
 	Passphrase   string
 	NoEncrypt    bool
@@ -51,6 +52,7 @@ type RestoreOptions struct {
 	TempDir           string
 	ArtifactsDir      string
 	KnowledgeDir      string
+	AvatarsDir        string
 	Keyring           Keyring
 	Passphrase        string
 	RequireEncrypted  bool
@@ -333,6 +335,10 @@ func buildPayloadTarGz(ctx context.Context, pool *pgxpool.Pool, opts BackupOptio
 	if err != nil {
 		return DBMeta{}, nil, 0, "", err
 	}
+	avatarCount, err := archiveVolume(tw, &entries, avatarsVolumePrefix, opts.AvatarsDir)
+	if err != nil {
+		return DBMeta{}, nil, 0, "", err
+	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	pmBytes, err := json.MarshalIndent(PayloadManifest{Entries: entries}, "", "  ")
@@ -353,7 +359,7 @@ func buildPayloadTarGz(ctx context.Context, pool *pgxpool.Pool, opts BackupOptio
 		return DBMeta{}, nil, 0, "", fmt.Errorf("backup: close payload file: %w", err)
 	}
 	cleanup = false
-	return meta, versions, artCount + knowCount, hex.EncodeToString(h.Sum(nil)), nil
+	return meta, versions, artCount + knowCount + avatarCount, hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func encryptFile(dstPath, srcPath string, dek, aad []byte) error {
@@ -535,9 +541,11 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (Rest
 	stagedVols, unchanged, filesRestored, err := stageVolumes(
 		opts.ArtifactsDir,
 		opts.KnowledgeDir,
+		opts.AvatarsDir,
 		verified.payloadTarPath,
 		verified.hasArtifacts,
 		verified.hasKnowledge,
+		verified.hasAvatars,
 	)
 	if err != nil {
 		return RestoreResult{}, err
@@ -587,6 +595,7 @@ type verifiedArchive struct {
 	tableSizes     map[string]int64
 	hasArtifacts   bool
 	hasKnowledge   bool
+	hasAvatars     bool
 }
 
 func verifyAndStageArchive(inPath, tmpDir string, opts RestoreOptions) (verifiedArchive, error) {
@@ -810,6 +819,7 @@ func verifyInnerPayload(manifest Manifest, payloadTarPath string, opts RestoreOp
 		meta               DBMeta
 		hasArtifacts       bool
 		hasKnowledge       bool
+		hasAvatars         bool
 	)
 	for {
 		hdr, err := tr.Next()
@@ -828,6 +838,9 @@ func verifyInnerPayload(manifest Manifest, payloadTarPath string, opts RestoreOp
 		}
 		if volumeEntry(clean, knowledgeVolumePrefix) {
 			hasKnowledge = true
+		}
+		if volumeEntry(clean, avatarsVolumePrefix) {
+			hasAvatars = true
 		}
 		if hdr.Typeflag == tar.TypeDir {
 			continue
@@ -933,6 +946,9 @@ func verifyInnerPayload(manifest Manifest, payloadTarPath string, opts RestoreOp
 	if hasKnowledge && strings.TrimSpace(opts.KnowledgeDir) == "" {
 		return verifiedArchive{}, errors.New("backup: archive contains knowledge volume files, but UPMO_KNOWLEDGE_DIR is not set")
 	}
+	if hasAvatars && strings.TrimSpace(opts.AvatarsDir) == "" {
+		return verifiedArchive{}, errors.New("backup: archive contains avatars volume files, but UPMO_AVATARS_DIR is not set")
+	}
 
 	return verifiedArchive{
 		manifest:       manifest,
@@ -941,6 +957,7 @@ func verifyInnerPayload(manifest Manifest, payloadTarPath string, opts RestoreOp
 		tableSizes:     tableSizes,
 		hasArtifacts:   hasArtifacts,
 		hasKnowledge:   hasKnowledge,
+		hasAvatars:     hasAvatars,
 	}, nil
 }
 

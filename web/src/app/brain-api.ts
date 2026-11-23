@@ -284,13 +284,17 @@ export function toMember(value: unknown): Member {
   const source = record(value, "member");
   const teams = list(source.teams, "teams");
   if (teams.some((team) => typeof team !== "string")) throw new Error("The brain sent no teams.");
-  return {
+  const member: Member = {
     id: text(source, "id"),
     name: text(source, "name"),
     email: text(source, "email"),
     role: workspaceRole(record(source.role, "role").system),
     teams: teams as string[],
   };
+  if (source.avatar_url === null || typeof source.avatar_url === "string") {
+    member.avatarUrl = source.avatar_url;
+  }
+  return member;
 }
 
 function toShareMember(value: unknown): ShareMember {
@@ -1243,6 +1247,20 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async deny(id) {
         if ((await chosen()) === "stub") return stub.approvals.deny(id);
         return toApproval(await call(decisionPath(id, "deny"), { method: "POST" }));
+      },
+    },
+    me: {
+      ...stub.me,
+      async uploadAvatar(file) {
+        if ((await chosen()) === "stub") return stub.me.uploadAvatar(file);
+        const form = new FormData();
+        form.append("avatar", file, file.name);
+        const body = record(await call("/api/me/avatar", { method: "PUT", body: form }), "avatar");
+        return { avatar_url: text(body, "avatar_url") };
+      },
+      async removeAvatar() {
+        if ((await chosen()) === "stub") return stub.me.removeAvatar();
+        await call("/api/me/avatar", { method: "DELETE" });
       },
     },
     members: {

@@ -1,5 +1,6 @@
 import { Group, Stack, Text, Title, VisuallyHidden } from "@mantine/core";
-import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   Button,
   ConfirmDialog,
@@ -10,12 +11,27 @@ import {
   PageHeader,
   StatusAlert,
   Textarea,
+  Wordmark,
   type DataTableColumn,
 } from "@upmo-ai/components";
 
+import { BrainError, membersQueryKey, sessionQueryKey, useApi } from "../../app/api";
 import { CaretIcon, ShellIcon, type ShellConcept } from "../../ui/icons";
 
 import "./memory.css";
+
+const MAX_AVATAR_BYTES = 50 * 1024 * 1024;
+const ALLOWED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function avatarErrorMessage(err: unknown): string {
+  if (err instanceof BrainError) {
+    if (err.status === 413) return "Avatar must be 50 MB or smaller.";
+    if (err.status === 415) return "Avatar must be a PNG, JPEG, GIF, or WebP image.";
+    if (err.status === 422) return err.error || err.message || "Avatar image could not be processed.";
+    if (err.status === 429) return "Slow down. Try again in a moment.";
+  }
+  return err instanceof Error ? err.message : "Avatar could not be updated.";
+}
 
 type Fact = {
   id: string;
@@ -76,6 +92,19 @@ function source(fact: Fact): string {
 }
 
 export function PersonalisationPage() {
+  const api = useApi();
+  const queryClient = useQueryClient();
+  const session = useQuery({
+    queryKey: sessionQueryKey(),
+    queryFn: () => api.session.get(),
+  });
+  const avatarUrl = session.data?.avatarUrl ?? null;
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const showAvatarImage = Boolean(avatarUrl) && failedAvatarUrl !== avatarUrl;
+
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [message, setMessage] = useState("");
@@ -125,6 +154,52 @@ export function PersonalisationPage() {
       await work();
     } catch (err: unknown) {
       setMessage(err instanceof Error ? err.message : "Personalisation could not be saved");
+    }
+  };
+
+  const refreshIdentity = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: sessionQueryKey() }),
+      queryClient.invalidateQueries({ queryKey: membersQueryKey() }),
+    ]);
+  };
+
+  const handleAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    setAvatarError("");
+    if (file.size > MAX_AVATAR_BYTES) {
+      setAvatarError("Avatar must be 50 MB or smaller.");
+      return;
+    }
+    if (!ALLOWED_AVATAR_TYPES.has(file.type)) {
+      setAvatarError("Avatar must be a PNG, JPEG, GIF, or WebP image.");
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      await api.me.uploadAvatar(file);
+      setFailedAvatarUrl(null);
+      await refreshIdentity();
+    } catch (err: unknown) {
+      setAvatarError(avatarErrorMessage(err));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setAvatarError("");
+    setAvatarBusy(true);
+    try {
+      await api.me.removeAvatar();
+      setFailedAvatarUrl(null);
+      await refreshIdentity();
+    } catch (err: unknown) {
+      setAvatarError(avatarErrorMessage(err));
+    } finally {
+      setAvatarBusy(false);
     }
   };
 
@@ -217,6 +292,56 @@ export function PersonalisationPage() {
             />
           )}
         </Group>
+        <section className="memory-avatar-card" data-testid="profile-avatar-card" aria-label="Profile photo">
+          <div className="memory-avatar-preview">
+            {showAvatarImage ? (
+              <img
+                className="memory-avatar-img"
+                src={avatarUrl!}
+                alt="Your avatar"
+                onError={() => setFailedAvatarUrl(avatarUrl)}
+              />
+            ) : (
+              <span className="memory-avatar-fallback">
+                <Wordmark compact height={20} label="Default avatar" />
+              </span>
+            )}
+          </div>
+          <div className="memory-avatar-controls">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="memory-avatar-input"
+              aria-label="Upload avatar"
+              onChange={(event) => void handleAvatarChange(event)}
+            />
+            <Group gap="xs" wrap="wrap">
+              <Button
+                size="compact-sm"
+                variant="default"
+                disabled={avatarBusy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {avatarUrl ? "Change photo" : "Upload photo"}
+              </Button>
+              {avatarUrl ? (
+                <Button
+                  size="compact-sm"
+                  variant="default"
+                  disabled={avatarBusy}
+                  onClick={() => void handleRemoveAvatar()}
+                >
+                  Remove photo
+                </Button>
+              ) : null}
+            </Group>
+            <Text size="sm" c="dimmed">
+              PNG, JPEG, GIF, or WebP. Up to 50 MB.
+            </Text>
+          </div>
+        </section>
+        {avatarError ? <StatusAlert tone="critical">{avatarError}</StatusAlert> : null}
         <section className="memory-profile" aria-label="Profile text">
           {editingProfile ? (
             <Stack gap="sm">

@@ -46,8 +46,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MetricsAddr != "" {
 		t.Errorf("MetricsAddr = %q, want empty", cfg.MetricsAddr)
 	}
-	if cfg.ArtifactsDir != "/var/upmo/artifacts" || cfg.KnowledgeDir != "/var/upmo/knowledge" {
-		t.Fatalf("volume defaults = %q %q", cfg.ArtifactsDir, cfg.KnowledgeDir)
+	if cfg.ArtifactsDir != "/var/upmo/artifacts" || cfg.KnowledgeDir != "/var/upmo/knowledge" || cfg.AvatarsDir != "/var/upmo/avatars" {
+		t.Fatalf("volume defaults = %q %q %q", cfg.ArtifactsDir, cfg.KnowledgeDir, cfg.AvatarsDir)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestDirFromEnv(t *testing.T) {
 }
 
 func TestLoadVolumeDirs(t *testing.T) {
-	for _, name := range []string{"UPMO_ARTIFACTS_DIR", "UPMO_KNOWLEDGE_DIR"} {
+	for _, name := range []string{"UPMO_ARTIFACTS_DIR", "UPMO_KNOWLEDGE_DIR", "UPMO_AVATARS_DIR"} {
 		for _, value := range []string{"", " \t", " /tmp/custom-volume ", "relative", "/tmp/bad\x00path"} {
 			env := map[string]string{
 				"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
@@ -91,16 +91,19 @@ func TestLoadVolumeDirs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantArt, wantKnow := "/var/upmo/artifacts", "/var/upmo/knowledge"
+			wantArt, wantKnow, wantAvatars := "/var/upmo/artifacts", "/var/upmo/knowledge", "/var/upmo/avatars"
 			if strings.TrimSpace(value) != "" {
-				if name == "UPMO_ARTIFACTS_DIR" {
+				switch name {
+				case "UPMO_ARTIFACTS_DIR":
 					wantArt = "/tmp/custom-volume"
-				} else {
+				case "UPMO_KNOWLEDGE_DIR":
 					wantKnow = "/tmp/custom-volume"
+				case "UPMO_AVATARS_DIR":
+					wantAvatars = "/tmp/custom-volume"
 				}
 			}
-			if cfg.ArtifactsDir != wantArt || cfg.KnowledgeDir != wantKnow {
-				t.Errorf("%s=%q: dirs = %q %q", name, value, cfg.ArtifactsDir, cfg.KnowledgeDir)
+			if cfg.ArtifactsDir != wantArt || cfg.KnowledgeDir != wantKnow || cfg.AvatarsDir != wantAvatars {
+				t.Errorf("%s=%q: dirs = %q %q %q", name, value, cfg.ArtifactsDir, cfg.KnowledgeDir, cfg.AvatarsDir)
 			}
 		}
 	}

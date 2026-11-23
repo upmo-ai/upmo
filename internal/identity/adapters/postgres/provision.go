@@ -23,6 +23,7 @@ import (
 type ProvisionStore struct {
 	Pool      *pgxpool.Pool
 	Emails    app.EmailSealer
+	Blobs     app.AvatarBlobs
 	PublicURL string
 	Now       func() time.Time
 }
@@ -416,12 +417,12 @@ func (s ProvisionStore) DeleteMember(ctx context.Context, externalID, keyID stri
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var userID string
+	var userID, oldAvatarKey string
 	err = tx.QueryRow(ctx, `
-		SELECT id::text
+		SELECT id::text, COALESCE(avatar_key, '')
 		FROM identity.users
 		WHERE external_id = $1
-		FOR NO KEY UPDATE`, extID).Scan(&userID)
+		FOR NO KEY UPDATE`, extID).Scan(&userID, &oldAvatarKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNoSuchMember
 	}
@@ -433,7 +434,8 @@ func (s ProvisionStore) DeleteMember(ctx context.Context, externalID, keyID stri
 		UPDATE identity.users
 		SET disabled_at = COALESCE(disabled_at, $2),
 		    password_hash = NULL,
-		    webauthn_handle = NULL
+		    webauthn_handle = NULL,
+		    avatar_key = NULL
 		WHERE id = $1::uuid`, userID, s.now()); err != nil {
 		return mapProvisionUserErr(err)
 	}
@@ -460,6 +462,9 @@ func (s ProvisionStore) DeleteMember(ctx context.Context, externalID, keyID stri
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return mapProvisionUserErr(err)
+	}
+	if oldAvatarKey != "" && s.Blobs != nil {
+		_ = s.Blobs.Remove(ctx, oldAvatarKey)
 	}
 	return nil
 }

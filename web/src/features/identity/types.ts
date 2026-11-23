@@ -16,6 +16,7 @@ export interface Member {
   email: string;
   role: WorkspaceRole;
   teams: string[];
+  avatarUrl?: string | null;
 }
 
 export interface CurrentUser {
@@ -26,6 +27,7 @@ export interface CurrentUser {
   /** How many passkeys the person has. Absent when the session does not say. */
   passkeyCount?: number;
   offerDismissed: boolean;
+  avatarUrl?: string | null;
 }
 
 export type SignInMethod = "passkey" | "password" | "link";

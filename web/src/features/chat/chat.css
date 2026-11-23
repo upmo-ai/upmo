@@ -392,7 +392,20 @@
 .chat-user-avatar {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  overflow: hidden;
   flex-shrink: 0;
+}
+
+.chat-user-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
 }
 
 .chat-user-body {

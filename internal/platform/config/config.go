@@ -21,6 +21,8 @@ const (
 	DefaultArtifactsDir = "/var/upmo/artifacts"
 	// DefaultKnowledgeDir is the knowledge volume root when unset.
 	DefaultKnowledgeDir = "/var/upmo/knowledge"
+	// DefaultAvatarsDir is the avatar volume root when unset.
+	DefaultAvatarsDir = "/var/upmo/avatars"
 )
 
 // DirFromEnv trims a directory environment value and uses def when it is empty.
@@ -99,6 +101,9 @@ type Config struct {
 	// ArtifactsDir is the Compose volume root for artifact bytes (UPMO_ARTIFACTS_DIR).
 	// Defaults to DefaultArtifactsDir.
 	ArtifactsDir string
+	// AvatarsDir is the Compose volume root for user avatar PNG bytes (UPMO_AVATARS_DIR).
+	// Defaults to DefaultAvatarsDir.
+	AvatarsDir string
 	// AuditRetentionDays is how long sealed audit events are kept before their
 	// whole expired month is dropped (UPMO_AUDIT_RETENTION_DAYS). 365 by
 	// default. Usual presets: 365 (SOC 2 observation period, common ISO 27001
@@ -369,6 +374,11 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	cfg.KnowledgeDir, err = DirFromEnv(knowDir, DefaultKnowledgeDir)
 	if err != nil {
 		return Config{}, fmt.Errorf("config: UPMO_KNOWLEDGE_DIR %w", err)
+	}
+	avatarDir, _ := lookup("UPMO_AVATARS_DIR")
+	cfg.AvatarsDir, err = DirFromEnv(avatarDir, DefaultAvatarsDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: UPMO_AVATARS_DIR %w", err)
 	}
 	smtp, err := loadSMTP(lookup)
 	if err != nil {

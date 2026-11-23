@@ -133,8 +133,9 @@ func TestReadReturnsAuthorIDNameAndAvatar(t *testing.T) {
 	if l2.AuthorID != nil || l2.AuthorName != nil || l2.AuthorAvatar != nil {
 		t.Fatalf("line 2 assistant author = (%v, %v, %v), want all nil", l2.AuthorID, l2.AuthorName, l2.AuthorAvatar)
 	}
-	if l3.AuthorID == nil || *l3.AuthorID != otherUser || l3.AuthorName == nil || *l3.AuthorName != "Grace Hopper" || l3.AuthorAvatar == nil || *l3.AuthorAvatar != avatar {
-		t.Fatalf("line 3 author = (%v, %v, %v)", l3.AuthorID, l3.AuthorName, l3.AuthorAvatar)
+	wantAvatar := "/api/users/" + otherUser + "/avatar?v=" + avatar
+	if l3.AuthorID == nil || *l3.AuthorID != otherUser || l3.AuthorName == nil || *l3.AuthorName != "Grace Hopper" || l3.AuthorAvatar == nil || *l3.AuthorAvatar != wantAvatar {
+		t.Fatalf("line 3 author = (%v, %v, %v), want avatar %q", l3.AuthorID, l3.AuthorName, l3.AuthorAvatar, wantAvatar)
 	}
 }
 

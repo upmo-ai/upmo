@@ -68,6 +68,7 @@ func (h Handler) current(w http.ResponseWriter, r *http.Request) {
 		"sign_in_method": session.Method,
 		"signed_in_at":   session.SignedIn,
 		"has_password":   has,
+		"avatar_url":     domain.AvatarURL(session.UserID, session.AvatarKey),
 	})
 }
 

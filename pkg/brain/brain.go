@@ -499,6 +499,11 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			return nil, fmt.Errorf("brain: create knowledge directory: %w", err)
 		}
 	}
+	if cfg.AvatarsDir != "" {
+		if err := os.MkdirAll(cfg.AvatarsDir, 0o700); err != nil {
+			return nil, fmt.Errorf("brain: create avatars directory: %w", err)
+		}
+	}
 
 	var o options
 	for _, opt := range opts {
@@ -602,11 +607,11 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		cleanupPools()
 		return nil, err
 	}
-	members := identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(internalCfg.SMTP), log)
+	members := identity.WithAvatars(identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(internalCfg.SMTP), log), cfg.AvatarsDir)
 	roles := identity.Roles(pool, log)
 	teams := identity.Teams(pool, log)
 	workspace := identity.Workspace(pool)
-	provIdentity := identity.Provision(owner, emails, cfg.PublicURL)
+	provIdentity := identity.WithProvisionAvatars(identity.Provision(owner, emails, cfg.PublicURL), cfg.AvatarsDir)
 	idFacade := identity.New(sessions, passkeys, passwords)
 
 	providers := gateway.NewProviders(pool, masterKeys, log)
@@ -987,6 +992,7 @@ func buildHandler(
 	identity.MountAPITokens(mux, sessions, tokens, log, passwords.HasPassword, pool, cfg.TrustedProxies)
 	identity.MountPasskeys(mux, passkeys, passwords, cfg.TrustedProxies)
 	identity.MountMembers(mux, members, sessions)
+	identity.MountAvatars(mux, members, sessions, pool)
 	identity.MountRoles(mux, ideps.roles, sessions)
 	identity.MountTeams(mux, ideps.teams, sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)

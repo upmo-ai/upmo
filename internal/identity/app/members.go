@@ -8,11 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/mail"
 )
+
+// AvatarBlobs stores re-encoded user avatar PNG bytes.
+type AvatarBlobs interface {
+	Put(ctx context.Context, key string, body []byte) error
+	Get(ctx context.Context, key string) ([]byte, error)
+	Remove(ctx context.Context, key string) error
+}
 
 // MemberStore is the members tables and the task share rows.
 type MemberStore interface {
@@ -34,11 +42,15 @@ type MemberStore interface {
 	RemoveMember(ctx context.Context, actorTokenHash []byte, id domain.UserID, now time.Time, rule func(system string) error) error
 	ReplaceMemberLink(ctx context.Context, id domain.UserID, purpose string, hash []byte, expires time.Time, rule func(system string, invited bool) error) error
 	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
+	SetAvatar(ctx context.Context, actorTokenHash []byte, user domain.UserID, avatarKey string) (oldKey string, err error)
+	ClearAvatar(ctx context.Context, actorTokenHash []byte, user domain.UserID) (oldKey string, err error)
+	LookupAvatarKey(ctx context.Context, user domain.UserID) (string, error)
 }
 
 // Members is who may manage the people in an install.
 type Members struct {
 	Store MemberStore
+	Blobs AvatarBlobs
 	Now   func() time.Time
 	// Mail emails each invite and recover link. Nil sends nothing; the
 	// token text is returned either way so the link can still be copied.
@@ -408,6 +420,72 @@ func permissionsFor(system string, raw []string) ([]domain.Permission, error) {
 		out = append(out, permission)
 	}
 	return out, nil
+}
+
+// SetAvatar validates and normalizes raw image bytes into a clean PNG, stores
+// the blob under a new UUIDv7 key, atomically updates the caller's avatar_key
+// via the identity.avatar_set definer function, and deletes the replaced blob
+// after commit. If the DB update fails, the newly written blob is deleted.
+func (m Members) SetAvatar(ctx context.Context, session Session, raw []byte) (string, error) {
+	if len(session.TokenHash) == 0 || session.UserID == (domain.UserID{}) {
+		return "", ErrNotSignedIn
+	}
+	if m.Blobs == nil {
+		return "", errors.New("identity: avatar storage is not configured")
+	}
+	pngBytes, err := domain.NormalizeAvatar(raw)
+	if err != nil {
+		return "", err
+	}
+	newID, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	newKey := newID.String()
+	if err := m.Blobs.Put(ctx, newKey, pngBytes); err != nil {
+		return "", err
+	}
+	oldKey, err := m.Store.SetAvatar(ctx, session.TokenHash, session.UserID, newKey)
+	if err != nil {
+		_ = m.Blobs.Remove(ctx, newKey)
+		return "", err
+	}
+	if oldKey != "" && oldKey != newKey {
+		_ = m.Blobs.Remove(ctx, oldKey)
+	}
+	return *domain.AvatarURL(session.UserID, newKey), nil
+}
+
+// RemoveAvatar clears the caller's avatar_key to NULL and removes the stored
+// blob after commit.
+func (m Members) RemoveAvatar(ctx context.Context, session Session) error {
+	if len(session.TokenHash) == 0 || session.UserID == (domain.UserID{}) {
+		return ErrNotSignedIn
+	}
+	oldKey, err := m.Store.ClearAvatar(ctx, session.TokenHash, session.UserID)
+	if err != nil {
+		return err
+	}
+	if oldKey != "" && m.Blobs != nil {
+		_ = m.Blobs.Remove(ctx, oldKey)
+	}
+	return nil
+}
+
+// ReadAvatar returns the current avatar key and PNG bytes for an active user.
+func (m Members) ReadAvatar(ctx context.Context, userID domain.UserID) (string, []byte, error) {
+	if userID == (domain.UserID{}) || m.Blobs == nil {
+		return "", nil, domain.ErrAvatarNotFound
+	}
+	key, err := m.Store.LookupAvatarKey(ctx, userID)
+	if err != nil || key == "" {
+		return "", nil, domain.ErrAvatarNotFound
+	}
+	data, err := m.Blobs.Get(ctx, key)
+	if err != nil {
+		return "", nil, err
+	}
+	return key, data, nil
 }
 
 func newLink() (string, []byte, []byte, error) {

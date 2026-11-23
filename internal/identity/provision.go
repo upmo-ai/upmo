@@ -1,8 +1,11 @@
 package identity
 
 import (
+	"strings"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/identity/adapters/blob"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
@@ -39,4 +42,13 @@ var (
 // The emails sealer stores addresses; without it member writes fail.
 func Provision(ownerPool *pgxpool.Pool, emails EmailSealer, publicURL string) ProvisionStore {
 	return postgres.ProvisionStore{Pool: ownerPool, Emails: emails, PublicURL: publicURL}
+}
+
+// WithProvisionAvatars attaches an avatar blob volume rooted at dir to store.
+func WithProvisionAvatars(store ProvisionStore, dir string) ProvisionStore {
+	if strings.TrimSpace(dir) == "" {
+		return store
+	}
+	store.Blobs = blob.Volume{Root: dir}
+	return store
 }

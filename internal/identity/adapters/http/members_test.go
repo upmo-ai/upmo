@@ -217,3 +217,12 @@ func (f *memberFake) ReplaceMemberLink(_ context.Context, _ domain.UserID, _ str
 func (f *memberFake) Profile(context.Context, domain.UserID) (string, string, error) {
 	return "", "", nil
 }
+func (f *memberFake) SetAvatar(context.Context, []byte, domain.UserID, string) (string, error) {
+	return "", nil
+}
+func (f *memberFake) ClearAvatar(context.Context, []byte, domain.UserID) (string, error) {
+	return "", nil
+}
+func (f *memberFake) LookupAvatarKey(context.Context, domain.UserID) (string, error) {
+	return "", domain.ErrAvatarNotFound
+}

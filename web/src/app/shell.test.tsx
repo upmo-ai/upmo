@@ -148,6 +148,10 @@ function identityStub(): Pick<ApiClient, "session" | "me" | "passkeys" | "passwo
       async viewAs(role) {
         return { ...signedOut, view: role, memberId: "lee" };
       },
+      async uploadAvatar() {
+        return { avatar_url: "/api/users/sam/avatar?v=stub" };
+      },
+      async removeAvatar() {},
     },
     passkeys: {
       async list() {
@@ -1492,5 +1496,29 @@ describe("app shell", () => {
     cleanup();
     renderAt("/settings/tokens");
     expect(await screen.findByRole("heading", { level: 1, name: "API tokens" })).toBeTruthy();
+  });
+
+  it("UPM-415 renders the user avatar image in the shell card and falls back to initials on error", async () => {
+    const base = createStubApi();
+    const avatarUrl = "/api/users/sam/avatar?v=01990000-0000-7000-8000-000000000001";
+    const client: ApiClient = {
+      ...base,
+      session: {
+        async get() {
+          return { ...(await base.session.get()), avatarUrl };
+        },
+      },
+    };
+    renderAt("/", client);
+    const card = await screen.findByRole("button", { name: /User account: Sam Rivera/ });
+    const img = card.querySelector("img.shell-avatar-img") as HTMLImageElement | null;
+    expect(img).toBeTruthy();
+    expect(img?.getAttribute("src")).toBe(avatarUrl);
+
+    fireEvent.error(img!);
+    await waitFor(() => {
+      expect(card.querySelector("img.shell-avatar-img")).toBeNull();
+    });
+    expect(card.querySelector(".shell-avatar")?.textContent).toBe("SR");
   });
 });

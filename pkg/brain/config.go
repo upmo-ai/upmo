@@ -33,6 +33,7 @@ type Config struct {
 	KnowledgeDir       string
 	SandboxImage       string
 	ArtifactsDir       string
+	AvatarsDir         string
 	AuditRetentionDays int
 	AuditWebhookURL    string
 	AuditSyslogAddr    string
@@ -83,6 +84,7 @@ func fromInternalConfig(cfg config.Config) Config {
 		KnowledgeDir:       cfg.KnowledgeDir,
 		SandboxImage:       cfg.SandboxImage,
 		ArtifactsDir:       cfg.ArtifactsDir,
+		AvatarsDir:         cfg.AvatarsDir,
 		AuditRetentionDays: cfg.AuditRetentionDays,
 		AuditWebhookURL:    cfg.AuditWebhookURL,
 		AuditSyslogAddr:    cfg.AuditSyslogAddr,
@@ -122,6 +124,7 @@ func toInternalConfig(cfg Config) config.Config {
 		KnowledgeDir:       cfg.KnowledgeDir,
 		SandboxImage:       cfg.SandboxImage,
 		ArtifactsDir:       cfg.ArtifactsDir,
+		AvatarsDir:         cfg.AvatarsDir,
 		AuditRetentionDays: cfg.AuditRetentionDays,
 		AuditWebhookURL:    cfg.AuditWebhookURL,
 		AuditSyslogAddr:    cfg.AuditSyslogAddr,

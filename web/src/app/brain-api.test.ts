@@ -187,6 +187,8 @@ describe("toMember", () => {
       teams: ["Finance"],
     });
     expect(toMember({ ...sent, teams: [] }).teams).toEqual([]);
+    expect(toMember({ ...sent, avatar_url: "/api/users/a/avatar?v=k1" }).avatarUrl).toBe("/api/users/a/avatar?v=k1");
+    expect(toMember({ ...sent, avatar_url: null }).avatarUrl).toBeNull();
   });
 
   it("reads a role the web does not know as a member", () => {
@@ -888,6 +890,39 @@ describe("createBrainApi artifacts", () => {
     expect(api.artifacts.downloadUrl("run-notes")).toBe(stub.artifacts.downloadUrl("run-notes"));
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("/api/tasks");
+  });
+
+  it("uploads and removes avatars against /api/me/avatar", async () => {
+    const calls: { method: string; path: string; hasAvatarFile: boolean }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        const method = init?.method ?? "GET";
+        const hasAvatarFile = init?.body instanceof FormData && init.body.get("avatar") instanceof File;
+        calls.push({ method, path, hasAvatarFile });
+        if (path === "/api/tasks") return Response.json([]);
+        if (path === "/api/me/avatar" && method === "PUT") {
+          return Response.json({ avatar_url: "/api/users/u1/avatar?v=k1" });
+        }
+        if (path === "/api/me/avatar" && method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      }),
+    );
+
+    const api = createBrainApi();
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "avatar.png", { type: "image/png" });
+    const uploaded = await api.me.uploadAvatar(file);
+    expect(uploaded).toEqual({ avatar_url: "/api/users/u1/avatar?v=k1" });
+    await api.me.removeAvatar();
+
+    expect(calls).toEqual([
+      { method: "GET", path: "/api/tasks", hasAvatarFile: false },
+      { method: "PUT", path: "/api/me/avatar", hasAvatarFile: true },
+      { method: "DELETE", path: "/api/me/avatar", hasAvatarFile: false },
+    ]);
   });
 });
 

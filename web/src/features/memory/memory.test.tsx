@@ -3,16 +3,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "../../App";
+import { BrainError, createStubApi, type ApiClient } from "../../app/api";
 import { AppProviders } from "../../theme";
 import { sampleFacts, sampleProfile } from "./sample";
 
 type Row = { id: string; claim: string; trust: string; confirmed_at: string };
 
-function renderAt(path: string) {
+function renderAt(path: string, client?: ApiClient) {
   const history = createMemoryHistory({ initialEntries: [path] });
   render(
     <AppProviders>
-      <App history={history} />
+      <App history={history} client={client} />
     </AppProviders>,
   );
 }
@@ -271,5 +272,83 @@ describe("Personalisation page", () => {
     });
     expect(await screen.findByText("Prefers short answers and tables.")).toBeTruthy();
     expect(calls.some((call) => call.method === "PUT" && call.url.endsWith("/profile"))).toBe(true);
+  });
+
+  it("UPM-415 uploads and removes a profile avatar and updates the shell avatar", async () => {
+    renderAt("/personalisation", createStubApi());
+    const card = await screen.findByTestId("profile-avatar-card");
+    expect(within(card).getByRole("button", { name: "Upload photo" })).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "Remove photo" })).toBeNull();
+    expect(within(card).getByText("PNG, JPEG, GIF, or WebP. Up to 50 MB.")).toBeTruthy();
+
+    const input = within(card).getByLabelText("Upload avatar") as HTMLInputElement;
+    const png = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "me.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [png] } });
+
+    const preview = (await within(card).findByRole("img", { name: "Your avatar" })) as HTMLImageElement;
+    expect(preview.getAttribute("src")).toContain("/api/users/sam/avatar?v=");
+    expect(within(card).getByRole("button", { name: "Change photo" })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "Remove photo" })).toBeTruthy();
+
+    await waitFor(() => {
+      const shellImg = document.querySelector(".shell-avatar-img") as HTMLImageElement | null;
+      expect(shellImg?.getAttribute("src")).toBe(preview.getAttribute("src"));
+    });
+
+    fireEvent.click(within(card).getByRole("button", { name: "Remove photo" }));
+    await waitFor(() => {
+      expect(within(card).queryByRole("img", { name: "Your avatar" })).toBeNull();
+    });
+    expect(within(card).getByRole("button", { name: "Upload photo" })).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "Remove photo" })).toBeNull();
+    await waitFor(() => {
+      expect(document.querySelector(".shell-avatar-img")).toBeNull();
+    });
+  });
+
+  it("UPM-415 rejects unsupported types and oversized files client-side and maps server 413/415 alerts", async () => {
+    let uploadCalls = 0;
+    let serverErr: BrainError | null = null;
+    const base = createStubApi();
+    const client: ApiClient = {
+      ...base,
+      me: {
+        ...base.me,
+        async uploadAvatar(file) {
+          uploadCalls += 1;
+          if (serverErr) throw serverErr;
+          return base.me.uploadAvatar(file);
+        },
+      },
+    };
+    renderAt("/personalisation", client);
+    const card = await screen.findByTestId("profile-avatar-card");
+    const input = within(card).getByLabelText("Upload avatar") as HTMLInputElement;
+
+    const svg = new File(["<svg/>"], "bad.svg", { type: "image/svg+xml" });
+    fireEvent.change(input, { target: { files: [svg] } });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Avatar must be a PNG, JPEG, GIF, or WebP image.",
+    );
+    expect(uploadCalls).toBe(0);
+
+    const big = new File(["x"], "huge.png", { type: "image/png" });
+    Object.defineProperty(big, "size", { value: 50 * 1024 * 1024 + 1 });
+    fireEvent.change(input, { target: { files: [big] } });
+    expect((await screen.findByRole("alert")).textContent).toContain("Avatar must be 50 MB or smaller.");
+    expect(uploadCalls).toBe(0);
+
+    serverErr = new BrainError(413, "too large");
+    const okPng = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "ok.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [okPng] } });
+    await waitFor(() => expect(uploadCalls).toBe(1));
+    expect((await screen.findByRole("alert")).textContent).toContain("Avatar must be 50 MB or smaller.");
+
+    serverErr = new BrainError(415, "unsupported");
+    fireEvent.change(input, { target: { files: [okPng] } });
+    await waitFor(() => expect(uploadCalls).toBe(2));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Avatar must be a PNG, JPEG, GIF, or WebP image.",
+    );
   });
 });

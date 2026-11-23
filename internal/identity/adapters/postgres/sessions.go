@@ -78,8 +78,8 @@ func (s Sessions) Find(ctx context.Context, hash []byte) (app.Row, bool, error) 
 	var row app.Row
 	err := s.Pool.QueryRow(ctx, `
 		SELECT id::text, user_id, created_at, last_seen_at, expires_at,
-		       sign_in_method, signed_in_at, role_id::text
-		FROM identity.session_find($1)`, hash).Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn, &row.RoleID)
+		       sign_in_method, signed_in_at, role_id::text, avatar_key
+		FROM identity.session_find($1)`, hash).Scan(&row.ID, &row.UserID, &row.Created, &row.LastSeen, &row.Expires, &row.Method, &row.SignedIn, &row.RoleID, &row.AvatarKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Row{}, false, nil
 	}

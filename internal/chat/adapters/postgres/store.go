@@ -700,7 +700,11 @@ func lineColumnsFor(viewer string) string {
 	return `line.id::text, line.seq, line.role, line.body,
 	line.author_id::text,
 	(SELECT person.name FROM identity.users AS person WHERE person.id = line.author_id),
-	(SELECT person.avatar_key FROM identity.users AS person WHERE person.id = line.author_id),
+	(SELECT CASE
+		WHEN person.avatar_key IS NOT NULL AND person.avatar_key <> ''
+		THEN '/api/users/' || line.author_id::text || '/avatar?v=' || person.avatar_key
+		ELSE NULL
+	END FROM identity.users AS person WHERE person.id = line.author_id),
 	line.model, line.tokens, line.cost_micro_usd, line.at,
 	line.status, line.reply_to::text, line.attempts, line.attachments,
 	line.route,

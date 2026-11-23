@@ -176,6 +176,7 @@ type ShellUser = {
   initials: string;
   roleName: string;
   management: boolean;
+  avatarUrl?: string | null;
 };
 
 function ShellHeader() {
@@ -286,7 +287,24 @@ function ShellFooter({ user }: { user: ShellUser }) {
   const navigate = useNavigate();
   const { setChoice } = useThemeChoice();
   const resolvedTheme = useUpmoTheme();
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
+  const showAvatar = Boolean(user.avatarUrl) && failedAvatarUrl !== user.avatarUrl;
   const summary = `${user.roleName} · ${workspaceName}`;
+
+  const renderAvatar = () => (
+    <span className="shell-avatar" aria-hidden="true">
+      {showAvatar ? (
+        <img
+          className="shell-avatar-img"
+          src={user.avatarUrl!}
+          alt=""
+          onError={() => setFailedAvatarUrl(user.avatarUrl ?? null)}
+        />
+      ) : (
+        user.initials
+      )}
+    </span>
+  );
 
   const account = (
     <Menu
@@ -303,9 +321,7 @@ function ShellFooter({ user }: { user: ShellUser }) {
           data-rail={rail || undefined}
           aria-label={`User account: ${user.name}`}
         >
-          <span className="shell-avatar" aria-hidden="true">
-            {user.initials}
-          </span>
+          {renderAvatar()}
           {rail ? null : (
             <>
               <div className="shell-user-info">
@@ -324,9 +340,7 @@ function ShellFooter({ user }: { user: ShellUser }) {
 
       <Menu.Dropdown className="shell-user-dropdown">
         <div className="shell-user-dropdown-header">
-          <span className="shell-avatar" aria-hidden="true">
-            {user.initials}
-          </span>
+          {renderAvatar()}
           <div className="shell-user-info">
             <span className="shell-user-name" title={user.name}>
               {user.name}
@@ -460,6 +474,7 @@ export function Shell() {
         .toUpperCase() || "U",
     roleName: userRole.charAt(0).toUpperCase() + userRole.slice(1),
     management: userRole === "owner" || userRole === "admin",
+    avatarUrl: session.data?.avatarUrl ?? currentMember?.avatarUrl ?? null,
   };
 
   const failedMutations = useMutationState({

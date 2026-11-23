@@ -325,6 +325,7 @@ func TestLookupFunctionsRunAsDefiner(t *testing.T) {
 		"identity.challenge_take(bytea, timestamptz)",
 		"identity.member_set_role(bytea, uuid, uuid)",
 		"identity.member_disable(bytea, uuid, timestamptz)",
+		"identity.avatar_set(bytea, text)",
 		"identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz)",
 		"identity.token_create(bytea, text, bytea, text[], timestamptz, timestamptz)",
 		"identity.role_create(bytea, text, text[])",

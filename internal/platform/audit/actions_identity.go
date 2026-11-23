@@ -56,6 +56,8 @@ const (
 	PasskeyRemove    Action = "passkey.remove"
 	PasswordSet      Action = "password.set"
 	PasswordRemove   Action = "password.remove"
+	AvatarSet        Action = "avatar.set"
+	AvatarRemove     Action = "avatar.remove"
 	WorkspaceUpdate  Action = "workspace.update"
 )
 
@@ -90,6 +92,8 @@ func init() {
 	register(PasskeyRemove, "passkey", classAccountChange, activityDelete)
 	register(PasswordSet, "user", classAccountChange, activityPasswordChange)
 	register(PasswordRemove, "user", classAccountChange, activityUnknown)
+	register(AvatarSet, "user", classAccountChange, activityUnknown)
+	register(AvatarRemove, "user", classAccountChange, activityUnknown)
 	register(WorkspaceUpdate, "workspace", classAPIActivity, activityUnknown,
 		"time_zone", "locale", "default_route", "default_agent_id",
 		"allow_member_providers", "allow_member_routes",

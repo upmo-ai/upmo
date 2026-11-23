@@ -232,6 +232,7 @@ type backupEnv struct {
 	databaseURL  string
 	artifactsDir string
 	knowledgeDir string
+	avatarsDir   string
 }
 
 func loadBackupEnv(forBackup bool) (backupEnv, error) {
@@ -253,6 +254,10 @@ func loadBackupEnv(forBackup bool) (backupEnv, error) {
 	if err != nil {
 		return backupEnv{}, fmt.Errorf("config: UPMO_KNOWLEDGE_DIR %w", err)
 	}
+	avatarsDir, err := config.DirFromEnv(os.Getenv("UPMO_AVATARS_DIR"), config.DefaultAvatarsDir)
+	if err != nil {
+		return backupEnv{}, fmt.Errorf("config: UPMO_AVATARS_DIR %w", err)
+	}
 	if forBackup {
 		if strings.TrimSpace(os.Getenv("UPMO_ARTIFACTS_DIR")) == "" {
 			if _, err := os.Stat(config.DefaultArtifactsDir); errors.Is(err, os.ErrNotExist) {
@@ -264,11 +269,17 @@ func loadBackupEnv(forBackup bool) (backupEnv, error) {
 				knowDir = ""
 			}
 		}
+		if strings.TrimSpace(os.Getenv("UPMO_AVATARS_DIR")) == "" {
+			if _, err := os.Stat(config.DefaultAvatarsDir); errors.Is(err, os.ErrNotExist) {
+				avatarsDir = ""
+			}
+		}
 	}
 	return backupEnv{
 		databaseURL:  dbURL,
 		artifactsDir: artDir,
 		knowledgeDir: knowDir,
+		avatarsDir:   avatarsDir,
 	}, nil
 }
 
@@ -392,6 +403,7 @@ func backupCommand(args []string, stdout io.Writer) error {
 		OutPath:      *outPath,
 		ArtifactsDir: env.artifactsDir,
 		KnowledgeDir: env.knowledgeDir,
+		AvatarsDir:   env.avatarsDir,
 		Keyring:      ring,
 		Passphrase:   passphrase,
 		NoEncrypt:    *noEncrypt,
@@ -443,6 +455,7 @@ func restoreCommand(args []string, stdout io.Writer) error {
 		InPath:            *inPath,
 		ArtifactsDir:      env.artifactsDir,
 		KnowledgeDir:      env.knowledgeDir,
+		AvatarsDir:        env.avatarsDir,
 		Keyring:           ring,
 		Passphrase:        passphrase,
 		RequireEncrypted:  *requireEncrypted,

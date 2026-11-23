@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { deflateSync } from "node:zlib";
 import { openAccountItem, storagePath } from "./session.mjs";
 
 // The official image ships browsers, not the npm package. e2e/run.sh installs
@@ -19,6 +20,126 @@ const partnerName = "Rowan Hale";
 
 function pageUrl(path) {
   return new URL(path, url).href;
+}
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    c ^= bytes[i];
+    for (let k = 0; k < 8; k += 1) {
+      c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    }
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([typeBytes, data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+function makeTinyPng(width = 4, height = 4) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width * 4 + 1);
+    raw[row] = 0; // no filter
+    for (let x = 0; x < width; x += 1) {
+      const offset = row + 1 + x * 4;
+      raw[offset] = 0x10;
+      raw[offset + 1] = 0x80;
+      raw[offset + 2] = 0x50;
+      raw[offset + 3] = 0xff;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+async function expectImageLoaded(locator, label) {
+  await locator.waitFor({ state: "visible", timeout: 15_000 });
+  const deadline = Date.now() + 10_000;
+  let state = null;
+  while (Date.now() < deadline) {
+    state = await locator.evaluate((img) => ({
+      complete: img.complete,
+      naturalWidth: img.naturalWidth,
+      src: img.getAttribute("src"),
+    }));
+    if (state.complete && state.naturalWidth > 0) return state;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${label} did not load: ${JSON.stringify(state)}`);
+}
+
+async function avatarFlow(page) {
+  const clear = await page.request.delete(pageUrl("/api/me/avatar"));
+  if (!clear.ok() && clear.status() !== 404) {
+    throw new Error(`clearing avatar before flow answered ${clear.status()}`);
+  }
+
+  await openAccountItem(page, "Personalisation");
+  const card = page.getByTestId("profile-avatar-card");
+  await card.waitFor();
+  await card.getByRole("button", { name: "Upload photo" }).waitFor();
+
+  await card.getByLabel("Upload avatar").setInputFiles({
+    name: "avatar.png",
+    mimeType: "image/png",
+    buffer: makeTinyPng(16, 16),
+  });
+
+  const preview = await expectImageLoaded(card.getByRole("img", { name: "Your avatar" }), "profile avatar preview");
+  if (!preview.src || !preview.src.startsWith("/api/users/") || !preview.src.includes("/avatar?v=")) {
+    throw new Error(`unexpected avatar preview src: ${JSON.stringify(preview.src)}`);
+  }
+  await card.getByRole("button", { name: "Change photo" }).waitFor();
+  await card.getByRole("button", { name: "Remove photo" }).waitFor();
+
+  const shellImg = await expectImageLoaded(
+    page.locator(".shell-user-card img.shell-avatar-img"),
+    "shell avatar",
+  );
+  if (shellImg.src !== preview.src) {
+    throw new Error(`shell avatar src ${JSON.stringify(shellImg.src)} !== ${JSON.stringify(preview.src)}`);
+  }
+
+  await page.getByRole("link", { name: "Chat", exact: true }).click();
+  await page.getByRole("heading", { level: 1, name: "Chat" }).waitFor();
+  const draft = page.getByRole("textbox", { name: "Message" });
+  await draft.waitFor();
+  await draft.fill("Avatar check message");
+  await draft.press("Enter");
+  const log = page.getByRole("log", { name: "Messages" });
+  await log.getByText("Avatar check message", { exact: true }).waitFor();
+
+  const chatImg = await expectImageLoaded(
+    log.locator("img.chat-user-avatar-img").last(),
+    "chat author avatar",
+  );
+  if (chatImg.src !== preview.src) {
+    throw new Error(`chat avatar src ${JSON.stringify(chatImg.src)} !== ${JSON.stringify(preview.src)}`);
+  }
+
+  await openAccountItem(page, "Personalisation");
+  await card.waitFor();
+  await card.getByRole("button", { name: "Remove photo" }).click();
+  await card.getByRole("button", { name: "Upload photo" }).waitFor();
+  await card.getByRole("img", { name: "Your avatar" }).waitFor({ state: "hidden" });
+  await page.locator(".shell-user-card img.shell-avatar-img").waitFor({ state: "hidden" });
 }
 
 async function expectFits(page, path, ready) {
@@ -227,6 +348,8 @@ async function identityFlow(page) {
   await revoke.getByRole("button", { name: "Revoke token" }).click();
   await page.getByText("Ship", { exact: true }).waitFor({ state: "hidden" });
   await page.getByText("No API tokens yet.").waitFor();
+
+  await avatarFlow(page);
 }
 
 const browser = await chromium.launch({
@@ -270,6 +393,9 @@ try {
   );
   await expectFits(page, "/settings/connectors", (current) =>
     current.getByRole("heading", { level: 1, name: "Connectors" }).waitFor(),
+  );
+  await expectFits(page, "/personalisation", (current) =>
+    current.getByTestId("profile-avatar-card").waitFor(),
   );
 
   await identityFlow(page);

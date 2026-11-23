@@ -38,6 +38,7 @@ services:
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - artifacts-data:/var/upmo/artifacts
       - knowledge-data:/var/upmo/knowledge
+      - avatars-data:/var/upmo/avatars
     # Built then exec'd rather than go run, so SIGTERM reaches brain and it shuts
     # down gracefully; go run exits on SIGTERM without passing it on.
     command:
@@ -74,6 +75,7 @@ services:
       UPMO_SANDBOX_IMAGE: ${UPMO_SANDBOX_IMAGE:-}
       UPMO_ARTIFACTS_DIR: /var/upmo/artifacts
       UPMO_KNOWLEDGE_DIR: /var/upmo/knowledge
+      UPMO_AVATARS_DIR: /var/upmo/avatars
       # Optional dense retrieval. Empty EmbedRoute keeps FTS-only knowledge search.
       UPMO_GATEWAY_URL: http://gateway:8082
       UPMO_EMBED_ROUTE: ${UPMO_EMBED_ROUTE:-}
@@ -395,6 +397,7 @@ networks:
 volumes:
   artifacts-data:
   knowledge-data:
+  avatars-data:
   upmo-gomodcache:
   upmo-gocache:
   upmo-golangci-cache:

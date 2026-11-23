@@ -18,6 +18,7 @@ import (
 type Passkeys struct {
 	Pool   *pgxpool.Pool
 	Emails app.EmailSealer
+	Blobs  app.AvatarBlobs
 }
 
 func (p Passkeys) SweepChallenges(ctx context.Context, now time.Time) error {

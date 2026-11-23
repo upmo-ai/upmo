@@ -313,7 +313,7 @@ func TestArchiveAndRestoreVolumeAndSymlinkRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoredCount, err := restoreVolumes(dstArt, "", tarPath, true, false, nil)
+	restoredCount, err := restoreVolumes(dstArt, "", "", tarPath, true, false, false, nil)
 	if err != nil {
 		t.Fatalf("restoreVolumes: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestArchiveAndRestoreVolumeAndSymlinkRoot(t *testing.T) {
 	}
 
 	// Missing target dir when archive has files must fail.
-	if _, err := restoreVolumes("", "", tarPath, true, false, nil); err == nil {
+	if _, err := restoreVolumes("", "", "", tarPath, true, false, false, nil); err == nil {
 		t.Fatal("expected error when ArtifactsDir is empty but archive has files")
 	}
 
@@ -422,7 +422,7 @@ func TestRestoreVolumesRollbackOnSecondVolumeFailure(t *testing.T) {
 		return os.Rename(oldpath, newpath)
 	}
 
-	if _, err := restoreVolumes(dstArt, dstKnow, tarPath, true, true, failOnSecondKnow); !errors.Is(err, injectedErr) {
+	if _, err := restoreVolumes(dstArt, dstKnow, "", tarPath, true, true, false, failOnSecondKnow); !errors.Is(err, injectedErr) {
 		t.Fatalf("expected injected error, got %v", err)
 	}
 
@@ -552,7 +552,7 @@ func TestRestoreEmptyConfiguredVolumeClearsTarget(t *testing.T) {
 		t.Fatal("volume root entry alone must mark the artifacts volume present")
 	}
 
-	vols, unchanged, _, err := stageVolumes(dstArt, "", verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge)
+	vols, unchanged, _, err := stageVolumes(dstArt, "", "", verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge, verified.hasAvatars)
 	if err != nil {
 		t.Fatalf("stageVolumes: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestRestoreLeavesUnconfiguredKnowledgeVolumeUnchanged(t *testing.T) {
 		t.Fatal("unconfigured knowledge volume must be absent from the archive")
 	}
 
-	vols, unchanged, _, err := stageVolumes(dstArt, dstKnow, verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge)
+	vols, unchanged, _, err := stageVolumes(dstArt, dstKnow, "", verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge, verified.hasAvatars)
 	if err != nil {
 		t.Fatalf("stageVolumes: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestRestoreArchiveWithoutVolumeRootEntryLeavesVolumeUntouched(t *testing.T)
 		t.Fatal("archive without volume entries must not mark volumes present")
 	}
 
-	vols, unchanged, _, err := stageVolumes(dstArt, dstKnow, verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge)
+	vols, unchanged, _, err := stageVolumes(dstArt, dstKnow, "", verified.payloadTarPath, verified.hasArtifacts, verified.hasKnowledge, verified.hasAvatars)
 	if err != nil {
 		t.Fatalf("stageVolumes: %v", err)
 	}

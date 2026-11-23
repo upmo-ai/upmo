@@ -201,7 +201,7 @@ type stagedVolume struct {
 // stageVolumes stages every configured volume the archive has entries for and
 // returns the archive prefix names of configured volumes left untouched
 // because the archive has no entries for them.
-func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) ([]*stagedVolume, []string, int, error) {
+func stageVolumes(artDir, knowDir, avatarsDir, payloadTarPath string, hasArt, hasKnow, hasAvatars bool) ([]*stagedVolume, []string, int, error) {
 	specs := []struct {
 		prefix     string
 		name       string
@@ -210,6 +210,7 @@ func stageVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool) 
 	}{
 		{prefix: artifactsVolumePrefix, name: "artifacts", rootDir: strings.TrimSpace(artDir), hasEntries: hasArt},
 		{prefix: knowledgeVolumePrefix, name: "knowledge", rootDir: strings.TrimSpace(knowDir), hasEntries: hasKnow},
+		{prefix: avatarsVolumePrefix, name: "avatars", rootDir: strings.TrimSpace(avatarsDir), hasEntries: hasAvatars},
 	}
 
 	var vols []*stagedVolume
@@ -377,8 +378,8 @@ func rollbackVolumeSwaps(vols []*stagedVolume, renameFn func(oldpath, newpath st
 	}
 }
 
-func restoreVolumes(artDir, knowDir, payloadTarPath string, hasArt, hasKnow bool, renameFn func(oldpath, newpath string) error) (int, error) {
-	vols, _, totalFiles, err := stageVolumes(artDir, knowDir, payloadTarPath, hasArt, hasKnow)
+func restoreVolumes(artDir, knowDir, avatarsDir, payloadTarPath string, hasArt, hasKnow, hasAvatars bool, renameFn func(oldpath, newpath string) error) (int, error) {
+	vols, _, totalFiles, err := stageVolumes(artDir, knowDir, avatarsDir, payloadTarPath, hasArt, hasKnow, hasAvatars)
 	if err != nil {
 		return 0, err
 	}

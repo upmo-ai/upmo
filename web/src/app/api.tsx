@@ -633,6 +633,8 @@ export interface ApiClient {
     signIn(method: "passkey" | "password"): Promise<CurrentUser>;
     dismissPasskeyOffer(): Promise<void>;
     viewAs(role: ViewRole): Promise<CurrentUser>;
+    uploadAvatar(file: File): Promise<{ avatar_url: string }>;
+    removeAvatar(): Promise<void>;
   };
   passkeys: {
     list(): Promise<Passkey[]>;
@@ -1568,7 +1570,8 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
   }
 
   // passkeyCount is only ever what /api/session reported; unknown stays undefined.
-  function currentUser(passkeyCount?: number): CurrentUser {
+  function currentUser(passkeyCount?: number, avatarUrl?: string | null): CurrentUser {
+    const resolvedAvatar = avatarUrl !== undefined ? avatarUrl : (findMember(currentMemberId)?.avatarUrl ?? null);
     return {
       memberId: currentMemberId,
       view,
@@ -1576,6 +1579,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
       passwordSet,
       ...(passkeyCount === undefined ? {} : { passkeyCount }),
       offerDismissed: offerDismissed(),
+      avatarUrl: resolvedAvatar,
     };
   }
 
@@ -1692,6 +1696,7 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
           sign_in_method?: SignInMethod;
           has_password?: boolean;
           passkey_count?: number;
+          avatar_url?: string | null;
         };
         if (
           body.sign_in_method === "passkey" ||
@@ -1705,12 +1710,14 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         if (body.has_password !== undefined) {
           passwordSet = Boolean(body.has_password);
         }
+        const avatarUrl =
+          body.avatar_url === null || typeof body.avatar_url === "string" ? body.avatar_url : undefined;
         // The brain names the signed-in person; the sample persona stands in
         // when it does not. The stub's own acting person stays the persona.
         if (typeof body.passkey_count === "number" && body.passkey_count >= 0) {
-          return copy(asPerson(currentUser(body.passkey_count), body.user_id));
+          return copy(asPerson(currentUser(body.passkey_count, avatarUrl), body.user_id));
         }
-        return copy(asPerson(currentUser(), body.user_id));
+        return copy(asPerson(currentUser(undefined, avatarUrl), body.user_id));
       }
     } catch (err) {
       if (err instanceof BrainError) {
@@ -1813,6 +1820,22 @@ export function createStubApi(options: StubOptions = {}): ApiClient {
         view = role;
         currentMemberId = viewPersona[role];
         return copy(currentUser());
+      },
+      async uploadAvatar(file) {
+        if (file.size > 50 * 1024 * 1024) {
+          throw new BrainError(413, "avatar must be 50 MB or smaller");
+        }
+        if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) {
+          throw new BrainError(415, "avatar must be a PNG, JPEG, GIF, or WebP image");
+        }
+        const url = `/api/users/${encodeURIComponent(currentMemberId)}/avatar?v=${nextId("avatar")}`;
+        const member = findMember(currentMemberId);
+        if (member) member.avatarUrl = url;
+        return { avatar_url: url };
+      },
+      async removeAvatar() {
+        const member = findMember(currentMemberId);
+        if (member) member.avatarUrl = null;
       },
     },
     passkeys: {

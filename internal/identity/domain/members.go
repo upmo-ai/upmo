@@ -25,14 +25,15 @@ var (
 
 // Member is an enabled person in the install.
 type Member struct {
-	ID       UserID
-	Email    string
-	Name     string
-	RoleID   RoleID
-	RoleName string
-	System   string
-	Teams    []string
-	Invited  bool
+	ID        UserID
+	Email     string
+	Name      string
+	RoleID    RoleID
+	RoleName  string
+	System    string
+	Teams     []string
+	Invited   bool
+	AvatarURL *string
 }
 
 // MemberRole is a role an invite may name.

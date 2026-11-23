@@ -28,18 +28,20 @@ type Session struct {
 	SignedIn  time.Time
 	RoleID    string
 	TokenHash []byte
+	AvatarKey string
 }
 
 // Row is a stored session, including one that has ended.
 type Row struct {
-	ID       string
-	UserID   domain.UserID
-	Created  time.Time
-	LastSeen time.Time
-	Expires  time.Time
-	Method   string
-	SignedIn time.Time
-	RoleID   string
+	ID        string
+	UserID    domain.UserID
+	Created   time.Time
+	LastSeen  time.Time
+	Expires   time.Time
+	Method    string
+	SignedIn  time.Time
+	RoleID    string
+	AvatarKey string
 }
 
 // Store is the session table.
@@ -125,7 +127,7 @@ func (s Service) Lookup(ctx context.Context, text string) (Session, error) {
 			return Session{}, err
 		}
 	}
-	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn, RoleID: row.RoleID, TokenHash: hash}, nil
+	return Session{ID: row.ID, UserID: row.UserID, Expires: row.Expires, Method: row.Method, SignedIn: row.SignedIn, RoleID: row.RoleID, TokenHash: hash, AvatarKey: row.AvatarKey}, nil
 }
 
 // EndOthers ends every session for user except keep.

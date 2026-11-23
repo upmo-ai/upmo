@@ -1089,4 +1089,38 @@ describe("UPM-318 chat attachments", () => {
     expect(await within(log).findByText("Ada Lovelace")).toBeTruthy();
     expect(within(log).getByRole("img", { name: "Ada Lovelace" })).toBeTruthy();
   });
+
+  it("UPM-415: renders author avatar image when author_avatar is set and falls back on error", async () => {
+    const base = quick();
+    const avatarUrl = "/api/users/u-ada/avatar?v=01990000-0000-7000-8000-000000000001";
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async get(id): Promise<Chat> {
+          const chat = await base.chats.get(id);
+          return {
+            ...chat,
+            lines: chat.lines.map((line) =>
+              line.role === "user"
+                ? { ...line, author_id: "u-ada", author_name: "Ada Lovelace", author_avatar: avatarUrl }
+                : line,
+            ),
+          };
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+    const log = messageLog();
+    const img = (await within(log).findByRole("img", { name: "Ada Lovelace" })) as HTMLImageElement;
+    expect(img.className).toContain("chat-user-avatar-img");
+    expect(img.getAttribute("src")).toBe(avatarUrl);
+
+    fireEvent.error(img);
+    await waitFor(() => {
+      expect(log.querySelector("img.chat-user-avatar-img")).toBeNull();
+    });
+    expect(within(log).getByRole("img", { name: "Ada Lovelace" })).toBeTruthy();
+  });
 });

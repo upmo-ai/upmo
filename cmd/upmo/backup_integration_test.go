@@ -171,7 +171,7 @@ func TestBackupOptionalOutAndReservation(t *testing.T) {
 }
 
 func TestBackupMissingDefaultVolumesAndRestoreDefaults(t *testing.T) {
-	for _, dir := range []string{config.DefaultArtifactsDir, config.DefaultKnowledgeDir} {
+	for _, dir := range []string{config.DefaultArtifactsDir, config.DefaultKnowledgeDir, config.DefaultAvatarsDir} {
 		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Skip("requires absent default volume directories")
 		}
@@ -187,13 +187,17 @@ func TestBackupMissingDefaultVolumesAndRestoreDefaults(t *testing.T) {
 	if err := os.Unsetenv("UPMO_KNOWLEDGE_DIR"); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("UPMO_AVATARS_DIR", "")
+	if err := os.Unsetenv("UPMO_AVATARS_DIR"); err != nil {
+		t.Fatal(err)
+	}
 	owner := pgtest.New(t)
 	if err := brainops.MigrateAll(context.Background(), owner); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, owner))
 	env, err := loadBackupEnv(true)
-	if err != nil || env.artifactsDir != "" || env.knowledgeDir != "" {
+	if err != nil || env.artifactsDir != "" || env.knowledgeDir != "" || env.avatarsDir != "" {
 		t.Fatalf("backup defaults = %+v, %v", env, err)
 	}
 	t.Chdir(t.TempDir())
@@ -205,7 +209,7 @@ func TestBackupMissingDefaultVolumesAndRestoreDefaults(t *testing.T) {
 		t.Fatalf("volumes not omitted: %q", out.String())
 	}
 	env, err = loadBackupEnv(false)
-	if err != nil || env.artifactsDir != "/var/upmo/artifacts" || env.knowledgeDir != "/var/upmo/knowledge" {
+	if err != nil || env.artifactsDir != "/var/upmo/artifacts" || env.knowledgeDir != "/var/upmo/knowledge" || env.avatarsDir != "/var/upmo/avatars" {
 		t.Fatalf("restore defaults = %+v, %v", env, err)
 	}
 }
@@ -239,8 +243,15 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 
 	srcArtDir := t.TempDir()
 	srcKnowDir := t.TempDir()
+	srcAvatarsDir := t.TempDir()
 	t.Setenv("UPMO_ARTIFACTS_DIR", srcArtDir)
 	t.Setenv("UPMO_KNOWLEDGE_DIR", srcKnowDir)
+	t.Setenv("UPMO_AVATARS_DIR", srcAvatarsDir)
+	avatarKey := uuid.Must(uuid.NewV7()).String()
+	avatarBody := []byte("restored-avatar-png-bytes")
+	if err := (identity.AvatarVolume{Root: srcAvatarsDir}).Put(ctx, avatarKey, avatarBody); err != nil {
+		t.Fatalf("seed avatars volume: %v", err)
+	}
 
 	// Seed identity user + sealed password hash.
 	var ownerRoleID uuid.UUID
@@ -478,6 +489,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, liveOwner))
 	t.Setenv("UPMO_ARTIFACTS_DIR", liveArtDir)
 	t.Setenv("UPMO_KNOWLEDGE_DIR", liveKnowDir)
+	t.Setenv("UPMO_AVATARS_DIR", t.TempDir())
 
 	var sink bytes.Buffer
 	for _, offset := range []int{len(rawArchive) / 2, len(rawArchive) - 4} {
@@ -518,9 +530,11 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	freshOwner := pgtest.New(t)
 	dstArtDir := t.TempDir()
 	dstKnowDir := t.TempDir()
+	dstAvatarsDir := t.TempDir()
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, freshOwner))
 	t.Setenv("UPMO_ARTIFACTS_DIR", dstArtDir)
 	t.Setenv("UPMO_KNOWLEDGE_DIR", dstKnowDir)
+	t.Setenv("UPMO_AVATARS_DIR", dstAvatarsDir)
 	t.Setenv(gateway.EnvMasterKey, key1B64)
 	t.Setenv(gateway.EnvMasterKeyID, key1ID)
 
@@ -589,6 +603,10 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	if err != nil || !bytes.Equal(gotKnowBytes, knowBody) {
 		t.Fatalf("restored knowledge bytes mismatch: got=%q err=%v", gotKnowBytes, err)
 	}
+	gotAvatarBytes, err := (identity.AvatarVolume{Root: dstAvatarsDir}).Get(ctx, avatarKey)
+	if err != nil || !bytes.Equal(gotAvatarBytes, avatarBody) {
+		t.Fatalf("restored avatar bytes mismatch: got=%q err=%v", gotAvatarBytes, err)
+	}
 
 	// Verify artifacts volume reader also opens restored artifact.
 	artRC, err := (artifacts.Volume{Root: dstArtDir}).Open(ctx, artifacts.StoreVolume, artifactRel)
@@ -606,6 +624,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	t.Setenv("UPMO_DATABASE_URL", poolURL(t, rotatedOwner))
 	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
 	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	t.Setenv("UPMO_AVATARS_DIR", t.TempDir())
 	t.Setenv(gateway.EnvMasterKey, key2B64)
 	t.Setenv(gateway.EnvMasterKeyID, key2ID)
 	t.Setenv(gateway.EnvMasterKeyPrevious+key1ID, key1B64)

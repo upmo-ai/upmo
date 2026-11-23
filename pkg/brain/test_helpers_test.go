@@ -49,7 +49,7 @@ func routes(
 	if err != nil {
 		return nil, err
 	}
-	members := identity.Members(pool, brainops.NewEmailSealer(masterKeys), cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log)
+	members := identity.WithAvatars(identity.Members(pool, brainops.NewEmailSealer(masterKeys), cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log), cfg.AvatarsDir)
 	providers := gateway.NewProviders(pool, masterKeys, log)
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		id, err := identity.ParseUserID(user)
