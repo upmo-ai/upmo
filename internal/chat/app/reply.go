@@ -68,16 +68,17 @@ const finishTimeout = 15 * time.Second
 // and its model. Route is the composer's pick when RoutePicked, and the
 // install's default route otherwise.
 type ReplyJobArgs struct {
-	ChatID      string `json:"chat_id"`
-	LineID      string `json:"line_id"`
-	ReplyID     string `json:"reply_id" river:"unique"`
-	Round       int    `json:"round" river:"unique"`
-	UserID      string `json:"user_id"`
-	Route       string `json:"route"`
-	RoutePicked bool   `json:"route_picked,omitempty"`
-	PinAccount  string `json:"pin_account,omitempty"`
-	PinModel    string `json:"pin_model,omitempty"`
-	AgentID     string `json:"agent_id,omitempty"`
+	ChatID        string `json:"chat_id"`
+	LineID        string `json:"line_id"`
+	ReplyID       string `json:"reply_id" river:"unique"`
+	Round         int    `json:"round" river:"unique"`
+	UserID        string `json:"user_id"`
+	Route         string `json:"route"`
+	RoutePicked   bool   `json:"route_picked,omitempty"`
+	PinAccount    string `json:"pin_account,omitempty"`
+	PinModel      string `json:"pin_model,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	ResumedHoldID string `json:"resumed_hold_id,omitempty"`
 }
 
 // Kind is the River job kind.
@@ -144,6 +145,9 @@ type ReplyRows interface {
 	IsPrivate(ctx context.Context, access Access, chatID string) (bool, error)
 	// ActionLog is the chat's log of tool calls that act outside it.
 	ActionLog(scope agentloop.AccessScope) agentloop.ActionLog
+	SaveHistory(ctx context.Context, access Access, claim Claim, messages, appended []agentloop.Message, seqStart int, exposure agentloop.ExposureState) error
+	LoadCachedToolOutput(ctx context.Context, scope agentloop.AccessScope, chatID, replyID, scopedCallID string) (agentloop.ToolResult, bool, error)
+	SaveCachedToolOutput(ctx context.Context, scope agentloop.AccessScope, chatID, replyID, authorUserID, toolName, scopedCallID string, res agentloop.ToolResult) error
 }
 
 type MemoryLookup interface {
@@ -238,6 +242,13 @@ type Claim struct {
 	// the author allowed for this chat; empty when the chat is tainted.
 	Exposure     agentloop.ExposureState
 	AllowedTools map[string]bool
+	DecidedHold  *DecidedHold
+}
+
+type DecidedHold struct {
+	ID, State   string
+	HoldTurnSeq int
+	Calls       []agentloop.HeldCall
 }
 
 // ReplyEnd is the failed end of a reply: which model was writing, the notices
@@ -255,6 +266,7 @@ const (
 	// RoundNext means the model asked for tools and the reply has a round
 	// left: the next round is queued.
 	RoundNext RoundEnd = iota + 1
+	RoundHold
 	// RoundDone means the final answer has text: the done line is stored.
 	RoundDone
 	// RoundFailed means the reply ends failed: too many rounds (D2), or a
@@ -641,6 +653,14 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 			return current, nil
 		}}
 	messages := claim.History
+	if claim.DecidedHold != nil || hasHeldPlaceholder(messages) {
+		if err := w.resolveHeldBatch(callCtx, live, claim, run, &engine, messages); err != nil {
+			tail, werr := sink.finish()
+			close(watching)
+			<-watched
+			return w.end(ctx, replyCtx, live, claim, tail, werr, err, attempts, writing)
+		}
+	}
 	if args.Round == 1 {
 		var err error
 		window := claim.ContextWindow
@@ -695,6 +715,133 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		return nil
 	}
 	return w.end(ctx, replyCtx, live, claim, tail, werr, err, attempts, writing)
+}
+
+func hasHeldPlaceholder(messages []agentloop.Message) bool {
+	for _, message := range messages {
+		if message.HeldPlaceholder {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *replyWorker) resolveHeldBatch(ctx context.Context, live *liveAccess, claim Claim, run *agentloop.RunState, engine *agentloop.Engine, messages []agentloop.Message) error {
+	holdTurnSeq := claim.TurnSeq
+	if claim.DecidedHold != nil && claim.DecidedHold.HoldTurnSeq > 0 {
+		holdTurnSeq = claim.DecidedHold.HoldTurnSeq
+	}
+	for i := range messages {
+		if !messages[i].HeldPlaceholder {
+			continue
+		}
+		var call *agentloop.HeldCall
+		if claim.DecidedHold != nil {
+			for j := range claim.DecidedHold.Calls {
+				if claim.DecidedHold.Calls[j].CallID == messages[i].ToolID {
+					call = &claim.DecidedHold.Calls[j]
+					break
+				}
+			}
+		}
+		replace := func(msg agentloop.Message) error {
+			messages[i] = msg
+			current, ok := live.get()
+			if !ok {
+				return errRevoked
+			}
+			if err := w.deps.Rows.SaveHistory(context.WithoutCancel(ctx), current, claim, messages, []agentloop.Message{msg}, run.Seq+1, run.Exposure); err != nil {
+				return err
+			}
+			run.Seq++
+			return nil
+		}
+		if call == nil {
+			if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: messages[i].ToolName, ToolID: messages[i].ToolID, Text: "blocked: missing approval", IsError: true}); err != nil {
+				return err
+			}
+			continue
+		}
+		if claim.DecidedHold.State == "denied" {
+			if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: call.ToolName, ToolID: call.CallID, Text: "denied by user", IsError: true}); err != nil {
+				return err
+			}
+			continue
+		}
+		if claim.DecidedHold.State != "approved" {
+			if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: call.ToolName, ToolID: call.CallID, Text: "blocked: missing approval", IsError: true}); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, ok := live.get(); !ok {
+			return errRevoked
+		}
+		def, ok := run.Catalog.Get(call.ToolName)
+		blockReason := ""
+		if !ok || ValidateChatTool(def) != nil {
+			blockReason = "unknown or inactive tool"
+		} else if agentloop.CallDigest(call.ToolName, def.Op, call.Arguments) != call.ArgsDigest {
+			blockReason = "argument digest mismatch"
+		} else {
+			decision, err := engine.WritePolicy.Decide(ctx, run.UserID, call.ToolName, def.Op, call.Arguments)
+			if err != nil {
+				return err
+			}
+			if decision.Verdict == "block" {
+				blockReason = decision.Reason
+				if blockReason == "" {
+					blockReason = "blocked"
+				}
+			}
+		}
+		if blockReason != "" {
+			if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: call.ToolName, ToolID: call.CallID, Text: "blocked: " + blockReason, IsError: true}); err != nil {
+				return err
+			}
+			continue
+		}
+		scopedID := agentloop.ScopedCallID(holdTurnSeq, call.CallID)
+		res, found, err := w.deps.Rows.LoadCachedToolOutput(ctx, claim.Scope, claim.Job.ChatID, claim.Job.ReplyID, scopedID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			err = agentloop.ExecuteAtMostOnce(ctx, engine.ActionLog, agentloop.ActionRecord{CallID: scopedID, RunID: run.RunID, ObjectID: run.ObjectID, UserID: run.UserID, ToolName: call.ToolName, Action: call.Action, Preview: call.Preview, UntrustedOrigin: call.UntrustedOrigin}, func(execCtx context.Context, idempotencyKey string) (string, error) {
+				tc := agentloop.ToolCall{ID: call.CallID, Name: call.ToolName, Arguments: call.Arguments, IdempotencyKey: idempotencyKey}
+				var execErr error
+				res, execErr = engine.Executor.Execute(execCtx, run, tc)
+				if execErr != nil && res.Output == "" {
+					res.Output = execErr.Error()
+					res.IsError = true
+				}
+				if err := w.deps.Rows.SaveCachedToolOutput(context.WithoutCancel(execCtx), claim.Scope, claim.Job.ChatID, claim.Job.ReplyID, run.UserID, call.ToolName, scopedID, res); err != nil {
+					return "", err
+				}
+				return res.ResponseDigest, execErr
+			})
+			if errors.Is(err, agentloop.ErrDuplicateAction) {
+				res, found, _ = w.deps.Rows.LoadCachedToolOutput(ctx, claim.Scope, claim.Job.ChatID, claim.Job.ReplyID, scopedID)
+				if !found {
+					res = agentloop.ToolResult{Output: err.Error(), IsError: true}
+				}
+			} else if err != nil && res.Output == "" {
+				res = agentloop.ToolResult{Output: err.Error(), IsError: true}
+			}
+		}
+		run.Exposure.Observe(res.Untrusted, res.Private)
+		text, offloaded, err := agentloop.MaybeOffload(ctx, engine.Outputs, run, call.ToolName, res.Output, res.Untrusted, w.cfg.OffloadAtTokens)
+		if err != nil {
+			return err
+		}
+		if len(res.DiscoveredTools) > 0 {
+			run.Catalog.Append(res.DiscoveredTools...)
+		}
+		if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: call.ToolName, ToolID: call.CallID, Text: text, IsError: res.IsError, Offload: offloaded}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // route is where every round of this reply goes: the route and the pin

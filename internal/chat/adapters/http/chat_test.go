@@ -88,6 +88,8 @@ func (f *fakeBook) Read(context.Context, app.Access, string) (app.Chat, error) {
 	}
 	return app.Chat{ID: chatID, Lines: f.lines}, nil
 }
+func (f *fakeBook) ApproveHold(context.Context, app.Access, string, string, bool) error { return nil }
+func (f *fakeBook) DenyHold(context.Context, app.Access, string, string) error          { return nil }
 
 func TestOpenCreatesAChat(t *testing.T) {
 	book := &fakeBook{}

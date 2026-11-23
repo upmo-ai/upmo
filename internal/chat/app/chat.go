@@ -44,7 +44,9 @@ var (
 	// ErrBusy is a chat with a reply already running in it.
 	ErrBusy = errors.New("chat: reply under way")
 	// ErrReplies is a chat that gets no replies in this install.
-	ErrReplies = errors.New("chat: replies are off")
+	ErrReplies     = errors.New("chat: replies are off")
+	ErrNoHold      = errors.New("chat: no such hold")
+	ErrHoldDecided = errors.New("chat: hold already decided")
 )
 
 // Access is the signed-in person and the allow list on this call.
@@ -125,6 +127,17 @@ type Chat struct {
 	// text, and another person's private data. They only turn on.
 	Tainted     bool
 	PrivateRead bool
+	Hold        *Hold
+}
+
+type HoldCall struct {
+	CallID, ToolName, Op, Action, Preview string
+	UntrustedOrigin                       bool
+}
+type Hold struct {
+	ID, LineID, Reason, Action, Preview string
+	UntrustedOrigin, CanAllowForChat    bool
+	Calls                               []HoldCall
 }
 
 // Book stores chats and their lines.
@@ -136,6 +149,40 @@ type Book interface {
 	Stop(ctx context.Context, access Access, chatID string) error
 	Delete(ctx context.Context, access Access, chatID string) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
+	ApproveHold(ctx context.Context, access Access, chatID, holdID string, allowForChat bool) error
+	DenyHold(ctx context.Context, access Access, chatID, holdID string) error
+}
+
+func ApproveHold(ctx context.Context, book Book, access Access, chatID, holdID string, allowForChat bool) error {
+	if err := caller(access); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ErrChat
+	}
+	if _, err := uuid.Parse(holdID); err != nil {
+		return ErrNoHold
+	}
+	if !slices.Contains(strings.Split(access.Allow, ","), "chat:edit") {
+		return ErrSay
+	}
+	return book.ApproveHold(ctx, access, chatID, holdID, allowForChat)
+}
+
+func DenyHold(ctx context.Context, book Book, access Access, chatID, holdID string) error {
+	if err := caller(access); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ErrChat
+	}
+	if _, err := uuid.Parse(holdID); err != nil {
+		return ErrNoHold
+	}
+	if !slices.Contains(strings.Split(access.Allow, ","), "chat:edit") {
+		return ErrSay
+	}
+	return book.DenyHold(ctx, access, chatID, holdID)
 }
 
 // Stop ends the running reply of a chat.

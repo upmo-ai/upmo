@@ -40,10 +40,41 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/chats", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/chats/{id}", wrap(http.HandlerFunc(h.say)))
 	mux.Handle("POST /api/chats/{id}/stop", wrap(http.HandlerFunc(h.stop)))
+	mux.Handle("POST /api/chats/{id}/holds/{hold}/approve", wrap(http.HandlerFunc(h.approveHold)))
+	mux.Handle("POST /api/chats/{id}/holds/{hold}/deny", wrap(http.HandlerFunc(h.denyHold)))
 	mux.Handle("DELETE /api/chats/{id}", wrap(http.HandlerFunc(h.delete)))
 	mux.Handle("GET /api/chats/{id}", wrap(http.HandlerFunc(h.read)))
 	mux.Handle("POST /api/chats/{id}/lines/{line}/retry", wrap(http.HandlerFunc(h.retry)))
 	mux.Handle("GET /api/chats/{id}/stream", wrap(http.HandlerFunc(h.stream)))
+}
+
+func (h Handler) approveHold(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		AllowForChat bool `json:"allow_for_chat"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "the chat input was refused")
+		return
+	}
+	if refuse(w, app.ApproveHold(r.Context(), h.Book, access, r.PathValue("id"), r.PathValue("hold"), input.AllowForChat)) {
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h Handler) denyHold(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if refuse(w, app.DenyHold(r.Context(), h.Book, access, r.PathValue("id"), r.PathValue("hold"))) {
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (h Handler) stop(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +340,10 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "needs a chat you can edit")
 	case errors.Is(err, app.ErrNoLine):
 		writeError(w, http.StatusNotFound, "no such line")
+	case errors.Is(err, app.ErrNoHold):
+		writeError(w, http.StatusNotFound, "no such hold")
+	case errors.Is(err, app.ErrHoldDecided):
+		writeError(w, http.StatusConflict, "that hold was already decided")
 	case errors.Is(err, app.ErrRetry):
 		writeError(w, http.StatusConflict, "that line cannot be retried")
 	case errors.Is(err, app.ErrBusy):

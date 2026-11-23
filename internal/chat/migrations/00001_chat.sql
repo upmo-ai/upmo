@@ -532,7 +532,7 @@ CREATE POLICY runs_owner_update ON chat.runs
   );
 
 GRANT SELECT, INSERT ON chat.runs TO upmo_app;
-GRANT UPDATE (state, round, claim, claim_round, round_seq, history, tokens, cost_micro_usd, cost_known, model, finished_at)
+GRANT UPDATE (state, round, claim, claim_round, round_seq, history, tokens, cost_micro_usd, cost_known, model, created_at, finished_at)
   ON chat.runs TO upmo_app;
 
 -- A delta or a line announces itself to the stream hub of every brain
@@ -565,6 +565,56 @@ CREATE TRIGGER chat_lines_stream_notify
   EXECUTE FUNCTION chat.stream_notify();
 
 -- +goose StatementBegin
+CREATE FUNCTION chat.fail_waiting_runs(target_chat_id uuid DEFAULT NULL)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE rec record; reply_body text; fail_class text; failed_count bigint := 0;
+BEGIN
+  FOR rec IN
+    SELECT run.id AS run_id, run.chat_id, run.line_id, run.author_id, run.model, run.tokens,
+           run.created_at AS run_created_at, hold.created_at AS hold_created_at,
+           chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id
+    FROM chat.runs run JOIN chat.chats chat ON chat.id = run.chat_id
+    LEFT JOIN chat.holds hold ON hold.chat_id = run.chat_id AND hold.state = 'pending'
+    WHERE run.state = 'waiting' AND (target_chat_id IS NULL OR run.chat_id = target_chat_id)
+    FOR UPDATE OF run
+  LOOP
+    fail_class := NULL;
+    IF COALESCE(rec.hold_created_at, rec.run_created_at, now()) <= now() - interval '24 hours' THEN
+      fail_class := 'timeout';
+    ELSIF target_chat_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM identity.users u JOIN identity.roles role ON role.id = u.role_id
+      WHERE u.id = rec.author_id AND u.disabled_at IS NULL AND 'chat:edit' = ANY (identity.role_permissions(role.key, role.permissions))
+        AND (rec.owner_user_id = rec.author_id
+          OR EXISTS (SELECT 1 FROM identity.shares share WHERE share.object_type = 'chat' AND share.object_id = rec.chat_id AND share.level = 'editor'
+            AND (share.user_id = rec.author_id OR share.grantee_role_id = u.role_id OR EXISTS (SELECT 1 FROM identity.team_members tm WHERE tm.team_id = share.team_id AND tm.user_id = rec.author_id)))
+        )
+    ) THEN fail_class := 'access';
+    END IF;
+    IF fail_class IS NOT NULL THEN
+      SELECT COALESCE(string_agg(delta.body, '' ORDER BY delta.seq), '') INTO reply_body
+      FROM chat.deltas delta WHERE delta.chat_id = rec.chat_id AND delta.line_id = rec.run_id AND delta.kind = 'text';
+      INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, status, reply_to, attempts)
+      SELECT rec.run_id, rec.chat_id, COALESCE(max(line.seq), 0) + 1, 'assistant', left(reply_body, 64000),
+        CASE WHEN rec.model <> '' THEN rec.model ELSE 'failed' END, rec.tokens, 'failed', rec.line_id,
+        jsonb_build_array(jsonb_build_object('model', CASE WHEN rec.model <> '' THEN rec.model ELSE 'failed' END, 'class', fail_class))
+      FROM chat.lines line WHERE line.chat_id = rec.chat_id;
+      DELETE FROM chat.deltas WHERE chat_id = rec.chat_id AND line_id = rec.run_id;
+      PERFORM chat.close_waiting_run(rec.chat_id, 'failed', CASE WHEN fail_class = 'timeout' THEN 'expired' ELSE NULL END);
+      failed_count := failed_count + 1;
+    END IF;
+  END LOOP;
+  RETURN failed_count;
+END;
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION chat.fail_waiting_runs(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.fail_waiting_runs(uuid) TO upmo_app;
+
+-- +goose StatementBegin
 CREATE FUNCTION chat.sweep_deltas()
 RETURNS bigint
 LANGUAGE plpgsql
@@ -574,8 +624,10 @@ AS $$
 DECLARE
   swept bigint;
 BEGIN
+  PERFORM chat.fail_waiting_runs(NULL);
   DELETE FROM chat.deltas AS delta
-  WHERE delta.at < now() - interval '2 hours';
+  WHERE delta.at < now() - interval '2 hours'
+    AND NOT EXISTS (SELECT 1 FROM chat.runs AS run WHERE run.id = delta.line_id AND run.state = 'waiting');
   GET DIAGNOSTICS swept = ROW_COUNT;
   RETURN swept;
 END;
@@ -729,6 +781,7 @@ CREATE TABLE chat.holds (
   chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
   line_id uuid,
   user_id uuid NOT NULL,
+  hold_turn_seq int NOT NULL DEFAULT 0,
   reason text NOT NULL,
   action text NOT NULL,
   preview text NOT NULL DEFAULT '',
@@ -738,6 +791,7 @@ CREATE TABLE chat.holds (
   created_at timestamptz NOT NULL DEFAULT now(),
   decided_at timestamptz,
   CONSTRAINT holds_reason_check CHECK (reason IN ('ask', 'expired')),
+  CONSTRAINT holds_turn_seq_check CHECK (hold_turn_seq >= 0),
   CONSTRAINT holds_action_check CHECK (char_length(action) BETWEEN 1 AND 200),
   CONSTRAINT holds_state_check CHECK (state IN ('pending', 'approved', 'denied', 'closed')),
   CONSTRAINT holds_decided_check CHECK ((state = 'pending') = (decided_at IS NULL))
@@ -768,6 +822,7 @@ CREATE POLICY chat_holds_select ON chat.holds
   USING (
     user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
     AND 'chat:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (SELECT 1 FROM chat.chats chat WHERE chat.id = chat_id AND identity.may('view', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id))
   );
 
 CREATE POLICY chat_holds_insert ON chat.holds
@@ -787,14 +842,53 @@ CREATE POLICY chat_holds_update ON chat.holds
   USING (
     user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
     AND 'chat:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
   )
   WITH CHECK (
     user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
     AND 'chat:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+    AND EXISTS (
+      SELECT 1 FROM chat.chats AS chat
+      WHERE chat.id = chat_id
+        AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+    )
   );
 
 GRANT SELECT, INSERT ON chat.holds TO upmo_app;
 GRANT UPDATE (state, decided_at) ON chat.holds TO upmo_app;
+
+-- +goose StatementBegin
+CREATE FUNCTION chat.decide_hold_once() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF OLD.state <> 'pending' THEN RAISE EXCEPTION 'chat: hold'; END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+CREATE TRIGGER chat_holds_decide_once BEFORE UPDATE ON chat.holds FOR EACH ROW EXECUTE FUNCTION chat.decide_hold_once();
+
+-- +goose StatementBegin
+CREATE FUNCTION chat.hold_status(target_chat_id uuid, target_hold_id uuid,
+  OUT chat_visible boolean, OUT hold_found boolean, OUT hold_user_id uuid, OUT hold_state text)
+RETURNS RECORD LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE c chat.chats%ROWTYPE; h chat.holds%ROWTYPE;
+BEGIN
+  chat_visible := false; hold_found := false; hold_user_id := NULL; hold_state := NULL;
+  SELECT * INTO c FROM chat.chats WHERE id = target_chat_id;
+  IF NOT FOUND OR NOT identity.may('view', c.object_type, c.owner_user_id, c.visibility, c.visibility_team_id, c.id) THEN RETURN; END IF;
+  chat_visible := true;
+  SELECT * INTO h FROM chat.holds WHERE id = target_hold_id AND chat_id = target_chat_id;
+  IF NOT FOUND THEN RETURN; END IF;
+  hold_found := true; hold_user_id := h.user_id; hold_state := h.state;
+END;
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION chat.hold_status(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.hold_status(uuid, uuid) TO upmo_app;
 
 CREATE TABLE chat.action_logs (
   scope_id uuid NOT NULL,
@@ -882,6 +976,7 @@ CREATE TABLE chat.findings (
 );
 
 CREATE INDEX chat_findings_chat_idx ON chat.findings (chat_id, created_at);
+CREATE INDEX chat_findings_source_ref_idx ON chat.findings (chat_id, source_ref) WHERE source_ref <> '';
 
 ALTER TABLE chat.findings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat.findings FORCE ROW LEVEL SECURITY;
@@ -981,9 +1076,14 @@ GRANT SELECT, INSERT, DELETE ON chat.tool_allowances TO upmo_app;
 -- +goose Down
 
 DROP TABLE IF EXISTS chat.tool_allowances;
+DROP FUNCTION IF EXISTS chat.hold_status(uuid, uuid);
+DROP TRIGGER IF EXISTS chat_holds_decide_once ON chat.holds;
+DROP FUNCTION IF EXISTS chat.decide_hold_once();
+DROP FUNCTION IF EXISTS chat.fail_waiting_runs(uuid);
 DROP FUNCTION IF EXISTS chat.close_waiting_run(uuid, text, text);
 DROP FUNCTION IF EXISTS chat.delete_chat(uuid);
 DROP TABLE IF EXISTS chat.findings;
+DROP INDEX IF EXISTS chat.chat_findings_source_ref_idx;
 DROP TABLE IF EXISTS chat.action_logs;
 DROP TABLE IF EXISTS chat.holds;
 DROP FUNCTION IF EXISTS chat.redacted_turn_metadata(uuid);

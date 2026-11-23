@@ -6,6 +6,8 @@ func chatRoutes() []entry {
 		{pattern: "POST /api/chats/{id}", route: Route{Action: ChatMessage}},
 		{pattern: "POST /api/chats/{id}/lines/{line}/retry", route: Route{Action: ChatRetry}},
 		{pattern: "POST /api/chats/{id}/stop", route: Route{Action: ChatStop}},
+		{pattern: "POST /api/chats/{id}/holds/{hold}/approve", route: Route{Action: ChatHoldApprove}},
+		{pattern: "POST /api/chats/{id}/holds/{hold}/deny", route: Route{Action: ChatHoldDeny}},
 		{pattern: "DELETE /api/chats/{id}", route: Route{Action: ChatDelete}},
 		{pattern: "POST /api/agents", route: Route{Action: AgentCreate}},
 		{pattern: "PATCH /api/agents/{id}", route: Route{Action: AgentUpdate}},

@@ -17,6 +17,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/memory"
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks"
@@ -210,6 +211,9 @@ func failStaleRuns(ctx context.Context, tx pgx.Tx, chatID string) error {
 		if err := failRunTx(ctx, tx, chatID, id, app.ReplyEnd{Attempts: []domain.Attempt{{Model: "", Class: "timeout"}}}, false); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(ctx, `SELECT chat.fail_waiting_runs($1::uuid)`, chatID); err != nil {
+		return fmt.Errorf("chat: stale holds: %w", err)
 	}
 	return nil
 }
@@ -408,10 +412,32 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	for i := range lines {
 		lines[i].Turns = turns[lines[i].ID]
 	}
+	var hold app.Hold
+	var calls [][]byte
+	err = tx.QueryRow(ctx, `SELECT id::text, COALESCE(line_id::text, ''), reason, action, preview, untrusted_origin, calls FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending' AND user_id = $2::uuid`, chatID, access.UserID).Scan(&hold.ID, &hold.LineID, &hold.Reason, &hold.Action, &hold.Preview, &hold.UntrustedOrigin, &calls)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return app.Chat{}, fmt.Errorf("chat: hold: %w", err)
+	}
+	if err == nil {
+		hold.Calls = make([]app.HoldCall, 0, len(calls))
+		hold.CanAllowForChat = !tainted
+		for _, raw := range calls {
+			var call agentloop.HeldCall
+			if err := json.Unmarshal(raw, &call); err != nil {
+				return app.Chat{}, fmt.Errorf("chat: hold calls: %w", err)
+			}
+			hold.Calls = append(hold.Calls, app.HoldCall{CallID: call.CallID, ToolName: call.ToolName, Op: string(call.Op), Action: call.Action, Preview: call.Preview, UntrustedOrigin: call.UntrustedOrigin})
+			hold.CanAllowForChat = hold.CanAllowForChat && app.CanAllowForChat(call.ToolName, call.Op, tainted)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Chat{}, err
 	}
-	return app.Chat{ID: chatID, Lines: lines, Tainted: tainted, PrivateRead: privateRead}, nil
+	chat := app.Chat{ID: chatID, Lines: lines, Tainted: tainted, PrivateRead: privateRead}
+	if hold.ID != "" {
+		chat.Hold = &hold
+	}
+	return chat, nil
 }
 
 func turnsForChatTx(ctx context.Context, tx pgx.Tx, chatID, viewerUserID string, isPrivateUnshared bool) (map[string][]app.Turn, error) {

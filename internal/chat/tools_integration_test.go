@@ -5,7 +5,10 @@ package chat_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/memory"
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
@@ -405,23 +409,44 @@ func TestMutatingUpmoToolsHoldByDefaultAndExecuteWithAllowance(t *testing.T) {
 
 	chatID := r.open()
 
-	// 1. Without an allowance, open_task holds and does not create a task row.
+	// 1. Without an allowance, open_task pauses for its author to approve.
 	if err := app.Say(ctx, r.store, ownerFull, chatID, "open a task", app.Picks{}); err != nil {
 		t.Fatal(err)
 	}
-	r.stub.reply(func(_ int, s *frames) {
-		s.doneCalls("m1", 1, 1, nil, stubTool{ID: "open1", Name: "open_task", Args: `{"goal":"Ship Q4 report"}`})
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: "open1", Name: "open_task", Args: `{"goal":"Prepare Q4 deck"}`})
+			return
+		}
+		s.delta("created")
+		s.done("m1", 1, 1, nil)
 	})
 	if err := r.run(r.lastJob(), 1); err != nil {
 		t.Fatal(err)
 	}
 	lines := r.lines(chatID)
-	if len(lines) != 2 || lines[1].Status != "failed" || len(lines[1].Attempts) == 0 || lines[1].Attempts[len(lines[1].Attempts)-1].Class != "hold" {
-		t.Fatalf("unallowed open_task reply = %+v, want failed with class hold", lines)
+	if len(lines) != 1 || r.runRow(r.lastJob().Args.ReplyID).State != "waiting" {
+		t.Fatalf("unallowed open_task lines = %+v run = %+v, want waiting", lines, r.runRow(r.lastJob().Args.ReplyID))
 	}
 	var taskCount int
 	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks`).Scan(&taskCount); err != nil || taskCount != 0 {
 		t.Fatalf("tasks after held open_task = %d (%v), want 0", taskCount, err)
+	}
+	var holdID string
+	if err := r.owner.QueryRow(ctx, `SELECT id::text FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ApproveHold(ctx, r.store, ownerFull, chatID, holdID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.lines(chatID); len(got) != 2 || got[1].Status != "done" || got[1].Body != "created" {
+		t.Fatalf("approved hold reply = %+v", got)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks WHERE goal = 'Prepare Q4 deck'`).Scan(&taskCount); err != nil || taskCount != 1 {
+		t.Fatalf("approved task count = %d (%v)", taskCount, err)
 	}
 
 	// 2. Grant "Allow for this chat" for open_task and save_memory: both execute and persist.
@@ -454,7 +479,7 @@ func TestMutatingUpmoToolsHoldByDefaultAndExecuteWithAllowance(t *testing.T) {
 	}
 
 	var gotOwner, gotGoal, gotStatus string
-	if err := r.owner.QueryRow(ctx, `SELECT owner_user_id::text, goal, status FROM tasks.tasks`).Scan(&gotOwner, &gotGoal, &gotStatus); err != nil {
+	if err := r.owner.QueryRow(ctx, `SELECT owner_user_id::text, goal, status FROM tasks.tasks WHERE goal = 'Ship Q4 report'`).Scan(&gotOwner, &gotGoal, &gotStatus); err != nil {
 		t.Fatalf("task row missing after allowed open_task: %v", err)
 	}
 	if gotOwner != ownerUser || gotGoal != "Ship Q4 report" || gotStatus != "Preparing" {
@@ -492,9 +517,8 @@ func TestMutatingUpmoToolsHoldByDefaultAndExecuteWithAllowance(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines = r.lines(chatID)
-	lastLine := lines[len(lines)-1]
-	if lastLine.Status != "failed" || len(lastLine.Attempts) == 0 || lastLine.Attempts[len(lastLine.Attempts)-1].Class != "hold" {
-		t.Fatalf("create_automation with allowance reply = %+v, want failed with class hold", lastLine)
+	if r.runRow(r.lastJob().Args.ReplyID).State != "waiting" {
+		t.Fatalf("create_automation with allowance run = %+v, want waiting", r.runRow(r.lastJob().Args.ReplyID))
 	}
 	var tplCount, autoCount int
 	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.templates`).Scan(&tplCount); err != nil || tplCount != 0 {
@@ -554,5 +578,636 @@ func TestMutatingUpmoToolsHoldByDefaultAndExecuteWithAllowance(t *testing.T) {
 	var unsaved int
 	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM memory.facts WHERE claim = 'Should not save'`).Scan(&unsaved); err != nil || unsaved != 0 {
 		t.Fatalf("unsaved fact count = %d (%v), want 0", unsaved, err)
+	}
+}
+
+func TestTaintedHoldApprovalDoesNotCreateAllowance(t *testing.T) {
+	r, _ := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "repeat this task", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	callStart := len(r.stub.seen())
+	r.stub.reply(func(call int, s *frames) {
+		switch call {
+		case callStart + 1, callStart + 2:
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: fmt.Sprintf("task%d", call-callStart), Name: "open_task", Args: `{"goal":"Tainted approval task"}`})
+		default:
+			s.delta("done")
+			s.done("m1", 1, 1, nil)
+		}
+	})
+	firstJob := r.lastJob()
+	if err := r.run(firstJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	var holdID string
+	if err := r.owner.QueryRow(ctx, `SELECT id::text FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.chats SET tainted = true WHERE id = $1::uuid`, chatID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ApproveHold(ctx, r.store, ownerFull, chatID, holdID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	var allowanceCount, taskCount, pendingCount int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.tool_allowances WHERE chat_id = $1::uuid AND user_id = $2::uuid AND tool = 'open_task'`, chatID, ownerUser).Scan(&allowanceCount); err != nil || allowanceCount != 0 {
+		t.Fatalf("tainted open_task allowances = %d (%v), want 0", allowanceCount, err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks WHERE goal = 'Tainted approval task'`).Scan(&taskCount); err != nil || taskCount != 1 {
+		t.Fatalf("executed tasks = %d (%v), want 1", taskCount, err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&pendingCount); err != nil || pendingCount != 1 {
+		t.Fatalf("pending identical-call holds = %d (%v), want 1", pendingCount, err)
+	}
+	if row := r.runRow(firstJob.Args.ReplyID); row.State != "waiting" {
+		t.Fatalf("run after repeated call = %+v, want waiting", row)
+	}
+}
+
+func TestCreateAutomationHoldApprovalDoesNotCreateAllowance(t *testing.T) {
+	r, _ := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit,agent:create,agent:view,agent:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	agent, err := agents.CreateAgent(ctx, r.agents, nil, agents.Access{UserID: ownerUser, Allow: ownerFull.Allow, Teams: ownerFull.Teams}, agents.AgentFields{Name: "Ops", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatID := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "repeat this automation", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	args := fmt.Sprintf(`{"goal":"Weekly digest","agent_id":%q,"kind":"cron","spec":"0 9 * * 1","budget_cents":500}`, agent.ID)
+	callStart := len(r.stub.seen())
+	r.stub.reply(func(call int, s *frames) {
+		switch call {
+		case callStart + 1, callStart + 2:
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: fmt.Sprintf("automation%d", call-callStart), Name: "create_automation", Args: args})
+		default:
+			s.delta("done")
+			s.done("m1", 1, 1, nil)
+		}
+	})
+	firstJob := r.lastJob()
+	if err := r.run(firstJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	var holdID string
+	if err := r.owner.QueryRow(ctx, `SELECT id::text FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ApproveHold(ctx, r.store, ownerFull, chatID, holdID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	var allowanceCount, templateCount, automationCount, pendingCount int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.tool_allowances WHERE chat_id = $1::uuid AND user_id = $2::uuid AND tool = 'create_automation'`, chatID, ownerUser).Scan(&allowanceCount); err != nil || allowanceCount != 0 {
+		t.Fatalf("create_automation allowances = %d (%v), want 0", allowanceCount, err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.templates WHERE goal = 'Weekly digest'`).Scan(&templateCount); err != nil || templateCount != 1 {
+		t.Fatalf("created templates = %d (%v), want 1", templateCount, err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.automations`).Scan(&automationCount); err != nil || automationCount != 1 {
+		t.Fatalf("created automations = %d (%v), want 1", automationCount, err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&pendingCount); err != nil || pendingCount != 1 {
+		t.Fatalf("pending identical-call holds = %d (%v), want 1", pendingCount, err)
+	}
+	if row := r.runRow(firstJob.Args.ReplyID); row.State != "waiting" {
+		t.Fatalf("run after repeated call = %+v, want waiting", row)
+	}
+}
+
+func TestWaitingRunSurvivesActiveEditorUserShare(t *testing.T) {
+	r, ownerFull, chatID, replyID := waitingRunThroughShare(t, false)
+	if err := app.Say(context.Background(), r.store, ownerFull, chatID, "owner says", app.Picks{}); !errors.Is(err, app.ErrBusy) {
+		t.Fatalf("owner Say while user-shared run waits = %v, want ErrBusy", err)
+	}
+	if row := r.runRow(replyID); row.State != "waiting" {
+		t.Fatalf("user-shared run after owner Say = %+v, want waiting", row)
+	}
+}
+
+func TestWaitingRunSurvivesActiveEditorRoleShare(t *testing.T) {
+	r, ownerFull, chatID, replyID := waitingRunThroughShare(t, true)
+	if err := app.Say(context.Background(), r.store, ownerFull, chatID, "owner says", app.Picks{}); !errors.Is(err, app.ErrBusy) {
+		t.Fatalf("owner Say while role-shared run waits = %v, want ErrBusy", err)
+	}
+	if row := r.runRow(replyID); row.State != "waiting" {
+		t.Fatalf("role-shared run after owner Say = %+v, want waiting", row)
+	}
+}
+
+func waitingRunThroughShare(t *testing.T, roleShare bool) (*rig, chat.Access, string, string) {
+	t.Helper()
+	r, _ := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if roleShare {
+		_, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, grantee_role_id, level, granted_by) VALUES ('chat', $1::uuid, (SELECT role_id FROM identity.users WHERE id = $2::uuid), 'editor', $3::uuid)`, chatID, otherUser, ownerUser)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else if _, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, chatID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	other := chat.Access{UserID: otherUser, Allow: "chat:view,chat:edit,task:create,task:view,task:edit", SharedView: "{" + chatID + "}", SharedEdit: "{" + chatID + "}"}
+	r.setAccess(otherUser, other)
+	if err := app.Say(ctx, r.store, other, chatID, "author line", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(_ int, s *frames) {
+		s.doneCalls("m1", 1, 1, nil, stubTool{ID: "shared", Name: "open_task", Args: `{"goal":"Shared author task"}`})
+	})
+	job := r.lastJob()
+	if err := r.run(job, 1); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.runRow(job.Args.ReplyID); row.State != "waiting" {
+		t.Fatalf("author run = %+v, want waiting", row)
+	}
+	return r, ownerFull, chatID, job.Args.ReplyID
+}
+
+func TestTeamVisibilityDoesNotPreserveWaitingRunAfterEditorShareRemoved(t *testing.T) {
+	r, _ := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.chats SET visibility = 'team', visibility_team_id = $2::uuid WHERE id = $1::uuid`, chatID, toolsTeamA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, chatID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	other := chat.Access{UserID: otherUser, Allow: "chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}", SharedView: "{" + chatID + "}", SharedEdit: "{" + chatID + "}"}
+	r.setAccess(otherUser, other)
+	if err := app.Say(ctx, r.store, other, chatID, "author line", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(_ int, s *frames) {
+		s.doneCalls("m1", 1, 1, nil, stubTool{ID: "team-share", Name: "open_task", Args: `{"goal":"Team share task"}`})
+	})
+	job := r.lastJob()
+	if err := r.run(job, 1); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.runRow(job.Args.ReplyID); row.State != "waiting" {
+		t.Fatalf("author run = %+v, want waiting", row)
+	}
+	if _, err := r.owner.Exec(ctx, `DELETE FROM identity.shares WHERE object_type = 'chat' AND object_id = $1::uuid AND user_id = $2::uuid`, chatID, otherUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "owner says", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.runRow(job.Args.ReplyID); row.State != "failed" || !row.HistoryNil {
+		t.Fatalf("run after share removal = %+v, want failed with cleared history", row)
+	}
+	var failClass string
+	if err := r.owner.QueryRow(ctx, `SELECT attempts -> 0 ->> 'class' FROM chat.lines WHERE id = $1::uuid`, job.Args.ReplyID).Scan(&failClass); err != nil || failClass != "access" {
+		t.Fatalf("failed run class = %q: %v", failClass, err)
+	}
+}
+
+func TestHoldApproveAndDenyLifecycleRedactedAuthorOnlyViewAnd24hExpiry(t *testing.T) {
+	r, _ := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if _, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, chatID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	other := chat.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + chatID + "}", SharedEdit: "{" + chatID + "}"}
+	r.setAccess(otherUser, other)
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "prepare the deck", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: "c1", Name: "open_task", Args: `{"goal":"Prepare Q4 deck"}`})
+			return
+		}
+		s.delta("done")
+		s.done("m1", 1, 1, nil)
+	})
+	job := r.lastJob()
+	if err := r.run(job, 1); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.runRow(job.Args.ReplyID); row.State != "waiting" {
+		t.Fatalf("run = %+v", row)
+	}
+	var holdID string
+	var holdTurnSeq int
+	var blocked int
+	if err := r.owner.QueryRow(ctx, `SELECT id::text, hold_turn_seq FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&holdID, &holdTurnSeq); err != nil || holdTurnSeq != 1 {
+		t.Fatalf("hold = %s seq %d: %v", holdID, holdTurnSeq, err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.turns WHERE chat_id = $1::uuid AND role = 'blocked'`, chatID).Scan(&blocked); err != nil || blocked != 1 {
+		t.Fatalf("blocked rows = %d: %v", blocked, err)
+	}
+	ownerMux, otherMux := r.httpMux(ownerFull), r.httpMux(other)
+	get := func(mux *http.ServeMux) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chats/"+chatID, nil))
+		return rec
+	}
+	ownerView, otherView := get(ownerMux), get(otherMux)
+	if ownerView.Code != http.StatusOK || !strings.Contains(ownerView.Body.String(), `"tool_name":"open_task"`) || strings.Contains(ownerView.Body.String(), `"arguments"`) {
+		t.Fatalf("author view = %d %s", ownerView.Code, ownerView.Body.String())
+	}
+	if otherView.Code != http.StatusOK || !strings.Contains(otherView.Body.String(), `"hold":null`) {
+		t.Fatalf("other view = %d %s", otherView.Code, otherView.Body.String())
+	}
+	post := func(mux *http.ServeMux, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+		return rec
+	}
+	path := "/api/chats/" + chatID + "/holds/" + holdID + "/approve"
+	if got := post(otherMux, path, `{}`); got.Code != http.StatusForbidden {
+		t.Fatalf("other approve status = %d", got.Code)
+	}
+	if got := post(ownerMux, "/api/chats/"+chatID+"/holds/018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb/approve", `{}`); got.Code != http.StatusNotFound {
+		t.Fatalf("missing hold status = %d", got.Code)
+	}
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "another", app.Picks{}); !errors.Is(err, app.ErrBusy) {
+		var holdState, holdReason string
+		_ = r.owner.QueryRow(ctx, `SELECT state, reason FROM chat.holds WHERE id = $1::uuid`, holdID).Scan(&holdState, &holdReason)
+		t.Fatalf("Say while waiting error = %v run=%+v hold=%s/%s", err, r.runRow(job.Args.ReplyID), holdState, holdReason)
+	}
+	if got := post(ownerMux, "/api/chats/"+chatID, `{"body":"another"}`); got.Code != http.StatusConflict {
+		t.Fatalf("say while waiting status = %d body=%s", got.Code, got.Body.String())
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.runs SET created_at = now() - interval '3 hours' WHERE id = $1::uuid`, job.Args.ReplyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.deltas SET at = now() - interval '3 hours' WHERE line_id = $1::uuid`, job.Args.ReplyID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := r.store.Sweep(ctx); err != nil || n != 0 {
+		t.Fatalf("sweep = %d: %v", n, err)
+	}
+	if row := r.runRow(job.Args.ReplyID); row.State != "waiting" {
+		t.Fatalf("sweep changed run: %+v", row)
+	}
+	if got := post(ownerMux, path, `{"allow_for_chat":true}`); got.Code != http.StatusAccepted {
+		t.Fatalf("approve status = %d %s", got.Code, got.Body.String())
+	}
+	var allowance int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.tool_allowances WHERE chat_id = $1::uuid AND user_id = $2::uuid AND tool = 'open_task'`, chatID, ownerUser).Scan(&allowance); err != nil || allowance != 1 {
+		t.Fatalf("allowance = %d: %v", allowance, err)
+	}
+	if got := post(ownerMux, path, `{}`); got.Code != http.StatusConflict {
+		t.Fatalf("second approve status = %d", got.Code)
+	}
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if lines := r.lines(chatID); len(lines) != 2 || lines[1].Status != "done" {
+		t.Fatalf("lines = %+v", lines)
+	}
+	expireChat := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, expireChat, "another task", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(_ int, s *frames) {
+		s.doneCalls("m1", 1, 1, nil, stubTool{ID: "c2", Name: "open_task", Args: `{"goal":"Expire me"}`})
+	})
+	expireJob := r.lastJob()
+	if err := r.run(expireJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.holds SET created_at = now() - interval '25 hours' WHERE chat_id = $1::uuid AND state = 'pending'`, expireChat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state, reason string
+	if err := r.owner.QueryRow(ctx, `SELECT state, reason FROM chat.holds WHERE chat_id = $1::uuid AND line_id = $2::uuid`, expireChat, expireJob.Args.ReplyID).Scan(&state, &reason); err != nil || state != "closed" || reason != "expired" {
+		t.Fatalf("expired hold = %s/%s: %v", state, reason, err)
+	}
+	revokedChat := r.open()
+	if _, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, revokedChat, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	other.SharedView, other.SharedEdit = "{"+revokedChat+"}", "{"+revokedChat+"}"
+	r.setAccess(otherUser, other)
+	if err := app.Say(ctx, r.store, other, revokedChat, "author line", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(_ int, s *frames) {
+		s.doneCalls("m1", 1, 1, nil, stubTool{ID: "access", Name: "open_task", Args: `{"goal":"Author hold"}`})
+	})
+	revokedJob := r.lastJob()
+	if err := r.run(revokedJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO chat.deltas (chat_id, line_id, seq, kind, body) VALUES ($1::uuid, $2::uuid, 1, 'text', repeat('x', 40000))`, revokedChat, revokedJob.Args.ReplyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `DELETE FROM identity.shares WHERE object_type = 'chat' AND object_id = $1::uuid AND user_id = $2::uuid`, revokedChat, otherUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Say(ctx, r.store, ownerFull, revokedChat, "continue", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT state FROM chat.holds WHERE chat_id = $1::uuid AND line_id = $2::uuid`, revokedChat, revokedJob.Args.ReplyID).Scan(&state); err != nil || state != "closed" {
+		t.Fatalf("revoked hold state = %s: %v", state, err)
+	}
+	if row := r.runRow(revokedJob.Args.ReplyID); row.State != "failed" || !row.HistoryNil {
+		t.Fatalf("revoked author run = %+v", row)
+	}
+	var failClass string
+	if err := r.owner.QueryRow(ctx, `SELECT attempts -> 0 ->> 'class' FROM chat.lines WHERE id = $1::uuid`, revokedJob.Args.ReplyID).Scan(&failClass); err != nil || failClass != "access" {
+		t.Fatalf("revoked author failure class = %q: %v", failClass, err)
+	}
+	var failedBodyRunes int
+	if err := r.owner.QueryRow(ctx, `SELECT char_length(body) FROM chat.lines WHERE id = $1::uuid`, revokedJob.Args.ReplyID).Scan(&failedBodyRunes); err != nil || failedBodyRunes != 40000 {
+		t.Fatalf("revoked author failed body length = %d: %v", failedBodyRunes, err)
+	}
+	deniedChat := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, deniedChat, "deny this", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(_ int, s *frames) {
+		s.doneCalls("m1", 1, 1, nil, stubTool{ID: "d1", Name: "open_task", Args: `{"goal":"Must not run"}`})
+	})
+	deniedJob := r.lastJob()
+	if err := r.run(deniedJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT id::text FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, deniedChat).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+	if got := post(ownerMux, "/api/chats/"+deniedChat+"/holds/"+holdID+"/deny", ""); got.Code != http.StatusAccepted {
+		t.Fatalf("deny status = %d %s", got.Code, got.Body.String())
+	}
+	r.stub.reply(func(_ int, s *frames) { s.delta("denied"); s.done("m1", 1, 1, nil) })
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.stub.seen()[len(r.stub.seen())-1]; !containsToolResult(agentMessages(got), "d1", "open_task", "denied by user") {
+		t.Fatalf("denied tool result absent: %+v", got.Messages)
+	}
+	var toolName, toolBody string
+	var toolError bool
+	if err := r.owner.QueryRow(ctx, `SELECT tool_name, body, is_error FROM chat.turns WHERE line_id = $1::uuid AND tool_id = 'd1' ORDER BY seq DESC LIMIT 1`, deniedJob.Args.ReplyID).Scan(&toolName, &toolBody, &toolError); err != nil || toolName != "open_task" || toolBody != "denied by user" || !toolError {
+		t.Fatalf("denied turn = %s/%s/%v: %v", toolName, toolBody, toolError, err)
+	}
+}
+
+func containsToolResult(messages []agentloop.Message, id, name, text string) bool {
+	for _, message := range messages {
+		if message.Role == agentloop.RoleTool && message.ToolID == id && message.ToolName == name && message.Text == text {
+			return true
+		}
+	}
+	return false
+}
+
+func TestApprovedCallRevalidationAndCrashRecoveryWithoutSecondDial(t *testing.T) {
+	r, tools := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "prepare the deck", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: "bad", Name: "open_task", Args: `{"goal":"Must not run"}`})
+			return
+		}
+		s.delta("blocked")
+		s.done("m1", 1, 1, nil)
+	})
+	job := r.lastJob()
+	if err := r.run(job, 1); err != nil {
+		t.Fatal(err)
+	}
+	var holdID string
+	if err := r.owner.QueryRow(ctx, `SELECT id::text FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `UPDATE chat.holds SET calls[1] = jsonb_set(calls[1], '{args_digest}', '"tampered"'::jsonb) WHERE id = $1::uuid`, holdID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ApproveHold(ctx, r.store, ownerFull, chatID, holdID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	seen := r.stub.seen()
+	resumedMessages := agentMessages(seen[len(seen)-1])
+	if !containsToolResult(resumedMessages, "bad", "open_task", "blocked: argument digest mismatch") {
+		t.Fatalf("tampered call result = %+v", resumedMessages)
+	}
+	var actualName, actualBody string
+	var actualError bool
+	if err := r.owner.QueryRow(ctx, `SELECT tool_name, body, is_error FROM chat.turns WHERE line_id = $1::uuid AND tool_id = 'bad' ORDER BY seq DESC LIMIT 1`, job.Args.ReplyID).Scan(&actualName, &actualBody, &actualError); err != nil || actualName != "open_task" || actualBody != "blocked: argument digest mismatch" || !actualError {
+		t.Fatalf("revalidation turn = %s/%s/%v: %v", actualName, actualBody, actualError, err)
+	}
+	var count int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks WHERE goal = 'Must not run'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("tampered task count = %d: %v", count, err)
+	}
+
+	crashChat := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, crashChat, "make both tasks", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	callStart := len(r.stub.seen())
+	r.stub.reply(func(call int, s *frames) {
+		if call == callStart+1 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: "c1", Name: "open_task", Args: `{"goal":"First task"}`}, stubTool{ID: "c2", Name: "open_task", Args: `{"goal":"Second task"}`})
+			return
+		}
+		s.delta("done")
+		s.done("m1", 1, 1, nil)
+	})
+	crashJob := r.lastJob()
+	if err := r.run(crashJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	var crashHoldID string
+	if err := r.owner.QueryRow(ctx, `SELECT id::text, hold_turn_seq FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, crashChat).Scan(&crashHoldID, &seq); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.ApproveHold(ctx, ownerFull, crashChat, crashHoldID, false); err != nil {
+		t.Fatal(err)
+	}
+	resumeJob := r.lastJob()
+	claim, err := r.store.Claim(ctx, ownerFull, resumeJob.Args, "018f3b2c-7a10-7c4a-8e11-eeeeeeeeeeee")
+	if err != nil || claim.DecidedHold == nil {
+		t.Fatalf("resume claim = %+v: %v", claim, err)
+	}
+	scope := claim.Scope
+	first, err := tools.OpenTask(ctx, ownerFull, scope, chat.NewTaskInput{Goal: "First task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstOutput, err := json.Marshal(map[string]string{"id": first.ID, "status": first.Status, "goal": "First task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopedID := agentloop.ScopedCallID(seq, "c1")
+	log := r.store.ActionLog(scope)
+	if err := log.BeginDial(ctx, agentloop.ActionRecord{CallID: scopedID, RunID: resumeJob.Args.ReplyID, ObjectID: crashChat, UserID: ownerUser, ToolName: "open_task", Action: "change open_task", Preview: "open_task()"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.FinishDial(ctx, resumeJob.Args.ReplyID, scopedID, agentloop.ActionStateDone, "cached", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.SaveCachedToolOutput(ctx, scope, crashChat, resumeJob.Args.ReplyID, ownerUser, "open_task", scopedID, agentloop.ToolResult{Output: string(firstOutput)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(resumeJob, 2); err != nil {
+		t.Fatal(err)
+	}
+	seen = r.stub.seen()
+	resumedMessages = agentMessages(seen[len(seen)-1])
+	if !containsToolResult(resumedMessages, "c1", "open_task", string(firstOutput)) {
+		t.Fatalf("cached first result = %+v", resumedMessages)
+	}
+	if !hasToolMessage(resumedMessages, "c2", "open_task") {
+		t.Fatalf("second tool result absent: %+v", resumedMessages)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks WHERE goal IN ('First task', 'Second task')`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("crash recovery tasks = %d: %v", count, err)
+	}
+}
+
+func hasToolMessage(messages []agentloop.Message, id, name string) bool {
+	for _, message := range messages {
+		if message.Role == agentloop.RoleTool && message.ToolID == id && message.ToolName == name {
+			return true
+		}
+	}
+	return false
+}
+
+func agentMessages(call stubCall) []agentloop.Message {
+	out := make([]agentloop.Message, 0, len(call.Messages))
+	for _, message := range call.Messages {
+		out = append(out, agentloop.Message{Role: agentloop.MessageRole(message.Role), Text: message.Text, ToolName: message.ToolName, ToolID: message.ToolID})
+	}
+	return out
+}
+
+func TestHoldAtRound14ResumesOnRound15AndNeverRunsRound16(t *testing.T) {
+	r, _ := newToolsRig(t)
+	seedToolsIdentity(t, r)
+	ctx := context.Background()
+	ownerFull := chat.Access{UserID: ownerUser, Allow: "chat:create,chat:view,chat:edit,task:create,task:view,task:edit", Teams: "{" + toolsTeamA + "}"}
+	r.setAccess(ownerUser, ownerFull)
+	chatID := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, chatID, "go to the fourteenth round", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	start := len(r.stub.seen())
+	r.stub.reply(func(call int, s *frames) {
+		round := call - start
+		if round <= 13 {
+			s.doneCalls("m1", 1, 0, nil, stubTool{ID: fmt.Sprintf("read%d", round), Name: "find_tool", Args: `{"query":"x"}`})
+			return
+		}
+		if round == 14 {
+			s.doneCalls("m1", 1, 0, nil, stubTool{ID: "held14", Name: "open_task", Args: `{"goal":"Round 14 task"}`})
+			return
+		}
+		if round == 15 {
+			s.doneCalls("m1", 1, 0, nil, stubTool{ID: "read15", Name: "find_tool", Args: `{"query":"x"}`})
+			return
+		}
+		t.Fatalf("unexpected model call %d", round)
+	})
+	job := r.lastJob()
+	for round := 1; round <= 14; round++ {
+		if err := r.run(job, 1); err != nil {
+			t.Fatal(err)
+		}
+		if round < 14 {
+			job = r.lastJob()
+		}
+	}
+	var holdID string
+	if err := r.owner.QueryRow(ctx, `SELECT id::text FROM chat.holds WHERE chat_id = $1::uuid AND state = 'pending'`, chatID).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.ApproveHold(ctx, ownerFull, chatID, holdID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if jobs := r.jobs(); len(jobs) != 15 || jobs[len(jobs)-1].Args.Round != 15 {
+		t.Fatalf("round jobs = %+v", jobs)
+	}
+	lines := r.lines(chatID)
+	if lines[len(lines)-1].Status != "failed" || reasonOf(lines[len(lines)-1]) != "the reply took too many steps" {
+		t.Fatalf("round 15 line = %+v", lines[len(lines)-1])
+	}
+
+	chat2 := r.open()
+	if err := app.Say(ctx, r.store, ownerFull, chat2, "hold on round fifteen", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	start = len(r.stub.seen())
+	r.stub.reply(func(call int, s *frames) {
+		round := call - start
+		if round <= 14 {
+			s.doneCalls("m1", 1, 0, nil, stubTool{ID: fmt.Sprintf("r%d", round), Name: "find_tool", Args: `{"query":"x"}`})
+			return
+		}
+		if round == 15 {
+			s.doneCalls("m1", 1, 0, nil, stubTool{ID: "held15", Name: "open_task", Args: `{"goal":"Must not pause"}`})
+			return
+		}
+		t.Fatalf("unexpected model call %d", round)
+	})
+	job = r.lastJob()
+	for round := 1; round <= 15; round++ {
+		if err := r.run(job, 1); err != nil {
+			t.Fatal(err)
+		}
+		if round < 15 {
+			job = r.lastJob()
+		}
+	}
+	var count int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.holds WHERE chat_id = $1::uuid`, chat2).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("round 15 holds = %d: %v", count, err)
+	}
+	if row := r.runRow(job.Args.ReplyID); row.State != "failed" || !row.HistoryNil {
+		t.Fatalf("round 15 hold run = %+v", row)
+	}
+	if len(r.jobs()) != 30 {
+		t.Fatalf("round 15 hold added a job: %d", len(r.jobs()))
 	}
 }

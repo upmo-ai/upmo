@@ -210,3 +210,5 @@ func (f *fakeBook) Read(context.Context, Access, string) (Chat, error) {
 	f.reads++
 	return Chat{Lines: f.lines}, nil
 }
+func (f *fakeBook) ApproveHold(context.Context, Access, string, string, bool) error { return nil }
+func (f *fakeBook) DenyHold(context.Context, Access, string, string) error          { return nil }

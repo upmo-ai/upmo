@@ -177,6 +177,26 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 	if lineID != job.LineID {
 		return app.Claim{}, app.ErrNoLine
 	}
+	if job.Round > 1 && job.ResumedHoldID != "" {
+		var holdID, holdState string
+		var holdTurnSeq int
+		var calls [][]byte
+		if err := tx.QueryRow(ctx, `SELECT id::text, state, hold_turn_seq, calls FROM chat.holds WHERE id = $1::uuid AND chat_id = $2::uuid AND line_id = $3::uuid AND state IN ('approved', 'denied')`, job.ResumedHoldID, job.ChatID, job.ReplyID).Scan(&holdID, &holdState, &holdTurnSeq, &calls); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return app.Claim{}, app.ErrNoHold
+			}
+			return app.Claim{}, fmt.Errorf("chat: decided hold: %w", err)
+		}
+		holdCalls := make([]agentloop.HeldCall, 0, len(calls))
+		for _, raw := range calls {
+			var call agentloop.HeldCall
+			if err := json.Unmarshal(raw, &call); err != nil {
+				return app.Claim{}, err
+			}
+			holdCalls = append(holdCalls, call)
+		}
+		claim.DecidedHold = &app.DecidedHold{ID: holdID, State: holdState, HoldTurnSeq: holdTurnSeq, Calls: holdCalls}
+	}
 	claim.CreatedAt = createdAt
 
 	switch {
@@ -185,7 +205,7 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		return claim, tx.Commit(ctx)
 	case round != job.Round-1:
 		return app.Claim{}, app.ErrNoLine
-	case claimRound == job.Round:
+	case claimRound == job.Round && claim.DecidedHold == nil:
 		claim.State = app.ClaimRescue
 	default:
 		claim.State = app.ClaimGo
@@ -374,11 +394,87 @@ func fenceTx(ctx context.Context, tx pgx.Tx, claim app.Claim) error {
 	return nil
 }
 
+func (s Store) SaveHistory(ctx context.Context, access app.Access, claim app.Claim, messages, appended []agentloop.Message, seqStart int, exposure agentloop.ExposureState) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockChat(ctx, tx, claim.Job.ChatID); err != nil {
+		return err
+	}
+	if err := fenceTx(ctx, tx, claim); err != nil {
+		return err
+	}
+	if len(appended) > 0 {
+		if err := InsertTurnRows(ctx, tx, agentloop.TurnCommit{RunID: claim.Job.ReplyID, ObjectID: claim.Job.ChatID, UserID: access.UserID, SeqStart: seqStart, Messages: appended, Exposure: exposure, Model: claim.Model}); err != nil {
+			return err
+		}
+	}
+	if exposure.Tainted || exposure.PrivateRead {
+		if _, err := tx.Exec(ctx, `SELECT chat.advance_chat_exposure($1::uuid, $2, $3)`, claim.Job.ChatID, exposure.Tainted, exposure.PrivateRead); err != nil {
+			return fmt.Errorf("chat: save history exposure: %w", err)
+		}
+	}
+	raw, err := json.Marshal(messages)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chat.runs SET history = $2::jsonb WHERE id = $1::uuid`, claim.Job.ReplyID, raw); err != nil {
+		return fmt.Errorf("chat: save history: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (s Store) SaveCachedToolOutput(ctx context.Context, scope agentloop.AccessScope, chatID, replyID, authorUserID, toolName, scopedCallID string, res agentloop.ToolResult) error {
+	raw, err := json.Marshal(struct {
+		Output                      string
+		IsError, Untrusted, Private bool
+	}{res.Output, res.IsError, res.Untrusted, res.Private})
+	if err != nil {
+		return err
+	}
+	return s.NarrowedTx(ctx, scope, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO chat.findings (chat_id, line_id, kind, title, body, source_ref, untrusted, private_read, author_id) VALUES ($1::uuid, $2::uuid, 'output', $3, $4, $5, $6, $7, $8::uuid)`, chatID, replyID, toolName, string(raw), scopedCallID, res.Untrusted, res.Private, authorUserID)
+		return err
+	})
+}
+
+func (s Store) LoadCachedToolOutput(ctx context.Context, scope agentloop.AccessScope, chatID, replyID, scopedCallID string) (agentloop.ToolResult, bool, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := agentloop.ApplyRLSTx(ctx, tx, agentloop.NarrowRLS(scope)); err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	var raw string
+	err = tx.QueryRow(ctx, `SELECT finding.body FROM chat.action_logs log JOIN chat.findings finding ON finding.chat_id = log.chat_id AND finding.line_id = log.scope_id AND finding.source_ref = log.call_id AND finding.kind = 'output' WHERE log.scope_id = $1::uuid AND log.call_id = $2 AND log.state IN ('done', 'failed') AND log.chat_id = $3::uuid`, replyID, scopedCallID, chatID).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentloop.ToolResult{}, false, nil
+	}
+	if err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	var cached struct {
+		Output                      string
+		IsError, Untrusted, Private bool
+	}
+	if err := json.Unmarshal([]byte(raw), &cached); err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	return agentloop.ToolResult{Output: cached.Output, IsError: cached.IsError, Untrusted: cached.Untrusted, Private: cached.Private}, true, nil
+}
+
 // CommitRound stores one round: its turns, the run's history and its costs,
 // and the line when the round ends the reply. A hold is refused before any
 // write. The write runs on a context that outlives the reply's own.
 func (s Store) CommitRound(ctx context.Context, access app.Access, claim app.Claim, rc app.RoundCommit) error {
-	if rc.Turn.Hold != nil || rc.Turn.Status == agentloop.TurnWaitingApproval {
+	if rc.End != app.RoundHold && rc.End != app.RoundFailed && (rc.Turn.Hold != nil || rc.Turn.Status == agentloop.TurnWaitingApproval) {
 		return app.ErrHold
 	}
 	tx, err := s.begin(ctx, access)
@@ -460,6 +556,23 @@ func (s Store) CommitRound(ctx context.Context, access app.Access, claim app.Cla
 		if err := failRunTx(ctx, tx, claim.Job.ChatID, claim.Job.ReplyID, rc.Fail, true); err != nil {
 			return err
 		}
+	case app.RoundHold:
+		if err := putTailTx(ctx, tx, claim.Job.ChatID, claim.Job.ReplyID, rc.Tail); err != nil {
+			return err
+		}
+		if rc.Turn.Hold == nil {
+			return errors.New("chat: missing hold batch")
+		}
+		holdID, err := insertHoldTx(ctx, tx, claim.Job.ChatID, claim.Job.ReplyID, access.UserID, rc.Turn.SeqStart, *rc.Turn.Hold)
+		if err != nil {
+			return err
+		}
+		if err := audit.Record(ctx, tx, audit.Event{Action: audit.AgentToolHeld, Outcome: audit.Success, TargetID: holdID, Changes: audit.Changes{Fields: []string{"tool", "count", "untrusted_origin"}, Values: map[string]audit.Change{"tool": {To: rc.Turn.Hold.Action}, "count": {To: len(rc.Turn.Hold.Calls)}, "untrusted_origin": {To: rc.Turn.Hold.UntrustedOrigin}}}}); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE chat.runs SET state = 'waiting', claim = NULL WHERE id = $1::uuid`, claim.Job.ReplyID); err != nil {
+			return fmt.Errorf("chat: wait run: %w", err)
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -516,6 +629,118 @@ func (s Store) Stop(ctx context.Context, access app.Access, chatID string) error
 		return err
 	}
 	if err := audit.Record(ctx, tx, audit.Event{Action: audit.ChatStop, Outcome: audit.Success, TargetID: runID, Changes: audit.Changes{Fields: []string{"status"}, Values: map[string]audit.Change{"status": {From: prev, To: domain.StatusStopped}}}}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s Store) ApproveHold(ctx context.Context, access app.Access, chatID, holdID string, allowForChat bool) error {
+	return s.decideHold(ctx, access, chatID, holdID, true, allowForChat)
+}
+
+func (s Store) DenyHold(ctx context.Context, access app.Access, chatID, holdID string) error {
+	return s.decideHold(ctx, access, chatID, holdID, false, false)
+}
+
+func (s Store) decideHold(ctx context.Context, access app.Access, chatID, holdID string, approve, allowForChat bool) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var visible, found bool
+	var holdUser, holdState string
+	if err := tx.QueryRow(ctx, `SELECT chat_visible, hold_found, COALESCE(hold_user_id::text, ''), COALESCE(hold_state, '') FROM chat.hold_status($1::uuid, $2::uuid)`, chatID, holdID).Scan(&visible, &found, &holdUser, &holdState); err != nil {
+		return fmt.Errorf("chat: hold status: %w", err)
+	}
+	if !visible {
+		return app.ErrGone
+	}
+	if !found {
+		return app.ErrNoHold
+	}
+	if holdUser != access.UserID {
+		return app.ErrAccess
+	}
+	if err := lockChat(ctx, tx, chatID); err != nil {
+		return err
+	}
+	var tainted bool
+	if err := tx.QueryRow(ctx, `SELECT tainted FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&tainted); err != nil {
+		return err
+	}
+	var lineID string
+	var calls [][]byte
+	err = tx.QueryRow(ctx, `SELECT COALESCE(line_id::text, ''), state, calls FROM chat.holds WHERE id = $1::uuid AND chat_id = $2::uuid FOR UPDATE`, holdID, chatID).Scan(&lineID, &holdState, &calls)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrNoHold
+	}
+	if err != nil {
+		return err
+	}
+	if holdState != "pending" {
+		return app.ErrHoldDecided
+	}
+	var round int
+	var runLineID string
+	err = tx.QueryRow(ctx, `SELECT round, line_id::text FROM chat.runs WHERE id = $1::uuid AND chat_id = $2::uuid AND state = 'waiting' FOR UPDATE`, lineID, chatID).Scan(&round, &runLineID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrHoldDecided
+	}
+	if err != nil {
+		return err
+	}
+	state := "denied"
+	if approve {
+		state = "approved"
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chat.holds SET state = $2, decided_at = now() WHERE id = $1::uuid`, holdID, state); err != nil {
+		return err
+	}
+	if approve && allowForChat && !tainted {
+		for _, raw := range calls {
+			var call agentloop.HeldCall
+			if err := json.Unmarshal(raw, &call); err != nil {
+				return err
+			}
+			if app.CanAllowForChat(call.ToolName, call.Op, false) {
+				if err := allowToolForChatTx(ctx, tx, chatID, access.UserID, call.ToolName); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	var route, pinAccount, pinModel, agentID string
+	var routePicked bool
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(route, ''), route IS NOT NULL, COALESCE(pin_account_id::text, ''), COALESCE(pin_model, ''), COALESCE(agent_id::text, '') FROM chat.lines WHERE id = $1::uuid AND chat_id = $2::uuid`, runLineID, chatID).Scan(&route, &routePicked, &pinAccount, &pinModel, &agentID); err != nil {
+		return err
+	}
+	if route == "" {
+		route = s.ReplyRoute
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chat.runs SET state = 'running', created_at = now() WHERE id = $1::uuid`, lineID); err != nil {
+		return err
+	}
+	job := app.ReplyJobArgs{ChatID: chatID, LineID: runLineID, ReplyID: lineID, Round: round + 1, UserID: access.UserID, Route: route, RoutePicked: routePicked, PinAccount: pinAccount, PinModel: pinModel, AgentID: agentID, ResumedHoldID: holdID}
+	if s.Enqueuer == nil {
+		return errors.New("chat: no reply enqueuer")
+	}
+	res, err := s.Enqueuer.InsertTx(ctx, tx, job, nil)
+	if err != nil {
+		return fmt.Errorf("chat: resume hold: %w", err)
+	}
+	if res.UniqueSkippedAsDuplicate {
+		return errors.New("chat: resumed round was not queued")
+	}
+	action := audit.ChatHoldDeny
+	fields := []string{"state"}
+	values := map[string]audit.Change{"state": {To: state}}
+	if approve {
+		action = audit.ChatHoldApprove
+		fields = append(fields, "allow_for_chat")
+		values["allow_for_chat"] = audit.Change{To: allowForChat && !tainted}
+	}
+	if err := audit.Record(ctx, tx, audit.Event{Action: action, Outcome: audit.Success, TargetID: holdID, Changes: audit.Changes{Fields: fields, Values: values}}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

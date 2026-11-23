@@ -41,23 +41,23 @@ func (s Store) SaveHold(ctx context.Context, scope agentloop.AccessScope, chatID
 	var id string
 	err := s.NarrowedTx(ctx, scope, func(tx pgx.Tx) error {
 		var err error
-		id, err = insertHoldTx(ctx, tx, chatID, lineID, scope.UserID, batch)
+		id, err = insertHoldTx(ctx, tx, chatID, lineID, scope.UserID, 0, batch)
 		return err
 	})
 	return id, err
 }
 
-func insertHoldTx(ctx context.Context, tx pgx.Tx, chatID, lineID, userID string, batch agentloop.BatchHold) (string, error) {
+func insertHoldTx(ctx context.Context, tx pgx.Tx, chatID, lineID, userID string, holdTurnSeq int, batch agentloop.BatchHold) (string, error) {
 	calls, err := batch.CallsJSONB()
 	if err != nil {
 		return "", err
 	}
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO chat.holds (chat_id, line_id, user_id, reason, action, preview, calls, untrusted_origin)
-		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3::uuid, $4, $5, $6, $7::jsonb[], $8)
+		INSERT INTO chat.holds (chat_id, line_id, user_id, hold_turn_seq, reason, action, preview, calls, untrusted_origin)
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3::uuid, $4, $5, $6, $7, $8::jsonb[], $9)
 		RETURNING id::text`,
-		chatID, lineID, userID, batch.Reason, batch.Action, batch.Preview, calls, batch.UntrustedOrigin).Scan(&id)
+		chatID, lineID, userID, holdTurnSeq, batch.Reason, batch.Action, batch.Preview, calls, batch.UntrustedOrigin).Scan(&id)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
 		return "", fmt.Errorf("chat: pending hold exists: %w", err)
@@ -266,6 +266,12 @@ func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit)
 			commit.Exposure.Tainted, commit.Exposure.PrivateRead,
 			commit.Model, commit.InputTokens, commit.OutputTokens, cost, commit.UserID); err != nil {
 			return fmt.Errorf("chat: insert turn: %w", err)
+		}
+		seq++
+	}
+	for _, ev := range commit.BlockedEvents {
+		if _, err := tx.Exec(ctx, `INSERT INTO chat.turns (chat_id, line_id, author_id, seq, role, body, tool_name, tool_id, is_error, offloaded, tainted, private_read, model) VALUES ($1::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, 'blocked', $5, $6, $7, true, false, $8, $9, $10)`, commit.ObjectID, commit.RunID, commit.UserID, seq, ev.Reason, ev.ToolName, ev.CallID, commit.Exposure.Tainted || ev.UntrustedOrigin, commit.Exposure.PrivateRead, commit.Model); err != nil {
+			return fmt.Errorf("chat: insert blocked turn: %w", err)
 		}
 		seq++
 	}

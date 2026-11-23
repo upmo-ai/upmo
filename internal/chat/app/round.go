@@ -224,8 +224,16 @@ func (s *roundStore) CommitTurnAndEnqueue(_ context.Context, commit agentloop.Tu
 		rc.End = RoundNext
 	case commit.Status == agentloop.TurnContinue:
 		rc.End, rc.Fail = RoundFailed, s.fail("rounds", commit.Model)
+	case commit.Status == agentloop.TurnWaitingApproval && round < MaxRounds:
+		rc.End = RoundHold
+	case commit.Status == agentloop.TurnWaitingApproval:
+		rc.End, rc.Fail = RoundFailed, s.fail("rounds", commit.Model)
 	case s.claim.BodyRunes == 0 && !s.sink.wrote():
 		rc.End, rc.Fail = RoundFailed, s.fail("empty", commit.Model)
+	}
+	if rc.End == RoundFailed {
+		rc.Turn.History = withoutHeldPlaceholders(rc.Turn.History)
+		rc.Turn.Messages = withoutHeldPlaceholders(rc.Turn.Messages)
 	}
 	err = s.w.deps.Rows.CommitRound(wctx, current, s.claim, rc)
 	switch {
@@ -236,6 +244,16 @@ func (s *roundStore) CommitTurnAndEnqueue(_ context.Context, commit agentloop.Tu
 		return err
 	}
 	return fmt.Errorf("%w: %w", ErrUnwritten, err)
+}
+
+func withoutHeldPlaceholders(messages []agentloop.Message) []agentloop.Message {
+	out := messages[:0]
+	for _, message := range messages {
+		if !message.HeldPlaceholder {
+			out = append(out, message)
+		}
+	}
+	return out
 }
 
 func (s *roundStore) fail(class, model string) ReplyEnd {

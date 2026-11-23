@@ -21,6 +21,26 @@ type chatJSON struct {
 	Lines       []lineJSON `json:"lines"`
 	Tainted     bool       `json:"tainted"`
 	PrivateRead bool       `json:"private_read"`
+	Hold        *holdJSON  `json:"hold"`
+}
+
+type holdCallJSON struct {
+	CallID          string `json:"call_id"`
+	ToolName        string `json:"tool_name"`
+	Op              string `json:"op"`
+	Action          string `json:"action"`
+	Preview         string `json:"preview"`
+	UntrustedOrigin bool   `json:"untrusted_origin"`
+}
+type holdJSON struct {
+	ID              string         `json:"id"`
+	LineID          string         `json:"line_id"`
+	Reason          string         `json:"reason"`
+	Action          string         `json:"action"`
+	Preview         string         `json:"preview"`
+	UntrustedOrigin bool           `json:"untrusted_origin"`
+	CanAllowForChat bool           `json:"can_allow_for_chat"`
+	Calls           []holdCallJSON `json:"calls"`
 }
 
 // lineJSON is one line of a chat in full.
@@ -79,6 +99,13 @@ func summaryBody(summary app.ChatSummary) summaryJSON {
 
 func chatBody(chat app.Chat) chatJSON {
 	body := chatJSON{ID: chat.ID, Lines: make([]lineJSON, 0, len(chat.Lines)), Tainted: chat.Tainted, PrivateRead: chat.PrivateRead}
+	if chat.Hold != nil {
+		hold := chat.Hold
+		body.Hold = &holdJSON{ID: hold.ID, LineID: hold.LineID, Reason: hold.Reason, Action: hold.Action, Preview: hold.Preview, UntrustedOrigin: hold.UntrustedOrigin, CanAllowForChat: hold.CanAllowForChat, Calls: make([]holdCallJSON, 0, len(hold.Calls))}
+		for _, call := range hold.Calls {
+			body.Hold.Calls = append(body.Hold.Calls, holdCallJSON{CallID: call.CallID, ToolName: call.ToolName, Op: call.Op, Action: call.Action, Preview: call.Preview, UntrustedOrigin: call.UntrustedOrigin})
+		}
+	}
 	for _, line := range chat.Lines {
 		body.Lines = append(body.Lines, lineBody(line))
 	}

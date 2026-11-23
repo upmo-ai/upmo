@@ -953,6 +953,8 @@ func TestSweepWorksForAnOwnerThatIsNeitherSuperuserNorBypassRLS(t *testing.T) {
 		`GRANT SELECT ON chat.chats TO ` + role,
 		`GRANT USAGE ON SCHEMA identity TO ` + role,
 		`GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO ` + role,
+		`GRANT EXECUTE ON FUNCTION chat.fail_waiting_runs(uuid) TO ` + role,
+		`GRANT SELECT ON chat.runs TO ` + role,
 	} {
 		if _, err := r.owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

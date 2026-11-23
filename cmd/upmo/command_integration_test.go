@@ -270,8 +270,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		"chat.goose_db_version": {},
 		"chat.holds": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"action", "calls", "chat_id", "created_at", "decided_at", "id", "line_id", "preview", "reason", "state", "untrusted_origin", "user_id"},
-			Insert: []string{"action", "calls", "chat_id", "created_at", "decided_at", "id", "line_id", "preview", "reason", "state", "untrusted_origin", "user_id"},
+			Select: []string{"action", "calls", "chat_id", "created_at", "decided_at", "hold_turn_seq", "id", "line_id", "preview", "reason", "state", "untrusted_origin", "user_id"},
+			Insert: []string{"action", "calls", "chat_id", "created_at", "decided_at", "hold_turn_seq", "id", "line_id", "preview", "reason", "state", "untrusted_origin", "user_id"},
 			Update: []string{"decided_at", "state"},
 		},
 		"chat.lines": {
@@ -283,7 +283,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Table:  []string{"INSERT", "SELECT"},
 			Select: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
 			Insert: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
-			Update: []string{"claim", "claim_round", "cost_known", "cost_micro_usd", "finished_at", "history", "model", "round", "round_seq", "state", "tokens"},
+			Update: []string{"claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "model", "round", "round_seq", "state", "tokens"},
 		},
 		"chat.tool_allowances": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
