@@ -34,6 +34,8 @@ Name each GitHub workflow, job and step in words, in title case. Examples: `CI`,
 
 Every pull request and every push to `main` runs the `CI` workflow. The `CI Result` job lists every other job and fails when one fails or is canceled. It is the only check the `main` ruleset requires, so a new job must be added to its `needs` list.
 
+The `Changes` job runs first and turns on only the jobs a change needs. Go changes (`cmd/`, `internal/`, `pkg/`, `tools/`, `go.mod`, `go.sum`) run the Go jobs. Changes under `web/` run Web Checks. End-to-End Tests run for Go, web, `e2e/` or `deploy/` changes. Container Images run for `deploy/` and Dockerfiles, Docs Check for Markdown, Canary for `scripts/`, and Workflow Security for `.github/`. Lint always checks retired words and adds golangci-lint for Go changes and shellcheck for `scripts/`. Vulnerability Scan, Secret Scan, Commit Messages and Dependency Review always run. A change to `.github/`, the `Makefile` or `compose.yml`, and the weekly run, turn on every job. `CI Result` counts a skipped job as passed.
+
 Each job writes a summary on the run page, pass or fail. Jobs that run tests with a report add test counts, the names of failed tests and coverage. A failed job adds the last lines of its output. `repolint summary` builds it from the reports in `reports/`.
 
 - **Coverage.** Go unit tests, Go integration tests and the web tests write coverage. Codecov receives it under the flags `go-unit`, `go-integration` and `web`. A Codecov outage never fails a job. Pull requests from forks upload without a token.

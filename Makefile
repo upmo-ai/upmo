@@ -33,19 +33,27 @@ LDFLAGS := -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$(VERS
 	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$(COMMIT) \
 	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: help build test test-integration test-live test-regression lint fmt up down ci web e2e arch vuln secrets commits docs fuzz canary workflows images
+.PHONY: help build build-go build-web test test-go test-web test-integration test-live test-regression lint lint-go lint-shell lint-web lint-terms fmt up down ci web e2e arch vuln secrets commits docs fuzz canary workflows images
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
 
-build: ## Build the Go module and the web app
+build: build-go build-web ## Build the Go module and the web app
+
+build-go: ## Build the Go module
 	$(GO) go build -ldflags "$(LDFLAGS)" ./...
+
+build-web: ## Build the web app
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm build"
 
 # Reports (JUnit and coverage) land in reports/ for the CI run summary and Codecov.
-test: ## Run Go unit tests with the race detector and the web tests
+test: test-go test-web ## Run Go unit tests with the race detector and the web tests
+
+test-go: ## Run Go unit tests with the race detector
 	mkdir -p reports
 	$(GO) go tool gotestsum --junitfile reports/go-unit.xml -- -race -coverprofile=reports/go-unit.cover ./...
+
+test-web: ## Run the web tests
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm test"
 
 test-integration: ## Run Go integration tests against the compose postgres and the Docker engine
@@ -59,10 +67,18 @@ test-live: ## Run tests that call a real model provider
 test-regression: ## Run regression tests
 	$(GO) go test -race -run Regression ./...
 
-lint: ## Run golangci-lint (linters and format check), shellcheck, the web lint and retired words
+lint: lint-go lint-shell lint-web lint-terms ## Run golangci-lint (linters and format check), shellcheck, the web lint and retired words
+
+lint-go: ## Run golangci-lint (linters and format check)
 	$(LINT) golangci-lint run ./...
+
+lint-shell: ## Run shellcheck on the scripts
 	$(TOOL) shellcheck
+
+lint-web: ## Run the web lint
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint"
+
+lint-terms: ## Check every tracked file for retired words
 	$(GO) sh -c "git ls-files | go run ./tools/repolint terms"
 
 fmt: ## Format Go code with gofmt and goimports
