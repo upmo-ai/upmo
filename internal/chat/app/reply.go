@@ -220,7 +220,8 @@ type Claim struct {
 	// after it. BodyRunes is how many runes the reply streamed already.
 	DeltaSeq  int
 	BodyRunes int
-	// Model is the last status notice's next model, else the run's.
+	// Model is the next model of the current round's last status notice, else
+	// the last committed round's.
 	Model string
 	// Attempts are the status notices of this reply, in seq order.
 	Attempts []domain.Attempt
@@ -572,8 +573,14 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 	}()
 
 	var attempts []domain.Attempt
+	// writing is the model this round is on: the last committed round's, then
+	// the next model of each failover this round announces.
+	writing := claim.Model
 	onAttempt := func(a ModelAttempt) {
 		attempts = append(attempts, domain.Attempt{Model: a.FailedModel, Class: a.Class})
+		if a.NextModel != "" {
+			writing = a.NextModel
+		}
 		sink.notice(Notice(a))
 	}
 	turnRoute, system := w.route(args, agent)
@@ -608,7 +615,7 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 	if store.done {
 		return nil
 	}
-	return w.end(ctx, replyCtx, live, claim, tail, werr, err, attempts)
+	return w.end(ctx, replyCtx, live, claim, tail, werr, err, attempts, writing)
 }
 
 // route is where every round of this reply goes: the route and the pin
@@ -642,7 +649,7 @@ func (w *replyWorker) route(args ReplyJobArgs, agent *Agent) (TurnRoute, string)
 
 // end stores what a round that did not commit leaves behind: the reply's text
 // so far and why it broke off, as a failed line.
-func (w *replyWorker) end(ctx, replyCtx context.Context, live *liveAccess, claim Claim, tail Pending, werr, err error, attempts []domain.Attempt) error {
+func (w *replyWorker) end(ctx, replyCtx context.Context, live *liveAccess, claim Claim, tail Pending, werr, err error, attempts []domain.Attempt, writing string) error {
 	args := claim.Job
 	// Whatever ended the round, the line is stored under the access as it is
 	// now. A look-up cut short by the reply's own end decides nothing.
@@ -671,12 +678,14 @@ func (w *replyWorker) end(ctx, replyCtx context.Context, live *liveAccess, claim
 		failure = failureOf(replyCtx, err)
 	}
 	all := append(append([]domain.Attempt{}, claim.Attempts...), attempts...)
+	// Without the gateway's word, the model is the one this round was last
+	// writing with; earlier rounds' notices never name it.
 	model := failure.Model
-	if model == "" && len(attempts) > 0 {
-		model = attempts[len(attempts)-1].Model // this round only; claim.Attempts are earlier rounds
-	}
 	if model == "" {
-		model = claim.Model
+		model = writing
+	}
+	if model == "" && len(attempts) > 0 {
+		model = attempts[len(attempts)-1].Model
 	}
 	last := failure
 	if last.Model == "" {

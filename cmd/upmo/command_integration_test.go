@@ -281,9 +281,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.runs": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "state", "tokens"},
-			Insert: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "state", "tokens"},
-			Update: []string{"claim", "claim_round", "cost_known", "cost_micro_usd", "finished_at", "history", "model", "round", "state", "tokens"},
+			Select: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
+			Insert: []string{"author_id", "chat_id", "claim", "claim_round", "cost_known", "cost_micro_usd", "created_at", "finished_at", "history", "id", "line_id", "model", "round", "round_seq", "state", "tokens"},
+			Update: []string{"claim", "claim_round", "cost_known", "cost_micro_usd", "finished_at", "history", "model", "round", "round_seq", "state", "tokens"},
 		},
 		"chat.turns": {
 			Table:  []string{"INSERT", "SELECT"},

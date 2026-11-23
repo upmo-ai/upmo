@@ -236,6 +236,9 @@ GRANT SELECT, INSERT, DELETE ON chat.deltas TO upmo_app;
 -- most. claim is the token of the worker that owns the current round, and
 -- claim_round that round; every write of a reply checks them under this
 -- row's lock. history is the model history after the last committed round.
+-- round_seq is the highest delta seq when the current round was claimed: the
+-- status notices after it are that round's own, and only they say which model
+-- the round was writing with.
 CREATE TABLE chat.runs (
   id uuid PRIMARY KEY,
   chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
@@ -245,6 +248,7 @@ CREATE TABLE chat.runs (
   round int NOT NULL DEFAULT 0,
   claim uuid,
   claim_round int NOT NULL DEFAULT 0,
+  round_seq int NOT NULL DEFAULT 0,
   history jsonb,
   tokens int NOT NULL DEFAULT 0,
   cost_micro_usd bigint NOT NULL DEFAULT 0,
@@ -322,7 +326,7 @@ CREATE POLICY runs_owner_update ON chat.runs
   );
 
 GRANT SELECT, INSERT ON chat.runs TO upmo_app;
-GRANT UPDATE (state, round, claim, claim_round, history, tokens, cost_micro_usd, cost_known, model, finished_at)
+GRANT UPDATE (state, round, claim, claim_round, round_seq, history, tokens, cost_micro_usd, cost_known, model, finished_at)
   ON chat.runs TO upmo_app;
 
 -- A delta or a line announces itself to the stream hub of every brain

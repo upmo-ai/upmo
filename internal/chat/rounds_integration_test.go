@@ -263,12 +263,23 @@ func TestAStuckRunStopsBlockingAfterLiveFor(t *testing.T) {
 
 	r.stub.reply(func(_ int, s *frames) { s.delta("ok"); s.done("m1", 1, 1, nil) })
 	r.say(chatID, "second", "")
+	// The stale reply is failed before the new line is stored, so the order is
+	// [first, failed-first, second].
 	lines := r.lines(chatID)
-	if len(lines) != 3 || lines[2].Status != "failed" || lines[2].Body != "partial" {
+	if len(lines) != 3 ||
+		lines[0].Role != "user" || lines[0].Body != "first" ||
+		lines[1].Role != "assistant" || lines[1].Status != "failed" || lines[1].Body != "partial" ||
+		lines[1].ReplyTo == nil || *lines[1].ReplyTo != lines[0].ID ||
+		lines[2].Role != "user" || lines[2].Body != "second" {
 		t.Fatalf("lines = %+v", lines)
 	}
-	if want := []domain.Attempt{{Model: "", Class: "timeout"}}; len(lines[2].Attempts) != 1 || lines[2].Attempts[0] != want[0] {
-		t.Fatalf("attempts = %+v", lines[2].Attempts)
+	if want := []domain.Attempt{{Model: "", Class: "timeout"}}; len(lines[1].Attempts) != 1 || lines[1].Attempts[0] != want[0] {
+		t.Fatalf("attempts = %+v", lines[1].Attempts)
+	}
+	// The read thread ends on the new question, which waits for its reply.
+	read, err := app.Read(ctx, r.store, ownerAccess, chatID)
+	if err != nil || len(read.Lines) != 3 || read.Lines[0].Pending || !read.Lines[2].Pending || read.Lines[2].Body != "second" {
+		t.Fatalf("read = %+v %v", read, err)
 	}
 	var running int
 	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.runs WHERE chat_id = $1::uuid AND state = 'running'`, chatID).Scan(&running); err != nil || running != 1 {
@@ -1090,6 +1101,126 @@ func TestATimeoutAfterAnEarlierFailoverNamesTheCurrentModel(t *testing.T) {
 		t.Fatalf("reply = %+v", reply)
 	}
 	want := []domain.Attempt{{Model: "m1", Class: "timeout"}, {Model: "m2", Class: "timeout"}}
+	if len(reply.Attempts) != 2 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] {
+		t.Fatalf("attempts = %+v", reply.Attempts)
+	}
+}
+
+// failoverThenBack runs a reply whose round 1 fails over from m1 to m2 and
+// commits on m2, and whose round 2 commits on m1, and returns round 3's job.
+// third is how the model answers round 3.
+func failoverThenBack(t *testing.T, r *rig, chatID string, third func(s *frames)) job {
+	t.Helper()
+	r.say(chatID, "q", "")
+	job1 := r.lastJob()
+	r.stub.reply(func(call int, s *frames) {
+		switch call {
+		case 1:
+			s.attempt("m1", "rate_limit", "m2")
+			s.doneCalls("m2", 1, 1, i64(1), stubTool{ID: "c1", Name: "find_tool", Args: `{"query":"x"}`})
+		case 2:
+			s.doneCalls("m1", 1, 1, i64(1), stubTool{ID: "c2", Name: "find_tool", Args: `{"query":"y"}`})
+		default:
+			third(s)
+		}
+	})
+	if err := r.run(job1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(r.jobs()[1], 1); err != nil {
+		t.Fatal(err)
+	}
+	jobs := r.jobs()
+	if len(jobs) != 3 || jobs[2].Args.Round != 3 {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	return jobs[2]
+}
+
+func TestAnEarlierRoundsFailoverDoesNotNameTheModelOfATimedOutLaterRound(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{Timeout: time.Second})
+	chatID := r.open()
+	job3 := failoverThenBack(t, r, chatID, func(s *frames) { s.hold(nil) })
+	if err := r.run(job3, 1); err != nil {
+		t.Fatal(err)
+	}
+	reply := r.lines(chatID)[1]
+	if reply.Status != "failed" || reasonOf(reply) != "timed out" || reply.Model == nil || *reply.Model != "m1" {
+		t.Fatalf("reply = %+v", reply)
+	}
+	want := []domain.Attempt{{Model: "m1", Class: "rate_limit"}, {Model: "m1", Class: "timeout"}}
+	if len(reply.Attempts) != 2 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] {
+		t.Fatalf("attempts = %+v", reply.Attempts)
+	}
+}
+
+func TestAnEarlierRoundsFailoverDoesNotNameTheModelOfARescuedLaterRound(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	ctx := context.Background()
+	chatID := r.open()
+	job3 := failoverThenBack(t, r, chatID, func(s *frames) { s.delta("never") })
+	// Round 3 is claimed by a worker that dies before it writes anything.
+	if c3, err := r.store.Claim(ctx, ownerAccess, job3.Args, token1); err != nil || c3.State != app.ClaimGo || c3.Model != "m1" {
+		t.Fatalf("claim = %+v %v", c3, err)
+	}
+	if err := r.run(job3, 2); err != nil {
+		t.Fatal(err)
+	}
+	if calls := r.stub.seen(); len(calls) != 2 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	reply := r.lines(chatID)[1]
+	if reply.Status != "failed" || reply.Model == nil || *reply.Model != "m1" {
+		t.Fatalf("reply = %+v", reply)
+	}
+	want := []domain.Attempt{{Model: "m1", Class: "rate_limit"}, {Model: "m1", Class: "canceled"}}
+	if len(reply.Attempts) != 2 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] {
+		t.Fatalf("attempts = %+v", reply.Attempts)
+	}
+}
+
+func TestARescuedLaterRoundIsNamedByItsOwnFailover(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	ctx := context.Background()
+	chatID := r.open()
+	job3 := failoverThenBack(t, r, chatID, func(s *frames) { s.delta("never") })
+	c3, err := r.store.Claim(ctx, ownerAccess, job3.Args, token1)
+	if err != nil || c3.State != app.ClaimGo {
+		t.Fatalf("claim = %+v %v", c3, err)
+	}
+	if err := r.store.PutDelta(ctx, ownerAccess, c3, c3.DeltaSeq+1, "status", `{"failed_model":"m1","class":"timeout","next_model":"m3"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.run(job3, 2); err != nil {
+		t.Fatal(err)
+	}
+	reply := r.lines(chatID)[1]
+	if reply.Status != "failed" || reply.Model == nil || *reply.Model != "m3" {
+		t.Fatalf("reply = %+v", reply)
+	}
+	want := []domain.Attempt{{Model: "m1", Class: "rate_limit"}, {Model: "m1", Class: "timeout"}, {Model: "m3", Class: "canceled"}}
+	if len(reply.Attempts) != 3 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] || reply.Attempts[2] != want[2] {
+		t.Fatalf("attempts = %+v", reply.Attempts)
+	}
+}
+
+func TestATimeoutAfterAFailoverInTheSameRoundNamesTheNextModel(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{Timeout: time.Second})
+	chatID := r.open()
+	r.say(chatID, "q", "")
+	r.stub.reply(func(_ int, s *frames) {
+		s.attempt("m1", "rate_limit", "m2")
+		s.delta("half")
+		s.hold(nil)
+	})
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	reply := r.lines(chatID)[1]
+	if reply.Status != "failed" || reasonOf(reply) != "timed out" || reply.Body != "half" || reply.Model == nil || *reply.Model != "m2" {
+		t.Fatalf("reply = %+v", reply)
+	}
+	want := []domain.Attempt{{Model: "m1", Class: "rate_limit"}, {Model: "m2", Class: "timeout"}}
 	if len(reply.Attempts) != 2 || reply.Attempts[0] != want[0] || reply.Attempts[1] != want[1] {
 		t.Fatalf("attempts = %+v", reply.Attempts)
 	}

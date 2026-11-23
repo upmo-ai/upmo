@@ -21,8 +21,12 @@ func (blockingExecutor) Execute(ctx context.Context, _ *agentloop.RunState, _ ag
 
 func TestATimedOutToolCallIsAnErrorResult(t *testing.T) {
 	inner := timedExecutor{limit: 20 * time.Millisecond, inner: blockingExecutor{}}
+	// The test's own bound: without the call's deadline the parent ends first
+	// and the call fails promptly instead of hanging.
+	parent, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	start := time.Now()
-	res, err := inner.Execute(context.Background(), &agentloop.RunState{}, agentloop.ToolCall{Name: "find_tool"})
+	res, err := inner.Execute(parent, &agentloop.RunState{}, agentloop.ToolCall{Name: "find_tool"})
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}

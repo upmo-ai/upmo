@@ -242,7 +242,7 @@ func TestStreamSendsDeltasAsTheyAreWrittenThenTheLine(t *testing.T) {
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	release := make(chan struct{})
+	release, closeRelease := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("Hello ")
 		s.hold(release)
@@ -258,7 +258,7 @@ func TestStreamSendsDeltasAsTheyAreWrittenThenTheLine(t *testing.T) {
 	live.expectDelta(queued.Args.ReplyID, 0, "")
 	live.expectDelta(queued.Args.ReplyID, 1, "Hello ")
 	live.expectQuiet(100 * time.Millisecond)
-	close(release)
+	closeRelease()
 	live.expectDelta(queued.Args.ReplyID, 2, "world")
 	if err := result(t, done); err != nil {
 		t.Fatal(err)

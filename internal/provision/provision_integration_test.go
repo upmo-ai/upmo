@@ -861,7 +861,7 @@ func TestProvisionStatusAndUsagePrivacy(t *testing.T) {
 	}{
 		{nov, "work", "gpt-4o", userA, nil, runID, 1000, 500, ptrI64(int64(cost1 * 1e6)), false, "models_dev", "task"},
 		{nov, "custom-route", "gpt-4o", userB, agentID, nil, 200, 100, ptrI64(int64(cost2 * 1e6)), false, "models_dev", "chat"},
-		{nov, "chat", "gpt-4o", userA, nil, runID2, 40, 20, ptrI64(100), false, "models_dev", "chat"}, // a chat run with no agent stays chat
+		{nov, "chat", "gpt-4o", userA, nil, runID2, 40, 20, ptrI64(100), false, "models_dev", "chat"},                    // a chat run with no agent stays chat
 		{nov, "chat", "gpt-4o-mini", userA, nil, nil, 50, 25, ptrI64(int64(cost3 * 1e6)), false, "models_dev", "memory"}, // direct even if the route is named "chat"
 		{nov, "memory-extract", "gpt-4o-mini", userA, nil, nil, 10, 5, ptrI64(1), true, "estimate", "memory"},
 		{nov, "unpriced-direct", "gpt-4o-mini", userA, nil, nil, 20, 10, nil, false, "unknown", "memory"},

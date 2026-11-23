@@ -76,6 +76,13 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string, 
 	if err := lockChat(ctx, tx, chatID); err != nil {
 		return err
 	}
+	// A stale run is failed before the new line is stored, so its failed reply
+	// keeps a lower seq than the line it held the chat for.
+	if s.replying() {
+		if err := failStaleRuns(ctx, tx, chatID); err != nil {
+			return err
+		}
+	}
 	var seq int
 	var lineID string
 	err = tx.QueryRow(ctx, `
@@ -143,11 +150,11 @@ func noReply(ctx context.Context, tx pgx.Tx, chatID, lineID string) error {
 	return nil
 }
 
-// reserveRun reserves the reply to the user line lineID, in the caller's
-// transaction, with the picks it is to be answered with. It fails any run of
-// the chat that outlived LiveFor, inserts the run row, and queues round 1.
-// A run already running in the chat is ErrBusy.
-func (s Store) reserveRun(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID string, picks app.Picks) error {
+// failStaleRuns fails any run of the chat that outlived LiveFor, under the
+// chat's lock already held. A run whose process died holds the chat for
+// LiveFor; after that the next Say or Retry fails it so a fresh reply can be
+// reserved.
+func failStaleRuns(ctx context.Context, tx pgx.Tx, chatID string) error {
 	rows, err := tx.Query(ctx, `
 		SELECT id::text FROM chat.runs
 		WHERE chat_id = $1::uuid AND state = 'running'
@@ -174,7 +181,14 @@ func (s Store) reserveRun(ctx context.Context, tx pgx.Tx, access app.Access, cha
 			return err
 		}
 	}
+	return nil
+}
 
+// reserveRun reserves the reply to the user line lineID, in the caller's
+// transaction, with the picks it is to be answered with. It inserts the run
+// row and queues round 1. A run already running in the chat is ErrBusy. Stale
+// runs are failed first by the caller through failStaleRuns.
+func (s Store) reserveRun(ctx context.Context, tx pgx.Tx, access app.Access, chatID, lineID string, picks app.Picks) error {
 	replyID, err := uuid.NewV7()
 	if err != nil {
 		return err

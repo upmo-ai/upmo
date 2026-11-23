@@ -103,13 +103,13 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		},
 	}
 	var state, lineID string
-	var round, claimRound int
+	var round, claimRound, roundSeq int
 	var createdAt time.Time
 	var history []byte
 	err = tx.QueryRow(ctx, `
-		SELECT state, round, claim_round, line_id::text, created_at, model, history
+		SELECT state, round, claim_round, round_seq, line_id::text, created_at, model, history
 		FROM chat.runs WHERE id = $1::uuid AND chat_id = $2::uuid FOR UPDATE`,
-		job.ReplyID, job.ChatID).Scan(&state, &round, &claimRound, &lineID, &createdAt, &claim.Model, &history)
+		job.ReplyID, job.ChatID).Scan(&state, &round, &claimRound, &roundSeq, &lineID, &createdAt, &claim.Model, &history)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Claim{}, app.ErrNoLine
 	}
@@ -149,7 +149,14 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		job.ChatID, job.ReplyID).Scan(&claim.DeltaSeq, &claim.BodyRunes); err != nil {
 		return app.Claim{}, fmt.Errorf("chat: claim deltas: %w", err)
 	}
-	attempts, model, err := noticesTx(ctx, tx, job.ChatID, job.ReplyID)
+	if claim.State == app.ClaimGo {
+		// The round starts here: notices of earlier rounds never name its model.
+		roundSeq = claim.DeltaSeq
+		if _, err := tx.Exec(ctx, `UPDATE chat.runs SET round_seq = $2 WHERE id = $1::uuid`, job.ReplyID, roundSeq); err != nil {
+			return app.Claim{}, fmt.Errorf("chat: claim: %w", err)
+		}
+	}
+	attempts, model, err := noticesTx(ctx, tx, job.ChatID, job.ReplyID, roundSeq)
 	if err != nil {
 		return app.Claim{}, err
 	}
@@ -177,10 +184,11 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 }
 
 // noticesTx reads the status notices of a reply as the attempts they announce,
-// and the next model of the last one.
-func noticesTx(ctx context.Context, tx pgx.Tx, chatID, runID string) ([]domain.Attempt, string, error) {
+// and the next model of the last one after roundSeq: the current round's own.
+// An earlier round's failover says nothing of the model a later round used.
+func noticesTx(ctx context.Context, tx pgx.Tx, chatID, runID string, roundSeq int) ([]domain.Attempt, string, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT body FROM chat.deltas
+		SELECT seq, body FROM chat.deltas
 		WHERE chat_id = $1::uuid AND line_id = $2::uuid AND kind = 'status'
 		ORDER BY seq`, chatID, runID)
 	if err != nil {
@@ -190,8 +198,9 @@ func noticesTx(ctx context.Context, tx pgx.Tx, chatID, runID string) ([]domain.A
 	var attempts []domain.Attempt
 	var model string
 	for rows.Next() {
+		var seq int
 		var body string
-		if err := rows.Scan(&body); err != nil {
+		if err := rows.Scan(&seq, &body); err != nil {
 			return nil, "", fmt.Errorf("chat: reply notice: %w", err)
 		}
 		var notice app.Notice
@@ -199,7 +208,9 @@ func noticesTx(ctx context.Context, tx pgx.Tx, chatID, runID string) ([]domain.A
 			return nil, "", fmt.Errorf("chat: reply notice: %w", err)
 		}
 		attempts = append(attempts, domain.Attempt{Model: notice.FailedModel, Class: notice.Class})
-		model = notice.NextModel
+		if seq > roundSeq {
+			model = notice.NextModel
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", fmt.Errorf("chat: reply notices: %w", err)
@@ -517,6 +528,9 @@ func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID stri
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockChat(ctx, tx, chatID); err != nil {
+		return err
+	}
+	if err := failStaleRuns(ctx, tx, chatID); err != nil {
 		return err
 	}
 	var role, status string

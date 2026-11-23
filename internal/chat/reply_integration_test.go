@@ -33,7 +33,7 @@ func TestSayQueuesNoReplyWhenRepliesAreOff(t *testing.T) {
 
 func TestReplyStreamsDeltasThenStoresTheLineAndDropsTheDeltas(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{FlushEvery: 20 * time.Millisecond})
-	release := make(chan struct{})
+	release, closeRelease := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("Hello ")
 		s.hold(release)
@@ -61,7 +61,7 @@ func TestReplyStreamsDeltasThenStoresTheLineAndDropsTheDeltas(t *testing.T) {
 		t.Fatalf("lines while streaming = %+v", lines)
 	}
 
-	close(release)
+	closeRelease()
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestFinishRollsBackTheLineAndTheDeltaDeleteTogether(t *testing.T) {
 func TestReplyWritesOneDeltaRowAndOneNotifyPerBatch(t *testing.T) {
 	// The time flush is out of reach, so only the size flush runs.
 	r := newRig(t, app.ReplyConfig{FlushEvery: time.Hour})
-	release := make(chan struct{})
+	release, closeRelease := holdRound(t)
 	piece := strings.Repeat("p", 100)
 	r.stub.reply(func(_ int, s *frames) {
 		for i := 0; i < 100; i++ {
@@ -181,7 +181,7 @@ func TestReplyWritesOneDeltaRowAndOneNotifyPerBatch(t *testing.T) {
 			t.Fatalf("row %d = seq %d, %d bytes", i, row.Seq, len(row.Body))
 		}
 	}
-	close(release)
+	closeRelease()
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestReplyWritesOneDeltaRowAndOneNotifyPerBatch(t *testing.T) {
 
 func TestReplyFlushesAPendingBatchAfterTheInterval(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{FlushEvery: 50 * time.Millisecond, FlushBytes: 1 << 20})
-	release := make(chan struct{})
+	release, closeRelease := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("abc")
 		s.hold(release)
@@ -214,7 +214,7 @@ func TestReplyFlushesAPendingBatchAfterTheInterval(t *testing.T) {
 		d := r.deltas(chatID)
 		return len(d) == 2 && d[1].Body == "abc"
 	})
-	close(release)
+	closeRelease()
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestReplyKeepsThePartialTextWhenTheStreamFails(t *testing.T) {
 
 func TestReplyOfAllFailedLinksListsEveryModelAndWritesNoticesAsStatusRows(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
-	release := make(chan struct{})
+	release, closeRelease := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.attempt("m1", "rate_limit", "m2")
 		s.attempt("m2", "transient", "")
@@ -272,7 +272,7 @@ func TestReplyOfAllFailedLinksListsEveryModelAndWritesNoticesAsStatusRows(t *tes
 		rows[2].Kind != "status" || rows[2].Body != `{"failed_model":"m2","class":"transient","next_model":""}` {
 		t.Fatalf("deltas = %+v", rows)
 	}
-	close(release)
+	closeRelease()
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -802,8 +802,7 @@ func TestFailReplyIsNarrow(t *testing.T) {
 
 func TestEditAccessRevokedMidStreamStopsTheWritesAndFailsTheReply(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{FlushBytes: 4, AccessEvery: 40 * time.Millisecond})
-	release := make(chan struct{})
-	defer close(release)
+	release, _ := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("seen")
 		s.hold(release)
@@ -942,6 +941,7 @@ func TestAGracefulShutdownEndsInAFailedLineThatKeepsTheText(t *testing.T) {
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
 	done := make(chan error, 1)
 	go func() { done <- r.runCtx(ctx, r.lastJob(), 1) }()
 	eventually(t, "the model to be asked", func() bool { return len(r.stub.seen()) == 1 })
@@ -958,8 +958,7 @@ func TestAGracefulShutdownEndsInAFailedLineThatKeepsTheText(t *testing.T) {
 
 func TestAnAccessLookupThatFailsMidStreamCountsAsAccessLost(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{FlushBytes: 4, AccessEvery: 40 * time.Millisecond})
-	release := make(chan struct{})
-	defer close(release)
+	release, _ := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("seen")
 		s.hold(release)
