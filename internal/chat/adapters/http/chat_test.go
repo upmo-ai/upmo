@@ -58,6 +58,20 @@ func (f *fakeBook) List(context.Context, app.Access) ([]app.ChatSummary, error) 
 	return f.summaries, nil
 }
 
+func (f *fakeBook) Search(context.Context, app.Access, string) ([]app.ChatSummary, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.summaries, nil
+}
+
+func (f *fakeBook) Rename(_ context.Context, _ app.Access, _, title string) (app.ChatSummary, error) {
+	if f.err != nil {
+		return app.ChatSummary{}, f.err
+	}
+	return app.ChatSummary{ID: chatID, Title: title}, nil
+}
+
 func (f *fakeBook) Say(_ context.Context, _ app.Access, _, body string, picks app.Picks) error {
 	f.says++
 	f.body = body

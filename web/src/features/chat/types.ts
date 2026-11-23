@@ -70,6 +70,10 @@ export interface Chat {
   lines: ChatLine[];
   tainted?: boolean;
   private_read?: boolean;
+  can_edit?: boolean;
+  can_delete?: boolean;
+  /** The title the owner set on this chat, when one is. */
+  title?: string;
   /** Switch notices for replies still pending. Never read from the server. */
   notices?: ChatNotice[];
 }

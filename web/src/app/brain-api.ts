@@ -437,6 +437,9 @@ export function toChat(value: unknown): Chat {
   const chat: Chat = { id: text(source, "id"), lines: list(source.lines, "lines").map(toChatLine) };
   if (typeof source.tainted === "boolean") chat.tainted = source.tainted;
   if (typeof source.private_read === "boolean") chat.private_read = source.private_read;
+  if (typeof source.can_edit === "boolean") chat.can_edit = source.can_edit;
+  if (typeof source.can_delete === "boolean") chat.can_delete = source.can_delete;
+  if (typeof source.title === "string") chat.title = source.title;
   return chat;
 }
 
@@ -1349,9 +1352,10 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       get repliesLater() {
         return settled === "stub";
       },
-      async list() {
-        if ((await chosen()) === "stub") return stub.chats.list();
-        return list(await call("/api/chats"), "chats").map(toChatSummary);
+      async list(query) {
+        if ((await chosen()) === "stub") return stub.chats.list(query);
+        const path = query?.trim() ? `/api/chats?q=${encodeURIComponent(query.trim())}` : "/api/chats";
+        return list(await call(path), "chats").map(toChatSummary);
       },
       async create() {
         if ((await chosen()) === "stub") return stub.chats.create();
@@ -1392,6 +1396,14 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async putShare(id, update) {
         if ((await chosen()) === "stub") return stub.chats.putShare(id, update);
         return toTaskShare(await call(`${chatPath(id)}/share`, { method: "PUT", body: shareBody(update) }));
+      },
+      async rename(id, title) {
+        if ((await chosen()) === "stub") return stub.chats.rename(id, title);
+        return toChatSummary(await call(chatPath(id), { method: "PATCH", body: { title } }));
+      },
+      async remove(id) {
+        if ((await chosen()) === "stub") return stub.chats.remove(id);
+        await call(chatPath(id), { method: "DELETE" });
       },
     },
     async usage(range) {

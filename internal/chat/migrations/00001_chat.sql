@@ -7,6 +7,7 @@ CREATE TABLE chat.chats (
   visibility text NOT NULL,
   visibility_team_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
+  title text NOT NULL DEFAULT '',
   tainted boolean NOT NULL DEFAULT false,
   private_read boolean NOT NULL DEFAULT false,
   rolling_summary text NOT NULL DEFAULT '',
@@ -20,7 +21,8 @@ CREATE TABLE chat.chats (
   CONSTRAINT chats_summary_seq_check CHECK (
     (summary_up_to_seq = 0 AND summary_up_to_line_id IS NULL AND rolling_summary = '')
     OR (summary_up_to_seq > 0 AND summary_up_to_line_id IS NOT NULL)
-  )
+  ),
+  CONSTRAINT chats_title_check CHECK (char_length(title) <= 60)
 );
 
 CREATE TABLE chat.lines (
@@ -43,6 +45,7 @@ CREATE TABLE chat.lines (
   pin_model text,
   author_id uuid,
   attachments jsonb,
+  body_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', left(body, 64000))) STORED,
   PRIMARY KEY (chat_id, seq),
   CONSTRAINT lines_seq_check CHECK (seq > 0),
   CONSTRAINT lines_id_key UNIQUE (id),
@@ -86,6 +89,7 @@ CREATE TABLE chat.lines (
 );
 
 CREATE INDEX lines_reply_to_idx ON chat.lines (reply_to) WHERE reply_to IS NOT NULL;
+CREATE INDEX lines_body_fts_idx ON chat.lines USING gin (body_tsv);
 
 ALTER TABLE chat.lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat.lines FORCE ROW LEVEL SECURITY;

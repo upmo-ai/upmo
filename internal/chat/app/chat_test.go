@@ -168,11 +168,73 @@ func TestListReturnsAnEmptyListNotNil(t *testing.T) {
 	}
 }
 
+func TestSearchValidatesTheQueryAndListsOnEmpty(t *testing.T) {
+	book := &fakeBook{summaries: []ChatSummary{{ID: "018f3b2c-7a10-7c4a-8e11-cccccccccccc", Title: domain.NewChatTitle}}}
+	access := Access{UserID: userID, Allow: "chat:view"}
+
+	got, err := Search(context.Background(), book, access, "  Roadmap ")
+	if err != nil || len(got) != 1 || got[0].Title != domain.NewChatTitle {
+		t.Fatalf("search = %+v %v", got, err)
+	}
+	if len(book.searches) != 1 || book.searches[0] != "Roadmap" {
+		t.Fatalf("queries = %v", book.searches)
+	}
+
+	// An empty query lists instead of searching.
+	if _, err := Search(context.Background(), book, access, ""); err != nil {
+		t.Fatal(err)
+	}
+	if book.lists != 1 {
+		t.Fatalf("lists = %d", book.lists)
+	}
+	if _, err := Search(context.Background(), book, access, strings.Repeat("q", domain.QueryRunes+1)); !errors.Is(err, domain.ErrQuery) {
+		t.Fatalf("long query error = %v", err)
+	}
+	if len(book.searches) != 1 {
+		t.Fatalf("queries = %v", book.searches)
+	}
+}
+
+func TestRenameValidatesTheTitle(t *testing.T) {
+	book := &fakeBook{}
+	access := Access{UserID: userID, Allow: "chat:edit"}
+	chatID := "018f3b2c-7a10-7c4a-8e11-bbbbbbbbbbbb"
+
+	renamed, err := Rename(context.Background(), book, access, chatID, "  Q4 \t Planning ")
+	if err != nil || renamed.Title != "Q4 Planning" {
+		t.Fatalf("rename = %+v %v", renamed, err)
+	}
+	if len(book.renamed) != 1 || book.renamed[0] != "Q4 Planning" {
+		t.Fatalf("titles = %v", book.renamed)
+	}
+
+	if _, err := Rename(context.Background(), book, access, "bad", "Q4"); !errors.Is(err, ErrChat) {
+		t.Fatalf("bad id error = %v", err)
+	}
+	for name, title := range map[string]string{
+		"empty":        " \t\n ",
+		"61 runes":     strings.Repeat("a", domain.TitleRunes+1),
+		"61 CJK runes": strings.Repeat("世", domain.TitleRunes+1),
+	} {
+		if _, err := Rename(context.Background(), book, access, chatID, title); !errors.Is(err, domain.ErrTitle) {
+			t.Errorf("%s: error = %v", name, err)
+		}
+	}
+	if _, err := Rename(context.Background(), book, Access{}, chatID, "Q4"); !errors.Is(err, ErrAccess) {
+		t.Fatalf("no access error = %v", err)
+	}
+	if len(book.renamed) != 1 {
+		t.Fatalf("titles = %v", book.renamed)
+	}
+}
+
 type fakeBook struct {
 	opens     int
 	says      int
 	lists     int
 	reads     int
+	searches  []string
+	renamed   []string
 	body      string
 	route     string
 	picks     Picks
@@ -189,6 +251,16 @@ func (f *fakeBook) Open(context.Context, Access) (ChatSummary, error) {
 func (f *fakeBook) List(context.Context, Access) ([]ChatSummary, error) {
 	f.lists++
 	return f.summaries, nil
+}
+
+func (f *fakeBook) Search(_ context.Context, _ Access, query string) ([]ChatSummary, error) {
+	f.searches = append(f.searches, query)
+	return f.summaries, nil
+}
+
+func (f *fakeBook) Rename(_ context.Context, _ Access, _ string, title string) (ChatSummary, error) {
+	f.renamed = append(f.renamed, title)
+	return ChatSummary{ID: "018f3b2c-7a10-7c4a-8e11-cccccccccccc", Title: title}, nil
 }
 
 func (f *fakeBook) Say(_ context.Context, _ Access, _, body string, picks Picks) error {

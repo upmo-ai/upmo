@@ -216,8 +216,14 @@ export function createChatsStub(
     // The stub writes an assistant line on its own, so a send is worth waiting for.
     repliesLater: true,
 
-    async list() {
+    async list(query) {
+      const needle = query?.trim().toLocaleLowerCase("en-GB") ?? "";
       return chats
+        .filter((chat) => {
+          if (!needle) return true;
+          if (chat.title.toLocaleLowerCase("en-GB").includes(needle)) return true;
+          return chat.lines.some((line) => line.body.toLocaleLowerCase("en-GB").includes(needle));
+        })
         .map(summarize)
         .sort((a, b) => Date.parse(b.last_activity) - Date.parse(a.last_activity))
         .map((item) => copy(item));
@@ -234,7 +240,7 @@ export function createChatsStub(
       return copy(summarize(chat));
     },
     async get(id): Promise<Chat> {
-      return copy({ id, lines: find(id).lines });
+      return copy({ id, lines: find(id).lines, can_edit: true, can_delete: true });
     },
     async send(id, body, picks) {
       const chat = find(id);
@@ -283,6 +289,16 @@ export function createChatsStub(
       };
       chat.share = next;
       return copy(next);
+    },
+    async rename(id, title) {
+      const chat = find(id);
+      chat.title = title.trim();
+      return copy(summarize(chat));
+    },
+    async remove(id) {
+      const index = chats.findIndex((item) => item.id === id);
+      if (index < 0) throw new Error("Chat missing.");
+      chats.splice(index, 1);
     },
   };
 }

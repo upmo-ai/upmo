@@ -12,6 +12,7 @@ const (
 	// ChatSweep deletes reply deltas whose line never arrived.
 	ChatSweep       Action = "chat.sweep"
 	ChatStop        Action = "chat.stop"
+	ChatUpdate      Action = "chat.update"
 	ChatDelete      Action = "chat.delete"
 	ChatHoldApprove Action = "chat.hold_approve"
 	ChatHoldDeny    Action = "chat.hold_deny"
@@ -34,6 +35,7 @@ func init() {
 	register(ChatRetry, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id")
 	register(ChatSweep, "delta", classAPIActivity, activityUnknown, "rows")
 	register(ChatStop, "line", classAPIActivity, activityUnknown, "status")
+	register(ChatUpdate, "chat", classAPIActivity, activityUnknown, "title")
 	register(ChatDelete, "chat", classAPIActivity, activityUnknown)
 	register(ChatHoldApprove, "hold", classAPIActivity, activityUnknown, "state", "allow_for_chat")
 	register(ChatHoldDeny, "hold", classAPIActivity, activityUnknown, "state")

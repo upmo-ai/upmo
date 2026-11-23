@@ -326,6 +326,103 @@ func TestChatRouteRefusalRecordsDenied(t *testing.T) {
 	}
 }
 
+func TestChatRenameUpdatesTitleAndSealsAuditWithoutContentLeak(t *testing.T) {
+	owner, appPool := chatRig(t)
+	sealed := newSealer(t, owner)
+	store := chat.NewStore(appPool, nil)
+
+	mux := http.NewServeMux()
+	chat.Handler{
+		Book: store,
+		Access: func(r *http.Request) (chatapp.Access, bool) {
+			audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: chatAccess.UserID, CredentialType: "session"})
+			return chatAccess, true
+		},
+	}.Mount(mux, nil)
+	served := serveWithAudit(t, mux, appPool)
+
+	rec := httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chats", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("open = %d %s", rec.Code, rec.Body.String())
+	}
+	var opened struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &opened); err != nil || opened.ID == "" {
+		t.Fatalf("open body = %s err %v", rec.Body.String(), err)
+	}
+
+	rec = httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chats/"+opened.ID, strings.NewReader(`{"body":"First user question"}`)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("say = %d %s", rec.Code, rec.Body.String())
+	}
+
+	var listed []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	rec = httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chats", nil))
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &listed) != nil {
+		t.Fatalf("list = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(listed) != 1 || listed[0].Title != "First user question" {
+		t.Fatalf("list = %+v", listed)
+	}
+
+	rec = httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/api/chats/"+opened.ID, strings.NewReader(`{"title":"Q4 Planning"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename = %d %s", rec.Code, rec.Body.String())
+	}
+	var renamed struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &renamed); err != nil || renamed.Title != "Q4 Planning" {
+		t.Fatalf("rename body = %s err %v", rec.Body.String(), err)
+	}
+
+	var read struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	rec = httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chats/"+opened.ID, nil))
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &read) != nil || read.Title != "Q4 Planning" {
+		t.Fatalf("read = %d %s", rec.Code, rec.Body.String())
+	}
+	listed = nil
+	rec = httptest.NewRecorder()
+	served.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chats", nil))
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil || len(listed) != 1 || listed[0].Title != "Q4 Planning" {
+		t.Fatalf("list = %d %s err %v", rec.Code, rec.Body.String(), err)
+	}
+
+	// The rename seals one chat.update event that holds the field name alone.
+	rows := sealed()
+	var update *audit.Row
+	for i := range rows {
+		if rows[i].Action == audit.ChatUpdate {
+			update = &rows[i]
+		}
+	}
+	if update == nil {
+		t.Fatalf("events = %v, want one chat.update", actions(rows))
+	}
+	if strings.Join(update.Changes.Fields, ",") != "title" {
+		t.Fatalf("fields = %v, want the title field", update.Changes.Fields)
+	}
+	if hasAnyValue(*update) {
+		t.Fatalf("changes hold a value: %s", changesJSON(t, *update))
+	}
+	if containsSecret(*update, "Q4 Planning") {
+		t.Fatalf("changes hold the title text: %s", changesJSON(t, *update))
+	}
+}
+
 // stubEnqueuer takes every job the chat store asks for and keeps none: the
 // retry only needs a queue to hand the reply to.
 type stubEnqueuer struct{}

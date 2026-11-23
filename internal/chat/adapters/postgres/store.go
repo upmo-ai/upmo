@@ -319,7 +319,8 @@ func (s Store) List(ctx context.Context, access app.Access) ([]app.ChatSummary, 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx, `
-		SELECT chat.id::text,
+		SELECT chat.title,
+		       chat.id::text,
 		       COALESCE((
 		         SELECT body FROM chat.lines AS line
 		         WHERE line.chat_id = chat.id AND line.role = 'user'
@@ -349,11 +350,11 @@ func (s Store) List(ctx context.Context, access app.Access) ([]app.ChatSummary, 
 	out := []app.ChatSummary{}
 	for rows.Next() {
 		var summary app.ChatSummary
-		var firstUser, newest string
-		if err := rows.Scan(&summary.ID, &firstUser, &newest, &summary.LastActivity); err != nil {
+		var customTitle, firstUser, newest string
+		if err := rows.Scan(&customTitle, &summary.ID, &firstUser, &newest, &summary.LastActivity); err != nil {
 			return nil, fmt.Errorf("chat: list: %w", err)
 		}
-		summary.Title = domain.Title(firstUser)
+		summary.Title = domain.DisplayTitle(customTitle, firstUser)
 		summary.Preview = domain.Preview(newest)
 		summary.LastActivity = summary.LastActivity.UTC()
 		out = append(out, summary)
@@ -367,6 +368,102 @@ func (s Store) List(ctx context.Context, access app.Access) ([]app.ChatSummary, 
 	return out, nil
 }
 
+// Search lists the chats under row security whose title or line body matches
+// the query, newest activity first, at most 100. A chat that matches by body
+// carries its matching line as the preview.
+func (s Store) Search(ctx context.Context, access app.Access, query string) ([]app.ChatSummary, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		WITH q AS (
+		  SELECT plainto_tsquery('english', $1) AS tsq
+		)
+		SELECT chat.id::text,
+		       chat.title,
+		       COALESCE((
+		         SELECT left(line.body, 60) FROM chat.lines AS line
+		         WHERE line.chat_id = chat.id AND line.role = 'user'
+		         ORDER BY line.seq
+		         LIMIT 1
+		       ), '') AS first_user_line,
+		       COALESCE((
+		         SELECT line.body FROM chat.lines AS line, q
+		         WHERE line.chat_id = chat.id
+		           AND NOT (`+superseded+`)
+		           AND numnode(q.tsq) > 0
+		           AND line.body_tsv @@ q.tsq
+		         ORDER BY line.seq DESC
+		         LIMIT 1
+		       ), (
+		         SELECT line.body FROM chat.lines AS line
+		         WHERE line.chat_id = chat.id AND NOT (`+superseded+`)
+		         ORDER BY line.seq DESC
+		         LIMIT 1
+		       ), '') AS preview_line,
+		       COALESCE((
+		         SELECT line.at FROM chat.lines AS line
+		         WHERE line.chat_id = chat.id
+		         ORDER BY line.seq DESC
+		         LIMIT 1
+		       ), chat.created_at) AS last_activity
+		FROM chat.chats AS chat, q
+		WHERE (chat.title <> '' AND chat.title ILIKE $2 ESCAPE '\')
+		   OR (
+		        chat.title = ''
+		        AND COALESCE((
+		          SELECT left(line.body, 60) FROM chat.lines AS line
+		          WHERE line.chat_id = chat.id AND line.role = 'user'
+		          ORDER BY line.seq
+		          LIMIT 1
+		        ), '') ILIKE $2 ESCAPE '\'
+		      )
+		   OR (
+		        numnode(q.tsq) > 0
+		        AND EXISTS (
+		          SELECT 1 FROM chat.lines AS line
+		          WHERE line.chat_id = chat.id
+		            AND NOT (`+superseded+`)
+		            AND line.body_tsv @@ q.tsq
+		        )
+		      )
+		ORDER BY last_activity DESC, chat.id DESC
+		LIMIT 100`, query, "%"+escapeLike(query)+"%")
+	if err != nil {
+		return nil, fmt.Errorf("chat: search: %w", err)
+	}
+	defer rows.Close()
+
+	out := []app.ChatSummary{}
+	for rows.Next() {
+		var summary app.ChatSummary
+		var firstUser, preview string
+		if err := rows.Scan(&summary.ID, &summary.Title, &firstUser, &preview, &summary.LastActivity); err != nil {
+			return nil, fmt.Errorf("chat: search: %w", err)
+		}
+		summary.Title = domain.DisplayTitle(summary.Title, firstUser)
+		summary.Preview = domain.Preview(preview)
+		summary.LastActivity = summary.LastActivity.UTC()
+		out = append(out, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chat: search: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// escapeLike doubles the escape, percent and underscore characters of a LIKE
+// pattern, so the title ILIKE matches them literally.
+func escapeLike(query string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query)
+}
+
 // Read returns the lines in order.
 func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.Chat, error) {
 	tx, err := s.begin(ctx, access)
@@ -375,8 +472,15 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var tainted, privateRead bool
-	err = tx.QueryRow(ctx, `SELECT tainted, private_read FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&tainted, &privateRead)
+	var tainted, privateRead, canEdit, canDelete bool
+	var customTitle, firstUser string
+	err = tx.QueryRow(ctx, `
+		SELECT title, tainted, private_read,
+		       identity.may('edit', object_type, owner_user_id, visibility, visibility_team_id, id),
+		       owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+		         AND 'chat:delete' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')),
+		       COALESCE((SELECT body FROM chat.lines AS line WHERE line.chat_id = $1::uuid AND line.role = 'user' ORDER BY line.seq LIMIT 1), '')
+		FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&customTitle, &tainted, &privateRead, &canEdit, &canDelete, &firstUser)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Chat{}, app.ErrGone
 	}
@@ -437,7 +541,7 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	if err := tx.Commit(ctx); err != nil {
 		return app.Chat{}, err
 	}
-	chat := app.Chat{ID: chatID, Lines: lines, Tainted: tainted, PrivateRead: privateRead}
+	chat := app.Chat{ID: chatID, Title: domain.DisplayTitle(customTitle, firstUser), Lines: lines, Tainted: tainted, PrivateRead: privateRead, CanEdit: canEdit, CanDelete: canDelete}
 	if hold.ID != "" {
 		chat.Hold = &hold
 	}
@@ -499,6 +603,48 @@ func (s Store) Delete(ctx context.Context, access app.Access, chatID string) err
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// Rename changes a chat's custom title under row security: a chat this
+// person can see but not edit is locked out, so it answers ErrSay.
+func (s Store) Rename(ctx context.Context, access app.Access, chatID, title string) (app.ChatSummary, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return app.ChatSummary{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockChat(ctx, tx, chatID); err != nil {
+		return app.ChatSummary{}, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE chat.chats SET title = $2 WHERE id = $1::uuid`, chatID, title)
+	if err != nil {
+		return app.ChatSummary{}, fmt.Errorf("chat: rename: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return app.ChatSummary{}, goneOrSay(ctx, tx, chatID)
+	}
+	// The title is content: the event records the field name alone.
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ChatUpdate,
+		Outcome:  audit.Success,
+		TargetID: chatID,
+		Changes:  audit.Changes{Fields: []string{"title"}},
+	}); err != nil {
+		return app.ChatSummary{}, err
+	}
+	var newest string
+	var lastActivity time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE((SELECT body FROM chat.lines AS line WHERE line.chat_id = chat.id ORDER BY line.seq DESC LIMIT 1), ''),
+		       COALESCE((SELECT line.at FROM chat.lines AS line WHERE line.chat_id = chat.id ORDER BY line.seq DESC LIMIT 1), chat.created_at)
+		FROM chat.chats AS chat WHERE chat.id = $1::uuid`, chatID).Scan(&newest, &lastActivity); err != nil {
+		return app.ChatSummary{}, fmt.Errorf("chat: rename: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return app.ChatSummary{}, err
+	}
+	return app.ChatSummary{ID: chatID, Title: title, Preview: domain.Preview(newest), LastActivity: lastActivity.UTC()}, nil
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {

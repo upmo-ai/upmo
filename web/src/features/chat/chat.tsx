@@ -1,6 +1,6 @@
 import { Anchor, Card, Stack, Text, ThemeIcon, Title, useMantineTheme } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-import { IconLayoutSidebar, IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
+import { IconLayoutSidebar, IconPencil, IconPlus, IconSearch, IconServer, IconTrash } from "@tabler/icons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
@@ -122,6 +122,13 @@ export function ChatPage() {
   const [selectedId, setSelectedId] = useState<string>();
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // The rename form is open with its text as the new title; the delete form
+  // asks its question while `deleting` is on.
+  const [renaming, setRenaming] = useState(false);
+  const [renameText, setRenameText] = useState("");
+  const [renameError, setRenameError] = useState<string>();
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string>();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -192,9 +199,10 @@ export function ChatPage() {
   }, [phone, sidebarOpen, collapse]);
 
   // Grouped as the data is read, so the days follow the clock whenever the list does.
+  // The query key carries the search text, so a new query fetches a new list.
   const chats = useQuery({
-    queryKey: chatsQueryKey(),
-    queryFn: () => api.chats.list(),
+    queryKey: chatsQueryKey(query),
+    queryFn: () => api.chats.list(query),
     select: (items) => ({ items, days: groupByDay(items, new Date()) }),
   });
   const list = chats.data?.items ?? noChats;
@@ -352,6 +360,32 @@ export function ChatPage() {
     },
   });
 
+  const rename = useWrite(
+    (input: { id: string; title: string }) => api.chats.rename(input.id, input.title),
+    [chatsQueryKey(), chatQueryKey(activeId ?? "")],
+    {
+      onSuccess: () => {
+        setRenameError(undefined);
+        setRenaming(false);
+        setRenameText("");
+      },
+      onError: (error) => setRenameError(sendRefusal(error)),
+    },
+  );
+
+  const remove = useWrite(
+    (id: string) => api.chats.remove(id),
+    [chatsQueryKey()],
+    {
+      onSuccess: (_, id) => {
+        setDeleting(false);
+        setDeleteError(undefined);
+        if (selectedId === id) setSelectedId(undefined);
+      },
+      onError: (error) => setDeleteError(sendRefusal(error)),
+    },
+  );
+
   // The reply has landed in the chat it was awaited in: read it out, and bring
   // the list's preview and time up to date.
   useEffect(() => {
@@ -363,13 +397,9 @@ export function ChatPage() {
     void queryClient.invalidateQueries({ queryKey: chatsQueryKey() });
   }, [lines, activeId, queryClient]);
 
+  // The server answers the search: no client-side filtering of the list.
   const needle = query.trim().toLocaleLowerCase("en-GB");
-  const days = (chats.data?.days ?? [])
-    .map((group) => ({
-      ...group,
-      chats: group.chats.filter((chat) => chat.title.toLocaleLowerCase("en-GB").includes(needle)),
-    }))
-    .filter((group) => group.chats.length > 0);
+  const days = chats.data?.days ?? [];
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(event.currentTarget.files ?? []);
@@ -422,6 +452,27 @@ export function ChatPage() {
       return;
     }
     create.mutate();
+  };
+
+  const openRename = () => {
+    setRenameText(activeChat?.title ?? "");
+    setRenameError(undefined);
+    setRenaming(true);
+  };
+
+  const submitRename = () => {
+    if (!activeId || !renameText.trim() || rename.isPending) return;
+    rename.mutate({ id: activeId, title: renameText.trim() });
+  };
+
+  const openDelete = () => {
+    setDeleteError(undefined);
+    setDeleting(true);
+  };
+
+  const confirmDelete = () => {
+    if (!activeId || remove.isPending) return;
+    remove.mutate(activeId);
   };
 
   return (
@@ -526,14 +577,62 @@ export function ChatPage() {
                   <IconLayoutSidebar size={16} stroke={1.75} aria-hidden="true" />
                 </IconButton>
               </span>
-              <Title order={2} id="current-chat-title" className="chat-thread-title">
-                {activeChat?.title ?? "Chat"}
-              </Title>
+              {renaming && thread.data?.can_edit ? (
+                <form
+                  className="chat-rename"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitRename();
+                  }}
+                >
+                  <Input
+                    size="xs"
+                    aria-label="New chat title"
+                    value={renameText}
+                    onChange={(event) => setRenameText(event.currentTarget.value)}
+                    rightSection={
+                      <Button type="submit" size="xs" variant="filled" disabled={!renameText.trim() || rename.isPending}>
+                        Save
+                      </Button>
+                    }
+                  />
+                  {renameError ? <Text c="red" size="xs">{renameError}</Text> : null}
+                </form>
+              ) : (
+                <>
+                  <Title order={2} id="current-chat-title" className="chat-thread-title">
+                    {activeChat?.title ?? "Chat"}
+                  </Title>
+                  {thread.data?.can_edit ? (
+                    <IconButton aria-label="Rename chat" variant="subtle" size={28} className="chat-head-btn chat-rename-btn" onClick={openRename}>
+                      <IconPencil size={16} stroke={1.75} aria-hidden="true" />
+                    </IconButton>
+                  ) : null}
+                </>
+              )}
             </div>
             {activeChat ? (
               <Button variant="subtle" size="xs" onClick={() => setSharingId(activeChat.id)}>
                 Share
               </Button>
+            ) : null}
+            {thread.data?.can_delete ? deleting ? (
+              <div className="chat-delete">
+                {deleteError ? <Text c="red" size="xs">{deleteError}</Text> : null}
+                <Text c="red" size="xs">
+                  Delete this chat?
+                </Text>
+                <Button size="xs" variant="default" aria-label="Confirm delete chat" onClick={confirmDelete}>
+                  Delete
+                </Button>
+                <Button size="xs" variant="subtle" aria-label="Cancel delete chat" onClick={() => setDeleting(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <IconButton aria-label="Delete chat" variant="subtle" size={28} className="chat-head-btn chat-delete-btn" onClick={openDelete}>
+                <IconTrash size={16} stroke={1.75} aria-hidden="true" />
+              </IconButton>
             ) : null}
           </div>
 

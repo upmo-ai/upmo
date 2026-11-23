@@ -246,7 +246,7 @@ export function useChatStream(chatId: string | undefined): StreamState {
       const line = parseLine(event.data);
       if (line === null) return;
       await apply((cached) => withLine(cached, line));
-      if (line.role === "assistant") void queryClient.invalidateQueries({ queryKey: chatsQueryKey(), exact: true });
+      if (line.role === "assistant") void queryClient.invalidateQueries({ queryKey: chatsQueryKey() });
     });
     source.addEventListener("end", () => {
       // Nothing follows: close before the browser reconnects, and read the chat

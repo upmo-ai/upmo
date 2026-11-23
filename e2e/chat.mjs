@@ -388,10 +388,46 @@ try {
   await messageLog(page).getByText("Plan the offsite", { exact: true }).waitFor();
   await expectComposerOnScreen(page, "UPM-201 after a new chat's line");
 
+  // Server search: "lead times" appears only in the assistant line of the
+  // supplier-prices chat, so the sidebar button returns for the query.
+  const searchBox = () => page.getByRole("textbox", { name: "Search chats" });
+  await searchBox().fill("lead times");
+  await until("UPM-320 search returns the body-matched chat", async () => {
+    const found = await list.getByRole("button", { name: "Summarize the supplier prices" }).count();
+    return { ok: found > 0 };
+  });
+  await searchBox().fill("");
+  await list.getByRole("button", { name: "Plan the offsite" }).click();
+  await page.getByRole("heading", { level: 2, name: "Plan the offsite" }).waitFor();
+
+  // Rename through the thread header: the heading and the sidebar show the new title.
+  await page.getByRole("button", { name: "Rename chat" }).click();
+  await page.getByRole("textbox", { name: "New chat title" }).fill("Q4 Offsite Plan");
+  await page.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("heading", { level: 2, name: "Q4 Offsite Plan" }).waitFor();
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("heading", { level: 2, name: "Q4 Offsite Plan" }).waitFor();
+  if ((await list.getByRole("button", { name: "Q4 Offsite Plan" }).count()) === 0) {
+    throw new Error("UPM-320: the renamed chat is not in the sidebar after reload");
+  }
+
+  // Delete through the thread header with a confirmation, and the chat stays gone after a reload.
+  await page.getByRole("button", { name: "Delete chat" }).click();
+  await page.getByRole("button", { name: "Confirm delete chat" }).click();
+  await until("UPM-320 the deleted chat leaves the sidebar", async () => {
+    const gone = (await page.getByRole("button", { name: "Q4 Offsite Plan" }).count()) === 0;
+    return { ok: gone };
+  });
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+  await until("UPM-320 the deleted chat stays gone", async () => {
+    const gone = (await page.getByRole("button", { name: "Q4 Offsite Plan" }).count()) === 0;
+    return { ok: gone };
+  });
+
   // Phone width: the list is a drawer that starts shut, opens from the thread
   // header, and shuts again once a chat is picked.
   await page.setViewportSize({ width: 390, height: 800 });
-  await openFreshChatPage(page, "Plan the offsite");
+  await openFreshChatPage(page, closeTitle);
   await until("UPM-201 drawer starts shut", async () => {
     const d = await drawer(page);
     return { ok: drawerShut(d), ...d };

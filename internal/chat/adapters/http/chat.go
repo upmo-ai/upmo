@@ -44,6 +44,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("POST /api/chats/{id}/stop", wrap(http.HandlerFunc(h.stop)))
 	mux.Handle("POST /api/chats/{id}/holds/{hold}/approve", wrap(http.HandlerFunc(h.approveHold)))
 	mux.Handle("POST /api/chats/{id}/holds/{hold}/deny", wrap(http.HandlerFunc(h.denyHold)))
+	mux.Handle("PATCH /api/chats/{id}", wrap(http.HandlerFunc(h.update)))
 	mux.Handle("DELETE /api/chats/{id}", wrap(http.HandlerFunc(h.delete)))
 	mux.Handle("GET /api/chats/{id}", wrap(http.HandlerFunc(h.read)))
 	mux.Handle("GET /api/chats/{id}/share", wrap(http.HandlerFunc(h.share)))
@@ -120,7 +121,7 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	summaries, err := app.List(r.Context(), h.Book, access)
+	summaries, err := app.Search(r.Context(), h.Book, access, r.URL.Query().Get("q"))
 	if refuse(w, err) {
 		return
 	}
@@ -142,6 +143,26 @@ func baseMediaType(raw string) string {
 		raw = raw[:i]
 	}
 	return strings.TrimSpace(strings.ToLower(raw))
+}
+
+// update renames the chat's custom title, as the person whose rights allow it.
+func (h Handler) update(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Title *string `json:"title"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Title == nil {
+		writeError(w, http.StatusBadRequest, "the chat input was refused")
+		return
+	}
+	summary, err := app.Rename(r.Context(), h.Book, access, r.PathValue("id"), *input.Title)
+	if refuse(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, summaryBody(summary))
 }
 
 func (h Handler) say(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +380,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusConflict, "a reply is already on its way")
 	case errors.Is(err, app.ErrReplies):
 		writeError(w, http.StatusServiceUnavailable, "replies are off")
-	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrLine), errors.Is(err, domain.ErrRoute),
+	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrTitle), errors.Is(err, domain.ErrQuery),
+		errors.Is(err, domain.ErrLine), errors.Is(err, domain.ErrRoute),
 		errors.Is(err, domain.ErrPin), errors.Is(err, domain.ErrAgent),
 		errors.Is(err, domain.ErrAttachment), errors.Is(err, domain.ErrAttachmentSize):
 		writeError(w, http.StatusBadRequest, "the chat input was refused")

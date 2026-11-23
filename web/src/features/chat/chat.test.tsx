@@ -502,17 +502,102 @@ describe("UPM-201 chats from the API", () => {
     expect(within(messageLog()).getByText("Stay on this chat")).toBeTruthy();
   });
 
-  it("UPM-201 filters the list by title and says when nothing matches", async () => {
-    renderChat();
+  it("UPM-320 typing in the search calls api.chats.list(query)", async () => {
+    const base = quick();
+    const list = vi.fn<ApiClient["chats"]["list"]>(base.chats.list);
+    const client: ApiClient = { ...base, chats: { ...base.chats, list } };
+    renderChat("/chat", client);
+    const nav = await findChatList();
+    await within(nav).findByRole("button", { name: /Roadmap priorities/ });
+
+    fireEvent.change(within(nav).getByRole("textbox", { name: "Search chats" }), { target: { value: "supplier" } });
+    await waitFor(() => expect(list).toHaveBeenCalledWith("supplier"));
+  });
+
+  it("UPM-320 shows the server's body match in the list, even when the title has no query", async () => {
+    const match: ChatSummary = {
+      id: "q3",
+      title: "Quarterly numbers",
+      preview: "Revenue is up.",
+      last_activity: new Date().toISOString(),
+    };
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        list: async (query?: string) => (query?.trim() === "lead times" ? [match] : []),
+      },
+    };
+    renderChat("/chat", client);
+    const nav = await findChatList();
+    await within(nav).findByText("No chats yet.");
+
+    fireEvent.change(within(nav).getByRole("textbox", { name: "Search chats" }), { target: { value: "lead times" } });
+    expect(await within(nav).findByRole("button", { name: /Quarterly numbers/ })).toBeTruthy();
+    expect(within(nav).queryByRole("button", { name: /Roadmap priorities/ })).toBeNull();
+
+    fireEvent.change(within(nav).getByRole("textbox", { name: "Search chats" }), { target: { value: "zzz" } });
+    expect(await within(nav).findByText("No chats match.")).toBeTruthy();
+  });
+
+  it("UPM-320 clicking Rename chat and saving the title updates the header and the sidebar", async () => {
+    const base = quick();
+    const rename = vi.fn<ApiClient["chats"]["rename"]>(base.chats.rename);
+    const client: ApiClient = { ...base, chats: { ...base.chats, rename } };
+    renderChat("/chat", client);
     const list = await findChatList();
     await within(list).findByRole("button", { name: /Roadmap priorities/ });
 
-    fireEvent.change(within(list).getByRole("textbox", { name: "Search chats" }), { target: { value: "supplier" } });
-    expect(within(list).getByRole("button", { name: /Supplier review/ })).toBeTruthy();
-    expect(within(list).queryByRole("button", { name: /Roadmap priorities/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Rename chat" }));
+    const input = screen.getByRole("textbox", { name: "New chat title" }) as HTMLInputElement;
+    expect(input.value).toBe("Roadmap priorities");
+    fireEvent.change(input, { target: { value: "Q4 Planning" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    fireEvent.change(within(list).getByRole("textbox", { name: "Search chats" }), { target: { value: "zzz" } });
-    expect(within(list).getByText("No chats match.")).toBeTruthy();
+    await waitFor(() => expect(rename).toHaveBeenCalledWith("roadmap-priorities", "Q4 Planning"));
+    expect(await screen.findByRole("heading", { level: 2, name: "Q4 Planning" })).toBeTruthy();
+    await waitFor(() => expect(within(list).getByRole("button", { name: /Q4 Planning/ })).toBeTruthy());
+  });
+
+  it("shows chat controls only when the current person can edit or delete", async () => {
+    const base = quick();
+    const viewer: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async get(id): Promise<Chat> {
+          return { ...(await base.chats.get(id)), can_edit: false, can_delete: false };
+        },
+      },
+    };
+    renderChat("/chat", viewer);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+    await within(messageLog()).findByText(/Summarize the launch notes/);
+    expect(screen.queryByRole("button", { name: "Rename chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete chat" })).toBeNull();
+
+    cleanup();
+    renderChat();
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+    expect(await screen.findByRole("button", { name: "Rename chat" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete chat" })).toBeTruthy();
+  });
+
+  it("UPM-320 clicking Delete chat and confirming calls remove and drops the chat from the sidebar", async () => {
+    const base = quick();
+    const remove = vi.fn<ApiClient["chats"]["remove"]>(base.chats.remove);
+    const client: ApiClient = { ...base, chats: { ...base.chats, remove } };
+    renderChat("/chat", client);
+    const list = await findChatList();
+    await within(list).findByRole("button", { name: /Roadmap priorities/ });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+    expect(screen.getByRole("button", { name: "Confirm delete chat" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete chat" }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("roadmap-priorities"));
+    await waitFor(() => expect(within(list).queryByRole("button", { name: /Roadmap priorities/ })).toBeNull());
   });
 });
 

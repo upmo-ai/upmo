@@ -4,7 +4,10 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -12,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/chat"
+	httpapi "github.com/upmo-ai/upmo/internal/chat/adapters/http"
 	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -80,6 +85,56 @@ func TestOpenLeavesTheSession(t *testing.T) {
 	_, err = owner.Exec(ctx, `UPDATE chat.lines SET body = 'changed' WHERE chat_id = $1`, id)
 	if err == nil || !strings.Contains(err.Error(), "chat: writer") {
 		t.Fatalf("line rewrite error = %v", err)
+	}
+}
+
+func TestGetChatReturnsStoredLines(t *testing.T) {
+	owner := up(t)
+	store := quietStore(t, owner)
+	ctx := context.Background()
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, runID := claimRun(t, ctx, store, owner, opened.ID)
+	if err := store.PutDelta(ctx, ownerAccess, claim, 1, "text", "The stored answer."); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitRound(ctx, ownerAccess, claim, app.RoundCommit{
+		Turn: agentloop.TurnCommit{
+			RunID: runID, ObjectID: opened.ID, UserID: ownerUser, SeqStart: 1,
+			Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "The stored answer."}}, Model: "m1",
+		},
+		Tail: app.Pending{Seq: 1, Text: "The stored answer."},
+		End:  app.RoundDone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	ownerAccessWithDelete := ownerAccess
+	ownerAccessWithDelete.Allow += ",chat:delete"
+	(httpapi.Handler{Book: store, Access: func(*http.Request) (app.Access, bool) { return ownerAccessWithDelete, true }}).Mount(mux, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chats/"+opened.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/chats/{id} = %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		CanEdit   bool `json:"can_edit"`
+		CanDelete bool `json:"can_delete"`
+		Lines     []struct {
+			Body string `json:"body"`
+		} `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Lines) != 2 || body.Lines[0].Body != "hello" || body.Lines[1].Body != "The stored answer." {
+		t.Fatalf("GET chat lines = %+v", body.Lines)
+	}
+	if !body.CanEdit || !body.CanDelete {
+		t.Fatalf("GET chat permissions = edit:%v delete:%v", body.CanEdit, body.CanDelete)
 	}
 }
 
@@ -311,5 +366,144 @@ func TestLinesBodyCheckEnforces32000UserAnd64000AssistantRunesAsAppRole(t *testi
 		return err
 	}); err != nil {
 		t.Fatalf("64000 assistant insert err = %v", err)
+	}
+}
+
+func insertUser(t *testing.T, pool *pgxpool.Pool, id, email, role string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now())
+		ON CONFLICT (id) DO NOTHING`, id, email, role); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChatRenameUpdatesTitleAndSealsAuditWithoutContentLeak(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	store := quietStore(t, owner)
+
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "First user question", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The list shows the chat's derived title.
+	derived, err := app.List(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(derived) != 1 || derived[0].ID != opened.ID || derived[0].Title != "First user question" {
+		t.Fatalf("derived = %+v", derived)
+	}
+
+	renamed, err := app.Rename(ctx, store, ownerAccess, opened.ID, "Q4 Planning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Title != "Q4 Planning" {
+		t.Fatalf("rename = %+v", renamed)
+	}
+	listed, err := app.List(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Title != "Q4 Planning" {
+		t.Fatalf("list = %+v", listed)
+	}
+	read, err := app.Read(ctx, store, ownerAccess, opened.ID)
+	if err != nil || read.Title != "Q4 Planning" {
+		t.Fatalf("read = %+v %v", read, err)
+	}
+
+	// The 60-rune limit is the Postgres check constraint, not just the domain.
+	if _, err := owner.Exec(ctx, `UPDATE chat.chats SET title = repeat('a', 61) WHERE id = $1::uuid`, opened.ID); err == nil || !strings.Contains(err.Error(), "chats_title_check") {
+		t.Fatalf("61-rune title update = %v", err)
+	}
+
+	// A shared editor renames, and a viewer cannot.
+	insertUser(t, owner, ownerUser, "rename-owner@example.com", "owner")
+	insertUser(t, owner, otherUser, "rename-editor@example.com", "member")
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, opened.ID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	editor := app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + opened.ID + "}", SharedEdit: "{" + opened.ID + "}"}
+	if _, err := app.Rename(ctx, store, editor, opened.ID, "Q4 Review"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = app.List(ctx, store, ownerAccess)
+	if err != nil || len(listed) != 1 || listed[0].Title != "Q4 Review" {
+		t.Fatalf("editor rename = %+v %v", listed, err)
+	}
+	viewer := app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + opened.ID + "}"}
+	if _, err := app.Rename(ctx, store, viewer, opened.ID, "nope"); !errors.Is(err, app.ErrSay) {
+		t.Fatalf("viewer rename error = %v", err)
+	}
+}
+
+func TestChatServerSearchMatchesTitleAndLineBodyUnderRLS(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	store := quietStore(t, owner)
+
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO chat.lines (chat_id, seq, role, body, model)
+		VALUES ($1::uuid, 1, 'assistant', 'The release date is November 30.', 'm')`, opened.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Rename(ctx, store, ownerAccess, opened.ID, "Roadmap"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chat B is another person's private chat, and it matches the query too.
+	creator := app.Access{UserID: otherUser, Allow: "chat:create,chat:view,chat:edit"}
+	other, err := app.Open(ctx, store, creator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO chat.lines (chat_id, seq, role, body)
+		VALUES ($1::uuid, 1, 'user', 'November 30 secret launch.')`, other.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := func(summaries []app.ChatSummary) []string {
+		got := make([]string, 0, len(summaries))
+		for _, summary := range summaries {
+			got = append(got, summary.ID)
+		}
+		return got
+	}
+
+	got, err := app.Search(ctx, store, ownerAccess, "Roadmap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != opened.ID || got[0].Title != "Roadmap" {
+		t.Fatalf("Roadmap = %v", ids(got))
+	}
+
+	got, err = app.Search(ctx, store, ownerAccess, "November")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != opened.ID {
+		t.Fatalf("November = %v", ids(got))
+	}
+
+	got, err = app.Search(ctx, store, ownerAccess, "nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("nonexistent = %v", ids(got))
 	}
 }

@@ -734,8 +734,8 @@ export interface ApiClient {
     remove(id: string): Promise<void>;
   };
   chats: {
-    /** GET /api/chats, newest activity first. */
-    list(): Promise<ChatSummary[]>;
+    /** GET /api/chats, newest activity first, or the server's matches for the trimmed query. */
+    list(query?: string): Promise<ChatSummary[]>;
     /** POST /api/chats. An empty chat titled "New chat". */
     create(): Promise<ChatSummary>;
     /** GET /api/chats/{id}. Lines are oldest first. */
@@ -757,6 +757,10 @@ export interface ApiClient {
     getShare(id: string): Promise<TaskShare>;
     /** PUT /api/chats/{id}/share. Owner only; 409 while a reply run is active. */
     putShare(id: string, update: ShareUpdate): Promise<TaskShare>;
+    /** PATCH /api/chats/{id}: rename the chat title (1..60 runes). */
+    rename(id: string, title: string): Promise<ChatSummary>;
+    /** DELETE /api/chats/{id}. */
+    remove(id: string): Promise<void>;
     /**
      * True while an assistant line is written on its own after a send, so a
      * reply is worth waiting for: the stub's is, the brain's is not yet.
@@ -930,8 +934,9 @@ export function knowledgeSearchQueryKey(folderId: string, query: string) {
   return ["knowledge", "search", folderId, query] as const;
 }
 
-export function chatsQueryKey() {
-  return CHATS_KEY;
+export function chatsQueryKey(query?: string) {
+  const q = query?.trim() ?? "";
+  return q === "" ? CHATS_KEY : ([...CHATS_KEY, { q }] as const);
 }
 
 export function chatQueryKey(id: string) {

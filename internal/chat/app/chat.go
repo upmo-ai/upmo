@@ -124,8 +124,11 @@ type ChatSummary struct {
 
 // Chat is one owned chat and its lines, oldest first.
 type Chat struct {
-	ID    string
-	Lines []Line
+	ID        string
+	Title     string
+	Lines     []Line
+	CanEdit   bool
+	CanDelete bool
 	// Tainted and PrivateRead are what the chat has read so far: untrusted
 	// text, and another person's private data. They only turn on.
 	Tainted     bool
@@ -147,6 +150,8 @@ type Hold struct {
 type Book interface {
 	Open(ctx context.Context, access Access) (ChatSummary, error)
 	List(ctx context.Context, access Access) ([]ChatSummary, error)
+	Search(ctx context.Context, access Access, query string) ([]ChatSummary, error)
+	Rename(ctx context.Context, access Access, chatID, title string) (ChatSummary, error)
 	Say(ctx context.Context, access Access, chatID, body string, picks Picks) error
 	Retry(ctx context.Context, access Access, chatID, lineID string, picks *Picks) error
 	Stop(ctx context.Context, access Access, chatID string) error
@@ -213,6 +218,22 @@ func Delete(ctx context.Context, book Book, access Access, chatID string) error 
 	return book.Delete(ctx, access, chatID)
 }
 
+// Rename changes a chat's custom title. The store answers a chat this person
+// can only view with ErrSay, so the handler can answer 403.
+func Rename(ctx context.Context, book Book, access Access, chatID, title string) (ChatSummary, error) {
+	if err := caller(access); err != nil {
+		return ChatSummary{}, err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ChatSummary{}, ErrChat
+	}
+	clean, err := domain.CustomTitle(trustfence.NeutralizeSlot(title))
+	if err != nil {
+		return ChatSummary{}, err
+	}
+	return book.Rename(ctx, access, chatID, clean)
+}
+
 // Open starts a chat for this person. The profile stays in memory and is read when a turn is built.
 // It does not open a login session.
 func Open(ctx context.Context, book Book, access Access) (ChatSummary, error) {
@@ -229,10 +250,25 @@ func Open(ctx context.Context, book Book, access Access) (ChatSummary, error) {
 
 // List returns the chats this person can view, newest activity first.
 func List(ctx context.Context, book Book, access Access) ([]ChatSummary, error) {
+	return Search(ctx, book, access, "")
+}
+
+// Search returns the chats this person can view whose title or line body
+// matches the query, newest activity first. An empty query lists all.
+func Search(ctx context.Context, book Book, access Access, query string) ([]ChatSummary, error) {
 	if err := caller(access); err != nil {
 		return nil, err
 	}
-	got, err := book.List(ctx, access)
+	q, err := domain.SearchQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	var got []ChatSummary
+	if q == "" {
+		got, err = book.List(ctx, access)
+	} else {
+		got, err = book.Search(ctx, access, q)
+	}
 	if err != nil {
 		return nil, err
 	}

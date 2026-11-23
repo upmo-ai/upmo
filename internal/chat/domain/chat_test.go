@@ -39,6 +39,44 @@ func TestTitleNamesAChatAfterItsFirstUserLine(t *testing.T) {
 	}
 }
 
+func TestCustomTitleAndSearchQueryValidation(t *testing.T) {
+	for name, raw := range map[string]string{
+		"empty":        "",
+		"spaces":       " \t\n ",
+		"61 a runes":   strings.Repeat("a", TitleRunes+1),
+		"61 CJK runes": strings.Repeat("世", TitleRunes+1),
+	} {
+		if _, err := CustomTitle(raw); !errors.Is(err, ErrTitle) {
+			t.Errorf("%s: error = %v", name, err)
+		}
+	}
+	if got, err := CustomTitle("  Q4 \t Planning  "); err != nil || got != "Q4 Planning" {
+		t.Fatalf("title = %q, %v", got, err)
+	}
+	if got, err := CustomTitle(strings.Repeat("世", TitleRunes)); err != nil || got != strings.Repeat("世", TitleRunes) {
+		t.Fatalf("title = %q, %v", got, err)
+	}
+	if got := DisplayTitle(" Q4 Planning ", "First user line"); got != "Q4 Planning" {
+		t.Fatalf("display title = %q", got)
+	}
+	if got := DisplayTitle("", "  First user line  "); got != "First user line" {
+		t.Fatalf("derived display title = %q", got)
+	}
+
+	if _, err := SearchQuery("   lead  times "); err != nil {
+		t.Fatalf("query error = %v", err)
+	}
+	if got, err := SearchQuery(""); err != nil || got != "" {
+		t.Fatalf("empty query = %q, %v", got, err)
+	}
+	if got, err := SearchQuery(strings.Repeat("q", QueryRunes)); err != nil || len(got) != QueryRunes {
+		t.Fatalf("max query = %d, %v", len(got), err)
+	}
+	if _, err := SearchQuery(strings.Repeat("q", QueryRunes+1)); !errors.Is(err, ErrQuery) {
+		t.Fatalf("long query error = %v", err)
+	}
+}
+
 func TestPreviewCarriesTheNewestLine(t *testing.T) {
 	tests := []struct {
 		name string

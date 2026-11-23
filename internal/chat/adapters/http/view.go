@@ -18,9 +18,12 @@ type summaryJSON struct {
 // chatJSON is one chat in full.
 type chatJSON struct {
 	ID          string     `json:"id"`
+	Title       string     `json:"title"`
 	Lines       []lineJSON `json:"lines"`
 	Tainted     bool       `json:"tainted"`
 	PrivateRead bool       `json:"private_read"`
+	CanEdit     bool       `json:"can_edit"`
+	CanDelete   bool       `json:"can_delete"`
 	Hold        *holdJSON  `json:"hold"`
 }
 
@@ -101,7 +104,7 @@ func summaryBody(summary app.ChatSummary) summaryJSON {
 }
 
 func chatBody(chat app.Chat) chatJSON {
-	body := chatJSON{ID: chat.ID, Lines: make([]lineJSON, 0, len(chat.Lines)), Tainted: chat.Tainted, PrivateRead: chat.PrivateRead}
+	body := chatJSON{ID: chat.ID, Title: chat.Title, Lines: make([]lineJSON, 0, len(chat.Lines)), Tainted: chat.Tainted, PrivateRead: chat.PrivateRead, CanEdit: chat.CanEdit, CanDelete: chat.CanDelete}
 	if chat.Hold != nil {
 		hold := chat.Hold
 		body.Hold = &holdJSON{ID: hold.ID, LineID: hold.LineID, Reason: hold.Reason, Action: hold.Action, Preview: hold.Preview, UntrustedOrigin: hold.UntrustedOrigin, CanAllowForChat: hold.CanAllowForChat, Calls: make([]holdCallJSON, 0, len(hold.Calls))}

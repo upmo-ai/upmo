@@ -302,6 +302,15 @@ describe("toChat and toChatLine", () => {
     });
   });
 
+  it("keeps the chat edit and delete permissions", () => {
+    expect(toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: [], can_edit: true, can_delete: false })).toEqual({
+      id: "01990000-0000-7000-8000-0000000000c1",
+      lines: [],
+      can_edit: true,
+      can_delete: false,
+    });
+  });
+
   it("keeps a reply's status, the line it answers and the models it tried", () => {
     const failed = {
       ...assistantLine,
@@ -374,6 +383,12 @@ describe("toChat and toChatLine", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+
+  });
+  it("reads a custom title the brain sends, and leaves it out when the title is derived", () => {
+    const chat = { id: "01990000-0000-7000-8000-0000000000c1", title: "Q4 Planning", lines: [userLine] };
+    expect(toChat(chat)).toEqual(chat);
+    expect(toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: [userLine] }).title).toBeUndefined();
   });
 });
 
@@ -873,5 +888,53 @@ describe("createBrainApi artifacts", () => {
     expect(api.artifacts.downloadUrl("run-notes")).toBe(stub.artifacts.downloadUrl("run-notes"));
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("/api/tasks");
+  });
+});
+
+describe("createBrainApi chats", () => {
+  const summary = {
+    id: "01990000-0000-7000-8000-0000000000c1",
+    title: "Roadmap",
+    preview: "Revenue is up.",
+    last_activity: "2026-11-08T09:10:00Z",
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the chats by server search, renames and removes them", async () => {
+    const calls: string[] = [];
+    let renameBody: string | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        calls.push(`${init?.method ?? "GET"} ${path}`);
+        expect(init?.credentials).toBe("include");
+        if (path === "/api/tasks") return Response.json([]);
+        if (path === "/api/chats?q=Roadmap") return Response.json([summary]);
+        if (path === `/api/chats/${summary.id}` && init?.method === "PATCH") {
+          if (typeof init?.body === "string") renameBody = init.body;
+          return Response.json({ ...summary, title: "Q4 Planning" });
+        }
+        if (path === `/api/chats/${summary.id}` && init?.method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ error: "no such chat" }, { status: 404 });
+      }),
+    );
+
+    const api = createBrainApi();
+    expect(await api.chats.list("Roadmap")).toEqual([summary]);
+    expect(await api.chats.rename(summary.id, "Q4 Planning")).toEqual({ ...summary, title: "Q4 Planning" });
+    expect(renameBody).toBe(JSON.stringify({ title: "Q4 Planning" }));
+    await api.chats.remove(summary.id);
+    expect(calls).toEqual([
+      "GET /api/tasks",
+      "GET /api/chats?q=Roadmap",
+      `PATCH /api/chats/${summary.id}`,
+      `DELETE /api/chats/${summary.id}`,
+    ]);
   });
 });

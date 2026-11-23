@@ -253,9 +253,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.chats": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "rolling_summary", "summary_up_to_line_id", "summary_up_to_seq", "tainted", "visibility", "visibility_team_id"},
-			Insert: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "rolling_summary", "summary_up_to_line_id", "summary_up_to_seq", "tainted", "visibility", "visibility_team_id"},
-			Update: []string{"id", "object_type", "visibility", "visibility_team_id"},
+			Select: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "rolling_summary", "summary_up_to_line_id", "summary_up_to_seq", "tainted", "title", "visibility", "visibility_team_id"},
+			Insert: []string{"created_at", "id", "object_type", "owner_user_id", "private_read", "rolling_summary", "summary_up_to_line_id", "summary_up_to_seq", "tainted", "title", "visibility", "visibility_team_id"},
+			Update: []string{"id", "object_type", "title", "visibility", "visibility_team_id"},
 		},
 		"chat.deltas": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
@@ -276,8 +276,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.lines": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"agent_id", "at", "attachments", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
-			Insert: []string{"agent_id", "at", "attachments", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
+			Select: []string{"agent_id", "at", "attachments", "attempts", "author_id", "body", "body_tsv", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
+			Insert: []string{"agent_id", "at", "attachments", "attempts", "author_id", "body", "body_tsv", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
 		},
 		"chat.runs": {
 			Table:  []string{"INSERT", "SELECT"},
