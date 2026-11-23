@@ -414,6 +414,22 @@ try {
   await expectNoSideScroll(page, "UPM-201 at 390x800 after a line");
   await page.setViewportSize(viewport);
 
+  // UPM-318: attach an in-memory .md file via the composer file input, send,
+  // and verify the attachment badge renders and persists across reload.
+  await openFreshChatPage(page, pricesTitle);
+  await page.locator('input[type="file"][aria-label="Attach files"]').setInputFiles({
+    name: "notes.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from("Close checklist item 1"),
+  });
+  await page.getByRole("list", { name: "Selected attachments" }).getByText("notes.md", { exact: true }).waitFor();
+  await send(page, "Review attached notes");
+  await messageLog(page).getByText("notes.md", { exact: true }).waitFor();
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.getByRole("heading", { level: 2, name: pricesTitle }).waitFor();
+  await messageLog(page).getByText("Review attached notes", { exact: true }).waitFor();
+  await messageLog(page).getByText("notes.md", { exact: true }).waitFor();
+
   console.log("chat check passed");
 } finally {
   await browser.close();

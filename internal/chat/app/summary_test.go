@@ -62,3 +62,33 @@ func TestFallbackDropExchangesFailsAfterBoundedDrops(t *testing.T) {
 		t.Fatalf("error = %#v", err)
 	}
 }
+
+func TestCutForSummaryCountsAttachmentTokensAndIncludesAttachmentsInTranscript(t *testing.T) {
+	extracted := `<untrust source="attachment">` + strings.Repeat("budget ", 400) + `</untrust>`
+	lines := []Line{
+		{ID: "1", Seq: 1, Role: "user", Body: "see attached", Attachments: []domain.Attachment{
+			{ID: "f1", Name: "{{notes}}.md", Mime: "text/markdown", SizeBytes: 100, SHA256: "abc", Extracted: extracted},
+		}},
+		{ID: "2", Seq: 2, Role: "assistant", Body: "ok"},
+		{ID: "3", Seq: 3, Role: "user", Body: "second"},
+		{ID: "4", Seq: 4, Role: "assistant", Body: "ok"},
+		{ID: "5", Seq: 5, Role: "user", Body: "now"},
+	}
+
+	// Body alone is tiny (< 10% of window=1000), so only attachment text crosses the 60% threshold.
+	if got := LineTokens(lines[0]); got <= agentloop.TokenEstimate(lines[0].Body) {
+		t.Fatalf("LineTokens = %d, did not count attachment text", got)
+	}
+	prompt := LinePromptText(lines[0])
+	if !strings.Contains(prompt, "Attachment ({ {notes}}.md):\n"+extracted) {
+		t.Fatalf("LinePromptText = %q", prompt)
+	}
+	cut, keep, id, seq, needed := CutForSummary(lines, "", 1000)
+	if !needed || len(cut) != 2 || len(keep) != 3 || id != "2" || seq != 2 {
+		t.Fatalf("CutForSummary = cut %d keep %d id %q seq %d needed %v", len(cut), len(keep), id, seq, needed)
+	}
+	transcript := BuildSummarizerTranscript("", cut)
+	if !strings.Contains(transcript, "Attachment ({ {notes}}.md):") || !strings.Contains(transcript, "budget budget") {
+		t.Fatalf("BuildSummarizerTranscript omitted attachment text: %q", transcript)
+	}
+}

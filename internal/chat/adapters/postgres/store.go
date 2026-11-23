@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,17 +84,46 @@ func (s Store) Say(ctx context.Context, access app.Access, chatID, body string, 
 			return err
 		}
 	}
+	lineUUID, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	lineID := lineUUID.String()
+	atts := slices.Clone(picks.Attachments)
+	var rawAttachments []byte
+	if len(atts) > 0 {
+		for i := range atts {
+			var findingID string
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO chat.findings (chat_id, line_id, kind, title, body, source_ref, untrusted, author_id)
+				VALUES ($1::uuid, $2::uuid, 'attachment', $3, $4, $5, true, $6::uuid)
+				RETURNING id::text`,
+				chatID, lineID, atts[i].Name, atts[i].Extracted, atts[i].SHA256, access.UserID,
+			).Scan(&findingID); err != nil {
+				return fmt.Errorf("chat: attachment finding: %w", err)
+			}
+			atts[i].ID = findingID
+		}
+		rawAttachments, err = json.Marshal(atts)
+		if err != nil {
+			return fmt.Errorf("chat: marshal attachments: %w", err)
+		}
+	}
 	var seq int
-	var lineID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO chat.lines (chat_id, seq, body, agent_id, route, pin_account_id, pin_model, author_id)
-		SELECT $1::uuid,
-		       COALESCE((SELECT MAX(seq) FROM chat.lines WHERE chat_id = $1::uuid), 0) + 1,
-		       $2, $3::uuid, $4, $5::uuid, $6, $7::uuid
-		RETURNING seq, id::text`, chatID, body,
-		orNull(picks.AgentID), orNull(picks.Route), orNull(picks.PinAccount), orNull(picks.PinModel), access.UserID).Scan(&seq, &lineID)
+		INSERT INTO chat.lines (id, chat_id, seq, body, agent_id, route, pin_account_id, pin_model, author_id, attachments)
+		SELECT $1::uuid, $2::uuid,
+		       COALESCE((SELECT MAX(seq) FROM chat.lines WHERE chat_id = $2::uuid), 0) + 1,
+		       $3, $4::uuid, $5, $6::uuid, $7, $8::uuid, $9::jsonb
+		RETURNING seq`, lineID, chatID, body,
+		orNull(picks.AgentID), orNull(picks.Route), orNull(picks.PinAccount), orNull(picks.PinModel), access.UserID, rawAttachments).Scan(&seq)
 	if err != nil {
 		return writeErr(err)
+	}
+	if len(atts) > 0 {
+		if _, err := tx.Exec(ctx, `SELECT chat.advance_chat_exposure($1::uuid, true, false)`, chatID); err != nil {
+			return fmt.Errorf("chat: taint attachment: %w", err)
+		}
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.ChatMessage,
@@ -241,15 +271,18 @@ func orNull(pick string) *string {
 // admits: the route and the ids and names of the model and the agent. The
 // line's text is content and never appears.
 func pickChanges(picks app.Picks) audit.Changes {
-	return audit.Changes{
-		Fields: []string{"agent_id", "model_id", "model_provider", "route"},
-		Values: map[string]audit.Change{
-			"route":          {To: picks.Route},
-			"model_provider": {To: picks.PinAccount},
-			"model_id":       {To: picks.PinModel},
-			"agent_id":       {To: picks.AgentID},
-		},
+	fields := []string{"agent_id", "model_id", "model_provider", "route"}
+	values := map[string]audit.Change{
+		"route":          {To: picks.Route},
+		"model_provider": {To: picks.PinAccount},
+		"model_id":       {To: picks.PinModel},
+		"agent_id":       {To: picks.AgentID},
 	}
+	if len(picks.Attachments) > 0 {
+		fields = append(fields, "attachment_count")
+		values["attachment_count"] = audit.Change{To: len(picks.Attachments)}
+	}
+	return audit.Changes{Fields: fields, Values: values}
 }
 
 // goneOrSay splits a locked miss in Say. The lock asks for edit rights too, so
@@ -489,7 +522,7 @@ func writeErr(err error) error {
 // gets the route and the model name alone.
 func lineColumnsFor(viewer string) string {
 	return `line.id::text, line.seq, line.role, line.body, line.model, line.tokens, line.cost_micro_usd, line.at,
-	line.status, line.reply_to::text, line.attempts,
+	line.status, line.reply_to::text, line.attempts, line.attachments,
 	line.route,
 	CASE WHEN line.author_id = ` + viewer + ` THEN line.pin_account_id::text END,
 	line.pin_model,
@@ -509,14 +542,20 @@ const superseded = `line.status IN ('failed', 'stopped') AND EXISTS (
 func scanLine(rows pgx.Rows, lead ...any) (app.Line, error) {
 	var line app.Line
 	var attempts []byte
+	var attachments []byte
 	dest := append(lead, &line.ID, &line.Seq, &line.Role, &line.Body, &line.Model, &line.Tokens, &line.CostMicroUSD, &line.At,
-		&line.Status, &line.ReplyTo, &attempts, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID, &line.Pending)
+		&line.Status, &line.ReplyTo, &attempts, &attachments, &line.Route, &line.PinAccount, &line.PinModel, &line.AgentID, &line.Pending)
 	if err := rows.Scan(dest...); err != nil {
 		return app.Line{}, fmt.Errorf("chat: line: %w", err)
 	}
 	if attempts != nil {
 		if err := json.Unmarshal(attempts, &line.Attempts); err != nil {
 			return app.Line{}, fmt.Errorf("chat: line attempts: %w", err)
+		}
+	}
+	if attachments != nil {
+		if err := json.Unmarshal(attachments, &line.Attachments); err != nil {
+			return app.Line{}, fmt.Errorf("chat: line attachments: %w", err)
 		}
 	}
 	return line, nil

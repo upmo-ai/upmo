@@ -9,6 +9,17 @@ export interface ChatSummary {
   last_activity: string;
 }
 
+export interface ChatAttachment {
+  name: string;
+  mime: string;
+  size_bytes: number;
+  sha256?: string;
+}
+
+export interface ChatAttachmentUpload {
+  file: File;
+}
+
 /** One message of GET /api/chats/{id}. */
 export interface ChatLine {
   id: string;
@@ -29,6 +40,8 @@ export interface ChatLine {
   reply_to?: string | null;
   /** The models a failed reply tried, and the plain reason each failed. */
   attempts?: ChatAttempt[];
+  /** Uploaded files attached to a user line. */
+  attachments?: ChatAttachment[];
   /** The last delta applied to a pending reply, so a replayed one is not added twice. */
   seq?: number;
 }

@@ -234,13 +234,21 @@ export function createChatsStub(
     async get(id): Promise<Chat> {
       return copy({ id, lines: find(id).lines });
     },
-    async send(id, body) {
+    async send(id, body, picks) {
       const chat = find(id);
       const text = body.trim();
       if (!text) throw new Error("Write a message.");
       if (chat.lines.at(-1)?.role === "user") throw new Error("Wait for the reply.");
       const tokens = estimateTokens(text);
-      chat.lines.push(newLine("user", text, tokens, Math.round(tokens * 3) / 1_000_000));
+      const userLine = newLine("user", text, tokens, Math.round(tokens * 3) / 1_000_000);
+      if (picks?.files && picks.files.length > 0) {
+        userLine.attachments = picks.files.map((file) => ({
+          name: file.name,
+          mime: file.type || "application/octet-stream",
+          size_bytes: file.size,
+        }));
+      }
+      chat.lines.push(userLine);
       if (chat.title === newChatTitle) chat.title = clip(text, titleLength);
       setTimeout(() => reply(chat, text), replyDelayMs);
     },

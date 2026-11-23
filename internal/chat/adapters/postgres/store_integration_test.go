@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/chat"
@@ -238,5 +239,77 @@ func TestTailReadsOneSnapshotSoARepliesDeltasAndLineNeverComeTogether(t *testing
 	}
 	if deltas != 0 || lines != 1 {
 		t.Fatalf("later tail: %d deltas, %d lines of the reply", deltas, lines)
+	}
+}
+
+func TestLinesBodyCheckEnforces32000UserAnd64000AssistantRunesAsAppRole(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	store := quietStore(t, owner)
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appPool := pgtest.App(t, owner)
+	execAsApp := func(fn func(tx pgx.Tx) error) error {
+		tx, err := appPool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `
+			SELECT set_config('upmo.user_id', $1, true),
+			       set_config('upmo.allow', $2, true),
+			       set_config('upmo.teams', '{}', true),
+			       set_config('upmo.shared_view', '{}', true),
+			       set_config('upmo.shared_edit', '{}', true)`,
+			ownerUser, ownerAccess.Allow); err != nil {
+			return err
+		}
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+
+	// User line of 32,001 runes must be refused by lines_body_check.
+	if err := execAsApp(func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO chat.lines (chat_id, seq, role, body, author_id)
+			VALUES ($1::uuid, 1, 'user', repeat('u', 32001), $2::uuid)`, opened.ID, ownerUser)
+		return err
+	}); err == nil || !strings.Contains(err.Error(), "lines_body_check") {
+		t.Fatalf("32001 user insert err = %v, want lines_body_check", err)
+	}
+
+	// User line of 32,000 runes must succeed.
+	var userLineID string
+	if err := execAsApp(func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			INSERT INTO chat.lines (chat_id, seq, role, body, author_id)
+			VALUES ($1::uuid, 1, 'user', repeat('u', 32000), $2::uuid)
+			RETURNING id::text`, opened.ID, ownerUser).Scan(&userLineID)
+	}); err != nil || userLineID == "" {
+		t.Fatalf("32000 user insert = %q err %v", userLineID, err)
+	}
+
+	// Assistant line of 64,001 runes must be refused by lines_body_check.
+	if err := execAsApp(func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO chat.lines (chat_id, seq, role, body, model, reply_to)
+			VALUES ($1::uuid, 2, 'assistant', repeat('a', 64001), 'm1', $2::uuid)`, opened.ID, userLineID)
+		return err
+	}); err == nil || !strings.Contains(err.Error(), "lines_body_check") {
+		t.Fatalf("64001 assistant insert err = %v, want lines_body_check", err)
+	}
+
+	// Assistant line of 64,000 runes must succeed.
+	if err := execAsApp(func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO chat.lines (chat_id, seq, role, body, model, reply_to)
+			VALUES ($1::uuid, 2, 'assistant', repeat('a', 64000), 'm1', $2::uuid)`, opened.ID, userLineID)
+		return err
+	}); err != nil {
+		t.Fatalf("64000 assistant insert err = %v", err)
 	}
 }

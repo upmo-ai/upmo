@@ -329,6 +329,52 @@ describe("toChat and toChatLine", () => {
     expect(() => toChatLine({ ...assistantLine, cost_usd: "0.0031" })).toThrow("no cost_usd");
     expect(() => toChat({ id: "01990000-0000-7000-8000-0000000000c1", lines: "none" })).toThrow("no lines");
   });
+
+  it("parses compact attachment metadata on a user line", () => {
+    const withAtt = {
+      ...userLine,
+      attachments: [{ name: "notes.md", mime: "text/markdown", size_bytes: 42, sha256: "abc123" }],
+    };
+    expect(toChatLine(withAtt)).toEqual(withAtt);
+  });
+
+  it("sends multipart FormData on POST /api/chats/{id} when files are attached", async () => {
+    const requests: Array<{ path: string; method?: string; body: BodyInit | null | undefined; headers: HeadersInit | undefined }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        requests.push({ path, method: init?.method, body: init?.body, headers: init?.headers });
+        if (path === "/api/tasks") return Response.json([]);
+        return new Response(null, { status: 202 });
+      }),
+    );
+    try {
+      const api = createBrainApi(createStubApi());
+      const file = new File(["Launch is Friday"], "notes.md", { type: "text/markdown" });
+      await api.chats.send("chat-1", "Review this", {
+        route: "fast",
+        agent_id: "agent-1",
+        pin: { account_id: "acc-1", model: "m-1" },
+        files: [file],
+      });
+      const post = requests.find((r) => r.path === "/api/chats/chat-1");
+      expect(post?.method).toBe("POST");
+      expect(post?.headers).toBeUndefined();
+      expect(post?.body).toBeInstanceOf(FormData);
+      const form = post?.body as FormData;
+      expect(form.get("body")).toBe("Review this");
+      expect(form.get("route")).toBe("fast");
+      expect(form.get("agent_id")).toBe("agent-1");
+      expect(form.get("pin_account_id")).toBe("acc-1");
+      expect(form.get("pin_model")).toBe("m-1");
+      const uploaded = form.getAll("files");
+      expect(uploaded).toHaveLength(1);
+      expect((uploaded[0] as File).name).toBe("notes.md");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("toProvider", () => {

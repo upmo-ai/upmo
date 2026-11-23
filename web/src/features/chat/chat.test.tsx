@@ -832,3 +832,72 @@ describe("UPM-265 nothing usable", () => {
     expect(screen.queryByRole("menuitemradio", { name: "deepseek-r1:14b", hidden: true })).toBeNull();
   });
 });
+
+describe("UPM-318 chat attachments", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("shows selected attachment chips, sends files with the message, and renders attachment badges", async () => {
+    const base = quick();
+    const sent: Array<{ id: string; body: string; files?: File[] }> = [];
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        send: async (id, body, picks) => {
+          sent.push({ id, body, files: picks?.files });
+          return base.chats.send(id, body, picks);
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("button", { name: "Copy reply" });
+
+    const fileInput = screen.getByLabelText("Attach files") as HTMLInputElement;
+    expect(fileInput.accept).toBe(".txt,.md,.pdf,.docx,.html,.htm");
+    const mdFile = new File(["# Launch notes"], "notes.md", { type: "text/markdown" });
+    fireEvent.change(fileInput, { target: { files: [mdFile] } });
+
+    const chipList = screen.getByRole("list", { name: "Selected attachments" });
+    expect(within(chipList).getByText("notes.md")).toBeTruthy();
+
+    const box = await type("Please summarize");
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(sent).toHaveLength(1);
+    });
+    expect(sent[0]?.body).toBe("Please summarize");
+    expect(sent[0]?.files?.map((file) => file.name)).toEqual(["notes.md"]);
+    expect(await within(messageLog()).findByText("notes.md")).toBeTruthy();
+  });
+
+  it("blocks send and shows an error when more than 10 files are selected", async () => {
+    const base = quick();
+    const sendSpy = vi.fn<ApiClient["chats"]["send"]>(base.chats.send);
+    const client: ApiClient = {
+      ...base,
+      chats: { ...base.chats, send: sendSpy },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("button", { name: "Copy reply" });
+
+    const fileInput = screen.getByLabelText("Attach files") as HTMLInputElement;
+    const eleven = Array.from({ length: 11 }, (_, i) => new File(["x"], `file-${i}.txt`, { type: "text/plain" }));
+    fireEvent.change(fileInput, { target: { files: eleven } });
+
+    expect(screen.getByText(/at most 10 files/i)).toBeTruthy();
+    const box = await type("Too many files");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(sendSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove file-10.txt" }));
+    expect(screen.queryByText(/at most 10 files/i)).toBeNull();
+  });
+});

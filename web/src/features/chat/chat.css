@@ -317,6 +317,66 @@
   margin-bottom: var(--space-2);
 }
 
+.chat-attachments-pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: var(--chat-container-width);
+  margin-bottom: var(--space-2);
+}
+
+.chat-attachment-chip,
+.chat-attachment-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-100);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.chat-attachment-chip-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-attachment-chip-remove {
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font: inherit;
+  line-height: 1;
+}
+
+.chat-attachment-chip-remove:hover {
+  color: var(--ink);
+}
+
+.chat-user-with-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chat-user-body {
+  white-space: pre-wrap;
+}
+
+.chat-line-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
 .chat-composer-wrap {
   flex-shrink: 0;
   width: 100%;

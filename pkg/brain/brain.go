@@ -1084,14 +1084,20 @@ func buildHandler(
 		return identity.RequireSession(sessions, next)
 	})
 
+	knowledgeConverter := knowledge.Converter{Text: knowledge.PassThroughText{}}
+	if cfg.MarkitdownURL != "" {
+		knowledgeConverter.Sidecar = &knowledge.Sidecar{BaseURL: cfg.MarkitdownURL}
+	}
+
 	chatBook := chat.NewStore(pool, work)
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
 		chatBook.ReplyRoute = cfg.ChatRoute
 	}
 	chat.Handler{
-		Book:    chatBook,
-		Stream:  chatStreams,
-		Metrics: reg,
+		Book:      chatBook,
+		Converter: knowledgeConverter,
+		Stream:    chatStreams,
+		Metrics:   reg,
 		Access: func(r *http.Request) (chat.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -1115,10 +1121,6 @@ func buildHandler(
 	})
 
 	knowledgeBook := knowledge.NewStore(pool, work)
-	knowledgeConverter := knowledge.Converter{Text: knowledge.PassThroughText{}}
-	if cfg.MarkitdownURL != "" {
-		knowledgeConverter.Sidecar = &knowledge.Sidecar{BaseURL: cfg.MarkitdownURL}
-	}
 	var knowledgeEmbedFor func(userID string) knowledge.Embedder
 	if cfg.GatewayURL != "" && cfg.ServiceKey != "" && cfg.EmbedRoute != "" {
 		embedClient, err := knowledge.OpenEmbedder(cfg.GatewayURL, cfg.ServiceKey, cfg.EmbedRoute)

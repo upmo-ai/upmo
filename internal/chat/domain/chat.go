@@ -7,7 +7,7 @@ import (
 )
 
 // LineRunes is the longest line of chat.
-const LineRunes = 4000
+const LineRunes = 32000
 
 // TitleRunes is the longest title a chat shows in a list.
 const TitleRunes = 60

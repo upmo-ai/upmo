@@ -7,7 +7,7 @@ import (
 )
 
 // ReplyRunes is the longest reply a model may add to a chat.
-const ReplyRunes = 32000
+const ReplyRunes = 64000
 
 // Line statuses. A reply is done, or failed when it broke off.
 const (

@@ -460,7 +460,7 @@ func TestHTTPServesTheChats(t *testing.T) {
 	if code, body := do(owned, http.MethodPost, path, `{"body":"   "}`); code != http.StatusBadRequest {
 		t.Fatalf("blank line = %d %s", code, body)
 	}
-	long := `{"body":"` + strings.Repeat("a", 4001) + `"}`
+	long := `{"body":"` + strings.Repeat("a", domain.LineRunes+1) + `"}`
 	if code, body := do(owned, http.MethodPost, path, long); code != http.StatusBadRequest {
 		t.Fatalf("long line = %d %s", code, body)
 	}

@@ -276,8 +276,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.lines": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"agent_id", "at", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
-			Insert: []string{"agent_id", "at", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
+			Select: []string{"agent_id", "at", "attachments", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
+			Insert: []string{"agent_id", "at", "attachments", "attempts", "author_id", "body", "chat_id", "cost_micro_usd", "feed_id", "id", "model", "pin_account_id", "pin_model", "reply_to", "role", "route", "seq", "status", "tokens"},
 		},
 		"chat.runs": {
 			Table:  []string{"INSERT", "SELECT"},

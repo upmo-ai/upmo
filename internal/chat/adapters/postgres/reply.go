@@ -77,7 +77,50 @@ func historyLinesTx(ctx context.Context, tx pgx.Tx, chatID, lineID string, summa
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("chat: reply history: %w", err)
 	}
+	rows.Close()
+	if err := hydrateAttachmentsTx(ctx, tx, chatID, lines); err != nil {
+		return nil, false, err
+	}
 	return lines, oldLine, nil
+}
+
+func hydrateAttachmentsTx(ctx context.Context, tx pgx.Tx, chatID string, lines []app.Line) error {
+	var lineIDs []string
+	for _, line := range lines {
+		if line.Role == domain.RoleUser && len(line.Attachments) > 0 {
+			lineIDs = append(lineIDs, line.ID)
+		}
+	}
+	if len(lineIDs) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, body FROM chat.findings
+		WHERE chat_id = $1::uuid AND kind = 'attachment' AND line_id = ANY($2::uuid[])`,
+		chatID, lineIDs)
+	if err != nil {
+		return fmt.Errorf("chat: attachment findings: %w", err)
+	}
+	defer rows.Close()
+	extracted := map[string]string{}
+	for rows.Next() {
+		var id, body string
+		if err := rows.Scan(&id, &body); err != nil {
+			return fmt.Errorf("chat: attachment findings: %w", err)
+		}
+		extracted[id] = body
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("chat: attachment findings: %w", err)
+	}
+	for i := range lines {
+		for j := range lines[i].Attachments {
+			if body, ok := extracted[lines[i].Attachments[j].ID]; ok {
+				lines[i].Attachments[j].Extracted = body
+			}
+		}
+	}
+	return nil
 }
 
 // Claim takes the run's current round under the chat's lock and hands the
@@ -463,7 +506,7 @@ func (s Store) Stop(ctx context.Context, access app.Access, chatID string) error
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, cost_micro_usd, status, reply_to) SELECT run.id, run.chat_id, (SELECT COALESCE(max(seq), 0) + 1 FROM chat.lines WHERE chat_id = run.chat_id), 'assistant', left($2, 32000), CASE WHEN run.model <> '' THEN run.model ELSE 'stopped' END, run.tokens, CASE WHEN run.cost_known THEN run.cost_micro_usd END, 'stopped', run.line_id FROM chat.runs AS run WHERE run.id = $1::uuid`, runID, text); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, cost_micro_usd, status, reply_to) SELECT run.id, run.chat_id, (SELECT COALESCE(max(seq), 0) + 1 FROM chat.lines WHERE chat_id = run.chat_id), 'assistant', left($2, 64000), CASE WHEN run.model <> '' THEN run.model ELSE 'stopped' END, run.tokens, CASE WHEN run.cost_known THEN run.cost_micro_usd END, 'stopped', run.line_id FROM chat.runs AS run WHERE run.id = $1::uuid`, runID, text); err != nil {
 		return writeErr(err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM chat.deltas WHERE chat_id = $1::uuid AND line_id = $2::uuid`, chatID, runID); err != nil {
@@ -519,7 +562,7 @@ func doneLineTx(ctx context.Context, tx pgx.Tx, chatID, runID string, tail app.P
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, cost_micro_usd, status, reply_to)
 		SELECT run.id, run.chat_id, (SELECT COALESCE(max(seq), 0) + 1 FROM chat.lines WHERE chat_id = run.chat_id),
-		       'assistant', left($2, 32000), run.model, run.tokens,
+		       'assistant', left($2, 64000), run.model, run.tokens,
 		       CASE WHEN run.cost_known THEN run.cost_micro_usd END, 'done', run.line_id
 		FROM chat.runs AS run WHERE run.id = $1::uuid`, runID, text); err != nil {
 		return writeErr(err)
@@ -548,7 +591,7 @@ func failRunTx(ctx context.Context, tx pgx.Tx, chatID, runID string, end app.Rep
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, cost_micro_usd, status, reply_to, attempts)
 		SELECT run.id, run.chat_id, (SELECT COALESCE(max(seq), 0) + 1 FROM chat.lines WHERE chat_id = run.chat_id),
-		       'assistant', left($2, 32000), $3, run.tokens,
+		       'assistant', left($2, 64000), $3, run.tokens,
 		       CASE WHEN $4 AND run.cost_known THEN run.cost_micro_usd END, 'failed', run.line_id, $5::jsonb
 		FROM chat.runs AS run WHERE run.id = $1::uuid`, runID, text, end.Model, keepCost, attempts); err != nil {
 		return writeErr(err)

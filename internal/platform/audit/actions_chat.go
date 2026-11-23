@@ -26,7 +26,7 @@ const (
 
 func init() {
 	register(ChatCreate, "chat", classAPIActivity, activityUnknown)
-	register(ChatMessage, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id")
+	register(ChatMessage, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id", "attachment_count")
 	register(ChatRetry, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id")
 	register(ChatSweep, "delta", classAPIActivity, activityUnknown, "rows")
 	register(ChatStop, "line", classAPIActivity, activityUnknown, "status")

@@ -76,7 +76,7 @@ import {
   type ArtifactKind,
   type ArtifactRecord,
 } from "../features/artifacts/types";
-import type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
+import type { Chat, ChatAttachment, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteDecision, type RouteHop } from "../features/models/types";
 import { adapterKey } from "../features/providers/rules";
 import type { ListedProvider } from "../features/providers/sharing";
@@ -370,6 +370,18 @@ export function toChatLine(value: unknown): ChatLine {
     parsed.attempts = source.attempts.map((item) => {
       const attempt = record(item, "attempt");
       return { model: text(attempt, "model"), reason: text(attempt, "reason") };
+    });
+  }
+  if (Array.isArray(source.attachments) && source.attachments.length > 0) {
+    parsed.attachments = source.attachments.map((item) => {
+      const att = record(item, "attachment");
+      const parsedAtt: ChatAttachment = {
+        name: text(att, "name"),
+        mime: text(att, "mime"),
+        size_bytes: whole(att, "size_bytes"),
+      };
+      if (typeof att.sha256 === "string" && att.sha256 !== "") parsedAtt.sha256 = att.sha256;
+      return parsedAtt;
     });
   }
   return parsed;
@@ -809,13 +821,16 @@ export function providerTestBody(config: ProviderProbe): Json {
 }
 
 async function call(path: string, init?: { method: "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<unknown> {
+  const isForm = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(path, {
     credentials: "include",
     ...(init
       ? {
           method: init.method,
           ...(init.body !== undefined
-            ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) }
+            ? isForm
+              ? { body: init.body as FormData }
+              : { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) }
             : {}),
         }
       : {}),
@@ -1339,7 +1354,23 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       },
       async send(id, body, picks = {}) {
         if ((await chosen()) === "stub") return stub.chats.send(id, body, picks);
-        await call(chatPath(id), { method: "POST", body: { body, ...picks } });
+        if (picks.files && picks.files.length > 0) {
+          const form = new FormData();
+          form.set("body", body);
+          if (picks.route) form.set("route", picks.route);
+          if (picks.agent_id) form.set("agent_id", picks.agent_id);
+          if (picks.pin) {
+            form.set("pin_account_id", picks.pin.account_id);
+            form.set("pin_model", picks.pin.model);
+          }
+          for (const file of picks.files) {
+            form.append("files", file, file.name);
+          }
+          await call(chatPath(id), { method: "POST", body: form });
+          return;
+        }
+        const { files: _files, ...jsonPicks } = picks;
+        await call(chatPath(id), { method: "POST", body: { body, ...jsonPicks } });
       },
       async retry(id, lineId, picks) {
         if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, picks);

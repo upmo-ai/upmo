@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -87,7 +88,7 @@ func TestSayChecksThePinAndTheAgent(t *testing.T) {
 	if err := Say(context.Background(), book, access, chatID, "hello", good); err != nil {
 		t.Fatal(err)
 	}
-	if want := (Picks{Route: "fast", PinAccount: pickAccount, PinModel: "gpt-x", AgentID: userID}); book.picks != want {
+	if want := (Picks{Route: "fast", PinAccount: pickAccount, PinModel: "gpt-x", AgentID: userID}); !reflect.DeepEqual(book.picks, want) {
 		t.Fatalf("picks stored = %+v, want %+v", book.picks, want)
 	}
 	for name, bad := range map[string]Picks{
@@ -116,7 +117,7 @@ func TestRetryPassesTheCleanedPicksOrNone(t *testing.T) {
 		t.Fatalf("retry with nothing sent %+v, error %v", book.retried, err)
 	}
 	given := Picks{Route: "fast", PinAccount: pickAccount, PinModel: "gpt-x"}
-	if err := Retry(context.Background(), book, access, chatID, chatID, &given); err != nil || book.retried == nil || *book.retried != given {
+	if err := Retry(context.Background(), book, access, chatID, chatID, &given); err != nil || book.retried == nil || !reflect.DeepEqual(*book.retried, given) {
 		t.Fatalf("retry sent %+v, error %v", book.retried, err)
 	}
 	if err := Retry(context.Background(), book, access, chatID, chatID, &Picks{}); err != nil || book.retried == nil || !book.retried.None() {

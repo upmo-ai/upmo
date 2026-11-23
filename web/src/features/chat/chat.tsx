@@ -3,7 +3,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import { IconLayoutSidebar, IconPlus, IconSearch, IconServer } from "@tabler/icons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
 
@@ -44,6 +44,20 @@ import "./chat.css";
 
 // How often the open chat is read again while a reply is awaited.
 const REPLY_POLL_MS = 300;
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = ".txt,.md,.pdf,.docx,.html,.htm";
+
+function attachmentLimitError(files: readonly File[]): string | undefined {
+  if (files.length > MAX_ATTACHMENTS) {
+    return `You can attach at most ${MAX_ATTACHMENTS} files per message.`;
+  }
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalBytes > MAX_ATTACHMENT_BYTES) {
+    return "Attachments must total 20 MB or less.";
+  }
+  return undefined;
+}
 
 const noLines: ChatLine[] = [];
 const noChats: ChatSummary[] = [];
@@ -106,6 +120,8 @@ export function ChatPage() {
   const [selectedId, setSelectedId] = useState<string>();
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // What this browser remembered; a pick that names something gone is Auto again once the lists are read.
   const [remembered, setRemembered] = useState<Picks>(loadPicks);
   const [sendError, setSendError] = useState<string>();
@@ -302,6 +318,9 @@ export function ChatPage() {
         setSendError(sendRefusal(error));
         // Give the words back unless something new is already being typed.
         setDraft((current) => (current === "" ? input.body : current));
+        if (input.picks.files && input.picks.files.length > 0) {
+          setAttachments((current) => (current.length === 0 ? input.picks.files ?? [] : current));
+        }
       },
     },
   );
@@ -348,13 +367,36 @@ export function ChatPage() {
     }))
     .filter((group) => group.chats.length > 0);
 
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    if (picked.length === 0) return;
+    const next = [...attachments, ...picked];
+    setAttachments(next);
+    setSendError(attachmentLimitError(next));
+  };
+
+  const handleRemoveAttachment = (index: number) => {
+    const next = attachments.filter((_, itemIndex) => itemIndex !== index);
+    setAttachments(next);
+    setSendError(attachmentLimitError(next));
+  };
+
   const handleSendMessage = () => {
     const text = draft.trim();
     if (!text || !activeId || thinking || send.isPending) return;
+    const limitErr = attachmentLimitError(attachments);
+    if (limitErr) {
+      setSendError(limitErr);
+      return;
+    }
+    const filesToSend = attachments;
     setSendError(undefined);
     setDraft("");
+    setAttachments([]);
     awaited.current.set(activeId, lines.at(-1)?.id);
-    send.mutate({ id: activeId, body: text, picks: currentPicks() });
+    const picksToSend: ChatPicks = filesToSend.length > 0 ? { ...currentPicks(), files: filesToSend } : currentPicks();
+    send.mutate({ id: activeId, body: text, picks: picksToSend });
   };
 
   const handleRetry = (lineId: string) => {
@@ -450,6 +492,7 @@ export function ChatPage() {
                         onClick={() => {
                           setSelectedId(chat.id);
                           setSendError(undefined);
+                          setAttachments([]);
                           dismissDrawer();
                         }}
                       >
@@ -510,6 +553,22 @@ export function ChatPage() {
                   </ChatMessage>
                 );
               }
+              if (line.role === "user" && line.attachments && line.attachments.length > 0) {
+                return (
+                  <ChatMessage key={line.id} role="user">
+                    <div className="chat-user-with-attachments">
+                      <div className="chat-user-body">{line.body}</div>
+                      <div className="chat-line-attachments" aria-label="Attachments">
+                        {line.attachments.map((att, index) => (
+                          <span className="chat-attachment-badge" key={`${att.name}-${index}`}>
+                            {att.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </ChatMessage>
+                );
+              }
               return (
                 <ChatMessage
                   key={line.id}
@@ -543,6 +602,33 @@ export function ChatPage() {
                 <StatusAlert tone="critical">{sendError}</StatusAlert>
               </div>
             ) : null}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={ATTACHMENT_ACCEPT}
+              aria-label="Attach files"
+              className="chat-file-input"
+              hidden
+              onChange={handleFileChange}
+            />
+            {attachments.length > 0 ? (
+              <div className="chat-attachments-pending" role="list" aria-label="Selected attachments">
+                {attachments.map((file, index) => (
+                  <span className="chat-attachment-chip" role="listitem" key={`${file.name}-${file.size}-${index}`}>
+                    <span className="chat-attachment-chip-name">{file.name}</span>
+                    <button
+                      type="button"
+                      className="chat-attachment-chip-remove"
+                      aria-label={`Remove ${file.name}`}
+                      onClick={() => handleRemoveAttachment(index)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <Composer
               value={draft}
               onChange={handleDraftChange}
@@ -557,7 +643,7 @@ export function ChatPage() {
                   { label: "Model", value: picks.model, options: modelOptions, onChange: pick("model"), searchable: true },
                 ],
               }}
-              onAttach={() => {}}
+              onAttach={() => fileInputRef.current?.click()}
               onDictate={() => {}}
             />
           </div>

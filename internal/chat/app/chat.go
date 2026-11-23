@@ -6,12 +6,26 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/platform/trustfence"
 )
+
+const (
+	// DefaultConvertTimeout bounds attachment-to-markdown conversion for one line.
+	DefaultConvertTimeout = 30 * time.Second
+	// MaxConvertedMarkdownBytes caps one converted markdown body before rune truncation.
+	MaxConvertedMarkdownBytes = 1 << 20
+	maxFindingBytes           = 262144
+)
+
+// BodyConverter turns uploaded attachment bytes into markdown text.
+type BodyConverter interface {
+	ToMarkdown(ctx context.Context, contentType string, body []byte) (string, error)
+}
 
 var (
 	// ErrAccess is a missing person or an empty allow list.
@@ -48,14 +62,17 @@ type Access struct {
 // neither) and the agent. Empty means no pick. They are stored on the user
 // line, so a retry and the history can show them.
 type Picks struct {
-	Route      string
-	PinAccount string
-	PinModel   string
-	AgentID    string
+	Route       string
+	PinAccount  string
+	PinModel    string
+	AgentID     string
+	Attachments []domain.Attachment
 }
 
 // None reports that nothing was picked.
-func (p Picks) None() bool { return p == Picks{} }
+func (p Picks) None() bool {
+	return p.Route == "" && p.PinAccount == "" && p.PinModel == "" && p.AgentID == "" && len(p.Attachments) == 0
+}
 
 // Line is one stored line of a chat. A user line carries no model and no cost,
 // and the picks it was sent with. An assistant line is done or failed, says
@@ -73,6 +90,7 @@ type Line struct {
 	Status       string
 	ReplyTo      *string
 	Attempts     []domain.Attempt
+	Attachments  []domain.Attachment
 	// Picks are set on a user line, each only when the person made it.
 	Route      *string
 	PinAccount *string
@@ -232,7 +250,84 @@ func cleanPicks(picks Picks) (Picks, error) {
 	if err != nil {
 		return Picks{}, err
 	}
-	return Picks{Route: route, PinAccount: account, PinModel: model, AgentID: agent}, nil
+	if len(picks.Attachments) > domain.MaxAttachments {
+		return Picks{}, domain.ErrAttachment
+	}
+	return Picks{
+		Route:       route,
+		PinAccount:  account,
+		PinModel:    model,
+		AgentID:     agent,
+		Attachments: picks.Attachments,
+	}, nil
+}
+
+// ConvertAttachments validates raw files, extracts markdown under a bounded wall-time
+// timeout, caps each extracted body, and wraps it in an untrusted fence.
+func ConvertAttachments(ctx context.Context, converter BodyConverter, raw []domain.RawAttachment) ([]domain.Attachment, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	checked, err := domain.CheckAttachments(raw)
+	if err != nil {
+		return nil, err
+	}
+	if converter == nil {
+		return nil, domain.ErrAttachment
+	}
+	cctx, cancel := context.WithTimeout(ctx, DefaultConvertTimeout)
+	defer cancel()
+	for i := range checked {
+		markdown, err := converter.ToMarkdown(cctx, checked[i].Mime, raw[i].Bytes)
+		if err != nil {
+			return nil, domain.ErrAttachment
+		}
+		markdown = trimBytesOnRuneBoundary(markdown, MaxConvertedMarkdownBytes)
+		markdown = trimRunes(markdown, domain.MaxExtractedRunes)
+		checked[i].Extracted = wrapAttachmentBounded(markdown)
+	}
+	return checked, nil
+}
+
+func trimBytesOnRuneBoundary(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+func trimRunes(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	i := 0
+	for count := 0; count < maxRunes && i < len(s); count++ {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+	}
+	return s[:i]
+}
+
+func wrapAttachmentBounded(markdown string) string {
+	wrapped := trustfence.Wrap(trustfence.TagUntrust, "attachment", markdown)
+	if len(wrapped) <= maxFindingBytes {
+		return wrapped
+	}
+	runes := []rune(markdown)
+	lo, hi := 0, len(runes)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if len(trustfence.Wrap(trustfence.TagUntrust, "attachment", string(runes[:mid]))) <= maxFindingBytes {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return trustfence.Wrap(trustfence.TagUntrust, "attachment", string(runes[:lo]))
 }
 
 // Read returns the chat and its lines in order.

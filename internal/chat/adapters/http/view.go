@@ -34,9 +34,10 @@ type lineJSON struct {
 	At      string   `json:"at"`
 	// Status is done, failed, or stopped. ReplyTo is the user line a reply answers.
 	// Attempts, on a failed line, are the models tried and why each failed.
-	Status   string        `json:"status"`
-	ReplyTo  *string       `json:"reply_to"`
-	Attempts []attemptJSON `json:"attempts"`
+	Status      string           `json:"status"`
+	ReplyTo     *string          `json:"reply_to"`
+	Attempts    []attemptJSON    `json:"attempts"`
+	Attachments []attachmentJSON `json:"attachments,omitempty"`
 	// Route, Pin and AgentID, on a user line, are the picks it was sent with;
 	// each is null when the person made no pick.
 	Route   *string  `json:"route"`
@@ -44,6 +45,14 @@ type lineJSON struct {
 	AgentID *string  `json:"agent_id"`
 	// Pending, on a user line, says no reply has been stored for it yet.
 	Pending bool `json:"pending"`
+}
+
+// attachmentJSON is compact metadata of one uploaded file on a user line.
+type attachmentJSON struct {
+	Name      string `json:"name"`
+	Mime      string `json:"mime"`
+	SizeBytes int    `json:"size_bytes"`
+	SHA256    string `json:"sha256,omitempty"`
 }
 
 // pinJSON is the model a user line was pinned to. The account is left out
@@ -95,20 +104,33 @@ func lineBody(line app.Line) lineJSON {
 			pin.AccountID = *line.PinAccount
 		}
 	}
+	var attachments []attachmentJSON
+	if len(line.Attachments) > 0 {
+		attachments = make([]attachmentJSON, 0, len(line.Attachments))
+		for _, att := range line.Attachments {
+			attachments = append(attachments, attachmentJSON{
+				Name:      att.Name,
+				Mime:      att.Mime,
+				SizeBytes: att.SizeBytes,
+				SHA256:    att.SHA256,
+			})
+		}
+	}
 	return lineJSON{
-		ID:       line.ID,
-		Role:     line.Role,
-		Body:     line.Body,
-		Model:    line.Model,
-		Tokens:   line.Tokens,
-		CostUSD:  cost,
-		At:       line.At.UTC().Format(time.RFC3339Nano),
-		Status:   line.Status,
-		ReplyTo:  line.ReplyTo,
-		Attempts: attempts,
-		Route:    line.Route,
-		Pin:      pin,
-		AgentID:  line.AgentID,
-		Pending:  line.Pending,
+		ID:          line.ID,
+		Role:        line.Role,
+		Body:        line.Body,
+		Model:       line.Model,
+		Tokens:      line.Tokens,
+		CostUSD:     cost,
+		At:          line.At.UTC().Format(time.RFC3339Nano),
+		Status:      line.Status,
+		ReplyTo:     line.ReplyTo,
+		Attempts:    attempts,
+		Attachments: attachments,
+		Route:       line.Route,
+		Pin:         pin,
+		AgentID:     line.AgentID,
+		Pending:     line.Pending,
 	}
 }

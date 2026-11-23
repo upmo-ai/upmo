@@ -78,7 +78,7 @@ export type {
   ArtifactRecord,
   ArtifactsApi,
 } from "../features/artifacts/types";
-export type { Chat, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
+export type { Chat, ChatAttachment, ChatAttachmentUpload, ChatLine, ChatSummary, LineRole } from "../features/chat/types";
 export type {
   DecisionBinding,
   DecisionEval,
@@ -271,6 +271,7 @@ export type ChatPicks = {
   agent_id?: string;
   route?: string;
   pin?: { account_id: string; model: string };
+  files?: File[];
 };
 
 /**

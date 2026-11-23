@@ -3,9 +3,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
@@ -18,11 +20,12 @@ import (
 // Stream, when set, serves the chat stream; Renew then looks a person's access
 // up again for the streams that stay open.
 type Handler struct {
-	Book    app.Book
-	Stream  *app.StreamHub
-	Metrics *metrics.Registry
-	Access  func(r *http.Request) (app.Access, bool)
-	Renew   func(ctx context.Context, r *http.Request) (app.Access, bool, error)
+	Book      app.Book
+	Converter app.BodyConverter
+	Stream    *app.StreamHub
+	Metrics   *metrics.Registry
+	Access    func(r *http.Request) (app.Access, bool)
+	Renew     func(ctx context.Context, r *http.Request) (app.Access, bool, error)
 }
 
 // Mount registers the chat routes. guard runs first.
@@ -93,23 +96,121 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
+type attachmentInput struct {
+	Name          string `json:"name"`
+	Mime          string `json:"mime"`
+	ContentBase64 string `json:"content_base64"`
+}
+
+func baseMediaType(raw string) string {
+	if i := strings.IndexByte(raw, ';'); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.TrimSpace(strings.ToLower(raw))
+}
+
 func (h Handler) say(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		pickInput
-		Body *string `json:"body"`
-	}
-	if json.NewDecoder(r.Body).Decode(&input) != nil || input.Body == nil {
-		writeError(w, http.StatusBadRequest, "a chat needs a line")
+	r.Body = http.MaxBytesReader(w, r.Body, 30<<20)
+	var (
+		body           string
+		picks          app.Picks
+		rawAttachments []domain.RawAttachment
+	)
+	switch baseMediaType(r.Header.Get("Content-Type")) {
+	case "multipart/form-data":
+		if err := r.ParseMultipartForm(domain.MaxAttachmentBytes + 1<<20); err != nil { //nolint:gosec // body is capped by MaxBytesReader above
+			writeError(w, http.StatusBadRequest, "the chat input was refused")
+			return
+		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
+		body = r.FormValue("body")
+		picks = app.Picks{
+			Route:      r.FormValue("route"),
+			AgentID:    r.FormValue("agent_id"),
+			PinAccount: r.FormValue("pin_account_id"),
+			PinModel:   r.FormValue("pin_model"),
+		}
+		var headers []*multipart.FileHeader
+		if r.MultipartForm != nil {
+			headers = append(headers, r.MultipartForm.File["files"]...)
+			headers = append(headers, r.MultipartForm.File["attachments"]...)
+		}
+		if len(headers) > domain.MaxAttachments {
+			writeError(w, http.StatusBadRequest, "the chat input was refused")
+			return
+		}
+		for _, hdr := range headers {
+			raw, err := readMultipartAttachment(hdr)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "the chat input was refused")
+				return
+			}
+			rawAttachments = append(rawAttachments, domain.RawAttachment{
+				Name:         hdr.Filename,
+				DeclaredMime: hdr.Header.Get("Content-Type"),
+				Bytes:        raw,
+			})
+		}
+	case "", "application/json":
+		var input struct {
+			pickInput
+			Body        *string           `json:"body"`
+			Attachments []attachmentInput `json:"attachments"`
+		}
+		if json.NewDecoder(r.Body).Decode(&input) != nil || input.Body == nil {
+			writeError(w, http.StatusBadRequest, "a chat needs a line")
+			return
+		}
+		if len(input.Attachments) > domain.MaxAttachments {
+			writeError(w, http.StatusBadRequest, "the chat input was refused")
+			return
+		}
+		body = *input.Body
+		picks = input.picks()
+		for _, att := range input.Attachments {
+			raw, err := base64.StdEncoding.DecodeString(att.ContentBase64)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "the chat input was refused")
+				return
+			}
+			rawAttachments = append(rawAttachments, domain.RawAttachment{
+				Name:         att.Name,
+				DeclaredMime: att.Mime,
+				Bytes:        raw,
+			})
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "the chat input was refused")
 		return
 	}
-	if err := app.Say(r.Context(), h.Book, access, r.PathValue("id"), *input.Body, input.picks()); refuse(w, err) {
+	if len(rawAttachments) > 0 {
+		converted, err := app.ConvertAttachments(r.Context(), h.Converter, rawAttachments)
+		if refuse(w, err) {
+			return
+		}
+		picks.Attachments = converted
+	}
+	if err := app.Say(r.Context(), h.Book, access, r.PathValue("id"), body, picks); refuse(w, err) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func readMultipartAttachment(hdr *multipart.FileHeader) ([]byte, error) {
+	part, err := hdr.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = part.Close() }()
+	return io.ReadAll(io.LimitReader(part, domain.MaxAttachmentBytes+1))
 }
 
 // pickInput is what the composer sends with a line or a retry: the route, the
@@ -215,7 +316,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, app.ErrReplies):
 		writeError(w, http.StatusServiceUnavailable, "replies are off")
 	case errors.Is(err, app.ErrChat), errors.Is(err, domain.ErrLine), errors.Is(err, domain.ErrRoute),
-		errors.Is(err, domain.ErrPin), errors.Is(err, domain.ErrAgent):
+		errors.Is(err, domain.ErrPin), errors.Is(err, domain.ErrAgent),
+		errors.Is(err, domain.ErrAttachment), errors.Is(err, domain.ErrAttachmentSize):
 		writeError(w, http.StatusBadRequest, "the chat input was refused")
 	case errors.Is(err, domain.ErrWriter):
 		writeError(w, http.StatusConflict, "the chat cannot take that change")

@@ -42,6 +42,7 @@ CREATE TABLE chat.lines (
   pin_account_id uuid,
   pin_model text,
   author_id uuid,
+  attachments jsonb,
   PRIMARY KEY (chat_id, seq),
   CONSTRAINT lines_seq_check CHECK (seq > 0),
   CONSTRAINT lines_id_key UNIQUE (id),
@@ -52,7 +53,7 @@ CREATE TABLE chat.lines (
   CONSTRAINT lines_tokens_check CHECK (tokens >= 0),
   CONSTRAINT lines_cost_check CHECK (cost_micro_usd IS NULL OR cost_micro_usd >= 0),
   CONSTRAINT lines_body_check CHECK (
-    char_length(body) <= CASE role WHEN 'user' THEN 4000 ELSE 32000 END
+    char_length(body) <= CASE role WHEN 'user' THEN 32000 ELSE 64000 END
     AND (char_length(body) >= 1 OR (role = 'assistant' AND status IN ('failed', 'stopped')))
   ),
   CONSTRAINT lines_user_bare_check CHECK (
@@ -73,6 +74,14 @@ CREATE TABLE chat.lines (
   CONSTRAINT lines_picks_user_check CHECK (
     role = 'user'
     OR (agent_id IS NULL AND route IS NULL AND pin_account_id IS NULL AND pin_model IS NULL AND author_id IS NULL)
+  ),
+  CONSTRAINT lines_attachments_check CHECK (
+    attachments IS NULL
+    OR (
+      role = 'user'
+      AND jsonb_typeof(attachments) = 'array'
+      AND jsonb_array_length(attachments) <= 10
+    )
   )
 );
 
@@ -615,7 +624,7 @@ BEGIN
          left(COALESCE((SELECT string_agg(delta.body, '' ORDER BY delta.seq)
                         FROM chat.deltas AS delta
                         WHERE delta.chat_id = in_chat AND delta.line_id = reply
-                          AND delta.kind = 'text'), ''), 32000),
+                          AND delta.kind = 'text'), ''), 64000),
          '', spent, 'failed', asked,
          jsonb_build_array(jsonb_build_object('model', '', 'class', why))
   FROM chat.lines AS line WHERE line.chat_id = in_chat;
@@ -868,7 +877,7 @@ CREATE TABLE chat.findings (
   private_read boolean NOT NULL DEFAULT false,
   author_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT chat_findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output')),
+  CONSTRAINT chat_findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output', 'attachment')),
   CONSTRAINT chat_findings_body_check CHECK (octet_length(body) <= 262144)
 );
 
@@ -894,7 +903,7 @@ CREATE POLICY chat_findings_select ON chat.findings
     SELECT 1 FROM chat.chats AS chat
     WHERE chat.id = chat_id
       AND identity.may('view', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
-      AND (chat.findings.source_ref = '' OR chat.findings.author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
+      AND (chat.findings.kind = 'attachment' OR chat.findings.source_ref = '' OR chat.findings.author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
       AND (NOT chat.findings.private_read OR (chat.findings.author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid AND chat.visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares s WHERE s.object_type = 'chat' AND s.object_id = chat.id)))
   ));
 

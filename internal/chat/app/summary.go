@@ -37,7 +37,23 @@ func FormatSummaryPrompt(rollingSummary string, tainted bool) string {
 }
 
 // LinePromptText is the single place to add extracted attachment text when it is available.
-func LinePromptText(line Line) string { return line.Body }
+func LinePromptText(line Line) string {
+	if len(line.Attachments) == 0 {
+		return line.Body
+	}
+	var b strings.Builder
+	b.WriteString(line.Body)
+	for _, att := range line.Attachments {
+		if att.Extracted == "" {
+			continue
+		}
+		b.WriteString("\n\nAttachment (")
+		b.WriteString(trustfence.NeutralizeSlot(att.Name))
+		b.WriteString("):\n")
+		b.WriteString(att.Extracted)
+	}
+	return b.String()
+}
 
 // LineTokens is the single place to count extracted attachment text when it is available.
 func LineTokens(line Line) int { return agentloop.TokenEstimate(LinePromptText(line)) }
