@@ -79,6 +79,14 @@ type Line struct {
 	AgentID    *string
 	// Pending is set on a user line that has no stored reply yet, done or failed.
 	Pending bool
+	Turns   []Turn
+}
+
+type Turn struct {
+	Seq                          int
+	Role, Body, ToolName, ToolID string
+	ToolCalls                    []byte
+	IsError, Offloaded, Tainted  bool
 }
 
 // ChatSummary is one chat in a list: its derived title and preview, and when
@@ -106,7 +114,34 @@ type Book interface {
 	List(ctx context.Context, access Access) ([]ChatSummary, error)
 	Say(ctx context.Context, access Access, chatID, body string, picks Picks) error
 	Retry(ctx context.Context, access Access, chatID, lineID string, picks *Picks) error
+	Stop(ctx context.Context, access Access, chatID string) error
+	Delete(ctx context.Context, access Access, chatID string) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
+}
+
+// Stop ends the running reply of a chat.
+func Stop(ctx context.Context, book Book, access Access, chatID string) error {
+	if err := caller(access); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ErrChat
+	}
+	return book.Stop(ctx, access, chatID)
+}
+
+// Delete removes a chat owned by access.UserID.
+func Delete(ctx context.Context, book Book, access Access, chatID string) error {
+	if err := caller(access); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ErrChat
+	}
+	if !slices.Contains(strings.Split(access.Allow, ","), "chat:delete") {
+		return ErrAccess
+	}
+	return book.Delete(ctx, access, chatID)
 }
 
 // Open starts a chat for this person. The profile stays in memory and is read when a turn is built.

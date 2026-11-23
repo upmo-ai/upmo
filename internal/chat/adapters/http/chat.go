@@ -36,9 +36,33 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/chats", wrap(http.HandlerFunc(h.list)))
 	mux.Handle("POST /api/chats", wrap(http.HandlerFunc(h.open)))
 	mux.Handle("POST /api/chats/{id}", wrap(http.HandlerFunc(h.say)))
+	mux.Handle("POST /api/chats/{id}/stop", wrap(http.HandlerFunc(h.stop)))
+	mux.Handle("DELETE /api/chats/{id}", wrap(http.HandlerFunc(h.delete)))
 	mux.Handle("GET /api/chats/{id}", wrap(http.HandlerFunc(h.read)))
 	mux.Handle("POST /api/chats/{id}/lines/{line}/retry", wrap(http.HandlerFunc(h.retry)))
 	mux.Handle("GET /api/chats/{id}/stream", wrap(http.HandlerFunc(h.stream)))
+}
+
+func (h Handler) stop(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if refuse(w, app.Stop(r.Context(), h.Book, access, r.PathValue("id"))) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h Handler) delete(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	if refuse(w, app.Delete(r.Context(), h.Book, access, r.PathValue("id"))) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h Handler) open(w http.ResponseWriter, r *http.Request) {

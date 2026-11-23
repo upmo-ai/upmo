@@ -17,7 +17,7 @@ CREATE TABLE chat.chats (
 );
 
 CREATE TABLE chat.lines (
-  chat_id uuid NOT NULL REFERENCES chat.chats (id),
+  chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
   seq int NOT NULL,
   body text NOT NULL,
   id uuid NOT NULL DEFAULT uuidv7(),
@@ -39,14 +39,14 @@ CREATE TABLE chat.lines (
   CONSTRAINT lines_seq_check CHECK (seq > 0),
   CONSTRAINT lines_id_key UNIQUE (id),
   CONSTRAINT lines_feed_id_key UNIQUE (feed_id),
-  CONSTRAINT lines_reply_to_fkey FOREIGN KEY (reply_to) REFERENCES chat.lines (id),
+  CONSTRAINT lines_reply_to_fkey FOREIGN KEY (reply_to) REFERENCES chat.lines (id) ON DELETE CASCADE,
   CONSTRAINT lines_role_check CHECK (role IN ('user', 'assistant')),
-  CONSTRAINT lines_status_check CHECK (status IN ('done', 'failed')),
+  CONSTRAINT lines_status_check CHECK (status IN ('done', 'failed', 'stopped')),
   CONSTRAINT lines_tokens_check CHECK (tokens >= 0),
   CONSTRAINT lines_cost_check CHECK (cost_micro_usd IS NULL OR cost_micro_usd >= 0),
   CONSTRAINT lines_body_check CHECK (
     char_length(body) <= CASE role WHEN 'user' THEN 4000 ELSE 32000 END
-    AND (char_length(body) >= 1 OR (role = 'assistant' AND status = 'failed'))
+    AND (char_length(body) >= 1 OR (role = 'assistant' AND status IN ('failed', 'stopped')))
   ),
   CONSTRAINT lines_user_bare_check CHECK (
     role <> 'user'
@@ -113,6 +113,7 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog
 AS $$
 BEGIN
+  IF TG_OP = 'DELETE' AND current_user = pg_catalog.pg_get_userbyid((SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.lines'::regclass)) AND NULLIF(pg_catalog.current_setting('upmo.chat_delete', true), '')::uuid = OLD.chat_id THEN RETURN OLD; END IF;
   RAISE EXCEPTION 'chat: writer';
 END;
 $$;
@@ -127,6 +128,35 @@ GRANT SELECT, INSERT ON chat.lines TO upmo_app;
 
 SELECT identity.protect('chat.chats');
 REVOKE UPDATE (created_at, tainted, private_read) ON chat.chats FROM upmo_app;
+DROP POLICY IF EXISTS may_delete ON chat.chats;
+CREATE POLICY may_delete ON chat.chats FOR DELETE USING (
+  owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  AND 'chat:delete' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
+);
+
+-- +goose StatementBegin
+CREATE FUNCTION chat.delete_chat(target_chat_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE
+  caller uuid := NULLIF(pg_catalog.current_setting('upmo.user_id', true), '')::uuid;
+  allow_list text[] := pg_catalog.string_to_array(NULLIF(pg_catalog.current_setting('upmo.allow', true), ''), ',');
+  c chat.chats%ROWTYPE;
+BEGIN
+  SELECT * INTO c FROM chat.chats WHERE id = target_chat_id FOR UPDATE;
+  IF NOT FOUND OR NOT identity.may('view', c.object_type, c.owner_user_id, c.visibility, c.visibility_team_id, c.id) THEN
+    RAISE EXCEPTION 'chat: no such chat' USING ERRCODE = 'P0002';
+  END IF;
+  IF caller IS NULL OR c.owner_user_id <> caller OR NOT ('chat:delete' = ANY (allow_list)) THEN
+    RAISE EXCEPTION 'chat: access' USING ERRCODE = '42501';
+  END IF;
+  PERFORM pg_catalog.set_config('upmo.chat_delete', target_chat_id::text, true);
+  DELETE FROM chat.chats WHERE id = target_chat_id;
+  PERFORM pg_catalog.set_config('upmo.chat_delete', '', true);
+END;
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION chat.delete_chat(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.delete_chat(uuid) TO upmo_app;
 
 -- chat.fail_reply runs for a person who can no longer write the chat, so no
 -- policy that asks for their access lets it through. It runs as the owner of
@@ -332,16 +362,16 @@ CREATE TABLE chat.runs (
   model text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
-  CONSTRAINT runs_state_check CHECK (state IN ('running', 'done', 'failed')),
+  CONSTRAINT runs_state_check CHECK (state IN ('running', 'waiting', 'done', 'failed', 'stopped')),
   CONSTRAINT runs_round_check CHECK (round BETWEEN 0 AND 15 AND claim_round BETWEEN round AND round + 1),
   CONSTRAINT runs_tokens_check CHECK (tokens >= 0),
   CONSTRAINT runs_cost_check CHECK (cost_micro_usd >= 0),
-  CONSTRAINT runs_finished_check CHECK ((state = 'running') = (finished_at IS NULL)),
-  CONSTRAINT runs_history_check CHECK (state = 'running' OR (history IS NULL AND claim IS NULL)),
+  CONSTRAINT runs_finished_check CHECK ((state IN ('running', 'waiting')) = (finished_at IS NULL)),
+  CONSTRAINT runs_history_check CHECK (state IN ('running', 'waiting') OR (history IS NULL AND claim IS NULL)),
   CONSTRAINT runs_history_type_check CHECK (history IS NULL OR jsonb_typeof(history) = 'array')
 );
 
-CREATE UNIQUE INDEX runs_one_running ON chat.runs (chat_id) WHERE state = 'running';
+CREATE UNIQUE INDEX runs_one_running ON chat.runs (chat_id) WHERE state IN ('running', 'waiting');
 CREATE INDEX runs_chat_idx ON chat.runs (chat_id);
 CREATE INDEX runs_line_idx ON chat.runs (line_id);
 
@@ -381,6 +411,36 @@ CREATE POLICY runs_update ON chat.runs
     WHERE chat.id = chat_id
       AND identity.may('edit', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
   ));
+
+-- +goose StatementBegin
+CREATE FUNCTION chat.close_waiting_run(target_chat_id uuid, new_state text, hold_reason text DEFAULT NULL)
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE
+  c record;
+  r record;
+  v_call_stack text;
+  is_table_owner boolean;
+BEGIN
+  is_table_owner := session_user = pg_catalog.pg_get_userbyid((SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.chats'::regclass));
+  IF new_state NOT IN ('stopped', 'failed') THEN RAISE EXCEPTION 'chat: state' USING ERRCODE = '22023'; END IF;
+  SELECT * INTO c FROM chat.chats WHERE id = target_chat_id FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'chat: no such chat' USING ERRCODE = 'P0002'; END IF;
+  IF new_state = 'stopped' THEN
+    IF NOT is_table_owner AND NOT identity.may('edit', c.object_type, c.owner_user_id, c.visibility, c.visibility_team_id, c.id) THEN RAISE EXCEPTION 'chat: access' USING ERRCODE = '42501'; END IF;
+  ELSE
+    GET DIAGNOSTICS v_call_stack = PG_CONTEXT;
+    IF NOT is_table_owner AND pg_catalog.strpos(v_call_stack, 'fail_waiting_runs(') = 0 THEN RAISE EXCEPTION 'chat: access' USING ERRCODE = '42501'; END IF;
+  END IF;
+  SELECT * INTO r FROM chat.runs WHERE chat_id = target_chat_id AND state IN ('running', 'waiting') FOR UPDATE;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  UPDATE chat.holds SET reason = COALESCE(NULLIF(hold_reason, ''), reason), state = 'closed', decided_at = now() WHERE chat_id = target_chat_id AND state = 'pending';
+  UPDATE chat.runs SET state = new_state, claim = NULL, history = NULL, finished_at = now() WHERE id = r.id;
+  RETURN r.id;
+END;
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION chat.close_waiting_run(uuid, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.close_waiting_run(uuid, text, text) TO upmo_app;
 
 -- For chat.fail_reply only, owner-wide like deltas_owner_delete.
 CREATE POLICY runs_owner_select ON chat.runs
@@ -524,6 +584,7 @@ CREATE TABLE chat.turns (
   offloaded boolean NOT NULL DEFAULT false,
   tainted boolean NOT NULL DEFAULT false,
   private_read boolean NOT NULL DEFAULT false,
+  author_id uuid,
   model text NOT NULL DEFAULT '',
   input_tokens int NOT NULL DEFAULT 0,
   output_tokens int NOT NULL DEFAULT 0,
@@ -550,12 +611,37 @@ CREATE POLICY chat_turns_owner ON chat.turns
       (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'chat.turns'::regclass))
   );
 
+-- +goose StatementBegin
+CREATE FUNCTION chat.redacted_turn_metadata(target_chat_id uuid)
+RETURNS TABLE (line_id uuid, seq int, role text, tool_name text, tool_id text, is_error boolean, offloaded boolean, tainted boolean)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT turn.line_id, turn.seq, turn.role, turn.tool_name, turn.tool_id, turn.is_error, turn.offloaded, turn.tainted
+  FROM chat.turns AS turn
+  JOIN chat.chats AS chat ON chat.id = turn.chat_id
+  WHERE turn.chat_id = target_chat_id
+    AND turn.private_read
+    AND (
+      turn.author_id IS DISTINCT FROM NULLIF(pg_catalog.current_setting('upmo.user_id', true), '')::uuid
+      OR chat.visibility <> 'private'
+      OR EXISTS (SELECT 1 FROM identity.shares AS share WHERE share.object_type = 'chat' AND share.object_id = chat.id)
+    )
+    AND identity.may('view', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+$$;
+-- +goose StatementEnd
+REVOKE ALL ON FUNCTION chat.redacted_turn_metadata(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.redacted_turn_metadata(uuid) TO upmo_app;
+
 CREATE POLICY chat_turns_select ON chat.turns
   FOR SELECT
   USING (EXISTS (
     SELECT 1 FROM chat.chats AS chat
     WHERE chat.id = chat_id
       AND identity.may('view', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+      AND (NOT chat.turns.private_read OR (
+        chat.turns.author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+        AND chat.visibility = 'private'
+        AND NOT EXISTS (SELECT 1 FROM identity.shares AS share WHERE share.object_type = 'chat' AND share.object_id = chat.id)
+      ))
   ));
 
 CREATE POLICY chat_turns_insert ON chat.turns
@@ -718,6 +804,8 @@ CREATE TABLE chat.findings (
   body text NOT NULL,
   source_ref text NOT NULL DEFAULT '',
   untrusted boolean NOT NULL DEFAULT false,
+  private_read boolean NOT NULL DEFAULT false,
+  author_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT chat_findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output')),
   CONSTRAINT chat_findings_body_check CHECK (octet_length(body) <= 262144)
@@ -745,6 +833,8 @@ CREATE POLICY chat_findings_select ON chat.findings
     SELECT 1 FROM chat.chats AS chat
     WHERE chat.id = chat_id
       AND identity.may('view', chat.object_type, chat.owner_user_id, chat.visibility, chat.visibility_team_id, chat.id)
+      AND (chat.findings.source_ref = '' OR chat.findings.author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
+      AND (NOT chat.findings.private_read OR (chat.findings.author_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid AND chat.visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares s WHERE s.object_type = 'chat' AND s.object_id = chat.id)))
   ));
 
 CREATE POLICY chat_findings_insert ON chat.findings
@@ -821,9 +911,12 @@ GRANT SELECT, INSERT, DELETE ON chat.tool_allowances TO upmo_app;
 -- +goose Down
 
 DROP TABLE IF EXISTS chat.tool_allowances;
+DROP FUNCTION IF EXISTS chat.close_waiting_run(uuid, text, text);
+DROP FUNCTION IF EXISTS chat.delete_chat(uuid);
 DROP TABLE IF EXISTS chat.findings;
 DROP TABLE IF EXISTS chat.action_logs;
 DROP TABLE IF EXISTS chat.holds;
+DROP FUNCTION IF EXISTS chat.redacted_turn_metadata(uuid);
 DROP TABLE IF EXISTS chat.turns;
 DROP FUNCTION IF EXISTS chat.fail_reply(uuid, int, uuid, text);
 DROP FUNCTION IF EXISTS chat.sweep_deltas();

@@ -51,15 +51,18 @@ var ErrAgentNotFound = app.ErrAgentNotFound
 
 // The reply to a chat line streams from a model while it is written.
 type (
-	ReplyJobArgs = app.ReplyJobArgs
-	ReplyConfig  = app.ReplyConfig
-	ReplyDeps    = app.ReplyDeps
-	StreamHub    = app.StreamHub
-	StreamConfig = app.StreamConfig
-	Stream       = app.Stream
-	LessonLookup = app.LessonLookup
-	Lesson       = agentloop.Lesson
-	LessonCard   = agentloop.LessonCard
+	ReplyJobArgs    = app.ReplyJobArgs
+	ReplyConfig     = app.ReplyConfig
+	ReplyDeps       = app.ReplyDeps
+	StreamHub       = app.StreamHub
+	StreamConfig    = app.StreamConfig
+	Stream          = app.Stream
+	LessonLookup    = app.LessonLookup
+	MemoryLookup    = app.MemoryLookup
+	KnowledgeLookup = app.KnowledgeLookup
+	KnowledgeHit    = agentloop.KnowledgeHit
+	Lesson          = agentloop.Lesson
+	LessonCard      = agentloop.LessonCard
 )
 
 // ReplyQueue is the River queue of reply jobs; give it workers of its own.

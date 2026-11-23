@@ -72,6 +72,8 @@ func (f *fakeBook) Retry(_ context.Context, _ app.Access, _, line string, picks 
 	}
 	return f.err
 }
+func (f *fakeBook) Stop(context.Context, app.Access, string) error   { return f.err }
+func (f *fakeBook) Delete(context.Context, app.Access, string) error { return f.err }
 
 func (f *fakeBook) Read(context.Context, app.Access, string) (app.Chat, error) {
 	f.reads++

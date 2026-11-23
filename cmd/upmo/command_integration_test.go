@@ -264,8 +264,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.findings": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"body", "chat_id", "created_at", "id", "kind", "line_id", "source_ref", "title", "untrusted"},
-			Insert: []string{"body", "chat_id", "created_at", "id", "kind", "line_id", "source_ref", "title", "untrusted"},
+			Select: []string{"author_id", "body", "chat_id", "created_at", "id", "kind", "line_id", "private_read", "source_ref", "title", "untrusted"},
+			Insert: []string{"author_id", "body", "chat_id", "created_at", "id", "kind", "line_id", "private_read", "source_ref", "title", "untrusted"},
 		},
 		"chat.goose_db_version": {},
 		"chat.holds": {
@@ -292,8 +292,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"chat.turns": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"body", "chat_id", "cost_micro_usd", "created_at", "id", "input_tokens", "is_error", "line_id", "model", "offloaded", "output_tokens", "private_read", "role", "seq", "tainted", "tool_calls", "tool_id", "tool_name"},
-			Insert: []string{"body", "chat_id", "cost_micro_usd", "created_at", "id", "input_tokens", "is_error", "line_id", "model", "offloaded", "output_tokens", "private_read", "role", "seq", "tainted", "tool_calls", "tool_id", "tool_name"},
+			Select: []string{"author_id", "body", "chat_id", "cost_micro_usd", "created_at", "id", "input_tokens", "is_error", "line_id", "model", "offloaded", "output_tokens", "private_read", "role", "seq", "tainted", "tool_calls", "tool_id", "tool_name"},
+			Insert: []string{"author_id", "body", "chat_id", "cost_micro_usd", "created_at", "id", "input_tokens", "is_error", "line_id", "model", "offloaded", "output_tokens", "private_read", "role", "seq", "tainted", "tool_calls", "tool_id", "tool_name"},
 		},
 		"decisions.gates": {
 			Table:  []string{"INSERT", "SELECT", "UPDATE"},
@@ -737,5 +737,19 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		if !slices.Equal(got.Update, want.Update) {
 			t.Errorf("%s UPDATE columns = %v, want %v", tbl, got.Update, want.Update)
 		}
+	}
+	var redactedTurnsAppExec, redactedTurnsPublicExec bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_function_privilege('upmo_app', p.oid, 'EXECUTE'),
+		       EXISTS (
+		         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) AS acl
+		         WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+		       )
+		FROM pg_catalog.pg_proc AS p
+		WHERE p.oid = 'chat.redacted_turn_metadata(uuid)'::regprocedure`).Scan(&redactedTurnsAppExec, &redactedTurnsPublicExec); err != nil {
+		t.Fatal(err)
+	}
+	if !redactedTurnsAppExec || redactedTurnsPublicExec {
+		t.Fatalf("chat.redacted_turn_metadata EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", redactedTurnsAppExec, redactedTurnsPublicExec)
 	}
 }

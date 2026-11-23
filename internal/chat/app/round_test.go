@@ -11,6 +11,20 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 )
 
+func TestCatalogExcludesPrivateSearchToolsWhenShared(t *testing.T) {
+	for _, tc := range []struct {
+		private                   bool
+		wantMemory, wantKnowledge bool
+	}{{true, true, true}, {false, false, false}} {
+		got := catalog(nil, tc.private, true, true)
+		_, memoryOK := got.Get("search_memory")
+		_, knowledgeOK := got.Get("search_knowledge")
+		if memoryOK != tc.wantMemory || knowledgeOK != tc.wantKnowledge {
+			t.Fatalf("private=%v tools: memory=%v knowledge=%v", tc.private, memoryOK, knowledgeOK)
+		}
+	}
+}
+
 // blockingExecutor blocks until its context ends.
 type blockingExecutor struct{}
 

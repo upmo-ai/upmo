@@ -52,7 +52,7 @@ func historyLinesTx(ctx context.Context, tx pgx.Tx, chatID, lineID string) ([]ap
 		LEFT JOIN chat.lines AS asked ON asked.id = line.reply_to
 		WHERE line.chat_id = $1::uuid
 		  AND COALESCE(asked.seq, line.seq) <= $2
-		  AND NOT (line.status = 'failed' OR EXISTS (
+		  AND NOT (line.status IN ('failed', 'stopped') OR EXISTS (
 		        SELECT 1 FROM chat.lines AS later
 		        WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq))
 		ORDER BY COALESCE(asked.seq, line.seq), (line.role = 'assistant'), line.seq`, chatID, userSeq)
@@ -88,14 +88,16 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		return app.Claim{}, err
 	}
 	var vis, team string
+	var private bool
 	var exposure agentloop.ExposureState
-	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, ''), tainted, private_read FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team, &exposure.Tainted, &exposure.PrivateRead); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, ''), tainted, private_read, visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares WHERE object_type = 'chat' AND object_id = chat.chats.id) FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team, &exposure.Tainted, &exposure.PrivateRead, &private); err != nil {
 		return app.Claim{}, fmt.Errorf("chat: claim scope: %w", err)
 	}
 	claim := app.Claim{
 		Job:      job,
 		Token:    token,
 		Exposure: exposure,
+		Private:  private,
 		Scope: agentloop.AccessScope{
 			UserID:           access.UserID,
 			Allow:            access.Allow,
@@ -186,7 +188,12 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 				return app.Claim{}, fmt.Errorf("chat: claim allowances: %w", err)
 			}
 		}
-		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(seq), 0) FROM chat.turns WHERE chat_id = $1::uuid`, job.ChatID).Scan(&claim.TurnSeq); err != nil {
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(max(seq), 0) FROM (
+				SELECT seq FROM chat.turns WHERE chat_id = $1::uuid
+				UNION ALL
+				SELECT seq FROM chat.redacted_turn_metadata($1::uuid)
+			) AS turns`, job.ChatID).Scan(&claim.TurnSeq); err != nil {
 			return app.Claim{}, fmt.Errorf("chat: claim turns: %w", err)
 		}
 		if job.Round == 1 {
@@ -388,6 +395,43 @@ func (s Store) Finish(ctx context.Context, access app.Access, claim app.Claim, e
 	return tx.Commit(ctx)
 }
 
+// Stop stores partial reply text and fences the active worker in one transaction.
+func (s Store) Stop(ctx context.Context, access app.Access, chatID string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockChat(ctx, tx, chatID); err != nil {
+		return err
+	}
+	var runID, prev string
+	err = tx.QueryRow(ctx, `SELECT id::text, state FROM chat.runs WHERE chat_id = $1::uuid AND state IN ('running', 'waiting') FOR UPDATE`, chatID).Scan(&runID, &prev)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return fmt.Errorf("chat: stop run: %w", err)
+	}
+	text, err := replyTextTx(ctx, tx, chatID, runID, app.Pending{})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO chat.lines (id, chat_id, seq, role, body, model, tokens, cost_micro_usd, status, reply_to) SELECT run.id, run.chat_id, (SELECT COALESCE(max(seq), 0) + 1 FROM chat.lines WHERE chat_id = run.chat_id), 'assistant', left($2, 32000), CASE WHEN run.model <> '' THEN run.model ELSE 'stopped' END, run.tokens, CASE WHEN run.cost_known THEN run.cost_micro_usd END, 'stopped', run.line_id FROM chat.runs AS run WHERE run.id = $1::uuid`, runID, text); err != nil {
+		return writeErr(err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM chat.deltas WHERE chat_id = $1::uuid AND line_id = $2::uuid`, chatID, runID); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(ctx, `SELECT chat.close_waiting_run($1::uuid, 'stopped', NULL)`, chatID).Scan(new(any)); err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{Action: audit.ChatStop, Outcome: audit.Success, TargetID: runID, Changes: audit.Changes{Fields: []string{"status"}, Values: map[string]audit.Change{"status": {From: prev, To: domain.StatusStopped}}}}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // putTailTx stores the one tail of text a round never flushed as a delta,
 // unless it is already there, so the reply's body is read in seq order.
 func putTailTx(ctx context.Context, tx pgx.Tx, chatID, runID string, tail app.Pending) error {
@@ -525,6 +569,8 @@ func (s Store) FailReply(ctx context.Context, job app.ReplyJobArgs, token, why s
 		return true, nil
 	case "fenced":
 		return false, nil
+	case "none":
+		return false, nil
 	}
 	return false, fmt.Errorf("chat: fail reply: no such reply")
 }
@@ -538,6 +584,23 @@ func (s Store) CanWrite(ctx context.Context, access app.Access, chatID string) e
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	return lockChat(ctx, tx, chatID)
+}
+
+func (s Store) IsPrivate(ctx context.Context, access app.Access, chatID string) (bool, error) {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var private bool
+	err = tx.QueryRow(ctx, `SELECT visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares WHERE object_type = 'chat' AND object_id = chat.chats.id) FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&private)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, app.ErrGone
+	}
+	if err != nil {
+		return false, err
+	}
+	return private, tx.Commit(ctx)
 }
 
 // Retry asks again for the reply to the user line that a failed assistant line
@@ -571,7 +634,7 @@ func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID stri
 	if err != nil {
 		return fmt.Errorf("chat: retry line: %w", err)
 	}
-	if role != domain.RoleAssistant || status != domain.StatusFailed || userLine == nil {
+	if role != domain.RoleAssistant || (status != domain.StatusFailed && status != domain.StatusStopped) || userLine == nil {
 		return app.ErrRetry
 	}
 	var answered bool

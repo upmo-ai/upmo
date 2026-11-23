@@ -4,7 +4,9 @@ package memory
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
+	"time"
 
 	"context"
 
@@ -36,14 +38,24 @@ func Migrations() fs.FS {
 // Handler serves the personalisation page. Facts keeps facts in the memory
 // schema, and GatewayClient proposes and embeds through the gateway.
 type (
-	Handler       = httpapi.Handler
-	Facts         = postgres.Facts
-	GatewayClient = gateway.Client
-	Editor        = app.Editor
-	Proposer      = app.Proposer
-	Embedder      = app.Embedder
-	Page          = app.Page
+	Handler        = httpapi.Handler
+	Facts          = postgres.Facts
+	GatewayClient  = gateway.Client
+	Editor         = app.Editor
+	Proposer       = app.Proposer
+	Embedder       = app.Embedder
+	Page           = app.Page
+	Recall         = app.Recall
+	RetrievalStore = app.RetrievalStore
+	Reranker       = app.Reranker
 )
+
+const SearchMemoryName = app.SearchMemoryName
+
+func SearchMemoryTool() (string, json.RawMessage) { return app.SearchMemoryTool() }
+func SearchMemory(ctx context.Context, store RetrievalStore, embedder Embedder, reranker Reranker, userID, query string, asOf time.Time) (Recall, error) {
+	return app.SearchMemory(ctx, store, embedder, reranker, userID, query, asOf)
+}
 
 // ErrRetry reports a gateway failure worth retrying.
 var ErrRetry = app.ErrRetry

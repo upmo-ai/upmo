@@ -32,7 +32,7 @@ type lineJSON struct {
 	Tokens  int      `json:"tokens"`
 	CostUSD *float64 `json:"cost_usd"`
 	At      string   `json:"at"`
-	// Status is done or failed. ReplyTo is the user line a reply answers.
+	// Status is done, failed, or stopped. ReplyTo is the user line a reply answers.
 	// Attempts, on a failed line, are the models tried and why each failed.
 	Status   string        `json:"status"`
 	ReplyTo  *string       `json:"reply_to"`

@@ -256,15 +256,15 @@ func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO chat.turns (
 				chat_id, line_id, seq, role, body, tool_calls, tool_name, tool_id,
-				is_error, offloaded, tainted, private_read, model, input_tokens, output_tokens, cost_micro_usd
+				is_error, offloaded, tainted, private_read, model, input_tokens, output_tokens, cost_micro_usd, author_id
 			) VALUES (
 				$1::uuid, NULLIF($2, '')::uuid, $3, $4, $5, $6::jsonb, $7, $8,
-				$9, $10, $11, $12, $13, $14, $15, $16
+				$9, $10, $11, $12, $13, $14, $15, $16, NULLIF($17, '')::uuid
 			)`,
 			commit.ObjectID, commit.RunID, seq, string(msg.Role), msg.Text, toolCalls,
 			msg.ToolName, msg.ToolID, msg.IsError, msg.Offload,
 			commit.Exposure.Tainted, commit.Exposure.PrivateRead,
-			commit.Model, commit.InputTokens, commit.OutputTokens, cost); err != nil {
+			commit.Model, commit.InputTokens, commit.OutputTokens, cost, commit.UserID); err != nil {
 			return fmt.Errorf("chat: insert turn: %w", err)
 		}
 		seq++

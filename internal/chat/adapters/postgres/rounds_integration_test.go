@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/chat/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/chat/app"
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
+	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 const claimToken = "018f3b2c-7a10-7c4a-8e11-aaaaaaaaaa01"
@@ -130,6 +132,98 @@ func TestAnOutputOfAnotherChatIsNotRetrievable(t *testing.T) {
 	outsA2 := store.Outputs(a.ID, outReplyID, func() (app.Access, error) { return ownerAccess, nil })
 	if body, untrusted, err := outsA2.RetrieveOutput(ctx, &agentloop.RunState{ObjectID: a.ID}, id); err != nil || body != "body" || untrusted {
 		t.Fatalf("own read = %q %v %v", body, untrusted, err)
+	}
+}
+
+func TestPrivateOutputsAndTurnArgumentsAreHiddenAfterChatShare(t *testing.T) {
+	owner := up(t)
+	store := quietStore(t, owner)
+	ctx := context.Background()
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []struct{ id, email, key string }{{ownerUser, "private-owner@example.com", "owner"}, {otherUser, "private-other@example.com", "member"}} {
+		if _, err := users.Exec(ctx, `INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at) VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now()) ON CONFLICT (id) DO NOTHING`, user.id, user.email, user.key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := users.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	claim, runID := claimRun(t, ctx, store, owner, opened.ID)
+	outs := store.Outputs(opened.ID, runID, func() (app.Access, error) { return ownerAccess, nil })
+	outID, err := outs.SaveOutput(ctx, &agentloop.RunState{Exposure: agentloop.ExposureState{PrivateRead: true}}, "private", "secret output", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, _, err := outs.RetrieveOutput(ctx, nil, outID); err != nil || body != "secret output" {
+		t.Fatalf("private output = %q, %v", body, err)
+	}
+	if err := store.PutDelta(ctx, ownerAccess, claim, 1, "text", "answer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitRound(ctx, ownerAccess, claim, app.RoundCommit{Turn: agentloop.TurnCommit{RunID: runID, ObjectID: opened.ID, UserID: ownerUser, SeqStart: 1, Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "private turn", ToolCalls: []agentloop.ToolCall{{ID: "call", Name: "search_memory", Arguments: []byte(`{"query":"secret"}`)}}}}, Exposure: agentloop.ExposureState{PrivateRead: true}, Model: "m1"}, End: app.RoundDone}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, opened.ID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	viewer := app.Access{UserID: otherUser, Allow: "chat:view", SharedView: "{" + opened.ID + "}"}
+	for name, access := range map[string]app.Access{"viewer": viewer, "author": ownerAccess} {
+		if err := store.NarrowedTx(ctx, scopeOf(access, opened.ID), func(tx pgx.Tx) error {
+			var visible int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM chat.turns WHERE chat_id = $1::uuid AND private_read`, opened.ID).Scan(&visible); err != nil {
+				return err
+			}
+			if visible != 0 {
+				return fmt.Errorf("%s direct private turns = %d, want 0", name, visible)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appPool := pgtest.App(t, owner)
+	readTx, err := appPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = readTx.Rollback(ctx) }()
+	if _, err := readTx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true), set_config('upmo.teams', '{}', true), set_config('upmo.shared_view', '{}', true), set_config('upmo.shared_edit', '{}', true)`, ownerUser, ownerAccess.Allow); err != nil {
+		t.Fatal(err)
+	}
+	var visible int
+	if err := readTx.QueryRow(ctx, `SELECT count(*) FROM chat.findings WHERE id = $1::uuid`, outID).Scan(&visible); err != nil || visible != 0 {
+		t.Fatalf("private finding visible=%d err=%v", visible, err)
+	}
+	if _, _, err := outs.RetrieveOutput(ctx, nil, outID); err == nil || err.Error() != "no such output" {
+		t.Fatalf("shared output read = %v", err)
+	}
+	for name, access := range map[string]app.Access{"viewer": viewer, "author": ownerAccess} {
+		got, err := app.Read(ctx, store, access, opened.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		turns := got.Lines[1].Turns
+		if len(turns) != 1 || turns[0].Seq != 1 || turns[0].Role != "assistant" || turns[0].Body != "" || turns[0].ToolCalls != nil || turns[0].ToolName != "" || turns[0].ToolID != "" || turns[0].IsError || turns[0].Offloaded || turns[0].Tainted {
+			t.Fatalf("%s shared private turns = %+v", name, turns)
+		}
+	}
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "next", app.Picks{}); err != nil {
+		t.Fatal(err)
+	}
+	var nextRunID, nextLineID string
+	if err := owner.QueryRow(ctx, `SELECT id::text, line_id::text FROM chat.runs WHERE chat_id = $1::uuid AND state = 'running' ORDER BY created_at DESC LIMIT 1`, opened.ID).Scan(&nextRunID, &nextLineID); err != nil {
+		t.Fatal(err)
+	}
+	claim, err = store.Claim(ctx, ownerAccess, app.ReplyJobArgs{ChatID: opened.ID, LineID: nextLineID, ReplyID: nextRunID, Round: 1, UserID: ownerUser}, claimToken)
+	if err != nil || claim.TurnSeq != 1 {
+		t.Fatalf("claim turn seq=%d err=%v, want 1", claim.TurnSeq, err)
 	}
 }
 

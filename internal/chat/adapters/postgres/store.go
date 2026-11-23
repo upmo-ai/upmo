@@ -363,10 +363,79 @@ func (s Store) Read(ctx context.Context, access app.Access, chatID string) (app.
 	if err := rows.Err(); err != nil {
 		return app.Chat{}, fmt.Errorf("chat: lines: %w", err)
 	}
+	rows.Close()
+	var privateUnshared bool
+	if err := tx.QueryRow(ctx, `SELECT visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares WHERE object_type = 'chat' AND object_id = chat.chats.id) FROM chat.chats WHERE id = $1::uuid`, chatID).Scan(&privateUnshared); err != nil {
+		return app.Chat{}, err
+	}
+	turns, err := turnsForChatTx(ctx, tx, chatID, access.UserID, privateUnshared)
+	if err != nil {
+		return app.Chat{}, err
+	}
+	for i := range lines {
+		lines[i].Turns = turns[lines[i].ID]
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return app.Chat{}, err
 	}
 	return app.Chat{ID: chatID, Lines: lines, Tainted: tainted, PrivateRead: privateRead}, nil
+}
+
+func turnsForChatTx(ctx context.Context, tx pgx.Tx, chatID, viewerUserID string, isPrivateUnshared bool) (map[string][]app.Turn, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT COALESCE(line_id::text, ''), seq, role, body, tool_calls, tool_name, tool_id, is_error, offloaded, tainted, private_read, author_id::text
+		FROM chat.turns WHERE chat_id = $1::uuid
+		UNION ALL
+		SELECT COALESCE(line_id::text, ''), seq, role, ''::text, NULL::jsonb, tool_name, tool_id, is_error, offloaded, tainted, true, NULL::text
+		FROM chat.redacted_turn_metadata($1::uuid)
+		ORDER BY seq`, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]app.Turn{}
+	for rows.Next() {
+		var lineID string
+		var turn app.Turn
+		var calls []byte
+		var privateRead bool
+		var authorID *string
+		if err := rows.Scan(&lineID, &turn.Seq, &turn.Role, &turn.Body, &calls, &turn.ToolName, &turn.ToolID, &turn.IsError, &turn.Offloaded, &turn.Tainted, &privateRead, &authorID); err != nil {
+			return nil, err
+		}
+		turn.ToolCalls = calls
+		if privateRead && (authorID == nil || *authorID != viewerUserID || !isPrivateUnshared) {
+			turn.Body = ""
+			turn.ToolCalls = nil
+		}
+		out[lineID] = append(out[lineID], turn)
+	}
+	return out, rows.Err()
+}
+
+// Delete removes an owned chat and all of its chat rows.
+func (s Store) Delete(ctx context.Context, access app.Access, chatID string) error {
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT chat.delete_chat($1::uuid)`, chatID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "P0002":
+				return app.ErrGone
+			case "42501":
+				return app.ErrAccess
+			}
+		}
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{Action: audit.ChatDelete, Outcome: audit.Success, TargetID: chatID}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
@@ -431,7 +500,7 @@ func lineColumnsFor(viewer string) string {
 // superseded holds for a failed reply that a later reply to the same user
 // line has answered, on a chat.lines row named line. Such a line stays
 // stored but is hidden from the thread and from the history.
-const superseded = `line.status = 'failed' AND EXISTS (
+const superseded = `line.status IN ('failed', 'stopped') AND EXISTS (
 	SELECT 1 FROM chat.lines AS later
 	WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq
 )`

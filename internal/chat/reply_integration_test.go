@@ -84,6 +84,313 @@ func TestReplyStreamsDeltasThenStoresTheLineAndDropsTheDeltas(t *testing.T) {
 	}
 }
 
+func TestStopStoresPartialTextFencesWorkerAndCanRetry(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	chatID := r.open()
+	r.say(chatID, "hi", "")
+	queued := r.lastJob()
+	claim, err := r.store.Claim(context.Background(), ownerAccess, queued.Args, token1)
+	if err != nil || claim.State != app.ClaimGo {
+		t.Fatalf("claim = %+v, %v", claim, err)
+	}
+	r.putDelta(chatID, queued.Args.ReplyID, 1, "text", "Hello ")
+	if err := r.store.Stop(context.Background(), ownerAccess, chatID); err != nil {
+		t.Fatal(err)
+	}
+	lines := r.lines(chatID)
+	if len(lines) != 2 || lines[1].Status != "stopped" || lines[1].Body != "Hello " {
+		t.Fatalf("lines = %+v", lines)
+	}
+	if err := r.store.PutDelta(context.Background(), ownerAccess, claim, 2, "text", "late"); !errors.Is(err, app.ErrFenced) {
+		t.Fatalf("late delta error = %v", err)
+	}
+	if got := r.deltas(chatID); len(got) != 0 {
+		t.Fatalf("deltas = %+v", got)
+	}
+	if err := r.store.Stop(context.Background(), ownerAccess, chatID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Retry(context.Background(), r.store, ownerAccess, chatID, queued.Args.ReplyID, nil); err != nil {
+		t.Fatal(err)
+	}
+	r.stub.reply(func(_ int, s *frames) { s.delta("Again"); s.done("m1", 1, 1, nil) })
+	if err := r.run(r.lastJob(), 1); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.Read(context.Background(), r.store, ownerAccess, chatID)
+	if err != nil || len(got.Lines) != 2 || got.Lines[1].Status != "done" || got.Lines[1].Body != "Again" {
+		t.Fatalf("read after retry = %+v, %v", got.Lines, err)
+	}
+}
+
+func TestStopBeforeTextIsEmptyAndIdempotent(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	ctx := context.Background()
+	chatID := r.open()
+	r.say(chatID, "hi", "")
+	queued := r.lastJob()
+	if claim, err := r.store.Claim(ctx, ownerAccess, queued.Args, token1); err != nil || claim.State != app.ClaimGo {
+		t.Fatalf("claim = %+v, %v", claim, err)
+	}
+	if err := app.Stop(ctx, r.store, ownerAccess, chatID); err != nil {
+		t.Fatal(err)
+	}
+	lines := r.lines(chatID)
+	if len(lines) != 2 || lines[1].Status != "stopped" || lines[1].Body != "" {
+		t.Fatalf("lines = %+v", lines)
+	}
+	var count int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM audit.pending WHERE action = 'chat.stop'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("stop audit count = %d, %v", count, err)
+	}
+	if err := app.Stop(ctx, r.store, ownerAccess, chatID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM audit.pending WHERE action = 'chat.stop'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("idempotent stop audit count = %d, %v", count, err)
+	}
+}
+
+type replyMemory struct{}
+
+func (replyMemory) SearchMemory(context.Context, chat.Access, string) (string, bool, bool, error) {
+	return strings.Repeat("private fact ", 30), false, true, nil
+}
+
+type replyKnowledge struct{}
+
+func (replyKnowledge) SearchKnowledge(context.Context, chat.Access, string, string) ([]chat.KnowledgeHit, error) {
+	return []chat.KnowledgeHit{{SourceID: "source", Seq: 1, Body: "curated knowledge"}}, nil
+}
+
+type countingReplyMemory struct{ calls int }
+
+func (m *countingReplyMemory) SearchMemory(context.Context, chat.Access, string) (string, bool, bool, error) {
+	m.calls++
+	return "private memory", false, true, nil
+}
+
+type countingReplyKnowledge struct{ calls int }
+
+func (k *countingReplyKnowledge) SearchKnowledge(context.Context, chat.Access, string, string) ([]chat.KnowledgeHit, error) {
+	k.calls++
+	return []chat.KnowledgeHit{{SourceID: "source", Seq: 1, Body: "private knowledge"}}, nil
+}
+
+func TestPrivateSearchToolsRunOnlyInPrivateChatAndPersistPrivateEvidence(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{OffloadAtTokens: 10})
+	r.deps.Memory, r.deps.Knowledge = replyMemory{}, replyKnowledge{}
+	worker, err := app.NewReplyWorker(r.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.worker = worker
+	ctx := context.Background()
+	chatID := r.open()
+	r.say(chatID, "find facts", "")
+	firstJob := r.lastJob()
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			s.doneCalls("m1", 1, 1, nil, stubTool{ID: "memory", Name: "search_memory", Args: `{"query":"facts"}`}, stubTool{ID: "knowledge", Name: "search_knowledge", Args: `{"query":"notes"}`})
+			return
+		}
+		s.delta("done")
+		s.done("m1", 1, 1, nil)
+	})
+	if err := r.run(firstJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	seen := r.stub.seen()
+	if len(seen) < 1 {
+		t.Fatal("gateway was not called")
+	}
+	tools := map[string]bool{}
+	for _, tool := range seen[0].Tools {
+		tools[tool.Name] = true
+	}
+	if !tools["search_memory"] || !tools["search_knowledge"] {
+		t.Fatalf("private tools = %v", tools)
+	}
+	var next job
+	for _, queued := range r.jobs() {
+		if queued.Args.Round == 2 {
+			next = queued
+			break
+		}
+	}
+	if next.Args.Round != 2 {
+		t.Fatal("round 2 was not queued")
+	}
+	if err := r.run(next, 1); err != nil {
+		t.Fatal(err)
+	}
+	var privateTurns, authoredTurns int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FILTER (WHERE private_read), count(*) FILTER (WHERE author_id = $2::uuid AND private_read) FROM chat.turns WHERE chat_id = $1::uuid`, chatID, ownerUser).Scan(&privateTurns, &authoredTurns); err != nil {
+		t.Fatal(err)
+	}
+	if privateTurns == 0 || authoredTurns != privateTurns {
+		t.Fatalf("turn privacy count=%d author count=%d", privateTurns, authoredTurns)
+	}
+	var privateOutputs int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.findings WHERE chat_id = $1::uuid AND kind = 'tool_output' AND private_read AND author_id = $2::uuid`, chatID, ownerUser).Scan(&privateOutputs); err != nil {
+		t.Fatal(err)
+	}
+	if privateOutputs != 2 {
+		t.Fatalf("private output count = %d", privateOutputs)
+	}
+}
+
+func TestPrivateSearchToolsRefuseAfterChatIsShared(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{OffloadAtTokens: 10})
+	memory := &countingReplyMemory{}
+	knowledge := &countingReplyKnowledge{}
+	r.deps.Memory, r.deps.Knowledge = memory, knowledge
+	worker, err := app.NewReplyWorker(r.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.worker = worker
+	ctx := context.Background()
+	chatID := r.open()
+	r.say(chatID, "find private facts", "")
+	firstJob := r.lastJob()
+	r.stub.reply(func(call int, s *frames) {
+		if call == 1 {
+			for _, user := range []struct{ id, email, role string }{
+				{ownerUser, "search-owner@example.com", "owner"},
+				{otherUser, "search-sharer@example.com", "member"},
+			} {
+				if _, err := r.owner.Exec(ctx, `INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at) VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now()) ON CONFLICT (id) DO NOTHING`, user.id, user.email, user.role); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+			if _, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'viewer', $3::uuid)`, chatID, otherUser, ownerUser); err != nil {
+				t.Error(err)
+				return
+			}
+			s.doneCalls("m1", 1, 1, nil,
+				stubTool{ID: "memory", Name: "search_memory", Args: `{"query":"facts"}`},
+				stubTool{ID: "knowledge", Name: "search_knowledge", Args: `{"query":"notes"}`},
+			)
+			return
+		}
+		s.done("m1", 1, 1, nil)
+	})
+	if err := r.run(firstJob, 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.owner.Query(ctx, `SELECT tool_name, body, is_error, private_read FROM chat.turns WHERE chat_id = $1::uuid AND role = 'tool' ORDER BY seq`, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	refused := map[string]bool{}
+	for rows.Next() {
+		var name, body string
+		var isError, private bool
+		if err := rows.Scan(&name, &body, &isError, &private); err != nil {
+			t.Fatal(err)
+		}
+		refused[name] = isError && !private && body == "private tool unavailable in shared chat"
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !refused["search_memory"] || !refused["search_knowledge"] {
+		t.Fatalf("refused tool results = %v", refused)
+	}
+	if memory.calls != 0 || knowledge.calls != 0 {
+		t.Fatalf("private lookup calls: memory=%d knowledge=%d", memory.calls, knowledge.calls)
+	}
+	var privateEvidence int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM chat.findings WHERE chat_id = $1::uuid AND private_read`, chatID).Scan(&privateEvidence); err != nil || privateEvidence != 0 {
+		t.Fatalf("private evidence=%d err=%v", privateEvidence, err)
+	}
+}
+
+func TestDeleteChatCascadesAndKeepsDirectLineDeleteBlocked(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	ctx := context.Background()
+	chatID := r.open()
+	r.say(chatID, "hi", "")
+	queued := r.lastJob()
+	claim, err := r.store.Claim(ctx, ownerAccess, queued.Args, token1)
+	if err != nil || claim.State != app.ClaimGo {
+		t.Fatalf("claim = %+v, %v", claim, err)
+	}
+	r.putDelta(chatID, queued.Args.ReplyID, 1, "text", "partial")
+	outs := r.store.Outputs(chatID, queued.Args.ReplyID, func() (app.Access, error) { return ownerAccess, nil })
+	if _, err := outs.SaveOutput(ctx, nil, "output", "body", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO chat.turns (chat_id, line_id, seq, role, body) VALUES ($1::uuid, $2::uuid, 1, 'assistant', 'turn')`, chatID, queued.Args.ReplyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO gateway.ledger (route, link_position, model, plan_kind, failure_class, user_id, run_id, source, source_id) VALUES ('chat', 0, 'm1', 'local', '', $1::uuid, $2::uuid, 'chat', $3::uuid)`, ownerUser, queued.Args.ReplyID, chatID); err != nil {
+		t.Fatal(err)
+	}
+	deleteAccess := ownerAccess
+	deleteAccess.Allow += ",chat:delete"
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true), set_config('upmo.allow', $2, true)`, ownerUser, deleteAccess.Allow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM chat.lines WHERE chat_id = $1::uuid`, chatID); err == nil {
+		t.Fatal("direct line delete succeeded")
+	}
+	_ = tx.Rollback(ctx)
+	if err := app.Delete(ctx, r.store, deleteAccess, chatID); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := r.owner.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM chat.chats WHERE id = $1::uuid)`, chatID).Scan(&exists); err != nil || exists {
+		t.Fatalf("chat exists=%v err=%v", exists, err)
+	}
+	for _, table := range []string{"chat.lines", "chat.runs", "chat.deltas", "chat.findings", "chat.turns"} {
+		var count int
+		if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE chat_id = $1::uuid`, chatID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s count=%d err=%v", table, count, err)
+		}
+	}
+	var ledger int
+	if err := r.owner.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger WHERE source = 'chat' AND source_id = $1::uuid`, chatID).Scan(&ledger); err != nil || ledger != 1 {
+		t.Fatalf("ledger count=%d err=%v", ledger, err)
+	}
+}
+
+func TestDeleteRejectsSharedEditorEvenWithDeletePermission(t *testing.T) {
+	r := newRig(t, app.ReplyConfig{})
+	ctx := context.Background()
+	chatID := r.open()
+	users, err := r.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []struct{ id, email, key string }{{ownerUser, "delete-owner@example.com", "owner"}, {otherUser, "delete-other@example.com", "member"}} {
+		if _, err := users.Exec(ctx, `INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at) VALUES ($1::uuid, $2, sha256(convert_to($2, 'UTF8')), 'k1', $2, (SELECT id FROM identity.roles WHERE key = $3), now()) ON CONFLICT (id) DO NOTHING`, user.id, user.email, user.key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := users.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.owner.Exec(ctx, `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('chat', $1::uuid, $2::uuid, 'editor', $3::uuid)`, chatID, otherUser, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	other := chat.Access{UserID: otherUser, Allow: "chat:view,chat:edit,chat:delete", SharedView: "{" + chatID + "}", SharedEdit: "{" + chatID + "}"}
+	if err := app.Delete(ctx, r.store, other, chatID); !errors.Is(err, app.ErrAccess) {
+		t.Fatalf("shared editor delete = %v", err)
+	}
+	var exists bool
+	if err := r.owner.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM chat.chats WHERE id = $1::uuid)`, chatID).Scan(&exists); err != nil || !exists {
+		t.Fatalf("chat exists=%v err=%v", exists, err)
+	}
+}
+
 func TestFinishRollsBackTheLineAndTheDeltaDeleteTogether(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
@@ -761,7 +1068,7 @@ func TestFailReplyIsNarrow(t *testing.T) {
 	if _, err := r.store.FailReply(ctx, queued.Args, "", "anything"); err == nil {
 		t.Fatal("a free reason was accepted")
 	}
-	if stored, err := r.store.FailReply(ctx, app.ReplyJobArgs{ChatID: chatID, LineID: user.ID, ReplyID: "018f3b2c-7a10-7c4a-8e11-777777777777", Round: 1}, "", "access"); err == nil || stored {
+	if stored, err := r.store.FailReply(ctx, app.ReplyJobArgs{ChatID: chatID, LineID: user.ID, ReplyID: "018f3b2c-7a10-7c4a-8e11-777777777777", Round: 1}, "", "access"); err != nil || stored {
 		t.Fatalf("a reply id with no run: stored %v %v", stored, err)
 	}
 	// A round that is not the run's next round is fenced out.
@@ -1035,24 +1342,24 @@ func TestAReplyIdWhoseDeltasBelongToAnotherChatIsNeitherAdoptedNorDeleted(t *tes
 	}
 }
 
-func TestAWorkerThatCannotStoreAFailedReplyReturnsAnError(t *testing.T) {
+func TestAWorkerWithNoRunReturnsCleanly(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	// A job for a reply id that has no run: nothing can be stored for it.
+	// A missing run is a clean no-op, including when deletion removed it.
 	queued.Args.ReplyID = "018f3b2c-7a10-7c4a-8e11-999999999999"
 	r.dropAccess(ownerUser)
-	if err := r.run(queued, 1); err == nil {
-		t.Fatal("the job reported success without storing a reply")
+	if err := r.run(queued, 1); err != nil {
+		t.Fatalf("missing run returned an error: %v", err)
 	}
 }
 
-func TestFailReplyRefusesAReplyIdWithNoRun(t *testing.T) {
+func TestFailReplyWithNoRunIsClean(t *testing.T) {
 	r := newRig(t, app.ReplyConfig{})
 	chatID := r.open()
 	r.say(chatID, "hi", "")
-	if stored, err := r.store.FailReply(context.Background(), app.ReplyJobArgs{ChatID: chatID, ReplyID: replyID, Round: 1}, "", "access"); err == nil || stored {
+	if stored, err := r.store.FailReply(context.Background(), app.ReplyJobArgs{ChatID: chatID, ReplyID: replyID, Round: 1}, "", "access"); err != nil || stored {
 		t.Fatalf("stored %v %v", stored, err)
 	}
 	if got := r.lines(chatID); len(got) != 1 {

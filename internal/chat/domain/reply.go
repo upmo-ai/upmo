@@ -11,8 +11,9 @@ const ReplyRunes = 32000
 
 // Line statuses. A reply is done, or failed when it broke off.
 const (
-	StatusDone   = "done"
-	StatusFailed = "failed"
+	StatusDone    = "done"
+	StatusFailed  = "failed"
+	StatusStopped = "stopped"
 )
 
 // Roles of a line.

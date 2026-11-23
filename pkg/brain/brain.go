@@ -40,6 +40,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
+	"github.com/upmo-ai/upmo/internal/platform/trustfence"
 	"github.com/upmo-ai/upmo/internal/provision"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
@@ -858,10 +859,12 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			return who, err
 		}
 		if err := chat.AddReplyWorker(workers, chat.ReplyDeps{
-			Rows:    chat.NewStore(pool, lazy),
-			Agents:  chatAgentLookup{store: agentStore, access: agentWho},
-			Lessons: chatLessons{store: agentStore, access: agentWho},
-			Turns:   chatTurns,
+			Rows:      chat.NewStore(pool, lazy),
+			Agents:    chatAgentLookup{store: agentStore, access: agentWho},
+			Lessons:   chatLessons{store: agentStore, access: agentWho},
+			Turns:     chatTurns,
+			Memory:    chatMemoryLookup{facts: memoryFacts, embed: func(userID string) memory.Embedder { return gw.For(userID) }},
+			Knowledge: chatKnowledgeLookup{folders: knowledgeBook, finder: knowledgeBook, embedFor: func(userID string) knowledge.Embedder { return gw.For(userID) }, members: members},
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -1585,6 +1588,69 @@ type scoutKnowledge struct {
 	folders knowledge.FolderLister
 	finder  knowledge.Finder
 	members identity.MemberService
+}
+
+type chatMemoryLookup struct {
+	facts memory.RetrievalStore
+	embed func(string) memory.Embedder
+}
+
+func (s chatMemoryLookup) SearchMemory(ctx context.Context, access chat.Access, query string) (string, bool, bool, error) {
+	recall, err := memory.SearchMemory(ctx, s.facts, s.embed(access.UserID), nil, access.UserID, query, time.Now())
+	return recall.Text, recall.Exposure.Untrusted, recall.Exposure.Private, err
+}
+
+type chatKnowledgeLookup struct {
+	folders  knowledge.FolderLister
+	finder   knowledge.Finder
+	embedFor func(string) knowledge.Embedder
+	members  identity.MemberService
+}
+
+func (s chatKnowledgeLookup) SearchKnowledge(ctx context.Context, chatAccess chat.Access, folderID, query string) ([]chat.KnowledgeHit, error) {
+	person, err := identity.ParseUserID(chatAccess.UserID)
+	if err != nil {
+		return nil, err
+	}
+	allow, err := s.members.FolderAllow(ctx, person)
+	if err != nil {
+		return nil, err
+	}
+	shares, err := s.members.ShareAccess(ctx, person, identity.TypeFolder)
+	if err != nil {
+		return nil, err
+	}
+	access := knowledge.Access{UserID: chatAccess.UserID, Allow: allow, Teams: shares.Teams, SharedView: shares.SharedView, SharedEdit: shares.SharedEdit}
+	folders := []knowledge.Folder{}
+	if folderID != "" {
+		folders = append(folders, knowledge.Folder{ID: folderID})
+	} else {
+		folders, err = knowledge.ListFolders(ctx, s.folders, access)
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := make([]chat.KnowledgeHit, 0, 8)
+	for _, folder := range folders {
+		if len(out) >= 8 {
+			break
+		}
+		hits, err := knowledge.Search(ctx, s.finder, s.embedFor(chatAccess.UserID), nil, access, folder.ID, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, hit := range hits {
+			if len(out) >= 8 {
+				break
+			}
+			body := hit.Body
+			if hit.Provenance.Untrusted() {
+				body = trustfence.Wrap(trustfence.TagUntrust, "knowledge", body)
+			}
+			out = append(out, chat.KnowledgeHit{SourceID: hit.SourceID, Seq: hit.Seq, Body: body, Untrusted: hit.Provenance.Untrusted()})
+		}
+	}
+	return out, nil
 }
 
 func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query string, limit int) ([]tasks.KnowledgeHit, error) {

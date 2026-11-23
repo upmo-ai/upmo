@@ -81,6 +81,24 @@ func TestOpenLeavesTheSession(t *testing.T) {
 	}
 }
 
+func TestDeleteRequiresChatDeletePermissionInStore(t *testing.T) {
+	owner := up(t)
+	store := quietStore(t, owner)
+	ctx := context.Background()
+	opened, err := app.Open(ctx, store, ownerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(ctx, ownerAccess, opened.ID); !errors.Is(err, app.ErrAccess) {
+		t.Fatalf("delete without chat:delete = %v", err)
+	}
+	var exists bool
+	if err := owner.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM chat.chats WHERE id = $1::uuid)`, opened.ID).Scan(&exists); err != nil || !exists {
+		t.Fatalf("chat exists=%v err=%v", exists, err)
+	}
+}
+
 // quietStore is a store whose lines are asked a model for, by a queue that
 // only records the job, so that nothing writes a reply into the chat.
 func quietStore(t *testing.T, owner *pgxpool.Pool) postgres.Store {

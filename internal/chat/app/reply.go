@@ -144,8 +144,16 @@ type ReplyRows interface {
 	// HasAllowance reports whether the person allowed the tool for the chat
 	// and the chat is untainted.
 	HasAllowance(ctx context.Context, access Access, chatID, toolName string) (bool, error)
+	IsPrivate(ctx context.Context, access Access, chatID string) (bool, error)
 	// ActionLog is the chat's log of tool calls that act outside it.
 	ActionLog(scope agentloop.AccessScope) agentloop.ActionLog
+}
+
+type MemoryLookup interface {
+	SearchMemory(context.Context, Access, string) (string, bool, bool, error)
+}
+type KnowledgeLookup interface {
+	SearchKnowledge(context.Context, Access, string, string) ([]agentloop.KnowledgeHit, error)
 }
 
 // ModelMessage is one turn sent to the model.
@@ -208,9 +216,10 @@ type Pending struct {
 
 // Claim is one round of one reply in the worker's hands.
 type Claim struct {
-	State ClaimState
-	Job   ReplyJobArgs
-	Token string
+	State   ClaimState
+	Job     ReplyJobArgs
+	Token   string
+	Private bool
 	// Scope is the chat's visibility, for the gateway call only (team_id).
 	Scope     agentloop.AccessScope
 	CreatedAt time.Time // chat.runs.created_at
@@ -350,13 +359,15 @@ type LessonLookup interface {
 // use chats. Agents, Lessons and Turns are required: building the worker
 // without any of them is an error. Log may be nil.
 type ReplyDeps struct {
-	Rows    ReplyRows
-	Agents  AgentLookup
-	Lessons LessonLookup
-	Turns   Turns
-	Access  func(ctx context.Context, userID string) (Access, bool, error)
-	Config  ReplyConfig
-	Log     *slog.Logger
+	Rows      ReplyRows
+	Agents    AgentLookup
+	Lessons   LessonLookup
+	Turns     Turns
+	Memory    MemoryLookup
+	Knowledge KnowledgeLookup
+	Access    func(ctx context.Context, userID string) (Access, bool, error)
+	Config    ReplyConfig
+	Log       *slog.Logger
 }
 
 type replyWorker struct {
@@ -604,7 +615,7 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 	engine := agentloop.Engine{
 		Model: w.deps.Turns.Bind(turnRoute, sink.add, onAttempt),
 		Executor: timedExecutor{limit: ToolTimeout, inner: agentloop.DefaultExecutor{
-			Lessons: lessonOpener{lookup: w.deps.Lessons, live: live}, Outputs: outs, OffloadAtTokens: w.cfg.OffloadAtTokens}},
+			Lessons: lessonOpener{lookup: w.deps.Lessons, live: live}, Memory: memorySearcher{lookup: w.deps.Memory, rows: w.deps.Rows, live: live, chatID: args.ChatID}, Knowledge: knowledgeSearcher{lookup: w.deps.Knowledge, rows: w.deps.Rows, live: live, chatID: args.ChatID}, Outputs: outs, OffloadAtTokens: w.cfg.OffloadAtTokens}},
 		TurnStore:            store,
 		ActionLog:            w.deps.Rows.ActionLog(claim.Scope),
 		Outputs:              outs,
@@ -613,7 +624,7 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		// ContextWindow 0: no trim, no guard (310b2)
 	}
 	run := &agentloop.RunState{RunID: args.ReplyID, ObjectID: args.ChatID, ObjectType: "chat",
-		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: catalog(agent), Seq: claim.TurnSeq,
+		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: catalog(agent, claim.Private, w.deps.Memory != nil, w.deps.Knowledge != nil), Seq: claim.TurnSeq,
 		Exposure: claim.Exposure}
 	engine.WritePolicy = ChatWritePolicy{ChatID: args.ChatID, Run: run, Allowed: claim.AllowedTools,
 		Allowances: w.deps.Rows, Access: func() (Access, error) {

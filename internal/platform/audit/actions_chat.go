@@ -10,7 +10,9 @@ const (
 	// ChatRetry asks again for the reply to one failed reply's user line.
 	ChatRetry Action = "chat.retry"
 	// ChatSweep deletes reply deltas whose line never arrived.
-	ChatSweep Action = "chat.sweep"
+	ChatSweep  Action = "chat.sweep"
+	ChatStop   Action = "chat.stop"
+	ChatDelete Action = "chat.delete"
 	// AgentCreate stores one agent profile.
 	AgentCreate Action = "agent.create"
 	// AgentUpdate changes one agent profile's fields. The prompt text is
@@ -27,6 +29,8 @@ func init() {
 	register(ChatMessage, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id")
 	register(ChatRetry, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id")
 	register(ChatSweep, "delta", classAPIActivity, activityUnknown, "rows")
+	register(ChatStop, "line", classAPIActivity, activityUnknown, "status")
+	register(ChatDelete, "chat", classAPIActivity, activityUnknown)
 	register(AgentCreate, "agent", classAPIActivity, activityUnknown, "enabled", "route", "model_provider", "model_id", "visibility", "team_ids")
 	register(AgentUpdate, "agent", classAPIActivity, activityUnknown, "enabled", "route", "model_provider", "model_id", "visibility", "team_ids")
 	register(AgentShare, "agent", classAPIActivity, activityUnknown, "visibility", "team_ids")
