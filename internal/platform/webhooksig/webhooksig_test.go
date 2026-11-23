@@ -187,6 +187,7 @@ func FuzzVerify(f *testing.F) {
 	f.Add(stdID, stdUnix, []byte(stdBody), stdSig, ghSig)
 	f.Add("", int64(0), []byte(nil), "", "")
 	f.Add("id", int64(-1), bytes.Repeat([]byte("a"), 32), "v1,not-base64", "sha256=zz")
+	f.Add(stdID, stdUnix, []byte(stdBody), " "+stdSig+" v1,AAAA", ghSig)
 	f.Fuzz(func(t *testing.T, id string, unix int64, body []byte, header, ghHeader string) {
 		defer func() {
 			if recover() != nil {
@@ -203,7 +204,7 @@ func FuzzVerify(f *testing.F) {
 		want := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 		now := time.Unix(unix, 0)
 		_, err = Verify([]string{stdSecret}, id, strconv.FormatInt(unix, 10), header, body, now)
-		valid := header == want && id != "" && len(body) <= MaxBody
+		valid := signedBy(header, want) && id != "" && len(body) <= MaxBody
 		if valid && err != nil {
 			t.Fatalf("rejected an independently computed signature: %v", err)
 		}
@@ -223,4 +224,24 @@ func FuzzVerify(f *testing.F) {
 			t.Fatalf("verified a forged GitHub signature %q", ghHeader)
 		}
 	})
+}
+
+// signedBy reports whether header is well formed and carries want. The header
+// is a space-separated list of version,value entries and v1 values are strict
+// base64, so extra entries and spacing do not change which MAC verifies.
+func signedBy(header, want string) bool {
+	found := false
+	for _, f := range strings.Fields(header) {
+		version, value, ok := strings.Cut(f, ",")
+		if !ok {
+			return false
+		}
+		if version == "v1" {
+			if _, err := base64.StdEncoding.Strict().DecodeString(value); err != nil {
+				return false
+			}
+		}
+		found = found || f == want
+	}
+	return found
 }
