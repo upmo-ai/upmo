@@ -38,8 +38,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # Each group turns on the jobs that check it. The weekly run, a first
-      # push, a failed diff, and any change to CI itself, the Makefile or
-      # compose.yml turn on every group.
+      # push, a failed diff, and any change to CI itself, the Makefile,
+      # compose.yml or a root dotfile (tool configs) turn on every group.
+      # Root files go to the Go group: repolint tests check them.
       - name: Pick Jobs
         id: pick
         env:
@@ -51,19 +52,19 @@ jobs:
           files=""
           if [ "$EVENT" = schedule ] || [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
             all=true
-          elif ! files=$(git diff --name-only "$BASE...$HEAD"); then
+          elif ! files=$(git -c core.quotePath=false diff --name-only --no-renames "$BASE...$HEAD"); then
             all=true
           fi
-          has() { printf '%s\n' "$files" | grep -Eq "$1"; }
-          if has '^(\.github/|Makefile$|compose\.yml$)'; then all=true; fi
+          has() { grep -Eq "$1" <<< "$files"; }
+          if has '^(\.github/|Makefile$|compose\.yml$|\.[^/]+$)'; then all=true; fi
           on() { if [ "$all" = true ] || has "$2"; then echo "$1=true"; else echo "$1=false"; fi; }
           {
-            on go '^(cmd|internal|pkg|tools)/|^go\.(mod|sum)$'
+            on go '^(cmd|internal|pkg|tools)/|^[^/]+$|^web/package\.json$'
             on web '^web/'
             on shell '^scripts/'
             on e2e '^(cmd|internal|pkg|web|e2e|deploy)/|^go\.(mod|sum)$'
             on images '^deploy/|(^|/)Dockerfile$'
-            on docs '\.md$|^docs/|^lychee\.toml$|^\.markdownlint'
+            on docs '\.md$|\.html$|^docs/|^LICENSE$|^lychee\.toml$'
             on workflows '^\.github/'
           } | tee -a "$GITHUB_OUTPUT" > picked.txt
           {
