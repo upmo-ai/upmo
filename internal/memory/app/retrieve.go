@@ -3,11 +3,11 @@ package app
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/memory/domain"
+	"github.com/upmo-ai/upmo/internal/platform/retrieval"
 )
 
 // Retrieval sizes. Each list and the fused list hold at most
@@ -80,79 +80,14 @@ func Retrieve(ctx context.Context, store RetrievalStore, embedder Embedder, rera
 		return nil, err
 	}
 
-	fused := fuse(near, match)
-	out := rerank(ctx, reranker, query, fused)
-	if len(out) > RetrieveLimit {
-		out = out[:RetrieveLimit]
+	fused := retrieval.Fuse([][]Candidate{near, match}, func(c Candidate) string { return c.ID }, func(a, b Candidate) bool {
+		return a.ID < b.ID
+	}, nil, RRFK, RetrieveCandidates)
+	var rank func(context.Context, string, []Candidate) ([]Candidate, error)
+	if reranker != nil {
+		rank = reranker.Rerank
 	}
+	out := retrieval.Rerank(ctx, query, fused, func(c Candidate) string { return c.ID }, rank)
+	out = retrieval.Pack(out, RetrieveLimit, func(Candidate) int { return 1 })
 	return out, nil
-}
-
-func fuse(lists ...[]Candidate) []Candidate {
-	type row struct {
-		candidate Candidate
-		score     float64
-	}
-	rows := map[string]*row{}
-	for _, list := range lists {
-		for i, c := range list {
-			r, ok := rows[c.ID]
-			if !ok {
-				r = &row{candidate: c}
-				rows[c.ID] = r
-			}
-			r.score += 1 / float64(RRFK+i+1)
-		}
-	}
-	ranked := make([]*row, 0, len(rows))
-	for _, r := range rows {
-		ranked = append(ranked, r)
-	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		return ranked[i].candidate.ID < ranked[j].candidate.ID
-	})
-	if len(ranked) > RetrieveCandidates {
-		ranked = ranked[:RetrieveCandidates]
-	}
-	out := make([]Candidate, len(ranked))
-	for i, r := range ranked {
-		out[i] = r.candidate
-	}
-	return out
-}
-
-// rerank keeps the fused order when the reranker is absent, fails, or
-// returns nothing. Otherwise it keeps fused IDs in the reranker's order.
-func rerank(ctx context.Context, reranker Reranker, query string, fused []Candidate) []Candidate {
-	if reranker == nil || len(fused) == 0 {
-		return fused
-	}
-	got, err := reranker.Rerank(ctx, query, fused)
-	if err != nil || len(got) == 0 {
-		return fused
-	}
-	known := make(map[string]Candidate, len(fused))
-	for _, c := range fused {
-		known[c.ID] = c
-	}
-	seen := make(map[string]struct{}, len(got))
-	out := make([]Candidate, 0, len(got))
-	for _, c := range got {
-		f, ok := known[c.ID]
-		if !ok {
-			continue
-		}
-		if _, dup := seen[c.ID]; dup {
-			continue
-		}
-		seen[c.ID] = struct{}{}
-		out = append(out, f)
-	}
-	if len(out) == 0 {
-		return fused
-	}
-	return out
 }

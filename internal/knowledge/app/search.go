@@ -2,13 +2,12 @@ package app
 
 import (
 	"context"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/upmo-ai/upmo/internal/knowledge/domain"
+	"github.com/upmo-ai/upmo/internal/platform/retrieval"
 )
 
 const (
@@ -102,15 +101,14 @@ func Search(
 	case len(lexical) == 0:
 		fused = toHits(denseHits)
 	default:
-		fused = fuse(lexical, denseHits)
+		fused = toHits(retrieval.Fuse([][]Lexical{lexical, denseHits}, lexicalKey, lexicalLess, mergeLexical, RRFK, LexicalCandidates))
 	}
-	fused = rerank(ctx, reranker, query, fused)
-	if len(fused) > SearchLimit {
-		fused = fused[:SearchLimit]
+	var rank func(context.Context, string, []Hit) ([]Hit, error)
+	if reranker != nil {
+		rank = reranker.Rerank
 	}
-	if fused == nil {
-		fused = []Hit{}
-	}
+	fused = retrieval.Rerank(ctx, query, fused, hitKey, rank)
+	fused = retrieval.Pack(fused, SearchLimit, func(Hit) int { return 1 })
 	return fused, nil
 }
 
@@ -135,54 +133,6 @@ func near(
 	return hits
 }
 
-func fuse(lists ...[]Lexical) []Hit {
-	type row struct {
-		hit   Hit
-		score float64
-	}
-	rows := map[string]*row{}
-	for _, list := range lists {
-		for i, match := range list {
-			key := match.SourceID + ":" + strconv.Itoa(match.Seq)
-			r, ok := rows[key]
-			if !ok {
-				r = &row{hit: Hit{
-					SourceID:   match.SourceID,
-					Seq:        match.Seq,
-					Body:       match.Body,
-					Provenance: match.Provenance,
-				}}
-				rows[key] = r
-			}
-			if match.Provenance.Untrusted() {
-				r.hit.Provenance = match.Provenance
-			}
-			r.score += 1 / float64(RRFK+i+1)
-		}
-	}
-	ranked := make([]*row, 0, len(rows))
-	for _, r := range rows {
-		ranked = append(ranked, r)
-	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		if ranked[i].hit.SourceID != ranked[j].hit.SourceID {
-			return ranked[i].hit.SourceID < ranked[j].hit.SourceID
-		}
-		return ranked[i].hit.Seq < ranked[j].hit.Seq
-	})
-	if len(ranked) > LexicalCandidates {
-		ranked = ranked[:LexicalCandidates]
-	}
-	out := make([]Hit, len(ranked))
-	for i, r := range ranked {
-		out[i] = r.hit
-	}
-	return out
-}
-
 func toHits(matches []Lexical) []Hit {
 	out := make([]Hit, len(matches))
 	for i, match := range matches {
@@ -196,31 +146,25 @@ func toHits(matches []Lexical) []Hit {
 	return out
 }
 
-func rerank(ctx context.Context, reranker Reranker, query string, hits []Hit) []Hit {
-	if reranker == nil || len(hits) == 0 {
-		return hits
+type hitID struct {
+	sourceID string
+	seq      int
+}
+
+func hitKey(hit Hit) hitID { return hitID{sourceID: hit.SourceID, seq: hit.Seq} }
+
+func lexicalKey(hit Lexical) hitID { return hitID{sourceID: hit.SourceID, seq: hit.Seq} }
+
+func lexicalLess(a, b Lexical) bool {
+	if a.SourceID != b.SourceID {
+		return a.SourceID < b.SourceID
 	}
-	got, err := reranker.Rerank(ctx, query, hits)
-	if err != nil || len(got) == 0 {
-		return hits
+	return a.Seq < b.Seq
+}
+
+func mergeLexical(a, b Lexical) Lexical {
+	if b.Provenance.Untrusted() {
+		a.Provenance = b.Provenance
 	}
-	known := map[string]Hit{}
-	for _, hit := range hits {
-		known[hit.SourceID+":"+strconv.Itoa(hit.Seq)] = hit
-	}
-	seen := map[string]bool{}
-	out := make([]Hit, 0, len(got))
-	for _, hit := range got {
-		key := hit.SourceID + ":" + strconv.Itoa(hit.Seq)
-		found, ok := known[key]
-		if !ok || seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, found)
-	}
-	if len(out) == 0 {
-		return hits
-	}
-	return out
+	return a
 }

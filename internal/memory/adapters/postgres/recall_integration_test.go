@@ -50,8 +50,7 @@ func TestLoadProfileAndActiveClaims(t *testing.T) {
 	if !strings.Contains(prefix, "Ada lives in Dhaka") {
 		t.Fatalf("prefix = %q", prefix)
 	}
-	recall := app.Search("prefers tea", mem.Claims)
-	if !strings.Contains(recall.Text, "Ada prefers tea") || strings.Contains(recall.Text, "coffee") {
-		t.Fatalf("recall = %s claims = %v", recall.Text, mem.Claims)
+	if len(mem.Claims) != 1 || mem.Claims[0] != "Ada prefers tea" {
+		t.Fatalf("claims = %v", mem.Claims)
 	}
 }
