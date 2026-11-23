@@ -81,11 +81,16 @@ export function listedPrice(
   seen: SeenModel,
   catalog: readonly CatalogModel[],
   pricingModel = seen.id,
+  vendor = "",
 ): { input: number | null; output: number | null; source: PriceSource } {
   const input = seenRateMicro(seen.pricing, "prompt");
   const output = seenRateMicro(seen.pricing, "completion");
   if (input !== null || output !== null) return { input, output, source: "provider" };
-  const row = catalog.find((item) => item.model === pricingModel);
+  let row = catalog.find((item) => item.model === pricingModel);
+  if (!row && vendor === "vertex" && pricingModel.startsWith("google/") && pricingModel.length > "google/".length) {
+    const alias = pricingModel.slice("google/".length);
+    row = catalog.find((item) => item.model === alias);
+  }
   const catIn = catalogMicro(row?.input_usd_per_mtok);
   const catOut = catalogMicro(row?.output_usd_per_mtok);
   if (catIn !== null || catOut !== null) return { input: catIn, output: catOut, source: "models_dev" };

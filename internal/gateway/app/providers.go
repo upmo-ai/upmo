@@ -409,11 +409,11 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 	if plan == domain.PlanLocal && !s.mayLocal(ctx, user) {
 		return domain.Provider{}, ErrLocalPlan
 	}
-	base, err := domain.CleanBaseURL(plan, in.BaseURL)
+	base, err := domain.CleanBaseURLForAdapter(in.Adapter, plan, in.BaseURL)
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	key, err := domain.CleanKey(in.APIKey)
+	key, err := domain.CleanKeyForAdapter(in.Adapter, in.APIKey)
 	if err != nil {
 		return domain.Provider{}, err
 	}
@@ -449,7 +449,7 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 		Models:        models,
 		Own:           visibility == domain.VisibilityPrivate,
 		CredentialRef: ref,
-		KeyHint:       domain.KeyHint(key),
+		KeyHint:       domain.KeyHintForAdapter(in.Adapter, key),
 		Share:         domain.Share{Visibility: visibility, TeamIDs: teams},
 	}, sealed)
 	if err != nil {
@@ -535,14 +535,14 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	}
 	// The saved URL is judged again whenever either it or the plan changes.
 	if in.BaseURL != nil || in.PlanKind != nil {
-		if next.BaseURL, err = domain.CleanBaseURL(next.PlanKind, next.BaseURL); err != nil {
+		if next.BaseURL, err = domain.CleanBaseURLForAdapter(next.Adapter, next.PlanKind, next.BaseURL); err != nil {
 			return domain.Provider{}, err
 		}
 		reset = reset || next.BaseURL != cur.BaseURL
 	}
 	var key string
 	if in.APIKey != nil {
-		if key, err = domain.CleanKey(*in.APIKey); err != nil {
+		if key, err = domain.CleanKeyForAdapter(next.Adapter, *in.APIKey); err != nil {
 			return domain.Provider{}, err
 		}
 	}
@@ -567,7 +567,7 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 			return domain.Provider{}, err
 		}
 		sealed = &boxed
-		next.KeyHint = domain.KeyHint(key)
+		next.KeyHint = domain.KeyHintForAdapter(next.Adapter, key)
 		reset = true
 	}
 	made, err := s.Accounts.Update(ctx, who, next, sealed, reset)
@@ -684,13 +684,13 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	if plan == domain.PlanLocal && !s.mayLocal(ctx, user) {
 		return TestResult{}, ErrLocalPlan
 	}
-	if base, err = domain.CleanBaseURL(plan, base); err != nil {
+	if base, err = domain.CleanBaseURLForAdapter(adapter, plan, base); err != nil {
 		return refuse(err.Error())
 	}
 	if base == "" && adapter != domain.AdapterFake {
 		return refuse("A base URL is required.")
 	}
-	if key, err = domain.CleanKey(key); err != nil {
+	if key, err = domain.CleanKeyForAdapter(adapter, key); err != nil {
 		return refuse(err.Error())
 	}
 	unsavedKey := key != ""

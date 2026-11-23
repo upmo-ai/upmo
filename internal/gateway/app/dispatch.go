@@ -197,6 +197,10 @@ type Secrets interface {
 // is absent from the catalog.
 type Caps func(model string) (have []string, ok bool)
 
+// VendorCaps reports the capabilities one model offers for a specific vendor.
+// ok is false when the model is absent from the catalog.
+type VendorCaps func(vendor, model string) (have []string, ok bool)
+
 // Dispatch walks a route's links using the failover table.
 type Dispatch struct {
 	Routes  Routes
@@ -214,13 +218,14 @@ type Dispatch struct {
 	Bundles Bundles
 	// Teams says which teams a person is on, for the accounts shared with
 	// them. Nil means nobody is on a team.
-	Teams  Teams
-	Decide map[string]Decider
-	Chat   map[string]Chatter
-	Stream map[string]StreamChatter
-	Embed  map[string]Embedder
-	Gates  *Gates
-	Caps   Caps
+	Teams      Teams
+	Decide     map[string]Decider
+	Chat       map[string]Chatter
+	Stream     map[string]StreamChatter
+	Embed      map[string]Embedder
+	Gates      *Gates
+	Caps       Caps
+	VendorCaps VendorCaps
 	// Status hears the outcome of every attempt, by credential ref. It must
 	// not block. Nil hears nothing.
 	Status Statuses
@@ -1414,10 +1419,18 @@ func (d Dispatch) skip(link domain.Link) (bool, error) {
 	if len(link.Need) == 0 {
 		return false, nil
 	}
-	if d.Caps == nil {
+	var (
+		have []string
+		ok   bool
+	)
+	switch {
+	case d.VendorCaps != nil:
+		have, ok = d.VendorCaps(domain.PricingVendor(link.Account), link.Model)
+	case d.Caps != nil:
+		have, ok = d.Caps(link.Model)
+	default:
 		return true, domain.ErrCapability
 	}
-	have, ok := d.Caps(link.Model)
 	if !ok || domain.Fit(link.Need, have) != nil {
 		return true, domain.ErrCapability
 	}

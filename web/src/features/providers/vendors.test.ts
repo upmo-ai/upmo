@@ -41,6 +41,13 @@ const mantle: ProviderVendor = {
   default_base_url: "",
   suggested_plan: "metered",
 };
+const vertex: ProviderVendor = {
+  key: "vertex",
+  name: "Google Vertex AI",
+  adapter: "vertex",
+  default_base_url: "",
+  suggested_plan: "metered",
+};
 
 describe("the picker's vendors", () => {
   it("are the brain's vendors in its order, with the test provider only in a dev build", () => {
@@ -84,10 +91,14 @@ describe("the picker's vendors", () => {
     expect(baseUrlRequired(TEST_VENDOR.adapter, TEST_VENDOR.defaultBaseUrl)).toBe(false);
   });
 
-  it("requires an entered endpoint for Azure and Bedrock Mantle", () => {
-    for (const row of [azure, mantle]) {
+  it("requires an entered endpoint for Azure, Bedrock Mantle, and Vertex AI", () => {
+    for (const row of [azure, mantle, vertex]) {
       const vendor = pickerVendor(row);
-      expect([vendor.id, baseUrlRequired(vendor.adapter, vendor.defaultBaseUrl)]).toEqual([row.key, true]);
+      expect([vendor.id, adapterKey(vendor.adapter), baseUrlRequired(vendor.adapter, vendor.defaultBaseUrl)]).toEqual([
+        row.key,
+        row.adapter,
+        true,
+      ]);
       expect(hostedBaseUrl(vendor.defaultBaseUrl)).toBeUndefined();
     }
   });

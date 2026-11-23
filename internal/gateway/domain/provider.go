@@ -1,8 +1,14 @@
 package domain
 
 import (
+	"bytes"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -20,6 +26,7 @@ const (
 	AdapterFake      = "fake"
 	AdapterOpenAI    = "openai_compat"
 	AdapterAnthropic = "anthropic"
+	AdapterVertex    = "vertex"
 )
 
 // ScriptedPrefix starts the model ids that only the fake adapter acts on.
@@ -27,14 +34,15 @@ const ScriptedPrefix = "fake-"
 
 // Limits on what a person may save.
 const (
-	MaxProviderName  = 60
-	MaxProviderLabel = 60
-	MaxModels        = 100
-	MaxSeenModels    = 2000
-	MaxModelName     = 120
-	MaxOwnAccounts   = 20
-	MaxAPIKeyBytes   = 4096
-	MaxBaseURLBytes  = 2048
+	MaxProviderName   = 60
+	MaxProviderLabel  = 60
+	MaxModels         = 100
+	MaxSeenModels     = 2000
+	MaxModelName      = 120
+	MaxOwnAccounts    = 20
+	MaxAPIKeyBytes    = 4096
+	MaxVertexKeyBytes = 16384
+	MaxBaseURLBytes   = 2048
 )
 
 // What an account last did, as the settings screen shows it.
@@ -242,6 +250,139 @@ func CleanKey(key string) (string, error) {
 		return "", Invalid("The API key is not valid.")
 	}
 	return key, nil
+}
+
+// VertexServiceAccount holds the validated fields of a Google Cloud
+// service-account JSON key used to mint Vertex AI OAuth 2.0 access tokens.
+// token_uri from user input is intentionally excluded so the adapter always
+// calls Google's fixed token endpoint.
+type VertexServiceAccount struct {
+	Type         string `json:"type"`
+	ClientEmail  string `json:"client_email"`
+	PrivateKey   string `json:"private_key"`
+	PrivateKeyID string `json:"private_key_id,omitempty"`
+}
+
+const minVertexRSABits = 2048
+
+// ParseVertexServiceAccount validates a Google Cloud service-account JSON key
+// and parses its RSA private key. Error messages never echo key material.
+func ParseVertexServiceAccount(raw string) (VertexServiceAccount, *rsa.PrivateKey, error) {
+	bad := Invalid("The service account JSON is not valid.")
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > MaxVertexKeyBytes || !utf8.ValidString(trimmed) || trimmed[0] != '{' {
+		return VertexServiceAccount{}, nil, bad
+	}
+	var sa VertexServiceAccount
+	dec := json.NewDecoder(strings.NewReader(trimmed))
+	if err := dec.Decode(&sa); err != nil {
+		return VertexServiceAccount{}, nil, bad
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return VertexServiceAccount{}, nil, bad
+	}
+	sa.Type = strings.TrimSpace(sa.Type)
+	sa.ClientEmail = strings.TrimSpace(sa.ClientEmail)
+	sa.PrivateKeyID = strings.TrimSpace(sa.PrivateKeyID)
+	if sa.Type != "service_account" || sa.ClientEmail == "" || hasControl(sa.ClientEmail) || !strings.Contains(sa.ClientEmail, "@") {
+		return VertexServiceAccount{}, nil, bad
+	}
+	if hasControl(sa.PrivateKeyID) || strings.TrimSpace(sa.PrivateKey) == "" {
+		return VertexServiceAccount{}, nil, bad
+	}
+	block, rest := pem.Decode([]byte(sa.PrivateKey))
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return VertexServiceAccount{}, nil, bad
+	}
+	var rsaKey *rsa.PrivateKey
+	if k, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if rk, ok := k.(*rsa.PrivateKey); ok {
+			rsaKey = rk
+		}
+	} else if rk, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		rsaKey = rk
+	}
+	if rsaKey == nil || rsaKey.N == nil || rsaKey.N.BitLen() < minVertexRSABits {
+		return VertexServiceAccount{}, nil, bad
+	}
+	return sa, rsaKey, nil
+}
+
+// CleanKeyForAdapter validates and normalizes a credential for adapter.
+// Non-Vertex adapters use CleanKey; AdapterVertex validates a service-account
+// JSON key and returns compact canonical JSON without token_uri.
+func CleanKeyForAdapter(adapter, key string) (string, error) {
+	if adapter != AdapterVertex {
+		return CleanKey(key)
+	}
+	if len(key) > MaxVertexKeyBytes {
+		return "", Invalid("The service account JSON is not valid.")
+	}
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "", nil
+	}
+	sa, _, err := ParseVertexServiceAccount(trimmed)
+	if err != nil {
+		return "", err
+	}
+	compact, err := json.Marshal(sa) //nolint:gosec // canonicalized service-account JSON sealed immediately at rest
+	if err != nil {
+		return "", Invalid("The service account JSON is not valid.")
+	}
+	return string(compact), nil
+}
+
+// KeyHintForAdapter returns the stored display hint for a credential. For
+// AdapterVertex, it derives the hint from private_key_id rather than the
+// trailing JSON brace.
+func KeyHintForAdapter(adapter, key string) string {
+	if adapter != AdapterVertex {
+		return KeyHint(key)
+	}
+	var sa struct {
+		PrivateKeyID string `json:"private_key_id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(key)), &sa); err != nil {
+		return ""
+	}
+	return KeyHint(strings.TrimSpace(sa.PrivateKeyID))
+}
+
+var vertexPathSegment = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// CleanBaseURLForAdapter runs CleanBaseURL and applies adapter-specific URL
+// path and host checks. For AdapterVertex, non-empty URLs must end in
+// /v1/projects/{project}/locations/{location}/endpoints/openapi and match the
+// Google host's global or regional location when targeting aiplatform.googleapis.com.
+func CleanBaseURLForAdapter(adapter, plan, raw string) (string, error) {
+	clean, err := CleanBaseURL(plan, raw)
+	if err != nil || clean == "" || adapter != AdapterVertex {
+		return clean, err
+	}
+	u, err := url.Parse(clean)
+	if err != nil {
+		return "", Invalid("The base URL is not valid.")
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(parts) != 7 || parts[0] != "v1" || parts[1] != "projects" || parts[3] != "locations" || parts[5] != "endpoints" || parts[6] != "openapi" {
+		return "", Invalid("The Vertex AI base URL must end with /v1/projects/{project}/locations/{location}/endpoints/openapi.")
+	}
+	project, location := parts[2], parts[4]
+	if !vertexPathSegment.MatchString(project) || !vertexPathSegment.MatchString(location) {
+		return "", Invalid("The Vertex AI project or location in the base URL is not valid.")
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "aiplatform.googleapis.com" && location != "global" {
+		return "", Invalid("The global Vertex AI host requires locations/global in the base URL.")
+	}
+	if prefix, ok := strings.CutSuffix(host, "-aiplatform.googleapis.com"); ok {
+		if location == "global" || prefix != location {
+			return "", Invalid("The regional Vertex AI host must match the location in the base URL.")
+		}
+	}
+	return clean, nil
 }
 
 // NeedKey reports a missing key: metered and subscription accounts need one,

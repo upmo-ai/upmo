@@ -17,6 +17,7 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/gateway/adapters/http"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/openai"
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
+	"github.com/upmo-ai/upmo/internal/gateway/adapters/vertex"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
@@ -69,6 +70,7 @@ func adapters() map[string]adapter {
 		domain.AdapterFake:      fake.Adapter{YesNo: true, Reply: "ok"},
 		domain.AdapterOpenAI:    openai.Adapter{},
 		domain.AdapterAnthropic: anthropic.Adapter{},
+		domain.AdapterVertex:    vertex.NewAdapter(),
 	}
 }
 
@@ -159,6 +161,13 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 			Log:            log,
 			Caps: func(model string) ([]string, bool) {
 				have, ok, err := store.Capabilities(context.Background(), model)
+				if err != nil || !ok {
+					return nil, false
+				}
+				return have, true
+			},
+			VendorCaps: func(vendor, model string) ([]string, bool) {
+				have, ok, err := store.CapabilitiesForVendor(context.Background(), vendor, model)
 				if err != nil || !ok {
 					return nil, false
 				}

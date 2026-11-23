@@ -1,20 +1,24 @@
 import { BrainError, type ProviderAccount, type ProviderPlanKind, type ProviderStatus } from "../../app/api";
 
 /**
- * The brain dispatches to three adapters: `fake`, which has no network,
- * `anthropic`, which speaks the Anthropic Messages API, and `openai_compat`,
- * which every other hosted or local provider in the picker is reached
- * through. The picker keeps its own labels (anthropic, openai, ...) as the
- * vendor name; this is the one place they turn into the adapter key the brain
- * accepts. The brain tells the compatible vendors apart by their address.
+ * The brain dispatches to four adapters: `fake`, which has no network,
+ * `anthropic`, which speaks the Anthropic Messages API, `vertex`, which mints
+ * Google Cloud OAuth access tokens for Vertex AI's OpenAI-compatible endpoint,
+ * and `openai_compat`, which every other hosted or local provider in the
+ * picker is reached through. The picker keeps its own labels (anthropic,
+ * openai, vertex, ...) as the vendor name; this is the one place they turn
+ * into the adapter key the brain accepts.
  */
 export function adapterKey(pickerAdapter: string): string {
-  return pickerAdapter === "fake" || pickerAdapter === "anthropic" ? pickerAdapter : "openai_compat";
+  return pickerAdapter === "fake" || pickerAdapter === "anthropic" || pickerAdapter === "vertex"
+    ? pickerAdapter
+    : "openai_compat";
 }
 
 const adapterLabels: Readonly<Record<string, string>> = {
   fake: "Test adapter",
   anthropic: "Anthropic Messages",
+  vertex: "Google Vertex AI",
   openai_compat: "OpenAI-compatible",
 };
 

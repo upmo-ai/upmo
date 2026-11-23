@@ -13,9 +13,10 @@ import {
 } from "./rules";
 
 describe("adapterKey", () => {
-  it("sends fake as fake, anthropic as anthropic, and every other picker adapter as openai_compat", () => {
+  it("sends fake, anthropic, and vertex as themselves, and every other picker adapter as openai_compat", () => {
     expect(adapterKey("fake")).toBe("fake");
     expect(adapterKey("anthropic")).toBe("anthropic");
+    expect(adapterKey("vertex")).toBe("vertex");
     for (const picked of ["openai", "gemini", "nebius", "ollama", "lmstudio", "cohere", "openai_compat"]) {
       expect(adapterKey(picked)).toBe("openai_compat");
     }
@@ -26,6 +27,7 @@ describe("adapterLabel", () => {
   it("names the brain's adapters and shows any other key as sent", () => {
     expect(adapterLabel("openai_compat")).toBe("OpenAI-compatible");
     expect(adapterLabel("anthropic")).toBe("Anthropic Messages");
+    expect(adapterLabel("vertex")).toBe("Google Vertex AI");
     expect(adapterLabel("fake")).toBe("Test adapter");
     expect(adapterLabel("ollama")).toBe("ollama");
     // A key that is also an object property name is not mistaken for a label.

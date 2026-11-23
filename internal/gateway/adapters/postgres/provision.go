@@ -124,7 +124,7 @@ func validateHouseProviders(inputs []HouseProviderInput, knownAdapter func(strin
 		if err != nil {
 			return nil, err
 		}
-		baseURL, err := domain.CleanBaseURL(planKind, in.BaseURL)
+		baseURL, err := domain.CleanBaseURLForAdapter(adapter, planKind, in.BaseURL)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +135,7 @@ func validateHouseProviders(inputs []HouseProviderInput, knownAdapter func(strin
 		if err := domain.CheckScripted(adapter, models); err != nil {
 			return nil, err
 		}
-		apiKey, err := domain.CleanKey(in.APIKey)
+		apiKey, err := domain.CleanKeyForAdapter(adapter, in.APIKey)
 		if err != nil {
 			return nil, err
 		}

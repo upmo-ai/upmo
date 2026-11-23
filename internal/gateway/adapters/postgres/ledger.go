@@ -109,25 +109,31 @@ func (s Store) lookupPriceTiers(ctx context.Context, vendor, model string) ([]do
 
 func (s Store) lookupCatalogPrices(ctx context.Context, vendor, model string) (exact domain.Price, exactFound bool, cross *domain.Price, err error) {
 	vendor = domain.VendorKey(vendor)
+	alias, hasAlias := domain.CatalogModelAlias(vendor, model)
+	models := []string{model}
+	if hasAlias {
+		models = append(models, alias)
+	}
 	rows, err := s.Pool.Query(ctx, `
-		SELECT vendor, version,
+		SELECT vendor, model, version,
 			round(input_usd_per_mtok * $3)::bigint,
 			round(output_usd_per_mtok * $3)::bigint,
 			round(cache_read_usd_per_mtok * $3)::bigint,
 			round(cache_write_usd_per_mtok * $3)::bigint,
 			context_window
 		FROM gateway.prices
-		WHERE model = $2
-		  AND vendor IN ($1, '')`, vendor, model, kernel.MicroUSDPerDollar)
+		WHERE model = ANY($2::text[])
+		  AND vendor IN ($1, '')`, vendor, models, kernel.MicroUSDPerDollar)
 	if err != nil {
 		return domain.Price{}, false, nil, err
 	}
 	defer rows.Close()
+	var exactModel, crossModel string
 	for rows.Next() {
-		var rowVendor string
+		var rowVendor, rowModel string
 		var p domain.Price
 		if err := rows.Scan(
-			&rowVendor, &p.Version,
+			&rowVendor, &rowModel, &p.Version,
 			&p.InputMicroUSDPerMTok, &p.OutputMicroUSDPerMTok,
 			&p.CacheReadMicroUSDPerMTok, &p.CacheWriteMicroUSDPerMTok,
 			&p.ContextWindow,
@@ -136,24 +142,30 @@ func (s Store) lookupCatalogPrices(ctx context.Context, vendor, model string) (e
 		}
 		switch {
 		case vendor != "" && rowVendor == vendor:
-			exact = p
-			exactFound = true
+			if !exactFound || rowModel == model {
+				exact = p
+				exactFound = true
+				exactModel = rowModel
+			}
 		case rowVendor == "":
-			cp := p
-			cross = &cp
+			if cross == nil || rowModel == model {
+				cp := p
+				cross = &cp
+				crossModel = rowModel
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return domain.Price{}, false, nil, err
 	}
 	if exactFound {
-		exact.Tiers, err = s.lookupPriceTiers(ctx, vendor, model)
+		exact.Tiers, err = s.lookupPriceTiers(ctx, vendor, exactModel)
 		if err != nil {
 			return domain.Price{}, false, nil, err
 		}
 	}
 	if cross != nil {
-		cross.Tiers, err = s.lookupPriceTiers(ctx, "", model)
+		cross.Tiers, err = s.lookupPriceTiers(ctx, "", crossModel)
 		if err != nil {
 			return domain.Price{}, false, nil, err
 		}

@@ -28,3 +28,21 @@ func TestAnthropicIsAKnownAdapterWithNoEmbeddings(t *testing.T) {
 		}
 	}
 }
+
+func TestVertexIsAKnownAdapterWithNoEmbeddings(t *testing.T) {
+	table := adapters()
+	v, ok := table[domain.AdapterVertex]
+	if !ok {
+		t.Fatal("the vertex adapter is not in the table")
+	}
+	p := NewProviders(nil, Keyring{}, nil)
+	if !p.Known(domain.AdapterVertex) || p.Probes[domain.AdapterVertex] == nil {
+		t.Error("the provider settings do not know the vertex adapter")
+	}
+	if _, ok := v.(app.ToolStreamChatter); !ok {
+		t.Error("the vertex adapter does not implement ToolStreamChatter")
+	}
+	if _, embeds := v.(app.Embedder); embeds {
+		t.Error("the vertex adapter is offered for embeddings")
+	}
+}

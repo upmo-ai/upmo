@@ -1,4 +1,4 @@
-import { Card, Group, PasswordInput, Stack, Text, Title } from "@mantine/core";
+import { Card, Group, PasswordInput, Stack, Text, Textarea, Title } from "@mantine/core";
 import { IconArrowLeft, IconCpu, IconPlus, IconSearch } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
@@ -71,6 +71,7 @@ function baseUrlHelp(meta: PickerVendor): string {
   if (meta.suggestedPlan === "local") return `Required. Address of your local or private ${meta.name} service.`;
   if (meta.id === "azure") return "Required. Paste the Azure OpenAI base URL including /openai/v1, without the chat path.";
   if (meta.id === "bedrock-mantle") return "Required. Paste the Bedrock Mantle base URL including /v1, without the chat path.";
+  if (meta.id === "vertex") return "Required. Paste the Vertex AI OpenAI endpoint URL ending in /endpoints/openapi, without /chat/completions.";
   const fallback = hostedBaseUrl(meta.defaultBaseUrl);
   if (fallback) {
     return `Optional. Empty uses ${fallback}. Change it only for a proxy or a private deployment, and give the address without the chat path.`;
@@ -81,6 +82,7 @@ function baseUrlHelp(meta: PickerVendor): string {
 function baseUrlPlaceholder(meta: PickerVendor): string {
   if (meta.id === "azure") return "https://{resource}.openai.azure.com/openai/v1";
   if (meta.id === "bedrock-mantle") return "https://bedrock-mantle.{region}.api.aws/v1";
+  if (meta.id === "vertex") return "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi";
   return meta.defaultBaseUrl ?? "https://api.example.com";
 }
 
@@ -419,25 +421,51 @@ function ProviderForm({ mode, vendors, existing }: ProviderFormProps) {
         />
 
         {showKey ? (
-          <PasswordInput
-            label="API Key"
-            required={needsKey}
-            size="md"
-            autoComplete="off"
-            description={
-              hasSavedKey
-                ? `Leave blank to keep the currently stored key.${savedKeyLine ? ` ${savedKeyLine}.` : ""}`
-                : needsKey
-                  ? "Keys are encrypted at rest and stay on this server."
-                  : "Optional on the local plan. Keys are encrypted at rest and stay on this server."
-            }
-            placeholder={hasSavedKey ? "••••••••••••••••" : "sk-..."}
-            value={apiKey}
-            onChange={(e) => {
-              setApiKey(e.target.value);
-              resetTest();
-            }}
-          />
+          selectedMeta.adapter === "vertex" ? (
+            <Textarea
+              label="Service account JSON"
+              required={needsKey}
+              size="md"
+              minRows={4}
+              autosize
+              maxRows={8}
+              autoComplete="off"
+              spellCheck={false}
+              description={
+                hasSavedKey
+                  ? `Leave blank to keep the currently stored service account JSON.${savedKeyLine ? ` ${savedKeyLine}.` : ""}`
+                  : needsKey
+                    ? "Paste the Google Cloud service account JSON key. Encrypted at rest and stays on this server."
+                    : "Optional on the local plan. Encrypted at rest and stays on this server."
+              }
+              placeholder={hasSavedKey ? "Leave blank to keep stored service account JSON" : '{"type": "service_account", "client_email": "...", "private_key": "..."}'}
+              value={apiKey}
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                resetTest();
+              }}
+            />
+          ) : (
+            <PasswordInput
+              label="API Key"
+              required={needsKey}
+              size="md"
+              autoComplete="off"
+              description={
+                hasSavedKey
+                  ? `Leave blank to keep the currently stored key.${savedKeyLine ? ` ${savedKeyLine}.` : ""}`
+                  : needsKey
+                    ? "Keys are encrypted at rest and stay on this server."
+                    : "Optional on the local plan. Keys are encrypted at rest and stay on this server."
+              }
+              placeholder={hasSavedKey ? "••••••••••••••••" : "sk-..."}
+              value={apiKey}
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                resetTest();
+              }}
+            />
+          )
         ) : null}
 
         <Input
@@ -631,7 +659,12 @@ function ProviderForm({ mode, vendors, existing }: ProviderFormProps) {
               <Table.Tbody>
                 {shownRows.map(({ seen, listed }) => {
                   const isChecked = selectedModels.includes(seen.id);
-                  const price = listedPrice(seen, catalog, existing?.pricing_models?.[seen.id] || seen.id);
+                  const price = listedPrice(
+                    seen,
+                    catalog,
+                    existing?.pricing_models?.[seen.id] || seen.id,
+                    existing?.pricing_provider || selectedProviderId,
+                  );
                   return (
                     <Table.Tr key={seen.id} onClick={() => handleToggleModel(seen.id)} style={{ cursor: "pointer" }}>
                       <Table.Td onClick={(e) => e.stopPropagation()}>

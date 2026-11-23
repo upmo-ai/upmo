@@ -26,6 +26,10 @@ type Adapter struct {
 	// Lookup resolves host names for the guarded clients. Nil uses the system
 	// resolver. Tests set it to re-point a name.
 	Lookup wire.Lookup
+	// ChatPath, when non-empty, overrides CompatPaths(base).ChatPath and uses
+	// Bearer authorization. Used by adapters (such as Vertex) that delegate
+	// OpenAI-compatible wire encoding to this adapter.
+	ChatPath string
 }
 
 func (a Adapter) client(attempt app.Attempt) *http.Client {
@@ -39,10 +43,13 @@ var (
 
 // target splits an attempt into the account's base URL and the paths of the
 // vendor that base URL is on. ok is false when the account has no base URL.
-func target(attempt app.Attempt) (base string, paths domain.Vendor, ok bool) {
+func (a Adapter) target(attempt app.Attempt) (base string, paths domain.Vendor, ok bool) {
 	base = strings.TrimRight(attempt.BaseURL, "/")
 	if base == "" {
 		return "", domain.Vendor{}, false
+	}
+	if a.ChatPath != "" {
+		return base, domain.Vendor{ChatPath: a.ChatPath, AuthStyle: domain.AuthBearer}, true
 	}
 	return base, domain.CompatPaths(base), true
 }
@@ -63,7 +70,7 @@ func authorize(req *http.Request, style domain.AuthStyle, secret string) {
 // malformed or oversized list keeps ClassOK when the auth call succeeded and
 // returns nil for the models.
 func (a Adapter) Probe(ctx context.Context, attempt app.Attempt) ([]domain.SeenModel, domain.FailureClass, error) {
-	base, paths, ok := target(attempt)
+	base, paths, ok := a.target(attempt)
 	if !ok {
 		return nil, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
@@ -278,7 +285,7 @@ func (a Adapter) ChatStream(ctx context.Context, attempt app.Attempt, req domain
 // ChatStreamTools streams text and tool-call deltas and returns the
 // accumulated ChatResult.
 func (a Adapter) ChatStreamTools(ctx context.Context, attempt app.Attempt, req domain.Request, events app.StreamEvents) (domain.ChatResult, domain.FailureClass, error) {
-	base, paths, ok := target(attempt)
+	base, paths, ok := a.target(attempt)
 	if !ok {
 		return domain.ChatResult{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
@@ -770,7 +777,7 @@ func oneChunk(payload string, state *streamState, events app.StreamEvents) (doma
 }
 
 func (a Adapter) complete(ctx context.Context, attempt app.Attempt, built domain.Request) (domain.ChatResult, domain.FailureClass, error) {
-	base, paths, ok := target(attempt)
+	base, paths, ok := a.target(attempt)
 	if !ok {
 		return domain.ChatResult{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}
@@ -859,7 +866,7 @@ func (a Adapter) Embed(ctx context.Context, attempt app.Attempt, inputs []string
 	if err := domain.CheckEmbedInputs(inputs); err != nil {
 		return nil, domain.Usage{}, domain.ClassCaller, err
 	}
-	base, paths, ok := target(attempt)
+	base, paths, ok := a.target(attempt)
 	if !ok {
 		return nil, domain.Usage{}, domain.ClassCaller, fmt.Errorf("gateway: adapter base URL is empty")
 	}

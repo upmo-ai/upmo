@@ -69,6 +69,45 @@ describe("listed prices", () => {
     expect(listedPrice({ id: "model-c" }, catalog)).toEqual({ input: null, output: null, source: "none" });
   });
 
+  it("matches Vertex models exact-first before stripping a google/ prefix", () => {
+    const vertexCatalog: CatalogModel[] = [
+      {
+        model: "gemini-2.5-flash",
+        kind: "chat",
+        context_window: 1_048_576,
+        input_usd_per_mtok: 0.3,
+        output_usd_per_mtok: 2.5,
+        cache_read_usd_per_mtok: null,
+        cache_write_usd_per_mtok: null,
+      },
+      {
+        model: "google/gemma-4-26b-a4b-it-maas",
+        kind: "chat",
+        context_window: 256_000,
+        input_usd_per_mtok: 0.13,
+        output_usd_per_mtok: 0.4,
+        cache_read_usd_per_mtok: null,
+        cache_write_usd_per_mtok: null,
+      },
+    ];
+    expect(listedPrice({ id: "google/gemini-2.5-flash" }, vertexCatalog, "google/gemini-2.5-flash", "vertex")).toEqual({
+      input: 300_000,
+      output: 2_500_000,
+      source: "models_dev",
+    });
+    expect(listedPrice({ id: "google/gemma-4-26b-a4b-it-maas" }, vertexCatalog, "google/gemma-4-26b-a4b-it-maas", "vertex")).toEqual({
+      input: 130_000,
+      output: 400_000,
+      source: "models_dev",
+    });
+    // Non-vertex vendor does not strip google/.
+    expect(listedPrice({ id: "google/gemini-2.5-flash" }, vertexCatalog, "google/gemini-2.5-flash", "openai")).toEqual({
+      input: null,
+      output: null,
+      source: "none",
+    });
+  });
+
   it("word a pair of rates", () => {
     expect(formatRates(2_500_000, 10_000_000)).toBe("in $2.50 · out $10.00 / MTok");
     expect(formatRates(null, null)).toBe("Unpriced");

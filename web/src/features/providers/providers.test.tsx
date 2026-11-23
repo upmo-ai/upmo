@@ -30,6 +30,7 @@ const vendors: ProviderVendor[] = [
   { key: "nebius", name: "Nebius", adapter: "openai_compat", default_base_url: "https://api.tokenfactory.nebius.com", suggested_plan: "metered" },
   { key: "azure", name: "Azure OpenAI", adapter: "openai_compat", default_base_url: "", suggested_plan: "metered" },
   { key: "bedrock-mantle", name: "Bedrock Mantle", adapter: "openai_compat", default_base_url: "", suggested_plan: "metered" },
+  { key: "vertex", name: "Google Vertex AI", adapter: "vertex", default_base_url: "", suggested_plan: "metered" },
   { key: "ollama", name: "Ollama", adapter: "openai_compat", default_base_url: "http://localhost:11434", suggested_plan: "local" },
 ];
 
@@ -133,6 +134,7 @@ function stubProviderApi(
   options: {
     accounts?: ProviderAccount[];
     testResponse?: object;
+    catalog?: object[];
     canShare?: boolean;
     uses?: object;
     usesFail?: string[];
@@ -158,6 +160,7 @@ function stubProviderApi(
       if (url === "/api/providers/sharing") return Response.json({ can_share: options.canShare ?? false });
       if (url === "/api/providers/vendors") return Response.json(vendors);
       if (url.startsWith("/api/providers/catalog")) {
+        if (options.catalog) return Response.json(options.catalog);
         return Response.json(url.endsWith("vendor=openai") ? [catalogRow] : []);
       }
       if (url === "/api/providers/test" && method === "POST") return Response.json(testResponse);
@@ -387,13 +390,13 @@ describe("providers", () => {
     expect(screen.queryByRole("button", { name: "Anthropic" })).toBeNull();
   });
 
-  it("has a brand mark for every vendor except Nebius and Bedrock Mantle", () => {
+  it("has a brand mark for every vendor except Nebius, Bedrock Mantle, and Vertex", () => {
     const aliasOf: Record<string, string> = aliases;
     const missing = vendors
       .map(({ key }) => key)
       .filter((key) => !Object.hasOwn(marks, aliasOf[key] ?? key));
 
-    expect(missing).toEqual(["nebius", "bedrock-mantle"]);
+    expect(missing).toEqual(["nebius", "bedrock-mantle", "vertex"]);
   });
 
   it("suggests the vendor's plan with one line under each choice", async () => {
@@ -520,6 +523,86 @@ describe("providers", () => {
       expect(isDisabled(continueButton())).toBe(true);
       fireEvent.change(baseUrl, { target: { value: endpoint } });
       expect(isDisabled(continueButton())).toBe(false);
+    });
+
+    it("uses multiline service account JSON, nil-model probe, and Vertex catalog pricing for Google Vertex AI", async () => {
+      const vertexCatalog = [
+        {
+          vendor: "vertex",
+          model: "gemini-2.5-flash",
+          kind: "chat",
+          inputs: ["text"],
+          outputs: ["text"],
+          context_window: 1_048_576,
+          input_usd_per_mtok: 0.3,
+          output_usd_per_mtok: 2.5,
+          cache_read_usd_per_mtok: null,
+          cache_write_usd_per_mtok: null,
+        },
+        {
+          vendor: "vertex",
+          model: "google/gemma-4-26b-a4b-it-maas",
+          kind: "chat",
+          inputs: ["text"],
+          outputs: ["text"],
+          context_window: 256_000,
+          input_usd_per_mtok: 0.13,
+          output_usd_per_mtok: 0.4,
+          cache_read_usd_per_mtok: null,
+          cache_write_usd_per_mtok: null,
+        },
+      ];
+      const requests = stubProviderApi({
+        catalog: vertexCatalog,
+        testResponse: { ok: true, latency_ms: 12 },
+      });
+      renderAt("/settings/providers/new");
+      click(await screen.findByRole("button", { name: "Google Vertex AI" }));
+      await continueTo(/Google Vertex AI Credentials & Plan/);
+
+      const baseUrl = screen.getByLabelText(/Base URL/) as HTMLInputElement;
+      expect(baseUrl.placeholder).toBe("https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi");
+      expect(screen.getByText("Required. Paste the Vertex AI OpenAI endpoint URL ending in /endpoints/openapi, without /chat/completions.")).toBeTruthy();
+
+      const jsonField = screen.getByLabelText(/^Service account JSON/);
+      expect(jsonField.tagName).toBe("TEXTAREA");
+      expect(isDisabled(continueButton())).toBe(true);
+
+      const saJSON = '{\n  "type": "service_account",\n  "client_email": "bot@demo.iam.gserviceaccount.com",\n  "private_key": "pem"\n}';
+      fireEvent.change(jsonField, { target: { value: saJSON } });
+      expect(isDisabled(continueButton())).toBe(true);
+
+      const endpoint = "https://aiplatform.googleapis.com/v1/projects/demo/locations/global/endpoints/openapi";
+      fireEvent.change(baseUrl, { target: { value: endpoint } });
+      expect(isDisabled(continueButton())).toBe(false);
+
+      await continueTo("Connection Verification");
+      clickButton("Test connection");
+      await waitFor(() => expect(screen.getByText("Connection verified")).toBeTruthy());
+      expect(screen.getByText("The provider listed no models. Add the ones you use by id.")).toBeTruthy();
+
+      const testBody = await sentBody(requests, "POST", "/api/providers/test");
+      expect(testBody.adapter).toBe("vertex");
+      expect(testBody.api_key).toBe(saJSON);
+      expect(testBody.base_url).toBe(endpoint);
+
+      await continueTo(/Models & Pricing for Google Vertex AI/);
+      const customInput = screen.getByPlaceholderText("e.g. my-org/fine-tuned-model");
+      fireEvent.change(customInput, { target: { value: "google/gemini-2.5-flash" } });
+      clickButton("Add");
+      fireEvent.change(customInput, { target: { value: "google/gemma-4-26b-a4b-it-maas" } });
+      clickButton("Add");
+
+      const rowOf = (id: string) => screen.getByRole("checkbox", { name: `Select ${id}` }).closest("tr") as HTMLElement;
+      expect(within(rowOf("google/gemini-2.5-flash")).getByText("in $0.30 · out $2.50 / MTok")).toBeTruthy();
+      expect(within(rowOf("google/gemini-2.5-flash")).getByText("models.dev")).toBeTruthy();
+      expect(within(rowOf("google/gemma-4-26b-a4b-it-maas")).getByText("in $0.13 · out $0.40 / MTok")).toBeTruthy();
+
+      clickButton("Connect provider");
+      const addBody = await sentBody(requests, "POST", "/api/providers");
+      expect(addBody.adapter).toBe("vertex");
+      expect(addBody.models).toEqual(["google/gemini-2.5-flash", "google/gemma-4-26b-a4b-it-maas"]);
+      expect(addBody.api_key).toBe(saJSON);
     });
 
     it("keeps Continue disabled on Credentials until a required API key is typed", async () => {

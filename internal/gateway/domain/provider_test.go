@@ -1,6 +1,11 @@
 package domain
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"net/netip"
 	"strings"
 	"testing"
@@ -290,6 +295,150 @@ func TestCheckScripted(t *testing.T) {
 			err := CheckScripted(tt.adapter, tt.models)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("CheckScripted(%q, %v) = %v", tt.adapter, tt.models, err)
+			}
+		})
+	}
+}
+
+func makeVertexJSON(t *testing.T, bits int, fields map[string]string) string {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, bits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{ //nolint:gosec // ephemeral RSA test fixture generated in memory
+		"type":           "service_account",
+		"client_email":   "svc@demo.iam.gserviceaccount.com",
+		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+		"private_key_id": "abcdef1234567890",
+		"token_uri":      "https://evil.example/token",
+	}
+	for k, v := range fields {
+		if v == "" {
+			delete(out, k)
+		} else {
+			out[k] = v
+		}
+	}
+	raw, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestCleanKeyForAdapterVertex(t *testing.T) {
+	validJSON := makeVertexJSON(t, 2048, nil)
+	cleaned, err := CleanKeyForAdapter(AdapterVertex, validJSON)
+	if err != nil {
+		t.Fatalf("CleanKeyForAdapter valid = %v", err)
+	}
+	if strings.Contains(cleaned, "evil.example") || strings.Contains(cleaned, "token_uri") {
+		t.Fatalf("CleanKeyForAdapter retained token_uri: %s", cleaned)
+	}
+	if got := KeyHintForAdapter(AdapterVertex, cleaned); got != "7890" {
+		t.Fatalf("KeyHintForAdapter = %q, want 7890", got)
+	}
+	noKeyID := makeVertexJSON(t, 2048, map[string]string{"private_key_id": ""})
+	if got := KeyHintForAdapter(AdapterVertex, noKeyID); got != "" {
+		t.Fatalf("KeyHintForAdapter without private_key_id = %q, want empty", got)
+	}
+	if got, err := CleanKeyForAdapter(AdapterVertex, "   "); err != nil || got != "" {
+		t.Fatalf("empty vertex key = %q, %v", got, err)
+	}
+
+	weakJSON := makeVertexJSON(t, 1024, nil)
+	badCases := []struct {
+		name string
+		raw  string
+	}{
+		{"wrong type", makeVertexJSON(t, 2048, map[string]string{"type": "authorized_user"})},
+		{"missing email", makeVertexJSON(t, 2048, map[string]string{"client_email": ""})},
+		{"bad email", makeVertexJSON(t, 2048, map[string]string{"client_email": "not-an-email"})},
+		{"bad pem", makeVertexJSON(t, 2048, map[string]string{"private_key": "not-a-pem"})},
+		{"weak rsa 1024", weakJSON},
+		{"trailing tokens", validJSON + " {}"},
+		{"oversized", strings.Repeat(" ", MaxVertexKeyBytes+1)},
+		{"plain api key", "sk-123456789012"},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := CleanKeyForAdapter(AdapterVertex, tc.raw); err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestCleanBaseURLForAdapterVertex(t *testing.T) {
+	tests := []struct {
+		name    string
+		plan    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "global valid",
+			plan: PlanMetered,
+			raw:  "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi/",
+			want: "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi",
+		},
+		{
+			name: "regional valid",
+			plan: PlanMetered,
+			raw:  "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi",
+			want: "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi",
+		},
+		{
+			name:    "global host with regional path rejected",
+			plan:    PlanMetered,
+			raw:     "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi",
+			wantErr: true,
+		},
+		{
+			name:    "regional host with global path rejected",
+			plan:    PlanMetered,
+			raw:     "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi",
+			wantErr: true,
+		},
+		{
+			name:    "regional host mismatch rejected",
+			plan:    PlanMetered,
+			raw:     "https://europe-west4-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi",
+			wantErr: true,
+		},
+		{
+			name:    "chat completions suffix rejected",
+			plan:    PlanMetered,
+			raw:     "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi/chat/completions",
+			wantErr: true,
+		},
+		{
+			name:    "missing endpoints openapi path rejected",
+			plan:    PlanMetered,
+			raw:     "https://aiplatform.googleapis.com/v1",
+			wantErr: true,
+		},
+		{
+			name: "local proxy with valid vertex path",
+			plan: PlanLocal,
+			raw:  "http://127.0.0.1:8080/v1/projects/demo/locations/global/endpoints/openapi",
+			want: "http://127.0.0.1:8080/v1/projects/demo/locations/global/endpoints/openapi",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CleanBaseURLForAdapter(AdapterVertex, tc.plan, tc.raw)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("CleanBaseURLForAdapter = %q, %v (wantErr=%v)", got, err, tc.wantErr)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Fatalf("CleanBaseURLForAdapter = %q, want %q", got, tc.want)
 			}
 		})
 	}

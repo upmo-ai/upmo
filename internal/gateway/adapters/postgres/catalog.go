@@ -329,13 +329,43 @@ func numericFromMicroOrFloat(micro *int64, fallback *float64) pgtype.Numeric {
 // Capabilities returns the catalog caps for a model. ok is false when absent.
 // Image input in the inputs array also counts as CapVision for route links.
 func (s Store) Capabilities(ctx context.Context, model string) ([]string, bool, error) {
+	return s.CapabilitiesForVendor(ctx, "", model)
+}
+
+// CapabilitiesForVendor returns the capabilities of model for vendor,
+// checking exact (vendor, model), vendor alias (such as Vertex google/
+// prefixes), exact model-only fallback, and aliased fallback in order.
+func (s Store) CapabilitiesForVendor(ctx context.Context, vendor, model string) ([]string, bool, error) {
+	vendor = domain.VendorKey(vendor)
+	alias, hasAlias := domain.CatalogModelAlias(vendor, model)
+	models := []string{model}
+	if hasAlias {
+		models = append(models, alias)
+	}
 	var caps, inputs []string
-	err := s.Pool.QueryRow(ctx, `
-		SELECT capabilities, inputs
-		FROM gateway.prices
-		WHERE model = $1
-		ORDER BY (vendor = '') DESC, vendor
-		LIMIT 1`, model).Scan(&caps, &inputs)
+	var err error
+	if vendor != "" {
+		err = s.Pool.QueryRow(ctx, `
+			SELECT capabilities, inputs
+			FROM gateway.prices
+			WHERE model = ANY($2::text[])
+			  AND vendor IN ($1, '')
+			ORDER BY
+				CASE
+					WHEN vendor = $1 AND model = $3 THEN 0
+					WHEN vendor = $1 THEN 1
+					WHEN vendor = '' AND model = $3 THEN 2
+					ELSE 3
+				END
+			LIMIT 1`, vendor, models, model).Scan(&caps, &inputs)
+	} else {
+		err = s.Pool.QueryRow(ctx, `
+			SELECT capabilities, inputs
+			FROM gateway.prices
+			WHERE model = $1
+			ORDER BY (vendor = '') DESC, vendor
+			LIMIT 1`, model).Scan(&caps, &inputs)
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, nil
@@ -388,16 +418,26 @@ func (s Store) CatalogModel(ctx context.Context, vendor, model string) (domain.C
 		return domain.CatalogRow{}, false, fmt.Errorf("gateway: no database")
 	}
 	vendor = domain.VendorKey(vendor)
+	models := []string{model}
+	if alias, ok := domain.CatalogModelAlias(vendor, model); ok {
+		models = append(models, alias)
+	}
 	row, err := scanCatalogRow(s.Pool.QueryRow(ctx, `
 		SELECT vendor, model, version, kind, inputs, outputs,
 			input_usd_per_mtok, output_usd_per_mtok,
 			cache_read_usd_per_mtok, cache_write_usd_per_mtok,
 			capabilities, context_window, max_output, reasoning, lifecycle, retires_at
 		FROM gateway.prices
-		WHERE model = $2
+		WHERE model = ANY($2::text[])
 		  AND vendor IN ($1, '')
-		ORDER BY (vendor = $1) DESC
-		LIMIT 1`, vendor, model))
+		ORDER BY
+			CASE
+				WHEN $1 <> '' AND vendor = $1 AND model = $3 THEN 0
+				WHEN $1 <> '' AND vendor = $1 THEN 1
+				WHEN vendor = '' AND model = $3 THEN 2
+				ELSE 3
+			END
+		LIMIT 1`, vendor, models, model))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.CatalogRow{}, false, nil
@@ -408,8 +448,8 @@ func (s Store) CatalogModel(ctx context.Context, vendor, model string) (domain.C
 }
 
 // ModelKinds resolves the catalog kind for each (vendor, model) pair,
-// falling back to the model-only row (empty vendor). Pairs absent from the catalog
-// are omitted from the returned map.
+// falling back to vendor alias and model-only rows (empty vendor). Pairs
+// absent from the catalog are omitted from the returned map.
 func (s Store) ModelKinds(ctx context.Context, pairs []domain.VendorModel) (map[domain.VendorModel]domain.ModelKind, error) {
 	if s.Pool == nil || len(pairs) == 0 {
 		return nil, nil
@@ -422,6 +462,9 @@ func (s Store) ModelKinds(ctx context.Context, pairs []domain.VendorModel) (map[
 		}
 		if p.Model != "" {
 			modelSet[p.Model] = true
+			if alias, ok := domain.CatalogModelAlias(p.Vendor, p.Model); ok {
+				modelSet[alias] = true
+			}
 		}
 	}
 	models := make([]string, 0, len(modelSet))
@@ -455,8 +498,17 @@ func (s Store) ModelKinds(ctx context.Context, pairs []domain.VendorModel) (map[
 	}
 	out := make(map[domain.VendorModel]domain.ModelKind, len(pairs))
 	for _, p := range pairs {
+		alias, hasAlias := domain.CatalogModelAlias(p.Vendor, p.Model)
 		if k, ok := raw[p]; ok {
 			out[p] = k
+		} else if hasAlias {
+			if k, ok := raw[domain.VendorModel{Vendor: p.Vendor, Model: alias}]; ok {
+				out[p] = k
+			} else if k, ok := raw[domain.VendorModel{Vendor: "", Model: p.Model}]; ok {
+				out[p] = k
+			} else if k, ok := raw[domain.VendorModel{Vendor: "", Model: alias}]; ok {
+				out[p] = k
+			}
 		} else if k, ok := raw[domain.VendorModel{Vendor: "", Model: p.Model}]; ok {
 			out[p] = k
 		}
@@ -466,7 +518,7 @@ func (s Store) ModelKinds(ctx context.Context, pairs []domain.VendorModel) (map[
 
 // ModelInputs returns the accepted input modalities for an account's model:
 // the account's discovered provider list first, then the catalog (vendor
-// row then fallback row). ok is false when neither has a row.
+// row, vendor alias row, then fallback row). ok is false when neither has a row.
 func (s Store) ModelInputs(ctx context.Context, accountID, vendor, model string) ([]string, bool, error) {
 	if s.Pool == nil {
 		return nil, false, nil
@@ -488,14 +540,25 @@ func (s Store) ModelInputs(ctx context.Context, accountID, vendor, model string)
 			return nil, false, err
 		}
 	}
+	vkey := domain.VendorKey(vendor)
+	models := []string{model}
+	if alias, ok := domain.CatalogModelAlias(vkey, model); ok {
+		models = append(models, alias)
+	}
 	var inputs []string
 	err := s.Pool.QueryRow(ctx, `
 		SELECT inputs
 		FROM gateway.prices
-		WHERE model = $2
+		WHERE model = ANY($2::text[])
 		  AND vendor IN ($1, '')
-		ORDER BY (vendor = $1) DESC
-		LIMIT 1`, domain.VendorKey(vendor), model).Scan(&inputs)
+		ORDER BY
+			CASE
+				WHEN $1 <> '' AND vendor = $1 AND model = $3 THEN 0
+				WHEN $1 <> '' AND vendor = $1 THEN 1
+				WHEN vendor = '' AND model = $3 THEN 2
+				ELSE 3
+			END
+		LIMIT 1`, vkey, models, model).Scan(&inputs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, nil
@@ -557,11 +620,18 @@ func (s Store) SuggestModelForInput(ctx context.Context, accountID, vendor, need
 		return "", false, nil
 	}
 	vendor = domain.VendorKey(vendor)
+	queryModels := make([]string, 0, len(modelIDs)*2)
+	for _, m := range modelIDs {
+		queryModels = append(queryModels, m)
+		if alias, ok := domain.CatalogModelAlias(vendor, m); ok {
+			queryModels = append(queryModels, alias)
+		}
+	}
 	catRows, err := s.Pool.Query(ctx, `
 		SELECT vendor, model, kind, inputs
 		FROM gateway.prices
 		WHERE model = ANY($1::text[])
-		  AND vendor IN ($2, '')`, modelIDs, vendor)
+		  AND vendor IN ($2, '')`, queryModels, vendor)
 	if err != nil {
 		return "", false, err
 	}
@@ -583,9 +653,16 @@ func (s Store) SuggestModelForInput(ctx context.Context, accountID, vendor, need
 		return "", false, err
 	}
 	for _, c := range candidates {
+		alias, hasAlias := domain.CatalogModelAlias(vendor, c.model)
 		info, ok := catByKey[domain.VendorModel{Vendor: vendor, Model: c.model}]
+		if !ok && hasAlias {
+			info, ok = catByKey[domain.VendorModel{Vendor: vendor, Model: alias}]
+		}
 		if !ok {
 			info, ok = catByKey[domain.VendorModel{Vendor: "", Model: c.model}]
+		}
+		if !ok && hasAlias {
+			info, ok = catByKey[domain.VendorModel{Vendor: "", Model: alias}]
 		}
 		// Uncataloged models count as chat with text input.
 		kind := domain.KindChat

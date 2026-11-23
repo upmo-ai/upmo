@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { createRequire } from "node:module";
 import { signInWithPassword, storagePath } from "./session.mjs";
 
@@ -149,6 +150,114 @@ try {
   await checkTemplateEndpoint("Bedrock Mantle", "https://bedrock-mantle.{region}.api.aws/v1", "https://bedrock-mantle.us-east-1.api.aws/v1");
   await page.getByRole("link", { name: "Cancel" }).click();
   await heading("Providers").waitFor();
+
+  // Google Vertex AI: verify template endpoint, multiline service account JSON,
+  // nil-model probe response, manual model selection with models.dev pricing,
+  // real Postgres persistence via POST /api/providers, and reload verification.
+  {
+    const vertexName = "e2e-vertex";
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const vertexJSON = JSON.stringify(
+      {
+        type: "service_account",
+        client_email: "e2e-bot@demo-proj.iam.gserviceaccount.com",
+        private_key_id: "e2evertexkeyid9988",
+        private_key: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      },
+      null,
+      2,
+    );
+    const vertexPlaceholder = "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi";
+    const vertexEndpoint = "https://us-central1-aiplatform.googleapis.com/v1/projects/demo-proj/locations/us-central1/endpoints/openapi";
+
+    await openProviders();
+    await page.getByRole("link", { name: "Add provider" }).first().click();
+    await heading("Connect a provider").waitFor();
+    await button("Google Vertex AI").click();
+    await button("Continue").click();
+    await page.getByText(/Google Vertex AI Credentials & Plan/).waitFor();
+    await page.getByLabel(/Provider display name/).fill(vertexName);
+
+    const base = page.getByLabel(/Base URL/);
+    if ((await base.getAttribute("placeholder")) !== vertexPlaceholder) {
+      throw new Error(`Google Vertex AI base URL placeholder is ${await base.getAttribute("placeholder")}`);
+    }
+    const jsonInput = page.getByLabel(/^Service account JSON/);
+    if ((await jsonInput.evaluate((el) => el.tagName)) !== "TEXTAREA") {
+      throw new Error("Google Vertex AI credential field is not a multiline textarea");
+    }
+    await jsonInput.fill(vertexJSON);
+    if (await button("Continue").isEnabled()) {
+      throw new Error("Google Vertex AI continued without a base URL");
+    }
+    await base.fill(vertexEndpoint);
+    if (!(await button("Continue").isEnabled())) {
+      throw new Error("Google Vertex AI did not continue after base URL and JSON were filled");
+    }
+    await button("Continue").click();
+    await page.getByText("Connection Verification").waitFor();
+
+    // Stub only the OAuth probe endpoint so the ephemeral test key does not need
+    // live Google Cloud credentials; POST /api/providers and reloads hit the real brain.
+    await page.route("**/api/providers/test", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body?.adapter === "vertex" || body?.id) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, latency_ms: 5 }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await button("Test connection").click();
+    await page.getByText("Connection verified").waitFor();
+    await page.getByText("The provider listed no models. Add the ones you use by id.").waitFor();
+    await button("Continue").click();
+    await page.getByText(/Models & Pricing for Google Vertex AI/).waitFor();
+
+    await page.getByPlaceholder("e.g. my-org/fine-tuned-model").fill("google/gemini-2.5-flash");
+    await button("Add").click();
+    const geminiRow = page.getByRole("checkbox", { name: "Select google/gemini-2.5-flash" }).locator("xpath=ancestor::tr");
+    await geminiRow.getByText("models.dev", { exact: true }).waitFor();
+
+    await button("Connect provider").click();
+    await heading("Providers").waitFor();
+    const vertexCard = page.locator('[data-testid^="provider-card-"]').filter({ hasText: vertexName });
+    await vertexCard.waitFor();
+    await vertexCard.getByText("Google Vertex AI", { exact: true }).waitFor();
+    await vertexCard.getByText("google/gemini-2.5-flash", { exact: true }).waitFor();
+
+    // Reload and verify the saved account, model ID, adapter, and key hint persisted in Postgres.
+    await page.unroute("**/api/providers/test");
+    await openProviders();
+    await vertexCard.waitFor();
+    await vertexCard.getByText("Google Vertex AI", { exact: true }).waitFor();
+    await vertexCard.getByText("google/gemini-2.5-flash", { exact: true }).waitFor();
+
+    // Edit screen shows the key_hint derived from private_key_id and leaves the JSON textarea blank.
+    await vertexCard.getByRole("button", { name: "Edit" }).click();
+    await heading(`Edit ${vertexName}`).waitFor();
+    await page.getByText(/Key ending 9988/).waitFor();
+    if ((await page.getByLabel(/^Service account JSON/).inputValue()) !== "") {
+      throw new Error("the Vertex service account JSON field held a value on edit");
+    }
+    await page.getByRole("link", { name: "Cancel" }).click();
+    await heading("Providers").waitFor();
+
+    // Clean up the Vertex test account via the live API.
+    const vertexAcct = (await (await page.request.get(pageUrl("/api/providers"))).json()).find(
+      (account) => account.name === vertexName,
+    );
+    if (!vertexAcct || vertexAcct.adapter !== "vertex" || vertexAcct.key_hint !== "9988" || !vertexAcct.models.includes("google/gemini-2.5-flash")) {
+      throw new Error(`unexpected saved vertex account: ${JSON.stringify(vertexAcct)}`);
+    }
+    const del = await page.request.delete(pageUrl(`/api/providers/${vertexAcct.id}`));
+    if (!del.ok()) throw new Error(`deleting ${vertexName} answered ${del.status()}`);
+    await openProviders();
+  }
 
   // Add an account: test, tick two of the models the provider listed, save.
   await testToModels(name);

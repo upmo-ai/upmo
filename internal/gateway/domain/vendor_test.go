@@ -13,7 +13,7 @@ import (
 var pickerVendors = []string{
 	"anthropic", "openai", "gemini", "nebius", "ollama", "deepseek", "groq", "xai",
 	"openrouter", "mistral", "together", "cerebras", "fireworks", "perplexity", "cohere", "lmstudio",
-	"azure", "bedrock-mantle",
+	"azure", "bedrock-mantle", "vertex",
 }
 
 func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
@@ -27,7 +27,7 @@ func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
 			t.Errorf("vendor %q: found=%v key=%q listed=%q", key, ok, v.Key, got[i].Key)
 			continue
 		}
-		if v.Adapter != AdapterOpenAI && v.Adapter != AdapterAnthropic {
+		if v.Adapter != AdapterOpenAI && v.Adapter != AdapterAnthropic && v.Adapter != AdapterVertex {
 			t.Errorf("%s: adapter %q is not one the gateway dispatches to", key, v.Adapter)
 		}
 		plan := PlanMetered
@@ -41,10 +41,13 @@ func TestEveryPickerVendorResolvesToAnAdapterAndAURLPair(t *testing.T) {
 				continue
 			}
 			base = savedBases(v)[0]
-		} else if clean, err := CleanBaseURL(plan, base); err != nil || clean != base {
+		} else if clean, err := CleanBaseURLForAdapter(v.Adapter, plan, base); err != nil || clean != base {
 			t.Errorf("%s: base URL %q is not one an account may save: %q, %v", key, base, clean, err)
 		}
-		paths := []string{v.ChatPath, v.ModelsPath}
+		paths := []string{v.ChatPath}
+		if v.Adapter != AdapterVertex || v.ModelsPath != "" {
+			paths = append(paths, v.ModelsPath)
+		}
 		if v.Adapter == AdapterOpenAI {
 			if v.EmbedPath != "" {
 				paths = append(paths, v.EmbedPath)
@@ -72,12 +75,19 @@ func savedBases(v Vendor) []string {
 	}
 	var bases []string
 	for _, pattern := range v.HostPatterns {
-		base := "https://" + strings.Replace(string(pattern), "*", "sample", 1)
+		host := strings.Replace(string(pattern), "*", "us-central1", 1)
+		base := "https://" + host
 		switch v.Key {
 		case "azure":
-			base += "/openai/v1"
+			base = "https://" + strings.Replace(string(pattern), "*", "sample", 1) + "/openai/v1"
 		case "bedrock-mantle":
-			base += "/v1"
+			base = "https://" + strings.Replace(string(pattern), "*", "sample", 1) + "/v1"
+		case "vertex":
+			loc := "global"
+			if strings.Contains(string(pattern), "*") {
+				loc = "us-central1"
+			}
+			base += "/v1/projects/sample/locations/" + loc + "/endpoints/openapi"
 		}
 		bases = append(bases, base)
 	}
@@ -157,18 +167,20 @@ func TestHostPatternsAreCopiedWhenAVendorIsHandedOut(t *testing.T) {
 			t.Errorf("%s: VendorFor host patterns = %v after editing a returned vendor, want %v", v.Key, again.HostPatterns, want)
 		}
 
-		base := "https://" + strings.Replace(string(want[0]), "*", "sample", 1)
-		paths := CompatPaths(base)
-		if paths.Key != v.Key {
-			t.Fatalf("CompatPaths(%q) = %q, want %s", base, paths.Key, v.Key)
-		}
-		paths.HostPatterns[0] = "*.mutated.example.com"
-		if got := CompatPaths(base); got.Key != v.Key || slices.Contains(got.HostPatterns, HostPattern("*.mutated.example.com")) {
-			t.Errorf("%s: CompatPaths(%q) after editing a returned vendor = %+v, want %s with %v", v.Key, base, got, v.Key, want)
+		if v.Adapter == AdapterOpenAI {
+			base := "https://" + strings.Replace(string(want[0]), "*", "sample", 1)
+			paths := CompatPaths(base)
+			if paths.Key != v.Key {
+				t.Fatalf("CompatPaths(%q) = %q, want %s", base, paths.Key, v.Key)
+			}
+			paths.HostPatterns[0] = "*.mutated.example.com"
+			if got := CompatPaths(base); got.Key != v.Key || slices.Contains(got.HostPatterns, HostPattern("*.mutated.example.com")) {
+				t.Errorf("%s: CompatPaths(%q) after editing a returned vendor = %+v, want %s with %v", v.Key, base, got, v.Key, want)
+			}
 		}
 	}
-	if checked != 2 {
-		t.Fatalf("checked %d pattern vendors, want Azure and Mantle", checked)
+	if checked != 3 {
+		t.Fatalf("checked %d pattern vendors, want Azure, Mantle and Vertex", checked)
 	}
 }
 
@@ -390,10 +402,49 @@ func TestPricingVendor(t *testing.T) {
 			account: Account{Provider: "openai", Adapter: AdapterOpenAI, BaseURL: ""},
 			want:    "",
 		},
+		{
+			name:    "vertex global endpoint",
+			account: Account{Provider: "vertex", Adapter: AdapterVertex, BaseURL: "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi"},
+			want:    "vertex",
+		},
+		{
+			name:    "vertex regional endpoint",
+			account: Account{Provider: "custom", Adapter: AdapterVertex, BaseURL: "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/endpoints/openapi"},
+			want:    "vertex",
+		},
+		{
+			name:    "vertex spoofed host",
+			account: Account{Provider: "vertex", Adapter: AdapterVertex, BaseURL: "https://aiplatform.googleapis.com.attacker.net/v1/projects/p/locations/global/endpoints/openapi"},
+			want:    "",
+		},
+		{
+			name:    "vertex multi-label region host",
+			account: Account{Provider: "vertex", Adapter: AdapterVertex, BaseURL: "https://a.b-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/endpoints/openapi"},
+			want:    "",
+		},
 	}
 	for _, tc := range cases {
 		if got := PricingVendor(tc.account); got != tc.want {
 			t.Errorf("%s: PricingVendor = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestVertexModelsDevMappingAndCatalogAlias(t *testing.T) {
+	if got, ok := VendorForModelsDev("google-vertex"); !ok || got != "vertex" {
+		t.Fatalf("VendorForModelsDev(google-vertex) = %q, %v; want vertex, true", got, ok)
+	}
+	alias, ok := CatalogModelAlias("vertex", "google/gemini-2.5-flash")
+	if !ok || alias != "gemini-2.5-flash" {
+		t.Fatalf("CatalogModelAlias(vertex, google/gemini-2.5-flash) = %q, %v", alias, ok)
+	}
+	if _, ok := CatalogModelAlias("vertex", "deepseek-ai/deepseek-v3.2-maas"); ok {
+		t.Fatal("non-google prefix must not alias")
+	}
+	if _, ok := CatalogModelAlias("vertex", "google/"); ok {
+		t.Fatal("empty suffix must not alias")
+	}
+	if _, ok := CatalogModelAlias("openai", "google/gemini-2.5-flash"); ok {
+		t.Fatal("non-vertex vendor must not alias")
 	}
 }

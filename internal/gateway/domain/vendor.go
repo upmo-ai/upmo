@@ -6,11 +6,17 @@ import (
 	"strings"
 )
 
-// HostPattern is a hostname pattern whose * covers exactly one non-empty DNS
-// label. Patterns are matched after hostOf normalization.
+// HostPattern is a hostname pattern. A pattern without * matches that exact
+// normalized host; a pattern with a single * matches one non-empty DNS label.
 type HostPattern string
 
 func (p HostPattern) match(host string) bool {
+	if host == "" {
+		return false
+	}
+	if !strings.Contains(string(p), "*") {
+		return string(p) == host
+	}
 	prefix, suffix, ok := strings.Cut(string(p), "*")
 	if !ok || strings.Contains(suffix, "*") || len(host) <= len(prefix)+len(suffix) {
 		return false
@@ -84,6 +90,7 @@ var vendors = []Vendor{
 	{Key: "lmstudio", Name: "LM Studio", Adapter: AdapterOpenAI, BaseURL: "http://localhost:1234", SuggestedPlan: PlanLocal, ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models", EmbedPath: "/v1/embeddings", Local: true},
 	{Key: "azure", Name: "Azure OpenAI", Adapter: AdapterOpenAI, BaseURL: "", HostPatterns: []HostPattern{"*.openai.azure.com", "*.services.ai.azure.com"}, AuthStyle: AuthAPIKey, SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: "/embeddings"},
 	{Key: "bedrock-mantle", Name: "Bedrock Mantle", Adapter: AdapterOpenAI, BaseURL: "", HostPatterns: []HostPattern{"bedrock-mantle.*.api.aws"}, AuthStyle: AuthBearer, SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "/models", EmbedPath: ""},
+	{Key: "vertex", Name: "Google Vertex AI", Adapter: AdapterVertex, BaseURL: "", HostPatterns: []HostPattern{"aiplatform.googleapis.com", "*-aiplatform.googleapis.com"}, AuthStyle: AuthBearer, SuggestedPlan: PlanMetered, ChatPath: "/chat/completions", ModelsPath: "", EmbedPath: ""},
 }
 
 // modelsDevVendors maps models.dev top-level provider ids to picker vendor
@@ -93,6 +100,7 @@ var modelsDevVendors = map[string]string{
 	"anthropic":      "anthropic",
 	"openai":         "openai",
 	"google":         "gemini",
+	"google-vertex":  "vertex",
 	"nebius":         "nebius",
 	"ollama":         "ollama",
 	"deepseek":       "deepseek",
@@ -233,7 +241,29 @@ func PricingVendorFor(adapter, baseURL string) string {
 			}
 		}
 		return ""
+	case AdapterVertex:
+		for _, v := range vendors {
+			if !v.Local && v.Adapter == AdapterVertex && v.livesOnHost(host) {
+				return v.Key
+			}
+		}
+		return ""
 	default:
 		return ""
 	}
+}
+
+// CatalogModelAlias returns the fallback catalog model key when a vendor's
+// OpenAI-compatible wire model ID carries a publisher prefix that models.dev
+// omits. Callers must check an exact (vendor, model) row first so models
+// stored with the prefix (such as google/gemma-4-26b-a4b-it-maas) keep their
+// exact row.
+func CatalogModelAlias(vendor, model string) (string, bool) {
+	if VendorKey(vendor) != "vertex" {
+		return "", false
+	}
+	if trimmed, ok := strings.CutPrefix(model, "google/"); ok && trimmed != "" {
+		return trimmed, true
+	}
+	return "", false
 }
