@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"github.com/upmo-ai/upmo/internal/knowledge/domain"
 )
 
 const maxClip = 128 << 10
@@ -52,7 +54,7 @@ func IngestClip(
 			title = ref
 		}
 	}
-	pieces, err := chunkBodies(body)
+	pieces, err := chunkPieces(body)
 	if err != nil {
 		return Result{}, err
 	}
@@ -79,6 +81,10 @@ func IngestClip(
 		ready, err := prepare(ctx, summarizer, embedder, pieces)
 		if err != nil {
 			return err
+		}
+		lang := domain.DetectLanguage(body)
+		for i := range ready {
+			ready[i].Language = lang
 		}
 		result, err = tx.Save(ctx, Draft{
 			FolderID:   draft.FolderID,

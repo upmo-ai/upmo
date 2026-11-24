@@ -28,6 +28,8 @@ var (
 	ErrFolder = errors.New("knowledge: folder")
 	// ErrQuery is a blank search query.
 	ErrQuery = errors.New("knowledge: query")
+	// ErrBody is a source body that is not valid UTF-8.
+	ErrBody = errors.New("knowledge: body")
 )
 
 // Access is the person and the allow list for this transaction.
@@ -79,12 +81,15 @@ type Current struct {
 	Hash     [32]byte
 }
 
-// Piece is one verbatim chunk and its quarantined prefix.
+// Piece is one verbatim chunk, its heading path metadata, the source
+// language configuration and its quarantined prefix.
 type Piece struct {
-	Body   string
-	Prefix string
-	Vector []float32
-	Model  string
+	Body        string
+	HeadingPath string
+	Language    string
+	Prefix      string
+	Vector      []float32
+	Model       string
 }
 
 // Tx is one ingest transaction.
@@ -126,7 +131,10 @@ func Ingest(
 	if title == "" {
 		return Result{}, ErrTitle
 	}
-	pieces, err := chunkBodies(draft.Body)
+	if !utf8.ValidString(draft.Body) {
+		return Result{}, ErrBody
+	}
+	pieces, err := chunkPieces(draft.Body)
 	if err != nil {
 		return Result{}, err
 	}
@@ -146,6 +154,10 @@ func Ingest(
 		ready, err := prepare(ctx, summarizer, embedder, pieces)
 		if err != nil {
 			return err
+		}
+		lang := domain.DetectLanguage(draft.Body)
+		for i := range ready {
+			ready[i].Language = lang
 		}
 		toSave := draft
 		toSave.Title = title
@@ -174,7 +186,8 @@ func checkAccess(access Access) error {
 	return nil
 }
 
-func chunkBodies(body string) ([]Piece, error) {
+// chunkPieces splits the body into verbatim pieces with their heading paths.
+func chunkPieces(body string) ([]Piece, error) {
 	parts, err := domain.Chunk(body)
 	if err != nil {
 		return nil, err
@@ -184,7 +197,8 @@ func chunkBodies(body string) ([]Piece, error) {
 	}
 	pieces := make([]Piece, len(parts))
 	for i, part := range parts {
-		pieces[i].Body = part
+		pieces[i].Body = part.Body
+		pieces[i].HeadingPath = part.HeadingPath
 	}
 	return pieces, nil
 }

@@ -450,8 +450,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"knowledge.chunks": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"body", "body_tsv", "context_prefix", "embedding", "embedding_model", "prefix_tsv", "revision", "seq", "source_id", "trust"},
-			Insert: []string{"body", "body_tsv", "context_prefix", "embedding", "embedding_model", "prefix_tsv", "revision", "seq", "source_id", "trust"},
+			Select: []string{"body", "body_tsv", "context_prefix", "embedding", "embedding_model", "folder_id", "heading_path", "language", "prefix_tsv", "revision", "seq", "source_id", "trust"},
+			Insert: []string{"body", "body_tsv", "context_prefix", "embedding", "embedding_model", "folder_id", "heading_path", "language", "prefix_tsv", "revision", "seq", "source_id", "trust"},
 		},
 		"knowledge.embed_models": {
 			Table:  []string{"INSERT", "SELECT"},
@@ -467,9 +467,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		"knowledge.goose_db_version": {},
 		"knowledge.sources": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"blob_key", "body", "error", "folder_id", "id", "kind", "provenance", "revision", "sha256", "source_ref", "status", "title", "updated_at"},
-			Insert: []string{"blob_key", "body", "error", "folder_id", "id", "kind", "provenance", "revision", "sha256", "source_ref", "status", "title", "updated_at"},
-			Update: []string{"blob_key", "body", "error", "kind", "provenance", "revision", "sha256", "source_ref", "status", "title", "updated_at"},
+			Select: []string{"blob_key", "body", "error", "folder_id", "id", "kind", "language", "provenance", "revision", "sha256", "source_ref", "status", "title", "updated_at"},
+			Insert: []string{"blob_key", "body", "error", "folder_id", "id", "kind", "language", "provenance", "revision", "sha256", "source_ref", "status", "title", "updated_at"},
+			Update: []string{"blob_key", "body", "error", "kind", "language", "provenance", "revision", "sha256", "source_ref", "status", "title", "updated_at"},
 		},
 		"memory.embed_models": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},

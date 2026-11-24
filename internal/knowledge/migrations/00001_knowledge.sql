@@ -1,6 +1,9 @@
 -- +goose Up
 
 CREATE EXTENSION IF NOT EXISTS vector;
+-- btree_gin lets the full-text index lead with the folder column, so a
+-- folder-scoped search scans one index instead of rechecking every hit.
+CREATE EXTENSION IF NOT EXISTS btree_gin;
 
 CREATE TABLE knowledge.folders (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -31,12 +34,16 @@ CREATE TABLE knowledge.sources (
   status text NOT NULL DEFAULT 'ready',
   error text NOT NULL DEFAULT '',
   blob_key text NOT NULL DEFAULT '',
+  language regconfig NOT NULL DEFAULT 'pg_catalog.simple'::regconfig,
   CONSTRAINT sources_title_check CHECK (title <> ''),
   CONSTRAINT sources_sha_check CHECK (octet_length(sha256) = 32),
   CONSTRAINT sources_revision_check CHECK (revision >= 0),
   CONSTRAINT sources_kind_check CHECK (kind IN ('markdown', 'file', 'url', 'clip')),
   CONSTRAINT sources_provenance_check CHECK (provenance IN ('curated', 'web')),
-  CONSTRAINT sources_status_check CHECK (status IN ('pending', 'ready', 'failed'))
+  CONSTRAINT sources_status_check CHECK (status IN ('pending', 'ready', 'failed')),
+  -- Lets chunks pin their folder to the same row as their source, so a
+  -- chunk can never claim a folder its source is not in.
+  CONSTRAINT sources_id_folder_unique UNIQUE (id, folder_id)
 );
 
 CREATE INDEX sources_folder ON knowledge.sources (folder_id);
@@ -46,6 +53,9 @@ CREATE UNIQUE INDEX sources_clip_ref
 
 CREATE TABLE knowledge.chunks (
   source_id uuid NOT NULL REFERENCES knowledge.sources (id) ON DELETE CASCADE,
+  -- A chunk's folder must match its source's folder; the folder cascade
+  -- still holds through sources, which cascade to their chunks.
+  folder_id uuid NOT NULL,
   revision int NOT NULL,
   seq int NOT NULL,
   body text NOT NULL,
@@ -53,8 +63,14 @@ CREATE TABLE knowledge.chunks (
   trust text NOT NULL DEFAULT 'document',
   embedding halfvec(1024),
   embedding_model text NOT NULL DEFAULT '',
-  body_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', body)) STORED,
-  prefix_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', context_prefix)) STORED,
+  heading_path text NOT NULL DEFAULT '',
+  language regconfig NOT NULL DEFAULT 'pg_catalog.simple'::regconfig,
+  body_tsv tsvector GENERATED ALWAYS AS (
+    to_tsvector(language, body || E'\n' || heading_path)
+  ) STORED,
+  prefix_tsv tsvector GENERATED ALWAYS AS (
+    to_tsvector(language, context_prefix)
+  ) STORED,
   PRIMARY KEY (source_id, revision, seq),
   CONSTRAINT chunks_body_check CHECK (body <> ''),
   CONSTRAINT chunks_trust_check CHECK (trust = 'document'),
@@ -62,11 +78,18 @@ CREATE TABLE knowledge.chunks (
   CONSTRAINT chunks_embed_pair_check CHECK (
     (embedding IS NULL AND embedding_model = '')
     OR (embedding IS NOT NULL AND embedding_model <> '')
-  )
+  ),
+  CONSTRAINT chunks_source_folder_fk
+    FOREIGN KEY (source_id, folder_id)
+    REFERENCES knowledge.sources (id, folder_id)
+    ON DELETE CASCADE
 );
 
-CREATE INDEX chunks_body_fts ON knowledge.chunks USING gin (body_tsv);
-CREATE INDEX chunks_prefix_fts ON knowledge.chunks USING gin (prefix_tsv);
+-- The folder column leads the text index: folder-scoped full-text search
+-- filters by folder and matches body_tsv in one bitmap index scan.
+CREATE INDEX chunks_body_fts ON knowledge.chunks USING gin (folder_id, body_tsv);
+-- prefix_tsv has no @@ query of its own (Lexical only ranks with it), so it
+-- carries no index.
 CREATE INDEX chunks_embedding_hnsw
   ON knowledge.chunks USING hnsw (embedding halfvec_cosine_ops);
 
@@ -178,7 +201,7 @@ CREATE POLICY chunks_delete ON knowledge.chunks
 
 GRANT USAGE ON SCHEMA knowledge TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON knowledge.sources TO upmo_app;
-GRANT UPDATE (title, body, sha256, revision, updated_at, kind, source_ref, provenance, status, error, blob_key)
+GRANT UPDATE (title, body, sha256, revision, updated_at, kind, source_ref, provenance, status, error, blob_key, language)
   ON knowledge.sources TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON knowledge.chunks TO upmo_app;
 GRANT SELECT, INSERT ON knowledge.embed_models TO upmo_app;

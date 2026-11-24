@@ -20,6 +20,16 @@ func TestIngestRejectsBlankTextBeforeTheStore(t *testing.T) {
 	}
 }
 
+func TestIngestRejectsInvalidUTF8BeforeTheStore(t *testing.T) {
+	store := &ingestStore{}
+	_, err := Ingest(context.Background(), store, allowAll, nil, nil, Draft{
+		FolderID: folderID, Title: "Notes", Body: "broken \xff\xfe text",
+	})
+	if !errors.Is(err, ErrBody) || store.calls != 0 {
+		t.Fatalf("err=%v calls=%d", err, store.calls)
+	}
+}
+
 func TestIngestSkipsAPublishedHash(t *testing.T) {
 	body := "Ada prefers oolong tea"
 	store := &ingestStore{current: Current{

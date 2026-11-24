@@ -278,6 +278,14 @@ func (s Store) ResetPending(ctx context.Context, access app.Access, sourceID str
 	return tx.Commit(ctx)
 }
 
+// Lexical runs the folder-scoped full-text search. The folder's languages
+// come from its sources, one row per source; each language parses the query
+// once and drives a per-language lateral that filters chunks on folder,
+// language and body match, so the folder-leading GIN index carries the
+// folder and text conditions together. Each lateral keeps the rank order
+// and limit, and the outer query applies them again across languages. The
+// source join stays for the current revision and row security, and a
+// prefix match alone still cannot introduce a hit.
 func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query string, limit int) ([]app.Lexical, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
@@ -285,18 +293,26 @@ func (s Store) Lexical(ctx context.Context, access app.Access, folderID, query s
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := tx.Query(ctx, `
-		SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text, source.provenance
-		FROM knowledge.chunks AS chunk
-		JOIN knowledge.sources AS source
-		  ON source.id = chunk.source_id
-		 AND source.revision = chunk.revision
-		WHERE source.folder_id = $1::uuid
-		  AND chunk.body_tsv @@ websearch_to_tsquery('english', $2)
-		ORDER BY
-		  ts_rank(chunk.body_tsv, websearch_to_tsquery('english', $2))
-		  + 0.3 * ts_rank(chunk.prefix_tsv, websearch_to_tsquery('english', $2)) DESC,
-		  chunk.source_id::text,
-		  chunk.seq
+		SELECT hits.source_id::text, hits.seq, hits.body, hits.embedding, hits.provenance
+		FROM (
+			SELECT DISTINCT language FROM knowledge.sources WHERE folder_id = $1::uuid
+		) AS lang
+		CROSS JOIN LATERAL websearch_to_tsquery(lang.language, $2) AS q
+		JOIN LATERAL (
+			SELECT chunk.source_id::text, chunk.seq, chunk.body, chunk.embedding::text, source.provenance,
+			       ts_rank(chunk.body_tsv, q) + 0.3 * ts_rank(chunk.prefix_tsv, q) AS rank
+			FROM knowledge.chunks AS chunk
+			JOIN knowledge.sources AS source
+			  ON source.id = chunk.source_id
+			 AND source.revision = chunk.revision
+			 AND source.folder_id = $1::uuid
+			WHERE chunk.folder_id = $1::uuid
+			  AND chunk.language = lang.language
+			  AND chunk.body_tsv @@ q
+			ORDER BY rank DESC, source_id::text, seq
+			LIMIT $3
+		) AS hits ON true
+		ORDER BY hits.rank DESC, hits.source_id::text, hits.seq
 		LIMIT $3`, folderID, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("knowledge: search: %w", err)
@@ -462,18 +478,23 @@ func (t rowTx) Save(
 	ref := draft.SourceRef
 	id := sourceID
 	revision := 0
+	// A source may publish with no pieces; its language then stays simple.
+	lang := "pg_catalog.simple"
+	if len(pieces) > 0 && pieces[0].Language != "" {
+		lang = pieces[0].Language
+	}
 	if sourceID == "" {
 		err := t.tx.QueryRow(ctx, `
 			INSERT INTO knowledge.sources (
 				folder_id, title, body, sha256, revision, updated_at,
-				kind, source_ref, provenance, status, error
+				kind, source_ref, provenance, status, error, language
 			) VALUES (
 				$1::uuid, $2, $3, $4, 0, $5,
-				$6, $7, $8, 'ready', ''
+				$6, $7, $8, 'ready', '', $9::regconfig
 			)
 			RETURNING id::text`,
 			folderID, title, body, hash[:], time.Now().UTC(),
-			kind, ref, provenance).Scan(&id)
+			kind, ref, provenance, lang).Scan(&id)
 		if err != nil {
 			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 		}
@@ -481,11 +502,11 @@ func (t rowTx) Save(
 		tag, err := t.tx.Exec(ctx, `
 			UPDATE knowledge.sources
 			SET title = $3, body = $4, sha256 = $5, updated_at = $6,
-			    status = 'ready', error = '',
+			    status = 'ready', error = '', language = $9::regconfig,
 			    source_ref = CASE WHEN $7 <> '' THEN $7 ELSE source_ref END,
 			    provenance = CASE WHEN $8 <> '' THEN $8 ELSE provenance END
 			WHERE id = $1::uuid AND folder_id = $2::uuid`,
-			sourceID, folderID, title, body, hash[:], time.Now().UTC(), ref, provenance)
+			sourceID, folderID, title, body, hash[:], time.Now().UTC(), ref, provenance, lang)
 		if err != nil {
 			return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 		}
@@ -493,14 +514,14 @@ func (t rowTx) Save(
 			err = t.tx.QueryRow(ctx, `
 				INSERT INTO knowledge.sources (
 					id, folder_id, title, body, sha256, revision, updated_at,
-					kind, source_ref, provenance, status, error
+					kind, source_ref, provenance, status, error, language
 				) VALUES (
 					$1::uuid, $2::uuid, $3, $4, $5, 0, $6,
-					$7, $8, $9, 'ready', ''
+					$7, $8, $9, 'ready', '', $10::regconfig
 				)
 				RETURNING id::text`,
 				sourceID, folderID, title, body, hash[:], time.Now().UTC(),
-				kind, ref, provenance).Scan(&id)
+				kind, ref, provenance, lang).Scan(&id)
 			if err != nil {
 				return app.Result{}, fmt.Errorf("knowledge: source: %w", err)
 			}
@@ -517,12 +538,18 @@ func (t rowTx) Save(
 			vector = formatHalfvec(piece.Vector)
 			model = piece.Model
 		}
+		pieceLang := piece.Language
+		if pieceLang == "" {
+			pieceLang = lang
+		}
 		if _, err := t.tx.Exec(ctx, `
 			INSERT INTO knowledge.chunks (
-				source_id, revision, seq, body, context_prefix, embedding, embedding_model
+				source_id, folder_id, revision, seq, body, context_prefix,
+				embedding, embedding_model, heading_path, language
 			) VALUES (
-				$1::uuid, $2, $3, $4, $5, NULLIF($6, '')::halfvec(1024), $7
-			)`, id, newRev, i, piece.Body, piece.Prefix, vector, model); err != nil {
+				$1::uuid, $10::uuid, $2, $3, $4, $5,
+				NULLIF($6, '')::halfvec(1024), $7, $8, $9::regconfig
+			)`, id, newRev, i, piece.Body, piece.Prefix, vector, model, piece.HeadingPath, pieceLang, folderID); err != nil {
 			return app.Result{}, fmt.Errorf("knowledge: chunk: %w", err)
 		}
 	}

@@ -401,9 +401,9 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatalf("seed knowledge.sources: %v", err)
 	}
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO knowledge.chunks (source_id, revision, seq, body)
-		VALUES ($1, 1, 0, 'PostgreSQL backup and restore runbook')`,
-		sourceID,
+		INSERT INTO knowledge.chunks (source_id, folder_id, revision, seq, body)
+		VALUES ($1, $2, 1, 0, 'PostgreSQL backup and restore runbook')`,
+		sourceID, folderID,
 	); err != nil {
 		t.Fatalf("seed knowledge.chunks: %v", err)
 	}
