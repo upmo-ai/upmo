@@ -357,7 +357,7 @@ func (a *App) Serve(ctx context.Context) error {
 		srvCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		errc := make(chan error, 2)
-		for _, s := range []*http.Server{srv, metrics.Server(cfg.MetricsAddr, a.metricsReg)} {
+		for _, s := range []*http.Server{srv, metrics.Server(cfg.MetricsAddr, a.metricsReg, cfg.MetricsToken)} {
 			go func() {
 				errc <- httpserver.Run(srvCtx, s, cfg.ShutdownTimeout, log)
 				cancel()
@@ -822,12 +822,12 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	memoryFacts := memory.NewFacts(pool)
 	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
 	provision.AddNonceSweep(workers, provIdentity)
-	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
+	if cfg.GatewayURL != "" && cfg.GatewayKey != "" {
 		embedRoute := cfg.EmbedRoute
 		if embedRoute == "" {
 			embedRoute = "memory-embed"
 		}
-		gw, err := memory.OpenGateway(cfg.GatewayURL, cfg.ServiceKey, "memory-extract", embedRoute)
+		gw, err := memory.OpenGateway(cfg.GatewayURL, cfg.GatewayKey, "memory-extract", embedRoute)
 		if err != nil {
 			cleanupPools()
 			return nil, fmt.Errorf("brain: memory gateway: %w", err)
@@ -851,7 +851,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			func(userID string) memory.Proposer { return gw.For(userID) },
 			func(userID string) memory.Embedder { return gw.For(userID) },
 		)
-		chatTurns, err := chat.OpenTurns(cfg.GatewayURL, cfg.ServiceKey)
+		chatTurns, err := chat.OpenTurns(cfg.GatewayURL, cfg.GatewayKey)
 		if err != nil {
 			cleanupPools()
 			return nil, fmt.Errorf("brain: chat gateway: %w", err)
@@ -1002,8 +1002,8 @@ func buildHandler(
 	taskBook := tasks.NewStore(pool, deps.Owner, work)
 	taskBook.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	var editorSigner tasks.EditorSigner
-	if cfg.ServiceKey != "" {
-		editorTokens, err := tasks.NewEditorTokens(cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	if cfg.EditorKey != "" {
+		editorTokens, err := tasks.NewEditorTokens(cfg.EditorKey, cfg.EditorKeyPrevious)
 		if err != nil {
 			return nil, err
 		}
@@ -1092,13 +1092,17 @@ func buildHandler(
 	})
 
 	knowledgeConverter := knowledge.Converter{Text: knowledge.PassThroughText{}}
-	if cfg.MarkitdownURL != "" {
-		knowledgeConverter.Sidecar = &knowledge.Sidecar{BaseURL: cfg.MarkitdownURL}
+	if cfg.MarkitdownURL != "" && cfg.MarkitdownKey != "" {
+		sidecar, err := knowledge.OpenSidecar(cfg.MarkitdownURL, cfg.MarkitdownKey)
+		if err != nil {
+			return nil, fmt.Errorf("brain: markitdown: %w", err)
+		}
+		knowledgeConverter.Sidecar = sidecar
 	}
 
 	chatBook := chat.NewStore(pool, work)
 	chatBook.ReplaceChatGrants = chatGrants{members: members}.ReplaceChatGrantsTx
-	if cfg.GatewayURL != "" && cfg.ServiceKey != "" {
+	if cfg.GatewayURL != "" && cfg.GatewayKey != "" {
 		chatBook.ReplyRoute = cfg.ChatRoute
 	}
 	chat.Handler{
@@ -1132,8 +1136,8 @@ func buildHandler(
 
 	knowledgeBook := knowledge.NewStore(pool, work)
 	var knowledgeEmbedFor func(userID string) knowledge.Embedder
-	if cfg.GatewayURL != "" && cfg.ServiceKey != "" && cfg.EmbedRoute != "" {
-		embedClient, err := knowledge.OpenEmbedder(cfg.GatewayURL, cfg.ServiceKey, cfg.EmbedRoute)
+	if cfg.GatewayURL != "" && cfg.GatewayKey != "" && cfg.EmbedRoute != "" {
+		embedClient, err := knowledge.OpenEmbedder(cfg.GatewayURL, cfg.GatewayKey, cfg.EmbedRoute)
 		if err != nil {
 			return nil, fmt.Errorf("brain: knowledge embedder: %w", err)
 		}
@@ -1377,7 +1381,7 @@ func taskSandboxes(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) (*ru
 	if cfg.SandboxdURL == "" {
 		return boxes, nil
 	}
-	provider, err := runtime.Open(cfg.SandboxdURL, cfg.ServiceKey)
+	provider, err := runtime.Open(cfg.SandboxdURL, cfg.SandboxdKey)
 	if err != nil {
 		return nil, fmt.Errorf("brain: sandboxd: %w", err)
 	}

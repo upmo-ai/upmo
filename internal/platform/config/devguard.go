@@ -43,8 +43,18 @@ func ParseEnv(v string) (Env, error) {
 var knownDevDigests = map[string]bool{
 	// compose.yml UPMO_MASTER_KEY (base64 of 32 equal bytes).
 	"c8cb79a67c6351c9eea0016493e4b902e2d5d718c2f7641cd6daeec215ac6ff9": true,
-	// compose.yml UPMO_SERVICE_KEY.
-	"df195a9a71e585f465f184ceb91bd77b416683aebbfcbc2ebf7da36f828d04b5": true,
+	// compose.yml UPMO_GATEWAY_KEY.
+	"c146b9e307eb13829c13a0758c6fdadddcd10edb7019a049f51bbc7d81d21bfd": true,
+	// compose.yml UPMO_SANDBOXD_KEY.
+	"37d3c698d078e796f1cc10396948e8e5aad7925bd77cd3077dea3d357ac64533": true,
+	// compose.yml UPMO_MARKITDOWN_KEY.
+	"3c22fa382072b44da164bc05df41f31ba9004d8f479353544b806e208a7bc456": true,
+	// compose.yml UPMO_EDITOR_KEY.
+	"a56282befedd89a4c6fb3ae7e34e16cbfe20680c0606581babf500cbe4adf1c6": true,
+	// compose.yml UPMO_RUN_KEY.
+	"543f20b476c8c809bce352d030e5d17dc31a6031f0f523de52c58ef9e73ad17b": true,
+	// compose.yml UPMO_METRICS_TOKEN (commented out there).
+	"79a1e4ecbbb1ba0268b2fff520b18d5a61a79854f76daac1129f08327b085fb5": true,
 	// The compose database owner password.
 	"07c69b4fc5934597a9301d5fa7ce7d79ecc1791a71a67aa50a03f08f6a9b29ce": true,
 	// The compose database app-role password.
@@ -90,8 +100,9 @@ type Guard struct {
 	PublicURL string
 	// DatabaseURLs are the Postgres URLs to check, only the non-empty ones.
 	DatabaseURLs []Setting
-	// ServiceKeys are UPMO_SERVICE_KEY, UPMO_SERVICE_KEY_PREVIOUS and each
-	// UPMO_PROVISION_KEYS entry, only the non-empty ones.
+	// ServiceKeys are the audience, editor and run keys with their
+	// _PREVIOUS partners, UPMO_METRICS_TOKEN and each UPMO_PROVISION_KEYS
+	// entry, only the non-empty ones.
 	ServiceKeys []Setting
 	// RequireMasterKey refuses a missing UPMO_MASTER_KEY: callers that load
 	// secrets need one in every environment, including development.
@@ -174,19 +185,19 @@ func checkMasterKey(name, v string) error {
 	return nil
 }
 
-// checkServiceKey refuses a service key from compose.yml or one whose payload
-// is all equal bytes. The decoding mirrors svcsig.ParseKey (upmo_svc_ plus
-// base64 of at least 32 bytes); a value that does not parse is left for the
-// service-key code to reject.
+// checkServiceKey refuses a key from compose.yml or one whose payload is all
+// equal bytes. Every key is upmo_ text ending in _ and base64, and base64 has
+// no underscore, so the payload is what follows the last underscore. A value
+// that does not decode is left for its parser to reject.
 func checkServiceKey(name, v string) error {
 	if knownDevSecret(v) {
 		return weakKeyError(name)
 	}
-	rest, ok := strings.CutPrefix(strings.TrimSpace(v), "upmo_svc_")
-	if !ok {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "upmo_") {
 		return nil
 	}
-	key, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(rest, "="))
+	key, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(v[strings.LastIndex(v, "_")+1:], "="))
 	if err != nil || len(key) < 32 {
 		return nil
 	}
@@ -214,12 +225,19 @@ func CheckConfig(cfg Config, requireMasterKey bool, lookup func(string) (string,
 	if cfg.DatabaseAppURL != "" {
 		g.DatabaseURLs = append(g.DatabaseURLs, Setting{Name: "UPMO_DATABASE_APP_URL", Value: cfg.DatabaseAppURL})
 	}
-	if cfg.ServiceKey != "" {
-		g.ServiceKeys = append(g.ServiceKeys, Setting{Name: "UPMO_SERVICE_KEY", Value: cfg.ServiceKey})
-	}
-	if cfg.ServiceKeyPrevious != "" {
-		g.ServiceKeys = append(g.ServiceKeys, Setting{Name: "UPMO_SERVICE_KEY_PREVIOUS", Value: cfg.ServiceKeyPrevious})
-	}
+	g.ServiceKeys = append(g.ServiceKeys, nonEmpty(
+		Setting{Name: "UPMO_GATEWAY_KEY", Value: cfg.GatewayKey},
+		Setting{Name: "UPMO_GATEWAY_KEY_PREVIOUS", Value: cfg.GatewayKeyPrevious},
+		Setting{Name: "UPMO_SANDBOXD_KEY", Value: cfg.SandboxdKey},
+		Setting{Name: "UPMO_SANDBOXD_KEY_PREVIOUS", Value: cfg.SandboxdKeyPrevious},
+		Setting{Name: "UPMO_MARKITDOWN_KEY", Value: cfg.MarkitdownKey},
+		Setting{Name: "UPMO_MARKITDOWN_KEY_PREVIOUS", Value: cfg.MarkitdownKeyPrevious},
+		Setting{Name: "UPMO_EDITOR_KEY", Value: cfg.EditorKey},
+		Setting{Name: "UPMO_EDITOR_KEY_PREVIOUS", Value: cfg.EditorKeyPrevious},
+		Setting{Name: "UPMO_RUN_KEY", Value: cfg.RunKey},
+		Setting{Name: "UPMO_RUN_KEY_PREVIOUS", Value: cfg.RunKeyPrevious},
+		Setting{Name: "UPMO_METRICS_TOKEN", Value: cfg.MetricsToken},
+	)...)
 	for _, key := range cfg.ProvisionKeys {
 		if key != "" {
 			g.ServiceKeys = append(g.ServiceKeys, Setting{Name: "UPMO_PROVISION_KEYS", Value: key})
@@ -228,15 +246,25 @@ func CheckConfig(cfg Config, requireMasterKey bool, lookup func(string) (string,
 	return CheckGuard(g, lookup, environ)
 }
 
-// CheckSandboxd runs the guard for a loaded Sandboxd config: service keys
-// only, since sandboxd opens no database and seals nothing.
+// CheckSandboxd runs the guard for a loaded Sandboxd config: keys only,
+// since sandboxd opens no database and seals nothing.
 func CheckSandboxd(cfg Sandboxd, lookup func(string) (string, bool), environ []string) error {
-	g := Guard{Env: cfg.Env}
-	if cfg.ServiceKey != "" {
-		g.ServiceKeys = append(g.ServiceKeys, Setting{Name: "UPMO_SERVICE_KEY", Value: cfg.ServiceKey})
-	}
-	if cfg.ServiceKeyPrevious != "" {
-		g.ServiceKeys = append(g.ServiceKeys, Setting{Name: "UPMO_SERVICE_KEY_PREVIOUS", Value: cfg.ServiceKeyPrevious})
-	}
+	g := Guard{Env: cfg.Env, ServiceKeys: nonEmpty(
+		Setting{Name: "UPMO_SANDBOXD_KEY", Value: cfg.SandboxdKey},
+		Setting{Name: "UPMO_SANDBOXD_KEY_PREVIOUS", Value: cfg.SandboxdKeyPrevious},
+		Setting{Name: "UPMO_EDITOR_KEY", Value: cfg.EditorKey},
+		Setting{Name: "UPMO_EDITOR_KEY_PREVIOUS", Value: cfg.EditorKeyPrevious},
+		Setting{Name: "UPMO_METRICS_TOKEN", Value: cfg.MetricsToken},
+	)}
 	return CheckGuard(g, lookup, environ)
+}
+
+func nonEmpty(settings ...Setting) []Setting {
+	var out []Setting
+	for _, s := range settings {
+		if s.Value != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

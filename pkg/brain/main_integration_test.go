@@ -33,6 +33,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
@@ -453,7 +454,7 @@ func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
 	}
 	public := httptest.NewServer(httpserver.NewGuarded("127.0.0.1:0", handler).Handler)
 	t.Cleanup(public.Close)
-	internal := httptest.NewServer(metrics.Server("127.0.0.1:0", reg).Handler)
+	internal := httptest.NewServer(metrics.Server("127.0.0.1:0", reg, brainScrapeToken).Handler)
 	t.Cleanup(internal.Close)
 
 	// Public mux must never expose /metrics.
@@ -475,7 +476,37 @@ func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
 		t.Fatalf("GET /readyz = %d, want 200", ready.StatusCode)
 	}
 
-	res, err := http.Get(internal.URL + "/metrics")
+	gatewayKey, err := svcsig.ParseAudienceKey("upmo_svc_gateway_"+base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32)), svcsig.AudienceGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayBearer, err := svcsig.SignRequest(gatewayKey, svcsig.AudienceGateway, http.MethodGet, "/metrics", "", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, auth := range map[string]string{"no bearer": "", "gateway bearer": "Bearer " + gatewayBearer} {
+		req, err := http.NewRequest(http.MethodGet, internal.URL+"/metrics", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("internal GET /metrics with %s = %d, want 401", name, res.StatusCode)
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, internal.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+brainScrapeToken)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,6 +533,8 @@ func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
 		}
 	}
 }
+
+const brainScrapeToken = "upmo_mtr_YnJhaW4tbWV0cmljcy1zY3JhcGUtdG9rZW4tZm9yLXRlc3Q" // #nosec G101 -- fixed test token, not a credential
 
 // agentsRig is the brain mounted on a fresh database with one signed-in owner.
 type agentsRig struct {

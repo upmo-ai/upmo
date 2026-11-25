@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
-	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -83,7 +82,7 @@ func TestOpenEditorRefusesSharedOrigin(t *testing.T) {
 
 func TestNewEditorTokensSigns(t *testing.T) {
 	raw := bytes32('k')
-	key := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
+	key := editorjwt.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
 	tokens, err := NewEditorTokens(key, "")
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +95,7 @@ func TestNewEditorTokensSigns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := editorjwt.New([][]byte{mustDerive(t, key)})
+	k, err := editorjwt.New([][]byte{raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,17 +114,4 @@ func bytes32(b byte) []byte {
 		out[i] = b
 	}
 	return out
-}
-
-func mustDerive(t *testing.T, secret string) []byte {
-	t.Helper()
-	master, err := editorjwt.ParseKey(secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := editorjwt.Derive(master)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key
 }

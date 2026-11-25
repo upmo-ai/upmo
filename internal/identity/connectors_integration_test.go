@@ -15,7 +15,7 @@ import (
 	httpapi "github.com/upmo-ai/upmo/internal/identity/adapters/http"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
-	"github.com/upmo-ai/upmo/internal/platform/svcsig"
+	"github.com/upmo-ai/upmo/internal/platform/runjwt"
 	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
 
@@ -90,7 +90,7 @@ func TestConnectorGrants(t *testing.T) {
 	for i := range raw {
 		raw[i] = 'k'
 	}
-	tokens, err := identity.NewRunTokens(svcsig.KeyPrefix+base64.RawStdEncoding.EncodeToString(raw), "")
+	tokens, err := identity.NewRunTokens(runjwt.KeyPrefix+base64.RawStdEncoding.EncodeToString(raw), "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,7 @@
 // Command sandboxd serves the SandboxProvider port, the egress proxy, the
 // editor access gate and the credential injector, so container privileges
 // stay out of brain.
-// Brain calls it with the service HMAC for the sandboxd audience.
+// Brain calls it with the v2 service bearer for the sandboxd audience.
 package main
 
 import (
@@ -56,7 +56,7 @@ func run() error {
 		reg = metrics.NewRegistry()
 		routeOpts = append(routeOpts, sandboxd.WithMetrics(reg))
 	}
-	api, err := sandboxd.Routes(cfg.ServiceKey, cfg.ServiceKeyPrevious, driver, log, routeOpts...)
+	api, err := sandboxd.Routes(cfg.SandboxdKey, cfg.SandboxdKeyPrevious, driver, log, routeOpts...)
 	if err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func run() error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	proxy := httpserver.New(cfg.ProxyAddr, sandboxd.Proxy(driver, log))
-	gateHandler, err := sandboxd.EditorGate(cfg.ServiceKey, cfg.ServiceKeyPrevious, driver, log)
+	gateHandler, err := sandboxd.EditorGate(cfg.EditorKey, cfg.EditorKeyPrevious, driver, log)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func run() error {
 	go sandboxd.Sweep(ctx, driver, sweepEvery, log)
 	servers := []*http.Server{httpserver.New(cfg.ListenAddr, api), proxy, gate}
 	if reg != nil {
-		servers = append(servers, metrics.Server(cfg.MetricsAddr, reg))
+		servers = append(servers, metrics.Server(cfg.MetricsAddr, reg, cfg.MetricsToken))
 	}
 	errc := make(chan error, len(servers))
 	for _, srv := range servers {

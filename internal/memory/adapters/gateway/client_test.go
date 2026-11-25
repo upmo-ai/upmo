@@ -19,7 +19,7 @@ func TestCallProposeAndEmbed(t *testing.T) {
 	var gotPath, gotUser, gotRoute, gotPrompt string
 	var gotInputs []string
 	srv := httptest.NewServer(mustGateway(t, secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+svcsig.BearerPrefix+svcsig.AudienceGateway+".") {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+svcsig.BearerPrefixV2+svcsig.AudienceGateway+".") {
 			t.Fatalf("auth = %q", r.Header.Get("Authorization"))
 		}
 		gotPath = r.URL.Path
@@ -109,15 +109,11 @@ func TestOpenRejectsRelativeURL(t *testing.T) {
 
 func mustGateway(t *testing.T, secret string, inner http.Handler) http.Handler {
 	t.Helper()
-	master, err := svcsig.ParseKey(secret)
+	derived, err := svcsig.ParseAudienceKey(secret, svcsig.AudienceGateway)
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceGateway)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceGateway, inner)
+	h, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceGateway, 1<<20, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,5 +126,5 @@ func serviceKey(t *testing.T, b byte) string {
 	for i := range raw {
 		raw[i] = b
 	}
-	return svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
+	return svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(raw)
 }

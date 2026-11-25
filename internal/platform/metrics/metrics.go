@@ -5,6 +5,9 @@ package metrics
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -398,11 +401,43 @@ func (r *Registry) Handler() http.Handler {
 	return mux
 }
 
-// Server returns an internal *http.Server bound to addr serving GET /metrics.
-func Server(addr string, reg *Registry) *http.Server {
+// TokenPrefix starts every scrape token (UPMO_METRICS_TOKEN).
+const TokenPrefix = "upmo_mtr_" // #nosec G101 -- published prefix, not a credential
+
+// ParseToken accepts upmo_mtr_ plus unpadded or padded base64 of at least 32
+// bytes. A scrape token is never a service key, so it cannot sign a call.
+func ParseToken(token string) error {
+	rest, ok := strings.CutPrefix(token, TokenPrefix)
+	if ok {
+		raw, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(rest, "="))
+		if err == nil && len(raw) >= 32 {
+			return nil
+		}
+	}
+	return errors.New("metrics: token is not upmo_mtr_ followed by base64 of at least 32 bytes")
+}
+
+// requireToken serves next only when the Authorization header is exactly
+// "Bearer <token>", compared in constant time. An empty token refuses every
+// scrape, and a service bearer is refused before any comparison.
+func requireToken(token string, next http.Handler) http.Handler {
+	want := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := r.Header.Get("Authorization")
+		if token == "" || strings.HasPrefix(got, "Bearer upmo_s2s_") || subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Server returns an internal *http.Server bound to addr serving GET /metrics
+// to scrapers that send the token.
+func Server(addr string, reg *Registry, token string) *http.Server {
 	return &http.Server{
 		Addr:              addr,
-		Handler:           reg.Handler(),
+		Handler:           requireToken(token, reg.Handler()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -412,8 +447,8 @@ func Server(addr string, reg *Registry) *http.Server {
 
 // ListenAndServe serves GET /metrics on addr until ctx is canceled, then
 // shuts down gracefully within timeout.
-func ListenAndServe(ctx context.Context, addr string, reg *Registry, timeout time.Duration, log *slog.Logger) error {
-	return httpserver.Run(ctx, Server(addr, reg), timeout, log)
+func ListenAndServe(ctx context.Context, addr string, reg *Registry, token string, timeout time.Duration, log *slog.Logger) error {
+	return httpserver.Run(ctx, Server(addr, reg, token), timeout, log)
 }
 
 // CounterVec tracks monotonically increasing counters indexed by label values.

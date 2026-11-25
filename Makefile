@@ -104,9 +104,10 @@ workflows: ## Lint the workflow files with actionlint and zizmor
 	$(TOOL) actionlint
 	$(TOOL) zizmor
 
-# Builds the two images, then lints their Dockerfiles and scans the images.
-images: ## Lint the Dockerfiles with hadolint and scan the built images with trivy
+# Builds the two images, runs the markitdown tests in its image, then lints the Dockerfiles and scans the images.
+images: ## Test the markitdown image, lint the Dockerfiles with hadolint and scan the built images with trivy
 	$(COMPOSE) build --pull markitdown sandbox-image
+	$(COMPOSE) run --rm --no-deps -v ./deploy/markitdown/test_main.py:/app/test_main.py:ro --entrypoint python markitdown -m unittest -v test_main
 	$(TOOL) hadolint
 	$(TOOL) trivy upmo/markitdown:dev
 	$(TOOL) trivy upmo/sandbox:base

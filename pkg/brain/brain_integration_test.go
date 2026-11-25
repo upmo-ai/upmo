@@ -237,7 +237,7 @@ func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
 		DatabaseURL:     "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable",
 		PublicURL:       "http://localhost:5173",
 		WebAuthnRPID:    "localhost",
-		ServiceKey:      "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32)),
+		GatewayKey:      "upmo_svc_gateway_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32)),
 		SessionIdle:     identity.IdleTimeout,
 		SessionMaxAge:   identity.MaxAge,
 		ShutdownTimeout: 2 * time.Second,

@@ -32,7 +32,8 @@ type Call struct {
 	userID string
 }
 
-// Open builds a client. baseURL and serviceKey are the install settings.
+// Open builds a client. baseURL is the install setting and serviceKey the
+// gateway key (UPMO_GATEWAY_KEY).
 // embedRoute is the gateway embed route name.
 func Open(baseURL, serviceKey, embedRoute string) (Client, error) {
 	parsed, err := url.Parse(baseURL)
@@ -42,11 +43,7 @@ func Open(baseURL, serviceKey, embedRoute string) (Client, error) {
 	if embedRoute == "" {
 		return Client{}, fmt.Errorf("knowledge: gateway route")
 	}
-	master, err := svcsig.ParseKey(serviceKey)
-	if err != nil {
-		return Client{}, err
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceGateway)
+	derived, err := svcsig.ParseAudienceKey(serviceKey, svcsig.AudienceGateway)
 	if err != nil {
 		return Client{}, err
 	}

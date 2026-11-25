@@ -61,7 +61,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
+	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := svcsig.Sign(derived, svcsig.AudienceGateway, http.MethodGet, "/upmo.gateway.v1.Gateway/Models", time.Now())
+	token, err := svcsig.SignRequest(derived, svcsig.AudienceGateway, http.MethodGet, "/upmo.gateway.v1.Gateway/Models", "", nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		}
 	}
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
+	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
 	owner := pgtest.New(t)
 	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
-	_, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, nil, nil)
+	_, err := routes(owner, config.Config{GatewayKey: mustMaster(t)}, nil, nil, nil)
 	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
 		t.Fatalf("routes error = %v", err)
 	}
@@ -287,7 +287,7 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(owner, config.Config{ServiceKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
+	handler, err := routes(owner, config.Config{GatewayKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(versions), nil
 	}, nil)
 	if err != nil {
@@ -295,9 +295,21 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 	}
 	info := buildinfo.Info()
 
+	derived := mustDerived(t, mustMaster(t))
 	for _, path := range []string{"/version", "/api/version"} {
+		bare := httptest.NewRecorder()
+		handler.ServeHTTP(bare, httptest.NewRequest(http.MethodGet, path, nil))
+		if bare.Code != http.StatusUnauthorized {
+			t.Fatalf("%s without a bearer = %d, want 401", path, bare.Code)
+		}
+		tok, err := svcsig.SignRequest(derived, svcsig.AudienceGateway, http.MethodGet, path, "", nil, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s = %d, want 200", path, rec.Code)
 		}
@@ -332,6 +344,56 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesCapTheBodyAndAcceptThePreviousKey(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO gateway.provider_accounts (name, adapter, credential_ref, plan_kind, house, visibility)
+		VALUES ('local', 'fake', 'house', 'local', true, 'everyone');
+		INSERT INTO gateway.routes (name, capability, decision, installed) VALUES ('draft', 'chat', '', true);
+		INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
+		SELECT id, 1, (SELECT id FROM gateway.provider_accounts WHERE name = 'local'), 'stub'
+		FROM gateway.routes
+	`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
+	current := svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(bytes32('h'))
+	previous := mustMaster(t)
+	handler, err := routes(owner, config.Config{GatewayKey: current, GatewayKeyPrevious: previous}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(httpserver.Protect(handler))
+	t.Cleanup(srv.Close)
+
+	for name, secret := range map[string]string{"current": current, "previous": previous} {
+		chat := postJSON(t, srv, mustDerived(t, secret), "/upmo.gateway.v1.Gateway/Chat", map[string]any{
+			"route": "draft", "prompt": "hello", "source": "system",
+		})
+		if chat["text"] != "ok" {
+			t.Fatalf("%s key chat = %v", name, chat)
+		}
+	}
+
+	const path = "/upmo.gateway.v1.Gateway/Chat"
+	big := bytes.Repeat([]byte{'a'}, 8<<20+1)
+	tok, err := svcsig.SignRequest(mustDerived(t, current), svcsig.AudienceGateway, http.MethodPost, path, "", big, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(big))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("8 MiB + 1 byte = %d, want 413", rec.Code)
+	}
+}
+
 func ptr(v float64) *float64 { return &v }
 
 func microPtr(v int64) *int64 { return &v }
@@ -346,7 +408,7 @@ func postJSON(t *testing.T, srv *httptest.Server, derived []byte, path string, b
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := svcsig.Sign(derived, svcsig.AudienceGateway, http.MethodPost, path, time.Now())
+	token, err := svcsig.SignRequest(derived, svcsig.AudienceGateway, http.MethodPost, path, "", raw, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +503,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
+	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +564,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := svcsig.Sign(derived, svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/ChatStream", time.Now())
+	tok, err := svcsig.SignRequest(derived, svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/ChatStream", "", raw, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +640,7 @@ func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, nil)
+	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +673,7 @@ func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := svcsig.Sign(derived, svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/ChatStream", time.Now())
+	tok, err := svcsig.SignRequest(derived, svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/ChatStream", "", raw, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,13 +769,13 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
 	reg := metrics.NewRegistry()
-	handler, err := routes(owner, config.Config{ServiceKey: master}, nil, nil, reg)
+	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	public := httptest.NewServer(httpserver.Protect(handler))
 	t.Cleanup(public.Close)
-	internal := httptest.NewServer(metrics.Server("127.0.0.1:0", reg).Handler)
+	internal := httptest.NewServer(metrics.Server("127.0.0.1:0", reg, scrapeToken).Handler)
 	t.Cleanup(internal.Close)
 
 	// /metrics must not be exposed on the public gateway server.
@@ -734,7 +796,21 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 		t.Fatalf("chat = %v", chat)
 	}
 
-	res, err := http.Get(internal.URL + "/metrics")
+	gatewayBearer, err := svcsig.SignRequest(derived, svcsig.AudienceGateway, http.MethodGet, "/metrics", "", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, auth := range map[string]string{"no bearer": "", "gateway bearer": "Bearer " + gatewayBearer} {
+		if code := scrapeStatus(t, internal.URL+"/metrics", auth); code != http.StatusUnauthorized {
+			t.Fatalf("internal GET /metrics with %s = %d, want 401", name, code)
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, internal.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+scrapeToken)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,19 +835,34 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 	}
 }
 
+const scrapeToken = "upmo_mtr_Z2F0ZXdheS1tZXRyaWNzLXNjcmFwZS10b2tlbi10ZXN0" // #nosec G101 -- fixed test token, not a credential
+
+func scrapeStatus(t *testing.T, url, auth string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	return res.StatusCode
+}
+
 func mustMaster(t *testing.T) string {
 	t.Helper()
 	raw := bytes32('g')
-	return svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
+	return svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(raw)
 }
 
 func mustDerived(t *testing.T, secret string) []byte {
 	t.Helper()
-	master, err := svcsig.ParseKey(secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := svcsig.Derive(master, svcsig.AudienceGateway)
+	d, err := svcsig.ParseAudienceKey(secret, svcsig.AudienceGateway)
 	if err != nil {
 		t.Fatal(err)
 	}

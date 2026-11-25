@@ -85,9 +85,9 @@ const FrameData = 32 << 10
 
 const bodyLimit = 1 << 20
 
-// fileLimit bounds a WriteFile body: MaxFile in base64 plus room for the
-// id, the path and the JSON around them.
-var fileLimit = int64(base64.StdEncoding.EncodedLen(runtime.MaxFile)) + bodyLimit
+// FileLimit bounds a WriteFile body: MaxFile in base64 plus room for the
+// id, the path and the JSON around them. It is also the signed-request cap.
+var FileLimit = int64(base64.StdEncoding.EncodedLen(runtime.MaxFile)) + bodyLimit
 
 // execGrace is the time an exec takes around the command itself: creating
 // it, attaching to it and waiting for the engine to report the exit code.
@@ -368,7 +368,7 @@ func (h Handler) readFile(w http.ResponseWriter, r *http.Request) {
 
 func (h Handler) writeFile(w http.ResponseWriter, r *http.Request) {
 	var body fileBody
-	if !h.decode(w, r, &body, fileLimit) {
+	if !h.decode(w, r, &body, FileLimit) {
 		return
 	}
 	if len(body.Data) > runtime.MaxFile {

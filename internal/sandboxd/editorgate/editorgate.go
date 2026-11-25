@@ -157,29 +157,6 @@ func singleJoin(base, add string) string {
 	}
 }
 
-// KeysFromService derives editor JWT verification keys from the install master.
-func KeysFromService(current, previous string) (editorjwt.Keys, error) {
-	if current == "" {
-		return editorjwt.Keys{}, editorjwt.ErrNoKey
-	}
-	var derived [][]byte
-	for _, secret := range []string{current, previous} {
-		if secret == "" {
-			continue
-		}
-		master, err := editorjwt.ParseKey(secret)
-		if err != nil {
-			return editorjwt.Keys{}, err
-		}
-		key, err := editorjwt.Derive(master)
-		if err != nil {
-			return editorjwt.Keys{}, err
-		}
-		derived = append(derived, key)
-	}
-	return editorjwt.New(derived)
-}
-
 // ValidateBaseURL checks UPMO_EDITOR_BASE_URL shape.
 func ValidateBaseURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,8 +38,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.PublicURL != "http://localhost:5173" || cfg.WebAuthnRPID != "localhost" {
 		t.Errorf("public URL = %s rp = %s", cfg.PublicURL, cfg.WebAuthnRPID)
 	}
-	if cfg.ServiceKey != "" || cfg.ServiceKeyPrevious != "" {
-		t.Errorf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	if cfg.GatewayKey != "" || cfg.SandboxdKey != "" || cfg.MarkitdownKey != "" || cfg.EditorKey != "" || cfg.RunKey != "" || cfg.MetricsToken != "" {
+		t.Errorf("keys = %+v", cfg)
 	}
 	if cfg.GatewayURL != "" {
 		t.Errorf("GatewayURL = %q", cfg.GatewayURL)
@@ -192,18 +193,170 @@ func TestLoadKnowledgeDir(t *testing.T) {
 	}
 }
 
-func TestLoadServiceKeys(t *testing.T) {
+// Test keys: base64 of 32 non-uniform bytes, one per variable.
+const (
+	gwKey    = "upmo_svc_gateway_Z2F0ZXdheS1rZXktZm9yLXRoZS1jb25maWctdGVzdCE"
+	gwPrev   = "upmo_svc_gateway_cHJldmlvdXMtZ2F0ZXdheS1rZXktY29uZmlnLXRlc3Q"
+	sbxKey   = "upmo_svc_sandboxd_c2FuZGJveGQta2V5LWZvci10aGUtY29uZmlnLXRlc3Q"
+	sbxPrev  = "upmo_svc_sandboxd_cHJldmlvdXMtc2FuZGJveGQta2V5LWNvbmZpZy10c3Q"
+	mdKey    = "upmo_svc_markitdown_bWFya2l0ZG93bi1rZXktZm9yLWNvbmZpZy10ZXN0cyE"
+	edKey    = "upmo_edk_ZWRpdG9yLWtleS1mb3ItdGhlLWNvbmZpZy10ZXN0ISE"
+	edPrev   = "upmo_edk_cHJldmlvdXMtZWRpdG9yLWtleS1jb25maWctdGVzdCE"
+	rnkKey   = "upmo_rnk_cnVuLWtleS1mb3ItdGhlLWNvbmZpZy10ZXN0ISEhISE"
+	mtrToken = "upmo_mtr_bWV0cmljcy10b2tlbi1mb3ItdGhlLWNvbmZpZy10c3Q" // #nosec G101 -- fixed test token, not a credential
+)
+
+func TestLoadKeys(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",
-		"UPMO_PUBLIC_URL":           "http://localhost:5173",
-		"UPMO_SERVICE_KEY":          "upmo_svc_current",
-		"UPMO_SERVICE_KEY_PREVIOUS": "upmo_svc_previous",
+		"UPMO_DATABASE_URL":          "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":            "http://localhost:5173",
+		"UPMO_GATEWAY_KEY":           gwKey,
+		"UPMO_GATEWAY_KEY_PREVIOUS":  gwPrev,
+		"UPMO_SANDBOXD_KEY":          sbxKey,
+		"UPMO_SANDBOXD_KEY_PREVIOUS": sbxPrev,
+		"UPMO_MARKITDOWN_KEY":        mdKey,
+		"UPMO_EDITOR_KEY":            edKey,
+		"UPMO_EDITOR_KEY_PREVIOUS":   edPrev,
+		"UPMO_RUN_KEY":               rnkKey,
+		"UPMO_METRICS_ADDR":          "127.0.0.1:9090",
+		"UPMO_METRICS_TOKEN":         mtrToken,
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ServiceKey != "upmo_svc_current" || cfg.ServiceKeyPrevious != "upmo_svc_previous" {
-		t.Fatalf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	if cfg.GatewayKey != gwKey || cfg.GatewayKeyPrevious != gwPrev || cfg.SandboxdKey != sbxKey || cfg.SandboxdKeyPrevious != sbxPrev ||
+		cfg.MarkitdownKey != mdKey || cfg.MarkitdownKeyPrevious != "" || cfg.EditorKey != edKey || cfg.EditorKeyPrevious != edPrev ||
+		cfg.RunKey != rnkKey || cfg.RunKeyPrevious != "" || cfg.MetricsToken != mtrToken {
+		t.Fatalf("keys = %+v", cfg)
+	}
+}
+
+func TestLoadRefusesWrongKeys(t *testing.T) {
+	base := map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+	}
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"service master", map[string]string{"UPMO_SERVICE_KEY": "upmo_svc_x"}, "config: UPMO_SERVICE_KEY is not read; set UPMO_GATEWAY_KEY, UPMO_SANDBOXD_KEY, UPMO_MARKITDOWN_KEY, UPMO_EDITOR_KEY and UPMO_RUN_KEY"},
+		{"empty service master", map[string]string{"UPMO_SERVICE_KEY": ""}, "config: UPMO_SERVICE_KEY is not read; set UPMO_GATEWAY_KEY, UPMO_SANDBOXD_KEY, UPMO_MARKITDOWN_KEY, UPMO_EDITOR_KEY and UPMO_RUN_KEY"},
+		{"previous service master", map[string]string{"UPMO_SERVICE_KEY_PREVIOUS": "upmo_svc_x"}, "config: UPMO_SERVICE_KEY is not read; set UPMO_GATEWAY_KEY, UPMO_SANDBOXD_KEY, UPMO_MARKITDOWN_KEY, UPMO_EDITOR_KEY and UPMO_RUN_KEY"},
+		{"sandboxd key as gateway key", map[string]string{"UPMO_GATEWAY_KEY": sbxKey}, "config: UPMO_GATEWAY_KEY: svcsig: key is not a gateway key"},
+		{"gateway key as previous sandboxd key", map[string]string{"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_SANDBOXD_KEY_PREVIOUS": gwKey}, "config: UPMO_SANDBOXD_KEY_PREVIOUS: svcsig: key is not a sandboxd key"},
+		{"raw master as gateway key", map[string]string{"UPMO_GATEWAY_KEY": "upmo_svc_" + strings.TrimPrefix(gwKey, "upmo_svc_gateway_")}, "config: UPMO_GATEWAY_KEY: svcsig: a raw service master is not accepted; give the derived gateway key"},
+		{"gateway key as markitdown key", map[string]string{"UPMO_MARKITDOWN_KEY": gwKey}, "config: UPMO_MARKITDOWN_KEY: svcsig: key is not a markitdown key"},
+		{"metrics token as gateway key", map[string]string{"UPMO_GATEWAY_KEY": mtrToken}, "config: UPMO_GATEWAY_KEY: svcsig: key is not upmo_svc_gateway_ followed by base64 of 32 bytes"},
+		{"run key as editor key", map[string]string{"UPMO_EDITOR_KEY": rnkKey}, "config: UPMO_EDITOR_KEY: editorjwt: key is not upmo_edk_ followed by base64 of 32 bytes"},
+		{"editor key as run key", map[string]string{"UPMO_RUN_KEY": edKey}, "config: UPMO_RUN_KEY: runjwt: key is not upmo_rnk_ followed by base64 of 32 bytes"},
+		{"previous without current", map[string]string{"UPMO_GATEWAY_KEY_PREVIOUS": gwPrev}, "config: UPMO_GATEWAY_KEY_PREVIOUS is set without UPMO_GATEWAY_KEY"},
+		{"metrics without token", map[string]string{"UPMO_METRICS_ADDR": "127.0.0.1:9090"}, "config: UPMO_METRICS_TOKEN is required when UPMO_METRICS_ADDR is set"},
+		{"service key as metrics token", map[string]string{"UPMO_METRICS_ADDR": "127.0.0.1:9090", "UPMO_METRICS_TOKEN": gwKey}, "config: UPMO_METRICS_TOKEN: metrics: token is not upmo_mtr_ followed by base64 of at least 32 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			for k, v := range base {
+				env[k] = v
+			}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			_, err := load(lookupFrom(env))
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	env := map[string]string{"UPMO_SERVICE_KEY": "upmo_svc_x"}
+	for k, v := range base {
+		env[k] = v
+	}
+	if _, err := loadGateway(lookupFrom(env)); err == nil || err.Error() != "config: UPMO_SERVICE_KEY is not read; set UPMO_GATEWAY_KEY" {
+		t.Fatalf("gateway refusal = %v", err)
+	}
+	delete(env, "UPMO_SERVICE_KEY")
+	if _, err := loadGateway(lookupFrom(env)); err == nil || err.Error() != "config: UPMO_GATEWAY_KEY is required" {
+		t.Fatalf("gateway without a key = %v", err)
+	}
+	env["UPMO_GATEWAY_KEY"] = gwKey
+	if cfg, err := loadGateway(lookupFrom(env)); err != nil || cfg.GatewayKey != gwKey {
+		t.Fatalf("gateway = %q %v", cfg.GatewayKey, err)
+	}
+}
+
+// allKeys sets every key variable any process reads, each with a valid value.
+func allKeys() map[string]string {
+	return map[string]string{
+		"UPMO_DATABASE_URL":            "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":              "http://localhost:5173",
+		"UPMO_GATEWAY_KEY":             gwKey,
+		"UPMO_GATEWAY_KEY_PREVIOUS":    gwPrev,
+		"UPMO_SANDBOXD_KEY":            sbxKey,
+		"UPMO_SANDBOXD_KEY_PREVIOUS":   sbxPrev,
+		"UPMO_MARKITDOWN_KEY":          mdKey,
+		"UPMO_MARKITDOWN_KEY_PREVIOUS": mdKey,
+		"UPMO_EDITOR_KEY":              edKey,
+		"UPMO_EDITOR_KEY_PREVIOUS":     edPrev,
+		"UPMO_RUN_KEY":                 rnkKey,
+		"UPMO_RUN_KEY_PREVIOUS":        rnkKey,
+		"UPMO_PROVISION_KEYS":          "upmo_svc_first",
+		"UPMO_METRICS_ADDR":            "127.0.0.1:9090",
+		"UPMO_METRICS_TOKEN":           mtrToken,
+	}
+}
+
+func TestLoadGatewayHoldsOnlyItsOwnKeys(t *testing.T) {
+	cfg, err := loadGateway(lookupFrom(allKeys()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GatewayKey != gwKey || cfg.GatewayKeyPrevious != gwPrev || cfg.MetricsToken != mtrToken {
+		t.Fatalf("own keys = %q %q %q", cfg.GatewayKey, cfg.GatewayKeyPrevious, cfg.MetricsToken)
+	}
+	for name, v := range map[string]string{
+		"SandboxdKey": cfg.SandboxdKey, "SandboxdKeyPrevious": cfg.SandboxdKeyPrevious,
+		"MarkitdownKey": cfg.MarkitdownKey, "MarkitdownKeyPrevious": cfg.MarkitdownKeyPrevious,
+		"EditorKey": cfg.EditorKey, "EditorKeyPrevious": cfg.EditorKeyPrevious,
+		"RunKey": cfg.RunKey, "RunKeyPrevious": cfg.RunKeyPrevious,
+	} {
+		if v != "" {
+			t.Errorf("gateway %s = %q, want empty", name, v)
+		}
+	}
+	if cfg.ProvisionKeys != nil {
+		t.Errorf("gateway ProvisionKeys = %v, want nil", cfg.ProvisionKeys)
+	}
+	// A malformed foreign key does not stop gateway, since it never reads one.
+	env := allKeys()
+	env["UPMO_SANDBOXD_KEY"] = gwKey
+	if _, err := loadGateway(lookupFrom(env)); err != nil {
+		t.Fatalf("gateway read the sandboxd key: %v", err)
+	}
+}
+
+func TestLoadSandboxdHoldsOnlyItsOwnKeys(t *testing.T) {
+	cfg, err := loadSandboxd(lookupFrom(allKeys()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Sandboxd{
+		SandboxdKey: sbxKey, SandboxdKeyPrevious: sbxPrev,
+		EditorKey: edKey, EditorKeyPrevious: edPrev,
+		MetricsToken: mtrToken,
+	}
+	if cfg.SandboxdKey != want.SandboxdKey || cfg.SandboxdKeyPrevious != want.SandboxdKeyPrevious ||
+		cfg.EditorKey != want.EditorKey || cfg.EditorKeyPrevious != want.EditorKeyPrevious || cfg.MetricsToken != want.MetricsToken {
+		t.Fatalf("own keys = %+v", cfg)
+	}
+	// No other field of Sandboxd may carry a key value from the environment.
+	foreign := map[string]bool{gwKey: true, gwPrev: true, mdKey: true, rnkKey: true, "upmo_svc_first": true}
+	v := reflect.ValueOf(cfg)
+	for i := range v.NumField() {
+		if f := v.Field(i); f.Kind() == reflect.String && foreign[f.String()] {
+			t.Errorf("sandboxd %s holds a foreign key", v.Type().Field(i).Name)
+		}
 	}
 }
 
@@ -615,15 +768,15 @@ func TestLoadSandboxImage(t *testing.T) {
 }
 
 func TestLoadSandboxd(t *testing.T) {
-	cfg, err := loadSandboxd(lookupFrom(map[string]string{"UPMO_SERVICE_KEY": "upmo_svc_x"}))
+	cfg, err := loadSandboxd(lookupFrom(map[string]string{"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ListenAddr != ":8083" || cfg.ProxyAddr != ":3128" || cfg.ShutdownTimeout != 10*time.Second || cfg.LogLevel != "info" {
 		t.Fatalf("defaults = %+v", cfg)
 	}
-	if cfg.ServiceKey != "upmo_svc_x" || cfg.ServiceKeyPrevious != "" {
-		t.Fatalf("service keys = %q %q", cfg.ServiceKey, cfg.ServiceKeyPrevious)
+	if cfg.SandboxdKey != sbxKey || cfg.SandboxdKeyPrevious != "" || cfg.EditorKey != edKey || cfg.EditorKeyPrevious != "" {
+		t.Fatalf("keys = %+v", cfg)
 	}
 	if cfg.Driver != "auto" {
 		t.Fatalf("Driver = %q, want auto", cfg.Driver)
@@ -636,20 +789,22 @@ func TestLoadSandboxd(t *testing.T) {
 		t.Fatalf("editor defaults = %q %q", cfg.EditorAddr, cfg.EditorBaseURL)
 	}
 	cfg, err = loadSandboxd(lookupFrom(map[string]string{
-		"UPMO_SERVICE_KEY":          "upmo_svc_x",
-		"UPMO_SERVICE_KEY_PREVIOUS": "upmo_svc_y",
-		"UPMO_LISTEN_ADDR":          ":9000",
-		"UPMO_PROXY_ADDR":           ":9001",
-		"UPMO_SHUTDOWN_TIMEOUT":     "3s",
-		"UPMO_LOG_LEVEL":            "debug",
-		"UPMO_SANDBOX_DRIVER":       " Docker ",
-		"UPMO_EGRESS_PROXY_URL":     " http://sandboxd:3128/ ",
-		"UPMO_SANDBOX_NETWORK":      " upm114_sandbox-egress ",
+		"UPMO_SANDBOXD_KEY":          sbxKey,
+		"UPMO_SANDBOXD_KEY_PREVIOUS": sbxPrev,
+		"UPMO_EDITOR_KEY":            edKey,
+		"UPMO_EDITOR_KEY_PREVIOUS":   edPrev,
+		"UPMO_LISTEN_ADDR":           ":9000",
+		"UPMO_PROXY_ADDR":            ":9001",
+		"UPMO_SHUTDOWN_TIMEOUT":      "3s",
+		"UPMO_LOG_LEVEL":             "debug",
+		"UPMO_SANDBOX_DRIVER":        " Docker ",
+		"UPMO_EGRESS_PROXY_URL":      " http://sandboxd:3128/ ",
+		"UPMO_SANDBOX_NETWORK":       " upm114_sandbox-egress ",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":9000" || cfg.ProxyAddr != ":9001" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevel != "debug" || cfg.ServiceKeyPrevious != "upmo_svc_y" || cfg.Driver != "docker" {
+	if cfg.ListenAddr != ":9000" || cfg.ProxyAddr != ":9001" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevel != "debug" || cfg.SandboxdKeyPrevious != sbxPrev || cfg.EditorKeyPrevious != edPrev || cfg.Driver != "docker" {
 		t.Fatalf("overrides = %+v", cfg)
 	}
 	if cfg.EgressProxyURL != "http://sandboxd:3128" || cfg.SandboxNetwork != "upm114_sandbox-egress" {
@@ -658,17 +813,21 @@ func TestLoadSandboxd(t *testing.T) {
 
 	for name, env := range map[string]map[string]string{
 		"no key":             {},
-		"empty key":          {"UPMO_SERVICE_KEY": ""},
-		"same address":       {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
-		"editor same listen": {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":8083"},
-		"editor same proxy":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_ADDR": ":3128"},
-		"editor base https":  {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EDITOR_BASE_URL": "https://127.0.0.1:8084"},
-		"bad timeout":        {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SHUTDOWN_TIMEOUT": "soon"},
-		"bad driver":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOX_DRIVER": "nomad"},
-		"https proxy":        {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "https://sandboxd:3128"},
-		"proxy user":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://box@sandboxd:3128"},
-		"proxy path":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "http://sandboxd:3128/x"},
-		"proxy host":         {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_EGRESS_PROXY_URL": "sandboxd:3128"},
+		"empty key":          {"UPMO_SANDBOXD_KEY": "", "UPMO_EDITOR_KEY": edKey},
+		"no editor key":      {"UPMO_SANDBOXD_KEY": sbxKey},
+		"service master":     {"UPMO_SERVICE_KEY": "upmo_svc_x", "UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey},
+		"gateway key":        {"UPMO_SANDBOXD_KEY": gwKey, "UPMO_EDITOR_KEY": edKey},
+		"metrics no token":   {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_METRICS_ADDR": "127.0.0.1:9093"},
+		"same address":       {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_LISTEN_ADDR": ":9000", "UPMO_PROXY_ADDR": ":9000"},
+		"editor same listen": {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EDITOR_ADDR": ":8083"},
+		"editor same proxy":  {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EDITOR_ADDR": ":3128"},
+		"editor base https":  {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EDITOR_BASE_URL": "https://127.0.0.1:8084"},
+		"bad timeout":        {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_SHUTDOWN_TIMEOUT": "soon"},
+		"bad driver":         {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_SANDBOX_DRIVER": "nomad"},
+		"https proxy":        {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EGRESS_PROXY_URL": "https://sandboxd:3128"},
+		"proxy user":         {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EGRESS_PROXY_URL": "http://box@sandboxd:3128"},
+		"proxy path":         {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EGRESS_PROXY_URL": "http://sandboxd:3128/x"},
+		"proxy host":         {"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_EGRESS_PROXY_URL": "sandboxd:3128"},
 	} {
 		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
 			t.Errorf("%s: want an error", name)
@@ -708,6 +867,7 @@ func TestLoadMetricsAddr(t *testing.T) {
 		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
+	base["UPMO_METRICS_TOKEN"] = mtrToken
 	for _, valid := range []string{":9090", "127.0.0.1:9090", "[::1]:9090"} {
 		base["UPMO_METRICS_ADDR"] = valid
 		cfg, err := load(lookupFrom(base))
@@ -728,8 +888,10 @@ func TestLoadMetricsAddr(t *testing.T) {
 
 func TestLoadSandboxdMetricsAddr(t *testing.T) {
 	cfg, err := loadSandboxd(lookupFrom(map[string]string{
-		"UPMO_SERVICE_KEY":  "upmo_svc_x",
-		"UPMO_METRICS_ADDR": "127.0.0.1:9093",
+		"UPMO_SANDBOXD_KEY":  sbxKey,
+		"UPMO_EDITOR_KEY":    edKey,
+		"UPMO_METRICS_ADDR":  "127.0.0.1:9093",
+		"UPMO_METRICS_TOKEN": mtrToken,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -746,8 +908,10 @@ func TestLoadSandboxdMetricsAddr(t *testing.T) {
 		"port too big": ":70000",
 	} {
 		if _, err := loadSandboxd(lookupFrom(map[string]string{
-			"UPMO_SERVICE_KEY":  "upmo_svc_x",
-			"UPMO_METRICS_ADDR": addr,
+			"UPMO_SANDBOXD_KEY":  sbxKey,
+			"UPMO_EDITOR_KEY":    edKey,
+			"UPMO_METRICS_ADDR":  addr,
+			"UPMO_METRICS_TOKEN": mtrToken,
 		})); err == nil {
 			t.Errorf("%s (%q): want an error", name, addr)
 		}

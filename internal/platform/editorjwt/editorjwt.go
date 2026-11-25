@@ -1,10 +1,9 @@
 // Package editorjwt signs and verifies a 15-minute audience-bound editor JWT.
-// The HMAC key is derived from the install master key. The token
+// The HMAC key is its own upmo_edk_ key (UPMO_EDITOR_KEY), used as is. The token
 // carries a person, a task and an editor session, never a secret.
 package editorjwt
 
 import (
-	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -13,8 +12,6 @@ import (
 	"errors"
 	"strings"
 	"time"
-
-	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
 // AudienceEditor is the audience the editor service expects.
@@ -25,8 +22,6 @@ const (
 	lifetime  = 15 * time.Minute
 	leeway    = 30 * time.Second
 	keyBytes  = 32
-	hkdfSalt  = "upmo-editor-jwt-v1"
-	hkdfInfo  = "editor-jwt"
 	headerB64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" // {"alg":"HS256","typ":"JWT"}
 )
 
@@ -39,36 +34,59 @@ var (
 	errClaims   = errors.New("editorjwt: claims do not match")
 )
 
-// ParseKey accepts the same upmo_svc_ master as process-to-process auth.
+// KeyPrefix starts every editor JWT key.
+const KeyPrefix = "upmo_edk_"
+
+// ParseKey accepts upmo_edk_ plus unpadded or padded base64 of exactly 32
+// bytes and returns those bytes as the HMAC key.
 func ParseKey(secret string) ([]byte, error) {
-	return svcsig.ParseKey(secret)
-}
-
-// Derive returns the 32-byte HMAC key for editor JWTs.
-func Derive(master []byte) ([]byte, error) {
-	if len(master) < keyBytes {
-		return nil, ErrNoKey
+	rest, ok := strings.CutPrefix(secret, KeyPrefix)
+	if ok {
+		key, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(rest, "="))
+		if err == nil && len(key) == keyBytes {
+			return key, nil
+		}
 	}
-	return hkdf.Key(sha256.New, master, []byte(hkdfSalt), hkdfInfo, keyBytes)
+	return nil, errors.New("editorjwt: key is not upmo_edk_ followed by base64 of 32 bytes")
 }
 
-// Keys signs with the current derived key and verifies against every derived key.
+// ParseKeys parses the current key and an optional previous one for
+// rotation. The current key signs; both verify.
+func ParseKeys(current, previous string) (Keys, error) {
+	if current == "" {
+		return Keys{}, ErrNoKey
+	}
+	var keys [][]byte
+	for _, secret := range []string{current, previous} {
+		if secret == "" {
+			continue
+		}
+		key, err := ParseKey(secret)
+		if err != nil {
+			return Keys{}, err
+		}
+		keys = append(keys, key)
+	}
+	return New(keys)
+}
+
+// Keys signs with the current key and verifies against every key.
 type Keys struct {
 	current  []byte
 	previous [][]byte
 }
 
-// New requires at least one derived 32-byte key.
-func New(derived [][]byte) (Keys, error) {
-	if len(derived) == 0 {
+// New requires at least one 32-byte key.
+func New(keys [][]byte) (Keys, error) {
+	if len(keys) == 0 {
 		return Keys{}, ErrNoKey
 	}
-	for _, k := range derived {
+	for _, k := range keys {
 		if len(k) != keyBytes {
 			return Keys{}, ErrNoKey
 		}
 	}
-	return Keys{current: derived[0], previous: derived[1:]}, nil
+	return Keys{current: keys[0], previous: keys[1:]}, nil
 }
 
 // Claims are the verified person, task and editor session.
@@ -104,7 +122,7 @@ func (k Keys) Sign(user, task, session string, now time.Time) (string, error) {
 	return body + "." + base64.RawURLEncoding.EncodeToString(mac(k.current, body)), nil
 }
 
-// Verify checks a JWT against any derived key.
+// Verify checks a JWT against any key.
 func (k Keys) Verify(token string, now time.Time) (Claims, error) {
 	if len(k.current) != keyBytes {
 		return Claims{}, ErrNoKey

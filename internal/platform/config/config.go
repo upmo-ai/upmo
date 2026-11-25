@@ -13,6 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
+	"github.com/upmo-ai/upmo/internal/platform/runjwt"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
@@ -68,10 +72,25 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// LogLevel is one of debug, info, warn, error (UPMO_LOG_LEVEL).
 	LogLevel string
-	// ServiceKey is the master HMAC key for process-to-process calls (UPMO_SERVICE_KEY).
-	ServiceKey string
-	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
-	ServiceKeyPrevious string
+	// GatewayKey is the upmo_svc_gateway_ key brain signs gateway calls with
+	// and gateway verifies them with (UPMO_GATEWAY_KEY). GatewayKeyPrevious
+	// is also verified during rotation (UPMO_GATEWAY_KEY_PREVIOUS).
+	GatewayKey, GatewayKeyPrevious string
+	// SandboxdKey is the upmo_svc_sandboxd_ key brain signs sandboxd calls
+	// with (UPMO_SANDBOXD_KEY, UPMO_SANDBOXD_KEY_PREVIOUS).
+	SandboxdKey, SandboxdKeyPrevious string
+	// MarkitdownKey is the upmo_svc_markitdown_ key brain signs conversion
+	// calls with (UPMO_MARKITDOWN_KEY, UPMO_MARKITDOWN_KEY_PREVIOUS).
+	MarkitdownKey, MarkitdownKeyPrevious string
+	// EditorKey is the upmo_edk_ key brain signs editor JWTs with
+	// (UPMO_EDITOR_KEY, UPMO_EDITOR_KEY_PREVIOUS).
+	EditorKey, EditorKeyPrevious string
+	// RunKey is the upmo_rnk_ key connector run JWTs are signed with
+	// (UPMO_RUN_KEY, UPMO_RUN_KEY_PREVIOUS).
+	RunKey, RunKeyPrevious string
+	// MetricsToken is the upmo_mtr_ scrape bearer GET /metrics requires
+	// (UPMO_METRICS_TOKEN). It is required when MetricsAddr is set.
+	MetricsToken string
 	// ProvisionKeys are the upmo_svc_ keys accepted on /api/v1/provision/*
 	// (UPMO_PROVISION_KEYS, comma-separated for zero-downtime key rotation).
 	// Empty disables all provisioning endpoints (returning 404).
@@ -135,6 +154,13 @@ type SMTP struct {
 	From string
 }
 
+// The UPMO_SERVICE_KEY refusals each process gives, naming the keys it reads instead.
+const (
+	refuseBrain    = "config: UPMO_SERVICE_KEY is not read; set UPMO_GATEWAY_KEY, UPMO_SANDBOXD_KEY, UPMO_MARKITDOWN_KEY, UPMO_EDITOR_KEY and UPMO_RUN_KEY"
+	refuseGateway  = "config: UPMO_SERVICE_KEY is not read; set UPMO_GATEWAY_KEY"
+	refuseSandboxd = "config: UPMO_SERVICE_KEY is not read; set UPMO_SANDBOXD_KEY and UPMO_EDITOR_KEY"
+)
+
 // Load reads configuration and requires the master key used by secret-using
 // Upmo commands, while development keys and passwords remain allowed locally.
 func Load() (Config, error) {
@@ -161,6 +187,30 @@ func LoadBrain() (Config, error) {
 	return cfg, nil
 }
 
+// LoadGateway reads the gateway configuration. Gateway verifies calls with
+// UPMO_GATEWAY_KEY, so it is required.
+func LoadGateway() (Config, error) {
+	cfg, err := loadGateway(os.LookupEnv)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func loadGateway(lookup func(string) (string, bool)) (Config, error) {
+	cfg, err := loadWith(lookup, refuseGateway, false)
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.GatewayKey == "" {
+		return Config{}, fmt.Errorf("config: UPMO_GATEWAY_KEY is required")
+	}
+	return cfg, nil
+}
+
 func loadBrain(lookup func(string) (string, bool)) (Config, error) {
 	cfg, err := load(lookup)
 	if err != nil {
@@ -172,7 +222,18 @@ func loadBrain(lookup func(string) (string, bool)) (Config, error) {
 	return cfg, nil
 }
 
+// load reads the configuration brain and its commands share.
 func load(lookup func(string) (string, bool)) (Config, error) {
+	return loadWith(lookup, refuseBrain, true)
+}
+
+// loadWith reads the shared configuration and refuses UPMO_SERVICE_KEY with
+// the process's own refusal. Only brain reads the keys of other audiences,
+// so a gateway never holds them.
+func loadWith(lookup func(string) (string, bool), refusal string, brain bool) (Config, error) {
+	if err := refuseServiceKey(lookup, refusal); err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddr:         ":8080",
 		ShutdownTimeout:    10 * time.Second,
@@ -275,19 +336,15 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	if v, ok := lookup("UPMO_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
 	}
-	if v, ok := lookup("UPMO_SERVICE_KEY"); ok {
-		cfg.ServiceKey = v
+	if cfg.GatewayKey, cfg.GatewayKeyPrevious, err = readKeys(lookup, "UPMO_GATEWAY_KEY", audienceKey(svcsig.AudienceGateway)); err != nil {
+		return Config{}, err
 	}
-	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
-		cfg.ServiceKeyPrevious = v
+	if cfg.MetricsToken, err = readMetricsToken(lookup, cfg.MetricsAddr); err != nil {
+		return Config{}, err
 	}
-	if v, ok := lookup("UPMO_PROVISION_KEYS"); ok && strings.TrimSpace(v) != "" {
-		for _, item := range strings.Split(v, ",") {
-			item = strings.TrimSpace(item)
-			if item == "" {
-				continue
-			}
-			cfg.ProvisionKeys = append(cfg.ProvisionKeys, item)
+	if brain {
+		if err := readBrainKeys(lookup, &cfg); err != nil {
+			return Config{}, err
 		}
 	}
 	if v, ok := lookup("UPMO_GATEWAY_URL"); ok && v != "" {
@@ -402,10 +459,17 @@ type Sandboxd struct {
 	ShutdownTimeout time.Duration
 	// LogLevel is one of debug, info, warn, error (UPMO_LOG_LEVEL).
 	LogLevel string
-	// ServiceKey is the master HMAC key (UPMO_SERVICE_KEY). It is required.
-	ServiceKey string
-	// ServiceKeyPrevious is the previous master key during rotation (UPMO_SERVICE_KEY_PREVIOUS).
-	ServiceKeyPrevious string
+	// SandboxdKey is the upmo_svc_sandboxd_ key calls are verified with
+	// (UPMO_SANDBOXD_KEY). It is required. SandboxdKeyPrevious is also
+	// verified during rotation (UPMO_SANDBOXD_KEY_PREVIOUS).
+	SandboxdKey, SandboxdKeyPrevious string
+	// EditorKey is the upmo_edk_ key editor JWTs are verified with
+	// (UPMO_EDITOR_KEY). It is required. EditorKeyPrevious is also verified
+	// during rotation (UPMO_EDITOR_KEY_PREVIOUS).
+	EditorKey, EditorKeyPrevious string
+	// MetricsToken is the upmo_mtr_ scrape bearer GET /metrics requires
+	// (UPMO_METRICS_TOKEN). It is required when MetricsAddr is set.
+	MetricsToken string
 	// Driver picks the sandbox driver (UPMO_SANDBOX_DRIVER): auto, docker,
 	// kubernetes or stub, auto by default. auto uses Docker when the engine answers.
 	Driver string
@@ -443,6 +507,9 @@ func LoadSandboxd() (Sandboxd, error) {
 }
 
 func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
+	if err := refuseServiceKey(lookup, refuseSandboxd); err != nil {
+		return Sandboxd{}, err
+	}
 	cfg := Sandboxd{
 		ListenAddr:      ":8083",
 		ProxyAddr:       ":3128",
@@ -524,20 +591,28 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 	if v, ok := lookup("UPMO_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
 	}
-	v, ok := lookup("UPMO_SERVICE_KEY")
-	if !ok || v == "" {
-		return Sandboxd{}, fmt.Errorf("config: UPMO_SERVICE_KEY is required")
+	var err error
+	if cfg.SandboxdKey, cfg.SandboxdKeyPrevious, err = readKeys(lookup, "UPMO_SANDBOXD_KEY", audienceKey(svcsig.AudienceSandboxd)); err != nil {
+		return Sandboxd{}, err
 	}
-	cfg.ServiceKey = v
+	if cfg.SandboxdKey == "" {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_SANDBOXD_KEY is required")
+	}
+	if cfg.EditorKey, cfg.EditorKeyPrevious, err = readKeys(lookup, "UPMO_EDITOR_KEY", editorKey); err != nil {
+		return Sandboxd{}, err
+	}
+	if cfg.EditorKey == "" {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_EDITOR_KEY is required")
+	}
+	if cfg.MetricsToken, err = readMetricsToken(lookup, cfg.MetricsAddr); err != nil {
+		return Sandboxd{}, err
+	}
 	envValue, _ := lookup("UPMO_ENV")
 	env, err := ParseEnv(envValue)
 	if err != nil {
 		return Sandboxd{}, err
 	}
 	cfg.Env = env
-	if v, ok := lookup("UPMO_SERVICE_KEY_PREVIOUS"); ok {
-		cfg.ServiceKeyPrevious = v
-	}
 	if v, ok := lookup("UPMO_EDITOR_IMAGE"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" && strings.ContainsAny(v, " \t\r\n") {
@@ -546,6 +621,98 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		cfg.EditorImage = v
 	}
 	return cfg, nil
+}
+
+// refuseServiceKey fails when the retired service master is set at all,
+// even empty, so a deployment cannot keep it next to the per-audience keys.
+func refuseServiceKey(lookup func(string) (string, bool), refusal string) error {
+	for _, name := range []string{"UPMO_SERVICE_KEY", "UPMO_SERVICE_KEY_PREVIOUS"} {
+		if _, ok := lookup(name); ok {
+			return errors.New(refusal)
+		}
+	}
+	return nil
+}
+
+// readBrainKeys reads the keys only brain holds: the sandboxd, markitdown,
+// editor, run and provision keys.
+func readBrainKeys(lookup func(string) (string, bool), cfg *Config) error {
+	var err error
+	if cfg.SandboxdKey, cfg.SandboxdKeyPrevious, err = readKeys(lookup, "UPMO_SANDBOXD_KEY", audienceKey(svcsig.AudienceSandboxd)); err != nil {
+		return err
+	}
+	if cfg.MarkitdownKey, cfg.MarkitdownKeyPrevious, err = readKeys(lookup, "UPMO_MARKITDOWN_KEY", audienceKey(svcsig.AudienceMarkitdown)); err != nil {
+		return err
+	}
+	if cfg.EditorKey, cfg.EditorKeyPrevious, err = readKeys(lookup, "UPMO_EDITOR_KEY", editorKey); err != nil {
+		return err
+	}
+	if cfg.RunKey, cfg.RunKeyPrevious, err = readKeys(lookup, "UPMO_RUN_KEY", runKey); err != nil {
+		return err
+	}
+	if v, ok := lookup("UPMO_PROVISION_KEYS"); ok && strings.TrimSpace(v) != "" {
+		for _, item := range strings.Split(v, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			cfg.ProvisionKeys = append(cfg.ProvisionKeys, item)
+		}
+	}
+	return nil
+}
+
+func audienceKey(audience string) func(string) error {
+	return func(v string) error {
+		_, err := svcsig.ParseAudienceKey(v, audience)
+		return err
+	}
+}
+
+func editorKey(v string) error {
+	_, err := editorjwt.ParseKey(v)
+	return err
+}
+
+func runKey(v string) error {
+	_, err := runjwt.ParseKey(v)
+	return err
+}
+
+// readKeys reads name and name_PREVIOUS, both optional here, and checks
+// each set value with parse. A previous key needs a current one to sign with.
+// Errors name the variable, never the value.
+func readKeys(lookup func(string) (string, bool), name string, parse func(string) error) (current, previous string, err error) {
+	current, _ = lookup(name)
+	previous, _ = lookup(name + "_PREVIOUS")
+	if current == "" && previous != "" {
+		return "", "", fmt.Errorf("config: %s_PREVIOUS is set without %s", name, name)
+	}
+	for _, s := range []Setting{{Name: name, Value: current}, {Name: name + "_PREVIOUS", Value: previous}} {
+		if s.Value == "" {
+			continue
+		}
+		if err := parse(s.Value); err != nil {
+			return "", "", fmt.Errorf("config: %s: %w", s.Name, err)
+		}
+	}
+	return current, previous, nil
+}
+
+// readMetricsToken reads UPMO_METRICS_TOKEN, required whenever a metrics
+// listener is configured.
+func readMetricsToken(lookup func(string) (string, bool), metricsAddr string) (string, error) {
+	v, _ := lookup("UPMO_METRICS_TOKEN")
+	if v == "" {
+		if metricsAddr != "" {
+			return "", fmt.Errorf("config: UPMO_METRICS_TOKEN is required when UPMO_METRICS_ADDR is set")
+		}
+		return "", nil
+	}
+	if err := metrics.ParseToken(v); err != nil {
+		return "", fmt.Errorf("config: UPMO_METRICS_TOKEN: %w", err)
+	}
+	return v, nil
 }
 
 // loadSMTP reads UPMO_SMTP_*. None set is mail unset; any set needs a host

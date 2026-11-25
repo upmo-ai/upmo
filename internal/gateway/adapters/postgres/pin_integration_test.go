@@ -614,7 +614,7 @@ func TestFeature_UPM353_EachSourceWritesItsSourceAndPayer(t *testing.T) {
 	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	serviceKey := "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	serviceKey := "upmo_svc_gateway_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 
 	chat, err := chatgateway.Open(srv.URL, serviceKey)
 	if err != nil {

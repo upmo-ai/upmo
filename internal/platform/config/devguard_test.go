@@ -15,8 +15,29 @@ func composeMasterKey() string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32))
 }
 
-func composeServiceKey() string {
-	return "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32))
+// composeKeys are the per-audience keys, JWT keys and scrape token
+// compose.yml embeds, each base64 of a different repeated byte.
+func composeKeys() []Setting {
+	k := func(prefix string, b byte) string {
+		return prefix + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32))
+	}
+	return []Setting{
+		{Name: "UPMO_GATEWAY_KEY", Value: k("upmo_svc_gateway_", 'g')},
+		{Name: "UPMO_SANDBOXD_KEY", Value: k("upmo_svc_sandboxd_", 's')},
+		{Name: "UPMO_MARKITDOWN_KEY", Value: k("upmo_svc_markitdown_", 'd')},
+		{Name: "UPMO_EDITOR_KEY", Value: k("upmo_edk_", 'e')},
+		{Name: "UPMO_RUN_KEY", Value: k("upmo_rnk_", 'r')},
+		{Name: "UPMO_METRICS_TOKEN", Value: k("upmo_mtr_", 't')},
+	}
+}
+
+func composeKey(name string) string {
+	for _, s := range composeKeys() {
+		if s.Name == name {
+			return s.Value
+		}
+	}
+	panic(name)
 }
 
 func composeDBURL() string {
@@ -100,7 +121,6 @@ func TestKnownDevSecret(t *testing.T) {
 		value string
 	}{
 		{"compose master key", composeMasterKey()},
-		{"compose service key", composeServiceKey()},
 		{"database owner", "upmo"},
 		{"database app role", "upmo_app"},
 		{"house credential", composeHouseValue()},
@@ -110,6 +130,11 @@ func TestKnownDevSecret(t *testing.T) {
 		}
 		if knownDevSecret(tc.value + "x") {
 			t.Errorf("knownDevSecret(%s with a suffix) = true", tc.name)
+		}
+	}
+	for _, c := range composeKeys() {
+		if !knownDevSecret(c.Value) {
+			t.Errorf("knownDevSecret(compose %s) = false, want true", c.Name)
 		}
 	}
 	if knownDevSecret(freshKey(t)) {
@@ -169,11 +194,11 @@ func TestCheckGuardProductionRefuses(t *testing.T) {
 			"UPMO_MASTER_KEY_PREVIOUS_k0 uses a development or weak key", composeMasterKey())
 	})
 	t.Run("service keys", func(t *testing.T) {
-		keys := []Setting{
-			{Name: "UPMO_SERVICE_KEY", Value: composeServiceKey()},
-			{Name: "UPMO_SERVICE_KEY_PREVIOUS", Value: repeatedServiceKey('x')},
-			{Name: "UPMO_PROVISION_KEYS", Value: repeatedServiceKey('z')},
-		}
+		keys := append(composeKeys(),
+			Setting{Name: "UPMO_GATEWAY_KEY_PREVIOUS", Value: "upmo_svc_gateway_" + strings.TrimPrefix(repeatedServiceKey('x'), "upmo_svc_")},
+			Setting{Name: "UPMO_EDITOR_KEY_PREVIOUS", Value: "upmo_edk_" + strings.TrimPrefix(repeatedServiceKey('y'), "upmo_svc_")},
+			Setting{Name: "UPMO_PROVISION_KEYS", Value: repeatedServiceKey('z')},
+		)
 		for _, s := range keys {
 			refuses(t, Guard{Env: EnvProduction, ServiceKeys: []Setting{s}},
 				lookupFrom(nil), nil, s.Name+" uses a development or weak key", s.Value)
@@ -217,9 +242,13 @@ func TestCheckGuardProductionRefuses(t *testing.T) {
 
 func TestCheckGuardProductionAccepts(t *testing.T) {
 	g := Guard{
-		Env:              EnvProduction,
-		DatabaseURLs:     []Setting{{Name: "UPMO_DATABASE_URL", Value: freshDBURL(t)}},
-		ServiceKeys:      []Setting{{Name: "UPMO_SERVICE_KEY", Value: "upmo_svc_" + freshKey(t)}},
+		Env:          EnvProduction,
+		DatabaseURLs: []Setting{{Name: "UPMO_DATABASE_URL", Value: freshDBURL(t)}},
+		ServiceKeys: []Setting{
+			{Name: "UPMO_GATEWAY_KEY", Value: "upmo_svc_gateway_" + freshKey(t)},
+			{Name: "UPMO_EDITOR_KEY", Value: "upmo_edk_" + freshKey(t)},
+			{Name: "UPMO_PROVISION_KEYS", Value: "upmo_svc_" + freshKey(t)},
+		},
 		RequireMasterKey: true,
 	}
 	lookup := lookupFrom(map[string]string{"UPMO_MASTER_KEY": freshKey(t)})
@@ -235,7 +264,7 @@ func TestCheckGuardDevelopment(t *testing.T) {
 		Env:              EnvDevelopment,
 		PublicURL:        "http://localhost:5173",
 		DatabaseURLs:     []Setting{{Name: "UPMO_DATABASE_URL", Value: composeDBURL()}},
-		ServiceKeys:      []Setting{{Name: "UPMO_SERVICE_KEY", Value: composeServiceKey()}},
+		ServiceKeys:      composeKeys(),
 		RequireMasterKey: true,
 	}
 	environ := []string{"UPMO_CREDENTIAL_house=" + composeHouseValue()}
@@ -274,7 +303,6 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 		name, key, value, want string
 	}{
 		{"master key", "UPMO_MASTER_KEY", composeMasterKey(), "UPMO_MASTER_KEY uses a development or weak key"},
-		{"service key", "UPMO_SERVICE_KEY", composeServiceKey(), "UPMO_SERVICE_KEY uses a development or weak key"},
 		{"credential", "UPMO_CREDENTIAL_house", composeHouseValue(), "UPMO_CREDENTIAL_house uses a development value"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -286,6 +314,17 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), tc.value) {
 				t.Fatalf("Load err holds the value: %v", err)
+			}
+		})
+	}
+	for _, c := range composeKeys() {
+		t.Run(c.Name, func(t *testing.T) {
+			base(t)
+			t.Setenv(c.Name, c.Value)
+			_, err := Load()
+			want := "config: " + c.Name + " uses a development or weak key; set a unique key or UPMO_ENV=development"
+			if err == nil || err.Error() != want {
+				t.Fatalf("Load err = %v, want %q", err, want)
 			}
 		})
 	}
@@ -329,7 +368,8 @@ func TestLoadAcceptsFreshValuesInProduction(t *testing.T) {
 	t.Setenv("UPMO_DATABASE_APP_URL", freshDBURL(t))
 	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
 	t.Setenv("UPMO_MASTER_KEY", freshKey(t))
-	t.Setenv("UPMO_SERVICE_KEY", "upmo_svc_"+freshKey(t))
+	t.Setenv("UPMO_GATEWAY_KEY", "upmo_svc_gateway_"+freshKey(t))
+	t.Setenv("UPMO_RUN_KEY", "upmo_rnk_"+freshKey(t))
 	t.Setenv("UPMO_CREDENTIAL_house", "sk-real-provider-key")
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load: %v", err)
@@ -345,7 +385,9 @@ func TestLoadDevelopmentRule(t *testing.T) {
 	t.Setenv("UPMO_DATABASE_APP_URL", "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable")
 	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
 	t.Setenv("UPMO_MASTER_KEY", composeMasterKey())
-	t.Setenv("UPMO_SERVICE_KEY", composeServiceKey())
+	for _, c := range composeKeys() {
+		t.Setenv(c.Name, c.Value)
+	}
 	t.Setenv("UPMO_CREDENTIAL_house", composeHouseValue())
 	if _, err := LoadBrain(); err != nil {
 		t.Fatalf("LoadBrain with the compose values in development: %v", err)
@@ -361,25 +403,32 @@ func TestLoadDevelopmentRule(t *testing.T) {
 	}
 }
 
-func TestLoadSandboxdGuardsTheServiceKey(t *testing.T) {
-	t.Setenv("UPMO_ENV", "")
-	t.Setenv("UPMO_SERVICE_KEY", composeServiceKey())
-	_, err := LoadSandboxd()
-	if err == nil || !strings.Contains(err.Error(), "UPMO_SERVICE_KEY uses a development or weak key") {
-		t.Fatalf("LoadSandboxd err = %v", err)
+func TestLoadSandboxdGuardsItsKeys(t *testing.T) {
+	fresh := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("UPMO_ENV", "")
+		t.Setenv("UPMO_SANDBOXD_KEY", "upmo_svc_sandboxd_"+freshKey(t))
+		t.Setenv("UPMO_EDITOR_KEY", "upmo_edk_"+freshKey(t))
 	}
-	if strings.Contains(err.Error(), composeServiceKey()) {
-		t.Fatalf("LoadSandboxd err holds the key: %v", err)
+	for _, name := range []string{"UPMO_SANDBOXD_KEY", "UPMO_EDITOR_KEY", "UPMO_METRICS_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			fresh(t)
+			t.Setenv(name, composeKey(name))
+			_, err := LoadSandboxd()
+			if err == nil || !strings.Contains(err.Error(), name+" uses a development or weak key") {
+				t.Fatalf("LoadSandboxd err = %v", err)
+			}
+			if strings.Contains(err.Error(), composeKey(name)) {
+				t.Fatalf("LoadSandboxd err holds the key: %v", err)
+			}
+			t.Setenv("UPMO_ENV", "development")
+			if _, err := LoadSandboxd(); err != nil {
+				t.Fatalf("LoadSandboxd in development: %v", err)
+			}
+		})
 	}
-
-	t.Setenv("UPMO_ENV", "development")
+	fresh(t)
 	if _, err := LoadSandboxd(); err != nil {
-		t.Fatalf("LoadSandboxd in development: %v", err)
-	}
-
-	t.Setenv("UPMO_ENV", "")
-	t.Setenv("UPMO_SERVICE_KEY", "upmo_svc_"+freshKey(t))
-	if _, err := LoadSandboxd(); err != nil {
-		t.Fatalf("LoadSandboxd with a fresh key: %v", err)
+		t.Fatalf("LoadSandboxd with fresh keys: %v", err)
 	}
 }

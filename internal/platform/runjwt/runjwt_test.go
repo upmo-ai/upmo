@@ -9,21 +9,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
 func keys(t *testing.T) Keys {
 	t.Helper()
-	master, err := ParseKey(svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes32('k')))
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := Derive(master)
-	if err != nil {
-		t.Fatal(err)
-	}
-	k, err := New([][]byte{derived})
+	k, err := ParseKeys(KeyPrefix+base64.RawStdEncoding.EncodeToString(bytes32('k')), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,14 +79,7 @@ func TestVerifyRejects(t *testing.T) {
 
 func TestRotation(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	old, err := Derive(bytes32('o'))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cur, err := Derive(bytes32('n'))
-	if err != nil {
-		t.Fatal(err)
-	}
+	old, cur := bytes32('o'), bytes32('n')
 	oldKeys, err := New([][]byte{old})
 	if err != nil {
 		t.Fatal(err)
@@ -150,11 +133,7 @@ func FuzzVerify(f *testing.F) {
 }
 
 func mustKeys() Keys {
-	d, err := Derive(bytes32('k'))
-	if err != nil {
-		panic(err)
-	}
-	k, err := New([][]byte{d})
+	k, err := New([][]byte{bytes32('k')})
 	if err != nil {
 		panic(err)
 	}
@@ -203,4 +182,27 @@ func independentMAC(key []byte, audience, token string, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func TestParseKey(t *testing.T) {
+	raw := bytes32('a')
+	for _, secret := range []string{KeyPrefix + base64.RawStdEncoding.EncodeToString(raw), KeyPrefix + base64.StdEncoding.EncodeToString(raw)} {
+		got, err := ParseKey(secret)
+		if err != nil || string(got) != string(raw) {
+			t.Fatalf("%q = %v %v", secret, got, err)
+		}
+	}
+	for _, secret := range []string{
+		"",
+		"upmo_svc_" + base64.RawStdEncoding.EncodeToString(raw),
+		KeyPrefix + base64.RawStdEncoding.EncodeToString(raw[:31]),
+		KeyPrefix + base64.RawStdEncoding.EncodeToString(append(raw, 'b')),
+	} {
+		if _, err := ParseKey(secret); err == nil || err.Error() != "runjwt: key is not upmo_rnk_ followed by base64 of 32 bytes" {
+			t.Fatalf("%q error = %v", secret, err)
+		}
+	}
+	if _, err := ParseKeys("", ""); !errors.Is(err, ErrNoKey) {
+		t.Fatalf("no key = %v", err)
+	}
 }

@@ -51,11 +51,7 @@ var provisionCalls = []string{
 
 func (f *fakeSandboxd) serve(t *testing.T, secret string) *httptest.Server {
 	t.Helper()
-	master, err := svcsig.ParseKey(secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceSandboxd)
+	derived, err := svcsig.ParseAudienceKey(secret, svcsig.AudienceSandboxd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +138,7 @@ func (f *fakeSandboxd) serve(t *testing.T, secret string) *httptest.Server {
 			http.NotFound(w, r)
 		}
 	})
-	h, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceSandboxd, inner)
+	h, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceSandboxd, 1<<20, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,5 +433,5 @@ func testKey(b byte) string {
 	for i := range raw {
 		raw[i] = b
 	}
-	return svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
+	return svcsig.KeyPrefix + "sandboxd_" + base64.RawStdEncoding.EncodeToString(raw)
 }

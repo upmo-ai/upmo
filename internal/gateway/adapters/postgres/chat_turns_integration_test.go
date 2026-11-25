@@ -80,7 +80,7 @@ func chatTurnsWorld(t *testing.T) (pinWorld, *toolStreamAdapter, chatgateway.Cli
 	httpapi.Handler{Dispatch: w.disp}.Mount(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	secret := "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	secret := "upmo_svc_gateway_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 	client, err := chatgateway.Open(srv.URL, secret)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestFeature_UPM414_CoreToolsSendRetrieveOutputPagingSchemaToProvider(t *tes
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	secret := "upmo_svc_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	secret := "upmo_svc_gateway_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 	client, err := chatgateway.Open(srv.URL, secret)
 	if err != nil {
 		t.Fatal(err)

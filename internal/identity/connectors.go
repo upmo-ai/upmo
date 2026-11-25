@@ -47,7 +47,7 @@ func MountConnectorGrants(mux *http.ServeMux, grants app.ConnectorGrants, sessio
 	(httpapi.ConnectorGrants{Grants: grants, Sessions: sessions}).Mount(mux)
 }
 
-// NewRunTokens derives signing keys from the current and optional previous master.
+// NewRunTokens parses the current and optional previous run key.
 func NewRunTokens(current, previous string) (app.RunTokens, error) {
 	return app.NewRunTokens(current, previous)
 }

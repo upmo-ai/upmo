@@ -34,15 +34,7 @@ func (f *fakeBook) TouchEditor(context.Context, string) error {
 
 func testKeys(t *testing.T) editorjwt.Keys {
 	t.Helper()
-	master, err := editorjwt.ParseKey(svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes32('e')))
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := editorjwt.Derive(master)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := editorjwt.New([][]byte{key})
+	keys, err := editorjwt.ParseKeys(editorjwt.KeyPrefix+base64.RawStdEncoding.EncodeToString(bytes32('e')), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,13 +143,6 @@ func TestPublicURL(t *testing.T) {
 	}
 }
 
-func TestKeysFromService(t *testing.T) {
-	secret := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes32('b'))
-	if _, err := KeysFromService(secret, ""); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestValidateBaseURL(t *testing.T) {
 	if _, err := ValidateBaseURL("https://x"); err == nil {
 		t.Fatal("expected error")
@@ -183,43 +168,13 @@ func TestParsePathRedirect(t *testing.T) {
 	}
 }
 
-func TestServiceMasterMatchesBrain(t *testing.T) {
-	secret := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes32('d'))
-	master, err := svcsig.ParseKey(secret)
-	if err != nil {
-		t.Fatal(err)
+// A token signed with a key derived from the retired service master does not
+// open the gate, and the master itself is not an editor key.
+func TestGateRefusesTheServiceMaster(t *testing.T) {
+	master := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes32('e'))
+	if _, err := editorjwt.ParseKeys(master, ""); err == nil {
+		t.Fatal("a service master was accepted as the editor key")
 	}
-	sandboxdKey, err := svcsig.Derive(master, svcsig.AudienceSandboxd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = sandboxdKey
-	gateKeys, err := KeysFromService(secret, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	editorKeys, err := editorjwt.New([][]byte{mustEditorDerive(t, master)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Unix(1_700_000_000, 0)
-	user, task, session := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	tok, err := editorKeys.Sign(user, task, session, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := gateKeys.Verify(tok, now); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func mustEditorDerive(t *testing.T, master []byte) []byte {
-	t.Helper()
-	k, err := editorjwt.Derive(master)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k
 }
 
 func bytes32(b byte) []byte {

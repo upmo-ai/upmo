@@ -214,7 +214,7 @@ func TestListenAndServeShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- ListenAndServe(ctx, "127.0.0.1:0", reg, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		done <- ListenAndServe(ctx, "127.0.0.1:0", reg, testToken, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 
 	cancel()
@@ -295,5 +295,68 @@ func TestSpecialFloatAndNegativeHandling(t *testing.T) {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("unexpected %q in metrics output:\n%s", unwanted, body)
 		}
+	}
+}
+
+const testToken = "upmo_mtr_bWV0cmljcy10b2tlbi1mb3ItdGVzdHMtb25seS0zMmJ5dGVz" // #nosec G101 -- fixed test token, not a credential
+
+func TestParseToken(t *testing.T) {
+	if err := ParseToken(testToken); err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{
+		"",
+		"upmo_mtr_" + strings.Repeat("A", 42),
+		"upmo_svc_gateway_bWV0cmljcy10b2tlbi1mb3ItdGVzdHMtb25seS0zMmJ5dGVz",
+		"upmo_mtr_!!!!",
+	} {
+		if err := ParseToken(token); err == nil {
+			t.Fatalf("%q accepted", token)
+		}
+	}
+}
+
+func TestServerRequiresTheToken(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetSandboxdActiveSeats(3)
+	srv := httptest.NewServer(Server("127.0.0.1:0", reg, testToken).Handler)
+	t.Cleanup(srv.Close)
+	get := func(auth string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/metrics", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		body, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(body)
+	}
+	for _, auth := range []string{"", "Bearer", "Bearer " + testToken + "x", testToken, "bearer " + testToken, "Bearer upmo_s2s_v2.gateway.1700000000.AAECAwQFBgcICQoLDA0ODw.z-sGwNTWPwCw3h5aSL_nEk2K0WV6Mb41LsSZ8bIXzu0"} {
+		if code, _ := get(auth); code != http.StatusUnauthorized {
+			t.Fatalf("%q = %d, want 401", auth, code)
+		}
+	}
+	code, body := get("Bearer " + testToken)
+	if code != http.StatusOK || !strings.Contains(body, "upmo_sandboxd_active_seats 3\n") {
+		t.Fatalf("token = %d %q", code, body)
+	}
+	empty := httptest.NewServer(Server("127.0.0.1:0", reg, "").Handler)
+	t.Cleanup(empty.Close)
+	req, _ := http.NewRequest(http.MethodGet, empty.URL+"/metrics", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	res, err := empty.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("empty token = %d, want 401", res.StatusCode)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
@@ -167,9 +168,10 @@ type seatCounter interface {
 	ActiveSeats() int
 }
 
-// Routes serves the SandboxProvider port behind the service HMAC for the
-// sandboxd audience. previousKey is optional, for rotation.
-// /healthz and /readyz stay open for the container healthcheck.
+// Routes serves the SandboxProvider port behind the v2 service bearer for
+// the sandboxd audience. serviceKey is UPMO_SANDBOXD_KEY and previousKey is
+// optional, for rotation. /healthz and /readyz stay open for the container
+// healthcheck.
 func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger, opts ...RouteOption) (http.Handler, error) {
 	var cfg routeConfig
 	for _, opt := range opts {
@@ -180,20 +182,16 @@ func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger, opt
 		if secret == "" && len(keys) > 0 {
 			continue
 		}
-		master, err := svcsig.ParseKey(secret)
+		key, err := svcsig.ParseAudienceKey(secret, svcsig.AudienceSandboxd)
 		if err != nil {
 			return nil, err
 		}
-		derived, err := svcsig.Derive(master, svcsig.AudienceSandboxd)
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, derived)
+		keys = append(keys, key)
 	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, nil)
 	httpapi.Handler{Provider: driver, Log: log}.Mount(mux)
-	h, err := svcsig.Handler(keys, svcsig.AudienceSandboxd, mux)
+	h, err := svcsig.Handler(keys, svcsig.AudienceSandboxd, httpapi.FileLimit, mux)
 	if err != nil {
 		return nil, err
 	}
@@ -208,13 +206,14 @@ func Routes(serviceKey, previousKey string, driver Driver, log *slog.Logger, opt
 	return h, nil
 }
 
-// EditorGate verifies editor JWTs and reverse-proxies to OpenVSCode.
-func EditorGate(serviceKey, previousKey string, driver Driver, log *slog.Logger) (http.Handler, error) {
+// EditorGate verifies editor JWTs signed with the editor key
+// (UPMO_EDITOR_KEY, previousKey optional) and reverse-proxies to OpenVSCode.
+func EditorGate(editorKey, previousKey string, driver Driver, log *slog.Logger) (http.Handler, error) {
 	book, ok := driver.(editorgate.Book)
 	if !ok {
 		return nil, fmt.Errorf("sandboxd: driver does not implement editor gate")
 	}
-	keys, err := editorgate.KeysFromService(serviceKey, previousKey)
+	keys, err := editorjwt.ParseKeys(editorKey, previousKey)
 	if err != nil {
 		return nil, err
 	}

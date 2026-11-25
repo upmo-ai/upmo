@@ -38,7 +38,7 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadGateway()
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func run() error {
 	srvCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
-	for _, s := range []*http.Server{srv, metrics.Server(cfg.MetricsAddr, reg)} {
+	for _, s := range []*http.Server{srv, metrics.Server(cfg.MetricsAddr, reg, cfg.MetricsToken)} {
 		go func() {
 			errc <- httpserver.Run(srvCtx, s, cfg.ShutdownTimeout, log)
 			cancel()
@@ -106,26 +106,20 @@ func run() error {
 	return errors.Join(<-errc, <-errc)
 }
 
+// maxBody caps every signed request body gateway reads and hashes.
+const maxBody = 8 << 20
+
 func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersions func(context.Context) (map[string]int64, error), reg *metrics.Registry) (http.Handler, error) {
-	master, err := svcsig.ParseKey(cfg.ServiceKey)
-	if err != nil {
-		return nil, err
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceGateway)
-	if err != nil {
-		return nil, err
-	}
-	keys := [][]byte{derived}
-	if cfg.ServiceKeyPrevious != "" {
-		prev, err := svcsig.ParseKey(cfg.ServiceKeyPrevious)
+	keys := make([][]byte, 0, 2)
+	for _, secret := range []string{cfg.GatewayKey, cfg.GatewayKeyPrevious} {
+		if secret == "" && len(keys) > 0 {
+			continue
+		}
+		key, err := svcsig.ParseAudienceKey(secret, svcsig.AudienceGateway)
 		if err != nil {
 			return nil, err
 		}
-		d, err := svcsig.Derive(prev, svcsig.AudienceGateway)
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, d)
+		keys = append(keys, key)
 	}
 	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
@@ -146,21 +140,12 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 			return identity.SettingsManagers(ctx, pool)
 		}),
 	)
-	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, mux)
+	httpserver.Version(mux, schemaVersions)
+	signed, err := svcsig.Handler(keys, svcsig.AudienceGateway, maxBody, mux)
 	if err != nil {
 		return nil, err
 	}
-	versionMux := http.NewServeMux()
-	httpserver.Version(versionMux, schemaVersions)
-	versionHandler := metrics.MiddlewareWithMux("gateway", reg, versionMux)(versionMux)
-	signedHandler := metrics.MiddlewareWithMux("gateway", reg, mux)(signed)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, pattern := versionMux.Handler(r); pattern != "" {
-			versionHandler.ServeHTTP(w, r)
-			return
-		}
-		signedHandler.ServeHTTP(w, r)
-	}), nil
+	return metrics.MiddlewareWithMux("gateway", reg, mux)(signed), nil
 }
 
 // secretBackends is the order a key is looked for: the environment, then the

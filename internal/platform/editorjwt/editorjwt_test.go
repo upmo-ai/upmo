@@ -6,21 +6,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
 func keys(t *testing.T) Keys {
 	t.Helper()
-	master, err := ParseKey(svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes32('e')))
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := Derive(master)
-	if err != nil {
-		t.Fatal(err)
-	}
-	k, err := New([][]byte{derived})
+	k, err := ParseKeys(KeyPrefix+base64.RawStdEncoding.EncodeToString(bytes32('e')), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,5 +68,28 @@ func TestVerifyRejects(t *testing.T) {
 		if _, err := k.Verify(split, now); !errors.Is(err, errToken) {
 			t.Fatalf("line break %q in signature = %v", brk, err)
 		}
+	}
+}
+
+func TestParseKey(t *testing.T) {
+	raw := bytes32('a')
+	for _, secret := range []string{KeyPrefix + base64.RawStdEncoding.EncodeToString(raw), KeyPrefix + base64.StdEncoding.EncodeToString(raw)} {
+		got, err := ParseKey(secret)
+		if err != nil || string(got) != string(raw) {
+			t.Fatalf("%q = %v %v", secret, got, err)
+		}
+	}
+	for _, secret := range []string{
+		"",
+		"upmo_svc_" + base64.RawStdEncoding.EncodeToString(raw),
+		KeyPrefix + base64.RawStdEncoding.EncodeToString(raw[:31]),
+		KeyPrefix + base64.RawStdEncoding.EncodeToString(append(raw, 'b')),
+	} {
+		if _, err := ParseKey(secret); err == nil || err.Error() != "editorjwt: key is not upmo_edk_ followed by base64 of 32 bytes" {
+			t.Fatalf("%q error = %v", secret, err)
+		}
+	}
+	if _, err := ParseKeys("", ""); !errors.Is(err, ErrNoKey) {
+		t.Fatalf("no key = %v", err)
 	}
 }

@@ -81,7 +81,8 @@ type Client struct {
 
 var _ app.SandboxProvider = Client{}
 
-// Open builds a client. baseURL and serviceKey are the install settings.
+// Open builds a client. baseURL is the install setting and serviceKey the
+// sandboxd key (UPMO_SANDBOXD_KEY).
 // A missing or malformed key is an error, so brain cannot hold a client that
 // will never authenticate.
 func Open(baseURL, serviceKey string) (Client, error) {
@@ -89,11 +90,7 @@ func Open(baseURL, serviceKey string) (Client, error) {
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return Client{}, fmt.Errorf("runtime: sandboxd url")
 	}
-	master, err := svcsig.ParseKey(serviceKey)
-	if err != nil {
-		return Client{}, err
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceSandboxd)
+	derived, err := svcsig.ParseAudienceKey(serviceKey, svcsig.AudienceSandboxd)
 	if err != nil {
 		return Client{}, err
 	}

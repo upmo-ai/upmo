@@ -23,7 +23,7 @@ func TestClientCreateAndDestroySigned(t *testing.T) {
 	var paths []string
 	var created map[string]any
 	srv := httptest.NewServer(mustSandboxd(t, secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+svcsig.BearerPrefix+svcsig.AudienceSandboxd+".") {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+svcsig.BearerPrefixV2+svcsig.AudienceSandboxd+".") {
 			t.Errorf("auth = %q", r.Header.Get("Authorization"))
 		}
 		paths = append(paths, r.URL.Path)
@@ -414,15 +414,11 @@ func TestOpenRefuses(t *testing.T) {
 
 func mustSandboxd(t *testing.T, secret string, inner http.Handler) http.Handler {
 	t.Helper()
-	master, err := svcsig.ParseKey(secret)
+	derived, err := svcsig.ParseAudienceKey(secret, svcsig.AudienceSandboxd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceSandboxd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceSandboxd, inner)
+	h, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceSandboxd, 1<<20, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,5 +431,5 @@ func serviceKey(t *testing.T, b byte) string {
 	for i := range raw {
 		raw[i] = b
 	}
-	return svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
+	return svcsig.KeyPrefix + "sandboxd_" + base64.RawStdEncoding.EncodeToString(raw)
 }

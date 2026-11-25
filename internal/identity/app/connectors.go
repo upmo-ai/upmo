@@ -70,27 +70,10 @@ type RunTokens struct {
 	keys runjwt.Keys
 }
 
-// NewRunTokens derives signing keys from the current and optional previous master.
+// NewRunTokens parses the current and optional previous run key
+// (UPMO_RUN_KEY, UPMO_RUN_KEY_PREVIOUS).
 func NewRunTokens(current, previous string) (RunTokens, error) {
-	if current == "" {
-		return RunTokens{}, runjwt.ErrNoKey
-	}
-	var derived [][]byte
-	for _, secret := range []string{current, previous} {
-		if secret == "" {
-			continue
-		}
-		master, err := runjwt.ParseKey(secret)
-		if err != nil {
-			return RunTokens{}, err
-		}
-		key, err := runjwt.Derive(master)
-		if err != nil {
-			return RunTokens{}, err
-		}
-		derived = append(derived, key)
-	}
-	keys, err := runjwt.New(derived)
+	keys, err := runjwt.ParseKeys(current, previous)
 	if err != nil {
 		return RunTokens{}, err
 	}

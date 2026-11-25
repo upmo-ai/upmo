@@ -37,7 +37,8 @@ type Call struct {
 	source string
 }
 
-// Open builds a client. baseURL and serviceKey are the install settings.
+// Open builds a client. baseURL is the install setting and serviceKey the
+// gateway key (UPMO_GATEWAY_KEY).
 // proposeRoute is the chat route for memory work. embedRoute is the embed route.
 func Open(baseURL, serviceKey, proposeRoute, embedRoute string) (Client, error) {
 	parsed, err := url.Parse(baseURL)
@@ -47,11 +48,7 @@ func Open(baseURL, serviceKey, proposeRoute, embedRoute string) (Client, error) 
 	if proposeRoute == "" || embedRoute == "" {
 		return Client{}, fmt.Errorf("memory: gateway route")
 	}
-	master, err := svcsig.ParseKey(serviceKey)
-	if err != nil {
-		return Client{}, err
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceGateway)
+	derived, err := svcsig.ParseAudienceKey(serviceKey, svcsig.AudienceGateway)
 	if err != nil {
 		return Client{}, err
 	}

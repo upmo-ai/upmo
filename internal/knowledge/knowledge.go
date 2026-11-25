@@ -75,7 +75,13 @@ func NewStore(pool *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
 // NewFetcher returns the URL fetcher for URL ingest.
 func NewFetcher() Fetcher { return fetch.New() }
 
-// OpenEmbedder returns a gateway embed client on embedRoute, signed with serviceKey.
+// OpenSidecar returns the conversion sidecar at baseURL, its calls signed
+// with the markitdown key.
+func OpenSidecar(baseURL, markitdownKey string) (*Sidecar, error) {
+	return convert.OpenSidecar(baseURL, markitdownKey)
+}
+
+// OpenEmbedder returns a gateway embed client on embedRoute, signed with the gateway key.
 func OpenEmbedder(baseURL, serviceKey, embedRoute string) (EmbedClient, error) {
 	return gateway.Open(baseURL, serviceKey, embedRoute)
 }

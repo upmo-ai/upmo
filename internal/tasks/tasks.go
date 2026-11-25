@@ -128,7 +128,7 @@ func NewStore(pool, owner *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
 	return postgres.Store{Pool: pool, Owner: owner, Enqueuer: enqueuer}
 }
 
-// NewEditorTokens derives the editor token signer from the install service keys.
+// NewEditorTokens builds the editor token signer from the editor keys.
 func NewEditorTokens(current, previous string) (EditorTokens, error) {
 	return app.NewEditorTokens(current, previous)
 }

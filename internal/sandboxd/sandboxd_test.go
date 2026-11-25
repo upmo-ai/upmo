@@ -31,7 +31,7 @@ const (
 )
 
 func serviceKey(b byte) string {
-	return svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat(string(b), 32)))
+	return svcsig.KeyPrefix + "sandboxd_" + base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat(string(b), 32)))
 }
 
 func spec() runtime.Spec {
@@ -329,27 +329,26 @@ func TestBrainSeatsProvisionOnTheStubFails(t *testing.T) {
 func TestRoutesRefuseWithoutServiceBearer(t *testing.T) {
 	key := serviceKey('k')
 	srv := start(t, key, "")
-	master, err := svcsig.ParseKey(key)
+	gateway, err := svcsig.ParseAudienceKey(svcsig.KeyPrefix+"gateway_"+base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), svcsig.AudienceGateway)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway, err := svcsig.Derive(master, svcsig.AudienceGateway)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gatewayBearer, err := svcsig.Sign(gateway, svcsig.AudienceGateway, http.MethodPost, pathCreate, time.Now())
+	gatewayBearer, err := svcsig.SignRequest(gateway, svcsig.AudienceGateway, http.MethodPost, pathCreate, "", []byte(`{}`), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A bearer signed for Create is bound to that path, so it opens no other route.
-	createBearer, err := svcsig.Sign(derivedKey(t, key), svcsig.AudienceSandboxd, http.MethodPost, pathCreate, time.Now())
+	createBearer, err := svcsig.SignRequest(derivedKey(t, key), svcsig.AudienceSandboxd, http.MethodPost, pathCreate, "", []byte(`{}`), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The same MAC under the retired v1 prefix is refused on every route.
+	v1Bearer := "upmo_s2s_v1." + strings.TrimPrefix(createBearer, svcsig.BearerPrefixV2)
 	for name, auth := range map[string]string{ //nolint:gosec // fixed test bearers, not credentials
 		"no bearer":        "",
 		"personal token":   "Bearer upmo_pat_0123456789abcdef",
 		"gateway audience": "Bearer " + gatewayBearer,
+		"v1 bearer":        "Bearer " + v1Bearer,
 		"not a bearer":     "Basic dXNlcjpwYXNz",
 	} {
 		for _, path := range []string{pathCreate, pathExec, pathReadFile, pathWriteFile} {
@@ -378,11 +377,7 @@ func TestRoutesRefuseWithoutServiceBearer(t *testing.T) {
 
 func derivedKey(t *testing.T, key string) []byte {
 	t.Helper()
-	master, err := svcsig.ParseKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceSandboxd)
+	derived, err := svcsig.ParseAudienceKey(key, svcsig.AudienceSandboxd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,6 +434,9 @@ func TestRoutesNeedAKey(t *testing.T) {
 	}
 	if _, err := Routes(serviceKey('k'), "nope", Stub(), log); err == nil {
 		t.Error("malformed previous key")
+	}
+	if _, err := Routes(svcsig.KeyPrefix+base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), "", Stub(), log); err == nil {
+		t.Error("raw service master as key")
 	}
 }
 
@@ -619,5 +617,51 @@ func TestRoutesWithMetricsTracksActiveSeatsAndHidesMetricsPath(t *testing.T) {
 	}
 	if body := scrape(); !strings.Contains(body, "upmo_sandboxd_active_seats 0\n") {
 		t.Fatalf("active seats after Destroy != 0:\n%s", body)
+	}
+}
+
+// TestMetricsListenerNeedsTheScrapeToken serves the sandboxd registry the way
+// cmd/sandboxd does and proves only the scrape token reads it.
+func TestMetricsListenerNeedsTheScrapeToken(t *testing.T) {
+	const token = "upmo_mtr_c2FuZGJveGQtbWV0cmljcy1zY3JhcGUtdG9rZW4tdGVzdA" // #nosec G101 -- fixed test token, not a credential
+	reg := metrics.NewRegistry()
+	if _, err := Routes(serviceKey('m'), "", Stub(), slog.New(slog.NewTextHandler(io.Discard, nil)), WithMetrics(reg)); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(metrics.Server("127.0.0.1:0", reg, token).Handler)
+	t.Cleanup(srv.Close)
+	gateway, err := svcsig.ParseAudienceKey(svcsig.KeyPrefix+"gateway_"+base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("g", 32))), svcsig.AudienceGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayBearer, err := svcsig.SignRequest(gateway, svcsig.AudienceGateway, http.MethodGet, "/metrics", "", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrape := func(auth string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/metrics", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		body, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(body)
+	}
+	for name, auth := range map[string]string{"no bearer": "", "gateway bearer": "Bearer " + gatewayBearer} {
+		if code, _ := scrape(auth); code != http.StatusUnauthorized {
+			t.Fatalf("%s = %d, want 401", name, code)
+		}
+	}
+	code, body := scrape("Bearer " + token)
+	if code != http.StatusOK || !strings.Contains(body, "upmo_sandboxd_active_seats 0\n") {
+		t.Fatalf("scrape token = %d:\n%s", code, body)
 	}
 }

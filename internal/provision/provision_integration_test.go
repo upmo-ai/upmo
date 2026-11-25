@@ -966,14 +966,7 @@ func TestProvisionV2BindingIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v1Tok, err := svcsig.Sign(derived, svcsig.AudienceProvision, http.MethodPost, "/api/v1/provision/sign-in-links", env.now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	v1Tok := "upmo_s2s_v1." + strings.TrimPrefix(env.sign(t, env.rawKey1, http.MethodPost, "/api/v1/provision/sign-in-links", linkBody, env.now), svcsig.BearerPrefixV2)
 	if rec := env.do(t, http.MethodPost, "/api/v1/provision/sign-in-links", v1Tok, linkBody); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("v1 bearer = %d, want 401", rec.Code)
 	}

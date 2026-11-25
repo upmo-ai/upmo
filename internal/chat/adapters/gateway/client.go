@@ -133,17 +133,14 @@ type Client struct {
 	http *http.Client
 }
 
-// Open builds a client. baseURL and serviceKey are the install settings.
+// Open builds a client. baseURL is the install setting and serviceKey the
+// gateway key (UPMO_GATEWAY_KEY).
 func Open(baseURL, serviceKey string) (Client, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return Client{}, fmt.Errorf("chat: gateway url")
 	}
-	master, err := svcsig.ParseKey(serviceKey)
-	if err != nil {
-		return Client{}, err
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceGateway)
+	derived, err := svcsig.ParseAudienceKey(serviceKey, svcsig.AudienceGateway)
 	if err != nil {
 		return Client{}, err
 	}

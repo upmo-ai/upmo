@@ -460,7 +460,7 @@ func TestWriteFile(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge || rec.Header().Get(HeaderError) != CodeTooLarge {
 		t.Fatalf("over MaxFile = %d %q", rec.Code, rec.Header().Get(HeaderError))
 	}
-	huge := `{"id":"box-1","path":"big","data":"` + strings.Repeat("A", int(fileLimit)) + `"}`
+	huge := `{"id":"box-1","path":"big","data":"` + strings.Repeat("A", int(FileLimit)) + `"}`
 	rec = post(mux, PathWriteFile, huge)
 	if rec.Code != http.StatusRequestEntityTooLarge || rec.Header().Get(HeaderError) != CodeTooLarge {
 		t.Fatalf("over the body limit = %d %q", rec.Code, rec.Header().Get(HeaderError))

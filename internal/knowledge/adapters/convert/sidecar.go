@@ -12,12 +12,28 @@ import (
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/knowledge/app"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
 
 // Sidecar POSTs raw bytes to the conversion service and returns markdown.
 type Sidecar struct {
 	BaseURL string
 	Client  *http.Client
+}
+
+// OpenSidecar builds a sidecar whose calls carry the v2 bearer for the
+// markitdown audience. A missing or malformed key is an error, so brain
+// cannot hold a sidecar that will never authenticate.
+func OpenSidecar(baseURL, markitdownKey string) (*Sidecar, error) {
+	key, err := svcsig.ParseAudienceKey(markitdownKey, svcsig.AudienceMarkitdown)
+	if err != nil {
+		return nil, err
+	}
+	transport, err := svcsig.Transport(nil, key, svcsig.AudienceMarkitdown)
+	if err != nil {
+		return nil, err
+	}
+	return &Sidecar{BaseURL: baseURL, Client: &http.Client{Timeout: 120 * time.Second, Transport: transport}}, nil
 }
 
 // Client converts bodies: text skips the sidecar; other types call it.

@@ -36,8 +36,8 @@ func TestTaskSandboxesWithoutURLHasNoProvider(t *testing.T) {
 
 func TestTaskSandboxesWithURLOpensTheClient(t *testing.T) {
 	raw := make([]byte, 32)
-	key := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
-	boxes, err := taskSandboxes(config.Config{SandboxdURL: "http://sandboxd:8083", ServiceKey: key, SandboxImage: "upmo/sandbox:base"}, nil, nil)
+	key := svcsig.KeyPrefix + "sandboxd_" + base64.RawStdEncoding.EncodeToString(raw)
+	boxes, err := taskSandboxes(config.Config{SandboxdURL: "http://sandboxd:8083", SandboxdKey: key, SandboxImage: "upmo/sandbox:base"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +49,12 @@ func TestTaskSandboxesWithURLOpensTheClient(t *testing.T) {
 	}
 }
 
-func TestTaskSandboxesWithURLNeedsTheServiceKey(t *testing.T) {
+func TestTaskSandboxesWithURLNeedsTheSandboxdKey(t *testing.T) {
 	if _, err := taskSandboxes(config.Config{SandboxdURL: "http://sandboxd:8083"}, nil, nil); err == nil {
 		t.Fatal("opened sandboxd with no service key")
+	}
+	gatewayKey := svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(make([]byte, 32))
+	if _, err := taskSandboxes(config.Config{SandboxdURL: "http://sandboxd:8083", SandboxdKey: gatewayKey}, nil, nil); err == nil {
+		t.Fatal("opened sandboxd with a gateway key")
 	}
 }

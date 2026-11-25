@@ -32,32 +32,15 @@ type EditorSandboxes interface {
 	StartEditor(ctx context.Context, taskID, status string) (runtime.Endpoint, error)
 }
 
-// EditorTokens mints editor JWTs from the service master key.
+// EditorTokens mints editor JWTs with the editor key.
 type EditorTokens struct {
 	keys editorjwt.Keys
 }
 
-// NewEditorTokens derives signing keys from the current and optional previous master.
+// NewEditorTokens parses the current and optional previous editor key
+// (UPMO_EDITOR_KEY, UPMO_EDITOR_KEY_PREVIOUS).
 func NewEditorTokens(current, previous string) (EditorTokens, error) {
-	if current == "" {
-		return EditorTokens{}, editorjwt.ErrNoKey
-	}
-	var derived [][]byte
-	for _, secret := range []string{current, previous} {
-		if secret == "" {
-			continue
-		}
-		master, err := editorjwt.ParseKey(secret)
-		if err != nil {
-			return EditorTokens{}, err
-		}
-		key, err := editorjwt.Derive(master)
-		if err != nil {
-			return EditorTokens{}, err
-		}
-		derived = append(derived, key)
-	}
-	keys, err := editorjwt.New(derived)
+	keys, err := editorjwt.ParseKeys(current, previous)
 	if err != nil {
 		return EditorTokens{}, err
 	}

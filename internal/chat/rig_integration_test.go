@@ -506,15 +506,11 @@ func newStubGateway(t *testing.T) *stubGateway {
 			script(n, &frames{w: w, f: w.(http.Flusher), ctx: r.Context()})
 		}
 	})
-	master, err := svcsig.ParseKey(serviceKey('k'))
+	derived, err := svcsig.ParseAudienceKey(serviceKey('k'), svcsig.AudienceGateway)
 	if err != nil {
 		t.Fatal(err)
 	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceGateway)
-	if err != nil {
-		t.Fatal(err)
-	}
-	signed, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceGateway, inner)
+	signed, err := svcsig.Handler([][]byte{derived}, svcsig.AudienceGateway, 1<<20, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,5 +590,5 @@ func serviceKey(b byte) string {
 	for i := range raw {
 		raw[i] = b
 	}
-	return svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(raw)
+	return svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(raw)
 }
