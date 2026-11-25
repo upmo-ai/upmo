@@ -152,6 +152,10 @@ type SMTP struct {
 	Password string
 	// From is the sender address (UPMO_SMTP_FROM). It is required when mail is set.
 	From string
+	// CAFile is the PEM CA file the relay certificate is checked against
+	// (UPMO_TLS_CA_FILE). It is set only when mail is set and is not validated
+	// here; the send fails closed when production needs it and it is unusable.
+	CAFile string
 }
 
 // The UPMO_SERVICE_KEY refusals each process gives, naming the keys it reads instead.
@@ -755,6 +759,7 @@ func loadSMTP(lookup func(string) (string, bool)) (SMTP, error) {
 	if _, err := netmail.ParseAddress(s.From); err != nil || strings.ContainsAny(s.From, "\r\n") {
 		return SMTP{}, fmt.Errorf("config: UPMO_SMTP_FROM must be an email address")
 	}
+	s.CAFile = strings.TrimSpace(get("UPMO_TLS_CA_FILE"))
 	return s, nil
 }
 

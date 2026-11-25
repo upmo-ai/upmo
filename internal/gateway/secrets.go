@@ -9,8 +9,9 @@ import "github.com/upmo-ai/upmo/internal/platform/secretchain"
 // ErrMissing is a credential the backend does not hold.
 var ErrMissing = secretchain.ErrMissing
 
-// VaultHTTP reads a KV v2 secret data.value or data for the ref key.
-var VaultHTTP = secretchain.VaultHTTP
+// VaultHTTP reads a KV v2 secret through netguard; its zero value is
+// production, which requires https and trusts only UPMO_TLS_CA_FILE.
+type VaultHTTP = secretchain.VaultHTTP
 
 // SecretBackend is one enabled secret source.
 type SecretBackend = secretchain.Backend

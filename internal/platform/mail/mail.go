@@ -5,15 +5,18 @@ package mail
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
 	netmail "net/mail"
+	"net/netip"
 	"net/smtp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/netguard"
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
@@ -39,15 +42,25 @@ const Timeout = 10 * time.Second
 var ErrAddress = errors.New("mail: not an email address")
 
 // SMTP sends through one relay, upgrading with STARTTLS when the relay offers
-// it. A relay that is neither loopback nor one DNS label is refused unless it
-// offers STARTTLS. net/smtp refuses to send a password without TLS unless the
-// relay is on localhost.
+// it. The dial goes through netguard, so an address that resolves into a
+// link-local or metadata range is never reached. The zero value is
+// production: STARTTLS on every host, trusted only as far as UPMO_TLS_CA_FILE
+// says. Development keeps plaintext for loopback and one DNS label and, with
+// no CAFile, the system roots. net/smtp refuses to send a password without
+// TLS unless the relay is on localhost.
 type SMTP struct {
 	Host     string
 	Port     int
 	User     string
 	Password string
 	From     string
+	// Development is true only for UPMO_ENV=development; the zero value is
+	// production.
+	Development bool
+	// CAFile is UPMO_TLS_CA_FILE. Production requires it for every send.
+	CAFile string
+	// Lookup resolves a host. Nil uses the system resolver. Tests set it.
+	Lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
 // SendInvite sends the invite link to the invited person.
@@ -78,7 +91,16 @@ func (s SMTP) send(ctx context.Context, to, subject, body string) error {
 		ctx, cancel = context.WithTimeout(ctx, Timeout)
 		defer cancel()
 	}
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
+	var pool *x509.CertPool
+	if !s.Development || s.CAFile != "" {
+		pool, err = tlscheck.RootCAs(s.CAFile)
+		if err != nil {
+			return fmt.Errorf("mail: %w", err)
+		}
+	}
+	// The relay sits on the private network, so the guard allows private and
+	// loopback targets; link-local and metadata addresses stay refused.
+	conn, err := (&netguard.Guard{LocalNetwork: true, Lookup: s.Lookup}).Dial(ctx, "tcp", net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
 	if err != nil {
 		return fmt.Errorf("mail: dial: %w", err)
 	}
@@ -94,10 +116,14 @@ func (s SMTP) send(ctx context.Context, to, subject, body string) error {
 	}
 	defer func() { _ = client.Close() }()
 	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12}); err != nil {
+		if err := client.StartTLS(&tls.Config{ServerName: s.Host, RootCAs: pool, MinVersion: tls.VersionTLS12}); err != nil {
+			var certErr *tls.CertificateVerificationError
+			if errors.As(err, &certErr) {
+				return fmt.Errorf("mail: starttls: the relay certificate is not trusted by UPMO_TLS_CA_FILE: %w", err)
+			}
 			return fmt.Errorf("mail: starttls: %w", err)
 		}
-	} else if !tlscheck.ExemptHost(s.Host) {
+	} else if !tlscheck.PlaintextAllowed(s.Development, s.Host) {
 		return fmt.Errorf("mail: the relay must offer STARTTLS unless its host is loopback or one DNS label")
 	}
 	if s.User != "" {

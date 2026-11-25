@@ -20,7 +20,7 @@ import (
 
 func TestSMTPSendsTheInviteLink(t *testing.T) {
 	relay := startRelay(t, "127.0.0.1")
-	sender := SMTP{Host: "127.0.0.1", Port: relay.port, From: "Upmo <noreply@upmo.test>"}
+	sender := SMTP{Host: "127.0.0.1", Port: relay.port, From: "Upmo <noreply@upmo.test>", Development: true}
 	link := "https://upmo.test/login/link#upmo_link_abc"
 	if err := sender.SendInvite(context.Background(), "Ada <ada@example.com>", link); err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestSMTPSendsTheInviteLink(t *testing.T) {
 
 func TestSMTPSendsTheRecoverLink(t *testing.T) {
 	relay := startRelay(t, "127.0.0.1")
-	sender := SMTP{Host: "127.0.0.1", Port: relay.port, From: "noreply@upmo.test"}
+	sender := SMTP{Host: "127.0.0.1", Port: relay.port, From: "noreply@upmo.test", Development: true}
 	link := "https://upmo.test/login/link#upmo_link_def"
 	if err := sender.SendRecover(context.Background(), "bob@example.com", link); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestSMTPErrorDoesNotHoldTheLink(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	link := "https://upmo.test/login/link#upmo_link_secret"
-	err = SMTP{Host: "127.0.0.1", Port: port, From: "noreply@upmo.test"}.SendRecover(context.Background(), "bob@example.com", link)
+	err = SMTP{Host: "127.0.0.1", Port: port, From: "noreply@upmo.test", Development: true}.SendRecover(context.Background(), "bob@example.com", link)
 	if err == nil || strings.Contains(err.Error(), "upmo_link_secret") {
 		t.Fatalf("err = %v", err)
 	}
@@ -91,7 +91,7 @@ func TestNoopSendsNothing(t *testing.T) {
 // local listener, the send is refused and the error says STARTTLS.
 func TestSMTPRequiresStartTLSOffLocalhost(t *testing.T) {
 	relay := startRelay(t, "127.0.0.2")
-	sender := SMTP{Host: "127.0.0.2", Port: relay.port, From: "noreply@upmo.test"}
+	sender := SMTP{Host: "127.0.0.2", Port: relay.port, From: "noreply@upmo.test", Development: true}
 	err := sender.SendInvite(context.Background(), "ada@example.com", "https://upmo.test/login/link#x")
 	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
 		t.Fatalf("err = %v, want it to say STARTTLS", err)
@@ -104,7 +104,7 @@ func TestSMTPRequiresStartTLSOffLocalhost(t *testing.T) {
 // smtp.example.com because a real name cannot point at a local listener.
 func TestSMTPRefusesSTARTTLSWithAnUntrustedCertificate(t *testing.T) {
 	port := startStartTLSRelay(t, "127.0.0.2")
-	sender := SMTP{Host: "127.0.0.2", Port: port, From: "noreply@upmo.test"}
+	sender := SMTP{Host: "127.0.0.2", Port: port, From: "noreply@upmo.test", Development: true}
 	err := sender.SendInvite(context.Background(), "ada@example.com", "https://upmo.test/login/link#x")
 	if err == nil || !strings.Contains(err.Error(), "starttls") {
 		t.Fatalf("err = %v, want it to say starttls", err)

@@ -40,7 +40,7 @@ func TestLinkIssuedLogsCarryNoEmailAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	members := identity.Members(owner, sealer.NewEmail(t), "http://localhost:5173", brainops.LinkMail(config.SMTP{}), log)
+	members := identity.Members(owner, sealer.NewEmail(t), "http://localhost:5173", brainops.LinkMail(config.EnvProduction, config.SMTP{}), log)
 
 	logs := &bytes.Buffer{}
 	previous := slog.Default()

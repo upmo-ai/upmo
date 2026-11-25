@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 )
 
@@ -106,9 +107,17 @@ func (c Chain) Get(ref string) (string, error) {
 }
 
 // FromEnv builds the standard chain: the environment, then Vault when both
-// UPMO_VAULT_ADDR and UPMO_VAULT_TOKEN are set. A Vault address that is
-// neither https nor on an exempt host is refused.
+// UPMO_VAULT_ADDR and UPMO_VAULT_TOKEN are set. Production (the default
+// UPMO_ENV) requires an https address on any host; development still allows
+// http on loopback or one DNS label. The CA file is not read here: every
+// fetch loads UPMO_TLS_CA_FILE itself.
 func FromEnv(lookup func(string) (string, bool)) (Chain, error) {
+	envValue, _ := lookup("UPMO_ENV")
+	env, err := config.ParseEnv(envValue)
+	if err != nil {
+		return nil, err
+	}
+	development := env == config.EnvDevelopment
 	chain := Chain{EnvSecrets{}}
 	addr, _ := lookup("UPMO_VAULT_ADDR")
 	token, _ := lookup("UPMO_VAULT_TOKEN")
@@ -116,15 +125,20 @@ func FromEnv(lookup func(string) (string, bool)) (Chain, error) {
 		return chain, nil
 	}
 	u, err := url.Parse(addr)
-	if err != nil || (u.Scheme != "https" && !tlscheck.ExemptHost(u.Hostname())) {
+	if err != nil || (u.Scheme != "https" && !tlscheck.PlaintextAllowed(development, u.Hostname())) {
+		if !development {
+			return nil, fmt.Errorf("secretchain: UPMO_VAULT_ADDR must be https when UPMO_ENV=production")
+		}
 		return nil, fmt.Errorf("secretchain: UPMO_VAULT_ADDR must be https unless the host is loopback or one DNS label")
 	}
 	path, _ := lookup("UPMO_VAULT_PATH")
+	caFile, _ := lookup("UPMO_TLS_CA_FILE")
+	caFile = strings.TrimSpace(caFile)
 	chain = append(chain, VaultSecrets{
 		Addr:  addr,
 		Token: token,
 		Path:  path,
-		Fetch: VaultHTTP,
+		Fetch: VaultHTTP{Development: development, CAFile: caFile}.Fetch,
 	})
 	return chain, nil
 }

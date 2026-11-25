@@ -54,6 +54,60 @@ func TestExemptHost(t *testing.T) {
 	}
 }
 
+// Only development on an exempt host may skip TLS. Production never allows
+// plaintext, whatever the host.
+func TestPlaintextAllowed(t *testing.T) {
+	cases := []struct {
+		development bool
+		host        string
+		want        bool
+	}{
+		{true, "vault", true},
+		{true, "localhost", true},
+		{true, "127.0.0.1", true},
+		{true, "vault.example", false},
+		{false, "vault", false},
+		{false, "localhost", false},
+		{false, "127.0.0.1", false},
+		{false, "vault.example", false},
+	}
+	for _, tc := range cases {
+		if got := PlaintextAllowed(tc.development, tc.host); got != tc.want {
+			t.Errorf("PlaintextAllowed(development %v, %q) = %v, want %v", tc.development, tc.host, got, tc.want)
+		}
+	}
+}
+
+// TestRootCAs builds a pool that verifies a certificate the CA file signed,
+// and answers an empty path, a missing path and a file with no certificate
+// with the one error that names the variable.
+func TestRootCAs(t *testing.T) {
+	caFile, leaf := writeCAWithLeaf(t)
+	pool, err := RootCAs(caFile)
+	if err != nil {
+		t.Fatalf("RootCAs(%q): %v", caFile, err)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
+		t.Fatalf("the pool does not verify a certificate the CA file signed: %v", err)
+	}
+
+	plain := filepath.Join(t.TempDir(), "not-a-certificate.pem")
+	if err := os.WriteFile(plain, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := "tlscheck: UPMO_TLS_CA_FILE must name a readable PEM CA file"
+	for name, path := range map[string]string{
+		"empty path":   "",
+		"missing path": filepath.Join(t.TempDir(), "missing.pem"),
+		"non-PEM file": plain,
+	} {
+		pool, err := RootCAs(path)
+		if err == nil || err.Error() != want || pool != nil {
+			t.Errorf("%s: RootCAs = pool %v, err %v; want no pool and err %q", name, pool, err, want)
+		}
+	}
+}
+
 // TestPostgresURLTableRefusesThePlantedRequireRow is the rule table for the
 // Postgres URL check. The planted bug for this ticket accepts sslmode=require
 // on a dotted host: if require is ever accepted, that row fails here.
@@ -191,6 +245,56 @@ func writeTestCA(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// writeCAWithLeaf writes a throwaway CA certificate and returns its path and
+// a server certificate the CA signed, so a test can check what a pool built
+// from the file verifies.
+func writeCAWithLeaf(t *testing.T) (string, *x509.Certificate) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "upmo-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	file := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(path, file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		DNSNames:     []string{"vault"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	signed, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := x509.ParseCertificate(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, parsed
 }
 
 // writeTestServiceFile writes a Postgres service file whose prod service

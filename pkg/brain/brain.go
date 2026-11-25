@@ -608,7 +608,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		cleanupPools()
 		return nil, err
 	}
-	members := identity.WithAvatars(identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(internalCfg.SMTP), log), cfg.AvatarsDir)
+	members := identity.WithAvatars(identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(env, internalCfg.SMTP), log), cfg.AvatarsDir)
 	roles := identity.Roles(pool, log)
 	teams := identity.Teams(pool, log)
 	workspace := identity.Workspace(pool)

@@ -69,7 +69,7 @@ func command(name string, args []string) error {
 	case "bootstrap":
 		return bootstrap(ctx, passkeys, args)
 	case "recover":
-		return recover(ctx, passkeys, identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(cfg.SMTP), log), args)
+		return recover(ctx, passkeys, identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(cfg.Env, cfg.SMTP), log), args)
 	default:
 		return fmt.Errorf("brain: unknown command %q", name)
 	}

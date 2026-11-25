@@ -545,6 +545,8 @@ func TestLoadSMTPUnset(t *testing.T) {
 		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_SMTP_HOST":    "",
+		// The CA file is read only when mail is set.
+		"UPMO_TLS_CA_FILE": "/etc/upmo/ca.pem",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -582,6 +584,19 @@ func TestLoadSMTP(t *testing.T) {
 	}
 	if cfg.SMTP.Port != 1025 || cfg.SMTP.User != "" {
 		t.Fatalf("SMTP = %+v", cfg.SMTP)
+	}
+	cfg, err = load(lookupFrom(map[string]string{
+		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_SMTP_HOST":    "smtp.example.com",
+		"UPMO_SMTP_FROM":    "noreply@example.com",
+		"UPMO_TLS_CA_FILE":  "  /etc/upmo/ca.pem  ",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SMTP.CAFile != "/etc/upmo/ca.pem" {
+		t.Fatalf("CAFile = %q, want the trimmed UPMO_TLS_CA_FILE", cfg.SMTP.CAFile)
 	}
 }
 

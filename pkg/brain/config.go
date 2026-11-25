@@ -56,6 +56,7 @@ type SMTPConfig struct {
 	User     string
 	Password string
 	From     string
+	CAFile   string
 }
 
 // LoadConfig reads the brain configuration from UPMO_ environment variables.
@@ -112,6 +113,7 @@ func fromInternalConfig(cfg config.Config) Config {
 			User:     cfg.SMTP.User,
 			Password: cfg.SMTP.Password,
 			From:     cfg.SMTP.From,
+			CAFile:   cfg.SMTP.CAFile,
 		},
 	}
 }
@@ -161,6 +163,7 @@ func toInternalConfig(cfg Config) config.Config {
 			User:     cfg.SMTP.User,
 			Password: cfg.SMTP.Password,
 			From:     cfg.SMTP.From,
+			CAFile:   cfg.SMTP.CAFile,
 		},
 	}
 }
