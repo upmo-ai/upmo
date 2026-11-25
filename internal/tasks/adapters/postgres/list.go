@@ -58,7 +58,7 @@ func (s Store) View(ctx context.Context, access app.Access, taskID string) (app.
 		SELECT id::text, goal, status, budget, spent, updated_at, cause, result
 		FROM tasks.tasks
 		WHERE id = $1::uuid`, taskID).Scan(
-		&view.ID, &view.Title, &status, &view.LimitCents, &view.SpentCents, &view.UpdatedAt, &view.Detail, &raw)
+		&view.ID, &view.Title, &status, &view.BudgetMicroUSD, &view.SpentMicroUSD, &view.UpdatedAt, &view.Detail, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.TaskView{}, app.ErrGone
 	}
@@ -114,7 +114,7 @@ func (s Store) List(ctx context.Context, access app.Access) ([]app.TaskSummary, 
 	for rows.Next() {
 		var task app.TaskSummary
 		var status, last string
-		if err := rows.Scan(&task.ID, &task.Title, &status, &task.LimitCents, &task.SpentCents, &task.UpdatedAt, &last); err != nil {
+		if err := rows.Scan(&task.ID, &task.Title, &status, &task.BudgetMicroUSD, &task.SpentMicroUSD, &task.UpdatedAt, &last); err != nil {
 			return nil, fmt.Errorf("tasks: list: %w", err)
 		}
 		if err := fill(&task, status, domain.Status(last)); err != nil {

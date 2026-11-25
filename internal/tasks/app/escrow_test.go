@@ -40,12 +40,12 @@ type fakeLedger struct {
 	spends int
 }
 
-func (f *fakeLedger) Fund(context.Context, Access, string, int) error {
+func (f *fakeLedger) Fund(context.Context, Access, string, int64) error {
 	f.funds++
 	return nil
 }
 
-func (f *fakeLedger) Spend(context.Context, Access, string, int) error {
+func (f *fakeLedger) Spend(context.Context, Access, string, int64) error {
 	f.spends++
 	return nil
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/decisions"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/kernel"
 	"github.com/upmo-ai/upmo/internal/knowledge"
 	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
@@ -1797,7 +1798,7 @@ func (t chatActionTools) CreateAutomation(ctx context.Context, current chat.Acce
 	templateID, err := tasks.SaveTemplate(ctx, t.tasks, access, "", tasks.Template{
 		Goal:    in.Goal,
 		AgentID: in.AgentID,
-		Budget:  in.BudgetCents,
+		Budget:  int64(in.BudgetCents) * kernel.MicroUSDPerCent,
 	})
 	if err != nil {
 		return "", "", err

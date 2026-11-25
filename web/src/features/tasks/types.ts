@@ -112,9 +112,9 @@ export interface Task {
   cost?: string;
   tokens?: number;
   spendLimit?: string;
-  /** Spent and limit in cents, so the budget percent is computed, not asserted. */
-  spentCents?: number;
-  limitCents?: number;
+  /** Spent and budget in whole micro-USD, so the budget percent is computed, not asserted. */
+  spentMicroUsd?: number;
+  budgetMicroUsd?: number;
   pausePercent?: number;
   runNumber?: number;
   model?: string;

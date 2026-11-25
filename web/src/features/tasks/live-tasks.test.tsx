@@ -18,8 +18,8 @@ type Stored = {
   title: string;
   status: string;
   phase: string;
-  spent_cents: number;
-  limit_cents: number;
+  spent_micro_usd: number;
+  budget_micro_usd: number;
   updated_at: string;
   result: string;
   detail: string;
@@ -33,8 +33,8 @@ function stored(id: string, title: string, status: string, phase: string, extra:
     title,
     status,
     phase,
-    spent_cents: 0,
-    limit_cents: 0,
+    spent_micro_usd: 0,
+    budget_micro_usd: 0,
     updated_at: "2026-11-08T09:00:00Z",
     result: "",
     detail: "",
@@ -54,8 +54,8 @@ type Call = { method: string; path: string; body: unknown };
 function brain(options: { list?: () => Response; refuseCreate?: boolean } = {}) {
   const tasks: Stored[] = [
     stored(mailId, "Sort the morning mail", "Working", "Working", {
-      spent_cents: 45,
-      limit_cents: 200,
+      spent_micro_usd: 450_000,
+      budget_micro_usd: 2_000_000,
       subtasks: [{ id: "child-1", title: "Flag the invoices", status: "Done" }],
       events: [
         event("ev-1", "Preparing", "open", "Task opened"),
@@ -81,8 +81,8 @@ function brain(options: { list?: () => Response; refuseCreate?: boolean } = {}) 
     title: task.title,
     status: task.status,
     phase: task.phase,
-    spent_cents: task.spent_cents,
-    limit_cents: task.limit_cents,
+    spent_micro_usd: task.spent_micro_usd,
+    budget_micro_usd: task.budget_micro_usd,
     updated_at: task.updated_at,
   });
   const find = (id: string) => [...tasks, unlisted].find((task) => task.id === id);
@@ -169,7 +169,7 @@ describe("tasks from the brain", () => {
 
     // Only a task with a budget shows money, and none shows what the brain did not send.
     const tile = screen.getByText("Sort the morning mail").closest("a") as HTMLElement;
-    expect(tile.textContent).toContain("€0.45");
+    expect(tile.textContent).toContain("US$0.45");
     const bare = screen.getByText("Plan the launch email").closest("a") as HTMLElement;
     expect(bare.querySelector(".task-tile-meta")).toBeNull();
     expect(document.body.textContent).not.toContain("undefined");
@@ -189,8 +189,17 @@ describe("tasks from the brain", () => {
     const subtasks = await screen.findByRole("list", { name: "Subtasks" });
     expect(within(subtasks).getByText("Flag the invoices")).toBeTruthy();
     expect(within(subtasks).getByTestId("subtask-status").textContent).toBe("Done");
-    expect(screen.getByText("Spent: €0.45")).toBeTruthy();
-    expect(screen.getByText("Limit: €2.00")).toBeTruthy();
+    expect(screen.getByText("Spent: US$0.45")).toBeTruthy();
+    expect(screen.getByText("Limit: US$2.00")).toBeTruthy();
+
+    cleanup();
+    renderAt(`/tasks/${planId}`);
+    expect(await screen.findByRole("heading", { level: 1, name: "Plan the launch email" })).toBeTruthy();
+    expect(screen.getByText("Spent: Unknown")).toBeTruthy();
+    expect(screen.getByText("Limit: Unknown")).toBeTruthy();
+    cleanup();
+    renderAt(`/tasks/${mailId}`);
+    expect(await screen.findByRole("heading", { level: 1, name: "Sort the morning mail" })).toBeTruthy();
 
     act(() => {
       screen.getByRole("radio", { name: "All events" }).click();

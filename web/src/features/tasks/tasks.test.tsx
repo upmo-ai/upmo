@@ -745,7 +745,7 @@ describe("tasks", () => {
     });
     expect(await screen.findByRole("heading", { level: 1, name: "Bare task" })).toBeTruthy();
     const header = document.querySelector(".task-header") as HTMLElement;
-    for (const invented of ["Run 14", "gpt-5.2", "started 08:00", "€2.10", "Upmo ·"]) {
+    for (const invented of ["Run 14", "gpt-5.2", "started 08:00", "US$2.10", "Upmo ·"]) {
       expect(header.textContent).not.toContain(invented);
     }
     expect(header.querySelector(".upmo-task-header__cost")).toBeNull();
@@ -808,7 +808,7 @@ describe("tasks", () => {
     });
     const tile = (await screen.findByText("Bare task")).closest("a") as HTMLElement;
     expect(tile.querySelector(".task-tile-meta")).toBeNull();
-    expect(tile.textContent).not.toContain("€0.00");
+    expect(tile.textContent).not.toContain("US$0.00");
     expect(tile.textContent).not.toContain("0 tokens");
   });
 
@@ -816,14 +816,14 @@ describe("tasks", () => {
     renderAt("/tasks/aster-digest");
     expect(await screen.findByRole("heading", { level: 1, name: "Daily finance digest" })).toBeTruthy();
     const header = document.querySelector(".task-header") as HTMLElement;
-    expect(header.textContent).toContain("Run 14 · Upmo · gpt-5.2 · started 08:00 · €2.10");
-    expect(screen.getByText(/€2.10 of €5.00 · 38k tokens · pauses at 90%/)).toBeTruthy();
+    expect(header.textContent).toContain("Run 14 · Upmo · gpt-5.2 · started 08:00 · US$2.10");
+    expect(screen.getByText(/US\$2.10 of US\$5.00 · 38k tokens · pauses at 90%/)).toBeTruthy();
     expect(screen.getByText("After the task is done")).toBeTruthy();
     expect(screen.getByText("Finance mailbox")).toBeTruthy();
     cleanup();
     renderAt("/tasks");
     expect(await screen.findByText("Daily finance digest")).toBeTruthy();
-    expect(taskList().textContent).toContain("€2.10");
+    expect(taskList().textContent).toContain("US$2.10");
     expect(taskList().textContent).toContain("38k tokens");
   });
 

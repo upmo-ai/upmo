@@ -27,7 +27,7 @@ const (
 
 func init() {
 	register(TaskCreate, "task", classAPIActivity, activityUnknown)
-	register(TaskUpdate, "task", classAPIActivity, activityUnknown, "status")
+	register(TaskUpdate, "task", classAPIActivity, activityUnknown, "status", "budget")
 	register(TaskChat, "line", classAPIActivity, activityUnknown)
 	register(TaskStatusChange, "task", classAPIActivity, activityUnknown, "status")
 	register(TaskShare, "task", classAPIActivity, activityUnknown, "grants", "visibility")

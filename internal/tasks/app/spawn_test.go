@@ -100,7 +100,7 @@ type fakeSpawner struct {
 	children []Subtask
 }
 
-func (f *fakeSpawner) Spawn(context.Context, Access, string, string, int, string) (Task, error) {
+func (f *fakeSpawner) Spawn(context.Context, Access, string, string, int64, string) (Task, error) {
 	f.spawns++
 	return Task{}, nil
 }

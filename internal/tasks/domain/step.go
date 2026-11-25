@@ -40,6 +40,8 @@ const (
 	// They take the same edge and differ only in the event they leave.
 	Approve Kind = "approve"
 	Deny    Kind = "deny"
+	// Fund raises a non-terminal root budget. It is not a status transition.
+	Fund Kind = "fund"
 )
 
 const (

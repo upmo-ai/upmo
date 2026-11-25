@@ -123,15 +123,9 @@ func TestChargeActualPreservesFullSpendAndPausesOnCross(t *testing.T) {
 	if !errors.Is(err, ErrExhausted) || spent2 != 1_250_000 || !paused2 {
 		t.Fatalf("while paused = spent:%d paused:%v err:%v", spent2, paused2, err)
 	}
-}
 
-func TestChargeCappedMatchesCappedSemantics(t *testing.T) {
-	spent, paused, err := ChargeCapped(10, 0, 10, false)
-	if err != nil || spent != 10 || !paused {
-		t.Fatalf("exact = %d paused:%v err:%v", spent, paused, err)
-	}
-	spent, paused, err = ChargeCapped(10, 0, 11, false)
-	if !errors.Is(err, ErrExhausted) || spent != 0 || !paused {
-		t.Fatalf("over = %d paused:%v err:%v", spent, paused, err)
+	spent, paused, err = ChargeActual(0, 0, 0, false)
+	if err != nil || spent != 0 || !paused {
+		t.Fatalf("zero budget = spent:%d paused:%v err:%v", spent, paused, err)
 	}
 }

@@ -76,8 +76,8 @@ function pendingFor(approvals: Approval[] | undefined, taskId?: string) {
 
 /** The spent share of the limit. pausePercent is the threshold, never this. */
 function budgetPercent(task: Task) {
-  if (!task.limitCents || task.limitCents <= 0) return 0;
-  return Math.min(100, Math.round(((task.spentCents ?? 0) / task.limitCents) * 100));
+  if (!task.budgetMicroUsd || task.budgetMicroUsd <= 0) return 0;
+  return Math.min(100, Math.round(((task.spentMicroUsd ?? 0) / task.budgetMicroUsd) * 100));
 }
 
 export function TasksPage() {
@@ -306,7 +306,7 @@ export function TaskPage() {
   const budget =
     task.cost !== undefined &&
     task.spendLimit !== undefined &&
-    task.limitCents !== undefined &&
+    task.budgetMicroUsd !== undefined &&
     task.pausePercent !== undefined
       ? {
           percent: budgetPercent(task),

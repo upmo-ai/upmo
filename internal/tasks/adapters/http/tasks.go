@@ -61,6 +61,8 @@ type Handler struct {
 	// the event runs as its own statement. Nil leaves the middleware's
 	// fallback to record the open.
 	Audit audit.Execer
+	// Ledger funds a task. Nil falls back to Book when Book is a Ledger.
+	Ledger app.Ledger
 	// Now returns the current time. Nil uses time.Now().
 	Now func() time.Time
 }
@@ -206,15 +208,33 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Kind string `json:"kind"`
-		Body string `json:"body"`
-		Turn string `json:"turn"`
+		Kind   string `json:"kind"`
+		Body   string `json:"body"`
+		Turn   string `json:"turn"`
+		Amount *int64 `json:"amount"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		writeError(w, http.StatusBadRequest, "a task needs a kind")
 		return
 	}
 	kind := domain.Kind(strings.TrimSpace(input.Kind))
+	if kind == domain.Fund {
+		if input.Amount == nil {
+			refuse(w, domain.ErrBudget)
+			return
+		}
+		book := h.ledger()
+		if book == nil {
+			refuse(w, app.ErrGone)
+			return
+		}
+		funded, err := app.FundView(r.Context(), book, h.View, access, r.PathValue("id"), *input.Amount)
+		if refuse(w, err) {
+			return
+		}
+		writeJSON(w, http.StatusOK, taskBody(funded))
+		return
+	}
 	switch kind {
 	case domain.Advance, domain.Plan, domain.Fail, domain.Chat, domain.Pass:
 	default:
@@ -234,6 +254,17 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, taskBody(stepped.Task))
+}
+
+func (h Handler) ledger() app.Ledger {
+	if h.Ledger != nil {
+		return h.Ledger
+	}
+	book, ok := h.Book.(app.Ledger)
+	if !ok {
+		return nil
+	}
+	return book
 }
 
 func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, bool) {
@@ -304,7 +335,7 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusConflict, "the task already waits for an approval")
 	case errors.Is(err, domain.ErrApproval):
 		writeError(w, http.StatusBadRequest, "the approval input was refused")
-	case errors.Is(err, app.ErrTask), errors.Is(err, domain.ErrInput), errors.Is(err, domain.ErrGoal), errors.Is(err, domain.ErrChat):
+	case errors.Is(err, app.ErrTask), errors.Is(err, domain.ErrInput), errors.Is(err, domain.ErrGoal), errors.Is(err, domain.ErrChat), errors.Is(err, domain.ErrBudget):
 		writeError(w, http.StatusBadRequest, "the task input was refused")
 	case errors.Is(err, domain.ErrTerminal), errors.Is(err, domain.ErrEvidence), errors.Is(err, domain.ErrTurn), errors.Is(err, domain.ErrExhausted), errors.Is(err, domain.ErrStatus):
 		writeError(w, http.StatusConflict, "the task cannot take that step")

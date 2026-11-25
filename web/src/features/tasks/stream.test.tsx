@@ -27,13 +27,13 @@ type Stored = {
   title: string;
   status: string;
   phase: string;
-  spent_cents: number;
-  limit_cents: number;
+  spent_micro_usd: number;
+  budget_micro_usd: number;
   events: { id: string; time: string; phase: string; type: string; message: string }[];
 };
 
 function stored(id: string, title: string, status: string, phase: string, events: Stored["events"]): Stored {
-  return { id, title, status, phase, spent_cents: 0, limit_cents: 0, events };
+  return { id, title, status, phase, spent_micro_usd: 0, budget_micro_usd: 0, events };
 }
 
 const opened = { id: "ev-1", time: "2026-11-08T09:00:00Z", phase: "Preparing", type: "open", message: "Task opened" };

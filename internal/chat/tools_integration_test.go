@@ -16,6 +16,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/chat"
 	"github.com/upmo-ai/upmo/internal/chat/app"
+	"github.com/upmo-ai/upmo/internal/kernel"
 	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
@@ -121,7 +122,7 @@ func (t rigActionTools) CreateAutomation(ctx context.Context, access chat.Access
 	templateID, err := tasks.SaveTemplate(ctx, t.tasks, taskAccess, "", tasks.Template{
 		Goal:    in.Goal,
 		AgentID: in.AgentID,
-		Budget:  in.BudgetCents,
+		Budget:  int64(in.BudgetCents) * kernel.MicroUSDPerCent,
 	})
 	if err != nil {
 		return "", "", err
@@ -539,6 +540,13 @@ func TestMutatingUpmoToolsHoldByDefaultAndExecuteWithAllowance(t *testing.T) {
 	})
 	if err != nil || tplID == "" || autoID == "" {
 		t.Fatalf("CreateAutomation = tpl=%q auto=%q err=%v", tplID, autoID, err)
+	}
+	var savedBudget int64
+	if err := r.owner.QueryRow(ctx, `SELECT budget FROM tasks.templates WHERE id = $1::uuid`, tplID).Scan(&savedBudget); err != nil {
+		t.Fatal(err)
+	}
+	if savedBudget != 5_000_000 {
+		t.Fatalf("template budget = %d, want 5000000", savedBudget)
 	}
 
 	// 5. Verify save_memory refuses if the chat becomes shared mid-round.

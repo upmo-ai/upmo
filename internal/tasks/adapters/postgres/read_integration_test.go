@@ -121,7 +121,7 @@ func TestListShapeAndOrder(t *testing.T) {
 		t.Fatalf("order = %s, %s", listed[0].Title, listed[1].Title)
 	}
 	got := listed[0]
-	if got.Title != "First" || got.SpentCents != 120 || got.LimitCents != 1000 || got.Status != domain.ShownWorking || got.Phase != domain.Planning {
+	if got.Title != "First" || got.SpentMicroUSD != 120 || got.BudgetMicroUSD != 2_000_000 || got.Status != domain.ShownWorking || got.Phase != domain.Planning {
 		t.Fatalf("first = %+v", got)
 	}
 	if got.UpdatedAt.IsZero() || got.UpdatedAt.Before(listed[1].UpdatedAt) {
@@ -391,6 +391,21 @@ func TestHTTPServesTheReadModel(t *testing.T) {
 	}
 	path := "/api/tasks/" + created.ID
 
+	code, body = do(owned, http.MethodGet, path, "")
+	if code != http.StatusOK {
+		t.Fatalf("open get = %d %s", code, body)
+	}
+	var opened struct {
+		Spent  int64 `json:"spent_micro_usd"`
+		Budget int64 `json:"budget_micro_usd"`
+	}
+	if err := json.Unmarshal(body, &opened); err != nil {
+		t.Fatal(err)
+	}
+	if opened.Spent != 0 || opened.Budget != 2_000_000 {
+		t.Fatalf("opened money = %+v", opened)
+	}
+
 	code, body = do(owned, http.MethodPost, path, `{"kind":"chat","body":" Start with March "}`)
 	if code != http.StatusCreated {
 		t.Fatalf("chat = %d %s", code, body)
@@ -411,7 +426,7 @@ func TestHTTPServesTheReadModel(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("advance = %d %s", code, body)
 	}
-	hasKeys(body, "id", "title", "status", "phase", "spent_cents", "limit_cents", "updated_at", "result", "detail", "subtasks", "events")
+	hasKeys(body, "id", "title", "status", "phase", "spent_micro_usd", "budget_micro_usd", "updated_at", "result", "detail", "subtasks", "events")
 	var detail struct {
 		ID, Title, Status, Phase, Result, Detail string
 		Subtasks                                 []json.RawMessage
@@ -452,7 +467,7 @@ func TestHTTPServesTheReadModel(t *testing.T) {
 	if err := json.Unmarshal(body, &items); err != nil || len(items) != 1 {
 		t.Fatalf("list = %s %v", body, err)
 	}
-	hasKeys(items[0], "id", "title", "status", "phase", "spent_cents", "limit_cents", "updated_at")
+	hasKeys(items[0], "id", "title", "status", "phase", "spent_micro_usd", "budget_micro_usd", "updated_at")
 
 	code, body = do(others, http.MethodGet, path, "")
 	if code != http.StatusNotFound || strings.TrimSpace(string(body)) != `{"error":"no such task"}` {
@@ -465,5 +480,23 @@ func TestHTTPServesTheReadModel(t *testing.T) {
 	code, body = do(others, http.MethodPost, path, `{"kind":"chat","body":"hello"}`)
 	if code != http.StatusNotFound {
 		t.Fatalf("other chat = %d %s", code, body)
+	}
+
+	code, body = do(owned, http.MethodPost, path, `{"kind":"fund","amount":2500000}`)
+	if code != http.StatusOK {
+		t.Fatalf("fund = %d %s", code, body)
+	}
+	if strings.Contains(string(body), "spent_cents") || strings.Contains(string(body), "limit_cents") {
+		t.Fatalf("fund body uses old money keys: %s", body)
+	}
+	var funded struct {
+		Spent  int64 `json:"spent_micro_usd"`
+		Budget int64 `json:"budget_micro_usd"`
+	}
+	if err := json.Unmarshal(body, &funded); err != nil {
+		t.Fatal(err)
+	}
+	if funded.Spent != 0 || funded.Budget != 2_500_000 {
+		t.Fatalf("funded money = %+v", funded)
 	}
 }

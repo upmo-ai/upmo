@@ -16,7 +16,7 @@ const questionId = "01990000-0000-7000-8000-0000000000c4";
 const approvalAction = "Send the weekly summary to the finance list";
 const approvalTitle = "Email the weekly summary";
 
-type StoredTask = { id: string; title: string; status: string; phase: string; spent_cents: number; limit_cents: number };
+type StoredTask = { id: string; title: string; status: string; phase: string; spent_micro_usd: number; budget_micro_usd: number };
 type StoredApproval = { id: string; task_id: string; title: string; action: string; state: string };
 type StoredNotice = { id: string; kind: string; title: string; task_id?: string };
 
@@ -29,8 +29,8 @@ type Call = { method: string; path: string; body: unknown };
  */
 function brain(options: { refuseDecide?: boolean; refuseNotices?: () => Response } = {}) {
   const tasks: StoredTask[] = [
-    { id: waitingId, title: approvalTitle, status: "Needs approval", phase: "Working", spent_cents: 0, limit_cents: 0 },
-    { id: doneId, title: "Reconcile the accounts", status: "Done", phase: "Checking", spent_cents: 0, limit_cents: 0 },
+    { id: waitingId, title: approvalTitle, status: "Needs approval", phase: "Working", spent_micro_usd: 0, budget_micro_usd: 0 },
+    { id: doneId, title: "Reconcile the accounts", status: "Done", phase: "Checking", spent_micro_usd: 0, budget_micro_usd: 0 },
   ];
   const approvals: StoredApproval[] = [
     { id: approvalId, task_id: waitingId, title: approvalTitle, action: approvalAction, state: "pending" },

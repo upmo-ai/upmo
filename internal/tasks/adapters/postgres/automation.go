@@ -101,7 +101,7 @@ func (s Store) Fire(ctx context.Context, access app.Access, automationID, dedup 
 	}
 
 	var goal string
-	var budget int
+	var budget int64
 	err = tx.QueryRow(ctx, `SELECT goal, budget FROM tasks.automation_template($1::uuid)`, automationID).Scan(&goal, &budget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s.trip(ctx, tx, automationID, failures, app.ErrGone)
@@ -119,10 +119,10 @@ func (s Store) Fire(ctx context.Context, access app.Access, automationID, dedup 
 	}
 	var taskID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, allow, automation_id)
-		VALUES ($1::uuid, 'private', $2, $3, $4, $5::uuid)
+		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, allow, automation_id, budget)
+		VALUES ($1::uuid, 'private', $2, $3, $4, $5::uuid, $6)
 		RETURNING id::text`,
-		access.UserID, filled, string(next), access.Allow, automationID).Scan(&taskID)
+		access.UserID, filled, string(next), access.Allow, automationID, budgetOrDefault(budget)).Scan(&taskID)
 	if err != nil {
 		return "", false, fmt.Errorf("tasks: open from automation: %w", err)
 	}
@@ -137,13 +137,6 @@ func (s Store) Fire(ctx context.Context, access app.Access, automationID, dedup 
 		TargetID: taskID,
 	}); err != nil {
 		return "", false, err
-	}
-	tag, err := tx.Exec(ctx, `UPDATE tasks.tasks SET budget = $2 WHERE id = $1::uuid`, taskID, budget)
-	if err != nil {
-		return "", false, fmt.Errorf("tasks: fund from automation: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return "", false, app.ErrGone
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO tasks.automation_fires (automation_id, dedup_key, task_id)

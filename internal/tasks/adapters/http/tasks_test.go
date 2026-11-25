@@ -79,7 +79,7 @@ func TestUnknownKindIsRefused(t *testing.T) {
 func TestListReturnsTasks(t *testing.T) {
 	book := &fakeBook{listed: []app.TaskSummary{{
 		ID: taskID, Title: "File the receipts", State: domain.Checking, Status: domain.ShownWorking, Phase: domain.Checking,
-		SpentCents: 120, LimitCents: 500, UpdatedAt: time.Date(2026, 11, 7, 9, 30, 0, 0, time.UTC),
+		SpentMicroUSD: 120_000, BudgetMicroUSD: 500_000, UpdatedAt: time.Date(2026, 11, 7, 9, 30, 0, 0, time.UTC),
 	}}}
 	rec := call(t, book, http.MethodGet, "/api/tasks", "", true)
 	if rec.Code != http.StatusOK || book.lists != 1 {
@@ -91,7 +91,7 @@ func TestListReturnsTasks(t *testing.T) {
 	}
 	want := map[string]any{
 		"id": taskID, "title": "File the receipts", "status": "Working", "phase": "Checking",
-		"spent_cents": float64(120), "limit_cents": float64(500), "updated_at": "2026-11-07T09:30:00Z",
+		"spent_micro_usd": float64(120_000), "budget_micro_usd": float64(500_000), "updated_at": "2026-11-07T09:30:00Z",
 	}
 	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("tasks = %#v", got)
@@ -124,7 +124,7 @@ func TestGetReturnsATask(t *testing.T) {
 	book := &fakeBook{viewed: app.TaskView{
 		TaskSummary: app.TaskSummary{
 			ID: taskID, Title: "File the receipts", State: domain.NeedsApproval, Status: domain.ShownNeedsApproval, Phase: domain.Working,
-			SpentCents: 120, LimitCents: 500, UpdatedAt: at,
+			SpentMicroUSD: 120_000, BudgetMicroUSD: 500_000, UpdatedAt: at,
 		},
 		Result:   "All filed",
 		Detail:   "parent_canceled",
@@ -141,7 +141,7 @@ func TestGetReturnsATask(t *testing.T) {
 	}
 	want := map[string]any{
 		"id": taskID, "title": "File the receipts", "status": "Needs approval", "phase": "Working",
-		"spent_cents": float64(120), "limit_cents": float64(500), "updated_at": "2026-11-07T09:30:00Z",
+		"spent_micro_usd": float64(120_000), "budget_micro_usd": float64(500_000), "updated_at": "2026-11-07T09:30:00Z",
 		"result": "All filed", "detail": "parent_canceled",
 		"subtasks": []any{map[string]any{"id": "sub-1", "title": "Sort the mail", "status": "Done"}},
 		"events": []any{map[string]any{
@@ -259,6 +259,7 @@ func callEditor(t *testing.T, book *fakeBook, editor app.EditorSandboxes, signer
 	mux := http.NewServeMux()
 	Handler{
 		Book:         book,
+		Ledger:       book,
 		List:         book,
 		View:         book,
 		PublicURL:    "http://localhost:5173",
@@ -279,6 +280,7 @@ func handlerWithProgress(book *fakeBook, progress app.Progresses, allow bool) ht
 	mux := http.NewServeMux()
 	Handler{
 		Book:     book,
+		Ledger:   book,
 		List:     book,
 		View:     book,
 		Progress: progress,
@@ -321,6 +323,14 @@ type fakeBook struct {
 	listed []app.TaskSummary
 	// openID is the id Open returns; empty means task-1.
 	openID string
+	funded []fundCall
+	spends int
+	taints int
+}
+
+type fundCall struct {
+	id     string
+	amount int64
 }
 
 type fakeProgress map[string]runtime.Record
@@ -388,4 +398,66 @@ func (f *fakeBook) Find(_ context.Context, _ app.Access, taskID string) (app.Tas
 
 func (f *fakeBook) Record(context.Context, app.Access, string, []domain.Check) (bool, error) {
 	return false, nil
+}
+
+func (f *fakeBook) Fund(_ context.Context, _ app.Access, taskID string, budget int64) error {
+	f.funded = append(f.funded, fundCall{id: taskID, amount: budget})
+	if f.viewed.ID == "" {
+		f.viewed = app.TaskView{TaskSummary: app.TaskSummary{
+			ID: taskID, Title: "File the receipts", State: domain.Preparing, Status: domain.ShownWorking, Phase: domain.Preparing,
+		}}
+	}
+	f.viewed.BudgetMicroUSD = budget
+	return nil
+}
+
+func (f *fakeBook) Spend(context.Context, app.Access, string, int64) error {
+	f.spends++
+	return nil
+}
+
+func (f *fakeBook) Taint(context.Context, app.Access, string) error {
+	f.taints++
+	return nil
+}
+
+func TestStepFundsATask(t *testing.T) {
+	book := &fakeBook{}
+	rec := call(t, book, http.MethodPost, "/api/tasks/"+taskID, `{"kind":"fund","amount":2500000}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(book.funded) != 1 || book.funded[0].id != taskID || book.funded[0].amount != 2_500_000 {
+		t.Fatalf("funds = %+v", book.funded)
+	}
+	if !strings.Contains(rec.Body.String(), `"budget_micro_usd":2500000`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestStepFundRefusesZeroNullAndOmittedAmount(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "zero", body: `{"kind":"fund","amount":0}`},
+		{name: "negative", body: `{"kind":"fund","amount":-1}`},
+		{name: "null", body: `{"kind":"fund","amount":null}`},
+		{name: "omitted", body: `{"kind":"fund"}`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			book := &fakeBook{}
+			rec := call(t, book, http.MethodPost, "/api/tasks/"+taskID, test.body, true)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body %s", rec.Code, rec.Body.String())
+			}
+			if strings.TrimSpace(rec.Body.String()) != `{"error":"the task input was refused"}` {
+				t.Fatalf("body = %s", rec.Body.String())
+			}
+			if len(book.funded) != 0 {
+				t.Fatalf("fund calls = %d", len(book.funded))
+			}
+		})
+	}
 }

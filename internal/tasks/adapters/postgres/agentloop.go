@@ -10,100 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/upmo-ai/upmo/internal/kernel"
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
-
-// FundMicroUSD sets a root task's micro-USD budget once.
-func (s Store) FundMicroUSD(ctx context.Context, access app.Access, taskID string, budgetMicroUSD int64) error {
-	if err := kernel.CheckRootBudget(budgetMicroUSD, kernel.DefaultMaxBudgetMicroUSD); err != nil {
-		return domain.ErrBudget
-	}
-	tx, err := s.begin(ctx, access)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var isChild bool
-	var legacyBudget int
-	var current int64
-	var status string
-	err = tx.QueryRow(ctx, `
-		SELECT parent_id IS NOT NULL, budget, budget_micro_usd, status
-		FROM tasks.tasks
-		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&isChild, &legacyBudget, &current, &status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return app.ErrGone
-	}
-	if err != nil {
-		return fmt.Errorf("tasks: lock fund micro: %w", err)
-	}
-	if isChild || legacyBudget != 0 || current != 0 {
-		return domain.ErrBudget
-	}
-	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {
-		return domain.ErrTerminal
-	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE tasks.tasks
-		SET budget_micro_usd = $2
-		WHERE id = $1::uuid`, taskID, budgetMicroUSD)
-	if err != nil {
-		return fmt.Errorf("tasks: fund micro: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return app.ErrGone
-	}
-	return tx.Commit(ctx)
-}
-
-// ChargeMicroUSD records actual post-call spend in micro-USD and pauses the task
-// when spent crosses budget_micro_usd while preserving full actual spend.
-func (s Store) ChargeMicroUSD(ctx context.Context, access app.Access, taskID string, amountMicroUSD int64) (int64, bool, error) {
-	tx, err := s.begin(ctx, access)
-	if err != nil {
-		return 0, false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var budget, spent int64
-	var paused bool
-	err = tx.QueryRow(ctx, `
-		SELECT budget_micro_usd, spent_micro_usd, paused
-		FROM tasks.tasks
-		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&budget, &spent, &paused)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, app.ErrGone
-	}
-	if err != nil {
-		return 0, false, fmt.Errorf("tasks: lock charge micro: %w", err)
-	}
-	nextSpent, nextPaused, chargeErr := domain.ChargeMicroUSD(budget, spent, amountMicroUSD, paused)
-	if chargeErr != nil {
-		return spent, paused, chargeErr
-	}
-	if nextSpent != spent || nextPaused != paused {
-		tag, err := tx.Exec(ctx, `
-			UPDATE tasks.tasks
-			SET spent_micro_usd = $2, paused = $3
-			WHERE id = $1::uuid`, taskID, nextSpent, nextPaused)
-		if err != nil {
-			return 0, false, fmt.Errorf("tasks: charge micro: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return 0, false, app.ErrGone
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, err
-	}
-	return nextSpent, nextPaused, nil
-}
 
 // NarrowedTx opens a transaction with single-team RLS narrowing applied for taskID.
 func (s Store) NarrowedTx(ctx context.Context, scope agentloop.AccessScope, fn func(pgx.Tx) error) error {
@@ -322,28 +232,28 @@ func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloo
 		}
 		var owner string
 		var currentTainted, currentPaused bool
-		var currentSpent int64
+		var currentBudget, currentSpent int64
 		if err := tx.QueryRow(ctx, `
-			SELECT owner_user_id::text, tainted, paused, spent_micro_usd
+			SELECT owner_user_id::text, tainted, paused, budget, spent
 			FROM tasks.tasks
 			WHERE id = $1::uuid
-			FOR UPDATE`, commit.ObjectID).Scan(&owner, &currentTainted, &currentPaused, &currentSpent); err != nil {
+			FOR UPDATE`, commit.ObjectID).Scan(&owner, &currentTainted, &currentPaused, &currentBudget, &currentSpent); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return app.ErrGone
 			}
 			return fmt.Errorf("tasks: lock turn commit: %w", err)
 		}
 		nextTainted := currentTainted || commit.Exposure.Tainted
-		nextPaused := currentPaused || commit.Paused
-		nextSpent := max(currentSpent, commit.SpentMicroUSD)
-		if nextTainted != currentTainted || nextPaused != currentPaused || nextSpent != currentSpent {
-			if _, err := tx.Exec(ctx, `
-				UPDATE tasks.tasks
-				SET spent_micro_usd = $2, paused = $3, tainted = $4, updated_at = now()
-				WHERE id = $1::uuid`,
-				commit.ObjectID, nextSpent, nextPaused, nextTainted); err != nil {
-				return fmt.Errorf("tasks: update turn state: %w", err)
-			}
+		nextSpent, nextPaused, err := domain.Charge(currentBudget, currentSpent, commit.CostMicroUSD, currentPaused)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE tasks.tasks
+			SET spent = $2, paused = $3, tainted = $4, updated_at = now()
+			WHERE id = $1::uuid`,
+			commit.ObjectID, nextSpent, nextPaused, nextTainted); err != nil {
+			return fmt.Errorf("tasks: update turn state: %w", err)
 		}
 		if commit.Hold != nil {
 			actingUser := commit.UserID

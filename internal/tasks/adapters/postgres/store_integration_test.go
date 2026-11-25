@@ -352,6 +352,35 @@ var (
 	otherAccess = app.Access{UserID: otherUser, Allow: "task:view,task:edit"}
 )
 
+func TestOpenUsesDefaultBudget(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var budget, held, spent int64
+	var paused bool
+	if err := owner.QueryRow(ctx, `SELECT budget, held, spent, paused FROM tasks.tasks WHERE id = $1`, task.ID).Scan(&budget, &held, &spent, &paused); err != nil {
+		t.Fatal(err)
+	}
+	if budget != 2_000_000 || held != 0 || spent != 0 || paused {
+		t.Fatalf("opened budget=%d held=%d spent=%d paused=%v", budget, held, spent, paused)
+	}
+	if err := app.Fund(ctx, store, ownerAccess, task.ID, 2_000_000); err != nil {
+		t.Fatal(err)
+	}
+	var againBudget, againHeld, againSpent int64
+	var againPaused bool
+	if err := owner.QueryRow(ctx, `SELECT budget, held, spent, paused FROM tasks.tasks WHERE id = $1`, task.ID).Scan(&againBudget, &againHeld, &againSpent, &againPaused); err != nil {
+		t.Fatal(err)
+	}
+	if againBudget != 2_000_000 || againHeld != 0 || againSpent != 0 || againPaused {
+		t.Fatalf("after equal fund budget=%d held=%d spent=%d paused=%v", againBudget, againHeld, againSpent, againPaused)
+	}
+}
+
 func openAtChecking(t *testing.T, store postgres.Store, goal string) app.Task {
 	t.Helper()
 	ctx := context.Background()

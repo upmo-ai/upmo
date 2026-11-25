@@ -226,26 +226,6 @@ func ChargeActual(budget, spent, amount int64, paused bool) (int64, bool, error)
 		return spent, true, ErrBudget
 	}
 	nextSpent := spent + amount
-	nextPaused := budget > 0 && nextSpent >= budget
+	nextPaused := nextSpent >= budget
 	return nextSpent, nextPaused, nil
-}
-
-// ChargeCapped applies amount to spent only when it fits within budget - spent.
-// Landing on budget pauses; an amount past budget pauses without mutating spent
-// and returns ErrExhausted.
-func ChargeCapped(budget, spent, amount int64, paused bool) (int64, bool, error) {
-	if amount < 1 {
-		return spent, paused, ErrBudget
-	}
-	if paused {
-		return spent, true, ErrExhausted
-	}
-	if spent > budget || amount > budget-spent {
-		return spent, true, ErrExhausted
-	}
-	spent += amount
-	if spent == budget {
-		return spent, true, nil
-	}
-	return spent, false, nil
 }

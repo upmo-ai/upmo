@@ -6,7 +6,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
-// TaskSummary is the part of the read model a list shows. Money is in cents.
+// TaskSummary is the part of the read model a list shows. Money is integer micro-USD.
 type TaskSummary struct {
 	ID    string
 	Title string
@@ -14,10 +14,10 @@ type TaskSummary struct {
 	State  domain.Status
 	Status domain.Shown
 	// Phase is the stored status while it is a phase, else the last phase.
-	Phase      domain.Status
-	SpentCents int
-	LimitCents int
-	UpdatedAt  time.Time
+	Phase          domain.Status
+	SpentMicroUSD  int64
+	BudgetMicroUSD int64
+	UpdatedAt      time.Time
 }
 
 // TaskView is the read model of one task for the person who can see it.

@@ -13,7 +13,7 @@ import (
 )
 
 // Spawn locks the parent, applies the ceilings, and opens one child.
-func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal string, budget int, allow string) (app.Task, error) {
+func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal string, budget int64, allow string) (app.Task, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return app.Task{}, err
@@ -26,12 +26,12 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 
 	var status, parentAllow string
 	var parentIsChild, paused, tainted bool
-	var parentBudget, held int
+	var parentBudget, held, spent int64
 	err = tx.QueryRow(ctx, `
-		SELECT status, parent_id IS NOT NULL, budget, held, paused, allow, tainted
+		SELECT status, parent_id IS NOT NULL, budget, held, spent, paused, allow, tainted
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, parentID).Scan(&status, &parentIsChild, &parentBudget, &held, &paused, &parentAllow, &tainted)
+		FOR UPDATE`, parentID).Scan(&status, &parentIsChild, &parentBudget, &held, &spent, &paused, &parentAllow, &tainted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Task{}, app.ErrGone
 	}
@@ -60,7 +60,7 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 	if err := domain.Ceilings(depth, siblings, openChildren); err != nil {
 		return app.Task{}, err
 	}
-	if err := domain.BudgetFits(parentBudget, held, budget); err != nil {
+	if err := domain.BudgetFits(parentBudget-spent, held, budget); err != nil {
 		return app.Task{}, err
 	}
 	granted := domain.Intersect(parentAllow, domain.Intersect(access.Allow, allow))

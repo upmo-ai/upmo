@@ -163,7 +163,7 @@ $$;
 
 -- A task is born Preparing, with its open event at seq 1.
 CREATE FUNCTION pg_temp.open_task(
-  p_task uuid, p_person uuid, p_parent uuid, p_goal text, p_budget int, p_spent int, p_at timestamptz)
+  p_task uuid, p_person uuid, p_parent uuid, p_goal text, p_budget bigint, p_spent bigint, p_at timestamptz)
 RETURNS void
 LANGUAGE plpgsql
 AS $$
@@ -180,7 +180,7 @@ $$;
 
 -- 0001: Working, with a chat line between its events.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000001', :'ada'::uuid, NULL,
-  'Sort the morning mail', 200, 45, now() - interval '65 minutes');
+  'Sort the morning mail', 2000000, 450000, now() - interval '65 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000001', 'plan', 'Preparing', 'Planning', now() - interval '64 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000001', 'advance', 'Planning', 'Working', now() - interval '63 minutes');
 INSERT INTO tasks.chat_events (task_id, seq, body, at)
@@ -188,12 +188,12 @@ VALUES ('e2e00000-0000-7000-8000-000000000001', 1, 'Read the support mailbox fir
 
 -- 0002: Planning.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000002', :'ada'::uuid, NULL,
-  'Plan the launch email', 300, 0, now() - interval '55 minutes');
+  'Plan the launch email', 3000000, 0, now() - interval '55 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000002', 'plan', 'Preparing', 'Planning', now() - interval '54 minutes');
 
 -- 0003: Needs approval, paused from Working.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000003', :'ada'::uuid, NULL,
-  'Email the supplier statements', 500, 210, now() - interval '50 minutes');
+  'Email the supplier statements', 5000000, 2100000, now() - interval '50 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'plan', 'Preparing', 'Planning', now() - interval '49 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'advance', 'Planning', 'Working', now() - interval '48 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'pause', 'Working', 'Needs approval', now() - interval '47 minutes');
@@ -201,21 +201,23 @@ SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000003', 'pause', 'Working', 
 -- 0004: Failed. The only cause the schema allows is a canceled parent, and it
 -- may be set once the task is Failed.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000004', :'ada'::uuid, NULL,
-  'Close the week for Kodeeo Limited', 500, 85, now() - interval '45 minutes');
+  'Close the week for Kodeeo Limited', 5000000, 850000, now() - interval '45 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000004', 'advance', 'Preparing', 'Working', now() - interval '44 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000004', 'fail', 'Working', 'Failed', now() - interval '43 minutes');
 UPDATE tasks.tasks SET cause = 'parent_canceled' WHERE id = 'e2e00000-0000-7000-8000-000000000004';
 
--- 0005: the parent. Its children hold 300 + 200 of its 1000.
+-- 0005: the parent. The done child settles 1200000 of spend onto it and releases
+-- 3000000 of hold. The working child then holds 2000000. Final parent: budget
+-- 10000000, spent 1200000, held 2000000, paused false.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000005', :'ada'::uuid, NULL,
-  'Close the books for October', 1000, 0, now() - interval '40 minutes');
+  'Close the books for October', 10000000, 0, now() - interval '40 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000005', 'plan', 'Preparing', 'Planning', now() - interval '39 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000005', 'advance', 'Planning', 'Working', now() - interval '38 minutes');
 
 -- 0006: Done. Only a subtask has a result, and a task is Done only after a
 -- passing check batch.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000006', :'ada'::uuid, 'e2e00000-0000-7000-8000-000000000005',
-  'Reconcile the accounts', 300, 120, now() - interval '37 minutes');
+  'Reconcile the accounts', 3000000, 1200000, now() - interval '37 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000006', 'advance', 'Preparing', 'Working', now() - interval '36 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000006', 'advance', 'Working', 'Checking', now() - interval '35 minutes');
 INSERT INTO tasks.checks (task_id, batch, seq, name, code, at)
@@ -231,12 +233,12 @@ WHERE id = 'e2e00000-0000-7000-8000-000000000006';
 
 -- 0007: Working.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000007', :'ada'::uuid, 'e2e00000-0000-7000-8000-000000000005',
-  'Draft the October summary', 200, 20, now() - interval '32 minutes');
+  'Draft the October summary', 2000000, 200000, now() - interval '32 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000007', 'advance', 'Preparing', 'Working', now() - interval '31 minutes');
 
 -- 0008: Needs approval, paused from Working, so a denial also has a task to resume.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000008', :'ada'::uuid, NULL,
-  'Draft the renewal notice', 300, 30, now() - interval '30 minutes');
+  'Draft the renewal notice', 3000000, 300000, now() - interval '30 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000008', 'plan', 'Preparing', 'Planning', now() - interval '29 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000008', 'advance', 'Planning', 'Working', now() - interval '28 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000008', 'pause', 'Working', 'Needs approval', now() - interval '27 minutes');

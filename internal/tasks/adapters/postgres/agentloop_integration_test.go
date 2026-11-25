@@ -19,7 +19,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
-func TestMicroUSDEscrowPreservesFullSpendAndPauses(t *testing.T) {
+func TestSpendPreservesFullActualSpendAndPauses(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
@@ -28,20 +28,26 @@ func TestMicroUSDEscrowPreservesFullSpendAndPauses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.FundMicroUSD(ctx, store, ownerAccess, task.ID, 1_000_000); err != nil {
+	if err := app.Spend(ctx, store, ownerAccess, task.ID, 1_600_000); err != nil {
 		t.Fatal(err)
 	}
-	spent, paused, err := app.ChargeMicroUSD(ctx, store, ownerAccess, task.ID, 600_000)
-	if err != nil || spent != 600_000 || paused {
-		t.Fatalf("first charge = spent:%d paused:%v err:%v", spent, paused, err)
+	spent, paused := taskMoney(t, owner, task.ID)
+	if spent != 1_600_000 || paused {
+		t.Fatalf("first spend = spent:%d paused:%v", spent, paused)
 	}
-	// Final model call crosses 1,000,000 -> preserves 1,250,000 and sets paused=true.
-	spent, paused, err = app.ChargeMicroUSD(ctx, store, ownerAccess, task.ID, 650_000)
-	if err != nil || spent != 1_250_000 || !paused {
-		t.Fatalf("crossing charge = spent:%d paused:%v err:%v", spent, paused, err)
+	if err := app.Spend(ctx, store, ownerAccess, task.ID, 650_000); err != nil {
+		t.Fatal(err)
 	}
-	if _, _, err := app.ChargeMicroUSD(ctx, store, ownerAccess, task.ID, 1); !errors.Is(err, domain.ErrExhausted) {
-		t.Fatalf("charge while paused = %v, want %v", err, domain.ErrExhausted)
+	spent, paused = taskMoney(t, owner, task.ID)
+	if spent != 2_250_000 || !paused {
+		t.Fatalf("crossing spend = spent:%d paused:%v", spent, paused)
+	}
+	if err := app.Spend(ctx, store, ownerAccess, task.ID, 1); !errors.Is(err, domain.ErrExhausted) {
+		t.Fatalf("spend while paused = %v, want %v", err, domain.ErrExhausted)
+	}
+	spent, paused = taskMoney(t, owner, task.ID)
+	if spent != 2_250_000 || !paused {
+		t.Fatalf("after refusal = spent:%d paused:%v", spent, paused)
 	}
 }
 
@@ -392,25 +398,10 @@ func assertTaskBeginDial23505(t *testing.T, ctx context.Context, owner, appPool 
 	}
 }
 
-func TestTasksBudgetSingleUnitConstraintAndCommitTurnAndEnqueue(t *testing.T) {
+func TestTasksCommitTurnAndEnqueue(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
-
-	// Legacy cent budget task rejects FundMicroUSD and DB constraint rejects dual units.
-	centTask, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Cent task"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.Fund(ctx, store, ownerAccess, centTask.ID, 500); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.FundMicroUSD(ctx, store, ownerAccess, centTask.ID, 1_000_000); !errors.Is(err, domain.ErrBudget) {
-		t.Fatalf("FundMicroUSD on cent task = %v, want ErrBudget", err)
-	}
-	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET budget_micro_usd = 1000 WHERE id = $1::uuid`, centTask.ID); err == nil {
-		t.Fatal("expected tasks_budget_single_unit_check to reject dual budget units")
-	}
 
 	// CommitTurnAndEnqueue persists turns, state, hold/approval, and enqueue callback atomically.
 	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Turn commit task"})
@@ -420,7 +411,7 @@ func TestTasksBudgetSingleUnitConstraintAndCommitTurnAndEnqueue(t *testing.T) {
 	if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Advance}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.FundMicroUSD(ctx, store, ownerAccess, task.ID, 5_000_000); err != nil {
+	if err := app.Fund(ctx, store, ownerAccess, task.ID, 5_000_000); err != nil {
 		t.Fatal(err)
 	}
 	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
@@ -467,7 +458,7 @@ func TestTasksBudgetSingleUnitConstraintAndCommitTurnAndEnqueue(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turnCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.QueryRow(ctx, `SELECT spent_micro_usd, tainted FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &tainted); err != nil {
+	if err := owner.QueryRow(ctx, `SELECT spent, tainted FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &tainted); err != nil {
 		t.Fatal(err)
 	}
 	if turnCount != 2 || spent != 250_000 || !tainted {
@@ -485,6 +476,7 @@ func TestTasksBudgetSingleUnitConstraintAndCommitTurnAndEnqueue(t *testing.T) {
 		SeqStart:      3,
 		Messages:      []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "waiting"}, {Role: agentloop.RoleTool, ToolName: "send_payment", ToolID: "c2", Text: "awaiting approval"}},
 		Model:         "m1",
+		CostMicroUSD:  50_000,
 		SpentMicroUSD: 300_000,
 		Exposure:      agentloop.ExposureState{Tainted: true},
 		Hold:          &hold,
@@ -500,7 +492,69 @@ func TestTasksBudgetSingleUnitConstraintAndCommitTurnAndEnqueue(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.approvals WHERE task_id = $1::uuid AND state = 'pending'`, task.ID).Scan(&approvalCount); err != nil {
 		t.Fatal(err)
 	}
-	if status != string(domain.NeedsApproval) || approvalCount != 1 || enqueuedCount != 1 {
-		t.Fatalf("after hold turn: status=%s approvals=%d enqueued=%d", status, approvalCount, enqueuedCount)
+	if err := owner.QueryRow(ctx, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent); err != nil {
+		t.Fatal(err)
 	}
+	if status != string(domain.NeedsApproval) || approvalCount != 1 || enqueuedCount != 1 || spent != 300_000 {
+		t.Fatalf("after hold turn: status=%s approvals=%d enqueued=%d spent=%d", status, approvalCount, enqueuedCount, spent)
+	}
+}
+
+func TestPausedCommitTurnAndEnqueueReturnsErrExhaustedWithoutCharge(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Paused turn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Advance}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Spend(ctx, store, ownerAccess, task.ID, domain.DefaultBudget); err != nil {
+		t.Fatal(err)
+	}
+	turnStore := postgres.TaskTurnStore{
+		Store: store,
+		Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+	}
+	err = turnStore.CommitTurnAndEnqueue(ctx, agentloop.TurnCommit{
+		RunID:         run.ID,
+		ObjectID:      task.ID,
+		UserID:        ownerUser,
+		SeqStart:      1,
+		Messages:      []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "late"}},
+		CostMicroUSD:  1,
+		SpentMicroUSD: 2_000_001,
+		Exposure:      agentloop.ExposureState{Tainted: true},
+	})
+	if !errors.Is(err, domain.ErrExhausted) {
+		t.Fatalf("paused commit = %v, want %v", err, domain.ErrExhausted)
+	}
+	var spent int64
+	var paused, tainted bool
+	var turns int
+	if err := owner.QueryRow(ctx, `SELECT spent, paused, tainted FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &paused, &tainted); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+		t.Fatal(err)
+	}
+	if spent != 2_000_000 || !paused || tainted || turns != 0 {
+		t.Fatalf("after refused commit: spent=%d paused=%v tainted=%v turns=%d", spent, paused, tainted, turns)
+	}
+}
+
+func taskMoney(t *testing.T, owner *pgxpool.Pool, id string) (int64, bool) {
+	t.Helper()
+	var spent int64
+	var paused bool
+	if err := owner.QueryRow(context.Background(), `SELECT spent, paused FROM tasks.tasks WHERE id = $1::uuid`, id).Scan(&spent, &paused); err != nil {
+		t.Fatal(err)
+	}
+	return spent, paused
 }

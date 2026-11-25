@@ -8,13 +8,13 @@ import (
 
 // summaryJSON is a task in a list, and the head of a task in full.
 type summaryJSON struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Status     string `json:"status"`
-	Phase      string `json:"phase"`
-	SpentCents int    `json:"spent_cents"`
-	LimitCents int    `json:"limit_cents"`
-	UpdatedAt  string `json:"updated_at"`
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	Phase          string `json:"phase"`
+	SpentMicroUSD  int64  `json:"spent_micro_usd"`
+	BudgetMicroUSD int64  `json:"budget_micro_usd"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // taskViewJSON is one task in full.
@@ -42,13 +42,13 @@ type eventJSON struct {
 
 func summaryBody(task app.TaskSummary) summaryJSON {
 	return summaryJSON{
-		ID:         task.ID,
-		Title:      task.Title,
-		Status:     string(task.Status),
-		Phase:      string(task.Phase),
-		SpentCents: task.SpentCents,
-		LimitCents: task.LimitCents,
-		UpdatedAt:  task.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:             task.ID,
+		Title:          task.Title,
+		Status:         string(task.Status),
+		Phase:          string(task.Phase),
+		SpentMicroUSD:  task.SpentMicroUSD,
+		BudgetMicroUSD: task.BudgetMicroUSD,
+		UpdatedAt:      task.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 

@@ -37,8 +37,8 @@ const head = {
   title: "Sort the morning mail",
   status: "Working",
   phase: "Planning",
-  spent_cents: 210,
-  limit_cents: 500,
+  spent_micro_usd: 2_100_000,
+  budget_micro_usd: 5_000_000,
   updated_at: "2026-11-08T09:00:00Z",
 };
 
@@ -51,17 +51,37 @@ describe("toTask", () => {
       phase: "Planning",
       result: "",
       detail: "",
-      cost: "€2.10",
-      spendLimit: "€5.00",
-      spentCents: 210,
-      limitCents: 500,
+      cost: "US$2.10",
+      spendLimit: "US$5.00",
+      spentMicroUsd: 2_100_000,
+      budgetMicroUsd: 5_000_000,
     });
   });
 
   it("shows no money for a task with no budget, and invents nothing else", () => {
-    const task = toTask({ ...head, spent_cents: 0, limit_cents: 0 });
-    for (const key of ["cost", "spendLimit", "spentCents", "limitCents", "model", "engine", "tokens", "sources", "artifacts", "preparing"]) {
+    const task = toTask({ ...head, spent_micro_usd: 0, budget_micro_usd: 0 });
+    for (const key of ["cost", "spendLimit", "spentMicroUsd", "budgetMicroUsd", "model", "engine", "tokens", "sources", "artifacts", "preparing"]) {
       expect(task).not.toHaveProperty(key);
+    }
+  });
+
+  it("keeps a tiny spend readable beside its budget", () => {
+    expect(toTask({ ...head, spent_micro_usd: 1_200, budget_micro_usd: 2_000_000 })).toMatchObject({
+      cost: "US$0.0012",
+      spendLimit: "US$2.00",
+      spentMicroUsd: 1_200,
+      budgetMicroUsd: 2_000_000,
+    });
+  });
+
+  it("refuses money the brain did not send as a whole micro-USD amount", () => {
+    for (const key of ["spent_micro_usd", "budget_micro_usd"] as const) {
+      const missing: Record<string, unknown> = { ...head };
+      delete missing[key];
+      expect(() => toTask(missing)).toThrow(`The brain sent no ${key}.`);
+      expect(() => toTask({ ...head, [key]: null })).toThrow(`The brain sent no ${key}.`);
+      expect(() => toTask({ ...head, [key]: "210" })).toThrow(`The brain sent no ${key}.`);
+      expect(() => toTask({ ...head, [key]: 1.5 })).toThrow(`The brain sent no ${key}.`);
     }
   });
 

@@ -20,6 +20,31 @@ func TestFireOpensOneTaskPerKey(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
+	if _, err := owner.Exec(ctx, `
+		CREATE TABLE tasks.budget_touch_upm402 (task_id uuid NOT NULL);
+		CREATE FUNCTION tasks.note_budget_upm402()
+		RETURNS trigger
+		LANGUAGE plpgsql
+		SECURITY DEFINER
+		SET search_path = pg_catalog
+		AS $body$
+		BEGIN
+		  INSERT INTO tasks.budget_touch_upm402 (task_id) VALUES (NEW.id);
+		  RETURN NEW;
+		END;
+		$body$;
+		CREATE TRIGGER tasks_note_budget_upm402
+		  BEFORE UPDATE OF budget ON tasks.tasks
+		  FOR EACH ROW
+		  EXECUTE FUNCTION tasks.note_budget_upm402()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = owner.Exec(context.Background(), `
+			DROP TRIGGER IF EXISTS tasks_note_budget_upm402 ON tasks.tasks;
+			DROP FUNCTION IF EXISTS tasks.note_budget_upm402();
+			DROP TABLE IF EXISTS tasks.budget_touch_upm402`)
+	})
 	templateID := saveAutomationTemplate(t, store, "File the {{kind}}", 40)
 	automationID, err := app.SaveAutomation(ctx, store, ownerAccess, templateID, domain.KindCron, " 0 9 * * 1 ")
 	if err != nil {
@@ -44,7 +69,7 @@ func TestFireOpensOneTaskPerKey(t *testing.T) {
 	}
 
 	var goal string
-	var budget int
+	var budget int64
 	var automation string
 	var children, runs int
 	if err := owner.QueryRow(ctx, `
@@ -57,6 +82,13 @@ func TestFireOpensOneTaskPerKey(t *testing.T) {
 	}
 	if goal != "File the { {no}}" || budget != 40 || automation != automationID || children != 0 || runs != 0 {
 		t.Fatalf("task goal %q budget %d automation %s children %d runs %d", goal, budget, automation, children, runs)
+	}
+	var touches int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.budget_touch_upm402 WHERE task_id = $1::uuid`, first).Scan(&touches); err != nil {
+		t.Fatal(err)
+	}
+	if touches != 0 {
+		t.Fatalf("budget updates = %d, want 0", touches)
 	}
 	var opened int
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks WHERE automation_id = $1`, automationID).Scan(&opened); err != nil {
@@ -178,7 +210,7 @@ func TestBreakerAndOwnerLeave(t *testing.T) {
 	}
 }
 
-func saveAutomationTemplate(t *testing.T, store postgres.Store, goal string, budget int) string {
+func saveAutomationTemplate(t *testing.T, store postgres.Store, goal string, budget int64) string {
 	t.Helper()
 	id, err := app.SaveTemplate(context.Background(), store, ownerAccess, "", domain.Template{
 		Goal:    goal,

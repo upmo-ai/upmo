@@ -168,20 +168,32 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.columns
 		WHERE table_schema = 'tasks' AND table_name = 'tasks'
-		  AND column_name IN ('budget', 'held', 'spent', 'budget_micro_usd', 'held_micro_usd', 'spent_micro_usd')`).Scan(&budgetCols); err != nil {
+		  AND column_name IN ('budget', 'held', 'spent')
+		  AND data_type = 'bigint'`).Scan(&budgetCols); err != nil {
 		t.Fatal(err)
 	}
-	if budgetCols != 6 {
-		t.Fatalf("tasks.tasks budget columns = %d, want 6", budgetCols)
+	if budgetCols != 3 {
+		t.Fatalf("tasks.tasks bigint budget columns = %d, want 3", budgetCols)
+	}
+	var microCols int
+	if err := owner.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'tasks' AND table_name = 'tasks'
+		  AND column_name IN ('budget_micro_usd', 'held_micro_usd', 'spent_micro_usd')`).Scan(&microCols); err != nil {
+		t.Fatal(err)
+	}
+	if microCols != 0 {
+		t.Fatalf("tasks.tasks duplicate micro-USD columns = %d, want 0", microCols)
 	}
 	var tplBudgetCols int
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.columns
-		WHERE table_schema = 'tasks' AND table_name = 'templates' AND column_name = 'budget'`).Scan(&tplBudgetCols); err != nil {
+		WHERE table_schema = 'tasks' AND table_name = 'templates'
+		  AND column_name = 'budget' AND data_type = 'bigint'`).Scan(&tplBudgetCols); err != nil {
 		t.Fatal(err)
 	}
 	if tplBudgetCols != 1 {
-		t.Fatalf("tasks.templates budget columns = %d, want 1", tplBudgetCols)
+		t.Fatalf("tasks.templates bigint budget columns = %d, want 1", tplBudgetCols)
 	}
 
 	var isSuper, bypassRLS bool
@@ -597,9 +609,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"tasks.tasks": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"allow", "automation_id", "budget", "budget_micro_usd", "cause", "goal", "held", "held_micro_usd", "id", "object_type", "owner_user_id", "parent_id", "passes", "paused", "result", "spent", "spent_micro_usd", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
-			Insert: []string{"allow", "automation_id", "budget", "budget_micro_usd", "cause", "goal", "held", "held_micro_usd", "id", "object_type", "owner_user_id", "parent_id", "passes", "paused", "result", "spent", "spent_micro_usd", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
-			Update: []string{"allow", "automation_id", "budget", "budget_micro_usd", "cause", "goal", "held", "held_micro_usd", "id", "object_type", "parent_id", "passes", "paused", "result", "spent", "spent_micro_usd", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Select: []string{"allow", "automation_id", "budget", "cause", "goal", "held", "id", "object_type", "owner_user_id", "parent_id", "passes", "paused", "result", "spent", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Insert: []string{"allow", "automation_id", "budget", "cause", "goal", "held", "id", "object_type", "owner_user_id", "parent_id", "passes", "paused", "result", "spent", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Update: []string{"allow", "automation_id", "budget", "cause", "goal", "held", "id", "object_type", "parent_id", "passes", "paused", "result", "spent", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
 		},
 		"tasks.template_deliveries": {
 			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},

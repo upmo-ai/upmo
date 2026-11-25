@@ -7,64 +7,86 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
-// Fund sets the budget of a root that has none.
-func (s Store) Fund(ctx context.Context, access app.Access, taskID string, budget int) error {
+// Fund raises a non-terminal root budget. An equal amount is a no-op.
+func (s Store) Fund(ctx context.Context, access app.Access, taskID string, budget int64) error {
+	if err := domain.BudgetFits(domain.TemplateBudgetMax, 0, budget); err != nil {
+		return err
+	}
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var isChild bool
-	var current int
-	var microBudget int64
+	var isChild, paused bool
+	var current, held, spent int64
 	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT parent_id IS NOT NULL, budget, budget_micro_usd, status
+		SELECT parent_id IS NOT NULL, budget, held, spent, paused, status
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&isChild, &current, &microBudget, &status)
+		FOR UPDATE`, taskID).Scan(&isChild, &current, &held, &spent, &paused, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrGone
 	}
 	if err != nil {
 		return fmt.Errorf("tasks: lock fund: %w", err)
 	}
-	if isChild || current != 0 || microBudget != 0 {
+	if isChild || budget < current {
 		return domain.ErrBudget
+	}
+	if budget == current {
+		return tx.Commit(ctx)
 	}
 	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {
 		return domain.ErrTerminal
 	}
-	if err := domain.BudgetFits(domain.TemplateBudgetMax, 0, budget); err != nil {
-		return err
+	nextPaused := paused
+	// spent+held wraps when spent is near MaxInt64 and a child hold is live.
+	if spent < budget && held < budget-spent {
+		nextPaused = false
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks.tasks
-		SET budget = $2
-		WHERE id = $1::uuid`, taskID, budget)
+		SET budget = $2, paused = $3, updated_at = now()
+		WHERE id = $1::uuid`, taskID, budget, nextPaused)
 	if err != nil {
 		return fmt.Errorf("tasks: fund: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
 		return app.ErrGone
 	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.TaskUpdate,
+		Outcome:  audit.Success,
+		TargetID: taskID,
+		Changes: audit.Changes{
+			Fields: []string{"budget"},
+			Values: map[string]audit.Change{"budget": {From: current, To: budget}},
+		},
+	}); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
-// Spend charges the task and pauses it when the budget is exhausted.
-func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amount int) error {
+// Spend charges the task. Reaching or crossing the budget pauses and keeps the full spend.
+func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amount int64) error {
+	if amount < 1 {
+		return domain.ErrBudget
+	}
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var budget, spent int
+	var budget, spent int64
 	var paused bool
 	err = tx.QueryRow(ctx, `
 		SELECT budget, spent, paused
@@ -78,22 +100,20 @@ func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amou
 		return fmt.Errorf("tasks: lock spend: %w", err)
 	}
 	nextSpent, nextPaused, chargeErr := domain.Charge(budget, spent, amount, paused)
-	if nextSpent != spent || nextPaused != paused {
-		tag, err := tx.Exec(ctx, `
-			UPDATE tasks.tasks
-			SET spent = $2, paused = $3
-			WHERE id = $1::uuid`, taskID, nextSpent, nextPaused)
-		if err != nil {
-			return fmt.Errorf("tasks: spend: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return app.ErrGone
-		}
+	if chargeErr != nil {
+		return chargeErr
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
+	tag, err := tx.Exec(ctx, `
+		UPDATE tasks.tasks
+		SET spent = $2, paused = $3, updated_at = now()
+		WHERE id = $1::uuid`, taskID, nextSpent, nextPaused)
+	if err != nil {
+		return fmt.Errorf("tasks: spend: %w", err)
 	}
-	return chargeErr
+	if tag.RowsAffected() != 1 {
+		return app.ErrGone
+	}
+	return tx.Commit(ctx)
 }
 
 // Taint marks the task. The database spreads the mark along the tree.

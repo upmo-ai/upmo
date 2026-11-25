@@ -80,6 +80,7 @@ import type { Chat, ChatAttachment, ChatLine, ChatSummary, LineRole } from "../f
 import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteDecision, type RouteHop } from "../features/models/types";
 import { adapterKey } from "../features/providers/rules";
 import type { ListedProvider } from "../features/providers/sharing";
+import { formatMicroUsd } from "../features/usage/format";
 
 type Json = Record<string, unknown>;
 
@@ -169,11 +170,6 @@ function stateOf(source: Json): ApprovalState {
   return value;
 }
 
-/** Cents as the stub writes them: €2.10. */
-function euros(cents: number): string {
-  return `€${(cents / 100).toFixed(2)}`;
-}
-
 /** The time of day, as the stub writes it. A stamp that is not a date is shown as sent. */
 function clock(stamp: string): string {
   const date = new Date(stamp);
@@ -210,12 +206,12 @@ function toSubtask(value: unknown): Subtask {
  * A task as the brain sends it: GET /api/tasks gives the light fields, and
  * GET /api/tasks/{id} adds the result, detail, subtasks and events. What the
  * brain does not send (model, engine, tokens, sources, artifacts, preparing)
- * stays absent. The money fields are worked out from the cents it does send.
+ * stays absent. The money fields are worked out from the micro-USD it does send.
  */
 export function toTask(value: unknown): Task {
   const source = record(value, "task");
-  const spent = whole(source, "spent_cents");
-  const limit = whole(source, "limit_cents");
+  const spent = micro(source, "spent_micro_usd");
+  const limit = micro(source, "budget_micro_usd");
   const task: Task = {
     id: text(source, "id"),
     title: text(source, "title"),
@@ -226,10 +222,10 @@ export function toTask(value: unknown): Task {
   };
   // No budget is no figure: a task without a limit has nothing to show against.
   if (limit > 0) {
-    task.cost = euros(spent);
-    task.spendLimit = euros(limit);
-    task.spentCents = spent;
-    task.limitCents = limit;
+    task.cost = formatMicroUsd(spent);
+    task.spendLimit = formatMicroUsd(limit);
+    task.spentMicroUsd = spent;
+    task.budgetMicroUsd = limit;
   }
   if ("result" in source) task.result = text(source, "result");
   // On a failed task the detail is the cause code; on a done one it is the result's own detail.

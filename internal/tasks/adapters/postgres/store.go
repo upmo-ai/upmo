@@ -416,9 +416,9 @@ func insertOpen(ctx context.Context, tx pgx.Tx, userID, allow string, input doma
 	}
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, allow)
-		VALUES ($1::uuid, 'private', $2, $3, $4)
-		RETURNING id::text`, userID, effect.Goal, string(next), allow).Scan(&id)
+		INSERT INTO tasks.tasks (owner_user_id, visibility, goal, status, allow, budget)
+		VALUES ($1::uuid, 'private', $2, $3, $4, $5)
+		RETURNING id::text`, userID, effect.Goal, string(next), allow, budgetOrDefault(0)).Scan(&id)
 	if err != nil {
 		return app.Task{}, fmt.Errorf("tasks: open: %w", err)
 	}
@@ -426,6 +426,14 @@ func insertOpen(ctx context.Context, tx pgx.Tx, userID, allow string, input doma
 		return app.Task{}, err
 	}
 	return app.Task{ID: id, Status: next, Goal: effect.Goal}, nil
+}
+
+// budgetOrDefault is the amountless root budget. A positive amount is kept.
+func budgetOrDefault(amount int64) int64 {
+	if amount == 0 {
+		return domain.DefaultBudget
+	}
+	return amount
 }
 
 func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
@@ -671,7 +679,7 @@ func (s Store) OpenTemplate(ctx context.Context, access app.Access, id string) (
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var goal, agentID string
-	var budget int
+	var budget int64
 	err = tx.QueryRow(ctx, `
 		SELECT goal, agent_id::text, budget
 		FROM tasks.templates

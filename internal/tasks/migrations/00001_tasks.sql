@@ -9,12 +9,9 @@ CREATE TABLE tasks.tasks (
   goal text NOT NULL,
   status text NOT NULL,
   parent_id uuid REFERENCES tasks.tasks (id),
-  budget int NOT NULL DEFAULT 0,
-  held int NOT NULL DEFAULT 0,
-  spent int NOT NULL DEFAULT 0,
-  budget_micro_usd bigint NOT NULL DEFAULT 0,
-  held_micro_usd bigint NOT NULL DEFAULT 0,
-  spent_micro_usd bigint NOT NULL DEFAULT 0,
+  budget bigint NOT NULL DEFAULT 0,
+  held bigint NOT NULL DEFAULT 0,
+  spent bigint NOT NULL DEFAULT 0,
   paused boolean NOT NULL DEFAULT false,
   allow text NOT NULL DEFAULT '',
   tainted boolean NOT NULL DEFAULT false,
@@ -32,13 +29,9 @@ CREATE TABLE tasks.tasks (
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
   ),
   CONSTRAINT tasks_parent_check CHECK (parent_id IS NULL OR parent_id <> id),
-  CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000),
+  CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000000),
   CONSTRAINT tasks_held_check CHECK (held BETWEEN 0 AND budget),
-  CONSTRAINT tasks_spent_check CHECK (spent BETWEEN 0 AND budget),
-  CONSTRAINT tasks_budget_micro_check CHECK (budget_micro_usd >= 0),
-  CONSTRAINT tasks_held_micro_check CHECK (held_micro_usd BETWEEN 0 AND budget_micro_usd),
-  CONSTRAINT tasks_spent_micro_check CHECK (spent_micro_usd >= 0),
-  CONSTRAINT tasks_budget_single_unit_check CHECK (NOT (budget > 0 AND budget_micro_usd > 0)),
+  CONSTRAINT tasks_spent_check CHECK (spent >= 0),
   CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
   CONSTRAINT tasks_cause_check CHECK (
     cause = '' OR (cause = 'parent_canceled' AND status = 'Failed')
@@ -585,21 +578,29 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog
 AS $$
 DECLARE
-  parent_budget int;
-  parent_held int;
+  parent_budget bigint;
+  parent_held bigint;
+  parent_spent bigint;
   parent_allow text;
   parent_tainted boolean;
+  parent_paused boolean;
+  parent_status text;
 BEGIN
   IF NEW.parent_id IS NULL THEN
     RETURN NEW;
   END IF;
-  SELECT task.budget, task.held, task.allow, task.tainted
-    INTO parent_budget, parent_held, parent_allow, parent_tainted
+  SELECT task.budget, task.held, task.spent, task.allow, task.tainted,
+         task.paused, task.status
+    INTO parent_budget, parent_held, parent_spent, parent_allow, parent_tainted,
+         parent_paused, parent_status
   FROM tasks.tasks AS task
-  WHERE task.id = NEW.parent_id;
+  WHERE task.id = NEW.parent_id
+  FOR UPDATE;
   IF parent_budget IS NULL
      OR NEW.budget < 1
-     OR parent_held + NEW.budget > parent_budget THEN
+     OR parent_paused
+     OR parent_status IN ('Done', 'Failed')
+     OR parent_spent + parent_held + NEW.budget > parent_budget THEN
     RAISE EXCEPTION 'tasks: budget';
   END IF;
   IF NOT tasks.allow_fits(parent_allow, NEW.allow) THEN
@@ -632,7 +633,9 @@ BEGIN
      AND OLD.status NOT IN ('Done', 'Failed')
      AND NEW.status IN ('Done', 'Failed') THEN
     UPDATE tasks.tasks
-    SET held = held - NEW.budget
+    SET spent = spent + NEW.spent,
+        held = held - NEW.budget,
+        paused = paused OR (spent + NEW.spent >= budget)
     WHERE id = NEW.parent_id;
   END IF;
   RETURN NEW;
@@ -654,10 +657,13 @@ AS $$
 DECLARE
   notice_task uuid;
 BEGIN
-  IF NOT NEW.paused OR OLD.paused THEN
+  IF NOT NEW.paused OR OLD.paused OR NEW.spent < NEW.budget THEN
     RETURN NEW;
   END IF;
   notice_task := COALESCE(NEW.parent_id, NEW.id);
+  PERFORM 1 FROM tasks.tasks AS task
+  WHERE task.id = notice_task
+  FOR UPDATE;
   INSERT INTO tasks.chat_events (task_id, seq, body)
   SELECT notice_task,
          COALESCE((SELECT MAX(seq) FROM tasks.chat_events WHERE task_id = notice_task), 0) + 1,
@@ -680,8 +686,11 @@ SET search_path = pg_catalog
 AS $$
 BEGIN
   IF NEW.budget IS DISTINCT FROM OLD.budget THEN
-    IF OLD.budget <> 0 OR NEW.parent_id IS NOT NULL OR NEW.budget < 1 THEN
+    IF NEW.parent_id IS NOT NULL OR NEW.budget <= OLD.budget THEN
       RAISE EXCEPTION 'tasks: budget';
+    END IF;
+    IF OLD.status IN ('Done', 'Failed') OR NEW.status IN ('Done', 'Failed') THEN
+      RAISE EXCEPTION 'tasks: terminal';
     END IF;
   END IF;
   IF NEW.allow IS DISTINCT FROM OLD.allow THEN
@@ -783,10 +792,10 @@ CREATE TABLE tasks.templates (
   owner_user_id uuid NOT NULL,
   goal text NOT NULL,
   agent_id uuid NOT NULL,
-  budget int NOT NULL,
+  budget bigint NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT templates_goal_check CHECK (char_length(goal) BETWEEN 1 AND 200),
-  CONSTRAINT templates_budget_check CHECK (budget BETWEEN 1 AND 1000000)
+  CONSTRAINT templates_budget_check CHECK (budget BETWEEN 1 AND 1000000000)
 );
 
 CREATE TABLE tasks.template_steps (
@@ -1005,7 +1014,7 @@ CREATE POLICY automation_fires_insert ON tasks.automation_fires
 
 -- +goose StatementBegin
 CREATE FUNCTION tasks.automation_template(automation uuid)
-RETURNS TABLE (goal text, budget int)
+RETURNS TABLE (goal text, budget bigint)
 LANGUAGE sql
 STABLE
 SECURITY DEFINER

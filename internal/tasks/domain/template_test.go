@@ -189,7 +189,7 @@ func TestNormalizeChecksDeliveries(t *testing.T) {
 func TestNormalizeChecksBudget(t *testing.T) {
 	tests := []struct {
 		name    string
-		budget  int
+		budget  int64
 		wantErr bool
 	}{
 		{name: "zero", budget: 0, wantErr: true},

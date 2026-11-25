@@ -17,7 +17,7 @@ type Subtask struct {
 
 // Spawner stores a child, lists children, and sends a line to a child.
 type Spawner interface {
-	Spawn(ctx context.Context, access Access, parentID, goal string, budget int, allow string) (Task, error)
+	Spawn(ctx context.Context, access Access, parentID, goal string, budget int64, allow string) (Task, error)
 	Children(ctx context.Context, access Access, parentID string) ([]Subtask, error)
 	Send(ctx context.Context, access Access, taskID, body string) error
 }
@@ -28,7 +28,7 @@ type Canceller interface {
 }
 
 // Spawn opens one child under a parent. It does not admit a run.
-func Spawn(ctx context.Context, book Spawner, access Access, parentID, goal string, budget int, allow string) (Task, error) {
+func Spawn(ctx context.Context, book Spawner, access Access, parentID, goal string, budget int64, allow string) (Task, error) {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
 		return Task{}, ErrAccess
 	}

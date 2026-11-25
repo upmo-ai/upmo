@@ -7,12 +7,13 @@ import (
 )
 
 const (
-	TemplateGoalRunes   = 200
-	TemplateTitleRunes  = 200
-	TemplateTargetRunes = 200
-	TemplateOutlineCap  = 12
-	TemplateDeliveryCap = 8
-	TemplateBudgetMax   = 1_000_000
+	TemplateGoalRunes         = 200
+	TemplateTitleRunes        = 200
+	TemplateTargetRunes       = 200
+	TemplateOutlineCap        = 12
+	TemplateDeliveryCap       = 8
+	DefaultBudget       int64 = 2_000_000
+	TemplateBudgetMax   int64 = 1_000_000_000
 )
 
 type Template struct {
@@ -20,7 +21,7 @@ type Template struct {
 	AgentID    string
 	Outline    []string
 	Deliveries []string
-	Budget     int
+	Budget     int64
 }
 
 var (

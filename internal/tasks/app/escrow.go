@@ -12,26 +12,20 @@ import (
 
 // Ledger funds a root, spends a budget, and marks taint.
 type Ledger interface {
-	Fund(ctx context.Context, access Access, taskID string, budget int) error
-	Spend(ctx context.Context, access Access, taskID string, amount int) error
+	Fund(ctx context.Context, access Access, taskID string, budget int64) error
+	Spend(ctx context.Context, access Access, taskID string, amount int64) error
 	Taint(ctx context.Context, access Access, taskID string) error
 }
 
-// MicroUSDLedger funds and charges tasks in micro-USD (1e-6 USD).
-type MicroUSDLedger interface {
-	FundMicroUSD(ctx context.Context, access Access, taskID string, budgetMicroUSD int64) error
-	ChargeMicroUSD(ctx context.Context, access Access, taskID string, amountMicroUSD int64) (spent int64, paused bool, err error)
-}
-
-// Fund sets a root budget once. A child budget comes only from escrow.
-func Fund(ctx context.Context, book Ledger, access Access, taskID string, budget int) error {
+// Fund raises a non-terminal root budget. A child budget comes only from escrow.
+func Fund(ctx context.Context, book Ledger, access Access, taskID string, budget int64) error {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
 		return ErrAccess
 	}
 	if _, err := uuid.Parse(taskID); err != nil {
 		return ErrTask
 	}
-	if err := kernel.CheckRootBudget(int64(budget), int64(domain.TemplateBudgetMax)); err != nil {
+	if err := kernel.CheckRootBudget(budget, domain.TemplateBudgetMax); err != nil {
 		if errors.Is(err, kernel.ErrBudget) {
 			return domain.ErrBudget
 		}
@@ -40,40 +34,16 @@ func Fund(ctx context.Context, book Ledger, access Access, taskID string, budget
 	return book.Fund(ctx, access, taskID, budget)
 }
 
-// FundMicroUSD sets a root budget in micro-USD (1e-6 USD) once.
-func FundMicroUSD(ctx context.Context, book MicroUSDLedger, access Access, taskID string, budgetMicroUSD int64) error {
-	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
-		return ErrAccess
+// FundView funds the task and returns the read model of the result.
+func FundView(ctx context.Context, book Ledger, view Viewer, access Access, taskID string, budget int64) (TaskView, error) {
+	if err := Fund(ctx, book, access, taskID, budget); err != nil {
+		return TaskView{}, err
 	}
-	if _, err := uuid.Parse(taskID); err != nil {
-		return ErrTask
-	}
-	if err := kernel.CheckRootBudget(budgetMicroUSD, kernel.DefaultMaxBudgetMicroUSD); err != nil {
-		if errors.Is(err, kernel.ErrBudget) {
-			return domain.ErrBudget
-		}
-		return err
-	}
-	return book.FundMicroUSD(ctx, access, taskID, budgetMicroUSD)
-}
-
-// ChargeMicroUSD records actual post-call spend in micro-USD and pauses if
-// spent crosses budget - spent while preserving full actual spend.
-func ChargeMicroUSD(ctx context.Context, book MicroUSDLedger, access Access, taskID string, amountMicroUSD int64) (int64, bool, error) {
-	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
-		return 0, false, ErrAccess
-	}
-	if _, err := uuid.Parse(taskID); err != nil {
-		return 0, false, ErrTask
-	}
-	if amountMicroUSD < 0 {
-		return 0, false, domain.ErrBudget
-	}
-	return book.ChargeMicroUSD(ctx, access, taskID, amountMicroUSD)
+	return ViewTask(ctx, view, access, taskID)
 }
 
 // Spend charges a task. Exhaustion pauses it and writes one notice.
-func Spend(ctx context.Context, book Ledger, access Access, taskID string, amount int) error {
+func Spend(ctx context.Context, book Ledger, access Access, taskID string, amount int64) error {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
 		return ErrAccess
 	}
