@@ -26,7 +26,7 @@ const (
 	editorListenPort = 3000
 	scratchPVCSize   = "1Gi"
 	// DefaultEditorImage is the code editor when Options.EditorImage is empty.
-	DefaultEditorImage = "gitpod/openvscode-server:1.92.1"
+	DefaultEditorImage = "gitpod/openvscode-server:1.92.1@sha256:3b837807c9fdfec8b577e0e58c6acf093ce27b6bdb33e2b468d864ee66861fe8"
 )
 
 // StartEditor starts the code editor beside a live sandbox.

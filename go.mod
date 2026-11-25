@@ -3,6 +3,7 @@ module github.com/upmo-ai/upmo
 go 1.26.5
 
 require (
+	github.com/abadojack/whatlanggo v1.0.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/go-webauthn/webauthn v0.18.2
@@ -14,6 +15,7 @@ require (
 	github.com/riverqueue/river v0.51.2
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.51.2
 	github.com/riverqueue/river/rivertype v0.51.2
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
 	golang.org/x/text v0.44.0
@@ -25,7 +27,6 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.3 // indirect
-	github.com/abadojack/whatlanggo v1.0.1 // indirect
 	github.com/bitfield/gotestdox v0.2.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
@@ -94,7 +95,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.43.0 // indirect
 	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect

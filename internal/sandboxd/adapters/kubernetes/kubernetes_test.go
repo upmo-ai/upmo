@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -555,6 +556,16 @@ func TestStartEditorUsesDefaultImage(t *testing.T) {
 	}
 	if editor.Labels[labelEditorToken] == "" {
 		t.Fatal("missing connection token label")
+	}
+}
+
+func TestDefaultEditorImagePinned(t *testing.T) {
+	const prefix = "gitpod/openvscode-server:1.92.1@"
+	if !strings.HasPrefix(DefaultEditorImage, prefix) {
+		t.Fatalf("DefaultEditorImage = %q, want prefix %q", DefaultEditorImage, prefix)
+	}
+	if !strings.Contains(DefaultEditorImage, "@sha256:") {
+		t.Fatalf("DefaultEditorImage = %q, want @sha256:", DefaultEditorImage)
 	}
 }
 

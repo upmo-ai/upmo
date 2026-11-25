@@ -11,7 +11,7 @@ x-go-env: &go-env
   GIT_CONFIG_VALUE_0: "*"
 
 x-go: &go
-  image: golang:1.26.11-bookworm
+  image: golang:1.26.11-bookworm@sha256:ea47ee45f1284d60f9cc09cb2c3bb4f508c256b640bd8bb30342ff13d1adcb52
   working_dir: /src
   volumes:
     - .:/src
@@ -219,7 +219,7 @@ services:
   golangci-lint:
     # v2.13.2 is the oldest v2 image whose Go (1.27) can load a go 1.26.5 module.
     # v2.12.2 ships Go 1.26.2, which refuses this module under GOTOOLCHAIN=local.
-    image: golangci/golangci-lint:v2.13.2-alpine
+    image: golangci/golangci-lint:v2.13.2-alpine@sha256:da1f79b184ff1d98781648407d05a99b9cba7b282aa3416b0a0eac102a3b0557
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -234,7 +234,7 @@ services:
       GOTOOLCHAIN: local
 
   web:
-    image: node:24.22.1-bookworm-slim
+    image: node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
     working_dir: /src/web
     volumes:
       - .:/src
@@ -263,7 +263,7 @@ services:
   # package is installed into a volume by e2e/run.sh so the web app does not
   # gain a dependency. Kept off the default `up` and off `make ci`.
   playwright:
-    image: mcr.microsoft.com/playwright:v1.61.1-noble
+    image: mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
     profiles: ["e2e"]
     user: root
     working_dir: /src
@@ -281,7 +281,7 @@ services:
     command: ["sh", "/src/e2e/run.sh"]
 
   osv-scanner:
-    image: ghcr.io/google/osv-scanner:v2.4.0
+    image: ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -289,7 +289,7 @@ services:
     command: ["scan", "source", "--no-call-analysis=go", "-L", "go.mod", "-L", "web/pnpm-lock.yaml", "-L", "e2e/package-lock.json", "-L", "deploy/markitdown/requirements.txt"]
 
   gitleaks:
-    image: ghcr.io/gitleaks/gitleaks:v8.30.1
+    image: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -302,7 +302,7 @@ services:
     command: ["git", "--no-banner", "--redact", "--verbose", "--config", "/src/.gitleaks.toml", "/src"]
 
   markdownlint:
-    image: davidanson/markdownlint-cli2:v0.23.1
+    image: davidanson/markdownlint-cli2:v0.23.1@sha256:f382ea4fdc949883e79de678009437fb40c339323654c7b0dd4d5221cda8ed20
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -310,7 +310,7 @@ services:
     command: ["**/*.md"]
 
   lychee:
-    image: lycheeverse/lychee:0.24.2
+    image: lycheeverse/lychee:0.24.2@sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -318,7 +318,7 @@ services:
     command: ["--config", "lychee.toml", "--no-progress", "."]
 
   shellcheck:
-    image: koalaman/shellcheck:v0.11.0
+    image: koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
     profiles: ["tools"]
     working_dir: /scripts
     volumes:
@@ -328,7 +328,7 @@ services:
   # Workflow files: actionlint checks syntax and shell steps, zizmor checks
   # for security mistakes (unpinned actions, token scope, injection).
   actionlint:
-    image: rhysd/actionlint:1.7.7
+    image: rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -336,7 +336,7 @@ services:
     command: ["-color"]
 
   zizmor:
-    image: ghcr.io/zizmorcore/zizmor:1.5.2
+    image: ghcr.io/zizmorcore/zizmor:1.5.2@sha256:2eec97e326025cebb147a380011ff40402866275cbb9e85968a471ca592c00a3
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -346,7 +346,7 @@ services:
   # Dockerfiles: hadolint lints the files, trivy scans the images built by
   # `make images`. trivy reads them through the engine socket.
   hadolint:
-    image: hadolint/hadolint:v2.12.0-alpine
+    image: hadolint/hadolint:v2.12.0-alpine@sha256:3c206a451cec6d486367e758645269fd7d696c5ccb6ff59d8b03b0e45268a199
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -354,7 +354,7 @@ services:
     command: ["hadolint", "deploy/markitdown/Dockerfile", "deploy/sandbox/Dockerfile"]
 
   trivy:
-    image: aquasec/trivy:0.58.1
+    image: aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
     profiles: ["tools"]
     volumes:
       - ${UPMO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
@@ -363,7 +363,7 @@ services:
     entrypoint: ["trivy", "image", "--no-progress", "--exit-code", "1", "--severity", "HIGH,CRITICAL", "--ignore-unfixed"]
 
   bash:
-    image: bash:5.3.15-alpine3.24
+    image: bash:5.3.15-alpine3.24@sha256:a19c811ee9e97fa8a080001d82b8e0ded303f0795cffdb1cbd162731bc8ce208
     profiles: ["tools"]
     working_dir: /scripts
     volumes:
@@ -371,7 +371,7 @@ services:
     command: ["bash", "/scripts/selftest.sh"]
 
   postgres:
-    image: pgvector/pgvector:0.8.7-pg18-bookworm
+    image: pgvector/pgvector:0.8.7-pg18-bookworm@sha256:38681dc6eaf55308e2a4c6de392d131652dcfac70e1263e35cd9b5ea3fe39782
     # Dev only credentials. Never reuse them outside the local compose stack.
     environment:
       POSTGRES_USER: upmo

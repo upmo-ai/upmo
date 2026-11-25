@@ -998,8 +998,21 @@ func TestStartEditorUsesDefaultImage(t *testing.T) {
 	if ed.Config == nil || ed.Config.Image != DefaultEditorImage {
 		t.Fatalf("image = %v, want %s", ed.Config, DefaultEditorImage)
 	}
+	if !slices.Equal(f.pulled, []string{DefaultEditorImage}) {
+		t.Fatalf("pulled = %v, want %s", f.pulled, DefaultEditorImage)
+	}
 	if !slices.Contains(ed.Config.Cmd, "--connection-token") || slices.Contains(ed.Config.Cmd, "--without-connection-token") {
 		t.Fatalf("cmd = %v", ed.Config.Cmd)
+	}
+}
+
+func TestDefaultEditorImagePinned(t *testing.T) {
+	const prefix = "gitpod/openvscode-server:1.92.1@"
+	if !strings.HasPrefix(DefaultEditorImage, prefix) {
+		t.Fatalf("DefaultEditorImage = %q, want prefix %q", DefaultEditorImage, prefix)
+	}
+	if !strings.Contains(DefaultEditorImage, "@sha256:") {
+		t.Fatalf("DefaultEditorImage = %q, want @sha256:", DefaultEditorImage)
 	}
 }
 

@@ -59,7 +59,7 @@ const (
 	DefaultProxyURL = "http://host.docker.internal:3128"
 	// DefaultEditorImage is the code editor when Options.EditorImage and
 	// UPMO_EDITOR_IMAGE are empty. Override to use an install-built image.
-	DefaultEditorImage = "gitpod/openvscode-server:1.92.1"
+	DefaultEditorImage = "gitpod/openvscode-server:1.92.1@sha256:3b837807c9fdfec8b577e0e58c6acf093ce27b6bdb33e2b468d864ee66861fe8"
 
 	namePrefix = "upmo-sandbox-"
 
