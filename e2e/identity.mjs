@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { deflateSync } from "node:zlib";
-import { openAccountItem, storagePath } from "./session.mjs";
+import { addSavedPasskey, openAccountItem, storagePath } from "./session.mjs";
 
 // The official image ships browsers, not the npm package. e2e/run.sh installs
 // playwright@1.61.1 here. NODE_PATH does not apply to ESM imports.
@@ -218,6 +218,8 @@ async function identityFlow(page) {
   }
   await page.goto(pageUrl("/"), { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.getByRole("heading", { level: 1, name: "Home" }).waitFor();
+  // Sharing is gated on a recent passkey; the prompt answers with the saved one.
+  await addSavedPasskey(page);
 
   await openAccountItem(page, "Security");
   await page.getByRole("heading", { level: 1, name: "Security" }).waitFor();

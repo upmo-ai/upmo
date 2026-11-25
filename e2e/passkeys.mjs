@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { openAccountItem } from "./session.mjs";
+import { openAccountItem, savePasskey } from "./session.mjs";
 
 // The official image ships browsers, not the npm package. e2e/run.sh installs
 // playwright@1.61.1 here. NODE_PATH does not apply to ESM imports.
@@ -189,6 +189,9 @@ try {
       await page.getByRole("dialog").getByRole("button", { name: "Set password" }).click();
     }
     await within(changePassword.waitFor());
+
+    // Later checks sign in with the password and step up with this passkey.
+    await savePasskey(client, authenticator.authenticatorId);
 
     phase = "logging in with the password and getting the passkey offer";
     await client.send("WebAuthn.removeVirtualAuthenticator", {
