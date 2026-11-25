@@ -293,7 +293,7 @@ services:
     command: ["sh", "/src/e2e/run.sh"]
 
   osv-scanner:
-    image: ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
+    image: ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -314,7 +314,7 @@ services:
     command: ["git", "--no-banner", "--redact", "--verbose", "--config", "/src/.gitleaks.toml", "/src"]
 
   markdownlint:
-    image: davidanson/markdownlint-cli2:v0.23.1@sha256:f382ea4fdc949883e79de678009437fb40c339323654c7b0dd4d5221cda8ed20
+    image: davidanson/markdownlint-cli2:v0.24.2@sha256:c768e94d8bb161c449bde28f60656929ca1f02c3010a405f65c9cac71563a889
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -340,7 +340,7 @@ services:
   # Workflow files: actionlint checks syntax and shell steps, zizmor checks
   # for security mistakes (unpinned actions, token scope, injection).
   actionlint:
-    image: rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
+    image: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
     profiles: ["tools"]
     working_dir: /src
     volumes:
@@ -366,7 +366,7 @@ services:
     command: ["hadolint", "deploy/markitdown/Dockerfile", "deploy/sandbox/Dockerfile"]
 
   trivy:
-    image: aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
+    image: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
     profiles: ["tools"]
     volumes:
       - ${UPMO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
