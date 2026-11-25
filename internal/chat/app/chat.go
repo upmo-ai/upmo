@@ -154,6 +154,7 @@ type Book interface {
 	Rename(ctx context.Context, access Access, chatID, title string) (ChatSummary, error)
 	Say(ctx context.Context, access Access, chatID, body string, picks Picks) error
 	Retry(ctx context.Context, access Access, chatID, lineID string, picks *Picks) error
+	Branch(ctx context.Context, access Access, chatID, upToLineID string, retry bool, picks *Picks) (ChatSummary, error)
 	Stop(ctx context.Context, access Access, chatID string) error
 	Delete(ctx context.Context, access Access, chatID string) error
 	Read(ctx context.Context, access Access, chatID string) (Chat, error)
@@ -320,6 +321,31 @@ func Retry(ctx context.Context, book Book, access Access, chatID, lineID string,
 		return err
 	}
 	return book.Retry(ctx, access, chatID, lineID, &cleaned)
+}
+
+// Branch copies a chat up to one line into a new private chat. retry asks for
+// a new reply on the cloned user line.
+func Branch(ctx context.Context, book Book, access Access, chatID, upToLineID string, retry bool, picks *Picks) (ChatSummary, error) {
+	if err := caller(access); err != nil {
+		return ChatSummary{}, err
+	}
+	if _, err := uuid.Parse(chatID); err != nil {
+		return ChatSummary{}, ErrChat
+	}
+	if _, err := uuid.Parse(upToLineID); err != nil {
+		return ChatSummary{}, ErrChat
+	}
+	if !slices.Contains(strings.Split(access.Allow, ","), "chat:create") {
+		return ChatSummary{}, ErrAccess
+	}
+	if picks == nil {
+		return book.Branch(ctx, access, chatID, upToLineID, retry, nil)
+	}
+	cleaned, err := cleanPicks(*picks)
+	if err != nil {
+		return ChatSummary{}, err
+	}
+	return book.Branch(ctx, access, chatID, upToLineID, retry, &cleaned)
 }
 
 // cleanPicks checks each pick of a line.

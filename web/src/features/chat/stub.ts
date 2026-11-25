@@ -1,4 +1,4 @@
-import { BrainError, type ApiClient, type ShareUpdate, type TaskShare } from "../../app/api";
+import { BrainError, type ApiClient, type ChatPicks, type ShareUpdate, type TaskShare } from "../../app/api";
 import type { Chat, ChatLine, ChatSummary } from "./types";
 
 // How long the stub takes to answer. A real model takes longer.
@@ -262,6 +262,36 @@ export function createChatsStub(
     },
     async retry() {
       throw new Error("The sample chats have no failed replies.");
+    },
+    async stop(id: string) {
+      const chat = find(id);
+      const last = chat.lines.at(-1);
+      if (last?.role === "assistant" && (last.status === "pending" || last.status === undefined)) {
+        last.status = "stopped";
+        return;
+      }
+      const line = newLine("assistant", "", 0, 0);
+      line.status = "stopped";
+      chat.lines.push(line);
+    },
+    async branch(id: string, upToLineId: string, opts?: { retry?: boolean; picks?: ChatPicks }) {
+      const source = find(id);
+      let index = source.lines.findIndex((line) => line.id === upToLineId);
+      if (index < 0) throw new Error("Line missing.");
+      const chosen = source.lines[index];
+      if (opts?.retry && chosen?.role === "assistant" && chosen.reply_to) {
+        const userIndex = source.lines.findIndex((line) => line.id === chosen.reply_to);
+        if (userIndex >= 0) index = userIndex;
+      }
+      serial += 1;
+      const chat: StoredChat = {
+        id: `chat-${serial}`,
+        title: source.title,
+        createdAt: clock().toISOString(),
+        lines: source.lines.slice(0, index + 1).map((line) => ({ ...line, id: `${line.id}-b${serial}` })),
+      };
+      chats.unshift(chat);
+      return copy(summarize(chat));
     },
     async getShare(id): Promise<TaskShare> {
       const chat = find(id);

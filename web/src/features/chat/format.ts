@@ -76,8 +76,9 @@ export function awaitingReply(lines: readonly ChatLine[] | undefined, replyFollo
   return last?.role === "user" && (replyFollows || last.pending === true);
 }
 
-/** A 403 means the chat can be read but not written in; any other problem is shown as it comes. */
+/** A 403 means the chat can be read but not written in. A 409 means a reply is already running. Any other problem is shown as it comes. */
 export function sendRefusal(error: unknown): string {
+  if (error instanceof BrainError && error.status === 409) return "A reply is already under way in this chat.";
   if (error instanceof BrainError && error.status === 403) return "You can read this chat but not write in it.";
   return error instanceof Error ? error.message : String(error);
 }

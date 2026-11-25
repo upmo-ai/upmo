@@ -905,6 +905,8 @@ CREATE TABLE chat.action_logs (
   call_id text NOT NULL,
   chat_id uuid NOT NULL REFERENCES chat.chats (id) ON DELETE CASCADE,
   line_id uuid,
+  user_line_id uuid REFERENCES chat.lines (id) ON DELETE CASCADE,
+  args_digest text NOT NULL DEFAULT '',
   user_id uuid NOT NULL,
   tool_name text NOT NULL,
   action text NOT NULL DEFAULT '',
@@ -922,6 +924,9 @@ CREATE TABLE chat.action_logs (
 );
 
 CREATE INDEX chat_action_logs_chat_idx ON chat.action_logs (chat_id, executed_at DESC);
+CREATE INDEX chat_action_logs_user_line_digest_idx
+  ON chat.action_logs (chat_id, user_line_id, tool_name, args_digest)
+  WHERE state IN ('done', 'dialing');
 
 ALTER TABLE chat.action_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat.action_logs FORCE ROW LEVEL SECURITY;
@@ -1083,8 +1088,120 @@ CREATE POLICY tool_allowances_delete ON chat.tool_allowances
 
 GRANT SELECT, INSERT, DELETE ON chat.tool_allowances TO upmo_app;
 
+-- +goose StatementBegin
+CREATE FUNCTION chat.branch_chat(source_chat_id uuid, up_to_line_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  caller uuid := NULLIF(pg_catalog.current_setting('upmo.user_id', true), '')::uuid;
+  allow_list text[] := pg_catalog.string_to_array(NULLIF(pg_catalog.current_setting('upmo.allow', true), ''), ',');
+  src chat.chats%ROWTYPE;
+  branch_seq int;
+  new_chat_id uuid;
+  remapped_summary_line_id uuid;
+  remapped_summary_seq int;
+BEGIN
+  IF caller IS NULL OR NOT ('chat:create' = ANY (allow_list)) THEN
+    RAISE EXCEPTION 'chat: access' USING ERRCODE = '42501';
+  END IF;
+  SELECT * INTO src FROM chat.chats WHERE id = source_chat_id;
+  IF NOT FOUND OR NOT identity.may('view', src.object_type, src.owner_user_id, src.visibility, src.visibility_team_id, src.id) THEN
+    RAISE EXCEPTION 'chat: no such chat' USING ERRCODE = 'P0002';
+  END IF;
+  SELECT line.seq INTO branch_seq
+  FROM chat.lines AS line
+  WHERE line.chat_id = source_chat_id AND line.id = up_to_line_id;
+  IF branch_seq IS NULL THEN
+    RAISE EXCEPTION 'chat: no such line' USING ERRCODE = 'P0002';
+  END IF;
+
+  INSERT INTO chat.chats (
+    owner_user_id, visibility, title, tainted, private_read
+  ) VALUES (
+    caller, 'private', src.title, src.tainted, src.private_read
+  )
+  RETURNING id INTO new_chat_id;
+
+  CREATE TEMP TABLE tmp_branch_lines ON COMMIT DROP AS
+  SELECT
+    line.*,
+    pg_catalog.uuidv7() AS new_id,
+    pg_catalog.row_number() OVER (ORDER BY line.seq)::int AS new_seq
+  FROM chat.lines AS line
+  WHERE line.chat_id = source_chat_id
+    AND line.seq <= branch_seq
+    AND NOT (
+      line.role = 'assistant'
+      AND line.status IN ('failed', 'stopped', 'done')
+      AND EXISTS (
+        SELECT 1 FROM chat.lines AS later
+        WHERE later.chat_id = source_chat_id
+          AND later.reply_to = line.reply_to
+          AND later.status = 'done'
+          AND later.seq > line.seq
+          AND later.seq <= branch_seq
+      )
+    )
+  ORDER BY line.seq;
+
+  INSERT INTO chat.lines (
+    chat_id, seq, body, id, role, at, model, tokens, cost_micro_usd,
+    status, reply_to, attempts, agent_id, route, pin_account_id, pin_model, author_id
+  )
+  SELECT
+    new_chat_id,
+    s.new_seq,
+    s.body,
+    s.new_id,
+    s.role,
+    s.at,
+    s.model,
+    s.tokens,
+    s.cost_micro_usd,
+    s.status,
+    parent.new_id,
+    s.attempts,
+    CASE WHEN s.role = 'user' AND s.author_id = caller THEN s.agent_id END,
+    CASE WHEN s.role = 'user' THEN s.route END,
+    CASE WHEN s.role = 'user' AND s.author_id = caller THEN s.pin_account_id END,
+    CASE WHEN s.role = 'user' AND s.author_id = caller THEN s.pin_model END,
+    CASE WHEN s.role = 'user' THEN caller END
+  FROM tmp_branch_lines AS s
+  LEFT JOIN tmp_branch_lines AS parent ON parent.id = s.reply_to
+  ORDER BY s.new_seq;
+
+  IF src.summary_up_to_seq > 0 AND src.summary_up_to_seq <= branch_seq AND src.rolling_summary <> '' THEN
+    SELECT t.new_id, t.new_seq
+    INTO remapped_summary_line_id, remapped_summary_seq
+    FROM tmp_branch_lines AS t
+    WHERE t.seq <= src.summary_up_to_seq
+    ORDER BY t.seq DESC
+    LIMIT 1;
+
+    IF remapped_summary_line_id IS NOT NULL THEN
+      UPDATE chat.chats
+      SET rolling_summary = src.rolling_summary,
+          summary_up_to_line_id = remapped_summary_line_id,
+          summary_up_to_seq = remapped_summary_seq
+      WHERE id = new_chat_id;
+    END IF;
+  END IF;
+
+  DROP TABLE tmp_branch_lines;
+  RETURN new_chat_id;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION chat.branch_chat(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION chat.branch_chat(uuid, uuid) TO upmo_app;
+
 -- +goose Down
 
+DROP FUNCTION IF EXISTS chat.branch_chat(uuid, uuid);
 DROP TABLE IF EXISTS chat.tool_allowances;
 DROP FUNCTION IF EXISTS chat.hold_status(uuid, uuid);
 DROP TRIGGER IF EXISTS chat_holds_decide_once ON chat.holds;

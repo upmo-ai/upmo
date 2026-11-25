@@ -373,7 +373,7 @@ export function toChatLine(value: unknown): ChatLine {
   }
   // The reply fields are sent by a brain that writes replies; an older one omits them.
   const status = source.status;
-  if (status === "done" || status === "failed") parsed.status = status;
+  if (status === "done" || status === "failed" || status === "stopped") parsed.status = status;
   if (typeof source.reply_to === "string") parsed.reply_to = source.reply_to;
   if (source.pending === true) parsed.pending = true;
   if (Array.isArray(source.attempts) && source.attempts.length > 0) {
@@ -1406,6 +1406,18 @@ export function createBrainApi(stub: ApiClient = createStubApi()): ApiClient {
       async retry(id, lineId, picks) {
         if ((await chosen()) === "stub") return stub.chats.retry(id, lineId, picks);
         await call(`${chatPath(id)}/lines/${encodeURIComponent(lineId)}/retry`, { method: "POST", body: { ...picks } });
+      },
+      async stop(id) {
+        if ((await chosen()) === "stub") return stub.chats.stop(id);
+        await call(`${chatPath(id)}/stop`, { method: "POST" });
+      },
+      async branch(id, upToLineId, opts) {
+        if ((await chosen()) === "stub") return stub.chats.branch(id, upToLineId, opts);
+        const { files: _files, ...jsonPicks } = opts?.picks ?? {};
+        return toChatSummary(await call(`${chatPath(id)}/branch`, {
+          method: "POST",
+          body: { up_to_line_id: upToLineId, retry: opts?.retry === true, ...jsonPicks },
+        }));
       },
       async getShare(id) {
         if ((await chosen()) === "stub") return stub.chats.getShare(id);

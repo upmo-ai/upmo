@@ -755,6 +755,13 @@ export interface ApiClient {
      * picks made now (202).
      */
     retry(id: string, lineId: string, picks: ChatPicks): Promise<void>;
+    /** POST /api/chats/{id}/stop. Ends the reply that is streaming or waiting. */
+    stop(id: string): Promise<void>;
+    /**
+     * POST /api/chats/{id}/branch. Copies the chat up to one line into a new
+     * private chat. retry asks for a new reply on the cloned user line.
+     */
+    branch(id: string, upToLineId: string, opts?: { retry?: boolean; picks?: ChatPicks }): Promise<ChatSummary>;
     /** GET /api/chats/{id}/share. Owner first, with names and private_read flag. */
     getShare(id: string): Promise<TaskShare>;
     /** PUT /api/chats/{id}/share. Owner only; 409 while a reply run is active. */

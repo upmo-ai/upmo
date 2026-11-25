@@ -198,14 +198,14 @@ func TestOnlyTheAuthorOfALineGetsItsAccountAndAgentBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	picks := app.Picks{Route: "fast", PinAccount: pickAccount, PinModel: "gpt-x", AgentID: pickAgent}
-	if err := app.Say(ctx, store, ownerAccess, opened.ID, "mine", picks); err != nil {
-		t.Fatal(err)
-	}
-	settle(t, owner, opened.ID)
 	editor := app.Access{UserID: otherUser, Allow: "chat:view,chat:edit", SharedView: "{" + opened.ID + "}", SharedEdit: "{" + opened.ID + "}"}
 	theirs := app.Picks{PinAccount: pickAccount2, PinModel: "theirs-m", AgentID: pickAgent}
 	if err := app.Say(ctx, store, editor, opened.ID, "theirs", theirs); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, owner, opened.ID)
+	picks := app.Picks{Route: "fast", PinAccount: pickAccount, PinModel: "gpt-x", AgentID: pickAgent}
+	if err := app.Say(ctx, store, ownerAccess, opened.ID, "mine", picks); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,23 +242,23 @@ func TestOnlyTheAuthorOfALineGetsItsAccountAndAgentBack(t *testing.T) {
 	for name, lines := range map[string][]app.Line{
 		"owner read": read(ownerAccess).Lines, "owner stream": streamed(ownerAccess),
 	} {
-		check(name, lines[0], true, true, "gpt-x")
-		check(name, lines[1], false, false, "theirs-m")
+		check(name, lines[0], false, false, "theirs-m")
+		check(name, lines[1], true, true, "gpt-x")
 	}
 	for name, lines := range map[string][]app.Line{
 		"editor read": read(editor).Lines, "editor stream": streamed(editor),
 	} {
-		check(name, lines[0], false, false, "gpt-x")
-		check(name, lines[1], true, true, "theirs-m")
-		if lines[0].Route == nil || *lines[0].Route != "fast" {
-			t.Fatalf("%s lost the route: %+v", name, lines[0])
+		check(name, lines[0], true, true, "theirs-m")
+		check(name, lines[1], false, false, "gpt-x")
+		if lines[1].Route == nil || *lines[1].Route != "fast" {
+			t.Fatalf("%s lost the route: %+v", name, lines[1])
 		}
 	}
 
 	// The editor retrying the owner's line reuses its route and nothing of the
 	// owner's account or agent.
 	chat := read(ownerAccess)
-	failReply(t, owner, opened.ID, pickReply1, chat.Lines[0].ID)
+	failReply(t, owner, opened.ID, pickReply1, chat.Lines[1].ID)
 	if err := app.Retry(ctx, store, editor, opened.ID, pickReply1, nil); err != nil {
 		t.Fatal(err)
 	}

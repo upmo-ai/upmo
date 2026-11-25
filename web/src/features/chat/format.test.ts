@@ -81,6 +81,12 @@ describe("UPM-201 send refusals", () => {
     );
   });
 
+  it("UPM-319 puts a 409 on send as a reply already under way", () => {
+    expect(sendRefusal(new BrainError(409, "a reply is already on its way"))).toBe(
+      "A reply is already under way in this chat.",
+    );
+  });
+
   it("UPM-201 shows any other problem as it comes", () => {
     expect(sendRefusal(new BrainError(400, "a chat needs a line"))).toBe("a chat needs a line");
     expect(sendRefusal(new Error("The brain is offline."))).toBe("The brain is offline.");

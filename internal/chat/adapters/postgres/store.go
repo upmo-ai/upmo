@@ -647,6 +647,125 @@ func (s Store) Rename(ctx context.Context, access app.Access, chatID, title stri
 	return app.ChatSummary{ID: chatID, Title: title, Preview: domain.Preview(newest), LastActivity: lastActivity.UTC()}, nil
 }
 
+// Branch copies the chat up to upToLineID into a new private chat owned by
+// the caller. retry reserves a reply on the cloned user line. An assistant
+// line with retry copies up to that line's user line and leaves the old reply
+// out.
+func (s Store) Branch(ctx context.Context, access app.Access, chatID, upToLineID string, retry bool, picks *app.Picks) (app.ChatSummary, error) {
+	if retry && !s.replying() {
+		return app.ChatSummary{}, app.ErrReplies
+	}
+	tx, err := s.begin(ctx, access)
+	if err != nil {
+		return app.ChatSummary{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	cloneUpTo := upToLineID
+	if retry {
+		var role string
+		var replyTo *string
+		err := tx.QueryRow(ctx, `
+			SELECT role, reply_to::text FROM chat.lines
+			WHERE id = $1::uuid AND chat_id = $2::uuid`, upToLineID, chatID).Scan(&role, &replyTo)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return app.ChatSummary{}, fmt.Errorf("chat: branch line: %w", err)
+		}
+		if err == nil && role == domain.RoleAssistant {
+			if replyTo == nil || *replyTo == "" {
+				return app.ChatSummary{}, app.ErrNoLine
+			}
+			cloneUpTo = *replyTo
+		}
+	}
+
+	var newID string
+	err = tx.QueryRow(ctx, `SELECT chat.branch_chat($1::uuid, $2::uuid)::text`, chatID, cloneUpTo).Scan(&newID)
+	if err != nil {
+		return app.ChatSummary{}, branchErr(err)
+	}
+	if retry {
+		if err := lockChat(ctx, tx, newID); err != nil {
+			return app.ChatSummary{}, err
+		}
+		if err := failStaleRuns(ctx, tx, newID); err != nil {
+			return app.ChatSummary{}, err
+		}
+		var userLine string
+		if err := tx.QueryRow(ctx, `
+			SELECT id::text FROM chat.lines
+			WHERE chat_id = $1::uuid AND role = 'user'
+			ORDER BY seq DESC LIMIT 1`, newID).Scan(&userLine); err != nil {
+			return app.ChatSummary{}, fmt.Errorf("chat: branch user line: %w", err)
+		}
+		var use app.Picks
+		if picks != nil {
+			use = *picks
+		} else if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(route, ''),
+			       CASE WHEN author_id = $2::uuid THEN COALESCE(pin_account_id::text, '') ELSE '' END,
+			       CASE WHEN author_id = $2::uuid THEN COALESCE(pin_model, '') ELSE '' END,
+			       CASE WHEN author_id = $2::uuid THEN COALESCE(agent_id::text, '') ELSE '' END
+			FROM chat.lines WHERE id = $1::uuid`, userLine, access.UserID).Scan(
+			&use.Route, &use.PinAccount, &use.PinModel, &use.AgentID); err != nil {
+			return app.ChatSummary{}, fmt.Errorf("chat: branch picks: %w", err)
+		}
+		if err := s.reserveRun(ctx, tx, access, newID, userLine, use); err != nil {
+			return app.ChatSummary{}, err
+		}
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action:   audit.ChatBranch,
+		Outcome:  audit.Success,
+		TargetID: newID,
+		Changes: audit.Changes{
+			Fields: []string{"retry", "source_chat_id", "up_to_line_id"},
+			Values: map[string]audit.Change{
+				"source_chat_id": {To: chatID},
+				"up_to_line_id":  {To: upToLineID},
+				"retry":          {To: retry},
+			},
+		},
+	}); err != nil {
+		return app.ChatSummary{}, err
+	}
+	var customTitle, firstUser, newest string
+	var lastActivity time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT title,
+		       COALESCE((SELECT body FROM chat.lines WHERE chat_id = $1::uuid AND role = 'user' ORDER BY seq LIMIT 1), ''),
+		       COALESCE((SELECT body FROM chat.lines WHERE chat_id = $1::uuid ORDER BY seq DESC LIMIT 1), ''),
+		       COALESCE((SELECT at FROM chat.lines WHERE chat_id = $1::uuid ORDER BY seq DESC LIMIT 1), created_at)
+		FROM chat.chats WHERE id = $1::uuid`, newID).Scan(&customTitle, &firstUser, &newest, &lastActivity); err != nil {
+		return app.ChatSummary{}, fmt.Errorf("chat: branch summary: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return app.ChatSummary{}, err
+	}
+	return app.ChatSummary{
+		ID:           newID,
+		Title:        domain.DisplayTitle(customTitle, firstUser),
+		Preview:      domain.Preview(newest),
+		LastActivity: lastActivity.UTC(),
+	}, nil
+}
+
+func branchErr(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "P0002":
+			if strings.Contains(pgErr.Message, "no such line") {
+				return app.ErrNoLine
+			}
+			return app.ErrGone
+		case "42501":
+			return app.ErrAccess
+		}
+	}
+	return fmt.Errorf("chat: branch: %w", err)
+}
+
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
 	return s.beginWith(ctx, access, pgx.TxOptions{})
 }
@@ -714,10 +833,10 @@ func lineColumnsFor(viewer string) string {
 	(line.role = 'user' AND NOT EXISTS (SELECT 1 FROM chat.lines AS reply WHERE reply.reply_to = line.id))`
 }
 
-// superseded holds for a failed reply that a later reply to the same user
-// line has answered, on a chat.lines row named line. Such a line stays
-// stored but is hidden from the thread and from the history.
-const superseded = `line.status IN ('failed', 'stopped') AND EXISTS (
+// superseded holds for a reply a later done reply to the same user line has
+// replaced, on a chat.lines row named line: a failed or stopped reply, or an
+// older done reply. The line stays stored but is hidden from the thread.
+const superseded = `line.role = 'assistant' AND line.status IN ('failed', 'stopped', 'done') AND EXISTS (
 	SELECT 1 FROM chat.lines AS later
 	WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq
 )`

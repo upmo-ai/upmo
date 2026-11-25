@@ -89,6 +89,8 @@ type Message struct {
 	IsError         bool        `json:"is_error,omitempty"`
 	Offload         bool        `json:"offload,omitempty"`
 	HeldPlaceholder bool        `json:"held_placeholder,omitempty"`
+	// Replay stores this tool result as a simulated turn. The prompt role stays tool.
+	Replay bool `json:"replay,omitempty"`
 }
 
 // ToolResult is the outcome of executing one tool call.
@@ -242,6 +244,8 @@ type RunState struct {
 	Catalog        *ToolCatalog
 	ApprovedCalls  map[string]string
 	Seq            int
+	// UserLineID is the user line this chat reply answers. Empty for a task run.
+	UserLineID string
 }
 
 var (

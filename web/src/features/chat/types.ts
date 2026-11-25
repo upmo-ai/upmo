@@ -50,7 +50,7 @@ export interface ChatLine {
   seq?: number;
 }
 
-export type LineStatus = "done" | "failed" | "pending";
+export type LineStatus = "done" | "failed" | "stopped" | "pending";
 
 export interface ChatAttempt {
   model: string;

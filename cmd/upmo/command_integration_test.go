@@ -247,8 +247,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		"audit.push_cursor": {},
 		"chat.action_logs": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"action", "call_id", "chat_id", "completed_at", "dry_run", "error_text", "executed_at", "line_id", "preview", "response_digest", "scope_id", "state", "tool_name", "untrusted_origin", "user_id"},
-			Insert: []string{"action", "call_id", "chat_id", "completed_at", "dry_run", "error_text", "executed_at", "line_id", "preview", "response_digest", "scope_id", "state", "tool_name", "untrusted_origin", "user_id"},
+			Select: []string{"action", "args_digest", "call_id", "chat_id", "completed_at", "dry_run", "error_text", "executed_at", "line_id", "preview", "response_digest", "scope_id", "state", "tool_name", "untrusted_origin", "user_id", "user_line_id"},
+			Insert: []string{"action", "args_digest", "call_id", "chat_id", "completed_at", "dry_run", "error_text", "executed_at", "line_id", "preview", "response_digest", "scope_id", "state", "tool_name", "untrusted_origin", "user_id", "user_line_id"},
 			Update: []string{"completed_at", "error_text", "response_digest", "state"},
 		},
 		"chat.chats": {
@@ -751,5 +751,19 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	}
 	if !redactedTurnsAppExec || redactedTurnsPublicExec {
 		t.Fatalf("chat.redacted_turn_metadata EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", redactedTurnsAppExec, redactedTurnsPublicExec)
+	}
+	var branchAppExec, branchPublicExec bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_function_privilege('upmo_app', p.oid, 'EXECUTE'),
+		       EXISTS (
+		         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) AS acl
+		         WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+		       )
+		FROM pg_catalog.pg_proc AS p
+		WHERE p.oid = 'chat.branch_chat(uuid, uuid)'::regprocedure`).Scan(&branchAppExec, &branchPublicExec); err != nil {
+		t.Fatal(err)
+	}
+	if !branchAppExec || branchPublicExec {
+		t.Fatalf("chat.branch_chat EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", branchAppExec, branchPublicExec)
 	}
 }

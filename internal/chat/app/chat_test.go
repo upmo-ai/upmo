@@ -275,6 +275,9 @@ func (f *fakeBook) Retry(_ context.Context, _ Access, _, _ string, picks *Picks)
 	f.retried = picks
 	return nil
 }
+func (f *fakeBook) Branch(context.Context, Access, string, string, bool, *Picks) (ChatSummary, error) {
+	return ChatSummary{}, nil
+}
 func (f *fakeBook) Stop(context.Context, Access, string) error   { return nil }
 func (f *fakeBook) Delete(context.Context, Access, string) error { return nil }
 

@@ -1124,3 +1124,131 @@ describe("UPM-318 chat attachments", () => {
     expect(within(log).getByRole("img", { name: "Ada Lovelace" })).toBeTruthy();
   });
 });
+
+describe("UPM-319 stop, retry and branch", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("TestWebStopButtonAndStoppedLineRetry", async () => {
+    const stop = vi.fn<ApiClient["chats"]["stop"]>(async () => {});
+    const retry = vi.fn<ApiClient["chats"]["retry"]>(async () => {});
+    let stopped = false;
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async get(id) {
+          const chat = await base.chats.get(id);
+          if (id !== "roadmap-priorities") return chat;
+          const user = chat.lines.filter((line) => line.role === "user");
+          if (!stopped) return { ...chat, lines: user };
+          return {
+            ...chat,
+            lines: [
+              ...user,
+              {
+                id: "stopped-1",
+                role: "assistant",
+                body: "partial answer",
+                model: "m1",
+                tokens: 4,
+                cost_usd: null,
+                at: "2026-11-23T02:15:00.000Z",
+                status: "stopped",
+              },
+            ],
+          };
+        },
+        async stop(id) {
+          stopped = true;
+          await stop(id);
+        },
+        retry,
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith("roadmap-priorities"));
+    expect(await screen.findByText("partial answer")).toBeTruthy();
+    const retries = screen.getAllByRole("button", { name: "Retry" });
+    fireEvent.click(retries[retries.length - 1]);
+    await waitFor(() => expect(retry).toHaveBeenCalledWith("roadmap-priorities", "stopped-1", expect.anything()));
+  });
+
+  it("TestWebRetryDoneAndBranchEarlierTurn", async () => {
+    const retry = vi.fn<ApiClient["chats"]["retry"]>(async () => {});
+    const branch = vi.fn<ApiClient["chats"]["branch"]>(async () => ({
+      id: "branched-chat",
+      title: "Branched chat",
+      preview: "earlier",
+      last_activity: "2026-11-23T02:15:00.000Z",
+    }));
+    let branched = false;
+    const base = quick();
+    const client: ApiClient = {
+      ...base,
+      chats: {
+        ...base.chats,
+        async list(query) {
+          const items = await base.chats.list(query);
+          if (!branched) return items;
+          return [
+            {
+              id: "branched-chat",
+              title: "Branched chat",
+              preview: "earlier",
+              last_activity: "2026-11-23T02:15:00.000Z",
+            },
+            ...items,
+          ];
+        },
+        async get(id) {
+          if (id === "branched-chat") {
+            return {
+              id,
+              title: "Branched chat",
+              lines: [
+                {
+                  id: "b1",
+                  role: "user",
+                  body: "branched turn",
+                  model: null,
+                  tokens: 1,
+                  cost_usd: null,
+                  at: "2026-11-23T02:15:00.000Z",
+                },
+              ],
+              can_edit: true,
+              can_delete: true,
+            };
+          }
+          return base.chats.get(id);
+        },
+        retry,
+        async branch(id, lineId, opts) {
+          branched = true;
+          return branch(id, lineId, opts);
+        },
+      },
+    };
+    renderChat("/chat", client);
+    await screen.findByRole("heading", { level: 2, name: "Roadmap priorities" });
+    const log = messageLog();
+    const retries = within(log).getAllByRole("button", { name: "Retry" });
+    fireEvent.click(retries[retries.length - 1]);
+    await waitFor(() => expect(retry).toHaveBeenCalledWith("roadmap-priorities", "roadmap-2", expect.anything()));
+    fireEvent.click(within(log).getByRole("button", { name: "Branch from here" }));
+    await waitFor(() =>
+      expect(branch).toHaveBeenCalledWith(
+        "roadmap-priorities",
+        "roadmap-1",
+        expect.objectContaining({ retry: false }),
+      ),
+    );
+    expect(await screen.findByRole("heading", { level: 2, name: "Branched chat" })).toBeTruthy();
+    expect(screen.getByText("branched turn")).toBeTruthy();
+  });
+});

@@ -3,7 +3,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import { IconLayoutSidebar, IconPencil, IconPlus, IconSearch, IconServer, IconTrash } from "@tabler/icons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { Button, ChatMessage, ChatThread, Composer, IconButton, Input, StatusAlert, Wordmark } from "@upmo-ai/components";
 import type { ComposerOption } from "@upmo-ai/components";
 
@@ -372,6 +372,26 @@ export function ChatPage() {
     },
   );
 
+  const stop = useWrite(
+    (id: string) => api.chats.stop(id),
+    [chatQueryKey(activeId ?? "")],
+    { shown: true, onError: (error) => setSendError(sendRefusal(error)) },
+  );
+
+  const branch = useWrite(
+    (input: { id: string; lineId: string; retry: boolean; picks: ChatPicks }) =>
+      api.chats.branch(input.id, input.lineId, { retry: input.retry, picks: input.picks }),
+    [chatsQueryKey()],
+    {
+      shown: true,
+      onSuccess: (created) => {
+        setSelectedId(created.id);
+        dismissDrawer();
+      },
+      onError: (error) => setSendError(sendRefusal(error)),
+    },
+  );
+
   const create = useWrite(() => api.chats.create(), [chatsQueryKey()], {
     onSuccess: (created) => {
       setSelectedId(created.id);
@@ -457,6 +477,35 @@ export function ChatPage() {
     setSendError(undefined);
     setRetrying((ids) => new Set(ids).add(lineId));
     retry.mutate({ id: activeId, lineId, picks: currentPicks() });
+  };
+
+  const handleStop = () => {
+    if (!activeId || stop.isPending) return;
+    setSendError(undefined);
+    stop.mutate(activeId);
+  };
+
+  const handleBranch = (lineId: string, again: boolean) => {
+    if (!activeId || thinking || branch.isPending) return;
+    setSendError(undefined);
+    branch.mutate({ id: activeId, lineId, retry: again, picks: currentPicks() });
+  };
+
+  const latestReplyId = [...lines].reverse().find((line) => line.role === "assistant" && line.status !== "pending")?.id;
+  const lineActions = (line: ChatLine) => {
+    const latest = line.id === latestReplyId;
+    return (
+      <div className="chat-line-actions">
+        <Button size="xs" variant="default" onClick={() => (latest ? handleRetry(line.id) : handleBranch(line.id, true))} disabled={thinking}>
+          Retry
+        </Button>
+        {latest ? null : (
+          <Button size="xs" variant="subtle" onClick={() => handleBranch(line.id, false)} disabled={thinking}>
+            Branch from here
+          </Button>
+        )}
+      </div>
+    );
   };
 
   const handleDraftChange = (value: string) => {
@@ -663,9 +712,18 @@ export function ChatPage() {
             empty={nothingUsable ? <SetupGuide /> : <Text className="chat-thread-empty">Write a message to start this chat.</Text>}
           >
             {lines.map((line) => {
-              if (line.status === "failed" && retrying.has(line.id)) return null;
+              if ((line.status === "failed" || line.status === "stopped") && retrying.has(line.id)) return null;
               if (line.status === "pending") {
                 return <ChatMessage key={line.id} role="assistant" content={line.body} streaming copyable={false} />;
+              }
+              if (line.status === "stopped") {
+                const text = line.body === "" ? "Reply stopped." : line.body;
+                return (
+                  <Fragment key={line.id}>
+                    <ChatMessage role="assistant" content={text} copyable={false} />
+                    {lineActions(line)}
+                  </Fragment>
+                );
               }
               if (line.status === "failed") {
                 return (
@@ -673,9 +731,7 @@ export function ChatPage() {
                     <div className="chat-failed">
                       <StatusAlert tone="critical">{line.body}</StatusAlert>
                       {line.attempts?.length ? <Text className="chat-attempts">{attemptsText(line.attempts)}</Text> : null}
-                      <Button size="xs" variant="default" onClick={() => handleRetry(line.id)} disabled={thinking}>
-                        Retry
-                      </Button>
+                      {lineActions(line)}
                     </div>
                   </ChatMessage>
                 );
@@ -700,19 +756,22 @@ export function ChatPage() {
                           ))}
                         </div>
                       ) : null}
+                      {lineActions(line)}
                     </div>
                   </ChatMessage>
                 );
               }
               return (
-                <ChatMessage
-                  key={line.id}
-                  role={line.role}
-                  content={line.body}
-                  model={line.model ?? undefined}
-                  tokens={line.tokens}
-                  cost={formatCost(line.cost_usd)}
-                />
+                <Fragment key={line.id}>
+                  <ChatMessage
+                    role={line.role}
+                    content={line.body}
+                    model={line.model ?? undefined}
+                    tokens={line.tokens}
+                    cost={formatCost(line.cost_usd)}
+                  />
+                  {lineActions(line)}
+                </Fragment>
               );
             })}
             {thinking && !pending ? (
@@ -763,6 +822,11 @@ export function ChatPage() {
                   </span>
                 ))}
               </div>
+            ) : null}
+            {thinking ? (
+              <Button size="xs" variant="default" onClick={handleStop} disabled={stop.isPending}>
+                Stop
+              </Button>
             ) : null}
             <Composer
               value={draft}

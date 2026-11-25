@@ -50,6 +50,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 	mux.Handle("GET /api/chats/{id}/share", wrap(http.HandlerFunc(h.share)))
 	mux.Handle("PUT /api/chats/{id}/share", wrap(http.HandlerFunc(h.putShare)))
 	mux.Handle("POST /api/chats/{id}/lines/{line}/retry", wrap(http.HandlerFunc(h.retry)))
+	mux.Handle("POST /api/chats/{id}/branch", wrap(http.HandlerFunc(h.branch)))
 	mux.Handle("GET /api/chats/{id}/stream", wrap(http.HandlerFunc(h.stream)))
 }
 
@@ -316,6 +317,28 @@ func (h Handler) retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h Handler) branch(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.person(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		pickInput
+		UpToLineID string `json:"up_to_line_id"`
+		Retry      bool   `json:"retry"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.UpToLineID) == "" {
+		writeError(w, http.StatusBadRequest, "the chat input was refused")
+		return
+	}
+	picks := input.picks()
+	summary, err := app.Branch(r.Context(), h.Book, access, r.PathValue("id"), input.UpToLineID, input.Retry, &picks)
+	if refuse(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, summaryBody(summary))
 }
 
 func (h Handler) read(w http.ResponseWriter, r *http.Request) {

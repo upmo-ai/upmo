@@ -45,6 +45,10 @@ type ActionRecord struct {
 	ErrorText       string
 	ExecutedAt      time.Time
 	CompletedAt     *time.Time
+	// UserLineID is the user line a chat reply answers. Empty outside chat.
+	UserLineID string
+	// ArgsDigest is CallDigest of a mutating call. Empty when the caller has none.
+	ArgsDigest string
 }
 
 // ActionLog is the pure port for 3-transaction at-most-once execution.
@@ -60,6 +64,23 @@ type ActionLog interface {
 	BeginDial(ctx context.Context, rec ActionRecord) error
 	FinishDial(ctx context.Context, scopeID, callID string, state ActionState, responseDigest, errText string, completedAt time.Time) error
 	RecordSimulated(ctx context.Context, rec ActionRecord) error
+}
+
+// ReplayLog is the optional lookup of a mutating call already done or still
+// dialing for the same user line and argument digest. A log that has no
+// user line, such as a task run, does not implement it.
+type ReplayLog interface {
+	PriorMutating(ctx context.Context, rec ActionRecord) (ToolResult, bool, error)
+}
+
+// CachedMutating asks log for an earlier done or dialing action when log
+// implements ReplayLog and the record names a user line and a digest.
+func CachedMutating(ctx context.Context, log ActionLog, rec ActionRecord) (ToolResult, bool, error) {
+	replay, ok := log.(ReplayLog)
+	if !ok || strings.TrimSpace(rec.UserLineID) == "" || rec.ArgsDigest == "" {
+		return ToolResult{}, false, nil
+	}
+	return replay.PriorMutating(ctx, rec)
 }
 
 // ActionScopeID returns the scope identifier for rec (RunID if non-empty, else ObjectID).

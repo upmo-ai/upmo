@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -180,13 +181,14 @@ func (l ChatActionLog) BeginDial(ctx context.Context, rec agentloop.ActionRecord
 		_, err = tx.Exec(ctx, `
 			INSERT INTO chat.action_logs (
 				scope_id, call_id, chat_id, line_id, user_id, tool_name, action, preview,
-				state, untrusted_origin, dry_run, executed_at
+				state, untrusted_origin, dry_run, executed_at, user_line_id, args_digest
 			) VALUES (
 				COALESCE(NULLIF($3, ''), $2)::uuid, $1, $2::uuid, NULLIF($3, '')::uuid, $4::uuid, $5, $6, $7,
-				'dialing', $8, false, $9
+				'dialing', $8, false, $9, NULLIF($10, '')::uuid, $11
 			)`,
 			rec.CallID, rec.ObjectID, rec.RunID, rec.UserID, rec.ToolName,
-			rec.Action, rec.Preview, rec.UntrustedOrigin, rec.ExecutedAt.UTC())
+			rec.Action, rec.Preview, rec.UntrustedOrigin, rec.ExecutedAt.UTC(),
+			rec.UserLineID, rec.ArgsDigest)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
 			return fmt.Errorf("%w: concurrent insert", agentloop.ErrDuplicateAction)
@@ -225,16 +227,76 @@ func (l ChatActionLog) RecordSimulated(ctx context.Context, rec agentloop.Action
 		_, err := tx.Exec(ctx, `
 			INSERT INTO chat.action_logs (
 				scope_id, call_id, chat_id, line_id, user_id, tool_name, action, preview,
-				state, untrusted_origin, dry_run, executed_at, completed_at
+				state, untrusted_origin, dry_run, executed_at, completed_at, user_line_id, args_digest
 			) VALUES (
 				COALESCE(NULLIF($3, ''), $2)::uuid, $1, $2::uuid, NULLIF($3, '')::uuid, $4::uuid, $5, $6, $7,
-				'simulated', $8, true, $9, $9
+				'simulated', $8, true, $9, $9, NULLIF($10, '')::uuid, $11
 			)
 			ON CONFLICT (scope_id, call_id) DO NOTHING`,
 			rec.CallID, rec.ObjectID, rec.RunID, rec.UserID, rec.ToolName,
-			rec.Action, rec.Preview, rec.UntrustedOrigin, rec.ExecutedAt.UTC())
+			rec.Action, rec.Preview, rec.UntrustedOrigin, rec.ExecutedAt.UTC(),
+			rec.UserLineID, rec.ArgsDigest)
 		return err
 	})
+}
+
+// PriorMutating finds an earlier mutating call for the same user line and
+// argument digest. Rows for the current run are ignored, so a second identical
+// call in that run still asks. A done row returns the cached finding (the
+// finding is still keyed by the run and the call id). A dialing row is
+// ErrDuplicateAction.
+func (l ChatActionLog) PriorMutating(ctx context.Context, rec agentloop.ActionRecord) (agentloop.ToolResult, bool, error) {
+	if strings.TrimSpace(rec.UserLineID) == "" || rec.ArgsDigest == "" || rec.ObjectID == "" {
+		return agentloop.ToolResult{}, false, nil
+	}
+	tx, err := l.Store.Pool.Begin(ctx)
+	if err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := agentloop.ApplyRLSTx(ctx, tx, agentloop.NarrowRLS(l.Scope)); err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	var state, digest, raw string
+	err = tx.QueryRow(ctx, `
+		SELECT log.state, log.response_digest, COALESCE(finding.body, '')
+		FROM chat.action_logs AS log
+		LEFT JOIN chat.findings AS finding
+		  ON finding.chat_id = log.chat_id
+		 AND finding.line_id = log.scope_id
+		 AND finding.source_ref = log.call_id
+		 AND finding.kind = 'output'
+		WHERE log.chat_id = $1::uuid
+		  AND log.user_line_id = $2::uuid
+		  AND log.tool_name = $3
+		  AND log.args_digest = $4
+		  AND log.state IN ('done', 'dialing')
+		  AND log.scope_id IS DISTINCT FROM NULLIF($5, '')::uuid
+		ORDER BY (log.state = 'dialing') DESC, log.executed_at DESC
+		LIMIT 1`, rec.ObjectID, rec.UserLineID, rec.ToolName, rec.ArgsDigest, rec.RunID).Scan(&state, &digest, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentloop.ToolResult{}, false, nil
+	}
+	if err != nil {
+		return agentloop.ToolResult{}, false, fmt.Errorf("chat: action replay: %w", err)
+	}
+	if state == string(agentloop.ActionStateDialing) {
+		return agentloop.ToolResult{}, false, fmt.Errorf("%w: already in flight", agentloop.ErrDuplicateAction)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	if raw == "" {
+		return agentloop.ToolResult{Output: digest}, true, nil
+	}
+	var cached struct {
+		Output                      string
+		IsError, Untrusted, Private bool
+	}
+	if err := json.Unmarshal([]byte(raw), &cached); err != nil {
+		return agentloop.ToolResult{}, false, err
+	}
+	return agentloop.ToolResult{Output: cached.Output, IsError: cached.IsError, Untrusted: cached.Untrusted, Private: cached.Private}, true, nil
 }
 
 // InsertTurnRows writes turn transcript entries into chat.turns inside tx.
@@ -253,6 +315,10 @@ func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit)
 		if msg.Role == agentloop.RoleAssistant {
 			cost = commit.ReportedCostMicroUSD
 		}
+		role := string(msg.Role)
+		if msg.Replay {
+			role = "simulated"
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO chat.turns (
 				chat_id, line_id, seq, role, body, tool_calls, tool_name, tool_id,
@@ -261,7 +327,7 @@ func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit)
 				$1::uuid, NULLIF($2, '')::uuid, $3, $4, $5, $6::jsonb, $7, $8,
 				$9, $10, $11, $12, $13, $14, $15, $16, NULLIF($17, '')::uuid
 			)`,
-			commit.ObjectID, commit.RunID, seq, string(msg.Role), msg.Text, toolCalls,
+			commit.ObjectID, commit.RunID, seq, role, msg.Text, toolCalls,
 			msg.ToolName, msg.ToolID, msg.IsError, msg.Offload,
 			commit.Exposure.Tainted, commit.Exposure.PrivateRead,
 			commit.Model, commit.InputTokens, commit.OutputTokens, cost, commit.UserID); err != nil {

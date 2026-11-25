@@ -9,6 +9,8 @@ const (
 	ChatMessage Action = "chat.message"
 	// ChatRetry asks again for the reply to one failed reply's user line.
 	ChatRetry Action = "chat.retry"
+	// ChatBranch copies a chat up to one line into a new private chat.
+	ChatBranch Action = "chat.branch"
 	// ChatSweep deletes reply deltas whose line never arrived.
 	ChatSweep       Action = "chat.sweep"
 	ChatStop        Action = "chat.stop"
@@ -33,6 +35,7 @@ func init() {
 	register(ChatCreate, "chat", classAPIActivity, activityUnknown)
 	register(ChatMessage, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id", "attachment_count")
 	register(ChatRetry, "line", classAPIActivity, activityUnknown, "route", "model_provider", "model_id", "agent_id")
+	register(ChatBranch, "chat", classAPIActivity, activityUnknown, "source_chat_id", "up_to_line_id", "retry")
 	register(ChatSweep, "delta", classAPIActivity, activityUnknown, "rows")
 	register(ChatStop, "line", classAPIActivity, activityUnknown, "status")
 	register(ChatUpdate, "chat", classAPIActivity, activityUnknown, "title")

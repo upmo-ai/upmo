@@ -34,7 +34,8 @@ func lockChat(ctx context.Context, tx pgx.Tx, chatID string) error {
 
 // historyLinesTx loads the transcript a round-1 reply sends: every earlier
 // exchange, each answer right after the user line it answers, without failed
-// or replaced replies. ErrNoLine when the user line is not there.
+// or stopped replies and without an older done reply once a newer done reply
+// to the same user line exists. ErrNoLine when the user line is not there.
 func historyLinesTx(ctx context.Context, tx pgx.Tx, chatID, lineID string, summaryUpToSeq int) ([]app.Line, bool, error) {
 	var userSeq int
 	err := tx.QueryRow(ctx, `
@@ -57,7 +58,9 @@ func historyLinesTx(ctx context.Context, tx pgx.Tx, chatID, lineID string, summa
 		query += ` AND COALESCE(asked.seq, line.seq) > $3`
 	}
 	query += ` AND COALESCE(asked.seq, line.seq) <= $2
-		  AND NOT (line.status IN ('failed', 'stopped') OR EXISTS (
+		  AND line.status NOT IN ('failed', 'stopped')
+		  AND NOT (
+		        line.role = 'assistant' AND line.status = 'done' AND EXISTS (
 		        SELECT 1 FROM chat.lines AS later
 		        WHERE later.reply_to = line.reply_to AND later.status = 'done' AND later.seq > line.seq))
 		ORDER BY COALESCE(asked.seq, line.seq), (line.role = 'assistant'), line.seq`
@@ -917,11 +920,11 @@ func (s Store) IsPrivate(ctx context.Context, access app.Access, chatID string) 
 	return private, tx.Commit(ctx)
 }
 
-// Retry asks again for the reply to the user line that a failed assistant line
-// left unanswered. The failed line stays; it is hidden once a later reply to
-// the same user line succeeds. With no picks given (nil) the picks stored on
-// the user line are used again; picks given, even all empty, replace them as
-// a whole.
+// Retry asks again for the reply to the latest user line. The assistant line
+// may be done, failed, or stopped. An older done reply stays visible until a
+// newer done reply to that user line exists. With no picks given (nil) the
+// picks stored on the user line are used again; picks given, even all empty,
+// replace them as a whole.
 func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID string, given *app.Picks) error {
 	if s.Enqueuer == nil || s.ReplyRoute == "" {
 		return app.ErrReplies
@@ -939,21 +942,39 @@ func (s Store) Retry(ctx context.Context, access app.Access, chatID, lineID stri
 	}
 	var role, status string
 	var userLine *string
+	var seq int
 	err = tx.QueryRow(ctx, `
-		SELECT role, status, reply_to::text FROM chat.lines
-		WHERE id = $1::uuid AND chat_id = $2::uuid`, lineID, chatID).Scan(&role, &status, &userLine)
+		SELECT role, status, reply_to::text, seq FROM chat.lines
+		WHERE id = $1::uuid AND chat_id = $2::uuid`, lineID, chatID).Scan(&role, &status, &userLine, &seq)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrNoLine
 	}
 	if err != nil {
 		return fmt.Errorf("chat: retry line: %w", err)
 	}
-	if role != domain.RoleAssistant || (status != domain.StatusFailed && status != domain.StatusStopped) || userLine == nil {
+	if role != domain.RoleAssistant || userLine == nil ||
+		(status != domain.StatusDone && status != domain.StatusFailed && status != domain.StatusStopped) {
+		return app.ErrRetry
+	}
+	var latest bool
+	if err := tx.QueryRow(ctx, `
+		SELECT seq = (SELECT max(seq) FROM chat.lines WHERE chat_id = $2::uuid AND role = 'user')
+		FROM chat.lines WHERE id = $1::uuid AND chat_id = $2::uuid AND role = 'user'`,
+		*userLine, chatID).Scan(&latest); err != nil {
+		return fmt.Errorf("chat: retry user line: %w", err)
+	}
+	if !latest {
 		return app.ErrRetry
 	}
 	var answered bool
 	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM chat.lines WHERE reply_to = $1::uuid AND status = 'done')`, *userLine).Scan(&answered); err != nil {
+		SELECT EXISTS (
+			SELECT 1 FROM chat.lines AS later
+			WHERE later.chat_id = $1::uuid
+			  AND later.reply_to = $2::uuid
+			  AND later.status = 'done'
+			  AND later.seq > $3
+		)`, chatID, *userLine, seq).Scan(&answered); err != nil {
 		return fmt.Errorf("chat: retry answered: %w", err)
 	}
 	if answered {

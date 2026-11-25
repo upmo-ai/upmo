@@ -643,7 +643,7 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 	}
 	run := &agentloop.RunState{RunID: args.ReplyID, ObjectID: args.ChatID, ObjectType: "chat",
 		UserID: args.UserID, AgentID: args.AgentID, Access: claim.Scope, Catalog: cat, Seq: claim.TurnSeq,
-		Exposure: claim.Exposure}
+		UserLineID: args.LineID, Exposure: claim.Exposure}
 	engine.WritePolicy = ChatWritePolicy{ChatID: args.ChatID, Run: run, Allowed: claim.AllowedTools,
 		Allowances: w.deps.Rows, Access: func() (Access, error) {
 			current, ok := live.get()
@@ -802,12 +802,32 @@ func (w *replyWorker) resolveHeldBatch(ctx context.Context, live *liveAccess, cl
 			continue
 		}
 		scopedID := agentloop.ScopedCallID(holdTurnSeq, call.CallID)
-		res, found, err := w.deps.Rows.LoadCachedToolOutput(ctx, claim.Scope, claim.Job.ChatID, claim.Job.ReplyID, scopedID)
-		if err != nil {
+		replayed := false
+		res, found, err := agentloop.CachedMutating(ctx, engine.ActionLog, agentloop.ActionRecord{
+			CallID: scopedID, RunID: run.RunID, ObjectID: run.ObjectID, UserID: run.UserID,
+			ToolName: call.ToolName, Action: call.Action, Preview: call.Preview,
+			UntrustedOrigin: call.UntrustedOrigin, UserLineID: run.UserLineID, ArgsDigest: call.ArgsDigest,
+		})
+		if errors.Is(err, agentloop.ErrDuplicateAction) {
+			res = agentloop.ToolResult{Output: err.Error(), IsError: true}
+			found = true
+		} else if err != nil {
 			return err
+		} else if found {
+			replayed = true
 		}
 		if !found {
-			err = agentloop.ExecuteAtMostOnce(ctx, engine.ActionLog, agentloop.ActionRecord{CallID: scopedID, RunID: run.RunID, ObjectID: run.ObjectID, UserID: run.UserID, ToolName: call.ToolName, Action: call.Action, Preview: call.Preview, UntrustedOrigin: call.UntrustedOrigin}, func(execCtx context.Context, idempotencyKey string) (string, error) {
+			res, found, err = w.deps.Rows.LoadCachedToolOutput(ctx, claim.Scope, claim.Job.ChatID, claim.Job.ReplyID, scopedID)
+			if err != nil {
+				return err
+			}
+		}
+		if !found {
+			err = agentloop.ExecuteAtMostOnce(ctx, engine.ActionLog, agentloop.ActionRecord{
+				CallID: scopedID, RunID: run.RunID, ObjectID: run.ObjectID, UserID: run.UserID,
+				ToolName: call.ToolName, Action: call.Action, Preview: call.Preview,
+				UntrustedOrigin: call.UntrustedOrigin, UserLineID: run.UserLineID, ArgsDigest: call.ArgsDigest,
+			}, func(execCtx context.Context, idempotencyKey string) (string, error) {
 				tc := agentloop.ToolCall{ID: call.CallID, Name: call.ToolName, Arguments: call.Arguments, IdempotencyKey: idempotencyKey}
 				var execErr error
 				res, execErr = engine.Executor.Execute(execCtx, run, tc)
@@ -837,7 +857,7 @@ func (w *replyWorker) resolveHeldBatch(ctx context.Context, live *liveAccess, cl
 		if len(res.DiscoveredTools) > 0 {
 			run.Catalog.Append(res.DiscoveredTools...)
 		}
-		if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: call.ToolName, ToolID: call.CallID, Text: text, IsError: res.IsError, Offload: offloaded}); err != nil {
+		if err := replace(agentloop.Message{Role: agentloop.RoleTool, ToolName: call.ToolName, ToolID: call.CallID, Text: text, IsError: res.IsError, Offload: offloaded, Replay: replayed}); err != nil {
 			return err
 		}
 	}

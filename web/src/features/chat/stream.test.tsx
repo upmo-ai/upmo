@@ -458,7 +458,8 @@ describe("chat stream page", () => {
     expect(log().textContent).not.toMatch(/error|exception|status \d{3}/i);
 
     await choose("Route", "chat");
-    fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));
+    const retries = within(log()).getAllByRole("button", { name: "Retry" });
+    fireEvent.click(retries[retries.length - 1]);
 
     await waitFor(() => {
       expect(calls).toContainEqual({
@@ -479,7 +480,7 @@ describe("chat stream page", () => {
       source?.emit("line", stored("r2", "assistant", "Here are the prices.", { status: "done", reply_to: "u2" }), "e5");
     });
     expect(await within(log()).findByText("Here are the prices.")).toBeTruthy();
-    expect(within(log()).queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(within(log()).getAllByRole("button", { name: "Retry" })).toHaveLength(2);
   });
 
   it("shows a reply under way when the page is opened again, from the replayed deltas", async () => {
@@ -558,7 +559,8 @@ describe("chat stream page", () => {
       expect(FakeEventSource.instances.length).toBeGreaterThan(1);
     });
     // The second chat's stream never opens; a retry there is awaited by polling.
-    fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));
+    const retries = within(log()).getAllByRole("button", { name: "Retry" });
+    fireEvent.click(retries[retries.length - 1]);
     expect(await within(log()).findByText("Thinking")).toBeTruthy();
 
     await pause(400);
@@ -821,7 +823,8 @@ describe("chat composer picks", () => {
     await choose("Route", "chat-stream");
     await choose("Model", "Auto");
 
-    fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));
+    const retries = within(log()).getAllByRole("button", { name: "Retry" });
+    fireEvent.click(retries[retries.length - 1]);
 
     await waitFor(() => {
       expect(sentTo(calls, `/api/chats/${failedChatId}/lines/f1/retry`)).toEqual([{ route: "chat-stream" }]);
@@ -836,7 +839,8 @@ describe("chat composer picks", () => {
     fireEvent.click(await within(list).findByRole("button", { name: /Summarize the prices/ }));
     await within(log()).findByText("No model could answer.");
 
-    fireEvent.click(within(log()).getByRole("button", { name: "Retry" }));
+    const retries = within(log()).getAllByRole("button", { name: "Retry" });
+    fireEvent.click(retries[retries.length - 1]);
 
     await waitFor(() => {
       expect(sentTo(calls, `/api/chats/${failedChatId}/lines/f1/retry`)).toEqual([{}]);

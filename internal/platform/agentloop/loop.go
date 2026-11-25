@@ -204,6 +204,17 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 				continue
 			}
 
+			if !run.DryRun {
+				msg, handled, rerr := e.replayMutating(ctx, run, call, def)
+				if rerr != nil {
+					return TurnOutcome{}, rerr
+				}
+				if handled {
+					appended = append(appended, msg)
+					continue
+				}
+			}
+
 			if run.DryRun {
 				held := BuildHeldCall(call, def, target, run.Exposure.Tainted)
 				action, preview, synthetic := DryRunResult(call.Name, def.Op, call.Arguments, held.UntrustedOrigin)
@@ -221,6 +232,8 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 						UntrustedOrigin: held.UntrustedOrigin,
 						DryRun:          true,
 						ExecutedAt:      nowFn(),
+						UserLineID:      run.UserLineID,
+						ArgsDigest:      held.ArgsDigest,
 					}); rerr != nil {
 						return TurnOutcome{}, rerr
 					}
@@ -296,6 +309,8 @@ func (e Engine) RunTurn(ctx context.Context, run *RunState, messages []Message, 
 					Preview:         held.Preview,
 					UntrustedOrigin: held.UntrustedOrigin,
 					ExecutedAt:      nowFn(),
+					UserLineID:      run.UserLineID,
+					ArgsDigest:      held.ArgsDigest,
 				}, func(ctx context.Context, idempotencyKey string) (string, error) {
 					callWithKey := call
 					callWithKey.IdempotencyKey = idempotencyKey
@@ -444,6 +459,36 @@ func (e Engine) evaluateWriteVerdict(ctx context.Context, run *RunState, call To
 		reason = "untrusted_write_guard"
 	}
 	return tight, target, reason, nil
+}
+
+// replayMutating serves a mutating call from an earlier done action on the
+// same user line, before a new dial begins. A call still dialing is an error
+// result so the two runs do not both execute it.
+func (e Engine) replayMutating(ctx context.Context, run *RunState, call ToolCall, def ToolDef) (Message, bool, error) {
+	res, found, err := CachedMutating(ctx, e.ActionLog, ActionRecord{
+		CallID:     ScopedCallID(run.Seq, call.ID),
+		RunID:      run.RunID,
+		ObjectID:   run.ObjectID,
+		UserID:     run.UserID,
+		ToolName:   call.Name,
+		UserLineID: run.UserLineID,
+		ArgsDigest: CallDigest(call.Name, def.Op, call.Arguments),
+	})
+	if err != nil {
+		if errors.Is(err, ErrDuplicateAction) {
+			return Message{Role: RoleTool, ToolName: call.Name, ToolID: call.ID, Text: err.Error(), IsError: true}, true, nil
+		}
+		return Message{}, false, err
+	}
+	if !found {
+		return Message{}, false, nil
+	}
+	msg, ferr := e.finalizeToolResult(ctx, run, call, res)
+	if ferr != nil {
+		return Message{}, false, ferr
+	}
+	msg.Replay = true
+	return msg, true, nil
 }
 
 func (e Engine) finalizeToolResult(ctx context.Context, run *RunState, call ToolCall, res ToolResult) (Message, error) {

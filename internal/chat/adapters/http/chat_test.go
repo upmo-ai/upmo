@@ -80,6 +80,9 @@ func (f *fakeBook) Say(_ context.Context, _ app.Access, _, body string, picks ap
 	return f.err
 }
 
+func (f *fakeBook) Branch(context.Context, app.Access, string, string, bool, *app.Picks) (app.ChatSummary, error) {
+	return app.ChatSummary{}, f.err
+}
 func (f *fakeBook) Retry(_ context.Context, _ app.Access, _, line string, picks *app.Picks) error {
 	f.retries++
 	f.retried = line

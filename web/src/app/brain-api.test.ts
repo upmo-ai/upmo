@@ -322,6 +322,11 @@ describe("toChat and toChatLine", () => {
       attempts: [{ model: "gpt-x", reason: "rate limited" }],
     };
     expect(toChatLine(failed)).toEqual(failed);
+    expect(toChatLine({ ...assistantLine, status: "stopped", body: "" })).toEqual({
+      ...assistantLine,
+      status: "stopped",
+      body: "",
+    });
     expect(toChatLine({ ...assistantLine, status: "done", reply_to: null, attempts: [] })).toEqual({
       ...assistantLine,
       status: "done",
