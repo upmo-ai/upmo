@@ -728,7 +728,8 @@ func postFund(t *testing.T, store postgres.Store, access app.Access, id, body st
 	t.Helper()
 	mux := http.NewServeMux()
 	tasks.Handler{
-		Book: store, List: store, View: store,
+		StepUp: func(*http.Request) bool { return true },
+		Book:   store, List: store, View: store,
 		Access: func(*http.Request) (app.Access, bool) { return access, true },
 	}.Mount(mux, nil)
 	rec := httptest.NewRecorder()

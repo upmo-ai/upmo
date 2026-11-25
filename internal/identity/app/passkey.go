@@ -379,6 +379,16 @@ func (p Passkeys) Fresh(session Session) bool {
 	return domain.Fresh(session.SignedIn, p.now())
 }
 
+// StepUp reports whether the session may make a sensitive change. A failed
+// passkey lookup refuses.
+func (p Passkeys) StepUp(ctx context.Context, session Session) (bool, error) {
+	rows, err := p.Store.ListPasskeys(ctx, session.UserID)
+	if err != nil {
+		return false, err
+	}
+	return domain.StepUp(session.SignedIn, p.now(), session.Method, len(rows) > 0), nil
+}
+
 // IssueLink creates a one-time link and returns its URL text, without the public prefix.
 func (p Passkeys) IssueLink(ctx context.Context, user domain.UserID, purpose string) (string, error) {
 	life, ok := domain.LinkLifetime(purpose)

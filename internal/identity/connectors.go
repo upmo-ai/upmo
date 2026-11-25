@@ -42,9 +42,10 @@ func ConnectorGrants(pool *pgxpool.Pool) app.ConnectorGrants {
 	return app.ConnectorGrants{Store: postgres.Passkeys{Pool: pool}}
 }
 
-// MountConnectorGrants registers the grant routes.
-func MountConnectorGrants(mux *http.ServeMux, grants app.ConnectorGrants, sessions app.Service) {
-	(httpapi.ConnectorGrants{Grants: grants, Sessions: sessions}).Mount(mux)
+// MountConnectorGrants registers the grant routes. passkeys looks up the
+// session and decides step-up for a change.
+func MountConnectorGrants(mux *http.ServeMux, grants app.ConnectorGrants, passkeys app.Passkeys) {
+	(httpapi.ConnectorGrants{Grants: grants, Sessions: passkeys.Sessions, Pass: passkeys}).Mount(mux)
 }
 
 // NewRunTokens parses the current and optional previous run key.

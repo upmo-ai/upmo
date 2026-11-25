@@ -13,6 +13,8 @@ import (
 type ConnectorGrants struct {
 	Grants   app.ConnectorGrants
 	Sessions app.Service
+	// Pass decides step-up for putting or deleting a grant.
+	Pass app.Passkeys
 }
 
 // Mount registers the grant routes. They require a session cookie.
@@ -50,7 +52,7 @@ func (h ConnectorGrants) list(w http.ResponseWriter, r *http.Request) {
 
 func (h ConnectorGrants) put(w http.ResponseWriter, r *http.Request) {
 	session, ok := h.session(w, r)
-	if !ok {
+	if !ok || !allowStepUp(w, r, h.Pass, session) {
 		return
 	}
 	var body struct {
@@ -81,7 +83,7 @@ func (h ConnectorGrants) put(w http.ResponseWriter, r *http.Request) {
 
 func (h ConnectorGrants) remove(w http.ResponseWriter, r *http.Request) {
 	session, ok := h.session(w, r)
-	if !ok {
+	if !ok || !allowStepUp(w, r, h.Pass, session) {
 		return
 	}
 	if err := h.Grants.Remove(r.Context(), session.UserID, r.PathValue("connector")); err != nil {

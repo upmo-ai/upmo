@@ -124,7 +124,11 @@ func newTestEnv(t *testing.T, withKeys bool) *testEnv {
 
 	mux := http.NewServeMux()
 	sessions := identity.Sessions(appPool, identity.IdleTimeout, identity.MaxAge)
-	identity.MountWorkspace(mux, identity.Workspace(appPool), sessions)
+	passkeys, err := identity.Passkeys(appPool, brainops.NewEmailSealer(keyring), sessions, "http://localhost:5173", "localhost", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.MountWorkspace(mux, identity.Workspace(appPool), passkeys)
 	provision.Handler{
 		Owner:      owner,
 		Identity:   env.identity,

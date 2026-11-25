@@ -17,6 +17,29 @@ func TestFreshWindow(t *testing.T) {
 	}
 }
 
+func TestStepUp(t *testing.T) {
+	now := time.Date(2026, 11, 25, 0, 11, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		signedIn   time.Time
+		method     string
+		hasPasskey bool
+		want       bool
+	}{
+		{"password on a passkey account", now.Add(-time.Minute), "password", true, false},
+		{"fresh passkey", now.Add(-time.Minute), "passkey", true, true},
+		{"passkey 11 minutes ago", now.Add(-11 * time.Minute), "passkey", true, false},
+		{"fresh password without a passkey", now.Add(-time.Minute), "password", false, true},
+		{"passkey at the 10 minute boundary", now.Add(-StepUpWindow), "passkey", true, true},
+		{"sign-in in the future", now.Add(time.Minute), "passkey", true, false},
+	}
+	for _, c := range cases {
+		if got := StepUp(c.signedIn, now, c.method, c.hasPasskey); got != c.want {
+			t.Errorf("%s: StepUp = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestRefillAndRetry(t *testing.T) {
 	start := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	if got := Refill(0, start, start.Add(6*time.Second), ThrottleBurst, ThrottlePerSecond); got != 1 {

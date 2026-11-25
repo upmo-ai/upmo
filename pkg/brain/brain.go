@@ -82,7 +82,9 @@ func SessionFrom(ctx context.Context) (Principal, bool) {
 type IdentityService interface {
 	RequireSession(next http.Handler) http.Handler
 	SessionFrom(ctx context.Context) (Principal, bool)
-	Fresh(p Principal) bool
+	// Fresh reports whether p may make a sensitive change: signed in within
+	// the step-up window and, when the account has a passkey, with it.
+	Fresh(ctx context.Context, p Principal) bool
 }
 
 // MemberService exposes member permissions and team memberships.
@@ -180,8 +182,12 @@ func (a identityAdapter) SessionFrom(ctx context.Context) (Principal, bool) {
 	return SessionFrom(ctx)
 }
 
-func (a identityAdapter) Fresh(p Principal) bool {
-	return a.id.Fresh(identity.Session{SignedIn: p.SignedIn})
+func (a identityAdapter) Fresh(ctx context.Context, p Principal) bool {
+	user, err := identity.ParseUserID(p.UserID)
+	if err != nil {
+		return false
+	}
+	return a.id.StepUp(ctx, identity.Session{UserID: user, Method: p.Method, SignedIn: p.SignedIn})
 }
 
 type memberAdapter struct {
@@ -891,8 +897,8 @@ func buildHandler(
 	identity.MountAvatars(mux, members, sessions, pool)
 	identity.MountRoles(mux, ideps.roles, sessions)
 	identity.MountTeams(mux, ideps.teams, sessions)
-	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
-	identity.MountWorkspace(mux, ideps.workspace, sessions)
+	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), passkeys)
+	identity.MountWorkspace(mux, ideps.workspace, passkeys)
 
 	taskBook := tasks.NewStore(pool, ideps.runner, work)
 	taskBook.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
@@ -903,6 +909,13 @@ func buildHandler(
 			return nil, err
 		}
 		editorSigner = editorTokens
+	}
+	stepUp := func(r *http.Request) bool {
+		person, ok := identity.SessionFrom(r.Context())
+		if !ok {
+			return false
+		}
+		return ideps.identity.StepUp(r.Context(), identity.Session{UserID: person.UserID, Method: person.Method, SignedIn: person.SignedIn})
 	}
 	taskAccess := func(ctx context.Context, user identity.UserID) (tasks.Access, bool, error) {
 		return taskAccessFor(ctx, members, user)
@@ -922,6 +935,7 @@ func buildHandler(
 		Audit:        pool,
 		Stream:       streams,
 		Metrics:      reg,
+		StepUp:       stepUp,
 		Access: func(r *http.Request) (tasks.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -1007,6 +1021,7 @@ func buildHandler(
 		Converter: knowledgeConverter,
 		Stream:    chatStreams,
 		Metrics:   reg,
+		StepUp:    stepUp,
 		Access: func(r *http.Request) (chat.Access, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {
@@ -1098,6 +1113,7 @@ func buildHandler(
 	gateway.ProvidersHandler{
 		Service: ideps.providers,
 		Log:     log,
+		StepUp:  stepUp,
 		Access: func(r *http.Request) (string, bool) {
 			person, ok := identity.SessionFrom(r.Context())
 			if !ok {

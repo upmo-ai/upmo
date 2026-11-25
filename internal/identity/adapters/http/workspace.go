@@ -18,6 +18,8 @@ import (
 type Workspace struct {
 	Workspace app.Workspace
 	Sessions  app.Service
+	// Pass decides step-up for PUT /api/workspace.
+	Pass app.Passkeys
 }
 
 // Mount registers the workspace routes.
@@ -77,7 +79,7 @@ func (h Workspace) get(w http.ResponseWriter, r *http.Request) {
 
 func (h Workspace) put(w http.ResponseWriter, r *http.Request) {
 	session, ok := h.session(w, r)
-	if !ok {
+	if !ok || !allowStepUp(w, r, h.Pass, session) {
 		return
 	}
 	var input struct {

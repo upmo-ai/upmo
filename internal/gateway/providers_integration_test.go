@@ -149,6 +149,7 @@ func newRigLimited(t *testing.T, keys Keyring, max int) *rig {
 func (r *rig) mount(log *slog.Logger) {
 	mux := http.NewServeMux()
 	ProvidersHandler{
+		StepUp:  func(*http.Request) bool { return true },
 		Service: r.svc,
 		Log:     log,
 		// The X-User header stands in for the session brain resolves.

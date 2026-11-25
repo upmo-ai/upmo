@@ -333,6 +333,7 @@ func TestProviderRouteSealsWithThePersonActor(t *testing.T) {
 
 	mux := http.NewServeMux()
 	gateway.ProvidersHandler{
+		StepUp:  func(*http.Request) bool { return true },
 		Service: svc,
 		Access: func(r *http.Request) (string, bool) {
 			audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: providerOwnerID, CredentialType: "session"})
@@ -390,6 +391,7 @@ func TestProviderUpdateRefusedForMemberRecordsDenied(t *testing.T) {
 	member := providerService(t, appPool, "", []string{team})
 	mux := http.NewServeMux()
 	gateway.ProvidersHandler{
+		StepUp:  func(*http.Request) bool { return true },
 		Service: member,
 		Access: func(r *http.Request) (string, bool) {
 			audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: providerMemberID, CredentialType: "session"})
@@ -429,6 +431,7 @@ func TestProviderModelsReadSealsAndRefusesInvisibleAccount(t *testing.T) {
 	mountAs := func(user string) http.Handler {
 		mux := http.NewServeMux()
 		gateway.ProvidersHandler{
+			StepUp:  func(*http.Request) bool { return true },
 			Service: providerService(t, appPool, "", nil),
 			Access: func(r *http.Request) (string, bool) {
 				audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: user, CredentialType: "session"})

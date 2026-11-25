@@ -104,6 +104,7 @@ func callProviders(t *testing.T, service app.Providers, method, path, body strin
 	t.Helper()
 	mux := http.NewServeMux()
 	ProvidersHandler{
+		StepUp:  func(*http.Request) bool { return true },
 		Service: service,
 		Access: func(*http.Request) (string, bool) {
 			return "018f3b2c-7a10-7c4a-8e11-111111111111", true
@@ -298,6 +299,7 @@ func TestVendorAndCatalogRoutesRequireSessionAndReturnData(t *testing.T) {
 
 	mux := http.NewServeMux()
 	ProvidersHandler{
+		StepUp:  func(*http.Request) bool { return true },
 		Service: svc,
 		Access: func(r *http.Request) (string, bool) {
 			u := r.Header.Get("X-User")

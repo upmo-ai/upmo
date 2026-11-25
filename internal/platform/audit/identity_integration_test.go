@@ -57,8 +57,8 @@ func newKit(t *testing.T) *kit {
 	identity.MountMembers(mux, identity.Members(appPool, sealer.NewEmail(t), "http://localhost:5173", nil, log), sessions)
 	identity.MountRoles(mux, identity.Roles(appPool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(appPool, log), sessions)
-	identity.MountConnectorGrants(mux, identity.ConnectorGrants(appPool), sessions)
-	identity.MountWorkspace(mux, identity.Workspace(appPool), sessions)
+	identity.MountConnectorGrants(mux, identity.ConnectorGrants(appPool), passkeys)
+	identity.MountWorkspace(mux, identity.Workspace(appPool), passkeys)
 	return &kit{owner: owner, app: appPool, served: mount(t, mux, appPool), passkeys: passkeys}
 }
 
@@ -120,6 +120,15 @@ func (k *kit) finishLink(t *testing.T, soft *webauthn.Soft, token string) string
 		t.Fatalf("link finish = %d %s", finish.Code, finish.Body.String())
 	}
 	return cookieValue(t, finish, httpapi.CookieName)
+}
+
+// passkeySessions marks the link sessions as passkey sign-ins, as a passkey
+// step-up would, so step-up routes pass without the step-up's own event.
+func (k *kit) passkeySessions(t *testing.T) {
+	t.Helper()
+	if _, err := k.owner.Exec(context.Background(), `UPDATE identity.sessions SET sign_in_method = 'passkey' WHERE sign_in_method = 'link'`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // addPasskey runs the add ceremony for one soft authenticator.
@@ -531,6 +540,7 @@ func TestPasskeyLifecycleSealsEvents(t *testing.T) {
 		t.Fatalf("event = %s target %s, want %s", row.Action, row.TargetID, ids[2])
 	}
 
+	k.passkeySessions(t)
 	if rec := k.sessionCall(http.MethodPatch, "/api/passkeys/"+ids[2], cookie, map[string]string{"name": "Travel key"}); rec.Code != http.StatusNoContent {
 		t.Fatalf("rename = %d %s", rec.Code, rec.Body.String())
 	}
@@ -965,6 +975,7 @@ func TestTokenActionsSealEvents(t *testing.T) {
 func TestConnectorGrantActionsSealEvents(t *testing.T) {
 	k := newKit(t)
 	cookie := k.signInOwner(t, "ada@example.com")
+	k.passkeySessions(t)
 
 	rec := k.sessionCall(http.MethodPut, "/api/connector-grants/github", cookie, map[string]any{
 		"resource_scope": "these", "resource_ids": []string{"upmo-ai/upmo"}, "changes": "allow",
@@ -1190,6 +1201,7 @@ func TestFailedAuditInsertRollsBackMemberRoleChange(t *testing.T) {
 func TestIdempotentWritesRecordNothing(t *testing.T) {
 	k := newKit(t)
 	cookie := k.signInOwner(t, "ada@example.com")
+	k.passkeySessions(t)
 	carol := seedJoinedMember(t, k.owner, "carol@example.com", "Carol")
 
 	rec := k.sessionCall(http.MethodPost, "/api/teams", cookie, map[string]string{"name": "Ship"})
@@ -1320,6 +1332,7 @@ func TestWorkspaceUpdateAndSSOSignInAudit(t *testing.T) {
 		"allow_member_agents":     true,
 		"sso_required":            true,
 	}
+	k.passkeySessions(t)
 	okPut := k.sessionCall(http.MethodPut, "/api/workspace", ownerCookie, workspacePayload)
 	if okPut.Code != http.StatusOK {
 		t.Fatalf("owner PUT /api/workspace = %d %s", okPut.Code, okPut.Body.String())

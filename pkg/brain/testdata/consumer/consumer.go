@@ -27,7 +27,7 @@ func Compose(ctx context.Context) (*brain.App, error) {
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				}
-				if deps.Identity.Fresh(p) {
+				if deps.Identity.Fresh(r.Context(), p) {
 					w.Header().Set("X-Fresh", "true")
 				}
 				w.Header().Set("X-Version", deps.BuildInfo.Version)

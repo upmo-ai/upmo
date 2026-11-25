@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -39,6 +40,24 @@ func routes(
 	reg *metrics.Registry,
 	opts ...Option,
 ) (http.Handler, error) {
+	return routesAt(nil, pool, cfg, log, boxes, work, noticeStore, streams, chatStreams, schemaVersions, reg, opts...)
+}
+
+// routesAt is routes with the identity clock pinned to now; nil keeps time.Now.
+func routesAt(
+	now func() time.Time,
+	pool *pgxpool.Pool,
+	cfg config.Config,
+	log *slog.Logger,
+	boxes *runtime.TaskSandboxes,
+	work *jobs.Client,
+	noticeStore notices.Store,
+	streams *tasks.StreamHub,
+	chatStreams *chat.StreamHub,
+	schemaVersions func(context.Context) (map[string]int64, error),
+	reg *metrics.Registry,
+	opts ...Option,
+) (http.Handler, error) {
 	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
 		return nil, err
@@ -50,6 +69,13 @@ func routes(
 	passkeys, err := identity.Passkeys(pool, brainops.NewEmailSealer(masterKeys), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return nil, err
+	}
+	if now != nil {
+		sessions.Now = now
+		passwords.Now = now
+		passkeys.Now = now
+		passkeys.Sessions = sessions
+		passwords.Sessions = sessions
 	}
 	members := identity.WithAvatars(identity.Members(pool, brainops.NewEmailSealer(masterKeys), cfg.PublicURL, brainops.LinkMail(cfg.Env, cfg.SMTP), log), cfg.AvatarsDir)
 	providers := gateway.NewProviders(pool, masterKeys, log)
