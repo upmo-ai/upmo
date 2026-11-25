@@ -10,8 +10,13 @@ regex = '''upmo_pat_[A-Za-z0-9_-]{43}'''
 
 [[rules]]
 id = "upmo-service-key"
-description = "Upmo process-to-process master key"
+description = "Upmo process-to-process audience key"
 regex = '''upmo_svc_[A-Za-z0-9+/=_-]{43,}'''
+
+[[rules]]
+id = "upmo-signing-key"
+description = "Upmo editor JWT key, run JWT key or metrics scrape token"
+regex = '''upmo_(?:edk|rnk|mtr)_[A-Za-z0-9+/=_-]{43,}'''
 
 [[allowlists]]
 description = "published examples, not credentials"
@@ -22,8 +27,8 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "dev-only per-audience keys shared by the local compose stack, never used outside it"
-targetRules = ["upmo-service-key"]
+description = "dev-only keys shared by the local compose stack, never used outside it (the first is the retired master, still in history)"
+targetRules = ["upmo-service-key", "upmo-signing-key"]
 condition = "AND"
 paths = ['''^compose\.yml$''']
 regexes = [
@@ -31,19 +36,9 @@ regexes = [
   '''^upmo_svc_gateway_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c$''',
   '''^upmo_svc_sandboxd_c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M$''',
   '''^upmo_svc_markitdown_ZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQ$''',
-]
-
-[[allowlists]]
-description = "fixed per-audience keys and scrape tokens in tests, not credentials"
-targetRules = ["upmo-service-key", "generic-api-key"]
-paths = [
-  '''^cmd/gateway/main_integration_test\.go$''',
-  '''^deploy/markitdown/test_main\.py$''',
-  '''^internal/platform/config/config_test\.go$''',
-  '''^internal/platform/metrics/metrics_test\.go$''',
-  '''^internal/platform/svcsig/svcsig_test\.go$''',
-  '''^internal/sandboxd/sandboxd_test\.go$''',
-  '''^pkg/brain/main_integration_test\.go$''',
+  '''^upmo_edk_ZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWU$''',
+  '''^upmo_rnk_cnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnI$''',
+  '''^upmo_mtr_dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ$''',
 ]
 
 [[allowlists]]
@@ -87,3 +82,50 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^internal/gateway/domain/provider_test\.go$''']
 regexes = ['''^sk-123456789012$''']
+
+[[allowlists]]
+description = "fixed v2 bearer vector key shared by the Go and Python markitdown tests"
+targetRules = ["upmo-service-key", "upmo-signing-key", "generic-api-key"]
+condition = "AND"
+paths = ['''^(deploy/markitdown/test_main\.py|internal/platform/svcsig/svcsig_test\.go)$''']
+regexes = [
+  '''^upmo_svc_markitdown_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA$''',
+]
+
+[[allowlists]]
+description = "metrics token test fixtures"
+targetRules = ["upmo-service-key", "upmo-signing-key", "generic-api-key"]
+condition = "AND"
+paths = ['''^internal/platform/metrics/metrics_test\.go$''']
+regexes = [
+  '''^upmo_svc_gateway_bWV0cmljcy10b2tlbi1mb3ItdGVzdHMtb25seS0zMmJ5dGVz$''',
+  '''^upmo_mtr_bWV0cmljcy10b2tlbi1mb3ItdGVzdHMtb25seS0zMmJ5dGVz$''',
+]
+
+[[allowlists]]
+description = "config loader test fixtures, base64 of readable test phrases"
+targetRules = ["upmo-service-key", "upmo-signing-key", "generic-api-key"]
+condition = "AND"
+paths = ['''^internal/platform/config/config_test\.go$''']
+regexes = [
+  '''^upmo_svc_gateway_Z2F0ZXdheS1rZXktZm9yLXRoZS1jb25maWctdGVzdCE$''',
+  '''^upmo_svc_gateway_cHJldmlvdXMtZ2F0ZXdheS1rZXktY29uZmlnLXRlc3Q$''',
+  '''^upmo_svc_sandboxd_c2FuZGJveGQta2V5LWZvci10aGUtY29uZmlnLXRlc3Q$''',
+  '''^upmo_svc_sandboxd_cHJldmlvdXMtc2FuZGJveGQta2V5LWNvbmZpZy10c3Q$''',
+  '''^upmo_svc_markitdown_bWFya2l0ZG93bi1rZXktZm9yLWNvbmZpZy10ZXN0cyE$''',
+  '''^upmo_edk_ZWRpdG9yLWtleS1mb3ItdGhlLWNvbmZpZy10ZXN0ISE$''',
+  '''^upmo_edk_cHJldmlvdXMtZWRpdG9yLWtleS1jb25maWctdGVzdCE$''',
+  '''^upmo_rnk_cnVuLWtleS1mb3ItdGhlLWNvbmZpZy10ZXN0ISEhISE$''',
+  '''^upmo_mtr_bWV0cmljcy10b2tlbi1mb3ItdGhlLWNvbmZpZy10c3Q$''',
+]
+
+[[allowlists]]
+description = "metrics scrape token fixtures in the process listener tests"
+targetRules = ["upmo-service-key", "upmo-signing-key", "generic-api-key"]
+condition = "AND"
+paths = ['''^(cmd/gateway/main_integration_test\.go|internal/sandboxd/sandboxd_test\.go|pkg/brain/main_integration_test\.go)$''']
+regexes = [
+  '''^upmo_mtr_Z2F0ZXdheS1tZXRyaWNzLXNjcmFwZS10b2tlbi10ZXN0$''',
+  '''^upmo_mtr_c2FuZGJveGQtbWV0cmljcy1zY3JhcGUtdG9rZW4tdGVzdA$''',
+  '''^upmo_mtr_YnJhaW4tbWV0cmljcy1zY3JhcGUtdG9rZW4tZm9yLXRlc3Q$''',
+]
