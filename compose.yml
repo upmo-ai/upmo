@@ -293,7 +293,7 @@ services:
     command: ["sh", "/src/e2e/run.sh"]
 
   osv-scanner:
-    image: ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
+    image: ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde
     profiles: ["tools"]
     working_dir: /src
     volumes:
