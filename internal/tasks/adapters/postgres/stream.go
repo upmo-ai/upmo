@@ -92,7 +92,7 @@ func lastPhase(ctx context.Context, tx pgx.Tx, taskID, upTo string) (domain.Stat
 		FROM tasks.task_events
 		WHERE task_id = $1::uuid
 		  AND ($2::text = '' OR id <= NULLIF($2::text, '')::uuid)
-		  AND to_status IN ('Preparing', 'Planning', 'Working', 'Checking')
+		  AND to_status IN ('Preparing', 'Planning', 'Working', 'Verifying')
 		ORDER BY seq DESC
 		LIMIT 1`, taskID, upTo).Scan(&phase)
 	if errors.Is(err, pgx.ErrNoRows) {

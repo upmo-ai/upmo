@@ -99,7 +99,7 @@ func (s Store) List(ctx context.Context, access app.Access) ([]app.TaskSummary, 
 		         SELECT event.to_status
 		         FROM tasks.task_events AS event
 		         WHERE event.task_id = task.id
-		           AND event.to_status IN ('Preparing', 'Planning', 'Working', 'Checking')
+		           AND event.to_status IN ('Preparing', 'Planning', 'Working', 'Verifying')
 		         ORDER BY event.seq DESC
 		         LIMIT 1
 		       ), '')

@@ -204,10 +204,10 @@ describe("stream rules", () => {
 
   it("patches the status and phase, and leaves a matching task as it is", () => {
     const task: Task = { id: workId, title: "T", status: "Working", phase: "Working", result: "", detail: "" };
-    expect(withStatus(task, { status: "Done", phase: "Checking" })).toMatchObject({ status: "Done", phase: "Checking" });
+    expect(withStatus(task, { status: "Done", phase: "Verifying" })).toMatchObject({ status: "Done", phase: "Verifying" });
     expect(withStatus(task, { status: "Working", phase: "Working" })).toBe(task);
     expect(withEvent(undefined, { id: "ev-9", time: "09:00:05", phase: "Working", message: "m" })).toBeUndefined();
-    expect(withStatus(undefined, { status: "Done", phase: "Checking" })).toBeUndefined();
+    expect(withStatus(undefined, { status: "Done", phase: "Verifying" })).toBeUndefined();
   });
 
   it("names the newest event and builds the stream URL after it", () => {
@@ -513,7 +513,7 @@ describe("task stream", () => {
 
     // The task finishes through the stream; then the agent goes quiet.
     await act(async () => {
-      source.emit("status", '{"status":"Done","phase":"Checking"}');
+      source.emit("status", '{"status":"Done","phase":"Verifying"}');
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STREAM_SILENCE_MS + 1_000);

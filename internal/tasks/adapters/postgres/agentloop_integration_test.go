@@ -21,7 +21,7 @@ import (
 
 func TestSpendPreservesFullActualSpendAndPauses(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 
 	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Micro USD run"})
@@ -53,7 +53,7 @@ func TestSpendPreservesFullActualSpendAndPauses(t *testing.T) {
 
 func TestTasksSingleTeamRLSNarrowingAndBatchHoldAndActionLog(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 
 	teamA := "018f3b2c-7a10-7c4a-8e11-aaaa00000001"
@@ -223,7 +223,7 @@ func TestTasksSingleTeamRLSNarrowingAndBatchHoldAndActionLog(t *testing.T) {
 
 func TestTasksActionLogScopedByRunAndTaskAllowsSameProviderCallID(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 
 	task1, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Task 1"})
@@ -400,7 +400,7 @@ func assertTaskBeginDial23505(t *testing.T, ctx context.Context, owner, appPool 
 
 func TestTasksCommitTurnAndEnqueue(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 
 	// CommitTurnAndEnqueue persists turns, state, hold/approval, and enqueue callback atomically.
@@ -502,7 +502,7 @@ func TestTasksCommitTurnAndEnqueue(t *testing.T) {
 
 func TestPausedCommitTurnAndEnqueueReturnsErrExhaustedWithoutCharge(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Paused turn"})
 	if err != nil {

@@ -34,6 +34,25 @@ func (s Store) NarrowedTx(ctx context.Context, scope agentloop.AccessScope, fn f
 	return tx.Commit(ctx)
 }
 
+// NarrowedOwnerTx is NarrowedTx on the migration-owner pool. Runner columns are revoked from upmo_app.
+func (s Store) NarrowedOwnerTx(ctx context.Context, scope agentloop.AccessScope, fn func(pgx.Tx) error) error {
+	if s.Owner == nil {
+		return fmt.Errorf("tasks: no owner database")
+	}
+	tx, err := s.Owner.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := agentloop.ApplyRLSTx(ctx, tx, agentloop.NarrowRLS(scope)); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // SaveFinding inserts a row into tasks.findings under narrowed RLS.
 func (s Store) SaveFinding(ctx context.Context, scope agentloop.AccessScope, taskID, runID, kind, title, body, sourceRef string, untrusted bool) (string, error) {
 	if kind == "" {
@@ -98,7 +117,13 @@ func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, tool
 	if len(toolName) > 64 {
 		toolName = toolName[:64]
 	}
-	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Pause})
+	var status string
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM tasks.tasks WHERE id = $1::uuid`, taskID).Scan(&status); err != nil {
+		return app.Approval{}, fmt.Errorf("tasks: status: %w", err)
+	}
+	kind := approvalEdge(domain.Status(status), batch.Reason)
+	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind, Reason: batch.Reason, From: domain.Status(status)})
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -109,10 +134,10 @@ func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, tool
 		State:  domain.ApprovalPending,
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks.approvals (task_id, user_id, tool, reason, action, preview, calls, untrusted_origin)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb[], $8)
+		INSERT INTO tasks.approvals (task_id, user_id, tool, reason, action, preview, from_status, calls, untrusted_origin)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb[], $9)
 		RETURNING id::text`,
-		taskID, ownerID, toolName, batch.Reason, batch.Action, batch.Preview, calls, batch.UntrustedOrigin).Scan(&approval.ID)
+		taskID, ownerID, toolName, batch.Reason, batch.Action, batch.Preview, status, calls, batch.UntrustedOrigin).Scan(&approval.ID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
 		return app.Approval{}, domain.ErrPending
@@ -226,43 +251,49 @@ type TaskTurnStore struct {
 
 // CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.
 func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloop.TurnCommit) error {
-	return s.Store.NarrowedTx(ctx, s.Scope, func(tx pgx.Tx) error {
+	return s.Store.NarrowedOwnerTx(ctx, s.Scope, func(tx pgx.Tx) error {
 		if err := InsertTurnRows(ctx, tx, commit); err != nil {
 			return err
 		}
 		var owner string
-		var currentTainted, currentPaused bool
+		var currentTainted, currentPaused, currentPrivate bool
 		var currentBudget, currentSpent int64
 		if err := tx.QueryRow(ctx, `
-			SELECT owner_user_id::text, tainted, paused, budget, spent
+			SELECT owner_user_id::text, tainted, paused, budget, spent, private_read
 			FROM tasks.tasks
 			WHERE id = $1::uuid
-			FOR UPDATE`, commit.ObjectID).Scan(&owner, &currentTainted, &currentPaused, &currentBudget, &currentSpent); err != nil {
+			FOR UPDATE`, commit.ObjectID).Scan(&owner, &currentTainted, &currentPaused, &currentBudget, &currentSpent, &currentPrivate); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return app.ErrGone
 			}
 			return fmt.Errorf("tasks: lock turn commit: %w", err)
 		}
+		actingUser := commit.UserID
+		if actingUser == "" {
+			actingUser = s.Scope.UserID
+		}
+		if owner != actingUser {
+			return app.ErrAccess
+		}
 		nextTainted := currentTainted || commit.Exposure.Tainted
+		nextPrivate := currentPrivate || commit.Exposure.PrivateRead
 		nextSpent, nextPaused, err := domain.Charge(currentBudget, currentSpent, commit.CostMicroUSD, currentPaused)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			UPDATE tasks.tasks
-			SET spent = $2, paused = $3, tainted = $4, updated_at = now()
-			WHERE id = $1::uuid`,
-			commit.ObjectID, nextSpent, nextPaused, nextTainted); err != nil {
+			SET spent = $2, paused = $3, tainted = $4, private_read = $5, updated_at = now()
+			WHERE id = $1::uuid
+			  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid`,
+			commit.ObjectID, nextSpent, nextPaused, nextTainted, nextPrivate)
+		if err != nil {
 			return fmt.Errorf("tasks: update turn state: %w", err)
 		}
+		if tag.RowsAffected() != 1 {
+			return app.ErrGone
+		}
 		if commit.Hold != nil {
-			actingUser := commit.UserID
-			if actingUser == "" {
-				actingUser = s.Scope.UserID
-			}
-			if owner != actingUser {
-				return app.ErrAccess
-			}
 			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "", *commit.Hold); err != nil {
 				return err
 			}

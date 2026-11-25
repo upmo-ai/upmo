@@ -1,4 +1,4 @@
-export const phases = ["Preparing", "Planning", "Working", "Checking"] as const;
+export const phases = ["Preparing", "Planning", "Working", "Verifying"] as const;
 
 export type Phase = (typeof phases)[number];
 

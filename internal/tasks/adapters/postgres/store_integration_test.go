@@ -21,7 +21,7 @@ import (
 
 func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil || opened.Status != domain.Preparing {
@@ -49,31 +49,31 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 		t.Fatalf("task events after unfinished turn = %d", events)
 	}
 	checked, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance, Turn: "upmo:end"})
-	if err != nil || checked.Status != domain.Checking {
-		t.Fatalf("advance to Checking = %+v %v", checked, err)
+	if err != nil || checked.Status != domain.Verifying {
+		t.Fatalf("advance to Verifying = %+v %v", checked, err)
 	}
 	if _, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance}); !errors.Is(err, domain.ErrEvidence) {
-		t.Fatalf("advance from Checking = %v", err)
+		t.Fatalf("advance from Verifying = %v", err)
 	}
 	noted, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Chat, Body: " I pass "})
-	if err != nil || noted.Status != domain.Checking {
+	if err != nil || noted.Status != domain.Verifying {
 		t.Fatalf("chat = %+v %v", noted, err)
 	}
 	var passes bool
 	if err := owner.QueryRow(ctx, `SELECT status, passes FROM tasks.tasks WHERE id = $1`, opened.ID).Scan(&stored, &passes); err != nil {
 		t.Fatal(err)
 	}
-	if stored != string(domain.Checking) || passes {
+	if stored != string(domain.Verifying) || passes {
 		t.Fatalf("after chat status=%s passes=%t", stored, passes)
 	}
-	passed, err := app.RecordChecks(ctx, store, ownerAccess, opened.ID, []domain.Check{{Name: "go test", Code: 0}})
+	passed, err := app.RecordChecks(ctx, store, ownerAccess, opened.ID, []domain.Check{{Name: "go test", Code: 0}}, nil)
 	if err != nil || !passed {
 		t.Fatalf("record checks passed=%t err=%v", passed, err)
 	}
 	if err := owner.QueryRow(ctx, `SELECT status, passes FROM tasks.tasks WHERE id = $1`, opened.ID).Scan(&stored, &passes); err != nil {
 		t.Fatal(err)
 	}
-	if stored != string(domain.Checking) || !passes {
+	if stored != string(domain.Verifying) || !passes {
 		t.Fatalf("after checks status=%s passes=%t", stored, passes)
 	}
 	done, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Pass})
@@ -112,7 +112,7 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 
 func TestTransitionPlansFromPreparingAndRejectsAnAdvanceEdgeToPlanning(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestTransitionPlansFromPreparingAndRejectsAnAdvanceEdgeToPlanning(t *testin
 
 func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -159,8 +159,8 @@ func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 		t.Fatalf("advance to Working = %+v %v", working, err)
 	}
 	got, err := app.ApplyTransition(ctx, store, ownerAccess, opened.ID, domain.Input{Kind: domain.Advance, Turn: "work complete\nupmo:end"})
-	if err != nil || got.Status != domain.Checking {
-		t.Fatalf("advance to Checking = %+v %v", got, err)
+	if err != nil || got.Status != domain.Verifying {
+		t.Fatalf("advance to Verifying = %+v %v", got, err)
 	}
 	var body string
 	if err := owner.QueryRow(ctx, `SELECT body FROM tasks.chat_events WHERE task_id = $1`, opened.ID).Scan(&body); err != nil {
@@ -173,7 +173,7 @@ func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 
 func TestTransitionFailThenChatStops(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Close the week"})
 	if err != nil {
@@ -197,13 +197,13 @@ func TestTransitionFailThenChatStops(t *testing.T) {
 
 func TestFailedChecksAreStoredAndDoNotPass(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	task := openAtChecking(t, store, "File the receipts")
-	if passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil || !passed {
+	if passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil || !passed {
 		t.Fatalf("successful checks passed=%t err=%v", passed, err)
 	}
-	passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 1}})
+	passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 1}}, nil)
 	if err != nil || passed {
 		t.Fatalf("record checks passed=%t err=%v", passed, err)
 	}
@@ -223,21 +223,21 @@ func TestFailedChecksAreStoredAndDoNotPass(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT code FROM tasks.checks WHERE task_id = $1 AND batch = 2`, task.ID).Scan(&code); err != nil {
 		t.Fatal(err)
 	}
-	if status != string(domain.Checking) || storedPasses || count != 2 || batch != 2 || code != 1 {
+	if status != string(domain.Verifying) || storedPasses || count != 2 || batch != 2 || code != 1 {
 		t.Fatalf("status=%s passes=%t count=%d batch=%d code=%d", status, storedPasses, count, batch, code)
 	}
 }
 
 func TestChecksBeforeCheckingAreRefused(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.RecordChecks(ctx, store, ownerAccess, opened.ID, []domain.Check{{Name: "go test", Code: 0}}); !errors.Is(err, domain.ErrInput) {
-		t.Fatalf("checks before Checking = %v", err)
+	if _, err := app.RecordChecks(ctx, store, ownerAccess, opened.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); !errors.Is(err, domain.ErrInput) {
+		t.Fatalf("checks before Verifying = %v", err)
 	}
 	var checks int
 	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.checks WHERE task_id = $1`, opened.ID).Scan(&checks); err != nil {
@@ -250,10 +250,10 @@ func TestChecksBeforeCheckingAreRefused(t *testing.T) {
 
 func TestTransitionHidesATaskFromAnotherPerson(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	task := openAtChecking(t, store, "Sort the mail")
-	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.ApplyTransition(ctx, store, otherAccess, task.ID, domain.Input{Kind: domain.Pass}); !errors.Is(err, app.ErrGone) {
@@ -290,7 +290,7 @@ func TestTransitionHidesATaskFromAnotherPerson(t *testing.T) {
 
 func TestEvidenceAndEventsCannotBeRewritten(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -307,7 +307,7 @@ func TestEvidenceAndEventsCannotBeRewritten(t *testing.T) {
 	if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Chat, Body: "kept"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `UPDATE tasks.task_events SET input = 'pass' WHERE task_id = $1`, task.ID); err == nil {
@@ -354,7 +354,7 @@ var (
 
 func TestOpenUsesDefaultBudget(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -388,9 +388,9 @@ func openAtChecking(t *testing.T, store postgres.Store, goal string) app.Task {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, next := range []domain.Status{domain.Working, domain.Checking} {
+	for _, next := range []domain.Status{domain.Working, domain.Verifying} {
 		input := domain.Input{Kind: domain.Advance}
-		if next == domain.Checking {
+		if next == domain.Verifying {
 			input.Turn = domain.Sentinel
 		}
 		task, err = app.ApplyTransition(ctx, store, ownerAccess, task.ID, input)

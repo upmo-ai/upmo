@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -31,12 +32,12 @@ func (s Store) Request(ctx context.Context, access app.Access, taskID string, as
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var owner string
+	var owner, status string
 	err = tx.QueryRow(ctx, `
-		SELECT owner_user_id::text
+		SELECT owner_user_id::text, status
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&owner)
+		FOR UPDATE`, taskID).Scan(&owner, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Approval{}, app.ErrGone
 	}
@@ -60,7 +61,8 @@ func (s Store) Request(ctx context.Context, access app.Access, taskID string, as
 		return app.Approval{}, domain.ErrPending
 	}
 
-	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Pause})
+	kind := approvalEdge(domain.Status(status), ask.Reason)
+	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind, Reason: ask.Reason, From: domain.Status(status)})
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -71,10 +73,10 @@ func (s Store) Request(ctx context.Context, access app.Access, taskID string, as
 		State:  domain.ApprovalPending,
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks.approvals (task_id, user_id, tool, reason, action)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+		INSERT INTO tasks.approvals (task_id, user_id, tool, reason, action, from_status)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
 		RETURNING id::text`,
-		taskID, owner, ask.Tool, ask.Reason, ask.Action).Scan(&approval.ID)
+		taskID, owner, ask.Tool, ask.Reason, ask.Action, status).Scan(&approval.ID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
 		return app.Approval{}, domain.ErrPending
@@ -89,9 +91,12 @@ func (s Store) Request(ctx context.Context, access app.Access, taskID string, as
 }
 
 // Decide settles a pending approval and resumes its task, in one transaction.
-// The task is locked first and the approval second, the order Request takes.
-// A denial also leaves a chat line so the agent sees it.
 func (s Store) Decide(ctx context.Context, access app.Access, approvalID string, kind domain.Kind) (app.Approval, error) {
+	return s.DecideWithInput(ctx, access, approvalID, kind, "")
+}
+
+// DecideWithInput settles a pending approval. body is the question answer or the plan note.
+func (s Store) DecideWithInput(ctx context.Context, access app.Access, approvalID string, kind domain.Kind, body string) (app.Approval, error) {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
 		return app.Approval{}, err
@@ -115,27 +120,37 @@ func (s Store) Decide(ctx context.Context, access app.Access, approvalID string,
 	}
 
 	approval := app.Approval{ID: approvalID, TaskID: taskID}
-	var state string
+	var state, reason, fromStatus, answer string
 	err = tx.QueryRow(ctx, `
-		SELECT approval.state, approval.action, task.goal
+		SELECT approval.state, approval.action, approval.reason, approval.from_status, approval.answer, task.goal
 		FROM tasks.approvals AS approval
 		JOIN tasks.tasks AS task ON task.id = approval.task_id
 		WHERE approval.id = $1::uuid
-		FOR UPDATE OF approval`, approvalID).Scan(&state, &approval.Action, &approval.Title)
+		FOR UPDATE OF approval`, approvalID).Scan(&state, &approval.Action, &reason, &fromStatus, &answer, &approval.Title)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Approval{}, app.ErrNoApproval
 	}
 	if err != nil {
 		return app.Approval{}, fmt.Errorf("tasks: lock approval: %w", err)
 	}
+	_ = answer
 	next, err := domain.Decide(domain.ApprovalState(state), kind)
 	if err != nil {
 		return app.Approval{}, err
 	}
-	tag, err := tx.Exec(ctx, `
+	answerSQL := `
 		UPDATE tasks.approvals
 		SET state = $2, decided_at = now()
-		WHERE id = $1::uuid`, approvalID, string(next))
+		WHERE id = $1::uuid`
+	answerArgs := []any{approvalID, string(next)}
+	if kind == domain.Approve && reason == domain.ReasonQuestion {
+		answerSQL = `
+		UPDATE tasks.approvals
+		SET state = $2, decided_at = now(), answer = $3
+		WHERE id = $1::uuid`
+		answerArgs = append(answerArgs, body)
+	}
+	tag, err := tx.Exec(ctx, answerSQL, answerArgs...)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == raiseException && pgErr.Message == decidedRefusal {
 		return app.Approval{}, domain.ErrDecided
@@ -146,12 +161,24 @@ func (s Store) Decide(ctx context.Context, access app.Access, approvalID string,
 	if tag.RowsAffected() != 1 {
 		return app.Approval{}, app.ErrNoApproval
 	}
-	if _, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind}); err != nil {
+	if _, _, err := stepLocked(ctx, tx, taskID, domain.Input{
+		Kind: kind, Reason: reason, From: domain.Status(fromStatus), Body: body,
+	}); err != nil {
 		return app.Approval{}, err
 	}
 	if kind == domain.Deny {
-		if _, err := insertChatEvent(ctx, tx, taskID, domain.DeniedLine); err != nil {
-			return app.Approval{}, err
+		switch reason {
+		case domain.ReasonAsk, domain.ReasonExpired, domain.ReasonTrifecta, domain.ReasonWriteguard:
+			if _, err := insertChatEvent(ctx, tx, taskID, domain.DeniedLine); err != nil {
+				return app.Approval{}, err
+			}
+		case domain.ReasonPlan:
+			note := strings.TrimSpace(body)
+			if note != "" {
+				if _, err := insertChatEvent(ctx, tx, taskID, note); err != nil {
+					return app.Approval{}, err
+				}
+			}
 		}
 	}
 	// One event per decision: the resume edge it applies and the denial line
@@ -176,6 +203,16 @@ func (s Store) Decide(ctx context.Context, access app.Access, approvalID string,
 	}
 	approval.State = next
 	return approval, nil
+}
+
+func approvalEdge(status domain.Status, reason string) domain.Kind {
+	if reason == domain.ReasonPlan && status == domain.Planning {
+		return domain.AskPlan
+	}
+	if status == domain.Verifying || (reason != domain.ReasonAsk && reason != domain.ReasonExpired) {
+		return domain.Hold
+	}
+	return domain.Pause
 }
 
 // Approvals lists this person's approvals under row security: pending first,

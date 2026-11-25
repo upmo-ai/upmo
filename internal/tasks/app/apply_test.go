@@ -12,7 +12,7 @@ import (
 const userID = "018f3b2c-7a10-7c4a-8e11-111111111111"
 
 func TestApplyPassCallsTheBook(t *testing.T) {
-	book := &fake{status: domain.Checking}
+	book := &fake{status: domain.Verifying}
 	_, err := ApplyTransition(context.Background(), book, Access{UserID: userID, Allow: "task:edit"}, taskOf(book), domain.Input{Kind: domain.Pass})
 	if !errors.Is(err, domain.ErrEvidence) || book.calls != 1 {
 		t.Fatalf("pass calls=%d err=%v", book.calls, err)
@@ -64,17 +64,17 @@ func TestRecordChecksValidatesAndCallsTheBook(t *testing.T) {
 	ctx := context.Background()
 	access := Access{UserID: userID, Allow: "task:edit"}
 	taskID := taskOf(book)
-	if _, err := RecordChecks(ctx, book, access, taskID, nil); !errors.Is(err, domain.ErrEvidence) || book.records != 0 {
+	if _, err := RecordChecks(ctx, book, access, taskID, nil, nil); !errors.Is(err, domain.ErrEvidence) || book.records != 0 {
 		t.Fatalf("empty checks records=%d err=%v", book.records, err)
 	}
-	passed, err := RecordChecks(ctx, book, access, taskID, []domain.Check{{Name: "go test", Code: 0}})
+	passed, err := RecordChecks(ctx, book, access, taskID, []domain.Check{{Name: "go test", Code: 0}}, nil)
 	if err != nil || !passed || book.records != 1 {
 		t.Fatalf("checks passed=%t records=%d err=%v", passed, book.records, err)
 	}
-	if _, err := RecordChecks(ctx, book, Access{Allow: "task:edit"}, taskID, []domain.Check{{Name: "go test"}}); !errors.Is(err, ErrAccess) {
+	if _, err := RecordChecks(ctx, book, Access{Allow: "task:edit"}, taskID, []domain.Check{{Name: "go test"}}, nil); !errors.Is(err, ErrAccess) {
 		t.Fatalf("access = %v", err)
 	}
-	if _, err := RecordChecks(ctx, book, access, "nope", []domain.Check{{Name: "go test"}}); !errors.Is(err, ErrTask) {
+	if _, err := RecordChecks(ctx, book, access, "nope", []domain.Check{{Name: "go test"}}, nil); !errors.Is(err, ErrTask) {
 		t.Fatalf("task = %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func (f *fake) Transition(_ context.Context, _ Access, taskID string, input doma
 	return Task{ID: taskID, Status: next, Goal: "File the receipts"}, nil
 }
 
-func (f *fake) Record(_ context.Context, _ Access, _ string, checks []domain.Check) (bool, error) {
+func (f *fake) Record(_ context.Context, _ Access, _ string, checks []domain.Check, _ map[int]string) (bool, error) {
 	f.records++
 	f.passes = domain.Passes(checks)
 	return f.passes, nil

@@ -17,12 +17,21 @@ const (
 	ApprovalClosed   ApprovalState = "closed"
 )
 
-// Reasons an approval is asked for. They are the reasons a connector call is
-// paused.
+// Reasons an approval is asked for.
 const (
-	ReasonAsk     = "ask"
-	ReasonExpired = "expired"
+	ReasonAsk         = "ask"
+	ReasonExpired     = "expired"
+	ReasonPlan        = "plan"
+	ReasonQuestion    = "question"
+	ReasonTrifecta    = "trifecta"
+	ReasonWriteguard  = "writeguard"
+	ReasonStalled     = "stalled"
+	ReasonFailing     = "failing"
+	ReasonReviewLimit = "review_limit"
+	ReasonUnknown     = "unknown"
 )
+
+const DeniedToolResult = "denied by a person"
 
 const (
 	// ToolBytes is the longest tool name an approval accepts, in bytes.
@@ -58,8 +67,8 @@ type Ask struct {
 }
 
 // NewAsk trims and checks a request. Tool is a non-empty name of at most
-// ToolBytes bytes with no credential mark. Reason is ask or expired. Action is
-// the one sentence the card shows, 1 to ActionRunes runes.
+// ToolBytes bytes with no credential mark. Reason is one of the ten stored
+// reasons. Action is the one sentence the card shows, 1 to ActionRunes runes.
 func NewAsk(tool, reason, action string) (Ask, error) {
 	tool = strings.TrimSpace(tool)
 	reason = strings.TrimSpace(reason)
@@ -67,7 +76,7 @@ func NewAsk(tool, reason, action string) (Ask, error) {
 	if tool == "" || len(tool) > ToolBytes || hasCredentialMark(tool) {
 		return Ask{}, ErrApproval
 	}
-	if reason != ReasonAsk && reason != ReasonExpired {
+	if !ValidReason(reason) {
 		return Ask{}, ErrApproval
 	}
 	if action == "" || utf8.RuneCountInString(action) > ActionRunes {
@@ -93,6 +102,16 @@ func Decide(state ApprovalState, kind Kind) (ApprovalState, error) {
 		return ApprovalApproved, nil
 	}
 	return ApprovalDenied, nil
+}
+
+// ValidReason reports whether reason is one of the ten stored approval reasons.
+func ValidReason(reason string) bool {
+	switch reason {
+	case ReasonAsk, ReasonExpired, ReasonPlan, ReasonQuestion, ReasonTrifecta, ReasonWriteguard, ReasonStalled, ReasonFailing, ReasonReviewLimit, ReasonUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 func hasCredentialMark(text string) bool {

@@ -80,7 +80,7 @@ func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amou
 	if amount < 1 {
 		return domain.ErrBudget
 	}
-	tx, err := s.begin(ctx, access)
+	tx, err := s.beginOwner(ctx, access)
 	if err != nil {
 		return err
 	}
@@ -88,25 +88,26 @@ func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amou
 
 	var budget, spent int64
 	var paused bool
+	var ownerID string
 	err = tx.QueryRow(ctx, `
-		SELECT budget, spent, paused
+		SELECT budget, spent, paused, owner_user_id::text
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&budget, &spent, &paused)
+		FOR UPDATE`, taskID).Scan(&budget, &spent, &paused, &ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrGone
 	}
 	if err != nil {
 		return fmt.Errorf("tasks: lock spend: %w", err)
 	}
+	if ownerID != access.UserID {
+		return app.ErrAccess
+	}
 	nextSpent, nextPaused, chargeErr := domain.Charge(budget, spent, amount, paused)
 	if chargeErr != nil {
 		return chargeErr
 	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE tasks.tasks
-		SET spent = $2, paused = $3, updated_at = now()
-		WHERE id = $1::uuid`, taskID, nextSpent, nextPaused)
+	tag, err := tx.Exec(ctx, spendUpdateSQL, taskID, nextSpent, nextPaused)
 	if err != nil {
 		return fmt.Errorf("tasks: spend: %w", err)
 	}
@@ -118,23 +119,27 @@ func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amou
 
 // Taint marks the task. The database spreads the mark along the tree.
 func (s Store) Taint(ctx context.Context, access app.Access, taskID string) error {
-	tx, err := s.begin(ctx, access)
+	tx, err := s.beginOwner(ctx, access)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var tainted bool
+	var ownerID string
 	err = tx.QueryRow(ctx, `
-		SELECT tainted
+		SELECT tainted, owner_user_id::text
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&tainted)
+		FOR UPDATE`, taskID).Scan(&tainted, &ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrGone
 	}
 	if err != nil {
 		return fmt.Errorf("tasks: lock taint: %w", err)
+	}
+	if ownerID != access.UserID {
+		return app.ErrAccess
 	}
 	if tainted {
 		return tx.Commit(ctx)
@@ -142,7 +147,8 @@ func (s Store) Taint(ctx context.Context, access app.Access, taskID string) erro
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks.tasks
 		SET tainted = true
-		WHERE id = $1::uuid`, taskID)
+		WHERE id = $1::uuid
+		  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid`, taskID)
 	if err != nil {
 		return fmt.Errorf("tasks: taint: %w", err)
 	}

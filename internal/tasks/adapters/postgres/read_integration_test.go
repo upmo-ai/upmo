@@ -33,14 +33,14 @@ func reach(t *testing.T, store postgres.Store, goal string, status domain.Status
 		domain.Preparing:     nil,
 		domain.Planning:      {{Kind: domain.Plan}},
 		domain.Working:       {{Kind: domain.Advance}},
-		domain.Checking:      {{Kind: domain.Advance}, {Kind: domain.Advance, Turn: domain.Sentinel}},
+		domain.Verifying:     {{Kind: domain.Advance}, {Kind: domain.Advance, Turn: domain.Sentinel}},
 		domain.NeedsApproval: {{Kind: domain.Advance}, {Kind: domain.Pause}},
 		domain.Done:          {{Kind: domain.Advance}, {Kind: domain.Advance, Turn: domain.Sentinel}, {Kind: domain.Pass}},
 		domain.Failed:        {{Kind: domain.Plan}, {Kind: domain.Fail}},
 	}
 	for _, input := range steps[status] {
 		if input.Kind == domain.Pass {
-			if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+			if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -57,7 +57,7 @@ func reach(t *testing.T, store postgres.Store, goal string, status domain.Status
 
 func TestViewCollapsesEachStatusAndKeepsThePhase(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	tests := []struct {
 		state  domain.Status
@@ -67,9 +67,9 @@ func TestViewCollapsesEachStatusAndKeepsThePhase(t *testing.T) {
 		{domain.Preparing, domain.ShownWorking, domain.Preparing},
 		{domain.Planning, domain.ShownWorking, domain.Planning},
 		{domain.Working, domain.ShownWorking, domain.Working},
-		{domain.Checking, domain.ShownWorking, domain.Checking},
+		{domain.Verifying, domain.ShownWorking, domain.Verifying},
 		{domain.NeedsApproval, domain.ShownNeedsApproval, domain.Working},
-		{domain.Done, domain.ShownDone, domain.Checking},
+		{domain.Done, domain.ShownDone, domain.Verifying},
 		{domain.Failed, domain.ShownFailed, domain.Planning},
 	}
 	ids := map[domain.Status]string{}
@@ -101,7 +101,7 @@ func TestViewCollapsesEachStatusAndKeepsThePhase(t *testing.T) {
 
 func TestListShapeAndOrder(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	first := openRoot(t, store, "First")
 	second := openRoot(t, store, "Second")
@@ -131,7 +131,7 @@ func TestListShapeAndOrder(t *testing.T) {
 
 func TestViewMergesTaskAndChatEventsInTimeOrder(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	task := reach(t, store, "File the receipts", domain.Working)
 	step := func(input domain.Input) {
@@ -160,8 +160,8 @@ func TestViewMergesTaskAndChatEventsInTimeOrder(t *testing.T) {
 		{domain.Working, "advance", "Moved on to Working"},
 		{domain.Working, "message", "Start with March"},
 		{domain.Working, "message", "March is filed"},
-		{domain.Checking, "advance", "Moved on to Checking"},
-		{domain.Checking, "message", "Looks right"},
+		{domain.Verifying, "advance", "Moved on to Verifying"},
+		{domain.Verifying, "message", "Looks right"},
 	}
 	var got []line
 	for i, event := range view.Events {
@@ -173,14 +173,14 @@ func TestViewMergesTaskAndChatEventsInTimeOrder(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %+v\nwant %+v", got, want)
 	}
-	if view.Status != domain.ShownWorking || view.Phase != domain.Checking {
+	if view.Status != domain.ShownWorking || view.Phase != domain.Verifying {
 		t.Fatalf("status %q phase %q", view.Status, view.Phase)
 	}
 }
 
 func TestViewListsOnlyDirectChildrenAsSubtasks(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	one, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
@@ -214,7 +214,7 @@ func TestViewListsOnlyDirectChildrenAsSubtasks(t *testing.T) {
 
 func TestViewListsOnlyTheSubtasksThePersonCanSee(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	shown, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
@@ -287,7 +287,7 @@ func TestViewListsOnlyTheSubtasksThePersonCanSee(t *testing.T) {
 
 func TestViewRendersResultAndDetail(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
@@ -301,6 +301,9 @@ func TestViewRendersResultAndDetail(t *testing.T) {
 
 	// The database only holds the fixed result object, which renders as compact
 	// JSON in jsonb key order. A JSON string result is covered by the rule test.
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, child.ID, domain.Input{Kind: domain.Advance}); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.SaveResult(ctx, store, ownerAccess, child.ID, "All filed", "two pages"); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +323,7 @@ func TestViewRendersResultAndDetail(t *testing.T) {
 
 func TestAnotherPersonSeesNothing(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	task := reach(t, store, "Sort the mail", domain.Working)
 
@@ -335,7 +338,7 @@ func TestAnotherPersonSeesNothing(t *testing.T) {
 
 func TestHTTPServesTheReadModel(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	serve := func(access app.Access) http.Handler {
 		mux := http.NewServeMux()
 		tasks.Handler{

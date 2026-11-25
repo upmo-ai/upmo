@@ -9,10 +9,22 @@ import (
 const (
 	// ParentCanceled is the cause stored when a parent cancel fails a child.
 	ParentCanceled = "parent_canceled"
+	// CauseCanceled is a question the person refused.
+	CauseCanceled = "canceled"
+	// CauseAccess is a task that lost the access it needed.
+	CauseAccess = "access"
+	// CauseStalled is a verification loop that repeated the same gap.
+	CauseStalled = "stalled"
+	// CauseFailing is a verification loop that kept missing.
+	CauseFailing = "failing"
+	// CauseReviewLimit is a review that used its rounds.
+	CauseReviewLimit = "review_limit"
+	// CauseUnknown is a check whose outcome could not be read.
+	CauseUnknown = "unknown"
 	// ResultSummaryRunes is the longest result summary.
 	ResultSummaryRunes = 200
 	// ResultDetailRunes is the longest result detail.
-	ResultDetailRunes = 2000
+	ResultDetailRunes = 32000
 	// WorktreeRunes is the longest worktree name.
 	WorktreeRunes = 80
 )

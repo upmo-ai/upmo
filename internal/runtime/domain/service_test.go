@@ -11,7 +11,7 @@ func TestPlaceEditorPlacesService(t *testing.T) {
 		want             Service
 	}{
 		{" Compose ", " Working ", Service{Name: EditorService, Volume: ScratchName, Mode: ModeReadOnly, Beside: BesideService, Platform: PlatformCompose}},
-		{"Kubernetes", "Checking", Service{Name: EditorService, Volume: ScratchName, Mode: ModeReadWrite, Beside: BesidePod, Platform: PlatformKubernetes}},
+		{"Kubernetes", "Verifying", Service{Name: EditorService, Volume: ScratchName, Mode: ModeReadWrite, Beside: BesidePod, Platform: PlatformKubernetes}},
 		{"Kubernetes", "Done", Service{Name: EditorService, Volume: ScratchName, Mode: ModeReadWrite, Beside: BesidePod, Platform: PlatformKubernetes}},
 		{"Kubernetes", "Failed", Service{Name: EditorService, Volume: ScratchName, Mode: ModeReadWrite, Beside: BesidePod, Platform: PlatformKubernetes}},
 	}

@@ -17,6 +17,7 @@ import (
 // Store is the task tables. One transition is one transaction.
 type Store struct {
 	Pool     *pgxpool.Pool
+	Owner    *pgxpool.Pool
 	Enqueuer jobs.Enqueuer
 	// ReplaceTaskGrants runs identity's grant replacement inside a transaction
 	// the store already opened. cmd wires it from taskGrants.
@@ -56,63 +57,6 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 		return app.Task{}, err
 	}
 	return task, nil
-}
-
-// Record locks the task, appends one check batch, and records whether it passed.
-func (s Store) Record(ctx context.Context, access app.Access, taskID string, checks []domain.Check) (bool, error) {
-	tx, err := s.begin(ctx, access)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var status string
-	err = tx.QueryRow(ctx, `
-		SELECT status
-		FROM tasks.tasks
-		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, app.ErrGone
-	}
-	if err != nil {
-		return false, fmt.Errorf("tasks: lock: %w", err)
-	}
-	if domain.Status(status) != domain.Checking {
-		return false, domain.ErrInput
-	}
-
-	var batch int
-	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(MAX(batch), 0) + 1
-		FROM tasks.checks
-		WHERE task_id = $1::uuid`, taskID).Scan(&batch); err != nil {
-		return false, fmt.Errorf("tasks: check batch: %w", err)
-	}
-	for index, check := range checks {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO tasks.checks (task_id, batch, seq, name, code)
-			VALUES ($1::uuid, $2, $3, $4, $5)`,
-			taskID, batch, index+1, check.Name, check.Code); err != nil {
-			return false, fmt.Errorf("tasks: check: %w", err)
-		}
-	}
-
-	passes := domain.Passes(checks)
-	tag, err := tx.Exec(ctx, `
-		UPDATE tasks.tasks
-		SET passes = $2, updated_at = now()
-		WHERE id = $1::uuid`, taskID, passes)
-	if err != nil {
-		return false, fmt.Errorf("tasks: passes: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return false, app.ErrGone
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return passes, nil
 }
 
 // Admit serializes admission for one person and creates or admits one run.
@@ -231,6 +175,28 @@ func (s Store) Queued(ctx context.Context, access app.Access) ([]string, error) 
 
 func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
 	return s.beginWith(ctx, access, pgx.TxOptions{})
+}
+
+func (s Store) beginOwner(ctx context.Context, access app.Access) (pgx.Tx, error) {
+	if s.Owner == nil {
+		return nil, fmt.Errorf("tasks: no owner database")
+	}
+	tx, err := s.Owner.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, `
+		SELECT set_config('upmo.user_id', $1, true),
+		       set_config('upmo.allow', $2, true),
+		       set_config('upmo.teams', $3, true),
+		       set_config('upmo.shared_view', $4, true),
+		       set_config('upmo.shared_edit', $5, true)`,
+		accessArgs(access)...)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
 }
 
 func (s Store) beginWith(ctx context.Context, access app.Access, opts pgx.TxOptions) (pgx.Tx, error) {
@@ -450,6 +416,19 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 	if err != nil {
 		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: lock: %w", err)
 	}
+	if input.Kind == domain.Resume {
+		var pending bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM tasks.approvals
+				WHERE task_id = $1::uuid AND state = 'pending'
+			)`, taskID).Scan(&pending); err != nil {
+			return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: pending approval: %w", err)
+		}
+		if pending {
+			return app.Task{}, domain.Effect{}, domain.ErrPending
+		}
+	}
 	if paused && (input.Kind == domain.Advance || input.Kind == domain.Plan) {
 		return app.Task{}, domain.Effect{}, domain.ErrExhausted
 	}
@@ -490,10 +469,19 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 	if err := insertTaskEvent(ctx, tx, taskID, effect); err != nil {
 		return app.Task{}, domain.Effect{}, err
 	}
-	tag, err := tx.Exec(ctx, `
+	statusSQL := `
 		UPDATE tasks.tasks
 		SET status = $2, updated_at = now()
-		WHERE id = $1::uuid`, taskID, string(next))
+		WHERE id = $1::uuid`
+	statusArgs := []any{taskID, string(next)}
+	if effect.Cause != "" {
+		statusSQL = `
+		UPDATE tasks.tasks
+		SET status = $2, cause = $3, updated_at = now()
+		WHERE id = $1::uuid`
+		statusArgs = append(statusArgs, effect.Cause)
+	}
+	tag, err := tx.Exec(ctx, statusSQL, statusArgs...)
 	if err != nil {
 		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: status: %w", err)
 	}

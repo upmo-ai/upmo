@@ -94,7 +94,7 @@ describe("tasks", () => {
     expect(screen.getByTestId("task-count").textContent).toBe("5 tasks");
   });
 
-  it("UPM-199 walks a task through its phases and stops at Checking", async () => {
+  it("UPM-199 walks a task through its phases and stops at Verifying", async () => {
     renderAt("/tasks/aster-mail");
     expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
@@ -111,7 +111,7 @@ describe("tasks", () => {
       screen.getByRole("tab", { name: "Activity" }).click();
     });
 
-    for (const phase of ["Planning", "Working", "Checking"]) {
+    for (const phase of ["Planning", "Working", "Verifying"]) {
       act(() => {
         screen.getByRole("button", { name: "Next phase" }).click();
       });
@@ -122,8 +122,8 @@ describe("tasks", () => {
 
     const nextPhase = screen.getByRole("button", { name: "Next phase" }) as HTMLButtonElement;
     expect(nextPhase.disabled).toBe(true);
-    expect(headerStatus()).toBe("Checking");
-    expect(screen.getByTestId("next-phase-note").textContent).toContain("Checking is the last step");
+    expect(headerStatus()).toBe("Verifying");
+    expect(screen.getByTestId("next-phase-note").textContent).toContain("Verifying is the last step");
     expect(screen.getByTestId("next-phase-note").textContent).toContain("marks the task Done");
 
     act(() => {
@@ -132,7 +132,7 @@ describe("tasks", () => {
     expect(screen.getByTestId("task-result").textContent).toBe(placeholder);
   });
 
-  it("UPM-199 gives no next-phase explanation before Checking", async () => {
+  it("UPM-199 gives no next-phase explanation before Verifying", async () => {
     renderAt("/tasks/aster-mail");
     expect(await screen.findByRole("heading", { level: 1, name: "Mail triage" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Next phase" }) as HTMLButtonElement).disabled).toBe(
@@ -141,13 +141,13 @@ describe("tasks", () => {
     expect(screen.queryByTestId("next-phase-note")).toBeNull();
   });
 
-  it("UPM-199 the stub refuses to advance a task out of Checking", async () => {
+  it("UPM-199 the stub refuses to advance a task out of Verifying", async () => {
     const api = createStubApi();
-    for (const phase of ["Planning", "Working", "Checking"]) {
+    for (const phase of ["Planning", "Working", "Verifying"]) {
       expect((await api.nextPhase("aster-mail")).phase).toBe(phase);
     }
     const again = await api.nextPhase("aster-mail");
-    expect(again.phase).toBe("Checking");
+    expect(again.phase).toBe("Verifying");
     expect(again.status).toBe("Working");
   });
 
@@ -164,7 +164,9 @@ describe("tasks", () => {
     act(() => {
       screen.getByRole("radio", { name: "All events" }).click();
     });
-    expect(within(screen.getByRole("region", { name: "Activity" })).getByText("6 events")).toBeTruthy();
+    const activity = screen.getByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("6 events")).toBeTruthy();
+    expect(within(activity).getByText("Verifying")).toBeTruthy();
   });
 
   it("shows a nested subtask under its parent", async () => {
@@ -284,7 +286,7 @@ describe("tasks", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Weekly close" })).toBeTruthy();
     expect(headerStatus()).toBe("Failed");
     const rail = screen.getByRole("list", { name: "Phases" });
-    expect(within(rail).getByRole("listitem", { current: "step" }).textContent).toBe("Checking");
+    expect(within(rail).getByRole("listitem", { current: "step" }).textContent).toBe("Verifying");
     expect((screen.getByRole("button", { name: "Next phase" }) as HTMLButtonElement).disabled).toBe(
       true,
     );

@@ -12,7 +12,7 @@ func TestMountRuleMountsScratch(t *testing.T) {
 		want   Mount
 	}{
 		{" Working ", Mount{Volume: ScratchName, Mode: ModeReadOnly}},
-		{"Checking", Mount{Volume: ScratchName, Mode: ModeReadWrite}},
+		{"Verifying", Mount{Volume: ScratchName, Mode: ModeReadWrite}},
 		{"Done", Mount{Volume: ScratchName, Mode: ModeReadWrite}},
 		{"Failed", Mount{Volume: ScratchName, Mode: ModeReadWrite}},
 	}

@@ -7,8 +7,8 @@
 -- Rows go in the way the brain writes them, so every constraint and trigger in
 -- internal/tasks/migrations still applies: each task opens with an `open`
 -- event, every status change follows an event whose edge matches, a task is
--- Done only with a passing check batch, a result belongs to a subtask, and a
--- subtask draws its budget from its parent.
+-- Done only with a passing check batch, a result is written while the task is
+-- Working or Verifying, and a subtask draws its budget from its parent.
 --
 --   ...0001  Sort the morning mail            Working (Working), one chat line
 --   ...0002  Plan the launch email            Working (Planning)
@@ -214,20 +214,22 @@ SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000005', :'ada'::uuid, N
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000005', 'plan', 'Preparing', 'Planning', now() - interval '39 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000005', 'advance', 'Planning', 'Working', now() - interval '38 minutes');
 
--- 0006: Done. Only a subtask has a result, and a task is Done only after a
--- passing check batch.
+-- 0006: Done. The result is written while the task is Verifying, then a passing
+-- check batch, then the pass into Done. The Done update does not change result.
 SELECT pg_temp.open_task('e2e00000-0000-7000-8000-000000000006', :'ada'::uuid, 'e2e00000-0000-7000-8000-000000000005',
   'Reconcile the accounts', 3000000, 1200000, now() - interval '37 minutes');
 SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000006', 'advance', 'Preparing', 'Working', now() - interval '36 minutes');
-SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000006', 'advance', 'Working', 'Checking', now() - interval '35 minutes');
+SELECT pg_temp.step('e2e00000-0000-7000-8000-000000000006', 'advance', 'Working', 'Verifying', now() - interval '35 minutes');
+UPDATE tasks.tasks
+SET result = '{"summary": "The accounts reconcile.", "detail": "All 31 ledger entries matched the bank statement."}'
+WHERE id = 'e2e00000-0000-7000-8000-000000000006';
 INSERT INTO tasks.checks (task_id, batch, seq, name, code, at)
 VALUES ('e2e00000-0000-7000-8000-000000000006', 1, 1, 'ledger reconciles', 0, now() - interval '34 minutes');
 INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, at)
-VALUES ('e2e00000-0000-7000-8000-000000000006', 4, 'Checking', 'Done', 'pass', now() - interval '33 minutes');
+VALUES ('e2e00000-0000-7000-8000-000000000006', 4, 'Verifying', 'Done', 'pass', now() - interval '33 minutes');
 UPDATE tasks.tasks
 SET status = 'Done',
     passes = true,
-    result = '{"summary": "The accounts reconcile.", "detail": "All 31 ledger entries matched the bank statement."}',
     updated_at = now() - interval '33 minutes'
 WHERE id = 'e2e00000-0000-7000-8000-000000000006';
 

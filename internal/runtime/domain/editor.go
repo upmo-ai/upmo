@@ -33,7 +33,7 @@ func MountRule(status string) (Mount, error) {
 	switch strings.TrimSpace(status) {
 	case "Working":
 		return Mount{Volume: ScratchName, Mode: ModeReadOnly}, nil
-	case "Checking", "Done", "Failed":
+	case "Verifying", "Done", "Failed":
 		return Mount{Volume: ScratchName, Mode: ModeReadWrite}, nil
 	default:
 		// Preparing, Planning, a blank status, and any other word have no editor mount.

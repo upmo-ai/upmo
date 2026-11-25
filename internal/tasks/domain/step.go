@@ -14,7 +14,7 @@ const (
 	Preparing Status = "Preparing"
 	Planning  Status = "Planning"
 	Working   Status = "Working"
-	Checking  Status = "Checking"
+	Verifying Status = "Verifying"
 	Done      Status = "Done"
 	Failed    Status = "Failed"
 	// NeedsApproval is a Working task whose connector call is paused.
@@ -37,9 +37,14 @@ const (
 	// Resume returns to Working once that same stored pause is taken.
 	Resume Kind = "resume"
 	// Approve and Deny are Resume once a person has decided a stored approval.
-	// They take the same edge and differ only in the event they leave.
+	// The reason and the stored from-status choose the edge.
 	Approve Kind = "approve"
 	Deny    Kind = "deny"
+	// AskPlan, Rework, Replan, and Hold are the verification edges.
+	AskPlan Kind = "ask_plan"
+	Rework  Kind = "rework"
+	Replan  Kind = "replan"
+	Hold    Kind = "hold"
 	// Fund raises a non-terminal root budget. It is not a status transition.
 	Fund Kind = "fund"
 )
@@ -53,19 +58,25 @@ const (
 
 // Input is one thing that happened. Goal is read for Open. Body is read for Chat.
 type Input struct {
-	Kind Kind
-	Goal string
-	Body string
-	Turn string
+	Kind   Kind
+	Goal   string
+	Body   string
+	Turn   string
+	Reason string
+	From   Status
+	To     Status
 }
 
 // Effect is the event the writer appends. It is a value, not a write.
 type Effect struct {
-	Kind Kind
-	From Status
-	To   Status
-	Goal string
-	Body string
+	Kind        Kind
+	From        Status
+	To          Status
+	Goal        string
+	Body        string
+	Reason      string
+	Cause       string
+	ResetBrakes bool
 }
 
 var (
@@ -75,7 +86,7 @@ var (
 	ErrInput = errors.New("tasks: input")
 	// ErrTerminal is a task that has already finished.
 	ErrTerminal = errors.New("tasks: terminal")
-	// ErrEvidence is a pass, or an advance out of Checking. Done needs core evidence.
+	// ErrEvidence is a pass, or an advance out of Verifying. Done needs core evidence.
 	ErrEvidence = errors.New("tasks: evidence")
 	// ErrGoal is a goal that is empty or too long.
 	ErrGoal = errors.New("tasks: goal")
@@ -86,7 +97,7 @@ var (
 var advance = map[Status]Status{
 	Preparing: Working,
 	Planning:  Working,
-	Working:   Checking,
+	Working:   Verifying,
 }
 
 // Step returns the next status and the event to append. It does not write.
@@ -95,7 +106,7 @@ var advance = map[Status]Status{
 func Step(status Status, input Input) (Status, Effect, error) {
 	switch input.Kind {
 	case Open:
-		return openTask(status, strings.TrimSpace(input.Goal))
+		return openTask(status, strings.TrimSpace(input.Goal), input.To)
 	case Advance:
 		return move(status)
 	case Plan:
@@ -110,23 +121,39 @@ func Step(status Status, input Input) (Status, Effect, error) {
 		return edge(status, Pause, Working, NeedsApproval)
 	case Resume:
 		return edge(status, Resume, NeedsApproval, Working)
+	case AskPlan:
+		return edge(status, AskPlan, Planning, NeedsApproval)
+	case Rework:
+		return edge(status, Rework, Verifying, Working)
+	case Replan:
+		return edge(status, Replan, Working, Planning)
+	case Hold:
+		return holdTask(status, input)
 	case Approve:
-		return edge(status, Approve, NeedsApproval, Working)
+		return approveTask(status, input)
 	case Deny:
-		return edge(status, Deny, NeedsApproval, Working)
+		return denyTask(status, input)
 	default:
 		return status, Effect{}, ErrInput
 	}
 }
 
-func openTask(status Status, goal string) (Status, Effect, error) {
+func openTask(status Status, goal string, to Status) (Status, Effect, error) {
 	if status != "" {
 		return status, Effect{}, ErrInput
 	}
 	if goal == "" || utf8.RuneCountInString(goal) > GoalRunes {
 		return status, Effect{}, ErrGoal
 	}
-	return Preparing, Effect{Kind: Open, To: Preparing, Goal: goal}, nil
+	if to == "" {
+		to = Preparing
+	}
+	switch to {
+	case Preparing, Planning, Working:
+	default:
+		return status, Effect{}, ErrInput
+	}
+	return to, Effect{Kind: Open, To: to, Goal: goal}, nil
 }
 
 func move(status Status) (Status, Effect, error) {
@@ -164,12 +191,103 @@ func pass(status Status) (Status, Effect, error) {
 	switch status {
 	case Done, Failed:
 		return status, Effect{}, ErrTerminal
-	case Checking:
-		return Done, Effect{Kind: Pass, From: Checking, To: Done}, nil
+	case Verifying:
+		return Done, Effect{Kind: Pass, From: Verifying, To: Done}, nil
 	case Preparing, Planning, Working, NeedsApproval:
 		return status, Effect{}, ErrInput
 	default:
 		return status, Effect{}, ErrStatus
+	}
+}
+
+func holdTask(status Status, input Input) (Status, Effect, error) {
+	if err := underway(status); err != nil {
+		return status, Effect{}, err
+	}
+	if status != Working && status != Verifying {
+		return status, Effect{}, ErrInput
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason != "" && !holdReason(status, reason) {
+		return status, Effect{}, ErrInput
+	}
+	return NeedsApproval, Effect{Kind: Hold, From: status, To: NeedsApproval, Reason: reason}, nil
+}
+
+func holdReason(status Status, reason string) bool {
+	switch reason {
+	case ReasonStalled, ReasonFailing, ReasonReviewLimit, ReasonUnknown:
+		return status == Working || status == Verifying
+	case ReasonAsk, ReasonExpired, ReasonQuestion, ReasonTrifecta, ReasonWriteguard:
+		// A batch hold leaves Verifying with reason ask.
+		return status == Working || status == Verifying
+	default:
+		return false
+	}
+}
+
+func approveTask(status Status, input Input) (Status, Effect, error) {
+	if err := underway(status); err != nil {
+		return status, Effect{}, err
+	}
+	if status != NeedsApproval {
+		return status, Effect{}, ErrInput
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = ReasonAsk
+	}
+	switch reason {
+	case ReasonPlan:
+		return Working, Effect{Kind: Approve, From: NeedsApproval, To: Working, Reason: ReasonPlan}, nil
+	case ReasonQuestion:
+		answer := strings.TrimSpace(input.Body)
+		if answer == "" || utf8.RuneCountInString(answer) > ChatRunes {
+			return status, Effect{}, ErrChat
+		}
+		return Working, Effect{Kind: Approve, From: NeedsApproval, To: Working, Reason: ReasonQuestion, Body: answer}, nil
+	case ReasonStalled, ReasonFailing, ReasonReviewLimit, ReasonUnknown:
+		target := input.From
+		if target == "" {
+			target = Working
+		}
+		if target != Working && target != Verifying {
+			return status, Effect{}, ErrInput
+		}
+		return target, Effect{Kind: Approve, From: NeedsApproval, To: target, Reason: reason, ResetBrakes: true}, nil
+	case ReasonAsk, ReasonExpired, ReasonTrifecta, ReasonWriteguard:
+		return Working, Effect{Kind: Approve, From: NeedsApproval, To: Working, Reason: reason}, nil
+	default:
+		return status, Effect{}, ErrInput
+	}
+}
+
+func denyTask(status Status, input Input) (Status, Effect, error) {
+	if err := underway(status); err != nil {
+		return status, Effect{}, err
+	}
+	if status != NeedsApproval {
+		return status, Effect{}, ErrInput
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = ReasonAsk
+	}
+	switch reason {
+	case ReasonPlan:
+		note := strings.TrimSpace(input.Body)
+		if utf8.RuneCountInString(note) > ChatRunes {
+			return status, Effect{}, ErrChat
+		}
+		return Planning, Effect{Kind: Deny, From: NeedsApproval, To: Planning, Reason: ReasonPlan, Body: note}, nil
+	case ReasonQuestion:
+		return Failed, Effect{Kind: Deny, From: NeedsApproval, To: Failed, Reason: ReasonQuestion, Cause: CauseCanceled}, nil
+	case ReasonStalled, ReasonFailing, ReasonReviewLimit, ReasonUnknown:
+		return Failed, Effect{Kind: Deny, From: NeedsApproval, To: Failed, Reason: reason, Cause: reason}, nil
+	case ReasonAsk, ReasonExpired, ReasonTrifecta, ReasonWriteguard:
+		return Working, Effect{Kind: Deny, From: NeedsApproval, To: Working, Reason: reason, Body: DeniedToolResult}, nil
+	default:
+		return status, Effect{}, ErrInput
 	}
 }
 
@@ -196,7 +314,7 @@ func chat(status Status, body string) (Status, Effect, error) {
 
 func underway(status Status) error {
 	switch status {
-	case Preparing, Planning, Working, Checking, NeedsApproval:
+	case Preparing, Planning, Working, Verifying, NeedsApproval:
 		return nil
 	case Done, Failed:
 		return ErrTerminal

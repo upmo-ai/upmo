@@ -16,10 +16,10 @@ const (
 )
 
 // Show collapses a stored status to the status a person sees. Preparing,
-// Planning, Working and Checking are all Working.
+// Planning, Working and Verifying are all Working.
 func Show(status Status) (Shown, error) {
 	switch status {
-	case Preparing, Planning, Working, Checking:
+	case Preparing, Planning, Working, Verifying:
 		return ShownWorking, nil
 	case NeedsApproval:
 		return ShownNeedsApproval, nil
@@ -33,7 +33,7 @@ func Show(status Status) (Shown, error) {
 }
 
 // PhaseOf returns the phase a status shows: the status itself while it is
-// Preparing, Planning, Working or Checking. Any other status shows last, the
+// Preparing, Planning, Working or Verifying. Any other status shows last, the
 // phase the task was in before, and Working when there was none.
 func PhaseOf(status, last Status) Status {
 	if isPhase(status) {
@@ -47,7 +47,7 @@ func PhaseOf(status, last Status) Status {
 
 func isPhase(status Status) bool {
 	switch status {
-	case Preparing, Planning, Working, Checking:
+	case Preparing, Planning, Working, Verifying:
 		return true
 	default:
 		return false
@@ -64,8 +64,10 @@ func EventMessage(kind Kind, to Status) (string, bool) {
 		return "Moved on to " + string(to), true
 	case Plan:
 		return "Planning", true
-	case Pause:
+	case Pause, AskPlan, Hold:
 		return "Waiting for approval", true
+	case Rework, Replan:
+		return "Moved on to " + string(to), true
 	case Resume, Approve:
 		return "Approval given", true
 	case Deny:

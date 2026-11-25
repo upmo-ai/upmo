@@ -62,7 +62,7 @@ func tracedStore(t *testing.T, owner *pgxpool.Pool, step func()) (postgres.Store
 // with the pass event.
 func TestReadsSeeOneSnapshotWhenATaskPassesMidRead(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 
 	for _, read := range []struct {
@@ -79,8 +79,8 @@ func TestReadsSeeOneSnapshotWhenATaskPassesMidRead(t *testing.T) {
 		}},
 	} {
 		t.Run(read.name, func(t *testing.T) {
-			task := reach(t, store, "Pass mid read "+read.name, domain.Checking)
-			if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+			task := reach(t, store, "Pass mid read "+read.name, domain.Verifying)
+			if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
 				t.Fatal(err)
 			}
 			_, before, err := read.read(store, task.ID)
@@ -101,10 +101,10 @@ func TestReadsSeeOneSnapshotWhenATaskPassesMidRead(t *testing.T) {
 				t.Fatal("the pass never ran mid read")
 			}
 			switch {
-			case state == domain.Checking && events == before:
+			case state == domain.Verifying && events == before:
 			case state == domain.Done && events == before+1:
 			default:
-				t.Fatalf("read status %s with %d events, before the pass there were %d: one snapshot shows Checking with %d or Done with %d",
+				t.Fatalf("read status %s with %d events, before the pass there were %d: one snapshot shows Verifying with %d or Done with %d",
 					state, events, before, before, before+1)
 			}
 		})

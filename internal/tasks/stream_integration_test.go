@@ -91,7 +91,7 @@ func newRig(t *testing.T, cfg tasks.StreamConfig) *rig {
 	if err := migrate.Up(ctx, owner, tasks.Schema, tasks.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	store := tasks.NewStore(pgtest.App(t, owner), nil)
+	store := tasks.NewStore(pgtest.App(t, owner), owner, nil)
 	r := &rig{
 		t:       t,
 		owner:   owner,
@@ -228,13 +228,13 @@ func (r *rig) task(goal string, status domain.Status) app.Task {
 		domain.Preparing: nil,
 		domain.Planning:  {{Kind: domain.Plan}},
 		domain.Working:   {{Kind: domain.Advance}},
-		domain.Checking:  {{Kind: domain.Advance}, {Kind: domain.Advance, Turn: domain.Sentinel}},
+		domain.Verifying: {{Kind: domain.Advance}, {Kind: domain.Advance, Turn: domain.Sentinel}},
 		domain.Done:      {{Kind: domain.Advance}, {Kind: domain.Advance, Turn: domain.Sentinel}, {Kind: domain.Pass}},
 		domain.Failed:    {{Kind: domain.Plan}, {Kind: domain.Fail}},
 	}
 	for _, input := range steps[status] {
 		if input.Kind == domain.Pass {
-			if _, err := app.RecordChecks(ctx, r.store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+			if _, err := app.RecordChecks(ctx, r.store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
 				r.t.Fatal(err)
 			}
 		}
@@ -528,7 +528,7 @@ func TestStreamResumesAfterAnIdAndLastEventIDWins(t *testing.T) {
 		t.Errorf("Content-Encoding = %q", got)
 	}
 	s.expectHello()
-	s.expectStatus("Working", "Checking")
+	s.expectStatus("Working", "Verifying")
 	want := r.detail(task.ID)[2:]
 	for i, id := range ids[2:] {
 		f := s.expectLine(id)
@@ -540,21 +540,21 @@ func TestStreamResumesAfterAnIdAndLastEventIDWins(t *testing.T) {
 			t.Errorf("line %d = %v, want %v", i, got, want[i])
 		}
 	}
-	s.expectStatus("Working", "Checking")
+	s.expectStatus("Working", "Verifying")
 	s.expectQuiet(300 * time.Millisecond)
 
 	// The header wins over the query.
 	header := http.Header{"Last-Event-Id": {ids[2]}}
 	s = r.open("owner", path+"?after="+ids[0], header)
 	s.expectHello()
-	s.expectStatus("Working", "Checking")
+	s.expectStatus("Working", "Verifying")
 	s.expectLine(ids[3])
 	s.expectLine(ids[4])
 
 	// With neither, nothing is replayed: the client has the task from GET.
 	s = r.open("owner", path, nil)
 	s.expectHello()
-	s.expectStatus("Working", "Checking")
+	s.expectStatus("Working", "Verifying")
 	s.expectQuiet(300 * time.Millisecond)
 }
 
@@ -744,13 +744,13 @@ func TestStreamEndsFinishedWhenTheTaskIsDoneOrFailed(t *testing.T) {
 		phase  string
 		kind   domain.Input
 	}{
-		{"done", domain.Done, "Done", "Checking", domain.Input{Kind: domain.Pass}},
+		{"done", domain.Done, "Done", "Verifying", domain.Input{Kind: domain.Pass}},
 		{"failed", domain.Failed, "Failed", "Planning", domain.Input{Kind: domain.Fail}},
 	} {
 		t.Run(tc.name+" while connected", func(t *testing.T) {
 			var task app.Task
 			if tc.status == domain.Done {
-				task = r.task("Finish", domain.Checking)
+				task = r.task("Finish", domain.Verifying)
 			} else {
 				task = r.task("Finish", domain.Planning)
 			}
@@ -758,7 +758,7 @@ func TestStreamEndsFinishedWhenTheTaskIsDoneOrFailed(t *testing.T) {
 			s.expectHello()
 			s.expectStatus("Working", tc.phase)
 			if tc.status == domain.Done {
-				if _, err := app.RecordChecks(context.Background(), r.store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}); err != nil {
+				if _, err := app.RecordChecks(context.Background(), r.store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
 					t.Fatal(err)
 				}
 			}

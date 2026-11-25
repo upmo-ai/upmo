@@ -65,7 +65,7 @@ function brain(options: { list?: () => Response; refuseCreate?: boolean } = {}) 
     stored(planId, "Plan the launch email", "Working", "Planning", {
       events: [event("ev-3", "Preparing", "open", "Task opened"), event("ev-4", "Planning", "plan", "Planning")],
     }),
-    stored(doneId, "Reconcile the accounts", "Done", "Checking", {
+    stored(doneId, "Reconcile the accounts", "Done", "Verifying", {
       result: '{"detail":"All 31 entries matched.","summary":"The accounts reconcile."}',
     }),
   ];

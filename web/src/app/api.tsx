@@ -1131,7 +1131,7 @@ Linear,€192.00,3 Nov`,
     id: "aster-done",
     title: "File the receipts",
     status: "Done",
-    phase: "Checking",
+    phase: "Verifying",
     result: "The receipts are filed.",
     detail: "File the receipts for Kodeeo Limited.",
     cost: "US$1.20",
@@ -1170,7 +1170,7 @@ REC-003,Meals,€32.00`,
       { id: "ed3", time: "07:30:16", phase: "Planning", message: "Plan written: 2 steps", detail: ["1. Read each receipt", "2. File it under its category"] },
       { id: "ed4", time: "07:31:02", phase: "Working", message: "Step 1 of 2 · Read each receipt" },
       { id: "ed5", time: "07:32:10", phase: "Working", message: "Artifact saved: receipts-filed.csv" },
-      { id: "ed6", time: "07:32:40", phase: "Checking", message: "Checks passed: 3 of 3 receipts filed" },
+      { id: "ed6", time: "07:32:40", phase: "Verifying", message: "Checks passed: 3 of 3 receipts filed" },
     ],
     preparing: preparingReadyBare,
   },
@@ -1178,7 +1178,7 @@ REC-003,Meals,€32.00`,
     id: "aster-failed",
     title: "Weekly close",
     status: "Failed",
-    phase: "Checking",
+    phase: "Verifying",
     result: "",
     detail: "Close the week for Kodeeo Limited.",
     cost: "US$0.85",
@@ -1200,7 +1200,7 @@ REC-003,Meals,€32.00`,
       { id: "ef2", time: "06:00:05", phase: "Preparing", message: "Files ready: 1 source read", detail: ["Ledger database"] },
       { id: "ef3", time: "06:00:18", phase: "Planning", message: "Plan written: 3 steps", detail: ["1. Pull the week's entries", "2. Reconcile the accounts", "3. Close the period"] },
       { id: "ef4", time: "06:01:30", phase: "Working", message: "Step 2 of 3 · Reconcile the accounts" },
-      { id: "ef5", time: "06:03:12", phase: "Checking", message: "Check failed: 2 accounts do not reconcile" },
+      { id: "ef5", time: "06:03:12", phase: "Verifying", message: "Check failed: 2 accounts do not reconcile" },
     ],
     preparing: preparingReadyBare,
   },
@@ -1304,13 +1304,13 @@ function asterShare(): StoredShare {
   };
 }
 
-// Checking is the last step a person can ask for. The checks decide when a
-// task is Done, so advancing from Checking is refused, as the backend does.
+// Verifying is the last step a person can ask for. The checks decide when a
+// task is Done, so advancing from Verifying is refused, as the backend does.
 function blocked(task: Task, approvals: Approval[]) {
   if (task.status === "Needs approval" || task.status === "Done" || task.status === "Failed") {
     return true;
   }
-  if (task.phase === "Checking") return true;
+  if (task.phase === "Verifying") return true;
   return approvals.some((item) => item.taskId === task.id && item.state === "pending");
 }
 

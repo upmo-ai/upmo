@@ -124,8 +124,8 @@ func NewStreamHub(pool *pgxpool.Pool, conn *pgx.ConnConfig, log *slog.Logger, cf
 }
 
 // NewStore returns the tasks Store on pool. A nil enqueuer enqueues no jobs.
-func NewStore(pool *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
-	return postgres.Store{Pool: pool, Enqueuer: enqueuer}
+func NewStore(pool, owner *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
+	return postgres.Store{Pool: pool, Owner: owner, Enqueuer: enqueuer}
 }
 
 // NewEditorTokens derives the editor token signer from the install service keys.

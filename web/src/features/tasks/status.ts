@@ -1,11 +1,11 @@
-import type { Attention, Phase, Status } from "@upmo-ai/components";
+import type { Attention, Status } from "@upmo-ai/components";
 
-import type { Task } from "./types";
+import type { Phase, Task } from "./types";
 
 type TaskState = Pick<Task, "status" | "phase">;
 
 /** The lifecycle step a task is on, or its outcome once it has finished. */
-export function taskPhase(task: TaskState): Phase {
+export function taskPhase(task: TaskState): Phase | "Done" | "Failed" {
   if (task.status === "Done" || task.status === "Failed") return task.status;
   return task.phase;
 }

@@ -161,7 +161,7 @@ func TestRequestApprovalRefusesASecondRequestWhilePending(t *testing.T) {
 
 func TestRequestApprovalIsAllOrNothing(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
 	ctx := context.Background()
 	planning := reach(t, store, "Plan it", domain.Planning)
 	working := reach(t, store, "Do it", domain.Working)
@@ -543,8 +543,8 @@ func TestAnEditorWhoFailedTheTaskStillListsAndDecidesNothing(t *testing.T) {
 	}
 	h := approvalServer(store, map[string]app.Access{"editor": editor})
 
-	// The close policy now lets the editor read the closed row, so the list
-	// and the decide must still keep it out of their hands.
+	// The editor can see the closed row. The list still hides it. A decision
+	// is the same conflict the owner gets, and it changes nothing.
 	if _, err := app.ApplyTransition(ctx, store, editor, task.ID, domain.Input{Kind: domain.Fail}); err != nil {
 		t.Fatal(err)
 	}
@@ -553,52 +553,9 @@ func TestAnEditorWhoFailedTheTaskStillListsAndDecidesNothing(t *testing.T) {
 	}
 	for _, verb := range []string{"approve", "deny"} {
 		code, body := send(h, "editor", http.MethodPost, "/api/approvals/"+approval.ID+"/"+verb)
-		if code != http.StatusNotFound || strings.TrimSpace(string(body)) != `{"error":"no such approval"}` {
+		if code != http.StatusConflict || strings.TrimSpace(string(body)) != `{"error":"the task is no longer waiting"}` {
 			t.Errorf("editor %s the closed approval = %d %s", verb, code, body)
 		}
-	}
-}
-
-func TestAnEditorCannotApproveDenyOrCloseAnOpenWait(t *testing.T) {
-	owner := up(t)
-	pool := pgtest.App(t, owner)
-	store := postgres.Store{Pool: pool}
-	ctx := context.Background()
-	task := reach(t, store, "File the receipts", domain.Working)
-	approval := request(t, store, task.ID)
-
-	editor := app.Access{
-		UserID: otherUser, Allow: "task:view,task:edit",
-		SharedView: "{" + task.ID + "}", SharedEdit: "{" + task.ID + "}",
-	}
-	as := func(statement string, args ...any) (int64, error) {
-		t.Helper()
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if _, err := tx.Exec(ctx, `
-			SELECT set_config('upmo.user_id', $1, true),
-			       set_config('upmo.allow', $2, true),
-			       set_config('upmo.teams', '{}', true),
-			       set_config('upmo.shared_view', $3, true),
-			       set_config('upmo.shared_edit', $4, true)`,
-			editor.UserID, editor.Allow, editor.SharedView, editor.SharedEdit); err != nil {
-			t.Fatal(err)
-		}
-		tag, err := tx.Exec(ctx, statement, args...)
-		return tag.RowsAffected(), err
-	}
-	// The task still waits, so the editor settles nothing.
-	settle := `UPDATE tasks.approvals SET state = $2, decided_at = now() WHERE id = $1`
-	for _, state := range []string{"approved", "denied", "closed"} {
-		if n, err := as(settle, approval.ID, state); err != nil || n != 0 {
-			t.Errorf("%s = %d rows, %v", state, n, err)
-		}
-	}
-	if _, pending := approvalRows(t, owner, task.ID); pending != 1 {
-		t.Fatalf("pending = %d", pending)
 	}
 }
 
@@ -658,7 +615,7 @@ func TestNobodyElseCanSeeOrDecideAnApproval(t *testing.T) {
 		"owner": ownerAccess, "stranger": otherAccess, "viewer": viewer, "editor": editor,
 	})
 
-	for _, who := range []string{"stranger", "viewer", "editor"} {
+	for _, who := range []string{"stranger", "viewer"} {
 		for _, verb := range []string{"approve", "deny"} {
 			code, body := send(h, who, http.MethodPost, "/api/approvals/"+approval.ID+"/"+verb)
 			if code != http.StatusNotFound || strings.TrimSpace(string(body)) != `{"error":"no such approval"}` {
@@ -669,6 +626,10 @@ func TestNobodyElseCanSeeOrDecideAnApproval(t *testing.T) {
 		if code != http.StatusOK || strings.TrimSpace(string(body)) != `[]` {
 			t.Errorf("%s list = %d %s", who, code, body)
 		}
+	}
+	// An editor with both shares can decide. The list still belongs to the owner.
+	if code, body := send(h, "editor", http.MethodGet, "/api/approvals"); code != http.StatusOK || strings.TrimSpace(string(body)) != `[]` {
+		t.Errorf("editor list = %d %s", code, body)
 	}
 	// The shared task itself is readable, so the 404 is the approval's own rule.
 	if _, err := app.ViewTask(ctx, store, viewer, task.ID); err != nil {

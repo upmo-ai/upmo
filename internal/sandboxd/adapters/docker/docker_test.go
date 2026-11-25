@@ -970,7 +970,7 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 	if err := d.StopEditor(ctx, box.ID); err != nil {
 		t.Fatal(err)
 	}
-	ep, err = d.StartEditor(ctx, box.ID, "Checking")
+	ep, err = d.StartEditor(ctx, box.ID, "Verifying")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +981,7 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 		t.Fatalf("created %d after status change", len(f.created))
 	}
 	if f.created[2].HostConfig.Mounts[0].ReadOnly {
-		t.Fatal("Checking should mount read-write")
+		t.Fatal("Verifying should mount read-write")
 	}
 }
 

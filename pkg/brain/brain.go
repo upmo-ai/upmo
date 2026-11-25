@@ -712,7 +712,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		if err != nil {
 			return nil, err
 		}
-		return tasks.NewStore(pool, nil).AutomationUses(ctx, access, agentIDs)
+		return tasks.NewStore(pool, owner, nil).AutomationUses(ctx, access, agentIDs)
 	}
 	noticeStore := notices.Store{Pool: pool}
 
@@ -834,7 +834,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		}
 		knowledgeBook := knowledge.NewStore(pool, nil)
 		tasks.AddScoutWorker(workers, tasks.ScoutDeps{
-			Goals:  tasks.NewStore(pool, nil),
+			Goals:  tasks.NewStore(pool, owner, nil),
 			Chat:   scoutChat{store: chat.NewStore(pool, nil), members: members},
 			Memory: scoutMemory{editor: memoryFacts},
 			Knowledge: scoutKnowledge{
@@ -871,7 +871,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			Turns:     chatTurns,
 			Memory:    chatMemoryLookup{facts: memoryFacts, embed: func(userID string) memory.Embedder { return gw.For(userID) }},
 			Knowledge: chatKnowledgeLookup{folders: knowledgeBook, finder: knowledgeBook, embedFor: func(userID string) knowledge.Embedder { return gw.For(userID) }, members: members},
-			Tools:     chatActionTools{tasks: tasks.NewStore(pool, lazy), agents: agentStore, memory: memoryFacts, members: members},
+			Tools:     chatActionTools{tasks: tasks.NewStore(pool, owner, lazy), agents: agentStore, memory: memoryFacts, members: members},
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -999,7 +999,7 @@ func buildHandler(
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
 	identity.MountWorkspace(mux, ideps.workspace, sessions)
 
-	taskBook := tasks.NewStore(pool, work)
+	taskBook := tasks.NewStore(pool, deps.Owner, work)
 	taskBook.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	var editorSigner tasks.EditorSigner
 	if cfg.ServiceKey != "" {

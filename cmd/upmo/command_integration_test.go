@@ -560,9 +560,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"tasks.approvals": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"action", "calls", "created_at", "decided_at", "id", "preview", "reason", "state", "task_id", "tool", "untrusted_origin", "user_id"},
-			Insert: []string{"action", "calls", "created_at", "decided_at", "id", "preview", "reason", "state", "task_id", "tool", "untrusted_origin", "user_id"},
-			Update: []string{"decided_at", "state"},
+			Select: []string{"action", "answer", "calls", "created_at", "decided_at", "from_status", "id", "preview", "reason", "state", "task_id", "tool", "untrusted_origin", "user_id"},
+			Insert: []string{"action", "answer", "calls", "created_at", "decided_at", "from_status", "id", "preview", "reason", "state", "task_id", "tool", "untrusted_origin", "user_id"},
+			Update: []string{"answer", "decided_at", "state"},
 		},
 		"tasks.automation_fires": {
 			Table:  []string{"INSERT", "SELECT"},
@@ -581,9 +581,12 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Insert: []string{"at", "body", "id", "seq", "task_id"},
 		},
 		"tasks.checks": {
-			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"at", "batch", "code", "name", "seq", "task_id"},
-			Insert: []string{"at", "batch", "code", "name", "seq", "task_id"},
+			Table:  []string{"SELECT"},
+			Select: []string{"at", "batch", "code", "criterion", "digest", "excerpt", "kind", "name", "regressed", "seq", "task_id", "unit", "verdict"},
+		},
+		"tasks.review_findings": {
+			Table:  []string{"SELECT"},
+			Select: []string{"at", "blocking", "criterion", "detail", "evidence", "round", "seq", "settled_by", "state", "task_id", "title", "unit"},
 		},
 		"tasks.findings": {
 			Table:  []string{"INSERT", "SELECT"},
@@ -609,9 +612,9 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"tasks.tasks": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"allow", "automation_id", "budget", "cause", "goal", "held", "id", "object_type", "owner_user_id", "parent_id", "passes", "paused", "result", "spent", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
-			Insert: []string{"allow", "automation_id", "budget", "cause", "goal", "held", "id", "object_type", "owner_user_id", "parent_id", "passes", "paused", "result", "spent", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
-			Update: []string{"allow", "automation_id", "budget", "cause", "goal", "held", "id", "object_type", "parent_id", "passes", "paused", "result", "spent", "status", "tainted", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Select: []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "result", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Insert: []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "result", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Update: []string{"allow", "automation_id", "budget", "cause", "goal", "id", "object_type", "parent_id", "paused", "result", "status", "updated_at", "visibility", "visibility_team_id", "worktree"},
 		},
 		"tasks.template_deliveries": {
 			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},

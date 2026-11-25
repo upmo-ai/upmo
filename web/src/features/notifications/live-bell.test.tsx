@@ -30,7 +30,7 @@ type Call = { method: string; path: string; body: unknown };
 function brain(options: { refuseDecide?: boolean; refuseNotices?: () => Response } = {}) {
   const tasks: StoredTask[] = [
     { id: waitingId, title: approvalTitle, status: "Needs approval", phase: "Working", spent_micro_usd: 0, budget_micro_usd: 0 },
-    { id: doneId, title: "Reconcile the accounts", status: "Done", phase: "Checking", spent_micro_usd: 0, budget_micro_usd: 0 },
+    { id: doneId, title: "Reconcile the accounts", status: "Done", phase: "Verifying", spent_micro_usd: 0, budget_micro_usd: 0 },
   ];
   const approvals: StoredApproval[] = [
     { id: approvalId, task_id: waitingId, title: approvalTitle, action: approvalAction, state: "pending" },

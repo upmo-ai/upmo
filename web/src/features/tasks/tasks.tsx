@@ -284,8 +284,8 @@ export function TaskPage() {
   const phase = taskPhase(task);
   const status = taskStatus(task, paused);
   const working = task.status === "Working" && pending.length === 0;
-  // Checking is the last step. Upmo finishes the task when its checks pass.
-  const checking = working && task.phase === "Checking";
+  // Verifying is the last step. Upmo finishes the task when its checks pass.
+  const checking = working && task.phase === "Verifying";
   const advance = working && !checking;
   const live = task.status === "Working" && !paused;
   const events = task.events ?? [];
@@ -344,7 +344,7 @@ export function TaskPage() {
 
       {checking ? (
         <Text size="sm" c="dimmed" data-testid="next-phase-note">
-          Next phase is off because Checking is the last step. Upmo marks the task Done when its checks
+          Next phase is off because Verifying is the last step. Upmo marks the task Done when its checks
           pass, so there is nothing for you to advance.
         </Text>
       ) : null}

@@ -42,7 +42,7 @@ type Task struct {
 // Book applies transitions and records checks under a row lock.
 type Book interface {
 	Transition(ctx context.Context, access Access, taskID string, input domain.Input) (Task, error)
-	Record(ctx context.Context, access Access, taskID string, checks []domain.Check) (bool, error)
+	Record(ctx context.Context, access Access, taskID string, checks []domain.Check, inputs map[int]string) (bool, error)
 }
 
 // ApplyTransition validates the caller and delegates one transition.
@@ -66,7 +66,7 @@ func ApplyTransition(ctx context.Context, book Book, access Access, taskID strin
 }
 
 // RecordChecks validates the caller and records one batch of checks.
-func RecordChecks(ctx context.Context, book Book, access Access, taskID string, checks []domain.Check) (bool, error) {
+func RecordChecks(ctx context.Context, book Book, access Access, taskID string, checks []domain.Check, inputs map[int]string) (bool, error) {
 	if _, err := uuid.Parse(access.UserID); err != nil || access.Allow == "" {
 		return false, ErrAccess
 	}
@@ -76,5 +76,5 @@ func RecordChecks(ctx context.Context, book Book, access Access, taskID string, 
 	if len(checks) == 0 {
 		return false, domain.ErrEvidence
 	}
-	return book.Record(ctx, access, taskID, checks)
+	return book.Record(ctx, access, taskID, checks, inputs)
 }

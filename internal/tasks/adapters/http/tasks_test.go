@@ -78,7 +78,7 @@ func TestUnknownKindIsRefused(t *testing.T) {
 
 func TestListReturnsTasks(t *testing.T) {
 	book := &fakeBook{listed: []app.TaskSummary{{
-		ID: taskID, Title: "File the receipts", State: domain.Checking, Status: domain.ShownWorking, Phase: domain.Checking,
+		ID: taskID, Title: "File the receipts", State: domain.Verifying, Status: domain.ShownWorking, Phase: domain.Verifying,
 		SpentMicroUSD: 120_000, BudgetMicroUSD: 500_000, UpdatedAt: time.Date(2026, 11, 7, 9, 30, 0, 0, time.UTC),
 	}}}
 	rec := call(t, book, http.MethodGet, "/api/tasks", "", true)
@@ -90,7 +90,7 @@ func TestListReturnsTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"id": taskID, "title": "File the receipts", "status": "Working", "phase": "Checking",
+		"id": taskID, "title": "File the receipts", "status": "Working", "phase": "Verifying",
 		"spent_micro_usd": float64(120_000), "budget_micro_usd": float64(500_000), "updated_at": "2026-11-07T09:30:00Z",
 	}
 	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
@@ -396,7 +396,7 @@ func (f *fakeBook) Find(_ context.Context, _ app.Access, taskID string) (app.Tas
 	return app.Task{ID: taskID, Goal: "File the receipts", Status: domain.Preparing}, nil
 }
 
-func (f *fakeBook) Record(context.Context, app.Access, string, []domain.Check) (bool, error) {
+func (f *fakeBook) Record(context.Context, app.Access, string, []domain.Check, map[int]string) (bool, error) {
 	return false, nil
 }
 

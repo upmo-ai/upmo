@@ -93,7 +93,7 @@ func (s Store) Cancel(ctx context.Context, access app.Access, taskID string) (ap
 	return task, nil
 }
 
-// SaveResult stores the fixed result on a child, once.
+// SaveResult stores the result while the task is Working or Verifying.
 func (s Store) SaveResult(ctx context.Context, access app.Access, taskID string, result domain.Result) error {
 	tx, err := s.begin(ctx, access)
 	if err != nil {
@@ -101,24 +101,21 @@ func (s Store) SaveResult(ctx context.Context, access app.Access, taskID string,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var isChild bool
-	var raw []byte
+	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT parent_id IS NOT NULL, result
+		SELECT status
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&isChild, &raw)
+		FOR UPDATE`, taskID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrGone
 	}
 	if err != nil {
 		return fmt.Errorf("tasks: lock result: %w", err)
 	}
-	if !isChild {
+	switch domain.Status(status) {
+	case domain.Preparing, domain.Planning, domain.NeedsApproval:
 		return domain.ErrInput
-	}
-	if raw != nil {
-		return domain.ErrResult
 	}
 	body, err := json.Marshal(result)
 	if err != nil {

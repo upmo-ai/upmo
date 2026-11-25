@@ -1,5 +1,34 @@
 -- +goose Up
 
+CREATE TABLE tasks.templates (
+  id uuid PRIMARY KEY DEFAULT uuidv7(),
+  owner_user_id uuid NOT NULL,
+  goal text NOT NULL,
+  agent_id uuid NOT NULL,
+  budget bigint NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT templates_goal_check CHECK (char_length(goal) BETWEEN 1 AND 200),
+  CONSTRAINT templates_budget_check CHECK (budget BETWEEN 1 AND 1000000000)
+);
+
+CREATE TABLE tasks.template_steps (
+  template_id uuid NOT NULL REFERENCES tasks.templates (id) ON DELETE CASCADE,
+  seq int NOT NULL,
+  title text NOT NULL,
+  PRIMARY KEY (template_id, seq),
+  CONSTRAINT template_steps_seq_check CHECK (seq > 0),
+  CONSTRAINT template_steps_title_check CHECK (char_length(title) BETWEEN 1 AND 200)
+);
+
+CREATE TABLE tasks.template_deliveries (
+  template_id uuid NOT NULL REFERENCES tasks.templates (id) ON DELETE CASCADE,
+  seq int NOT NULL,
+  target text NOT NULL,
+  PRIMARY KEY (template_id, seq),
+  CONSTRAINT template_deliveries_seq_check CHECK (seq > 0),
+  CONSTRAINT template_deliveries_target_check CHECK (char_length(target) BETWEEN 1 AND 200)
+);
+
 CREATE TABLE tasks.tasks (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   object_type text NOT NULL DEFAULT 'task',
@@ -15,15 +44,30 @@ CREATE TABLE tasks.tasks (
   paused boolean NOT NULL DEFAULT false,
   allow text NOT NULL DEFAULT '',
   tainted boolean NOT NULL DEFAULT false,
+  private_read boolean NOT NULL DEFAULT false,
   cause text NOT NULL DEFAULT '',
   result jsonb,
   worktree text NOT NULL DEFAULT '',
   automation_id uuid,
   passes boolean NOT NULL DEFAULT false,
+  agent_id uuid,
+  agent_version int,
+  template_id uuid REFERENCES tasks.templates (id) ON DELETE SET NULL,
+  source_chat_id uuid,
+  up_to_line_id uuid,
+  dry_run boolean NOT NULL DEFAULT false,
+  flow text NOT NULL DEFAULT 'standard',
+  plan_approval text NOT NULL DEFAULT 'risky',
+  plan jsonb,
+  plan_digest text NOT NULL DEFAULT '',
+  stalls int NOT NULL DEFAULT 0,
+  failures int NOT NULL DEFAULT 0,
+  replanned boolean NOT NULL DEFAULT false,
+  last_gap text NOT NULL DEFAULT '',
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT tasks_type_check CHECK (object_type = 'task'),
   CONSTRAINT tasks_goal_check CHECK (char_length(goal) BETWEEN 1 AND 200),
-  CONSTRAINT tasks_status_check CHECK (status IN ('Preparing', 'Planning', 'Working', 'Checking', 'Needs approval', 'Done', 'Failed')),
+  CONSTRAINT tasks_status_check CHECK (status IN ('Preparing', 'Planning', 'Working', 'Verifying', 'Needs approval', 'Done', 'Failed')),
   CONSTRAINT tasks_visibility_check CHECK (
     (visibility IN ('private', 'everyone') AND visibility_team_id IS NULL)
     OR (visibility = 'team' AND visibility_team_id IS NOT NULL)
@@ -34,9 +78,20 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_spent_check CHECK (spent >= 0),
   CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
   CONSTRAINT tasks_cause_check CHECK (
-    cause = '' OR (cause = 'parent_canceled' AND status = 'Failed')
+    cause = '' OR (
+      status = 'Failed'
+      AND cause IN ('parent_canceled', 'canceled', 'access', 'stalled', 'failing', 'review_limit', 'unknown')
+    )
   ),
-  CONSTRAINT tasks_worktree_check CHECK (char_length(worktree) <= 80)
+  CONSTRAINT tasks_worktree_check CHECK (char_length(worktree) <= 80),
+  CONSTRAINT tasks_agent_version_check CHECK (agent_version IS NULL OR agent_version >= 1),
+  CONSTRAINT tasks_flow_check CHECK (flow IN ('light', 'standard', 'full')),
+  CONSTRAINT tasks_plan_approval_check CHECK (plan_approval IN ('always', 'risky', 'never')),
+  CONSTRAINT tasks_plan_check CHECK (plan IS NULL OR jsonb_typeof(plan) = 'object'),
+  CONSTRAINT tasks_plan_digest_check CHECK (plan_digest = '' OR plan_digest ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT tasks_stalls_check CHECK (stalls >= 0),
+  CONSTRAINT tasks_failures_check CHECK (failures >= 0),
+  CONSTRAINT tasks_last_gap_check CHECK (char_length(last_gap) <= 4000)
 );
 
 CREATE INDEX tasks_parent_idx ON tasks.tasks (parent_id);
@@ -56,17 +111,23 @@ CREATE TABLE tasks.task_events (
   UNIQUE (task_id, seq),
   CONSTRAINT task_events_seq_check CHECK (seq > 0),
   CONSTRAINT task_events_edge_check CHECK (
-    (input = 'open' AND from_status = '' AND to_status = 'Preparing' AND seq = 1)
+    (input = 'open' AND from_status = '' AND to_status IN ('Preparing', 'Planning', 'Working') AND seq = 1)
     OR (input = 'advance' AND (
       (from_status = 'Preparing' AND to_status = 'Working')
       OR (from_status = 'Planning' AND to_status = 'Working')
-      OR (from_status = 'Working' AND to_status = 'Checking')
+      OR (from_status = 'Working' AND to_status = 'Verifying')
     ))
     OR (input = 'plan' AND from_status = 'Preparing' AND to_status = 'Planning')
-    OR (input = 'fail' AND to_status = 'Failed' AND from_status IN ('Preparing', 'Planning', 'Working', 'Checking', 'Needs approval'))
-    OR (input = 'pass' AND from_status = 'Checking' AND to_status = 'Done')
+    OR (input = 'ask_plan' AND from_status = 'Planning' AND to_status = 'Needs approval')
+    OR (input = 'rework' AND from_status = 'Verifying' AND to_status = 'Working')
+    OR (input = 'replan' AND from_status = 'Working' AND to_status = 'Planning')
     OR (input = 'pause' AND from_status = 'Working' AND to_status = 'Needs approval')
-    OR (input IN ('resume', 'approve', 'deny') AND from_status = 'Needs approval' AND to_status = 'Working')
+    OR (input = 'hold' AND from_status IN ('Working', 'Verifying') AND to_status = 'Needs approval')
+    OR (input = 'resume' AND from_status = 'Needs approval' AND to_status = 'Working')
+    OR (input = 'approve' AND from_status = 'Needs approval' AND to_status IN ('Working', 'Verifying'))
+    OR (input = 'deny' AND from_status = 'Needs approval' AND to_status IN ('Working', 'Planning', 'Failed'))
+    OR (input = 'fail' AND to_status = 'Failed' AND from_status IN ('Preparing', 'Planning', 'Working', 'Verifying', 'Needs approval'))
+    OR (input = 'pass' AND from_status = 'Verifying' AND to_status = 'Done')
   )
 );
 
@@ -87,12 +148,97 @@ CREATE TABLE tasks.checks (
   seq int NOT NULL,
   name text NOT NULL,
   code int NOT NULL,
+  unit int NOT NULL DEFAULT 0,
+  criterion int NOT NULL DEFAULT 0,
+  kind text NOT NULL DEFAULT 'command',
+  verdict text NOT NULL DEFAULT 'pass',
+  digest text NOT NULL DEFAULT '',
+  excerpt text NOT NULL DEFAULT '',
+  regressed boolean NOT NULL DEFAULT false,
   at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (task_id, batch, seq),
   CONSTRAINT checks_batch_check CHECK (batch > 0),
   CONSTRAINT checks_seq_check CHECK (seq > 0),
-  CONSTRAINT checks_name_check CHECK (char_length(name) BETWEEN 1 AND 80)
+  CONSTRAINT checks_name_check CHECK (char_length(name) BETWEEN 1 AND 80),
+  CONSTRAINT checks_unit_check CHECK (unit >= 0),
+  CONSTRAINT checks_criterion_check CHECK (criterion >= 0),
+  CONSTRAINT checks_unit_criterion_pair_check CHECK ((unit = 0) = (criterion = 0)),
+  CONSTRAINT checks_kind_check CHECK (kind IN ('exists', 'command', 'citation', 'rule')),
+  CONSTRAINT checks_verdict_check CHECK (verdict IN ('pass', 'fail', 'unknown')),
+  CONSTRAINT checks_excerpt_check CHECK (char_length(excerpt) <= 4000)
 );
+
+CREATE TABLE tasks.review_findings (
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id) ON DELETE CASCADE,
+  seq int NOT NULL,
+  unit int NOT NULL,
+  criterion int NOT NULL,
+  title text NOT NULL,
+  detail text NOT NULL DEFAULT '',
+  evidence text NOT NULL DEFAULT '',
+  blocking boolean NOT NULL DEFAULT true,
+  state text NOT NULL DEFAULT 'open',
+  round int NOT NULL DEFAULT 1,
+  settled_by uuid,
+  at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (task_id, seq),
+  CONSTRAINT review_findings_seq_check CHECK (seq > 0),
+  CONSTRAINT review_findings_unit_check CHECK (unit BETWEEN 1 AND 12),
+  CONSTRAINT review_findings_criterion_check CHECK (criterion BETWEEN 1 AND 6),
+  CONSTRAINT review_findings_title_check CHECK (char_length(title) BETWEEN 1 AND 200),
+  CONSTRAINT review_findings_detail_check CHECK (char_length(detail) <= 4000),
+  CONSTRAINT review_findings_evidence_check CHECK (char_length(evidence) <= 4000),
+  CONSTRAINT review_findings_state_check CHECK (state IN ('open', 'fixed', 'accepted', 'dismissed')),
+  CONSTRAINT review_findings_round_check CHECK (round > 0),
+  CONSTRAINT review_findings_settled_check CHECK ((state = 'accepted') = (settled_by IS NOT NULL))
+);
+
+ALTER TABLE tasks.review_findings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.review_findings FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY review_findings_select ON tasks.review_findings
+  FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
+
+CREATE POLICY review_findings_owner_insert ON tasks.review_findings
+  FOR INSERT
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.review_findings'::regclass))
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+CREATE POLICY review_findings_owner_update ON tasks.review_findings
+  FOR UPDATE
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.review_findings'::regclass))
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.review_findings'::regclass))
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
+
+GRANT SELECT ON tasks.review_findings TO upmo_app;
+REVOKE INSERT, UPDATE, DELETE ON tasks.review_findings FROM upmo_app;
 
 CREATE TABLE tasks.runs (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -170,13 +316,17 @@ CREATE POLICY checks_select ON tasks.checks
       AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
   ));
 
-CREATE POLICY checks_insert ON tasks.checks
+CREATE POLICY checks_owner_insert ON tasks.checks
   FOR INSERT
-  WITH CHECK (EXISTS (
-    SELECT 1 FROM tasks.tasks AS task
-    WHERE task.id = task_id
-      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
-  ));
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.checks'::regclass))
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
 
 CREATE POLICY runs_select ON tasks.runs
   FOR SELECT
@@ -318,7 +468,7 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog
 AS $$
 BEGIN
-  IF NEW.status IS DISTINCT FROM 'Preparing' THEN
+  IF NEW.status NOT IN ('Preparing', 'Planning', 'Working') THEN
     RAISE EXCEPTION 'tasks: writer';
   END IF;
   IF NOT EXISTS (
@@ -326,7 +476,7 @@ BEGIN
     WHERE event.task_id = NEW.id
       AND event.input = 'open'
       AND event.from_status = ''
-      AND event.to_status = 'Preparing'
+      AND event.to_status = NEW.status
       AND event.seq = 1
   ) THEN
     RAISE EXCEPTION 'tasks: writer';
@@ -346,34 +496,116 @@ DECLARE
   prev text;
   nxt text;
   latest_batch int;
+  unit_rec record;
+  crit_rec record;
+  unit_num int;
+  crit_num int;
+  latest_verdict text;
+  latest_code int;
+  latest_digest text;
+  evt_input text;
+  has_criteria boolean := false;
 BEGIN
   IF NEW.status IS NOT DISTINCT FROM 'Done' AND NEW.passes IS DISTINCT FROM true THEN
     RAISE EXCEPTION 'tasks: evidence';
   END IF;
-  IF NEW.passes IS NOT DISTINCT FROM true AND OLD.passes IS DISTINCT FROM true THEN
-    SELECT MAX(check_row.batch)
-      INTO latest_batch
-    FROM tasks.checks AS check_row
-    WHERE check_row.task_id = NEW.id;
-    IF latest_batch IS NULL OR EXISTS (
-      SELECT 1
+  IF NEW.status = 'Working' AND OLD.status = 'Verifying' AND NEW.passes IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'tasks: evidence';
+  END IF;
+  IF NEW.passes IS NOT DISTINCT FROM true AND (
+    OLD.passes IS DISTINCT FROM true
+    OR NEW.status IS NOT DISTINCT FROM 'Done'
+    OR NEW.plan IS DISTINCT FROM OLD.plan
+  ) THEN
+    IF NEW.plan IS NULL THEN
+      SELECT MAX(check_row.batch)
+        INTO latest_batch
       FROM tasks.checks AS check_row
-      WHERE check_row.task_id = NEW.id
-        AND check_row.batch = latest_batch
-        AND check_row.code <> 0
-    ) THEN
-      RAISE EXCEPTION 'tasks: evidence';
+      WHERE check_row.task_id = NEW.id;
+      IF latest_batch IS NULL OR EXISTS (
+        SELECT 1
+        FROM tasks.checks AS check_row
+        WHERE check_row.task_id = NEW.id
+          AND check_row.batch = latest_batch
+          AND (check_row.code <> 0 OR check_row.verdict <> 'pass')
+      ) THEN
+        RAISE EXCEPTION 'tasks: evidence';
+      END IF;
+    ELSE
+      IF jsonb_typeof(NEW.plan->'units') IS DISTINCT FROM 'array'
+         OR jsonb_array_length(NEW.plan->'units') < 1 THEN
+        RAISE EXCEPTION 'tasks: evidence';
+      END IF;
+      FOR unit_rec IN
+        SELECT value AS unit_obj, ordinality::int AS u_idx
+        FROM jsonb_array_elements(NEW.plan->'units') WITH ORDINALITY
+      LOOP
+        IF jsonb_typeof(unit_rec.unit_obj->'criteria') IS DISTINCT FROM 'array'
+           OR jsonb_array_length(unit_rec.unit_obj->'criteria') < 1 THEN
+          RAISE EXCEPTION 'tasks: evidence';
+        END IF;
+        unit_num := COALESCE((unit_rec.unit_obj->>'unit')::int, unit_rec.u_idx);
+        FOR crit_rec IN
+          SELECT value AS crit_obj, ordinality::int AS c_idx
+          FROM jsonb_array_elements(unit_rec.unit_obj->'criteria') WITH ORDINALITY
+        LOOP
+          has_criteria := true;
+          crit_num := COALESCE((crit_rec.crit_obj->>'criterion')::int, crit_rec.c_idx);
+          IF EXISTS (
+            SELECT 1 FROM tasks.review_findings AS rf
+            WHERE rf.task_id = NEW.id
+              AND rf.unit = unit_num
+              AND rf.criterion = crit_num
+              AND rf.blocking
+              AND rf.state = 'open'
+          ) THEN
+            RAISE EXCEPTION 'tasks: evidence';
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM tasks.review_findings AS rf
+            WHERE rf.task_id = NEW.id
+              AND rf.unit = unit_num
+              AND rf.criterion = crit_num
+              AND rf.state = 'accepted'
+          ) THEN
+            SELECT check_row.verdict, check_row.code, check_row.digest
+              INTO latest_verdict, latest_code, latest_digest
+            FROM tasks.checks AS check_row
+            WHERE check_row.task_id = NEW.id
+              AND check_row.unit = unit_num
+              AND check_row.criterion = crit_num
+            ORDER BY check_row.batch DESC, check_row.seq DESC
+            LIMIT 1;
+            IF latest_verdict IS DISTINCT FROM 'pass'
+               OR latest_code IS DISTINCT FROM 0
+               OR latest_digest !~ '^[0-9a-f]{64}$'
+               OR latest_digest IS DISTINCT FROM COALESCE(crit_rec.crit_obj->>'digest', '') THEN
+              RAISE EXCEPTION 'tasks: evidence';
+            END IF;
+          END IF;
+        END LOOP;
+      END LOOP;
+      IF NOT has_criteria THEN
+        RAISE EXCEPTION 'tasks: evidence';
+      END IF;
     END IF;
   END IF;
   IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
     RETURN NEW;
   END IF;
-  SELECT event.from_status, event.to_status
-    INTO prev, nxt
+  SELECT event.from_status, event.to_status, event.input
+    INTO prev, nxt, evt_input
   FROM tasks.task_events AS event
   WHERE event.task_id = NEW.id
   ORDER BY event.seq DESC
   LIMIT 1;
+  IF evt_input = 'resume' AND EXISTS (
+    SELECT 1 FROM tasks.approvals AS approval
+    WHERE approval.task_id = NEW.id
+      AND approval.state = 'pending'
+  ) THEN
+    RAISE EXCEPTION 'tasks: approval';
+  END IF;
   IF prev IS DISTINCT FROM OLD.status OR nxt IS DISTINCT FROM NEW.status THEN
     RAISE EXCEPTION 'tasks: writer';
   END IF;
@@ -504,6 +736,8 @@ DECLARE
   keys int := 0;
   summary text;
   detail text;
+  last_input text;
+  last_reason text;
 BEGIN
   IF TG_OP = 'INSERT' AND NEW.cause <> '' THEN
     RAISE EXCEPTION 'tasks: cause';
@@ -512,23 +746,55 @@ BEGIN
     RAISE EXCEPTION 'tasks: writer';
   END IF;
   IF TG_OP = 'UPDATE' AND NEW.cause IS DISTINCT FROM OLD.cause THEN
-    IF OLD.cause <> '' OR NEW.cause <> 'parent_canceled' OR NEW.status <> 'Failed' THEN
+    IF OLD.cause <> ''
+       OR NEW.cause NOT IN ('parent_canceled', 'canceled', 'access', 'stalled', 'failing', 'review_limit', 'unknown')
+       OR NEW.status <> 'Failed' THEN
       RAISE EXCEPTION 'tasks: cause';
     END IF;
   END IF;
   IF TG_OP = 'UPDATE' AND NEW.worktree IS DISTINCT FROM OLD.worktree AND OLD.worktree <> '' THEN
     RAISE EXCEPTION 'tasks: worktree';
   END IF;
-  IF TG_OP = 'UPDATE' AND OLD.result IS NOT NULL AND NEW.result IS DISTINCT FROM OLD.result THEN
+  IF TG_OP = 'UPDATE' AND OLD.status = 'Verifying' AND NEW.status = 'Working' THEN
+    NEW.passes := false;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD.status = 'Needs approval' AND NEW.status IN ('Working', 'Verifying') THEN
+    SELECT event.input INTO last_input
+    FROM tasks.task_events AS event
+    WHERE event.task_id = NEW.id
+    ORDER BY event.seq DESC
+    LIMIT 1;
+    IF last_input = 'approve' THEN
+      SELECT approval.reason INTO last_reason
+      FROM tasks.approvals AS approval
+      WHERE approval.task_id = NEW.id
+        AND approval.state = 'approved'
+      ORDER BY approval.decided_at DESC NULLS LAST, approval.created_at DESC, approval.id DESC
+      LIMIT 1;
+      IF last_reason IN ('stalled', 'failing', 'review_limit', 'unknown') THEN
+        NEW.stalls := 0;
+        NEW.failures := 0;
+        NEW.last_gap := '';
+      END IF;
+    END IF;
+  END IF;
+  IF TG_OP = 'INSERT' AND NEW.result IS NOT NULL AND NEW.status NOT IN ('Working', 'Verifying') THEN
     RAISE EXCEPTION 'tasks: result';
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.result IS DISTINCT FROM OLD.result THEN
+    IF OLD.status IN ('Done', 'Failed')
+       OR NEW.status NOT IN ('Working', 'Verifying')
+       OR NEW.result IS NULL THEN
+      RAISE EXCEPTION 'tasks: result';
+    END IF;
   END IF;
   IF NEW.result IS NULL THEN
     RETURN NEW;
   END IF;
-  IF TG_OP = 'UPDATE' AND OLD.result IS NOT NULL THEN
+  IF TG_OP = 'UPDATE' AND NEW.result IS NOT DISTINCT FROM OLD.result THEN
     RETURN NEW;
   END IF;
-  IF NEW.parent_id IS NULL OR jsonb_typeof(NEW.result) IS DISTINCT FROM 'object' THEN
+  IF jsonb_typeof(NEW.result) IS DISTINCT FROM 'object' THEN
     RAISE EXCEPTION 'tasks: result';
   END IF;
   FOR key IN SELECT jsonb_object_keys(NEW.result)
@@ -538,12 +804,14 @@ BEGIN
       RAISE EXCEPTION 'tasks: result';
     END IF;
   END LOOP;
-  IF keys <> 2 THEN
+  IF keys <> 2
+     OR jsonb_typeof(NEW.result->'summary') IS DISTINCT FROM 'string'
+     OR jsonb_typeof(NEW.result->'detail') IS DISTINCT FROM 'string' THEN
     RAISE EXCEPTION 'tasks: result';
   END IF;
   summary := NEW.result->>'summary';
-  detail := COALESCE(NEW.result->>'detail', '');
-  IF char_length(summary) < 1 OR char_length(summary) > 200 OR char_length(detail) > 2000 THEN
+  detail := NEW.result->>'detail';
+  IF char_length(summary) < 1 OR char_length(summary) > 200 OR char_length(detail) > 32000 THEN
     RAISE EXCEPTION 'tasks: result';
   END IF;
   RETURN NEW;
@@ -575,6 +843,7 @@ $$;
 CREATE FUNCTION tasks.escrow_child()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 DECLARE
@@ -589,6 +858,7 @@ BEGIN
   IF NEW.parent_id IS NULL THEN
     RETURN NEW;
   END IF;
+  PERFORM pg_catalog.set_config('upmo.escrow_probe', NEW.parent_id::text, true);
   SELECT task.budget, task.held, task.spent, task.allow, task.tainted,
          task.paused, task.status
     INTO parent_budget, parent_held, parent_spent, parent_allow, parent_tainted,
@@ -612,6 +882,7 @@ BEGIN
   UPDATE tasks.tasks
   SET held = held + NEW.budget
   WHERE id = NEW.parent_id;
+  PERFORM pg_catalog.set_config('upmo.escrow_probe', '', true);
   RETURN NEW;
 END;
 $$;
@@ -626,17 +897,20 @@ CREATE TRIGGER tasks_escrow_child
 CREATE FUNCTION tasks.release_escrow()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 BEGIN
   IF NEW.parent_id IS NOT NULL
      AND OLD.status NOT IN ('Done', 'Failed')
      AND NEW.status IN ('Done', 'Failed') THEN
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', NEW.parent_id::text, true);
     UPDATE tasks.tasks
     SET spent = spent + NEW.spent,
         held = held - NEW.budget,
         paused = paused OR (spent + NEW.spent >= budget)
     WHERE id = NEW.parent_id;
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', '', true);
   END IF;
   RETURN NEW;
 END;
@@ -652,15 +926,21 @@ CREATE TRIGGER tasks_release_escrow
 CREATE FUNCTION tasks.budget_notice()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 DECLARE
   notice_task uuid;
+  prev text;
 BEGIN
   IF NOT NEW.paused OR OLD.paused OR NEW.spent < NEW.budget THEN
     RETURN NEW;
   END IF;
   notice_task := COALESCE(NEW.parent_id, NEW.id);
+  prev := current_setting('upmo.escrow_probe', true);
+  IF prev IS NULL OR prev = '' THEN
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', notice_task::text, true);
+  END IF;
   PERFORM 1 FROM tasks.tasks AS task
   WHERE task.id = notice_task
   FOR UPDATE;
@@ -668,6 +948,9 @@ BEGIN
   SELECT notice_task,
          COALESCE((SELECT MAX(seq) FROM tasks.chat_events WHERE task_id = notice_task), 0) + 1,
          'Budget exhausted.';
+  IF prev IS NULL OR prev = '' THEN
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', '', true);
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -696,7 +979,7 @@ BEGIN
   IF NEW.allow IS DISTINCT FROM OLD.allow THEN
     RAISE EXCEPTION 'tasks: authority';
   END IF;
-  IF OLD.tainted AND NOT NEW.tainted THEN
+  IF (OLD.tainted AND NOT NEW.tainted) OR (OLD.private_read AND NOT NEW.private_read) THEN
     RAISE EXCEPTION 'tasks: taint';
   END IF;
   RETURN NEW;
@@ -713,27 +996,45 @@ CREATE TRIGGER tasks_keep_grant
 CREATE FUNCTION tasks.spread_taint()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
+DECLARE
+  child_ids text;
 BEGIN
-  IF NOT NEW.tainted OR OLD.tainted THEN
+  IF NOT NEW.tainted OR (TG_OP = 'UPDATE' AND OLD.tainted) THEN
     RETURN NEW;
   END IF;
-  UPDATE tasks.tasks
-  SET tainted = true
-  WHERE id = NEW.parent_id
-    AND NOT tainted;
-  UPDATE tasks.tasks
-  SET tainted = true
-  WHERE parent_id = NEW.id
-    AND NOT tainted;
+  IF NEW.parent_id IS NOT NULL THEN
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', NEW.parent_id::text, true);
+    UPDATE tasks.tasks
+    SET tainted = true
+    WHERE id = NEW.parent_id
+      AND NOT tainted;
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', '', true);
+  END IF;
+  PERFORM pg_catalog.set_config('upmo.escrow_child_of', NEW.id::text, true);
+  SELECT COALESCE(string_agg(child.id::text, ','), '')
+    INTO child_ids
+  FROM tasks.tasks AS child
+  WHERE child.parent_id = NEW.id
+    AND NOT child.tainted;
+  PERFORM pg_catalog.set_config('upmo.escrow_child_of', '', true);
+  IF child_ids <> '' THEN
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', child_ids, true);
+    UPDATE tasks.tasks
+    SET tainted = true
+    WHERE id = ANY (string_to_array(child_ids, ',')::uuid[])
+      AND NOT tainted;
+    PERFORM pg_catalog.set_config('upmo.escrow_probe', '', true);
+  END IF;
   RETURN NEW;
 END;
 $$;
 -- +goose StatementEnd
 
 CREATE TRIGGER tasks_spread_taint
-  AFTER UPDATE OF tainted ON tasks.tasks
+  AFTER INSERT OR UPDATE OF tainted ON tasks.tasks
   FOR EACH ROW
   EXECUTE FUNCTION tasks.spread_taint();
 
@@ -775,7 +1076,8 @@ CREATE TRIGGER run_events_append_only
 
 GRANT SELECT, INSERT ON tasks.task_events TO upmo_app;
 GRANT SELECT, INSERT ON tasks.chat_events TO upmo_app;
-GRANT SELECT, INSERT ON tasks.checks TO upmo_app;
+GRANT SELECT ON tasks.checks TO upmo_app;
+REVOKE INSERT, UPDATE, DELETE ON tasks.checks FROM upmo_app;
 GRANT SELECT, INSERT ON tasks.runs TO upmo_app;
 GRANT UPDATE (state) ON tasks.runs TO upmo_app;
 GRANT SELECT, INSERT ON tasks.run_events TO upmo_app;
@@ -786,35 +1088,11 @@ REVOKE DELETE ON tasks.runs FROM upmo_app;
 REVOKE UPDATE, DELETE ON tasks.run_events FROM upmo_app;
 
 SELECT identity.protect('tasks.tasks');
-
-CREATE TABLE tasks.templates (
-  id uuid PRIMARY KEY DEFAULT uuidv7(),
-  owner_user_id uuid NOT NULL,
-  goal text NOT NULL,
-  agent_id uuid NOT NULL,
-  budget bigint NOT NULL,
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT templates_goal_check CHECK (char_length(goal) BETWEEN 1 AND 200),
-  CONSTRAINT templates_budget_check CHECK (budget BETWEEN 1 AND 1000000000)
-);
-
-CREATE TABLE tasks.template_steps (
-  template_id uuid NOT NULL REFERENCES tasks.templates (id) ON DELETE CASCADE,
-  seq int NOT NULL,
-  title text NOT NULL,
-  PRIMARY KEY (template_id, seq),
-  CONSTRAINT template_steps_seq_check CHECK (seq > 0),
-  CONSTRAINT template_steps_title_check CHECK (char_length(title) BETWEEN 1 AND 200)
-);
-
-CREATE TABLE tasks.template_deliveries (
-  template_id uuid NOT NULL REFERENCES tasks.templates (id) ON DELETE CASCADE,
-  seq int NOT NULL,
-  target text NOT NULL,
-  PRIMARY KEY (template_id, seq),
-  CONSTRAINT template_deliveries_seq_check CHECK (seq > 0),
-  CONSTRAINT template_deliveries_target_check CHECK (char_length(target) BETWEEN 1 AND 200)
-);
+REVOKE UPDATE (
+  agent_id, agent_version, template_id, source_chat_id, up_to_line_id, dry_run,
+  tainted, private_read, held, spent,
+  passes, flow, plan_approval, plan, plan_digest, stalls, failures, replanned, last_gap
+) ON tasks.tasks FROM upmo_app;
 
 ALTER TABLE tasks.templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks.templates FORCE ROW LEVEL SECURITY;
@@ -1100,6 +1378,67 @@ CREATE POLICY tasks_owner_open_children ON tasks.tasks
       (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.tasks'::regclass))
   );
 
+CREATE POLICY tasks_owner_escrow_select ON tasks.tasks
+  FOR SELECT
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.tasks'::regclass))
+    AND (
+      id IN (
+        SELECT probe.item::uuid
+        FROM unnest(string_to_array(current_setting('upmo.escrow_probe', true), ',')) AS probe(item)
+        WHERE probe.item ~ '^[0-9a-fA-F-]{36}$'
+      )
+      OR parent_id = NULLIF(current_setting('upmo.escrow_child_of', true), '')::uuid
+    )
+  );
+
+CREATE POLICY tasks_owner_escrow_update ON tasks.tasks
+  FOR UPDATE
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.tasks'::regclass))
+    AND id IN (
+      SELECT probe.item::uuid
+      FROM unnest(string_to_array(current_setting('upmo.escrow_probe', true), ',')) AS probe(item)
+      WHERE probe.item ~ '^[0-9a-fA-F-]{36}$'
+    )
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.tasks'::regclass))
+    AND id IN (
+      SELECT probe.item::uuid
+      FROM unnest(string_to_array(current_setting('upmo.escrow_probe', true), ',')) AS probe(item)
+      WHERE probe.item ~ '^[0-9a-fA-F-]{36}$'
+    )
+  );
+
+CREATE POLICY chat_events_owner_budget_select ON tasks.chat_events
+  FOR SELECT
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.chat_events'::regclass))
+    AND task_id IN (
+      SELECT probe.item::uuid
+      FROM unnest(string_to_array(current_setting('upmo.escrow_probe', true), ',')) AS probe(item)
+      WHERE probe.item ~ '^[0-9a-fA-F-]{36}$'
+    )
+  );
+
+CREATE POLICY chat_events_owner_budget_insert ON tasks.chat_events
+  FOR INSERT
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.chat_events'::regclass))
+    AND body = 'Budget exhausted.'
+    AND task_id IN (
+      SELECT probe.item::uuid
+      FROM unnest(string_to_array(current_setting('upmo.escrow_probe', true), ',')) AS probe(item)
+      WHERE probe.item ~ '^[0-9a-fA-F-]{36}$'
+    )
+  );
+
 -- tasks.automation_exists checks whether an automation id exists when setting
 -- a spend limit, returning only a boolean so callers without task:view or
 -- members:manage never read automation columns. Because tasks.automations has
@@ -1189,14 +1528,21 @@ CREATE TABLE tasks.approvals (
   reason text NOT NULL,
   action text NOT NULL,
   preview text NOT NULL DEFAULT '',
+  answer text NOT NULL DEFAULT '',
+  from_status text NOT NULL DEFAULT 'Working',
   calls jsonb[] NOT NULL DEFAULT '{}'::jsonb[],
   untrusted_origin boolean NOT NULL DEFAULT false,
   state text NOT NULL DEFAULT 'pending',
   created_at timestamptz NOT NULL DEFAULT now(),
   decided_at timestamptz,
   CONSTRAINT approvals_tool_check CHECK (char_length(tool) BETWEEN 1 AND 64),
-  CONSTRAINT approvals_reason_check CHECK (reason IN ('ask', 'expired')),
+  CONSTRAINT approvals_reason_check CHECK (
+    reason IN ('ask', 'expired', 'plan', 'question', 'trifecta', 'writeguard', 'stalled', 'failing', 'review_limit', 'unknown')
+  ),
   CONSTRAINT approvals_action_check CHECK (char_length(action) BETWEEN 1 AND 200),
+  CONSTRAINT approvals_preview_check CHECK (char_length(preview) <= 4000),
+  CONSTRAINT approvals_answer_check CHECK (char_length(answer) <= 4000),
+  CONSTRAINT approvals_from_status_check CHECK (from_status IN ('Planning', 'Working', 'Verifying')),
   CONSTRAINT approvals_state_check CHECK (state IN ('pending', 'approved', 'denied', 'closed')),
   CONSTRAINT approvals_decided_check CHECK ((state = 'pending') = (decided_at IS NULL))
 );
@@ -1210,14 +1556,13 @@ CREATE INDEX approvals_user_idx ON tasks.approvals (user_id, created_at DESC);
 ALTER TABLE tasks.approvals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks.approvals FORCE ROW LEVEL SECURITY;
 
--- The task owner is the one who decides, so a person who can only view or
--- edit a shared task never sees its approvals.
 CREATE POLICY approvals_select ON tasks.approvals
   FOR SELECT
-  USING (
-    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
-    AND 'task:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
-  );
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
 
 CREATE POLICY approvals_insert ON tasks.approvals
   FOR INSERT
@@ -1233,14 +1578,16 @@ CREATE POLICY approvals_insert ON tasks.approvals
 
 CREATE POLICY approvals_update ON tasks.approvals
   FOR UPDATE
-  USING (
-    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
-    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
-  )
-  WITH CHECK (
-    user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
-    AND 'task:edit' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ','))
-  );
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+  ));
 
 CREATE POLICY approvals_close ON tasks.approvals
   FOR UPDATE
@@ -1287,7 +1634,7 @@ CREATE TRIGGER approvals_decide_once
   EXECUTE FUNCTION tasks.decide_once();
 
 GRANT SELECT, INSERT ON tasks.approvals TO upmo_app;
-GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_app;
+GRANT UPDATE (state, decided_at, answer) ON tasks.approvals TO upmo_app;
 
 CREATE TABLE tasks.findings (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -1477,6 +1824,10 @@ DROP FUNCTION IF EXISTS tasks.stream_notify();
 DROP POLICY IF EXISTS automations_owner_exists ON tasks.automations;
 DROP FUNCTION IF EXISTS tasks.automation_exists(uuid);
 DROP POLICY IF EXISTS tasks_owner_open_children ON tasks.tasks;
+DROP POLICY IF EXISTS tasks_owner_escrow_select ON tasks.tasks;
+DROP POLICY IF EXISTS tasks_owner_escrow_update ON tasks.tasks;
+DROP POLICY IF EXISTS chat_events_owner_budget_select ON tasks.chat_events;
+DROP POLICY IF EXISTS chat_events_owner_budget_insert ON tasks.chat_events;
 DROP TABLE IF EXISTS tasks.automation_fires;
 DROP TABLE IF EXISTS tasks.automations;
 DROP FUNCTION IF EXISTS tasks.automation_uses(uuid[]);
@@ -1502,10 +1853,6 @@ DROP FUNCTION IF EXISTS tasks.keep_parent();
 DROP FUNCTION IF EXISTS tasks.limit_child();
 DROP FUNCTION IF EXISTS tasks.open_child_count();
 
-DROP TABLE IF EXISTS tasks.template_deliveries;
-DROP TABLE IF EXISTS tasks.template_steps;
-DROP TABLE IF EXISTS tasks.templates;
-
 DROP TRIGGER IF EXISTS run_events_append_only ON tasks.run_events;
 DROP TRIGGER IF EXISTS runs_follow ON tasks.runs;
 DROP TRIGGER IF EXISTS runs_born ON tasks.runs;
@@ -1526,4 +1873,8 @@ DROP TABLE IF EXISTS tasks.runs;
 DROP TABLE IF EXISTS tasks.checks;
 DROP TABLE IF EXISTS tasks.chat_events;
 DROP TABLE IF EXISTS tasks.task_events;
+DROP TABLE IF EXISTS tasks.review_findings;
 DROP TABLE IF EXISTS tasks.tasks;
+DROP TABLE IF EXISTS tasks.template_deliveries;
+DROP TABLE IF EXISTS tasks.template_steps;
+DROP TABLE IF EXISTS tasks.templates;

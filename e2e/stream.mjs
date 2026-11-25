@@ -120,8 +120,8 @@ try {
     throw new Error(`advancing the task answered ${advanced.status()}`);
   }
   const seen = await awaitPhase(page, "Working");
-  if (seen.phase !== "Checking" || seen.status !== "Checking") {
-    throw new Error(`advance showed ${JSON.stringify(seen)}, expected Checking`);
+  if (seen.phase !== "Verifying" || seen.status !== "Verifying") {
+    throw new Error(`advance showed ${JSON.stringify(seen)}, expected Verifying`);
   }
 
   // A second tab with the same session streams the same task: a line posted

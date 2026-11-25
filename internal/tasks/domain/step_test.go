@@ -11,7 +11,7 @@ func TestStepWalksToCheckingAndStops(t *testing.T) {
 	if err != nil || status != Preparing || effect.Goal != "File the receipts" || effect.From != "" {
 		t.Fatalf("open = %s %+v %v", status, effect, err)
 	}
-	want := []Status{Working, Checking}
+	want := []Status{Working, Verifying}
 	for _, next := range want {
 		status, effect, err = Step(status, Input{Kind: Advance})
 		if err != nil || status != next || effect.To != next {
@@ -19,7 +19,7 @@ func TestStepWalksToCheckingAndStops(t *testing.T) {
 		}
 	}
 	if _, _, err := Step(status, Input{Kind: Advance}); !errors.Is(err, ErrEvidence) {
-		t.Fatalf("advance from Checking = %v", err)
+		t.Fatalf("advance from Verifying = %v", err)
 	}
 }
 
@@ -38,8 +38,8 @@ func TestStepPlansOnlyFromPreparing(t *testing.T) {
 }
 
 func TestStepPassIsTheOnlyEdgeIntoDone(t *testing.T) {
-	status, effect, err := Step(Checking, Input{Kind: Pass})
-	if err != nil || status != Done || effect.Kind != Pass || effect.From != Checking {
+	status, effect, err := Step(Verifying, Input{Kind: Pass})
+	if err != nil || status != Done || effect.Kind != Pass || effect.From != Verifying {
 		t.Fatalf("pass = %s %+v %v", status, effect, err)
 	}
 	if _, _, err := Step(Working, Input{Kind: Pass}); !errors.Is(err, ErrInput) {
@@ -51,7 +51,7 @@ func TestStepPassIsTheOnlyEdgeIntoDone(t *testing.T) {
 }
 
 func TestStepFailFromEachOpenStatus(t *testing.T) {
-	for _, status := range []Status{Preparing, Planning, Working, Checking} {
+	for _, status := range []Status{Preparing, Planning, Working, Verifying} {
 		next, effect, err := Step(status, Input{Kind: Fail})
 		if err != nil || next != Failed || effect.From != status {
 			t.Fatalf("fail from %s = %s %+v %v", status, next, effect, err)
@@ -80,7 +80,7 @@ func TestStepPauseAndResumeWorking(t *testing.T) {
 }
 
 func TestStepPauseOnlyFromWorking(t *testing.T) {
-	for _, status := range []Status{Preparing, Planning, Checking, NeedsApproval} {
+	for _, status := range []Status{Preparing, Planning, Verifying, NeedsApproval} {
 		if _, _, err := Step(status, Input{Kind: Pause}); !errors.Is(err, ErrInput) {
 			t.Fatalf("pause from %s = %v", status, err)
 		}
@@ -96,7 +96,7 @@ func TestStepPauseOnlyFromWorking(t *testing.T) {
 }
 
 func TestStepResumeOnlyFromNeedsApproval(t *testing.T) {
-	for _, status := range []Status{Preparing, Planning, Working, Checking} {
+	for _, status := range []Status{Preparing, Planning, Working, Verifying} {
 		if _, _, err := Step(status, Input{Kind: Resume}); !errors.Is(err, ErrInput) {
 			t.Fatalf("resume from %s = %v", status, err)
 		}
@@ -162,6 +162,82 @@ func TestStepRejectsABadGoal(t *testing.T) {
 	}
 	if _, _, err := Step(Preparing, Input{Kind: "sideways"}); !errors.Is(err, ErrInput) {
 		t.Fatalf("unknown input = %v", err)
+	}
+}
+
+func TestStepVerificationEdgesAndDeterministicApproveDenyRouting(t *testing.T) {
+	status, _, err := Step("", Input{Kind: Open, Goal: "File the receipts", To: Planning})
+	if err != nil || status != Planning {
+		t.Fatalf("open planning = %s %v", status, err)
+	}
+	status, _, err = Step("", Input{Kind: Open, Goal: "File the receipts", To: Working})
+	if err != nil || status != Working {
+		t.Fatalf("open working = %s %v", status, err)
+	}
+	if _, _, err := Step("", Input{Kind: Open, Goal: "File the receipts", To: Verifying}); !errors.Is(err, ErrInput) {
+		t.Fatalf("open verifying = %v", err)
+	}
+
+	status, effect, err := Step(Planning, Input{Kind: AskPlan})
+	if err != nil || status != NeedsApproval || effect.Kind != AskPlan || effect.From != Planning || effect.To != NeedsApproval {
+		t.Fatalf("ask plan = %s %+v %v", status, effect, err)
+	}
+	status, effect, err = Step(Verifying, Input{Kind: Rework})
+	if err != nil || status != Working || effect.Kind != Rework || effect.To != Working {
+		t.Fatalf("rework = %s %+v %v", status, effect, err)
+	}
+	status, effect, err = Step(Working, Input{Kind: Replan})
+	if err != nil || status != Planning || effect.Kind != Replan || effect.To != Planning {
+		t.Fatalf("replan = %s %+v %v", status, effect, err)
+	}
+	for _, from := range []Status{Working, Verifying} {
+		status, effect, err = Step(from, Input{Kind: Hold, Reason: ReasonAsk})
+		if from == Verifying {
+			status, effect, err = Step(from, Input{Kind: Hold, Reason: ReasonStalled})
+		}
+		if err != nil || status != NeedsApproval || effect.Kind != Hold || effect.From != from {
+			t.Fatalf("hold from %s = %s %+v %v", from, status, effect, err)
+		}
+	}
+
+	status, effect, err = Step(NeedsApproval, Input{Kind: Approve, Reason: ReasonPlan})
+	if err != nil || status != Working || effect.To != Working {
+		t.Fatalf("approve plan = %s %+v %v", status, effect, err)
+	}
+	status, effect, err = Step(NeedsApproval, Input{Kind: Deny, Reason: ReasonPlan, Body: "Add unit 2"})
+	if err != nil || status != Planning || effect.Body != "Add unit 2" {
+		t.Fatalf("deny plan = %s %+v %v", status, effect, err)
+	}
+	if _, _, err := Step(NeedsApproval, Input{Kind: Approve, Reason: ReasonQuestion}); !errors.Is(err, ErrChat) {
+		t.Fatalf("empty answer = %v", err)
+	}
+	status, effect, err = Step(NeedsApproval, Input{Kind: Approve, Reason: ReasonQuestion, Body: "Use EUR"})
+	if err != nil || status != Working || effect.Body != "Use EUR" {
+		t.Fatalf("approve question = %s %+v %v", status, effect, err)
+	}
+	status, effect, err = Step(NeedsApproval, Input{Kind: Deny, Reason: ReasonQuestion})
+	if err != nil || status != Failed || effect.Cause != CauseCanceled {
+		t.Fatalf("deny question = %s %+v %v", status, effect, err)
+	}
+	for _, reason := range []string{ReasonStalled, ReasonFailing, ReasonReviewLimit, ReasonUnknown} {
+		status, effect, err = Step(NeedsApproval, Input{Kind: Approve, Reason: reason, From: Verifying})
+		if err != nil || status != Verifying || !effect.ResetBrakes {
+			t.Fatalf("approve %s = %s %+v %v", reason, status, effect, err)
+		}
+		status, effect, err = Step(NeedsApproval, Input{Kind: Deny, Reason: reason})
+		if err != nil || status != Failed || effect.Cause != reason {
+			t.Fatalf("deny %s = %s %+v %v", reason, status, effect, err)
+		}
+	}
+	for _, reason := range []string{ReasonAsk, ReasonExpired, ReasonTrifecta, ReasonWriteguard} {
+		status, effect, err = Step(NeedsApproval, Input{Kind: Approve, Reason: reason})
+		if err != nil || status != Working {
+			t.Fatalf("approve %s = %s %+v %v", reason, status, effect, err)
+		}
+		status, effect, err = Step(NeedsApproval, Input{Kind: Deny, Reason: reason})
+		if err != nil || status != Working || effect.Body != DeniedToolResult {
+			t.Fatalf("deny %s = %s %+v %v", reason, status, effect, err)
+		}
 	}
 }
 
