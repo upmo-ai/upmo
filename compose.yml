@@ -314,7 +314,7 @@ services:
     command: ["git", "--no-banner", "--redact", "--verbose", "--config", "/src/.gitleaks.toml", "/src"]
 
   markdownlint:
-    image: davidanson/markdownlint-cli2:v0.23.1@sha256:f382ea4fdc949883e79de678009437fb40c339323654c7b0dd4d5221cda8ed20
+    image: davidanson/markdownlint-cli2:v0.24.2@sha256:c768e94d8bb161c449bde28f60656929ca1f02c3010a405f65c9cac71563a889
     profiles: ["tools"]
     working_dir: /src
     volumes:
