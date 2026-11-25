@@ -22,11 +22,29 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "dev-only service key shared by the local compose stack, never used outside it"
+description = "dev-only per-audience keys shared by the local compose stack, never used outside it"
 targetRules = ["upmo-service-key"]
 condition = "AND"
 paths = ['''^compose\.yml$''']
-regexes = ['''^upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c$''']
+regexes = [
+  '''^upmo_svc_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c$''',
+  '''^upmo_svc_gateway_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c$''',
+  '''^upmo_svc_sandboxd_c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M$''',
+  '''^upmo_svc_markitdown_ZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQ$''',
+]
+
+[[allowlists]]
+description = "fixed per-audience keys and scrape tokens in tests, not credentials"
+targetRules = ["upmo-service-key", "generic-api-key"]
+paths = [
+  '''^cmd/gateway/main_integration_test\.go$''',
+  '''^deploy/markitdown/test_main\.py$''',
+  '''^internal/platform/config/config_test\.go$''',
+  '''^internal/platform/metrics/metrics_test\.go$''',
+  '''^internal/platform/svcsig/svcsig_test\.go$''',
+  '''^internal/sandboxd/sandboxd_test\.go$''',
+  '''^pkg/brain/main_integration_test\.go$''',
+]
 
 [[allowlists]]
 description = "editor token test fixtures are user, task and session UUIDs, not secrets"
