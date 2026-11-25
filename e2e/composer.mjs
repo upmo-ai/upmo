@@ -244,7 +244,8 @@ try {
   if (sent.agent_id !== agentId) {
     throw new Error(`flow 5: the line went out with agent ${sent.agent_id}, expected the first agent`);
   }
-  const retry = page.getByRole("button", { name: "Retry", exact: true });
+  // The user line has its own Retry (a branch); this one is the failed reply's.
+  const retry = log.locator(".chat-failed").getByRole("button", { name: "Retry", exact: true });
   await retry.waitFor({ timeout: 10_000 });
   if (/fake stream/i.test(await log.innerText())) {
     throw new Error("flow 5: the failed reply shows provider text");
