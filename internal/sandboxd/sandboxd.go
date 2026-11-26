@@ -220,10 +220,10 @@ func EditorGate(editorKey, previousKey string, driver Driver, log *slog.Logger) 
 	return editorgate.Handler{Book: book, Keys: keys, Log: log}, nil
 }
 
-// Proxy returns the egress proxy for the sandboxes driver holds. env:
-// references resolve from sandboxd's environment. A host that
-// names a credential the process cannot resolve is refused; every other
-// allowed host tunnels. CONNECT still does not rewrite TLS bytes.
+// Proxy returns the egress proxy for the sandboxes driver holds. It resolves
+// no credential: a host that names one is refused, and every other allowed
+// host tunnels. Nothing is read from sandboxd's environment until the worker
+// key unwrap is wired. CONNECT still does not rewrite TLS bytes.
 func Proxy(driver Driver, log *slog.Logger) http.Handler {
-	return egress.Proxy{Book: driver, Inject: inject.Injector{Resolver: inject.Env{}}, Log: log}
+	return egress.Proxy{Book: driver, Inject: inject.Injector{Resolver: inject.Refuse{}}, Log: log}
 }

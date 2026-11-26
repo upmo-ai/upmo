@@ -77,9 +77,9 @@ func TestRefuseResolvesNothing(t *testing.T) {
 }
 
 func TestEnvResolvesFromTheProcess(t *testing.T) {
-	t.Setenv("UPMO_INJECT_TEST_TOKEN", "real-from-env")
-	rw, err := Injector{Resolver: Env{}}.For(context.Background(), "github.com", []runtime.Credential{
-		{Sentinel: "upmo_sentinel_gh", Ref: "env:UPMO_INJECT_TEST_TOKEN", Host: "github.com"},
+	t.Setenv("INJECT_TEST_TOKEN", "real-from-env")
+	rw, err := Injector{Resolver: Env{Allow: []string{"INJECT_TEST_TOKEN"}}}.For(context.Background(), "github.com", []runtime.Credential{
+		{Sentinel: "upmo_sentinel_gh", Ref: "env:INJECT_TEST_TOKEN", Host: "github.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,22 +91,58 @@ func TestEnvResolvesFromTheProcess(t *testing.T) {
 }
 
 func TestEnvRefusesBadRefs(t *testing.T) {
-	t.Setenv("UPMO_INJECT_TEST_TOKEN", "real")
+	t.Setenv("INJECT_TEST_TOKEN", "real")
+	t.Setenv("INJECT_EMPTY", "")
+	env := Env{Allow: []string{"INJECT_TEST_TOKEN", "INJECT_EMPTY", "MISSING_NAME"}}
 	cases := []string{
 		"vault:secret",
 		"env:",
 		"env:1BAD",
 		"env:HAS-DASH",
 		"env:MISSING_NAME",
-		"ENV:UPMO_INJECT_TEST_TOKEN",
+		"ENV:INJECT_TEST_TOKEN",
+		"env:INJECT_EMPTY",
 	}
 	for _, ref := range cases {
-		if _, err := (Env{}).Resolve(context.Background(), ref); !errors.Is(err, ErrNoBackend) {
+		if _, err := env.Resolve(context.Background(), ref); !errors.Is(err, ErrNoBackend) {
 			t.Fatalf("Resolve(%q) = %v, want ErrNoBackend", ref, err)
 		}
 	}
-	t.Setenv("UPMO_INJECT_EMPTY", "")
-	if _, err := (Env{}).Resolve(context.Background(), "env:UPMO_INJECT_EMPTY"); !errors.Is(err, ErrNoBackend) {
-		t.Fatalf("empty env = %v", err)
+}
+
+func TestEnvRefusesUpmoNamesEvenWhenListed(t *testing.T) {
+	t.Setenv("UPMO_MASTER_KEY", "upmo_master_test_value")
+	t.Setenv("UPMO_SERVICE_KEY", "upmo_service_test_value")
+	env := Env{Allow: []string{"UPMO_MASTER_KEY", "UPMO_SERVICE_KEY"}}
+	for _, ref := range []string{"env:UPMO_MASTER_KEY", "env:UPMO_SERVICE_KEY"} {
+		value, err := env.Resolve(context.Background(), ref)
+		if !errors.Is(err, ErrNoBackend) || value != "" {
+			t.Fatalf("Resolve(%q) = %q, %v, want ErrNoBackend", ref, value, err)
+		}
+		if err.Error() != "inject: no credential backend" {
+			t.Fatalf("Resolve(%q) err text = %q", ref, err)
+		}
+	}
+}
+
+func TestEnvResolvesOnlyItsAllowList(t *testing.T) {
+	t.Setenv("NOT_A_CREDENTIAL", "sk-test-unlisted")
+	t.Setenv("ALLOWED_REF", "sk-test-allowed")
+	env := Env{Allow: []string{"ALLOWED_REF"}}
+	if value, err := env.Resolve(context.Background(), "env:NOT_A_CREDENTIAL"); !errors.Is(err, ErrNoBackend) || value != "" {
+		t.Fatalf("unlisted = %q, %v, want ErrNoBackend", value, err)
+	}
+	value, err := env.Resolve(context.Background(), "env:ALLOWED_REF")
+	if err != nil || value != "sk-test-allowed" {
+		t.Fatalf("listed = %q, %v, want sk-test-allowed", value, err)
+	}
+	// Exact match only: no prefix or case folding.
+	for _, list := range [][]string{{"ALLOWED"}, {"allowed_ref"}, {"ALLOWED_REF_X"}} {
+		if _, err := (Env{Allow: list}).Resolve(context.Background(), "env:ALLOWED_REF"); !errors.Is(err, ErrNoBackend) {
+			t.Fatalf("allow %v resolved ALLOWED_REF: %v", list, err)
+		}
+	}
+	if value, err := (Env{}).Resolve(context.Background(), "env:ALLOWED_REF"); !errors.Is(err, ErrNoBackend) || value != "" {
+		t.Fatalf("zero Env = %q, %v, want ErrNoBackend", value, err)
 	}
 }
