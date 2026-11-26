@@ -101,8 +101,8 @@ type disabledPassword struct{}
 func (disabledPassword) Take(context.Context, string, time.Time, float64, float64) (bool, time.Duration, error) {
 	return true, 0, nil
 }
-func (disabledPassword) PasswordAccount(context.Context, string) (domain.UserID, string, string, bool, error) {
-	return domain.UserID{}, "", "", false, nil
+func (disabledPassword) PasswordAccount(context.Context, string) (domain.UserID, string, bool, error) {
+	return domain.UserID{}, "", false, nil
 }
 func (disabledPassword) PersonByEmail(context.Context, string) (domain.UserID, bool, bool, error) {
 	return domain.UserID{}, false, false, nil

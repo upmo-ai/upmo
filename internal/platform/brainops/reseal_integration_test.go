@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/argon2"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -98,7 +99,7 @@ func seedPerson(t *testing.T, owner *pgxpool.Pool, ring gateway.Keyring, address
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedHash, err := NewPasswordSealer(ring).Seal(identity.PasswordRef(user), hash)
+	storedHash, err := sealPassword(ring, user, hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +226,10 @@ func checkPersonOpen(t *testing.T, p storedPerson, ring gateway.Keyring, hash, a
 	if prefix, _, _ := strings.Cut(p.passwordHash, ":"); prefix != keyID {
 		t.Fatalf("password is under key %q, want %q", prefix, keyID)
 	}
-	gotHash, err := NewPasswordSealer(ring).Open(identity.PasswordRef(user), p.passwordHash)
+	if n := strings.Count(p.passwordHash, ":"); n != 4 {
+		t.Fatalf("password has %d fields, want 5", n+1)
+	}
+	gotHash, err := openPassword(ring, user, p.passwordHash)
 	if err != nil || gotHash != hash {
 		t.Fatalf("password opens to %q, %v", gotHash, err)
 	}
@@ -406,7 +410,7 @@ func TestResealedRowsOpenWithTheOldKeyRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := NewPasswordSealer(only2).Open(identity.PasswordRef(user), person.passwordHash); err != nil || got != "ada-hash" {
+	if got, err := openPassword(only2, user, person.passwordHash); err != nil || got != "ada-hash" {
 		t.Fatalf("password opens to %q, %v without the old key", got, err)
 	}
 
@@ -868,5 +872,71 @@ func TestResealMovesAK1RowAndCountsK9AsUnknown(t *testing.T) {
 	}
 	if lost := after["LOST"]; lost.keyID != "k9" || !bytes.Equal(lost.wrapped, before["LOST"].wrapped) || !bytes.Equal(lost.ciphertext, before["LOST"].ciphertext) {
 		t.Fatalf("the k9 row changed: key %q", lost.keyID)
+	}
+}
+
+// Invariant 10, the password part: a k1 five-field password moves to k2
+// under a new data key and the worker's check still matches it; the old
+// three-field form counts failed and is left as it is; a k9 password counts
+// as unknown.
+func TestResealFiveFields(t *testing.T) {
+	owner := newResealDB(t)
+	ctx := context.Background()
+	const password = "correct horse battery"
+	salt := []byte("salt-of-16-bytes")
+	phc := "$argon2id$v=19$m=19456,t=2,p=1$" + base64.RawStdEncoding.EncodeToString(salt) + "$" +
+		base64.RawStdEncoding.EncodeToString(argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, 32))
+	ring1 := reseedRing(t, "k1")
+	ada := seedPerson(t, owner, ring1, "ada@example.com", phc)
+	three := seedPerson(t, owner, ring1, "ben@example.com", phc)
+	threeUser, err := identity.ParseUserID(three)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := ring1.Seal(identity.PasswordRef(threeUser), phc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldText := "k1:" + base64.StdEncoding.EncodeToString(old.Nonce) + ":" + base64.StdEncoding.EncodeToString(old.Ciphertext)
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, three, oldText); err != nil {
+		t.Fatal(err)
+	}
+	lost := seedPerson(t, owner, reseedRing(t, "k9"), "cara@example.com", phc)
+	before := readPerson(t, owner, ada).passwordHash
+	lostBefore := readPerson(t, owner, lost).passwordHash
+
+	ring2 := reseedRing(t, "k2", "k1")
+	unknown, err := UnknownKeyRows(ctx, owner, ring2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeCount(t, ResealResult{Stores: unknown}, StorePasswords); got.Unknown != 1 || strings.Join(got.UnknownKeyIDs, ",") != "k9" {
+		t.Fatalf("unknown passwords = %+v, want one under k9", got)
+	}
+	result, err := Reseal(ctx, owner, ring2, ResealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeCount(t, result, StorePasswords); got.Resealed != 1 || got.Unknown != 1 || got.Failed != 1 || got.Current != 0 {
+		t.Fatalf("password tally = %+v, want one resealed, one unknown, one failed", got)
+	}
+	after := readPerson(t, owner, ada).passwordHash
+	was, now := strings.Split(before, ":"), strings.Split(after, ":")
+	if len(now) != 5 || now[0] != "k2" || now[2] == was[2] || now[4] == was[4] {
+		t.Fatalf("resealed password = %s, want five fields under k2 with a new wrap and payload", after)
+	}
+	check := passwordCheck{owner: owner, ring: ring2, emails: NewEmailSealer(ring2)}
+	account, err := check.ByAddress(ctx, "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match, rehash, err := check.Check(ctx, account, password); err != nil || !match || rehash {
+		t.Fatalf("check after reseal = %t %t %v, want a match", match, rehash, err)
+	}
+	if got := readPerson(t, owner, three).passwordHash; got != oldText {
+		t.Fatalf("the three-field row changed to %s", got)
+	}
+	if got := readPerson(t, owner, lost).passwordHash; got != lostBefore {
+		t.Fatal("the k9 row changed")
 	}
 }

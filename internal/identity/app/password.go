@@ -15,15 +15,27 @@ var ErrWrong = errors.New("identity: email or password is wrong")
 // ErrLimited is a password guess over a throttle bucket.
 var ErrLimited = errors.New("identity: slow down")
 
-// ErrNoSealer means no master key is wired, so no password hash can be stored.
-var ErrNoSealer = errors.New("identity: password storage needs a master key")
+// ErrNoSealer means no key service is wired, so no password hash can be
+// stored or checked.
+var ErrNoSealer = errors.New("identity: password storage needs the key service")
 
-// PasswordSealer seals and opens a stored password hash. The brain wires it
-// from the master keyring.
-type PasswordSealer interface {
-	Ready() bool
-	Seal(ref, hash string) (string, error)
-	Open(ref, stored string) (string, error)
+// MaxEmailBytes and MaxPasswordBytes bound what a password check sends to
+// the worker; anything longer is a wrong password without a call.
+const (
+	MaxEmailBytes    = 320
+	MaxPasswordBytes = 1024
+)
+
+// PasswordKeys is the worker's side of a password. Seal asks the worker to
+// wrap a new data key for the person and seals hash under it here, as the
+// stored text. The worker checks a password against the stored hash, which
+// brain never opens: Verify by address for sign-in, VerifySession for the
+// signed-in person behind a session token hash. A worker that cannot answer
+// is domain.ErrBusy, and its per-address limit is ErrLimited.
+type PasswordKeys interface {
+	Seal(ctx context.Context, user domain.UserID, hash string) (string, error)
+	Verify(ctx context.Context, email, password string) (match, rehash bool, err error)
+	VerifySession(ctx context.Context, tokenHash []byte, password string) (match, rehash bool, err error)
 }
 
 // PasswordRef is the seal ref of one person's stored password hash: a hash
@@ -35,7 +47,9 @@ func PasswordRef(user domain.UserID) string {
 // PasswordStore is the password columns and the shared throttle.
 type PasswordStore interface {
 	Take(ctx context.Context, key string, now time.Time, burst, perSecond float64) (bool, time.Duration, error)
-	PasswordAccount(ctx context.Context, email string) (user domain.UserID, hash, personName string, found bool, err error)
+	// PasswordAccount finds the enabled person behind an address. It never
+	// reads the stored hash.
+	PasswordAccount(ctx context.Context, email string) (user domain.UserID, personName string, found bool, err error)
 	// PersonByEmail resolves a person for sign-in failure audit only.
 	PersonByEmail(ctx context.Context, email string) (user domain.UserID, disabled, found bool, err error)
 	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
@@ -50,7 +64,7 @@ type PasswordStore interface {
 type Passwords struct {
 	Sessions Service
 	Store    PasswordStore
-	Sealer   PasswordSealer
+	Keys     PasswordKeys
 	Now      func() time.Time
 }
 
@@ -73,27 +87,24 @@ func (p Passwords) SignIn(ctx context.Context, email, password, ip, agent string
 	if err != nil {
 		return "", false, retry, err
 	}
-	user, stored, _, found, err := p.Store.PasswordAccount(ctx, email)
-	if err != nil {
-		return "", false, 0, err
+	if p.Keys == nil {
+		return "", false, 0, ErrNoSealer
 	}
-	if !found || stored == "" {
-		if err := p.guardMissingAccount(ctx, email); err != nil {
-			return "", false, 0, err
+	match, rehash := false, false
+	if sendable(email, password) {
+		if match, rehash, err = p.Keys.Verify(ctx, email, password); err != nil {
+			return "", false, keysRetry(ctx, err), err
 		}
-		return "", false, 0, ErrWrong
 	}
-	hash, err := p.open(user, stored)
+	if !match {
+		return "", false, 0, p.wrong(ctx, email)
+	}
+	user, _, found, err := p.Store.PasswordAccount(ctx, email)
 	if err != nil {
 		return "", false, 0, err
 	}
-	ok, rehash, err := domain.VerifyPassword(password, hash)
-	if err != nil {
-		return "", false, 0, err
-	}
-	if !ok {
-		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: user.String()})
-		return "", false, 0, ErrWrong
+	if !found {
+		return "", false, 0, p.wrong(ctx, email)
 	}
 	if err := checkSSOSignIn(ctx, p.Store, user, false); err != nil {
 		return "", false, 0, err
@@ -104,7 +115,7 @@ func (p Passwords) SignIn(ctx context.Context, email, password, ip, agent string
 			return "", false, 0, err
 		}
 		// A rehash that cannot be sealed keeps the stored hash; the sign-in stands.
-		if sealed, err := p.seal(user, next); err == nil {
+		if sealed, err := p.Keys.Seal(ctx, user, next); err == nil {
 			if err := p.Store.SetPassword(ctx, user, sealed); err != nil {
 				return "", false, 0, err
 			}
@@ -123,11 +134,14 @@ func (p Passwords) Set(ctx context.Context, user domain.UserID, keep, email, nam
 	if err := domain.Check(password, email, name); err != nil {
 		return err
 	}
+	if p.Keys == nil {
+		return ErrNoSealer
+	}
 	hash, err := domain.HashPassword(password)
 	if err != nil {
 		return err
 	}
-	stored, err := p.seal(user, hash)
+	stored, err := p.Keys.Seal(ctx, user, hash)
 	if err != nil {
 		return err
 	}
@@ -155,32 +169,26 @@ func (p Passwords) Clear(ctx context.Context, user domain.UserID, keep string) e
 	return p.Sessions.EndOthers(ctx, user, keep)
 }
 
-// Verify checks the password and refreshes the session. It counts as a guess.
-func (p Passwords) Verify(ctx context.Context, user domain.UserID, sessionID, email, password, ip string) (time.Duration, error) {
+// Verify checks the signed-in person's password and refreshes the session.
+// The worker checks the person behind tokenHash, never one named by email,
+// which only keys the throttle. It counts as a guess.
+func (p Passwords) Verify(ctx context.Context, user domain.UserID, sessionID string, tokenHash []byte, email, password, ip string) (time.Duration, error) {
 	now := p.now()
 	retry, err := p.limit(ctx, email, ip, now)
 	if err != nil {
 		return retry, err
 	}
-	account, stored, _, found, err := p.Store.PasswordAccount(ctx, email)
-	if err != nil {
-		return 0, err
+	if p.Keys == nil {
+		return 0, ErrNoSealer
 	}
-	if !found || stored == "" {
-		if err := p.guardMissingAccount(ctx, email); err != nil {
-			return 0, err
+	match := false
+	// The session body sends no address, so only the password is bounded.
+	if password != "" && len(password) <= MaxPasswordBytes {
+		if match, _, err = p.Keys.VerifySession(ctx, tokenHash, password); err != nil {
+			return keysRetry(ctx, err), err
 		}
-		return 0, ErrWrong
 	}
-	hash, err := p.open(account, stored)
-	if err != nil {
-		return 0, err
-	}
-	ok, _, err := domain.VerifyPassword(password, hash)
-	if err != nil || !ok {
-		if err != nil {
-			return 0, err
-		}
+	if !match {
 		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: user.String()})
 		return 0, ErrWrong
 	}
@@ -192,37 +200,38 @@ func (p Passwords) HasPassword(ctx context.Context, user domain.UserID) (bool, e
 	return p.Store.HasPassword(ctx, user)
 }
 
-// guardMissingAccount names an unknown or disabled person and does the same hash
-// work as a wrong password, without returning the email.
-func (p Passwords) guardMissingAccount(ctx context.Context, email string) error {
+// wrong names the person a failed sign-in was for, without the email, and
+// returns ErrWrong. The worker already spent one hash on every path.
+func (p Passwords) wrong(ctx context.Context, email string) error {
 	id, disabled, found, err := p.Store.PersonByEmail(ctx, email)
 	if err != nil {
 		return err
 	}
-	if found && disabled {
+	switch {
+	case found && disabled:
 		audit.Annotate(ctx, audit.Event{Reason: "disabled", TargetType: "user", TargetID: id.String()})
-	} else {
+	case found:
+		audit.Annotate(ctx, audit.Event{Reason: "bad_credential", TargetType: "user", TargetID: id.String()})
+	default:
 		audit.Annotate(ctx, audit.Event{Reason: "unknown_account"})
 	}
-	return domain.DummyPasswordHash()
+	return ErrWrong
 }
 
-// seal returns hash in the stored form, sealed for this person alone. Without
-// a ready sealer nothing is stored.
-func (p Passwords) seal(user domain.UserID, hash string) (string, error) {
-	if p.Sealer == nil || !p.Sealer.Ready() {
-		return "", ErrNoSealer
+// keysRetry is the wait to suggest after the worker refused a check: its
+// window is one minute, the same for every address.
+func keysRetry(ctx context.Context, err error) time.Duration {
+	if !errors.Is(err, ErrLimited) {
+		return 0
 	}
-	return p.Sealer.Seal(PasswordRef(user), hash)
+	audit.Annotate(ctx, audit.Event{Reason: "throttled"})
+	return time.Minute
 }
 
-// open returns the hash stored for user. A value that does not open is an
-// error, never a wrong-password answer: the sign-in fails loudly instead.
-func (p Passwords) open(user domain.UserID, stored string) (string, error) {
-	if p.Sealer == nil || !p.Sealer.Ready() {
-		return "", ErrNoSealer
-	}
-	return p.Sealer.Open(PasswordRef(user), stored)
+// sendable reports whether an address and password fit what the worker
+// checks; an empty or longer one is a wrong password without a call.
+func sendable(email, password string) bool {
+	return email != "" && password != "" && len(email) <= MaxEmailBytes && len(password) <= MaxPasswordBytes
 }
 
 func (p Passwords) limit(ctx context.Context, email, ip string, now time.Time) (time.Duration, error) {

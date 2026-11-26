@@ -195,6 +195,33 @@ func ActorOfTokenHash(ctx context.Context, owner *pgxpool.Pool, hash []byte) (st
 	return postgres.ActorOfTokenHash(ctx, owner, hash)
 }
 
+// StoredPassword is one person's stored password as the worker reads it.
+type StoredPassword = postgres.StoredPassword
+
+// StoredPasswordByAddress finds the person, disabled or not, behind any of an
+// address's index hashes. Only the worker's owner pool may call it.
+func StoredPasswordByAddress(ctx context.Context, owner *pgxpool.Pool, hashes [][]byte) (StoredPassword, bool, error) {
+	return postgres.StoredPasswordByAddress(ctx, owner, hashes)
+}
+
+// StoredPasswordOfSession finds the enabled person behind an unexpired
+// session hash, with their stored address and its index hash. Only the
+// worker's owner pool may call it.
+func StoredPasswordOfSession(ctx context.Context, owner *pgxpool.Pool, tokenHash []byte) (StoredPassword, string, []byte, bool, error) {
+	return postgres.StoredPasswordOfSession(ctx, owner, tokenHash)
+}
+
+// TakePasswordVerify counts one password check for an address's window and
+// returns the count, at most 6. Only the worker's owner pool may call it.
+func TakePasswordVerify(ctx context.Context, owner *pgxpool.Pool, subject []byte) (int, error) {
+	return postgres.TakePasswordVerify(ctx, owner, subject)
+}
+
+// SweepPasswordVerify deletes password check windows older than 10 minutes.
+func SweepPasswordVerify(ctx context.Context, owner *pgxpool.Pool) (int64, error) {
+	return postgres.SweepPasswordVerify(ctx, owner)
+}
+
 // ActiveUser reports whether userID is a joined, non-disabled user.
 func ActiveUser(ctx context.Context, owner *pgxpool.Pool, userID string) (bool, error) {
 	return postgres.ActiveUser(ctx, owner, userID)

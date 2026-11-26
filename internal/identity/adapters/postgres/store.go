@@ -67,10 +67,14 @@ func (p Passkeys) ChangeCredentials(ctx context.Context, user domain.UserID, kee
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var hasPassword bool
-	if err := tx.QueryRow(ctx, `SELECT password_hash IS NOT NULL FROM identity.users WHERE id = $1 AND disabled_at IS NULL FOR NO KEY UPDATE`, user).Scan(&hasPassword); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT true FROM identity.users WHERE id = $1 AND disabled_at IS NULL FOR NO KEY UPDATE`, user).Scan(&hasPassword); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.ErrNotSignedIn
 		}
+		return err
+	}
+	// Under the row lock; brain reads only whether a password is set.
+	if err := tx.QueryRow(ctx, `SELECT identity.has_password_of($1)`, user).Scan(&hasPassword); err != nil {
 		return err
 	}
 	var passkeysCount int

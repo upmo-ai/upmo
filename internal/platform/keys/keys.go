@@ -31,10 +31,18 @@ const (
 	// PathProviderTest probes a saved provider account with its saved key,
 	// which only the worker opens.
 	PathProviderTest = "/internal/keys/provider-test"
+	// PathPasswordVerify checks a password against the stored hash, which
+	// only the worker opens.
+	PathPasswordVerify = "/internal/keys/password-verify"
 )
 
-// KindCredential is the one kind wrap and unwrap serve in this release.
+// KindCredential is the kind of a provider credential's data key. Only
+// gateway and sandboxd unwrap it.
 const KindCredential = "credential"
+
+// KindPassword is the kind of a stored password hash's data key, with the
+// person's lower-case uuid as ref. Brain wraps it; nobody unwraps it.
+const KindPassword = "password"
 
 // MaxBody caps every request and response body of the key service.
 const MaxBody = 4096
@@ -53,6 +61,10 @@ const MaxProviderTestBody = 8 << 20
 // ErrUnavailable is every failed call: a dial error, a timeout and any
 // status other than 200. It carries no bytes from the worker.
 var ErrUnavailable = errors.New("keys: worker unavailable")
+
+// ErrLimited is a password check the worker refused with 429: too many for
+// that address, or for brain, in the current window.
+var ErrLimited = errors.New("keys: slow down")
 
 // WrapRequest is the body of POST /internal/keys/wrap.
 type WrapRequest struct {
@@ -98,6 +110,22 @@ type ProviderTestResponse struct {
 	OK     bool              `json:"ok"`
 	Error  string            `json:"error"`
 	Models []json.RawMessage `json:"models"`
+}
+
+// PasswordVerifyRequest is the body of POST /internal/keys/password-verify:
+// either the address a person signs in with, or the hash of the signed-in
+// person's session token, and the password to check.
+type PasswordVerifyRequest struct {
+	Email          string `json:"email,omitempty"`
+	ActorTokenHash []byte `json:"actor_token_hash,omitempty"`
+	Password       string `json:"password"`
+}
+
+// PasswordVerifyResponse is whether the password matched, and whether the
+// stored hash uses older settings and should be replaced.
+type PasswordVerifyResponse struct {
+	Match  bool `json:"match"`
+	Rehash bool `json:"rehash"`
 }
 
 // Options configure a client.
@@ -223,6 +251,40 @@ func (c Client) ProviderTest(ctx context.Context, accountID string, actorTokenHa
 	return out, nil
 }
 
+// VerifyPassword asks the worker to check password for the person behind
+// the address email. An unknown, disabled or password-less person is no
+// match. A 429 is ErrLimited; any other failure is ErrUnavailable.
+func (c Client) VerifyPassword(ctx context.Context, email, password string) (match, rehash bool, err error) {
+	return c.verifyPassword(ctx, PasswordVerifyRequest{Email: email, Password: password})
+}
+
+// VerifyPasswordForSession asks the worker to check password for the
+// enabled person whose unexpired session hashes to tokenHash.
+func (c Client) VerifyPasswordForSession(ctx context.Context, tokenHash []byte, password string) (match, rehash bool, err error) {
+	return c.verifyPassword(ctx, PasswordVerifyRequest{ActorTokenHash: tokenHash, Password: password})
+}
+
+func (c Client) verifyPassword(ctx context.Context, in PasswordVerifyRequest) (bool, bool, error) {
+	// The password goes to the worker, which checks it; the body is wiped.
+	raw, err := json.Marshal(in) // #nosec G117 -- the password is the payload this call exists to send
+	if err != nil {
+		return false, false, ErrUnavailable
+	}
+	defer clear(raw)
+	body, status, err := c.do(ctx, c.http, http.MethodPost, PathPasswordVerify, raw, MaxBody)
+	if status == http.StatusTooManyRequests {
+		return false, false, ErrLimited
+	}
+	if err != nil {
+		return false, false, err
+	}
+	var out PasswordVerifyResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return false, false, ErrUnavailable
+	}
+	return out.Match, out.Rehash, nil
+}
+
 func (c Client) post(ctx context.Context, path string, in, out any) error {
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -242,8 +304,14 @@ func (c Client) post(ctx context.Context, path string, in, out any) error {
 // call sends one signed request and returns the body of a 200. Anything else
 // is ErrUnavailable with no bytes.
 func (c Client) call(ctx context.Context, client *http.Client, method, path string, raw []byte, limit int64) ([]byte, error) {
+	body, _, err := c.do(ctx, client, method, path, raw, limit)
+	return body, err
+}
+
+// do is call that also returns the status, 0 when there was no answer.
+func (c Client) do(ctx context.Context, client *http.Client, method, path string, raw []byte, limit int64) ([]byte, int, error) {
 	if client == nil {
-		return nil, ErrUnavailable
+		return nil, 0, ErrUnavailable
 	}
 	var reader io.Reader = http.NoBody
 	if raw != nil {
@@ -251,20 +319,20 @@ func (c Client) call(ctx context.Context, client *http.Client, method, path stri
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, 0, ErrUnavailable
 	}
 	if raw != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, 0, ErrUnavailable
 	}
 	defer func() { _ = res.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil || res.StatusCode != http.StatusOK || int64(len(body)) > limit {
 		clear(body)
-		return nil, ErrUnavailable
+		return nil, res.StatusCode, ErrUnavailable
 	}
-	return body, nil
+	return body, res.StatusCode, nil
 }

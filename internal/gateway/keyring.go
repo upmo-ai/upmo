@@ -216,6 +216,46 @@ func (w WorkerSealer) ProviderTest(ctx context.Context, accountID string, actorT
 // KeysVerify holds the worker audience keys the key service verifies.
 type KeysVerify = keyservice.Verify
 
+// KeysPasswords is what the key service's password-verify needs from
+// identity; KeysPasswordAccount is the person one check is for.
+type (
+	KeysPasswords       = keyservice.Passwords
+	KeysPasswordAccount = keyservice.PasswordAccount
+)
+
+var (
+	// ErrKeysHashBusy is a password check with every hash slot in use.
+	ErrKeysHashBusy = keyservice.ErrHashBusy
+	// ErrKeysStoredPassword is a stored password that does not open.
+	ErrKeysStoredPassword = keyservice.ErrStoredPassword
+)
+
+// Wrapped is a new data key and its wrap under the current master.
+type Wrapped = domain.Wrapped
+
+// KindPassword is the kind a stored password's data key is wrapped for.
+const KindPassword = domain.KindPassword
+
+// ValidKeyID reports whether id can name a master key.
+func ValidKeyID(id string) bool { return domain.ValidKeyID(id) }
+
+// SealWithDataKey seals plaintext for ref under w's data key.
+func SealWithDataKey(w Wrapped, ref, plaintext string) (Sealed, error) {
+	return domain.SealWithDataKey(w, ref, plaintext)
+}
+
+// OpenData opens a payload sealed for ref under dataKey.
+func OpenData(dataKey []byte, ref string, ciphertext, nonce []byte) (string, error) {
+	return domain.OpenData(dataKey, ref, ciphertext, nonce)
+}
+
+// SealedText is s as one five-field text value, the stored form of a
+// password: key id, wrap nonce, wrapped key, payload nonce and payload.
+func SealedText(s Sealed) string { return domain.SealedText(s) }
+
+// ParseSealedText reads a five-field value; any other shape is an error.
+func ParseSealedText(stored string) (Sealed, error) { return domain.ParseSealedText(stored) }
+
 // ActorOfTokenHash names the person whose unexpired session or API token
 // hashes to hash. The worker wires identity's owner-pool lookup.
 type ActorOfTokenHash func(ctx context.Context, hash []byte) (user string, ok bool, err error)
@@ -224,8 +264,8 @@ type ActorOfTokenHash func(ctx context.Context, hash []byte) (user string, ok bo
 // in-process ring, reading wrap columns and writing audit rows as owner.
 // providers is the worker's provider use case on the owner pool, wired with
 // the same Allow, Teams and LocalPlan rules brain uses; actor resolves the
-// person behind a provider-test.
-func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers app.Providers, actor ActorOfTokenHash, log *slog.Logger) (http.Handler, error) {
+// person behind a provider-test; passwords serves password-verify.
+func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers app.Providers, actor ActorOfTokenHash, passwords KeysPasswords, log *slog.Logger) (http.Handler, error) {
 	if actor == nil {
 		return nil, fmt.Errorf("gateway: provider test needs an actor lookup")
 	}
@@ -252,7 +292,7 @@ func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers
 		}
 		return out, nil
 	}
-	return keyservice.New(owner, ring, verify, test, log)
+	return keyservice.New(owner, ring, verify, test, passwords, log)
 }
 
 // WorkerProviders is the worker's provider use case for provider-test: the

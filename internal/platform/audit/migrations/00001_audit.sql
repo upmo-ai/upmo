@@ -134,7 +134,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-  IF record_keys.action IS NULL OR record_keys.action NOT IN ('keys.wrap', 'keys.unwrap', 'keys.provider_test') THEN
+  IF record_keys.action IS NULL OR record_keys.action NOT IN ('keys.wrap', 'keys.unwrap', 'keys.provider_test', 'keys.password_verify') THEN
     RAISE EXCEPTION 'audit: keys action refused' USING ERRCODE = '22023';
   END IF;
   IF record_keys.outcome IS NULL OR record_keys.outcome NOT IN ('success', 'denied') THEN

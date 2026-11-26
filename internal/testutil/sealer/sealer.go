@@ -1,44 +1,48 @@
-// Package sealer gives integration tests a real password sealer: AES-256-GCM
-// through the gateway master keyring, stored the way brainops.NewPasswordSealer
-// stores one (key id, nonce and ciphertext joined by colons).
+// Package sealer gives integration tests the test master key: the real
+// email sealer over it, the real worker key service over it for passwords,
+// and helpers that seed and inspect a stored password the way the worker
+// does (five fields: key id, wrap nonce, wrapped key, payload nonce,
+// payload). Tests that only plant or read a row use Seal and Open; the
+// password use case always goes through Passwords.
 package sealer
 
 import (
 	"encoding/base64"
-	"errors"
-	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
-// errStored is every reason a stored password hash does not open.
-var errStored = errors.New("sealer: stored password hash")
-
-// Sealer seals and opens stored password hashes for the identity suites. The
-// zero value holds no key: it refuses to seal and opens nothing, like a brain
-// without a master key.
-type Sealer struct {
-	keys gateway.Keyring
-}
-
-// New builds a sealer over one master key, current id "k1".
-func New(t *testing.T) Sealer {
-	t.Helper()
-	return Sealer{keys: ring(t)}
-}
-
 // NewEmail returns a real email sealer for the identity suites: the brainops
-// sealer over one master key, current id "k1".
+// sealer over the test master key, current id "k1".
 func NewEmail(t *testing.T) identity.EmailSealer {
 	t.Helper()
-	return brainops.NewEmailSealer(ring(t))
+	return brainops.NewEmailSealer(Ring(t))
 }
 
-// ring builds one master keyring over 32 bytes of key material, current id "k1".
-func ring(t *testing.T) gateway.Keyring {
+// Passwords starts the real worker key service over owner and the test
+// master key, so it finds people by the index hashes NewEmail writes, and
+// returns brain's password port over it.
+func Passwords(t *testing.T, owner *pgxpool.Pool) identity.PasswordKeys {
+	t.Helper()
+	return PasswordsOn(t, workerkeys.Start(t, owner, Ring(t)))
+}
+
+// PasswordsOn is brain's password port over a running worker.
+func PasswordsOn(t *testing.T, w *workerkeys.Worker) identity.PasswordKeys {
+	t.Helper()
+	return brainops.WorkerPasswords{Keys: w.Client(t, svcsig.AudienceWorkerBrain)}
+}
+
+// Ring builds the test master keyring over 32 bytes of key material,
+// current id "k1".
+func Ring(t *testing.T) gateway.Keyring {
 	t.Helper()
 	keys, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
 		if name == gateway.EnvMasterKey {
@@ -52,39 +56,38 @@ func ring(t *testing.T) gateway.Keyring {
 	return keys
 }
 
-func (s Sealer) Ready() bool { return s.keys.Ready() }
+// Seal returns hash stored for user as the worker stores one: a new data
+// key wrapped for v1:password:<uuid> under the test master, and the payload
+// sealed for identity:password:<uuid>.
+func Seal(t *testing.T, user identity.UserID, hash string) string {
+	t.Helper()
+	ring := Ring(t)
+	w, err := ring.WrapNew(gateway.KindPassword, user.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(w.DataKey)
+	sealed, err := gateway.SealWithDataKey(w, identity.PasswordRef(user), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gateway.SealedText(sealed)
+}
 
-func (s Sealer) Seal(ref, hash string) (string, error) {
-	sealed, err := s.keys.Seal(ref, hash)
+// Open returns the hash stored for user, or an error when it does not open
+// under the test master.
+func Open(t *testing.T, user identity.UserID, stored string) (string, error) {
+	t.Helper()
+	s, err := gateway.ParseSealedText(stored)
 	if err != nil {
 		return "", err
 	}
-	return strings.Join([]string{
-		sealed.KeyID,
-		base64.StdEncoding.EncodeToString(sealed.Nonce),
-		base64.StdEncoding.EncodeToString(sealed.Ciphertext),
-	}, ":"), nil
-}
-
-func (s Sealer) Open(ref, stored string) (string, error) {
-	id, rest, ok := strings.Cut(stored, ":")
-	nonce, ciphertext, ok2 := strings.Cut(rest, ":")
-	if !ok || !ok2 || strings.Contains(ciphertext, ":") {
-		return "", errStored
-	}
-	rawNonce, err := base64.StdEncoding.DecodeString(nonce)
+	dataKey, err := Ring(t).Unwrap(gateway.KindPassword, user.String(), s.KeyID, s.WrapNonce, s.WrappedKey)
 	if err != nil {
-		return "", errStored
+		return "", err
 	}
-	rawCiphertext, err := base64.StdEncoding.DecodeString(ciphertext)
-	if err != nil {
-		return "", errStored
-	}
-	hash, err := s.keys.Open(ref, gateway.Sealed{Ciphertext: rawCiphertext, Nonce: rawNonce, KeyID: id})
-	if err != nil {
-		return "", errStored
-	}
-	return hash, nil
+	defer clear(dataKey)
+	return gateway.OpenData(dataKey, identity.PasswordRef(user), s.Ciphertext, s.Nonce)
 }
 
 func bytes32(b byte) []byte {

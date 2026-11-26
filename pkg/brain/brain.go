@@ -512,8 +512,15 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	internalCfg := toInternalConfig(cfg)
 	emails := brainops.NewEmailSealer(masterKeys)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
+	// Brain holds no master key for passwords or credentials: the worker
+	// wraps every data key, and checks every password.
+	workerKeys, err := workerClient(ctx, cfg)
+	if err != nil {
+		cleanupPools()
+		return nil, err
+	}
 	passwords := identity.Passwords(pool, emails, sessions)
-	passwords.Sealer = brainops.NewPasswordSealer(masterKeys)
+	passwords.Keys = brainops.WorkerPasswords{Keys: workerKeys}
 	tokens := identity.APITokens(pool, log)
 	passkeys, err := identity.Passkeys(pool, emails, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
@@ -527,13 +534,8 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	idFacade := identity.New(sessions, passkeys, passwords)
 
 	// Brain seals a provider key under a data key the worker wraps; the
-	// master key it still holds serves passwords and email only.
-	credentials, err := workerSealer(ctx, cfg)
-	if err != nil {
-		cleanupPools()
-		return nil, err
-	}
-	providers := gateway.NewProviders(pool, credentials, log)
+	// master key it still holds serves email only.
+	providers := gateway.NewProviders(pool, gateway.WorkerSealer{Keys: workerKeys}, log)
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		id, err := identity.ParseUserID(user)
 		if err != nil {
@@ -1719,12 +1721,12 @@ func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query stri
 	return out, nil
 }
 
-// workerSealer builds the key service client and checks, signed, that the
-// worker is ready. Brain seals and tests every saved provider key through
-// it, so it is required.
-func workerSealer(ctx context.Context, cfg Config) (gateway.WorkerSealer, error) {
+// workerClient builds the key service client and checks, signed, that the
+// worker is ready. Brain seals every password and saved provider key, and
+// checks every password, through it, so it is required.
+func workerClient(ctx context.Context, cfg Config) (*keys.Client, error) {
 	if cfg.WorkerURL == "" {
-		return gateway.WorkerSealer{}, errors.New("config: UPMO_WORKER_URL is required")
+		return nil, errors.New("config: UPMO_WORKER_URL is required")
 	}
 	client, err := keys.Open(keys.Options{
 		URL:         cfg.WorkerURL,
@@ -1734,10 +1736,10 @@ func workerSealer(ctx context.Context, cfg Config) (gateway.WorkerSealer, error)
 		CAFile:      os.Getenv("UPMO_TLS_CA_FILE"),
 	})
 	if err != nil {
-		return gateway.WorkerSealer{}, err
+		return nil, err
 	}
 	if err := client.Ready(ctx); err != nil {
-		return gateway.WorkerSealer{}, errors.New("config: worker is not ready")
+		return nil, errors.New("config: worker is not ready")
 	}
-	return gateway.WorkerSealer{Keys: &client}, nil
+	return &client, nil
 }

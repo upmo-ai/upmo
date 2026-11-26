@@ -36,12 +36,62 @@ const (
 	Window = 10 * time.Second
 )
 
+// PasswordRate is how many password-verify calls brain may make per
+// Window, counted apart from Rate. PasswordAttempts is how many checks one
+// address may take per 60-second window, counted in the database so a
+// restart keeps them.
+const (
+	PasswordRate     = 10
+	PasswordAttempts = 5
+)
+
+// The bounds of a password-verify body, in bytes.
+const (
+	maxEmailBytes    = 320
+	maxPasswordBytes = 1024
+)
+
 // The audit actions this service writes through audit.record_keys.
 const (
-	actionWrap         = "keys.wrap"
-	actionUnwrap       = "keys.unwrap"
-	actionProviderTest = "keys.provider_test"
+	actionWrap           = "keys.wrap"
+	actionUnwrap         = "keys.unwrap"
+	actionProviderTest   = "keys.provider_test"
+	actionPasswordVerify = "keys.password_verify"
 )
+
+var (
+	// ErrHashBusy is a check refused because every hash slot is in use; the
+	// caller tries again.
+	ErrHashBusy = errors.New("keys: hash busy")
+	// ErrStoredPassword is a stored password that does not open: not five
+	// fields, an unknown key, or altered bytes.
+	ErrStoredPassword = errors.New("keys: stored password")
+)
+
+// PasswordAccount is the person a password check is for. Subject is the
+// address's window key, the current 32-byte email index MAC. User is empty
+// for an unknown address, Stored is empty when no password is set, and
+// Usable is true only for an enabled person with a stored password.
+type PasswordAccount struct {
+	Subject []byte
+	User    string
+	Stored  string
+	Usable  bool
+}
+
+// Passwords is what password-verify needs from identity, on the owner pool.
+// Check runs exactly one Argon2 verify on every path: against the stored
+// hash when the account is usable, otherwise a dummy one, and then answers
+// no match. It returns ErrStoredPassword or ErrHashBusy, and never the hash.
+type Passwords interface {
+	ByAddress(ctx context.Context, email string) (PasswordAccount, error)
+	// BySession is the enabled person behind an unexpired session hash;
+	// false for any other hash.
+	BySession(ctx context.Context, tokenHash []byte) (PasswordAccount, bool, error)
+	// Take counts one check for subject and returns the window's count.
+	Take(ctx context.Context, subject []byte) (int, error)
+	Check(ctx context.Context, account PasswordAccount, password string) (match, rehash bool, err error)
+}
 
 // proxySecretLen is the size of a sandbox's proxy secret, and actorHashLen
 // the size of a session or API token hash.
@@ -53,6 +103,8 @@ const (
 var (
 	refPattern     = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 	sandboxPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	// personPattern is a password ref: a person's uuid in lower case.
+	personPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	// service is the audit service each worker audience acts for.
 	service = map[string]string{
 		svcsig.AudienceWorkerBrain:    "brain",
@@ -73,15 +125,19 @@ type Verify map[string][][]byte
 type ProviderTester func(ctx context.Context, accountID string, actor []byte, allowed func() error) (keys.ProviderTestResponse, error)
 
 // New returns the handler for /internal/keys/*. The owner pool reads the
-// wrap columns and writes the audit rows; test serves provider-test. A
-// missing pool, ring, tester or audience key is an error, so the worker
-// cannot serve a route that fails open.
-func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderTester, log *slog.Logger) (http.Handler, error) {
+// wrap columns and writes the audit rows; test serves provider-test and
+// passwords serves password-verify. A missing pool, ring, tester, password
+// check or audience key is an error, so the worker cannot serve a route
+// that fails open.
+func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderTester, passwords Passwords, log *slog.Logger) (http.Handler, error) {
 	if owner == nil {
 		return nil, errors.New("keyservice: no database")
 	}
 	if test == nil {
 		return nil, errors.New("keyservice: no provider tester")
+	}
+	if passwords == nil {
+		return nil, errors.New("keyservice: no password check")
 	}
 	if !ring.Ready() {
 		return nil, domain.ErrNoMasterKey
@@ -89,7 +145,11 @@ func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderT
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &server{owner: owner, ring: ring, test: test, log: log, limit: &limiter{at: map[string][]time.Time{}}}
+	s := &server{
+		owner: owner, ring: ring, test: test, passwords: passwords, log: log,
+		limit:         &limiter{rate: Rate, at: map[string][]time.Time{}},
+		passwordLimit: &limiter{rate: PasswordRate, at: map[string][]time.Time{}},
+	}
 	d := dispatch{}
 	for audience := range service {
 		h, err := svcsig.Handler(verify[audience], audience, keys.MaxBody, s.routes(audience))
@@ -119,11 +179,14 @@ func (d dispatch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type server struct {
-	owner *pgxpool.Pool
-	ring  domain.Keyring
-	test  ProviderTester
-	log   *slog.Logger
-	limit *limiter
+	owner     *pgxpool.Pool
+	ring      domain.Keyring
+	test      ProviderTester
+	passwords Passwords
+	log       *slog.Logger
+	limit     *limiter
+	// passwordLimit counts password-verify calls apart from limit.
+	passwordLimit *limiter
 }
 
 // routes serves one verified audience.
@@ -143,6 +206,8 @@ func (s *server) routes(audience string) http.Handler {
 			s.unwrap(w, r, audience)
 		case r.Method == http.MethodPost && r.URL.Path == keys.PathProviderTest:
 			s.providerTest(w, r, audience)
+		case r.Method == http.MethodPost && r.URL.Path == keys.PathPasswordVerify:
+			s.passwordVerify(w, r, audience)
 		default:
 			http.NotFound(w, r)
 		}
@@ -161,8 +226,9 @@ func (s *server) wrap(w http.ResponseWriter, r *http.Request, audience string) {
 		return
 	}
 	s.describe(changes, in.Kind, in.Ref, "")
-	// Brain alone wraps, and only credentials until passwords and email move.
-	if audience != svcsig.AudienceWorkerBrain || in.Kind != domain.KindCredential || !refPattern.MatchString(in.Ref) {
+	// Brain alone wraps: a credential for its ref, or a password for the
+	// person's uuid.
+	if audience != svcsig.AudienceWorkerBrain || !mayWrap(in.Kind, in.Ref) {
 		s.deny(w, r.Context(), http.StatusForbidden, actionWrap, audience, changes)
 		return
 	}
@@ -221,6 +287,18 @@ func (s *server) unwrap(w http.ResponseWriter, r *http.Request, audience string)
 	}
 	defer clear(dataKey)
 	respond(w, keys.UnwrapResponse{DataKey: dataKey})
+}
+
+// mayWrap is the wrap rule for brain's kinds and refs.
+func mayWrap(kind, ref string) bool {
+	switch kind {
+	case domain.KindCredential:
+		return refPattern.MatchString(ref)
+	case domain.KindPassword:
+		return personPattern.MatchString(ref)
+	default:
+		return false
+	}
 }
 
 // mayUnwrap is the unwrap rule. Gateway unwraps a credential with no
@@ -306,6 +384,117 @@ func (s *server) providerTest(w http.ResponseWriter, r *http.Request, audience s
 	respond(w, out)
 }
 
+// passwordVerifyBody is the password-verify body as read: the two proofs
+// stay raw so a null counts as present, and exactly one must be.
+type passwordVerifyBody struct {
+	Email          json.RawMessage `json:"email"`
+	ActorTokenHash json.RawMessage `json:"actor_token_hash"`
+	Password       string          `json:"password"`
+}
+
+// passwordVerify checks a password for brain, by address at sign-in or for
+// the signed-in person behind a session hash. The worker opens the stored
+// hash and answers match and rehash only. Each address takes at most
+// PasswordAttempts checks a minute, unknown ones included, so a refusal
+// never tells whether an address exists.
+func (s *server) passwordVerify(w http.ResponseWriter, r *http.Request, audience string) {
+	ctx := r.Context()
+	changes := map[string]string{"audience": audience, "kind": domain.KindPassword}
+	if !s.passwordLimit.take(audience, time.Now()) {
+		s.deny(w, ctx, http.StatusTooManyRequests, actionPasswordVerify, audience, changes)
+		return
+	}
+	var in passwordVerifyBody
+	if !decode(r, &in) || audience != svcsig.AudienceWorkerBrain {
+		s.deny(w, ctx, http.StatusForbidden, actionPasswordVerify, audience, changes)
+		return
+	}
+	email, tokenHash, raw, ok := in.proof()
+	if !ok || len(in.Password) == 0 || len(in.Password) > maxPasswordBytes {
+		if raw != nil {
+			changes["ref_digest"] = s.ring.AuditDigest(raw)
+		}
+		s.deny(w, ctx, http.StatusForbidden, actionPasswordVerify, audience, changes)
+		return
+	}
+	var account PasswordAccount
+	var err error
+	if tokenHash == nil {
+		account, err = s.passwords.ByAddress(ctx, email)
+	} else {
+		var found bool
+		account, found, err = s.passwords.BySession(ctx, tokenHash)
+		if err == nil && !found {
+			s.deny(w, ctx, http.StatusForbidden, actionPasswordVerify, audience, changes)
+			return
+		}
+	}
+	if err != nil || len(account.Subject) != sha256.Size {
+		s.log.Warn("keys: find a password account", "err", err)
+		s.deny(w, ctx, http.StatusServiceUnavailable, actionPasswordVerify, audience, changes)
+		return
+	}
+	attempts, err := s.passwords.Take(ctx, account.Subject)
+	if err != nil {
+		s.log.Warn("keys: count a password check", "err", err)
+		s.deny(w, ctx, http.StatusServiceUnavailable, actionPasswordVerify, audience, changes)
+		return
+	}
+	if attempts > PasswordAttempts {
+		s.deny(w, ctx, http.StatusTooManyRequests, actionPasswordVerify, audience, changes)
+		return
+	}
+	match, rehash, err := s.passwords.Check(ctx, account, in.Password)
+	switch {
+	case errors.Is(err, ErrHashBusy):
+		s.deny(w, ctx, http.StatusServiceUnavailable, actionPasswordVerify, audience, changes)
+		return
+	case err != nil:
+		// Name the key only when the value has its shape: field 1 of a
+		// stored value is never logged otherwise.
+		if parts := strings.Split(account.Stored, ":"); len(parts) == 5 && domain.ValidKeyID(parts[0]) {
+			s.log.Warn("keys: a stored password did not open", "key_id", parts[0])
+		} else {
+			s.log.Warn("keys: a stored password did not open")
+		}
+		s.deny(w, ctx, http.StatusInternalServerError, actionPasswordVerify, audience, changes)
+		return
+	}
+	if err := s.record(ctx, actionPasswordVerify, "success", audience, changes); err != nil {
+		s.log.Warn("keys: audit refused a password check", "err", err)
+		refuse(w, http.StatusForbidden)
+		return
+	}
+	respond(w, keys.PasswordVerifyResponse{Match: match, Rehash: rehash})
+}
+
+// proof reads exactly one of the address and the session hash. raw is the
+// caller's bytes of the proof it named, for a digest when they are refused.
+func (b passwordVerifyBody) proof() (email string, tokenHash, raw []byte, ok bool) {
+	hasEmail, hasHash := b.Email != nil, b.ActorTokenHash != nil
+	switch {
+	case hasEmail:
+		if err := json.Unmarshal(b.Email, &email); err != nil {
+			return "", nil, []byte(b.Email), false
+		}
+		raw = []byte(email)
+		if hasHash || len(email) == 0 || len(email) > maxEmailBytes {
+			return "", nil, raw, false
+		}
+		return email, nil, raw, true
+	case hasHash:
+		if err := json.Unmarshal(b.ActorTokenHash, &tokenHash); err != nil {
+			return "", nil, []byte(b.ActorTokenHash), false
+		}
+		if len(tokenHash) != actorHashLen {
+			return "", nil, tokenHash, false
+		}
+		return "", tokenHash, tokenHash, true
+	default:
+		return "", nil, nil, false
+	}
+}
+
 // describe fills the audit changes from the caller's fields. A ref or
 // sandbox id that misses its pattern is kept only as a keyed digest.
 func (s *server) describe(changes map[string]string, kind, ref, sandboxID string) {
@@ -313,7 +502,7 @@ func (s *server) describe(changes map[string]string, kind, ref, sandboxID string
 	case domain.KindCredential, "password", "email":
 		changes["kind"] = kind
 	}
-	if refPattern.MatchString(ref) {
+	if refPattern.MatchString(ref) || (kind == domain.KindPassword && personPattern.MatchString(ref)) {
 		changes["ref"] = ref
 	} else {
 		changes["ref_digest"] = s.ring.AuditDigest([]byte(ref))
@@ -385,11 +574,12 @@ func respond(w http.ResponseWriter, v any) {
 
 // limiter counts calls per audience over the last Window.
 type limiter struct {
-	mu sync.Mutex
-	at map[string][]time.Time
+	mu   sync.Mutex
+	rate int
+	at   map[string][]time.Time
 }
 
-// take records one call and reports whether it is within Rate. A refused
+// take records one call and reports whether it is within rate. A refused
 // call is not recorded.
 func (l *limiter) take(audience string, now time.Time) bool {
 	l.mu.Lock()
@@ -400,7 +590,7 @@ func (l *limiter) take(audience string, now time.Time) bool {
 			kept = append(kept, t)
 		}
 	}
-	if len(kept) >= Rate {
+	if len(kept) >= l.rate {
 		l.at[audience] = kept
 		return false
 	}

@@ -261,10 +261,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatalf("lookup owner role: %v", err)
 	}
 	userID := uuid.New()
-	sealedPW, err := brainops.NewPasswordSealer(ring1).Seal(userID.String(), passwordHashText)
-	if err != nil {
-		t.Fatalf("seal password hash: %v", err)
-	}
+	sealedPW := sealPasswordText(t, ring1, userID, passwordHashText)
 	if _, err := srcOwner.Exec(ctx, `
 		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at, password_hash)
 		VALUES ($1, 'founder@example.com', sha256('founder@example.com'::bytea), 'k1', 'Founder', $2, now(), now(), $3)`,
@@ -561,7 +558,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	if gotRoleID != ownerRoleID {
 		t.Fatalf("restored role_id = %s, want %s", gotRoleID, ownerRoleID)
 	}
-	unsealedPW, err := brainops.NewPasswordSealer(ring1).Open(userID.String(), gotPassword)
+	unsealedPW, err := openPasswordText(t, ring1, userID, gotPassword)
 	if err != nil || unsealedPW != passwordHashText {
 		t.Fatalf("unseal restored password hash: got=%q err=%v", unsealedPW, err)
 	}
@@ -781,6 +778,69 @@ func TestBackupRestoreVersion1ArchiveToEmptyTarget(t *testing.T) {
 	// Verify JSON encoding of manifest works cleanly.
 	if _, err := json.Marshal(m); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Invariant 10, the backup part: the key-id scan reads field 1 of a
+// five-field password, and never a field of the old three-field form.
+func TestBackupScansThePasswordKeyOfFiveFields(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
+	ctx := context.Background()
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatal(err)
+	}
+	key := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	ring := func(id string, b byte) gateway.Keyring {
+		r, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
+			switch name {
+			case gateway.EnvMasterKey:
+				return key(b), true
+			case gateway.EnvMasterKeyID:
+				return id, true
+			}
+			return "", false
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	five, three := uuid.New(), uuid.New()
+	// The addresses are plain and their hash key is k1, so only a password
+	// names k3 or k4.
+	for _, p := range []struct {
+		id     uuid.UUID
+		email  string
+		role   string
+		stored string
+	}{
+		{five, "five@example.com", "owner", sealPasswordText(t, ring("k3", 0x63), five, "a stored hash")},
+		{three, "three@example.com", "member", "k4:bm9uY2U=:Y2lwaGVydGV4dA=="},
+	} {
+		if _, err := srcOwner.Exec(ctx, `
+			INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at, password_hash)
+			SELECT $1, $2, sha256(convert_to($2, 'UTF8')), 'k1', 'Person', id, now(), now(), $3 FROM identity.roles WHERE key = $4`,
+			p.id, p.email, p.stored, p.role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(gateway.EnvMasterKey, key(0x61))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	archivePath := filepath.Join(t.TempDir(), "passwords.tar.gz")
+	var out bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath, "--no-encrypt"}, &out); err != nil {
+		t.Fatalf("backupCommand: %v", err)
+	}
+	var meta backup.DBMeta
+	if err := json.Unmarshal(archiveEntries(t, archivePath)["payload.tar.gz/db/meta.json"], &meta); err != nil {
+		t.Fatalf("parse db/meta.json: %v", err)
+	}
+	if got := strings.Join(meta.KeyIDs, ","); got != "k1,k3" {
+		t.Fatalf("db/meta.json key_ids = %s, want k1,k3", got)
 	}
 }
 
@@ -2236,4 +2296,44 @@ func archiveEntries(t *testing.T, archive string) map[string][]byte {
 	}
 	read("", raw)
 	return out
+}
+
+// sealPasswordText stores hash for user as the worker does: five fields,
+// a new data key wrapped for v1:password:<uuid>, the payload sealed for
+// identity:password:<uuid>.
+func sealPasswordText(t *testing.T, ring gateway.Keyring, user uuid.UUID, hash string) string {
+	t.Helper()
+	person, err := identity.ParseUserID(user.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ring.WrapNew(gateway.KindPassword, person.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(w.DataKey)
+	sealed, err := gateway.SealWithDataKey(w, identity.PasswordRef(person), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gateway.SealedText(sealed)
+}
+
+// openPasswordText opens a five-field stored password with ring.
+func openPasswordText(t *testing.T, ring gateway.Keyring, user uuid.UUID, stored string) (string, error) {
+	t.Helper()
+	person, err := identity.ParseUserID(user.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := gateway.ParseSealedText(stored)
+	if err != nil {
+		return "", err
+	}
+	dataKey, err := ring.Unwrap(gateway.KindPassword, person.String(), s.KeyID, s.WrapNonce, s.WrappedKey)
+	if err != nil {
+		return "", err
+	}
+	defer clear(dataKey)
+	return gateway.OpenData(dataKey, identity.PasswordRef(person), s.Ciphertext, s.Nonce)
 }

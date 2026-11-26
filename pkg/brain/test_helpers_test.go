@@ -66,7 +66,8 @@ func routesAt(
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	passwords := identity.Passwords(pool, brainops.NewEmailSealer(masterKeys), sessions)
-	passwords.Sealer = brainops.NewPasswordSealer(masterKeys)
+	// No pkg/brain test signs in or sets a password here: Keys stays unset,
+	// which refuses every password call (the identity suites drive the worker).
 	tokens := identity.APITokens(pool, log)
 	passkeys, err := identity.Passkeys(pool, brainops.NewEmailSealer(masterKeys), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
