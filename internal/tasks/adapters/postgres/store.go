@@ -16,8 +16,10 @@ import (
 
 // Store is the task tables. One transition is one transaction.
 type Store struct {
-	Pool     *pgxpool.Pool
-	Owner    *pgxpool.Pool
+	Pool *pgxpool.Pool
+	// Runner logs in as upmo_runner, the only role that may write the runner
+	// columns (checks, passes, plan, brake, spend, taint).
+	Runner   *pgxpool.Pool
 	Enqueuer jobs.Enqueuer
 	// ReplaceTaskGrants runs identity's grant replacement inside a transaction
 	// the store already opened. cmd wires it from taskGrants.
@@ -177,11 +179,11 @@ func (s Store) begin(ctx context.Context, access app.Access) (pgx.Tx, error) {
 	return s.beginWith(ctx, access, pgx.TxOptions{})
 }
 
-func (s Store) beginOwner(ctx context.Context, access app.Access) (pgx.Tx, error) {
-	if s.Owner == nil {
-		return nil, fmt.Errorf("tasks: no owner database")
+func (s Store) beginRunner(ctx context.Context, access app.Access) (pgx.Tx, error) {
+	if s.Runner == nil {
+		return nil, fmt.Errorf("tasks: no runner database")
 	}
-	tx, err := s.Owner.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.Runner.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
 	}

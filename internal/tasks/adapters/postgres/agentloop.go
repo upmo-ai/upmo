@@ -34,12 +34,12 @@ func (s Store) NarrowedTx(ctx context.Context, scope agentloop.AccessScope, fn f
 	return tx.Commit(ctx)
 }
 
-// NarrowedOwnerTx is NarrowedTx on the migration-owner pool. Runner columns are revoked from upmo_app.
-func (s Store) NarrowedOwnerTx(ctx context.Context, scope agentloop.AccessScope, fn func(pgx.Tx) error) error {
-	if s.Owner == nil {
-		return fmt.Errorf("tasks: no owner database")
+// NarrowedRunnerTx is NarrowedTx on the upmo_runner pool. Runner columns are revoked from upmo_app.
+func (s Store) NarrowedRunnerTx(ctx context.Context, scope agentloop.AccessScope, fn func(pgx.Tx) error) error {
+	if s.Runner == nil {
+		return fmt.Errorf("tasks: no runner database")
 	}
-	tx, err := s.Owner.Begin(ctx)
+	tx, err := s.Runner.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ type TaskTurnStore struct {
 
 // CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.
 func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloop.TurnCommit) error {
-	return s.Store.NarrowedOwnerTx(ctx, s.Scope, func(tx pgx.Tx) error {
+	return s.Store.NarrowedRunnerTx(ctx, s.Scope, func(tx pgx.Tx) error {
 		if err := InsertTurnRows(ctx, tx, commit); err != nil {
 			return err
 		}

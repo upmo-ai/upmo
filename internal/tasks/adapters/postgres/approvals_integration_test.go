@@ -161,7 +161,7 @@ func TestRequestApprovalRefusesASecondRequestWhilePending(t *testing.T) {
 
 func TestRequestApprovalIsAllOrNothing(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	planning := reach(t, store, "Plan it", domain.Planning)
 	working := reach(t, store, "Do it", domain.Working)

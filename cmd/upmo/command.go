@@ -7,21 +7,35 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
+	"github.com/upmo-ai/upmo/internal/agents"
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/backup"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
+	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/platform/logging"
+	"github.com/upmo-ai/upmo/internal/platform/metrics"
+	"github.com/upmo-ai/upmo/internal/platform/notices"
+	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
+	"github.com/upmo-ai/upmo/internal/provision"
 )
 
 func command(name string, args []string) error {
@@ -32,6 +46,8 @@ func command(name string, args []string) error {
 		return backupCommand(args, os.Stdout)
 	case "restore":
 		return restoreCommand(args, os.Stdout)
+	case "worker":
+		return workerCommand()
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -91,6 +107,13 @@ func checkEnvGuard(dbURL string) error {
 	}, os.LookupEnv, os.Environ())
 }
 
+// developmentEnv reports whether UPMO_ENV is development. A value ParseEnv
+// refuses is production here; checkEnvGuard reports it next.
+func developmentEnv() bool {
+	env, err := config.ParseEnv(os.Getenv("UPMO_ENV"))
+	return err == nil && env == config.EnvDevelopment
+}
+
 func migrateCommand() error {
 	dbURL := strings.TrimSpace(os.Getenv("UPMO_DATABASE_URL"))
 	if dbURL == "" {
@@ -100,7 +123,7 @@ func migrateCommand() error {
 		}
 		dbURL = cfg.DatabaseURL
 	} else {
-		if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
+		if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL, developmentEnv()); err != nil {
 			return err
 		}
 		if err := checkEnvGuard(dbURL); err != nil {
@@ -240,7 +263,7 @@ func loadBackupEnv(forBackup bool) (backupEnv, error) {
 	if dbURL == "" {
 		return backupEnv{}, errors.New("config: UPMO_DATABASE_URL is required")
 	}
-	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL); err != nil {
+	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", dbURL, developmentEnv()); err != nil {
 		return backupEnv{}, err
 	}
 	if err := checkEnvGuard(dbURL); err != nil {
@@ -476,4 +499,217 @@ func restoreCommand(args []string, stdout io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// servingRoles are the roles the worker gives a password, each from its own
+// URL. A role whose URL is unset stays NOLOGIN.
+var servingRoles = []struct{ env, role string }{
+	{"UPMO_DATABASE_APP_URL", "upmo_app"},
+	{"UPMO_DATABASE_RUNNER_URL", "upmo_runner"},
+	{"UPMO_DATABASE_GATEWAY_URL", "upmo_gateway"},
+	{"UPMO_DATABASE_SANDBOX_URL", "upmo_sandbox"},
+}
+
+// workerCommand runs `upmo worker`, the one process that holds the privileged
+// role. It migrates, gives each serving role its password, runs the jobs that
+// read or move every person's rows, and serves /api/v1/provision/* on its
+// internal listener. Brain, gateway and sandboxd start after it and never
+// hold this role.
+func workerCommand() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log := logging.New(os.Stdout, cfg.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	provisionKeys, err := provision.ParseKeys(cfg.ProvisionKeys)
+	if err != nil {
+		return err
+	}
+	// A plaintext Vault address with a token fails the start, however the
+	// audit push is configured.
+	secrets, err := secretchain.FromEnv(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	ring, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		return err
+	}
+
+	owner, err := brainops.OpenOwnerPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
+	if err := backup.CheckPrivileges(ctx, owner); err != nil {
+		return err
+	}
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		return err
+	}
+	logins := map[string]string{
+		"UPMO_DATABASE_APP_URL":     cfg.DatabaseAppURL,
+		"UPMO_DATABASE_RUNNER_URL":  cfg.DatabaseRunnerURL,
+		"UPMO_DATABASE_GATEWAY_URL": cfg.DatabaseGatewayURL,
+		"UPMO_DATABASE_SANDBOX_URL": cfg.DatabaseSandboxURL,
+	}
+	for _, r := range servingRoles {
+		if logins[r.env] == "" {
+			continue
+		}
+		if err := brainops.EnableLogin(ctx, owner, r.env, r.role, logins[r.env]); err != nil {
+			return err
+		}
+	}
+
+	reg := checkSealedKeys(ctx, owner, ring, cfg.MetricsAddr != "", log)
+
+	work, err := openWorkerJobs(owner, cfg, secrets, ring, reg, log)
+	if err != nil {
+		return err
+	}
+	if err := work.Start(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		wait, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if err := work.Stop(wait); err != nil {
+			log.Warn("worker jobs still running at shutdown", "err", err)
+		}
+	}()
+
+	log.Info("worker started", "listen", cfg.WorkerListenAddr)
+	servers := []*http.Server{httpserver.New(cfg.WorkerListenAddr, workerHandler(owner, cfg, ring, provisionKeys, log))}
+	if reg != nil {
+		servers = append(servers, metrics.Server(cfg.MetricsAddr, reg, cfg.MetricsToken))
+	}
+	srvCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errc := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func() {
+			errc <- httpserver.Run(srvCtx, srv, cfg.ShutdownTimeout, log)
+			cancel()
+		}()
+	}
+	errs := make([]error, len(servers))
+	for i := range servers {
+		errs[i] = <-errc
+	}
+	return errors.Join(errs...)
+}
+
+// checkSealedKeys warns once per store whose sealed rows use a master key the
+// ring does not hold: those rows can never open. It never stops start-up,
+// and a counting error is a warning too. With metrics on it returns the
+// registry with the gauge each scrape recounts; otherwise nil.
+func checkSealedKeys(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring, withMetrics bool, log *slog.Logger) *metrics.Registry {
+	if unknown, err := brainops.UnknownKeyRows(ctx, owner, ring); err != nil {
+		log.Warn("counting sealed rows by key failed", "err", err)
+	} else {
+		for _, count := range unknown {
+			if count.Unknown > 0 {
+				log.Warn("sealed rows use a master key that is not loaded",
+					"store", count.Store, "rows", count.Unknown, "key_ids", count.UnknownKeyIDs)
+			}
+		}
+	}
+	if !withMetrics {
+		return nil
+	}
+	reg := metrics.NewRegistry()
+	brainops.RegisterUnknownKeyMetric(reg, owner, ring)
+	return reg
+}
+
+// workerHandler is the worker's one HTTP surface: provisioning, with its own
+// key check, on the owner pool, and the health routes compose waits on.
+func workerHandler(owner *pgxpool.Pool, cfg config.Config, ring gateway.Keyring, keys []provision.Key, log *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	httpserver.Health(mux, owner.Ping)
+	provision.Handler{
+		Owner:      owner,
+		Identity:   identity.WithProvisionAvatars(identity.Provision(owner, brainops.NewEmailSealer(ring), cfg.PublicURL), cfg.AvatarsDir),
+		MasterKeys: ring,
+		Keys:       keys,
+		Log:        log,
+	}.Mount(mux)
+	return mux
+}
+
+// openWorkerJobs registers every job that reads or moves rows across people
+// on the owner pool, on River tables of its own schema: River elects one
+// leader per schema, and only the leader inserts periodic jobs, so sharing
+// brain's schema could leave these never scheduled.
+func openWorkerJobs(owner *pgxpool.Pool, cfg config.Config, secrets secretchain.Chain, ring gateway.Keyring, reg *metrics.Registry, log *slog.Logger) (*jobs.Client, error) {
+	workers := river.NewWorkers()
+	// The sealer runs on the owner pool: pending and sealed events are the
+	// app role's to insert and read, never to move.
+	audit.AddSealer(workers, owner, os.Stdout)
+	audit.AddRetention(workers, owner, cfg.AuditRetentionDays)
+	audit.AddVerifier(workers, owner)
+	workspaceZone := func(ctx context.Context) (string, error) {
+		return identity.WorkspaceTimeZone(ctx, owner)
+	}
+	settingsManagers := func(ctx context.Context) ([]string, error) {
+		return identity.SettingsManagers(ctx, owner)
+	}
+	notify := func(ctx context.Context, tx pgx.Tx, userID, title string) error {
+		uid, err := uuid.Parse(userID)
+		if err != nil {
+			return err
+		}
+		_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
+		return err
+	}
+	gateway.AddSpendChecker(workers, owner, workspaceZone, reg, log)
+	gateway.AddUsageRollup(workers, owner, workspaceZone, log)
+	gateway.AddProviderChecker(workers, gateway.ProviderCheckDeps{
+		Owner:   owner,
+		Secrets: append(slices.Clone(secrets), gateway.DBSecrets{Pool: owner, Keys: ring}),
+		AgentModelUses: func(ctx context.Context, provider string, models []string) ([]string, error) {
+			return agents.SystemProviderModelUses(ctx, owner, provider, models)
+		},
+		AutomationModelUses: func(context.Context, string, []string) ([]string, error) {
+			return nil, nil
+		},
+		ActiveUser: func(ctx context.Context, userID string) (bool, error) {
+			return identity.ActiveUser(ctx, owner, userID)
+		},
+		SettingsManagers: settingsManagers,
+		Notify:           notify,
+		Log:              log,
+	})
+	gateway.AddCatalogRefresher(workers, gateway.CatalogRefreshDeps{
+		Owner:            owner,
+		SettingsManagers: settingsManagers,
+		Notify:           notify,
+		Log:              log,
+	})
+	emails := brainops.NewEmailSealer(ring)
+	provision.AddNonceSweep(workers, identity.Provision(owner, emails, cfg.PublicURL))
+	periodic := []*river.PeriodicJob{
+		audit.SealPeriodic(), audit.RetentionPeriodic(), audit.VerifyPeriodic(),
+		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
+		gateway.ProviderCheckPeriodic(), gateway.CatalogRefreshPeriodic(),
+		gateway.UsageRollupPeriodic(),
+	}
+	if cfg.AuditWebhookURL != "" || cfg.AuditSyslogAddr != "" {
+		audit.AddPusher(workers, owner, audit.PushConfig{
+			WebhookURL: cfg.AuditWebhookURL,
+			SyslogAddr: cfg.AuditSyslogAddr,
+			Secrets:    secrets,
+		})
+		periodic = append(periodic, audit.PushPeriodic())
+	}
+	return jobs.Open(owner,
+		jobs.WithSchema(jobs.WorkerSchema),
+		jobs.WithWorkers(workers),
+		jobs.WithPeriodic(periodic...),
+		jobs.WithMetrics(reg),
+	)
 }

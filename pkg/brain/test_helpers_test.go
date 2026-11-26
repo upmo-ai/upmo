@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
+	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 func routes(
@@ -120,5 +122,13 @@ func routes(
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return buildHandler(deps, ideps, boxes, work, streams, chatStreams, nil, o)
+	return buildHandler(deps, ideps, boxes, work, streams, chatStreams, o)
+}
+
+// servingPools injects the two pools brain runs on as the roles brain logs in
+// as in production: a real upmo_app login and a real upmo_runner login. A
+// superuser session that switched role would fail brain's role check.
+func servingPools(t *testing.T, owner *pgxpool.Pool) Option {
+	t.Helper()
+	return WithPools(pgtest.AppLogin(t, owner), pgtest.Login(t, owner, "upmo_runner"))
 }

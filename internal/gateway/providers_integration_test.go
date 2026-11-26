@@ -1530,7 +1530,7 @@ func TestMigrationLeavesExistingAccountsGlobal(t *testing.T) {
 	var n int
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*) FROM pg_policies WHERE schemaname = 'gateway'
-		AND tablename IN ('provider_accounts', 'provider_models', 'credentials')`).Scan(&n); err != nil || n != 11 {
+		AND tablename IN ('provider_accounts', 'provider_models', 'credentials')`).Scan(&n); err != nil || n != 15 {
 		t.Fatalf("policies = %d, %v", n, err)
 	}
 	var forced int

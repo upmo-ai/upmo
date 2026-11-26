@@ -80,7 +80,7 @@ func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amou
 	if amount < 1 {
 		return domain.ErrBudget
 	}
-	tx, err := s.beginOwner(ctx, access)
+	tx, err := s.beginRunner(ctx, access)
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func (s Store) Spend(ctx context.Context, access app.Access, taskID string, amou
 
 // Taint marks the task. The database spreads the mark along the tree.
 func (s Store) Taint(ctx context.Context, access app.Access, taskID string) error {
-	tx, err := s.beginOwner(ctx, access)
+	tx, err := s.beginRunner(ctx, access)
 	if err != nil {
 		return err
 	}

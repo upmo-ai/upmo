@@ -163,14 +163,16 @@ func MountWorkspace(mux *http.ServeMux, workspace app.Workspace, sessions app.Se
 	(httpapi.Workspace{Workspace: workspace, Sessions: sessions}).Mount(mux)
 }
 
-// WorkspaceTimeZone reads the workspace's configured time zone on the owner pool.
-func WorkspaceTimeZone(ctx context.Context, owner *pgxpool.Pool) (string, error) {
-	return postgres.WorkspaceTimeZone(ctx, owner)
+// WorkspaceTimeZone reads the workspace's configured time zone through a
+// definer any serving pool may call.
+func WorkspaceTimeZone(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	return postgres.WorkspaceTimeZone(ctx, pool)
 }
 
-// SettingsManagers returns the IDs of all active users holding settings:manage.
-func SettingsManagers(ctx context.Context, owner *pgxpool.Pool) ([]string, error) {
-	return postgres.SettingsManagers(ctx, owner)
+// SettingsManagers returns the IDs of all active users holding settings:manage,
+// through a definer any serving pool may call.
+func SettingsManagers(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	return postgres.SettingsManagers(ctx, pool)
 }
 
 // ActiveUser reports whether userID is a joined, non-disabled user.

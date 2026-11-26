@@ -123,9 +123,10 @@ func NewStreamHub(pool *pgxpool.Pool, conn *pgx.ConnConfig, log *slog.Logger, cf
 	return app.NewStreamHub(postgres.Store{Pool: pool}, postgres.Listener{Config: conn, Log: log}, log, cfg)
 }
 
-// NewStore returns the tasks Store on pool. A nil enqueuer enqueues no jobs.
-func NewStore(pool, owner *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
-	return postgres.Store{Pool: pool, Owner: owner, Enqueuer: enqueuer}
+// NewStore returns the tasks Store on pool. runner logs in as upmo_runner and
+// writes the runner columns upmo_app may not. A nil enqueuer enqueues no jobs.
+func NewStore(pool, runner *pgxpool.Pool, enqueuer jobs.Enqueuer) Store {
+	return postgres.Store{Pool: pool, Runner: runner, Enqueuer: enqueuer}
 }
 
 // NewEditorTokens builds the editor token signer from the editor keys.

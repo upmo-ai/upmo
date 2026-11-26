@@ -118,6 +118,7 @@ type createBody struct {
 	TTLSeconds  int64            `json:"ttl_seconds"`
 	Allow       []string         `json:"allow"`
 	Credentials []credentialBody `json:"credentials"`
+	ProxySecret []byte           `json:"proxy_secret"`
 }
 
 type shapeBody struct {
@@ -171,6 +172,7 @@ func (c Client) Create(ctx context.Context, spec app.Spec) (app.Sandbox, error) 
 		TTLSeconds:  int64(spec.TTL / time.Second),
 		Allow:       spec.Allow,
 		Credentials: make([]credentialBody, 0, len(spec.Credentials)),
+		ProxySecret: spec.ProxySecret,
 	}
 	for _, cr := range spec.Credentials {
 		body.Credentials = append(body.Credentials, credentialBody{Sentinel: cr.Sentinel, Ref: cr.Ref, Host: cr.Host})

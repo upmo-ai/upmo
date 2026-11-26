@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -67,43 +68,98 @@ func RootCAs(path string) (*x509.CertPool, error) {
 }
 
 // PostgresURL refuses a Postgres connection string unless every target pgx
-// would dial is exempt, or dialled with a verified certificate. pgx itself
-// parses the string — keyword DSN quirks, the host= parameter, comma lists,
-// the PG* environment and the service file — so the hosts checked are the
-// hosts pgx resolves at connect time, and a string pgx cannot parse (or a
-// private CA it cannot read) fails closed. The dial targets are the main
-// config and each fallback; a host that starts with / is a Unix socket
-// directory pgx never wraps in TLS. A non-exempt host must land on sslmode
-// verify-full, which is exactly the tls.Config with TLS on, the certificate
-// verified and the server name checked; require and verify-ca skip the name
-// check, prefer and allow keep a plaintext fallback, and disable has no TLS
-// at all. envName names the environment variable in the error; a private CA
-// rides on the existing sslrootcert parameter.
-func PostgresURL(envName, dsn string) error {
+// would dial is allowed. pgx itself parses the string — keyword DSN quirks,
+// the host= parameter, comma lists, the PG* environment and the service file —
+// so the hosts checked are the hosts pgx resolves at connect time, and a
+// string pgx cannot parse (or a CA or key file it cannot read) fails closed.
+// The dial targets are the main config and each fallback; a host that starts
+// with / is a Unix socket directory pgx never wraps in TLS, so production
+// refuses it and development allows it.
+//
+// In development an exempt host (loopback, one DNS label) may use any TLS
+// state. Every other host, and in production every host, must land on
+// sslmode verify-full, which is exactly the tls.Config with TLS on, the
+// certificate verified and the server name checked; require and verify-ca
+// skip the name check, prefer and allow keep a plaintext fallback, and
+// disable has no TLS at all. Production also needs the private CA in
+// sslrootcert and the client certificate in sslcert and sslkey, so the
+// database checks who is connecting as well as the password. envName names
+// the environment variable in the error.
+func PostgresURL(envName, dsn string, development bool) error {
 	config, err := pgconn.ParseConfig(dsn)
 	if err != nil {
 		return fmt.Errorf("config: %s must be a Postgres URL", envName)
 	}
-	if err := checkDialTarget(envName, config.Host, config.TLSConfig); err != nil {
+	clientCert := clientCertNamed(dsn)
+	if err := checkDialTarget(envName, config.Host, config.TLSConfig, development, clientCert); err != nil {
 		return err
 	}
 	for _, fallback := range config.Fallbacks {
-		if err := checkDialTarget(envName, fallback.Host, fallback.TLSConfig); err != nil {
+		if err := checkDialTarget(envName, fallback.Host, fallback.TLSConfig, development, clientCert); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkDialTarget applies the rule to one host pgx may dial: exempt hosts
-// (loopback, one DNS label) and Unix socket directories may use any TLS
-// state, every other host must carry verify-full's tls.Config.
-func checkDialTarget(envName, host string, tlsConfig *tls.Config) error {
-	if strings.HasPrefix(host, "/") || ExemptHost(host) {
+// keywordSetting finds one key=value pair in a keyword DSN.
+func keywordSetting(dsn, key string) string {
+	m := regexp.MustCompile(`(?:^|\s)` + key + `\s*=\s*('[^']*'|\S+)`).FindStringSubmatch(dsn)
+	if m == nil {
+		return ""
+	}
+	return strings.Trim(m[1], "'")
+}
+
+// clientCertNamed reports whether the string, or PGSSLCERT and PGSSLKEY,
+// name a client certificate and key. pgx loads them while parsing but keeps
+// them private, so the names are read here; pgx has already refused a pair
+// that does not load. A certificate only a service file names is not seen,
+// which refuses it in production rather than accept a missing one.
+func clientCertNamed(dsn string) bool {
+	var cert, key string
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		if u, err := url.Parse(dsn); err == nil {
+			cert, key = u.Query().Get("sslcert"), u.Query().Get("sslkey")
+		}
+	} else {
+		cert, key = keywordSetting(dsn, "sslcert"), keywordSetting(dsn, "sslkey")
+	}
+	if cert == "" {
+		cert = os.Getenv("PGSSLCERT")
+	}
+	if key == "" {
+		key = os.Getenv("PGSSLKEY")
+	}
+	return cert != "" && key != ""
+}
+
+// checkDialTarget applies the rule to one host pgx may dial.
+func checkDialTarget(envName, host string, tlsConfig *tls.Config, development, clientCert bool) error {
+	if strings.HasPrefix(host, "/") {
+		// Postgres has no TLS over a Unix socket.
+		if development {
+			return nil
+		}
+		return fmt.Errorf("config: %s must not use a Unix socket in production", envName)
+	}
+	if PlaintextAllowed(development, host) {
 		return nil
 	}
 	if tlsConfig == nil || tlsConfig.InsecureSkipVerify || tlsConfig.ServerName != host {
-		return fmt.Errorf("config: %s must use sslmode=verify-full unless the host is loopback or one DNS label", envName)
+		if development {
+			return fmt.Errorf("config: %s must use sslmode=verify-full unless the host is loopback or one DNS label", envName)
+		}
+		return fmt.Errorf("config: %s must use sslmode=verify-full in production", envName)
+	}
+	if development {
+		return nil
+	}
+	if tlsConfig.RootCAs == nil {
+		return fmt.Errorf("config: %s must name the database CA in sslrootcert in production", envName)
+	}
+	if !clientCert {
+		return fmt.Errorf("config: %s must name a client certificate in sslcert and sslkey in production", envName)
 	}
 	return nil
 }

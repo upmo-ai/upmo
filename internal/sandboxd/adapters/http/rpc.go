@@ -112,6 +112,7 @@ type createBody struct {
 	TTLSeconds  int64            `json:"ttl_seconds"`
 	Allow       []string         `json:"allow"`
 	Credentials []credentialBody `json:"credentials"`
+	ProxySecret []byte           `json:"proxy_secret"`
 }
 
 type shapeBody struct {
@@ -197,12 +198,19 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, runtime.ErrSpec)
 		return
 	}
+	// Brain chose the proxy secret and stored its hash; without it sandboxd
+	// could not bind the sandbox, so nothing is created.
+	if len(body.ProxySecret) != 32 {
+		h.fail(w, runtime.ErrSpec)
+		return
+	}
 	spec := runtime.Spec{
-		Task:  body.Task,
-		Image: body.Image,
-		Tier:  body.Tier,
-		TTL:   time.Duration(body.TTLSeconds) * time.Second,
-		Allow: body.Allow,
+		Task:        body.Task,
+		Image:       body.Image,
+		Tier:        body.Tier,
+		TTL:         time.Duration(body.TTLSeconds) * time.Second,
+		Allow:       body.Allow,
+		ProxySecret: body.ProxySecret,
 	}
 	for _, c := range body.Credentials {
 		spec.Credentials = append(spec.Credentials, runtime.Credential{Sentinel: c.Sentinel, Ref: c.Ref, Host: c.Host})

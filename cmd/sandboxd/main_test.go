@@ -107,3 +107,14 @@ func TestRunRefusesBadKeys(t *testing.T) {
 		})
 	}
 }
+
+// Sandboxd never holds the privileged role: with UPMO_DATABASE_URL set it
+// stops before any driver, listener or pool opens, and the error names it.
+func TestRunRefusesTheOwnerDatabaseURL(t *testing.T) {
+	keys(t)
+	t.Setenv("UPMO_DATABASE_URL", "postgres://upmo:owner-secret@/upmo?host=/var/run/postgresql")
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_URL") || strings.Contains(err.Error(), "owner-secret") {
+		t.Fatalf("run err = %v, want a refusal naming UPMO_DATABASE_URL", err)
+	}
+}

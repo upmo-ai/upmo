@@ -1810,6 +1810,97 @@ CREATE POLICY action_logs_update ON tasks.action_logs
 GRANT SELECT, INSERT ON tasks.action_logs TO upmo_app;
 GRANT UPDATE (state, response_digest, error_text, completed_at) ON tasks.action_logs TO upmo_app;
 
+-- upmo_runner writes the runner columns upmo_app may not: the check batches
+-- and passes (Record), the plan and brake counters, the spend and the taint,
+-- and the agent loop's turn commit. Brain sets the task owner's settings on
+-- each of those transactions, and every runner policy admits only rows of
+-- the task whose owner is upmo.user_id, the same test the statements make.
+GRANT USAGE ON SCHEMA tasks TO upmo_runner;
+GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO upmo_runner;
+GRANT SELECT ON tasks.tasks TO upmo_runner;
+GRANT UPDATE (
+  status, cause, passes, plan, plan_digest, stalls, failures, replanned, last_gap,
+  spent, paused, tainted, private_read, updated_at
+) ON tasks.tasks TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.checks TO upmo_runner;
+GRANT SELECT ON tasks.review_findings TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.turns TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.approvals TO upmo_runner;
+GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.task_events TO upmo_runner;
+
+CREATE POLICY tasks_runner_select ON tasks.tasks
+  FOR SELECT TO upmo_runner
+  USING (owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid);
+
+CREATE POLICY tasks_runner_update ON tasks.tasks
+  FOR UPDATE TO upmo_runner
+  USING (owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
+  WITH CHECK (owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid);
+
+CREATE POLICY checks_runner_select ON tasks.checks
+  FOR SELECT TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY checks_runner_insert ON tasks.checks
+  FOR INSERT TO upmo_runner
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY review_findings_runner_select ON tasks.review_findings
+  FOR SELECT TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY turns_runner ON tasks.turns
+  FOR ALL TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY task_events_runner ON tasks.task_events
+  FOR ALL TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY approvals_runner ON tasks.approvals
+  FOR ALL TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
 -- +goose Down
 
 DROP TABLE IF EXISTS tasks.action_logs;

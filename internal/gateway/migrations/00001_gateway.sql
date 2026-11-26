@@ -944,7 +944,259 @@ GRANT SELECT (kind, subject_id, period_start, spent_micro_usd, held_micro_usd) O
 GRANT SELECT ON gateway.usage_daily TO upmo_app;
 GRANT SELECT ON gateway.usage_daily_state TO upmo_app;
 
+-- The bundle tables had no row security. Only the owner and the gateway
+-- process read them.
+ALTER TABLE gateway.tool_bundles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.tool_bundles FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateway.tool_bundle_tools ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.tool_bundle_tools FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tool_bundles_service ON gateway.tool_bundles
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+CREATE POLICY tool_bundle_tools_service ON gateway.tool_bundle_tools
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+-- True only for the role cmd/gateway logs in as. That role is not the table
+-- owner, so gateway.serving() stays false for it.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.dispatching()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT current_user = 'upmo_gateway';
+$$;
+-- +goose StatementEnd
+
+-- The gateway process dispatches as upmo_gateway: it reads routes, prices
+-- and every sealed credential, and writes the ledger, spend and holds. The
+-- column lists limit what it reads and writes; each policy lets the granted
+-- command see every row, because a dispatch has no person's settings.
+GRANT USAGE ON SCHEMA gateway TO upmo_gateway;
+GRANT SELECT (ref, ciphertext, nonce, key_id) ON gateway.credentials TO upmo_gateway;
+GRANT SELECT ON gateway.provider_accounts TO upmo_gateway;
+GRANT UPDATE (status, checked_at, status_started_at) ON gateway.provider_accounts TO upmo_gateway;
+GRANT SELECT ON gateway.provider_models TO upmo_gateway;
+GRANT SELECT ON gateway.routes, gateway.route_links, gateway.prices, gateway.price_tiers TO upmo_gateway;
+GRANT SELECT ON gateway.tool_bundles, gateway.tool_bundle_tools TO upmo_gateway;
+-- The call pricing reads the account's override and its discovered list
+-- price. On the ledger, gateway reads only what Settle (hold_id) and the
+-- unpriced-model notice (the rest) filter on; it never reads a call's
+-- people, tokens or cost back.
+GRANT SELECT ON gateway.price_overrides, gateway.account_models_seen TO upmo_gateway;
+GRANT SELECT (id, at, hold_id, provider_account_id, model, price_source, service_tier, unknown_notified_at) ON gateway.ledger TO upmo_gateway;
+GRANT INSERT ON gateway.ledger TO upmo_gateway;
+GRANT UPDATE (unknown_notified_at) ON gateway.ledger TO upmo_gateway;
+GRANT SELECT ON gateway.usage_limits TO upmo_gateway;
+GRANT SELECT, INSERT, UPDATE ON gateway.usage_spend TO upmo_gateway;
+GRANT SELECT, INSERT, DELETE ON gateway.usage_holds TO upmo_gateway;
+GRANT EXECUTE ON FUNCTION gateway.serving() TO upmo_gateway;
+
+CREATE POLICY credentials_dispatch ON gateway.credentials FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY provider_accounts_dispatch ON gateway.provider_accounts FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY provider_accounts_dispatch_status ON gateway.provider_accounts FOR UPDATE TO upmo_gateway USING (true) WITH CHECK (true);
+CREATE POLICY provider_models_dispatch ON gateway.provider_models FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY routes_dispatch ON gateway.routes FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY route_links_dispatch ON gateway.route_links FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY tool_bundles_dispatch ON gateway.tool_bundles FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY tool_bundle_tools_dispatch ON gateway.tool_bundle_tools FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY price_overrides_dispatch ON gateway.price_overrides FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY account_models_seen_dispatch ON gateway.account_models_seen FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY ledger_dispatch_select ON gateway.ledger FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY ledger_dispatch_insert ON gateway.ledger FOR INSERT TO upmo_gateway WITH CHECK (true);
+CREATE POLICY ledger_dispatch_notice ON gateway.ledger FOR UPDATE TO upmo_gateway USING (true) WITH CHECK (true);
+CREATE POLICY usage_limits_dispatch ON gateway.usage_limits FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY usage_spend_dispatch_select ON gateway.usage_spend FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY usage_spend_dispatch_insert ON gateway.usage_spend FOR INSERT TO upmo_gateway WITH CHECK (true);
+CREATE POLICY usage_spend_dispatch_update ON gateway.usage_spend FOR UPDATE TO upmo_gateway USING (true) WITH CHECK (true);
+CREATE POLICY usage_holds_dispatch_select ON gateway.usage_holds FOR SELECT TO upmo_gateway USING (true);
+CREATE POLICY usage_holds_dispatch_insert ON gateway.usage_holds FOR INSERT TO upmo_gateway WITH CHECK (true);
+CREATE POLICY usage_holds_dispatch_delete ON gateway.usage_holds FOR DELETE TO upmo_gateway USING (true);
+
+-- The person policies on these tables apply to every role, so the gateway
+-- role runs their checks too. They read only upmo_ settings, which the
+-- gateway never sets, so they admit nothing on their own.
+GRANT EXECUTE ON FUNCTION identity.can_use(uuid, uuid[], uuid, text, uuid[]) TO upmo_gateway;
+GRANT EXECUTE ON FUNCTION identity.may_use(uuid, text, uuid[]) TO upmo_gateway;
+GRANT EXECUTE ON FUNCTION identity.may_manage(uuid, text) TO upmo_gateway;
+GRANT EXECUTE ON FUNCTION identity.may_manage_provider(uuid, text) TO upmo_gateway;
+GRANT EXECUTE ON FUNCTION identity.member_providers_allowed() TO upmo_gateway;
+
+-- The schema heads /version reports, for roles that may not read the goose
+-- tables.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.schema_versions()
+RETURNS TABLE (schema_name text, version bigint)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  s text;
+  v bigint;
+BEGIN
+  FOR s IN
+    SELECT n.nspname::text
+    FROM pg_class AS c
+    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE c.relname = 'goose_db_version'
+      AND c.relkind = 'r'
+      AND n.nspname = ANY (ARRAY['audit', 'identity', 'memory', 'knowledge', 'tasks', 'chat',
+        'decisions', 'artifacts', 'runtime', 'gateway', 'notices', 'agents', 'platform'])
+    ORDER BY 1
+  LOOP
+    EXECUTE format('SELECT COALESCE(max(version_id), 0) FROM %I.goose_db_version WHERE is_applied AND version_id > 0', s) INTO v;
+    schema_name := s;
+    version := v;
+    RETURN NEXT;
+  END LOOP;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION gateway.schema_versions() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gateway.schema_versions() TO upmo_gateway, upmo_app;
+
+-- sandbox_credential_refs binds a sandbox to the credential refs its task may
+-- use. UPM-406 writes it through a definer of its own. No serving role has a
+-- privilege on it.
+CREATE TABLE gateway.sandbox_credential_refs (
+  sandbox_id text NOT NULL,
+  ref text NOT NULL,
+  PRIMARY KEY (sandbox_id, ref),
+  CONSTRAINT sandbox_credential_refs_sandbox_check CHECK (sandbox_id ~ '^[A-Za-z0-9._-]{1,64}$'),
+  CONSTRAINT sandbox_credential_refs_ref_check CHECK (ref ~ '^[A-Za-z0-9_]{1,64}$')
+);
+
+ALTER TABLE gateway.sandbox_credential_refs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gateway.sandbox_credential_refs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY sandbox_credential_refs_service ON gateway.sandbox_credential_refs
+  FOR ALL
+  USING (gateway.serving())
+  WITH CHECK (gateway.serving());
+
+-- Sandboxd calls this once at Create, as upmo_sandbox, to bind the sandbox to
+-- the task's pending row. Brain chose the proxy secret and stored its hash
+-- with the row, so the call must present that same hash and sandbox_id must
+-- still be null. It sets sandbox_id only; anything else is 42501 and writes
+-- nothing.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.attach_sandbox_credential(task uuid, sandbox text, secret_hash bytea)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  n bigint;
+BEGIN
+  IF task IS NULL OR sandbox IS NULL OR sandbox !~ '^[A-Za-z0-9._-]{1,64}$'
+     OR secret_hash IS NULL OR octet_length(secret_hash) <> 32 THEN
+    RAISE EXCEPTION 'gateway: sandbox credential refused' USING ERRCODE = '42501';
+  END IF;
+  UPDATE runtime.task_sandboxes AS t
+  SET sandbox_id = sandbox
+  WHERE t.task_id = task
+    AND t.sandbox_id IS NULL
+    AND t.proxy_secret_hash = secret_hash;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'gateway: sandbox credential refused' USING ERRCODE = '42501';
+  END IF;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION gateway.attach_sandbox_credential(uuid, text, bytea) FROM PUBLIC;
+GRANT USAGE ON SCHEMA gateway TO upmo_sandbox;
+GRANT EXECUTE ON FUNCTION gateway.attach_sandbox_credential(uuid, text, bytea) TO upmo_sandbox;
+
+-- True only when the hash matches the sandbox's stored proxy secret hash, the
+-- ref is bound to that sandbox and stored, and the sandbox's task is live. It
+-- never reads upmo.user_id. Only the owner calls it.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.sandbox_may_open(sandbox_id text, ref text, secret_hash bytea)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF sandbox_id IS NULL OR sandbox_id !~ '^[A-Za-z0-9._-]{1,64}$'
+     OR ref IS NULL OR ref !~ '^[A-Za-z0-9_]{1,64}$'
+     OR secret_hash IS NULL OR octet_length(secret_hash) <> 32 THEN
+    RETURN false;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1
+    FROM runtime.task_sandboxes AS box
+    JOIN tasks.tasks AS task ON task.id = box.task_id
+    WHERE box.sandbox_id = sandbox_may_open.sandbox_id
+      AND box.proxy_secret_hash = sandbox_may_open.secret_hash
+      AND box.expires_at > clock_timestamp()
+      AND NOT task.paused
+      AND task.status IN ('Preparing', 'Planning', 'Working', 'Verifying')
+  ) AND EXISTS (
+    SELECT 1 FROM gateway.sandbox_credential_refs AS bound
+    WHERE bound.sandbox_id = sandbox_may_open.sandbox_id
+      AND bound.ref = sandbox_may_open.ref
+  ) AND EXISTS (
+    SELECT 1 FROM gateway.credentials AS c WHERE c.ref = sandbox_may_open.ref
+  );
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION gateway.sandbox_may_open(text, text, bytea) FROM PUBLIC;
+
+-- The one credential read sandboxd has: the sealed row of one bound ref, only
+-- as upmo_sandbox and only while sandbox_may_open holds. Every refusal is the
+-- same 42501.
+-- Inside a definer current_user is the owner, so the caller is checked by
+-- its login: sandboxd logs in as upmo_sandbox.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.credential_for_sandbox(sandbox_id text, ref text, secret_hash bytea)
+RETURNS TABLE (ciphertext bytea, nonce bytea, key_id text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF session_user <> 'upmo_sandbox'
+     OR NOT gateway.sandbox_may_open(credential_for_sandbox.sandbox_id, credential_for_sandbox.ref, credential_for_sandbox.secret_hash) THEN
+    RAISE EXCEPTION 'gateway: sandbox credential refused' USING ERRCODE = '42501';
+  END IF;
+  RETURN QUERY
+    SELECT c.ciphertext, c.nonce, c.key_id
+    FROM gateway.credentials AS c
+    WHERE c.ref = credential_for_sandbox.ref;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION gateway.credential_for_sandbox(text, text, bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gateway.credential_for_sandbox(text, text, bytea) TO upmo_sandbox;
+
 -- +goose Down
+
+DROP FUNCTION IF EXISTS gateway.credential_for_sandbox(text, text, bytea);
+DROP FUNCTION IF EXISTS gateway.sandbox_may_open(text, text, bytea);
+DROP FUNCTION IF EXISTS gateway.attach_sandbox_credential(uuid, text, bytea);
+DROP TABLE IF EXISTS gateway.sandbox_credential_refs;
+DROP FUNCTION IF EXISTS gateway.schema_versions();
+DROP FUNCTION IF EXISTS gateway.dispatching();
 
 REVOKE ALL ON gateway.usage_daily_state FROM upmo_app;
 REVOKE ALL ON gateway.usage_daily FROM upmo_app;

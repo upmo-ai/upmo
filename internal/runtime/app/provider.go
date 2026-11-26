@@ -69,6 +69,10 @@ type SandboxProvider interface {
 
 // Spec describes one sandbox. It never carries a credential value, only
 // references and the sentinels the sandbox sees in their place.
+//
+// ProxySecret is the 32-byte secret brain chooses for the sandbox's proxy.
+// Brain stores only its SHA-256, with the task's pending row; sandboxd
+// presents that hash to bind the sandbox. CheckSpec does not carry it.
 type Spec struct {
 	Task        string
 	Image       string
@@ -76,6 +80,7 @@ type Spec struct {
 	TTL         time.Duration
 	Allow       []string
 	Credentials []Credential
+	ProxySecret []byte
 }
 
 // Credential maps a sentinel the sandbox sees to a reference sandboxd

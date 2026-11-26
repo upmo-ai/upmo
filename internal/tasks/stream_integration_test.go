@@ -91,7 +91,7 @@ func newRig(t *testing.T, cfg tasks.StreamConfig) *rig {
 	if err := migrate.Up(ctx, owner, tasks.Schema, tasks.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	store := tasks.NewStore(pgtest.App(t, owner), owner, nil)
+	store := tasks.NewStore(pgtest.App(t, owner), pgtest.Runner(t, owner), nil)
 	r := &rig{
 		t:       t,
 		owner:   owner,

@@ -36,6 +36,17 @@ type openConfig struct {
 	queues   map[string]river.QueueConfig
 	periodic []*river.PeriodicJob
 	metrics  *metrics.Registry
+	schema   string
+}
+
+// WithSchema runs the client on the River tables in schema instead of
+// Schema. River elects one leader per schema, and only the leader inserts
+// periodic jobs, so a process whose periodic jobs no other process may run
+// needs its own schema. A client off Schema does not drain the outbox.
+func WithSchema(schema string) Option {
+	return func(c *openConfig) {
+		c.schema = schema
+	}
 }
 
 // WithMetrics instruments River job runs and samples queue depth on reg.
@@ -70,25 +81,31 @@ func WithPeriodic(jobs ...*river.PeriodicJob) Option {
 }
 
 // Open builds a River client on pool. It registers the test-only ping worker
-// and the outbox drain worker; product kinds are registered in pkg/brain.
+// and, on Schema, the outbox drain worker; product kinds are registered by the
+// caller.
 func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 	cfg := &openConfig{
 		workers: river.NewWorkers(),
 		queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 2}},
+		schema:  Schema,
 	}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 	workers := cfg.workers
 	river.AddWorker(workers, pingWorker{})
-	river.AddWorker(workers, &outboxDrainWorker{pool: pool})
+	periodic := cfg.periodic
+	if cfg.schema == Schema {
+		river.AddWorker(workers, &outboxDrainWorker{pool: pool})
+		periodic = append([]*river.PeriodicJob{outboxDrainPeriodic()}, periodic...)
+	}
 	driver := riverpgxv5.New(pool)
 	rcfg := &river.Config{
-		Schema:               Schema,
+		Schema:               cfg.schema,
 		Workers:              workers,
 		RescueStuckJobsAfter: RescueStuckAfter,
 		Queues:               cfg.queues,
-		PeriodicJobs:         append([]*river.PeriodicJob{outboxDrainPeriodic()}, cfg.periodic...),
+		PeriodicJobs:         periodic,
 	}
 	if cfg.metrics != nil {
 		rcfg.Middleware = append(rcfg.Middleware, &metricsMiddleware{reg: cfg.metrics})
@@ -98,7 +115,7 @@ func Open(pool *pgxpool.Pool, opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("jobs: client: %w", err)
 	}
 	if cfg.metrics != nil {
-		registerQueueDepthCollector(cfg.metrics, pool, cfg.queues)
+		registerQueueDepthCollector(cfg.metrics, pool, cfg.schema, cfg.queues)
 	}
 	return &Client{river: inner}, nil
 }
@@ -130,7 +147,7 @@ func jobOutcome(err error) string {
 	return "error"
 }
 
-func registerQueueDepthCollector(reg *metrics.Registry, pool *pgxpool.Pool, queues map[string]river.QueueConfig) {
+func registerQueueDepthCollector(reg *metrics.Registry, pool *pgxpool.Pool, schema string, queues map[string]river.QueueConfig) {
 	known := make([]string, 0, len(queues))
 	for q := range queues {
 		known = append(known, q)
@@ -140,7 +157,7 @@ func registerQueueDepthCollector(reg *metrics.Registry, pool *pgxpool.Pool, queu
 		defer cancel()
 		rows, err := pool.Query(qctx, `
 			SELECT queue, count(*)
-			FROM platform.river_job
+			FROM `+pgx.Identifier{schema, "river_job"}.Sanitize()+`
 			WHERE state IN ('available', 'pending', 'running', 'retryable', 'scheduled')
 			GROUP BY queue`)
 		if err != nil {

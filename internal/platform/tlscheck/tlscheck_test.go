@@ -144,7 +144,7 @@ func TestPostgresURLTableRefusesThePlantedRequireRow(t *testing.T) {
 		{"the host query parameter may stay on one label", "UPMO_DATABASE_URL", "postgres://127.0.0.1/upmo?sslmode=disable&host=postgres", nil, ""},
 		{"a comma authority list is every host", "UPMO_DATABASE_URL", "postgres://127.0.0.1,db.example.com/upmo?sslmode=disable", nil, "config: UPMO_DATABASE_URL"},
 		{"a comma authority list of exempt hosts loads", "UPMO_DATABASE_URL", "postgres://127.0.0.1,postgres/upmo?sslmode=disable", nil, ""},
-		{"a local socket host is exempt", "UPMO_DATABASE_URL", "postgres:///upmo?host=/var/run/postgresql&sslmode=disable", nil, ""},
+		{"a local socket host is allowed in development", "UPMO_DATABASE_URL", "postgres:///upmo?host=/var/run/postgresql&sslmode=disable", nil, ""},
 		{"a repeated sslmode must all be verify-full", "UPMO_DATABASE_URL", "postgres://db.example.com/upmo?sslmode=verify-full&sslmode=disable", nil, "config: UPMO_DATABASE_URL"},
 		{"a repeated keyword sslmode must all be verify-full", "UPMO_DATABASE_URL", "host=db.example.com sslmode=verify-full sslmode=disable", nil, "config: UPMO_DATABASE_URL"},
 
@@ -173,7 +173,7 @@ func TestPostgresURLTableRefusesThePlantedRequireRow(t *testing.T) {
 			for name, value := range tc.env {
 				t.Setenv(name, value)
 			}
-			err := PostgresURL(tc.envName, tc.url)
+			err := PostgresURL(tc.envName, tc.url, true)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("err = %v, want none", err)
@@ -188,6 +188,85 @@ func TestPostgresURLTableRefusesThePlantedRequireRow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPostgresURLProductionNeedsVerifyFullAndClientCertificates is the
+// production rule: one DNS label is no longer exempt, and verify-full needs
+// the database CA and a client certificate and key. The same single-label
+// disable URL still loads in development.
+func TestPostgresURLProductionNeedsVerifyFullAndClientCertificates(t *testing.T) {
+	clearPostgresEnv(t)
+	caFile := writeTestCA(t)
+	certFile, keyFile := writeTestClientCert(t)
+	full := "postgres://upmo@postgres:5432/upmo?sslmode=verify-full&sslrootcert=" + caFile + "&sslcert=" + certFile + "&sslkey=" + keyFile
+	cases := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{"disable on one label", "postgres://upmo@postgres:5432/upmo?sslmode=disable", "config: UPMO_DATABASE_URL must use sslmode=verify-full in production"},
+		{"disable on loopback", "postgres://upmo@127.0.0.1:5432/upmo?sslmode=disable", "config: UPMO_DATABASE_URL must use sslmode=verify-full in production"},
+		{"require on one label", "postgres://upmo@postgres:5432/upmo?sslmode=require", "config: UPMO_DATABASE_URL must use sslmode=verify-full in production"},
+		{"verify-ca on one label", "postgres://upmo@postgres:5432/upmo?sslmode=verify-ca&sslrootcert=" + caFile, "config: UPMO_DATABASE_URL must use sslmode=verify-full in production"},
+		{"verify-full without sslrootcert", "postgres://upmo@postgres:5432/upmo?sslmode=verify-full", "config: UPMO_DATABASE_URL must name the database CA in sslrootcert in production"},
+		{"verify-full without a client certificate", "postgres://upmo@postgres:5432/upmo?sslmode=verify-full&sslrootcert=" + caFile, "config: UPMO_DATABASE_URL must name a client certificate in sslcert and sslkey in production"},
+		{"verify-full with the CA and a client certificate", full, ""},
+		{"a Unix socket host", "postgres://upmo@/upmo?host=/var/run/postgresql", "config: UPMO_DATABASE_URL must not use a Unix socket in production"},
+		{"a Unix socket host with verify-full and certificates", "postgres://upmo@/upmo?host=/var/run/postgresql&sslmode=verify-full&sslrootcert=" + caFile + "&sslcert=" + certFile + "&sslkey=" + keyFile, "config: UPMO_DATABASE_URL must not use a Unix socket in production"},
+		{"a Unix socket as a fallback host", "host=db.example.com,/var/run/postgresql user=upmo sslmode=verify-full sslrootcert=" + caFile + " sslcert=" + certFile + " sslkey=" + keyFile, "config: UPMO_DATABASE_URL must not use a Unix socket in production"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := PostgresURL("UPMO_DATABASE_URL", tc.url, false)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want none", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+	if err := PostgresURL("UPMO_DATABASE_URL", "postgres://upmo@postgres:5432/upmo?sslmode=disable", true); err != nil {
+		t.Fatalf("development single-label disable = %v, want none", err)
+	}
+}
+
+// writeTestClientCert writes a throwaway self-signed client certificate and
+// its key and returns both paths: pgconn loads them while parsing.
+func writeTestClientCert(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "upmo"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "client.crt")
+	keyPath := filepath.Join(dir, "client.key")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
 }
 
 // clearPostgresEnv unsets every PG* variable pgconn.ParseConfig reads, so a

@@ -8,7 +8,7 @@ Do not install Node, Go or pnpm on your machine for this repository. Every `make
 
 ```sh
 make build    # build the Go module and the web app
-make up       # start brain and postgres
+make up       # start the worker, brain and postgres
 make test     # run the tests
 make lint     # run the linters
 make ci       # run the same checks as CI

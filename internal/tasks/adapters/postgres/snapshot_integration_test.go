@@ -62,7 +62,7 @@ func tracedStore(t *testing.T, owner *pgxpool.Pool, step func()) (postgres.Store
 // with the pass event.
 func TestReadsSeeOneSnapshotWhenATaskPassesMidRead(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 
 	for _, read := range []struct {

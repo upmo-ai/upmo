@@ -1,11 +1,22 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/upmo-ai/upmo/internal/testutil/pgtls"
 )
 
 func lookupFrom(env map[string]string) func(string) (string, bool) {
@@ -17,7 +28,7 @@ func lookupFrom(env map[string]string) func(string) (string, bool) {
 
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}))
 	if err != nil {
@@ -78,7 +89,7 @@ func TestLoadVolumeDirs(t *testing.T) {
 	for _, name := range []string{"UPMO_ARTIFACTS_DIR", "UPMO_KNOWLEDGE_DIR", "UPMO_AVATARS_DIR"} {
 		for _, value := range []string{"", " \t", " /tmp/custom-volume ", "relative", "/tmp/bad\x00path"} {
 			env := map[string]string{
-				"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+				"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 				"UPMO_PUBLIC_URL":   "http://localhost:5173",
 				name:                value,
 			}
@@ -112,7 +123,7 @@ func TestLoadVolumeDirs(t *testing.T) {
 
 func TestLoadGatewayURL(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_GATEWAY_URL":  "http://gateway:8080/",
 	}))
@@ -123,7 +134,7 @@ func TestLoadGatewayURL(t *testing.T) {
 		t.Fatalf("GatewayURL = %q", cfg.GatewayURL)
 	}
 	if _, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_GATEWAY_URL":  "gateway:8080",
 	})); err == nil {
@@ -133,7 +144,7 @@ func TestLoadGatewayURL(t *testing.T) {
 
 func TestLoadEmbedRoute(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_EMBED_ROUTE":  " knowledge-embed ",
 	}))
@@ -147,7 +158,7 @@ func TestLoadEmbedRoute(t *testing.T) {
 
 func TestLoadChatRouteAndWorkers(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -174,7 +185,7 @@ func TestLoadChatRouteAndWorkers(t *testing.T) {
 
 func TestLoadKnowledgeDir(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":  pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":    "http://localhost:5173",
 		"UPMO_KNOWLEDGE_DIR": "/var/upmo/knowledge",
 	}))
@@ -185,7 +196,7 @@ func TestLoadKnowledgeDir(t *testing.T) {
 		t.Fatalf("KnowledgeDir = %q", cfg.KnowledgeDir)
 	}
 	if _, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":  pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":    "http://localhost:5173",
 		"UPMO_KNOWLEDGE_DIR": "relative/path",
 	})); err == nil {
@@ -208,7 +219,7 @@ const (
 
 func TestLoadKeys(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":          "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":          pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":            "http://localhost:5173",
 		"UPMO_GATEWAY_KEY":           gwKey,
 		"UPMO_GATEWAY_KEY_PREVIOUS":  gwPrev,
@@ -233,8 +244,9 @@ func TestLoadKeys(t *testing.T) {
 
 func TestLoadRefusesWrongKeys(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
-		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_DATABASE_URL":         pgtls.URL(t, "upmo"),
+		"UPMO_DATABASE_GATEWAY_URL": pgtls.URL(t, "upmo_gateway"),
+		"UPMO_PUBLIC_URL":           "http://localhost:5173",
 	}
 	for _, tc := range []struct {
 		name string
@@ -287,9 +299,11 @@ func TestLoadRefusesWrongKeys(t *testing.T) {
 }
 
 // allKeys sets every key variable any process reads, each with a valid value.
-func allKeys() map[string]string {
+func allKeys(t *testing.T) map[string]string {
+	t.Helper()
 	return map[string]string{
-		"UPMO_DATABASE_URL":            "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":            pgtls.URL(t, "upmo"),
+		"UPMO_DATABASE_GATEWAY_URL":    pgtls.URL(t, "upmo_gateway"),
 		"UPMO_PUBLIC_URL":              "http://localhost:5173",
 		"UPMO_GATEWAY_KEY":             gwKey,
 		"UPMO_GATEWAY_KEY_PREVIOUS":    gwPrev,
@@ -308,7 +322,7 @@ func allKeys() map[string]string {
 }
 
 func TestLoadGatewayHoldsOnlyItsOwnKeys(t *testing.T) {
-	cfg, err := loadGateway(lookupFrom(allKeys()))
+	cfg, err := loadGateway(lookupFrom(allKeys(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +343,7 @@ func TestLoadGatewayHoldsOnlyItsOwnKeys(t *testing.T) {
 		t.Errorf("gateway ProvisionKeys = %v, want nil", cfg.ProvisionKeys)
 	}
 	// A malformed foreign key does not stop gateway, since it never reads one.
-	env := allKeys()
+	env := allKeys(t)
 	env["UPMO_SANDBOXD_KEY"] = gwKey
 	if _, err := loadGateway(lookupFrom(env)); err != nil {
 		t.Fatalf("gateway read the sandboxd key: %v", err)
@@ -337,7 +351,9 @@ func TestLoadGatewayHoldsOnlyItsOwnKeys(t *testing.T) {
 }
 
 func TestLoadSandboxdHoldsOnlyItsOwnKeys(t *testing.T) {
-	cfg, err := loadSandboxd(lookupFrom(allKeys()))
+	env := allKeys(t)
+	delete(env, "UPMO_DATABASE_URL")
+	cfg, err := loadSandboxd(lookupFrom(env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,26 +384,41 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 
 func TestLoadDatabaseAppURL(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DatabaseAppURL != "" {
-		t.Fatalf("default = %q, want empty", cfg.DatabaseAppURL)
+	if cfg.DatabaseAppURL != "" || cfg.DatabaseRunnerURL != "" {
+		t.Fatalf("defaults = %q %q, want empty", cfg.DatabaseAppURL, cfg.DatabaseRunnerURL)
 	}
-	if _, err := loadBrain(lookupFrom(base)); err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_APP_URL is required") {
+	if cfg.WorkerListenAddr != ":8090" {
+		t.Fatalf("WorkerListenAddr = %q, want :8090", cfg.WorkerListenAddr)
+	}
+	if _, err := loadBrain(lookupFrom(base)); err == nil || err.Error() != "config: UPMO_DATABASE_APP_URL is required" {
 		t.Fatalf("brain without an app URL: %v", err)
 	}
-	base["UPMO_DATABASE_APP_URL"] = "postgres://upmo_app:s3cret@localhost/upmo"
+	base["UPMO_DATABASE_APP_URL"] = pgtls.URL(t, "upmo_app:s3cret")
+	if _, err := loadBrain(lookupFrom(base)); err == nil || err.Error() != "config: UPMO_DATABASE_RUNNER_URL is required" {
+		t.Fatalf("brain without a runner URL: %v", err)
+	}
+	base["UPMO_DATABASE_RUNNER_URL"] = pgtls.URL(t, "upmo_runner:s3cret")
 	cfg, err = loadBrain(lookupFrom(base))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DatabaseAppURL != "postgres://upmo_app:s3cret@localhost/upmo" { // #nosec G101 -- a fake password in a config test
-		t.Fatalf("DatabaseAppURL = %q", cfg.DatabaseAppURL)
+	if cfg.DatabaseAppURL != base["UPMO_DATABASE_APP_URL"] || cfg.DatabaseRunnerURL != base["UPMO_DATABASE_RUNNER_URL"] {
+		t.Fatalf("DatabaseAppURL = %q DatabaseRunnerURL = %q", cfg.DatabaseAppURL, cfg.DatabaseRunnerURL)
+	}
+	// Brain never reads the privileged URL, even when it is set.
+	if cfg.DatabaseURL != "" {
+		t.Fatalf("brain DatabaseURL = %q, want empty", cfg.DatabaseURL)
+	}
+	delete(base, "UPMO_DATABASE_URL")
+	if _, err := loadBrain(lookupFrom(base)); err != nil {
+		t.Fatalf("brain without UPMO_DATABASE_URL: %v", err)
 	}
 	// A load error still comes through before the app URL is checked.
 	delete(base, "UPMO_PUBLIC_URL")
@@ -398,6 +429,7 @@ func TestLoadDatabaseAppURL(t *testing.T) {
 
 func TestLoadDatabaseURLRequiresVerifyFullOffLocalhost(t *testing.T) {
 	base := map[string]string{
+		"UPMO_ENV":        "development",
 		"UPMO_PUBLIC_URL": "http://localhost:5173",
 	}
 	for _, mode := range []string{"", "disable", "allow", "prefer", "require", "verify-ca"} {
@@ -422,7 +454,7 @@ func TestLoadDatabaseURLRequiresVerifyFullOffLocalhost(t *testing.T) {
 	for _, exempt := range []string{
 		"postgres://postgres:5432/upmo?sslmode=disable",
 		"postgres://upmo@127.0.0.1:5432/upmo?sslmode=disable",
-		"postgres://upmo@localhost/upmo",
+		"postgres://upmo@/upmo?host=/var/run/postgresql",
 	} {
 		base["UPMO_DATABASE_URL"] = exempt
 		if _, err := load(lookupFrom(base)); err != nil {
@@ -431,9 +463,92 @@ func TestLoadDatabaseURLRequiresVerifyFullOffLocalhost(t *testing.T) {
 	}
 }
 
+// Production refuses sslmode=disable even on one DNS label, and verify-full
+// needs the CA and a client certificate and key. Development still loads the
+// compose URL.
+func TestLoadDatabaseURLProductionNeedsVerifyFull(t *testing.T) {
+	caFile, certFile, keyFile := writeTestPKI(t)
+	env := map[string]string{
+		"UPMO_ENV":          "production",
+		"UPMO_PUBLIC_URL":   "http://localhost:5173",
+		"UPMO_DATABASE_URL": "postgres://upmo@postgres:5432/upmo?sslmode=disable",
+	}
+	if _, err := load(lookupFrom(env)); err == nil || err.Error() != "config: UPMO_DATABASE_URL must use sslmode=verify-full in production" {
+		t.Fatalf("production disable: %v", err)
+	}
+	env["UPMO_ENV"] = "development"
+	if _, err := load(lookupFrom(env)); err != nil {
+		t.Fatalf("development disable: %v", err)
+	}
+	env["UPMO_ENV"] = "production"
+	for _, mode := range []string{"require", "verify-ca"} {
+		env["UPMO_DATABASE_URL"] = "postgres://upmo@postgres:5432/upmo?sslmode=" + mode + "&sslrootcert=" + caFile
+		if _, err := load(lookupFrom(env)); err == nil || err.Error() != "config: UPMO_DATABASE_URL must use sslmode=verify-full in production" {
+			t.Fatalf("production %s: %v", mode, err)
+		}
+	}
+	env["UPMO_DATABASE_URL"] = "postgres://upmo@postgres:5432/upmo?sslmode=verify-full"
+	if _, err := load(lookupFrom(env)); err == nil || !strings.Contains(err.Error(), "sslrootcert") {
+		t.Fatalf("production verify-full without sslrootcert: %v", err)
+	}
+	env["UPMO_DATABASE_URL"] = "postgres://upmo@postgres:5432/upmo?sslmode=verify-full&sslrootcert=" + caFile + "&sslcert=" + certFile + "&sslkey=" + keyFile
+	cfg, err := load(lookupFrom(env))
+	if err != nil {
+		t.Fatalf("production verify-full with CA and client certificate: %v", err)
+	}
+	if cfg.DatabaseURL != env["UPMO_DATABASE_URL"] {
+		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+	// Every database URL takes the same rule.
+	for _, name := range []string{"UPMO_DATABASE_APP_URL", "UPMO_DATABASE_RUNNER_URL", "UPMO_DATABASE_GATEWAY_URL", "UPMO_DATABASE_SANDBOX_URL"} {
+		with := map[string]string{name: "postgres://x@postgres:5432/upmo?sslmode=disable"}
+		for k, v := range env {
+			with[k] = v
+		}
+		want := "config: " + name + " must use sslmode=verify-full in production"
+		if _, err := load(lookupFrom(with)); err == nil || err.Error() != want {
+			t.Fatalf("%s: %v, want %q", name, err, want)
+		}
+	}
+}
+
+// Postgres has no TLS over a Unix socket, so production refuses a socket host
+// on every pool URL and the error names that variable. Development keeps it.
+func TestLoadRefusesSocketHostInProduction(t *testing.T) {
+	const socket = "postgres://x:s3cret@/upmo?host=/var/run/postgresql"
+	brain := func(env map[string]string) error { _, err := loadBrain(lookupFrom(env)); return err }
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		load func(map[string]string) error
+	}{
+		{"UPMO_DATABASE_URL", map[string]string{"UPMO_PUBLIC_URL": "http://localhost:5173"},
+			func(env map[string]string) error { _, err := load(lookupFrom(env)); return err }},
+		{"UPMO_DATABASE_APP_URL", map[string]string{"UPMO_PUBLIC_URL": "http://localhost:5173", "UPMO_DATABASE_RUNNER_URL": pgtls.URL(t, "upmo_runner:s3cret")}, brain},
+		{"UPMO_DATABASE_RUNNER_URL", map[string]string{"UPMO_PUBLIC_URL": "http://localhost:5173", "UPMO_DATABASE_APP_URL": pgtls.URL(t, "upmo_app:s3cret")}, brain},
+		{"UPMO_DATABASE_GATEWAY_URL", allKeys(t),
+			func(env map[string]string) error { _, err := loadGateway(lookupFrom(env)); return err }},
+		{"UPMO_DATABASE_SANDBOX_URL", map[string]string{"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey},
+			func(env map[string]string) error { _, err := loadSandboxd(lookupFrom(env)); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.env[tc.name] = socket
+			want := "config: " + tc.name + " must not use a Unix socket in production"
+			if err := tc.load(tc.env); err == nil || err.Error() != want {
+				t.Fatalf("production socket: %v, want %q", err, want)
+			}
+			tc.env["UPMO_ENV"] = "development"
+			if err := tc.load(tc.env); err != nil {
+				t.Fatalf("development socket: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadDatabaseAppURLRequiresVerifyFullOffLocalhost(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_ENV":          "development",
+		"UPMO_DATABASE_URL": "postgres://upmo@/upmo?host=/var/run/postgresql",
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	base["UPMO_DATABASE_APP_URL"] = "postgres://db.example.com/upmo?sslmode=disable"
@@ -447,10 +562,71 @@ func TestLoadDatabaseAppURLRequiresVerifyFullOffLocalhost(t *testing.T) {
 	}
 }
 
+// Sandboxd refuses the privileged URL outright and reads only its own.
+func TestLoadSandboxdDatabaseURLs(t *testing.T) {
+	env := map[string]string{
+		"UPMO_SANDBOXD_KEY": sbxKey,
+		"UPMO_EDITOR_KEY":   edKey,
+	}
+	cfg, err := loadSandboxd(lookupFrom(env))
+	if err != nil || cfg.DatabaseSandboxURL != "" {
+		t.Fatalf("no database: %q %v", cfg.DatabaseSandboxURL, err)
+	}
+	env["UPMO_DATABASE_SANDBOX_URL"] = pgtls.URL(t, "upmo_sandbox:s3cret")
+	if cfg, err := loadSandboxd(lookupFrom(env)); err != nil || cfg.DatabaseSandboxURL != env["UPMO_DATABASE_SANDBOX_URL"] {
+		t.Fatalf("sandbox URL: %q %v", cfg.DatabaseSandboxURL, err)
+	}
+	env["UPMO_DATABASE_URL"] = "postgres://upmo@/upmo?host=/var/run/postgresql"
+	_, err = loadSandboxd(lookupFrom(env))
+	if err == nil || err.Error() != "config: UPMO_DATABASE_URL must not be set for sandboxd; it logs in as upmo_sandbox on UPMO_DATABASE_SANDBOX_URL" {
+		t.Fatalf("sandboxd with UPMO_DATABASE_URL: %v", err)
+	}
+}
+
+// writeTestPKI writes a throwaway CA and a client certificate and key, and
+// returns the three paths: pgconn reads them while parsing.
+func writeTestPKI(t *testing.T) (string, string, string) {
+	t.Helper()
+	write := func(name, typ string, der []byte) string {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "upmo-test-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "upmo"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	clientDER, err := x509.CreateCertificate(rand.Reader, client, ca, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return write("ca.pem", "CERTIFICATE", caDER), write("client.crt", "CERTIFICATE", clientDER), write("client.key", "EC PRIVATE KEY", keyDER)
+}
+
 func TestLoadServiceURLsRequireHTTPSOffLocalhost(t *testing.T) {
 	for _, name := range []string{"UPMO_GATEWAY_URL", "UPMO_SANDBOXD_URL", "UPMO_MARKITDOWN_URL"} {
 		base := map[string]string{
-			"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+			"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 			"UPMO_PUBLIC_URL":   "http://localhost:5173",
 			name:                "http://gateway.internal.example",
 		}
@@ -474,7 +650,7 @@ func TestLoadServiceURLsRequireHTTPSOffLocalhost(t *testing.T) {
 
 func TestLoadMarkitdownURLEmptySkipsTheSidecar(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -504,7 +680,7 @@ func TestLoadMarkitdownURLEmptySkipsTheSidecar(t *testing.T) {
 
 func TestLoadRejectsIdleLongerThanMaxAge(t *testing.T) {
 	_, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":         "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":         pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":           "http://localhost:5173",
 		"UPMO_SESSION_IDLE_TIMEOUT": "48h",
 		"UPMO_SESSION_MAX_AGE":      "24h",
@@ -516,7 +692,7 @@ func TestLoadRejectsIdleLongerThanMaxAge(t *testing.T) {
 
 func TestLoadFromEnv(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":     "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":     pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":       "http://localhost:5173",
 		"UPMO_LISTEN_ADDR":      "127.0.0.1:9000",
 		"UPMO_SHUTDOWN_TIMEOUT": "3s",
@@ -532,7 +708,7 @@ func TestLoadFromEnv(t *testing.T) {
 
 func TestLoadInvalidDuration(t *testing.T) {
 	if _, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":     "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":     pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":       "http://localhost:5173",
 		"UPMO_SHUTDOWN_TIMEOUT": "soon",
 	})); err == nil {
@@ -542,7 +718,7 @@ func TestLoadInvalidDuration(t *testing.T) {
 
 func TestLoadSMTPUnset(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_SMTP_HOST":    "",
 		// The CA file is read only when mail is set.
@@ -558,7 +734,7 @@ func TestLoadSMTPUnset(t *testing.T) {
 
 func TestLoadSMTP(t *testing.T) {
 	cfg, err := load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":  pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":    "http://localhost:5173",
 		"UPMO_SMTP_HOST":     "smtp.example.com",
 		"UPMO_SMTP_USER":     "relay",
@@ -573,7 +749,7 @@ func TestLoadSMTP(t *testing.T) {
 		t.Fatalf("SMTP = %+v", cfg.SMTP)
 	}
 	cfg, err = load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_SMTP_HOST":    "mailpit",
 		"UPMO_SMTP_PORT":    "1025",
@@ -586,7 +762,7 @@ func TestLoadSMTP(t *testing.T) {
 		t.Fatalf("SMTP = %+v", cfg.SMTP)
 	}
 	cfg, err = load(lookupFrom(map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 		"UPMO_SMTP_HOST":    "smtp.example.com",
 		"UPMO_SMTP_FROM":    "noreply@example.com",
@@ -618,7 +794,7 @@ func TestLoadSMTPPartialOrInvalid(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := map[string]string{
-				"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+				"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 				"UPMO_PUBLIC_URL":   "http://localhost:5173",
 			}
 			for k, v := range tc.env {
@@ -637,7 +813,7 @@ func TestLoadSMTPPartialOrInvalid(t *testing.T) {
 
 func TestLoadSandboxdURL(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -663,7 +839,7 @@ func TestLoadSandboxdURL(t *testing.T) {
 
 func TestLoadAuditRetentionDays(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -693,7 +869,7 @@ func TestLoadAuditRetentionDays(t *testing.T) {
 
 func TestLoadAuditWebhookURL(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -728,7 +904,7 @@ func TestLoadAuditWebhookURL(t *testing.T) {
 
 func TestLoadAuditSyslogAddr(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -764,7 +940,7 @@ func TestLoadAuditSyslogAddr(t *testing.T) {
 
 func TestLoadSandboxImage(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))
@@ -852,7 +1028,7 @@ func TestLoadSandboxd(t *testing.T) {
 
 func TestLoadArtifactsDir(t *testing.T) {
 	env := map[string]string{
-		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":  pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":    "http://localhost:5173",
 		"UPMO_ARTIFACTS_DIR": "/var/upmo/artifacts",
 	}
@@ -867,7 +1043,7 @@ func TestLoadArtifactsDir(t *testing.T) {
 
 func TestLoadArtifactsDirMustBeAbsolute(t *testing.T) {
 	env := map[string]string{
-		"UPMO_DATABASE_URL":  "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL":  pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":    "http://localhost:5173",
 		"UPMO_ARTIFACTS_DIR": "relative/path",
 	}
@@ -879,7 +1055,7 @@ func TestLoadArtifactsDirMustBeAbsolute(t *testing.T) {
 
 func TestLoadMetricsAddr(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	base["UPMO_METRICS_TOKEN"] = mtrToken
@@ -935,7 +1111,7 @@ func TestLoadSandboxdMetricsAddr(t *testing.T) {
 
 func TestLoadProvisionKeys(t *testing.T) {
 	base := map[string]string{
-		"UPMO_DATABASE_URL": "postgres://upmo@localhost/upmo",
+		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
 	}
 	cfg, err := load(lookupFrom(base))

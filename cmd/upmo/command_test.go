@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/upmo-ai/upmo/internal/testutil/pgtls"
 )
 
 // These commands read UPMO_DATABASE_URL directly instead of through
@@ -31,7 +33,9 @@ func TestMigrateAndBackupRefusePlaintextDatabaseURL(t *testing.T) {
 // UPMO_ENV is production, like an unset one.
 func TestMigrateBackupRestoreRefuseDevelopmentValuesInProduction(t *testing.T) {
 	composeDBURL := func() string {
-		return "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable" // #nosec G101 -- the compose development URL, never a real credential
+		// The compose password on a verify-full URL with certificates, so the
+		// password rule is what refuses it in production.
+		return pgtls.URL(t, "upmo:upmo")
 	}
 	freshURL := func(t *testing.T) string {
 		t.Helper()
@@ -39,7 +43,7 @@ func TestMigrateBackupRestoreRefuseDevelopmentValuesInProduction(t *testing.T) {
 		if _, err := rand.Read(raw); err != nil {
 			t.Fatal(err)
 		}
-		return "postgres://upmo:" + hex.EncodeToString(raw) + "@postgres:5432/upmo?sslmode=disable"
+		return pgtls.URL(t, "upmo:"+hex.EncodeToString(raw))
 	}
 	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
 
@@ -82,6 +86,7 @@ func TestMigrateBackupRestoreRefuseDevelopmentValuesInProduction(t *testing.T) {
 // scrubbed message.
 func TestMigrateErrorDoesNotEchoDatabaseURL(t *testing.T) {
 	const marker = "s3cret-pw"
+	t.Setenv("UPMO_ENV", "development")
 	t.Setenv("UPMO_DATABASE_URL", "postgres://opuser:"+marker+"@127.0.0.1:1/x?pool_max_conns=abc")
 	err := command("migrate", nil)
 	if err == nil {
@@ -154,5 +159,20 @@ func TestSecretCommandsRefuseMissingMasterKeyBeforeOpeningDatabase(t *testing.T)
 				t.Fatalf("command err = %v", err)
 			}
 		})
+	}
+}
+
+// The worker builds the secret chain on every start, before any pool opens,
+// so a plaintext Vault address with a token fails it even with no audit push
+// configured. Brain no longer reads Vault at all.
+func TestWorkerRefusesAPlaintextVaultAddress(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
+	t.Setenv("UPMO_DATABASE_URL", "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable")
+	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
+	t.Setenv("UPMO_VAULT_ADDR", "http://vault.example")
+	t.Setenv("UPMO_VAULT_TOKEN", "t")
+	if err := command("worker", nil); err == nil || !strings.Contains(err.Error(), "UPMO_VAULT_ADDR") {
+		t.Fatalf("err = %v, want it to name UPMO_VAULT_ADDR", err)
 	}
 }

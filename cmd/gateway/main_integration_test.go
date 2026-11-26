@@ -61,7 +61,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		}
 	}
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
 	owner := pgtest.New(t)
 	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
-	_, err := routes(owner, config.Config{GatewayKey: mustMaster(t)}, nil, nil, nil)
+	_, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: mustMaster(t)}, nil, nil, nil)
 	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
 		t.Fatalf("routes error = %v", err)
 	}
@@ -283,11 +283,12 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	versions, err := migrate.SchemaVersions(ctx, owner)
+	pool := dispatchPool(t, owner)
+	versions, err := gateway.SchemaVersions(ctx, pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(owner, config.Config{GatewayKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
+	handler, err := routes(pool, config.Config{GatewayKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(versions), nil
 	}, nil)
 	if err != nil {
@@ -363,7 +364,7 @@ func TestGatewayRoutesCapTheBodyAndAcceptThePreviousKey(t *testing.T) {
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	current := svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(bytes32('h'))
 	previous := mustMaster(t)
-	handler, err := routes(owner, config.Config{GatewayKey: current, GatewayKeyPrevious: previous}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: current, GatewayKeyPrevious: previous}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +445,8 @@ func TestGatewayToolBundles(t *testing.T) {
 			('core', 'search', 1), ('core', 'write', 2)`); err != nil {
 		t.Fatal(err)
 	}
-	store := postgres.Store{Pool: owner}
+	// The bundle tables force row security now; the gateway role reads them.
+	store := postgres.Store{Pool: dispatchPool(t, owner)}
 	b, err := store.Bundle(ctx, "core")
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +505,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +642,7 @@ func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -769,7 +771,7 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
 	reg := metrics.NewRegistry()
-	handler, err := routes(owner, config.Config{GatewayKey: master}, nil, nil, reg)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, reg)
 	if err != nil {
 		t.Fatal(err)
 	}

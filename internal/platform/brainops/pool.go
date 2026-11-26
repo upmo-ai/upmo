@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/platform/migrate"
 )
 
 // OpenOwnerPool opens the owner pool with MaxConns=10, dials it once, and
@@ -47,12 +51,12 @@ func pingOwner(ctx context.Context, pool *pgxpool.Pool) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// ParseListenConfig parses the owner database URL for stream LISTEN
+// ParseListenConfig parses the database URL in envName for stream LISTEN
 // connections and scrubs the URL from parse errors.
-func ParseListenConfig(databaseURL string) (*pgx.ConnConfig, error) {
+func ParseListenConfig(envName, databaseURL string) (*pgx.ConnConfig, error) {
 	listenConn, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, PoolURLError("UPMO_DATABASE_URL", databaseURL)
+		return nil, PoolURLError(envName, databaseURL)
 	}
 	return listenConn, nil
 }
@@ -60,24 +64,97 @@ func ParseListenConfig(databaseURL string) (*pgx.ConnConfig, error) {
 // RequestPool opens connections that log in as upmo_app, which owns nothing,
 // and sets that role again on every checkout.
 func RequestPool(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
+	return rolePool(ctx, "UPMO_DATABASE_APP_URL", rawURL, "upmo_app")
+}
+
+// rolePool opens a pool on rawURL that sets role again on every checkout, or
+// none when role is empty. It does not dial.
+func rolePool(ctx context.Context, envName, rawURL, role string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(rawURL)
 	if err != nil {
-		return nil, AppPoolError(rawURL)
+		return nil, PoolURLError(envName, rawURL)
 	}
-	setRole := func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
-		return err
-	}
-	cfg.AfterConnect = setRole
-	cfg.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
-		err := setRole(ctx, conn)
-		return err == nil, err
+	if role != "" {
+		setRole := func(ctx context.Context, conn *pgx.Conn) error {
+			_, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{role}.Sanitize())
+			return err
+		}
+		cfg.AfterConnect = setRole
+		cfg.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+			err := setRole(ctx, conn)
+			return err == nil, err
+		}
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return nil, AppPoolError(rawURL)
+		return nil, PoolURLError(envName, rawURL)
 	}
 	return pool, nil
+}
+
+// OpenServingPool opens the pool a serving process runs on, from the URL in
+// envName, sets role on every checkout when role is set, and refuses it
+// unless CheckServingRole passes. want, when set, is the only role it accepts.
+func OpenServingPool(ctx context.Context, envName, rawURL, role, want string) (*pgxpool.Pool, error) {
+	pool, err := rolePool(ctx, envName, rawURL, role)
+	if err != nil {
+		return nil, err
+	}
+	// pgx names the user and host in a connect error, so it is replaced.
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("brain: %s could not be opened", envName)
+	}
+	if err := CheckServingRole(ctx, pool, envName, want); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
+// upmoSchemas are the schemas whose tables a serving role must neither own
+// nor be able to act as the owner of.
+var upmoSchemas = append(slices.Clone(migrate.KnownSchemas), jobs.WorkerSchema)
+
+// CheckServingRole refuses a pool a request could use to step around row
+// security: its login (session_user) or its current role is a superuser, has
+// BYPASSRLS or may create roles or databases, or either owns, or may act as the owner of, a table in an
+// Upmo schema. want, when set, is the only current role accepted. Brain runs
+// it on both of its pools, gateway and sandboxd on theirs. No setting
+// weakens it.
+func CheckServingRole(ctx context.Context, pool *pgxpool.Pool, envName, want string) error {
+	var (
+		current, session string
+		bypass, owns     bool
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT current_user, session_user,
+		       EXISTS (
+		         SELECT 1 FROM pg_roles AS r
+		         WHERE r.rolname IN (current_user, session_user)
+		           AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)
+		       ),
+		       EXISTS (
+		         SELECT 1
+		         FROM pg_class AS c
+		         JOIN pg_namespace AS n ON n.oid = c.relnamespace
+		         WHERE n.nspname = ANY ($1)
+		           AND c.relkind IN ('r', 'p')
+		           AND (pg_has_role(current_user, c.relowner, 'MEMBER')
+		             OR pg_has_role(session_user, c.relowner, 'MEMBER'))
+		       )`, upmoSchemas).Scan(&current, &session, &bypass, &owns)
+	if err != nil {
+		return fmt.Errorf("brain: %s role check failed", envName)
+	}
+	switch {
+	case bypass:
+		return fmt.Errorf("brain: %s logs in as a superuser, a BYPASSRLS role, or a role that can create roles or databases", envName)
+	case owns:
+		return fmt.Errorf("brain: %s logs in as a role that owns Upmo tables or may act as their owner", envName)
+	case want != "" && current != want:
+		return fmt.Errorf("brain: %s must log in as %s, not %s", envName, want, current)
+	}
+	return nil
 }
 
 // AppPoolError returns a scrubbed error for UPMO_DATABASE_APP_URL.
@@ -94,82 +171,34 @@ func PoolURLError(envName, rawURL string) error {
 	return fmt.Errorf("brain: %s could not be opened", envName)
 }
 
-// EnableAppLogin makes the app role a real login. The migration creates
-// upmo_app NOLOGIN, because tests run it as the owner through a session role
-// switch; the owner pool sets the password from the app URL instead, so the
-// request pool can log in as upmo_app itself. A password cannot be a bind
-// parameter in ALTER ROLE, so the statement is built server-side with format
-// and neither it nor the password is ever logged. It runs on every start, so
-// rotating the password in config is enough.
-func EnableAppLogin(ctx context.Context, owner *pgxpool.Pool, appURL string) error {
-	cfg, err := pgxpool.ParseConfig(appURL)
+// EnableLogin makes role a real login with the password in the URL envName
+// names. The migrations create every serving role NOLOGIN, because tests run
+// them as the owner through a session role switch; the worker sets each
+// password from its URL instead, so that process can log in as the role
+// itself. A password cannot be a bind parameter in ALTER ROLE, so the
+// statement is built server-side with format and neither it nor the password
+// is ever logged. It runs on every worker start, so rotating the password in
+// config is enough.
+func EnableLogin(ctx context.Context, owner *pgxpool.Pool, envName, role, rawURL string) error {
+	cfg, err := pgxpool.ParseConfig(rawURL)
 	if err != nil {
 		// The parse error names the URL, which holds the password.
-		return errors.New("brain: UPMO_DATABASE_APP_URL is not a Postgres URL")
+		return fmt.Errorf("brain: %s is not a Postgres URL", envName)
 	}
-	if cfg.ConnConfig.User != "upmo_app" {
-		return fmt.Errorf("brain: UPMO_DATABASE_APP_URL must log in as upmo_app, not %s", cfg.ConnConfig.User)
+	if cfg.ConnConfig.User != role {
+		return fmt.Errorf("brain: %s must log in as %s, not %s", envName, role, cfg.ConnConfig.User)
 	}
 	if cfg.ConnConfig.Password == "" {
-		return fmt.Errorf("brain: UPMO_DATABASE_APP_URL needs a password")
+		return fmt.Errorf("brain: %s needs a password", envName)
 	}
 	var stmt string
 	if err := owner.QueryRow(ctx,
-		"SELECT format('ALTER ROLE upmo_app WITH LOGIN PASSWORD %L', $1::text)", cfg.ConnConfig.Password,
+		"SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', $1::text, $2::text)", role, cfg.ConnConfig.Password,
 	).Scan(&stmt); err != nil {
-		return fmt.Errorf("brain: app login: %w", err)
+		return fmt.Errorf("brain: %s login: %w", role, err)
 	}
 	if _, err := owner.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("brain: app login: %w", err)
-	}
-	return nil
-}
-
-// OpenAppPool opens the request pool and refuses any credential that is not
-// the app role, so the process never serves with a pool a role reset could
-// walk back to the owner.
-func OpenAppPool(ctx context.Context, owner *pgxpool.Pool, appURL string) (*pgxpool.Pool, error) {
-	pool, err := RequestPool(ctx, appURL)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkAppRole(ctx, owner, pool); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	return pool, nil
-}
-
-// checkAppRole refuses a request pool that did not log in as the app role:
-// session_user must be upmo_app, hold no role- or database-wide rights, and
-// not reach the owner role. It refuses in every environment; there is no
-// switch that weakens it.
-func checkAppRole(ctx context.Context, owner, app *pgxpool.Pool) error {
-	var ownerRole string
-	if err := owner.QueryRow(ctx, "SELECT current_user").Scan(&ownerRole); err != nil {
-		return fmt.Errorf("brain: app role check: %w", err)
-	}
-	var (
-		session    string
-		privileged bool
-		member     bool
-	)
-	err := app.QueryRow(ctx, `
-		SELECT session_user,
-		       rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls,
-		       pg_has_role(session_user, $1::name, 'MEMBER')
-		FROM pg_roles
-		WHERE rolname = session_user`, ownerRole).Scan(&session, &privileged, &member)
-	if err != nil {
-		return fmt.Errorf("brain: app role check: %w", err)
-	}
-	switch {
-	case session != "upmo_app":
-		return fmt.Errorf("brain: request pool logged in as %s, not upmo_app", session)
-	case privileged:
-		return fmt.Errorf("brain: upmo_app is a superuser or can create roles or databases or bypass row security")
-	case member:
-		return fmt.Errorf("brain: upmo_app is a member of the owner role %s", ownerRole)
+		return fmt.Errorf("brain: %s login: %w", role, err)
 	}
 	return nil
 }

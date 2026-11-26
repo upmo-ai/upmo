@@ -67,7 +67,7 @@ func shareSetup(t *testing.T) *shareEnv {
 	}
 	pool := pgtest.App(t, owner)
 	members := identity.Members(pool, nil, "", nil, nil)
-	store := tasks.NewStore(pool, owner, nil)
+	store := tasks.NewStore(pool, pgtest.Runner(t, owner), nil)
 	store.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	mux := http.NewServeMux()
 	tasks.Handler{

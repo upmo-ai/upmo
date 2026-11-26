@@ -52,7 +52,7 @@ func newUsesRig(t *testing.T) usesRig {
 		WebAuthnRPID:    "localhost",
 		ShutdownTimeout: 2 * time.Second,
 	},
-		WithPools(owner, appPool),
+		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 	)
 	if err != nil {

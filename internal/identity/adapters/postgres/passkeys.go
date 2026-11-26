@@ -128,13 +128,7 @@ func (p Passkeys) Account(ctx context.Context, user domain.UserID) (domain.Accou
 
 func (p Passkeys) AccountByCredential(ctx context.Context, credentialID, userHandle []byte) (domain.Account, error) {
 	var id domain.UserID
-	err := p.Pool.QueryRow(ctx, `
-		SELECT person.id
-		FROM identity.passkeys AS passkey
-		JOIN identity.users AS person ON person.id = passkey.user_id
-		WHERE passkey.credential_id = $1
-		  AND person.webauthn_handle = $2
-		  AND person.disabled_at IS NULL`, credentialID, userHandle).Scan(&id)
+	err := p.Pool.QueryRow(ctx, `SELECT id FROM identity.account_by_credential($1, $2)`, credentialID, userHandle).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, app.ErrNotSignedIn
 	}

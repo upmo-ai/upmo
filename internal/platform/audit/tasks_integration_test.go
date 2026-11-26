@@ -69,7 +69,7 @@ func openWorkingTask(t *testing.T, store tasks.Store) app.Task {
 func TestTaskTransitionsSealOneActionEach(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	ctx := context.Background()
 
 	task := openWorkingTask(t, store)
@@ -144,7 +144,7 @@ func TestTaskTransitionsSealOneActionEach(t *testing.T) {
 func TestTaskFailSealsTheStatusChange(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	ctx := context.Background()
 
 	task := openWorkingTask(t, store)
@@ -167,7 +167,7 @@ func TestTaskFailSealsTheStatusChange(t *testing.T) {
 func TestTaskRunSealsTheSystemAdmission(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	ctx := context.Background()
 
 	task := openWorkingTask(t, store)
@@ -199,7 +199,7 @@ func TestTaskRunSealsTheSystemAdmission(t *testing.T) {
 func TestTaskShareSealsGrantsAndVisibility(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	ctx := context.Background()
 
 	task := openWorkingTask(t, store)
@@ -244,7 +244,7 @@ func TestTaskShareSealsGrantsAndVisibility(t *testing.T) {
 func TestAutomationFireSealsTheSystemCreate(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	ctx := context.Background()
 
 	templateID, err := app.SaveTemplate(ctx, store, taskAccess, "", domain.Template{
@@ -289,7 +289,7 @@ func TestAutomationFireSealsTheSystemCreate(t *testing.T) {
 func TestTaskRoutesSealTheirOwnEvents(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 
 	mux := http.NewServeMux()
 	tasks.Handler{
@@ -395,8 +395,8 @@ func (g shareGrants) replaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID 
 	return g.members.ReplaceTaskGrantsTx(ctx, tx, taskID, writes, by)
 }
 
-func taskShareStore(appPool, owner *pgxpool.Pool, grants shareGrants) tasks.Store {
-	store := tasks.NewStore(appPool, owner, nil)
+func taskShareStore(t *testing.T, appPool, owner *pgxpool.Pool, grants shareGrants) tasks.Store {
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	store.ReplaceTaskGrants = grants.replaceTaskGrantsTx
 	return store
 }
@@ -421,7 +421,7 @@ func TestTaskShareWriteSealsTheGrantsBeforeAndAfter(t *testing.T) {
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
 	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
-	store := taskShareStore(appPool, owner, grants)
+	store := taskShareStore(t, appPool, owner, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
 	task, err := store.Transition(ctx, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Close the books"})
@@ -487,7 +487,7 @@ func TestTaskShareWriteRollsBackWhenAuditInsertFails(t *testing.T) {
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
 	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
-	store := taskShareStore(appPool, owner, grants)
+	store := taskShareStore(t, appPool, owner, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
 	task, err := store.Transition(ctx, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Close the books"})
@@ -557,7 +557,7 @@ func TestTaskShareWriteRollsBackGrantsWhenVisibilityFails(t *testing.T) {
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
 	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
-	store := taskShareStore(appPool, owner, grants)
+	store := taskShareStore(t, appPool, owner, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
 	task, err := store.Transition(ctx, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Close the books"})
@@ -614,7 +614,7 @@ func insertPerson(t *testing.T, owner *pgxpool.Pool, email string) string {
 func TestApprovalDecisionsSealApproveAndDeny(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 	ctx := context.Background()
 
 	working := openWorkingTask(t, store)
@@ -669,7 +669,7 @@ func TestApprovalDecisionsSealApproveAndDeny(t *testing.T) {
 func TestTaskEditorOpenSealsItsSensitiveEvent(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 
 	task := openWorkingTask(t, store)
 	sealed()
@@ -718,7 +718,7 @@ func TestTaskEditorOpenSealsItsSensitiveEvent(t *testing.T) {
 func TestTaskRouteRefusalRecordsDenied(t *testing.T) {
 	owner, appPool := tasksRig(t)
 	sealed := newSealer(t, owner)
-	store := tasks.NewStore(appPool, owner, nil)
+	store := tasks.NewStore(appPool, pgtest.Runner(t, owner), nil)
 
 	stranger := app.Access{UserID: "018f3b2c-7a10-7c4a-8e11-444444444444"}
 	mux := http.NewServeMux()

@@ -418,7 +418,7 @@ func TestTaskSandboxesStartEditorCallsProvider(t *testing.T) {
 	p := &fakeProvider{editorEp: Endpoint{URL: "http://127.0.0.1:30001"}}
 	s, book := newTaskSandboxes(p)
 	task := "11111111-1111-1111-1111-111111111111"
-	if err := book.Claim(context.Background(), task, SandboxTTL); err != nil {
+	if err := book.Claim(context.Background(), task, SandboxTTL, make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := book.Fill(context.Background(), task, "box-1", time.Now().Add(SandboxTTL)); err != nil || !ok {
@@ -632,7 +632,7 @@ type fakeStore struct {
 
 var _ TaskSandboxStore = (*fakeStore)(nil)
 
-func (b *fakeStore) Claim(_ context.Context, taskID string, ttl time.Duration) error {
+func (b *fakeStore) Claim(_ context.Context, taskID string, ttl time.Duration, _ []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.claimErr != nil {

@@ -41,6 +41,8 @@ func spec() runtime.Spec {
 		Tier:  runtime.TierContainer,
 		TTL:   10 * time.Minute,
 		Allow: []string{"github.com"},
+		// Brain chooses one per Create; sandboxd refuses a Create without it.
+		ProxySecret: bytes.Repeat([]byte{0x61}, 32),
 	}
 }
 

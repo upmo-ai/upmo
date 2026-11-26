@@ -67,22 +67,28 @@ func TestAppLoginCannotReachOwner(t *testing.T) {
 	}
 }
 
-// checkAppRole takes the genuine login and refuses the two credentials that
-// would hand the request pool back to the owner: the owner's own login, and
-// an upmo_app that has been made a member of the owner role.
-func TestCheckAppRole(t *testing.T) {
+// CheckServingRole takes the genuine login and refuses every credential that
+// would let a request step around row security: the owner's own login, a
+// superuser session that switched to upmo_app, an upmo_app that has been made
+// a member of the table owner, and a login that is not the expected role.
+func TestCheckServingRole(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	var ownerRole string
 	if err := owner.QueryRow(ctx, "SELECT current_user").Scan(&ownerRole); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkAppRole(ctx, owner, pgtest.AppLogin(t, owner)); err != nil {
+	if err := CheckServingRole(ctx, pgtest.AppLogin(t, owner), "UPMO_DATABASE_APP_URL", "upmo_app"); err != nil {
 		t.Fatalf("genuine upmo_app login refused: %v", err)
 	}
 	// The planted bug: the request URL pointed at the owner credential.
-	if err := checkAppRole(ctx, owner, owner); err == nil {
-		t.Fatal("owner pool passed the app role check")
+	const bypass = "brain: UPMO_DATABASE_APP_URL logs in as a superuser, a BYPASSRLS role, or a role that can create roles or databases"
+	if err := CheckServingRole(ctx, owner, "UPMO_DATABASE_APP_URL", "upmo_app"); err == nil || err.Error() != bypass {
+		t.Fatalf("owner pool: %v, want %q", err, bypass)
+	}
+	// A superuser login that switched to upmo_app is still the superuser.
+	if err := CheckServingRole(ctx, pgtest.App(t, owner), "UPMO_DATABASE_APP_URL", "upmo_app"); err == nil || err.Error() != bypass {
+		t.Fatalf("SET ROLE pool: %v, want %q", err, bypass)
 	}
 	// The grant is cluster-wide, so it is taken back before the test ends.
 	if _, err := owner.Exec(ctx, "GRANT "+ownerRole+" TO upmo_app"); err != nil {
@@ -93,16 +99,16 @@ func TestCheckAppRole(t *testing.T) {
 			t.Errorf("revoke %s from upmo_app: %v", ownerRole, err)
 		}
 	})
-	err := checkAppRole(ctx, owner, pgtest.AppLogin(t, owner))
-	if err == nil || !strings.Contains(err.Error(), "member") {
-		t.Fatalf("member of the owner role passed: %v", err)
+	const owns = "brain: UPMO_DATABASE_APP_URL logs in as a role that owns Upmo tables or may act as their owner"
+	if err := CheckServingRole(ctx, pgtest.AppLogin(t, owner), "UPMO_DATABASE_APP_URL", "upmo_app"); err == nil || err.Error() != owns {
+		t.Fatalf("member of the owner role: %v, want %q", err, owns)
 	}
 }
 
 // An upmo_app holding a cluster-wide right is refused even though it is the
 // right role and not a member of the owner: the right is restored before the
 // test ends, the same way the member grant above is taken back.
-func TestCheckAppRoleRefusesPrivilegedAppRole(t *testing.T) {
+func TestCheckServingRoleRefusesPrivilegedAppRole(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if _, err := owner.Exec(ctx, "ALTER ROLE upmo_app CREATEROLE"); err != nil {
@@ -113,17 +119,16 @@ func TestCheckAppRoleRefusesPrivilegedAppRole(t *testing.T) {
 			t.Errorf("restore upmo_app NOCREATEROLE: %v", err)
 		}
 	})
-	err := checkAppRole(ctx, owner, pgtest.AppLogin(t, owner))
-	if err == nil || !strings.Contains(err.Error(), "superuser or can create roles") {
-		t.Fatalf("upmo_app with CREATEROLE passed the app role check: %v", err)
+	err := CheckServingRole(ctx, pgtest.AppLogin(t, owner), "UPMO_DATABASE_APP_URL", "upmo_app")
+	if err == nil || !strings.Contains(err.Error(), "can create roles or databases") {
+		t.Fatalf("upmo_app with CREATEROLE passed the role check: %v", err)
 	}
 }
 
-// A login that is not upmo_app at all — not a superuser, not a member of the
-// owner role — is refused on the session user alone, before the role's rights
-// are looked at. The throwaway role is cluster-wide, so it is named after this
-// test's own database and dropped before the test ends.
-func TestCheckAppRoleRefusesStrangerLogin(t *testing.T) {
+// A login that is not the expected role at all is refused on its name. The
+// throwaway role is cluster-wide, so it is named after this test's own
+// database and dropped before the test ends.
+func TestCheckServingRoleRefusesStrangerLogin(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	role := "upmo_stranger_" + owner.Config().ConnConfig.Database
@@ -146,67 +151,74 @@ func TestCheckAppRoleRefusesStrangerLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	err = checkAppRole(ctx, owner, pool)
-	if err == nil || !strings.Contains(err.Error(), "not upmo_app") {
-		t.Fatalf("stranger login passed the app role check: %v", err)
+	err = CheckServingRole(ctx, pool, "UPMO_DATABASE_SANDBOX_URL", "upmo_sandbox")
+	want := "brain: UPMO_DATABASE_SANDBOX_URL must log in as upmo_sandbox, not " + role
+	if err == nil || err.Error() != want {
+		t.Fatalf("stranger login: %v, want %q", err, want)
 	}
 }
 
-// EnableAppLogin turns the migration's NOLOGIN role into a working login, is
-// safe to run on every start, and refuses a URL that is not a password login
-// for upmo_app without naming the URL.
-func TestEnableAppLogin(t *testing.T) {
+// EnableLogin turns a migration's NOLOGIN role into a working login, is safe
+// to run on every start, and refuses a URL that is not a password login for
+// that role without naming the URL.
+func TestEnableLogin(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
-	// Start from the migration's state, with the role unable to log in.
-	if _, err := owner.Exec(ctx, "ALTER ROLE upmo_app NOLOGIN"); err != nil {
-		t.Fatal(err)
-	}
-	appURL := dbURL(t, owner, url.UserPassword("upmo_app", "upmo-app-test"))
-	if err := EnableAppLogin(ctx, owner, appURL); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnableAppLogin(ctx, owner, appURL); err != nil {
-		t.Fatalf("second EnableAppLogin: %v", err)
-	}
-	pool, err := pgxpool.New(ctx, appURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	var session string
-	if err := pool.QueryRow(ctx, "SELECT session_user").Scan(&session); err != nil {
-		t.Fatal(err)
-	}
-	if session != "upmo_app" {
-		t.Fatalf("session_user = %s, want upmo_app", session)
-	}
-
-	if err := EnableAppLogin(ctx, owner, dbURL(t, owner, url.User("upmo_app"))); err == nil {
-		t.Fatal("app URL without a password was accepted")
-	}
-	ownerURL := dbURL(t, owner, nil)
-	err = EnableAppLogin(ctx, owner, ownerURL)
-	if err == nil || strings.Contains(err.Error(), ownerURL) {
-		t.Fatalf("owner credential as app URL: %v", err)
+	for _, r := range []struct{ env, role string }{
+		{"UPMO_DATABASE_APP_URL", "upmo_app"},
+		{"UPMO_DATABASE_RUNNER_URL", "upmo_runner"},
+		{"UPMO_DATABASE_GATEWAY_URL", "upmo_gateway"},
+		{"UPMO_DATABASE_SANDBOX_URL", "upmo_sandbox"},
+	} {
+		// Start from the migration's state, with the role unable to log in.
+		if _, err := owner.Exec(ctx, "ALTER ROLE "+r.role+" NOLOGIN"); err != nil {
+			t.Fatal(err)
+		}
+		roleURL := dbURL(t, owner, url.UserPassword(r.role, r.role+"-test"))
+		if err := EnableLogin(ctx, owner, r.env, r.role, roleURL); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnableLogin(ctx, owner, r.env, r.role, roleURL); err != nil {
+			t.Fatalf("second EnableLogin %s: %v", r.role, err)
+		}
+		pool, err := pgxpool.New(ctx, roleURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var session string
+		err = pool.QueryRow(ctx, "SELECT session_user").Scan(&session)
+		pool.Close()
+		if err != nil || session != r.role {
+			t.Fatalf("session_user = %s %v, want %s", session, err, r.role)
+		}
+		if err := EnableLogin(ctx, owner, r.env, r.role, dbURL(t, owner, url.User(r.role))); err == nil {
+			t.Fatalf("%s URL without a password was accepted", r.env)
+		}
+		ownerURL := dbURL(t, owner, nil)
+		err = EnableLogin(ctx, owner, r.env, r.role, ownerURL)
+		if err == nil || strings.Contains(err.Error(), ownerURL) || !strings.Contains(err.Error(), r.env) {
+			t.Fatalf("owner credential as %s: %v", r.env, err)
+		}
 	}
 }
 
-// OpenAppPool is what run starts the request pool with: the owner credential
-// in the app URL is refused, in every environment, and the app login serves.
-func TestOpenAppPoolRefusesOwnerCredential(t *testing.T) {
+// OpenServingPool is what brain starts its pools with: the owner credential
+// is refused, in every environment, and the app login serves.
+func TestOpenServingPoolRefusesOwnerCredential(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 
 	// The planted bug: UPMO_DATABASE_APP_URL set to the owner credential.
 	// The pool opens and SET ROLE upmo_app even works, but the check refuses
 	// it, so the brain stops instead of serving as the owner.
-	if pool, err := OpenAppPool(ctx, owner, dbURL(t, owner, nil)); err == nil {
+	if pool, err := OpenServingPool(ctx, "UPMO_DATABASE_APP_URL", dbURL(t, owner, nil), "upmo_app", "upmo_app"); err == nil {
 		pool.Close()
 		t.Fatal("request pool on the owner credential was accepted")
+	} else if !strings.Contains(err.Error(), "BYPASSRLS") {
+		t.Fatalf("owner credential: %v, want it to name BYPASSRLS", err)
 	}
 
-	pool, err := OpenAppPool(ctx, owner, pgtest.AppLoginURL(t, owner))
+	pool, err := OpenServingPool(ctx, "UPMO_DATABASE_APP_URL", pgtest.AppLoginURL(t, owner), "upmo_app", "upmo_app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,11 +232,10 @@ func TestOpenAppPoolRefusesOwnerCredential(t *testing.T) {
 	}
 }
 
-// A request pool that does not open fails without naming the URL: its parse
-// error carries the URL, password included, and run logs whatever it is
-// given. The port below cannot parse, and the marker rides in the password.
-func TestOpenAppPoolFailureOmitsPassword(t *testing.T) {
-	owner := pgtest.New(t)
+// A pool that does not open fails without naming the URL: its parse error
+// carries the URL, password included, and run logs whatever it is given. The
+// port below cannot parse, and the marker rides in the password.
+func TestOpenServingPoolFailureOmitsPassword(t *testing.T) {
 	const marker = "open-marker-sesame"
 	bad := "postgres://upmo_app:" + marker + "@127.0.0.1:notaport/upmo"
 	_, err := RequestPool(context.Background(), bad)
@@ -234,9 +245,9 @@ func TestOpenAppPoolFailureOmitsPassword(t *testing.T) {
 	if strings.Contains(err.Error(), marker) {
 		t.Fatalf("request pool error names the app URL password: %v", err)
 	}
-	if _, err := OpenAppPool(context.Background(), owner, bad); err == nil {
-		t.Fatal("malformed app URL was accepted by OpenAppPool")
+	if _, err := OpenServingPool(context.Background(), "UPMO_DATABASE_APP_URL", bad, "upmo_app", "upmo_app"); err == nil {
+		t.Fatal("malformed app URL was accepted by OpenServingPool")
 	} else if strings.Contains(err.Error(), marker) {
-		t.Fatalf("open app pool error names the app URL password: %v", err)
+		t.Fatalf("open serving pool error names the app URL password: %v", err)
 	}
 }

@@ -53,7 +53,7 @@ func TestParentCancelSetsTheCauseOnOpenChildren(t *testing.T) {
 
 func TestSaveResultNeutralisesAndStoresOnce(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	root := openRoot(t, store, "File the receipts")
 	if err := app.SaveResult(ctx, store, ownerAccess, root.ID, " See {{prior}} ", "two pages"); !errors.Is(err, domain.ErrInput) {

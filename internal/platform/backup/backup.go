@@ -106,7 +106,7 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, opts BackupOptions) (Backup
 	if err := reserved.Close(); err != nil {
 		return BackupResult{}, fmt.Errorf("backup: close output reservation: %w", err)
 	}
-	if err := checkPrivileges(ctx, pool); err != nil {
+	if err := CheckPrivileges(ctx, pool); err != nil {
 		return BackupResult{}, err
 	}
 
@@ -520,7 +520,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, opts RestoreOptions) (Rest
 	if inPath == "" {
 		return RestoreResult{}, errors.New("backup: --in path is required")
 	}
-	if err := checkPrivileges(ctx, pool); err != nil {
+	if err := CheckPrivileges(ctx, pool); err != nil {
 		return RestoreResult{}, err
 	}
 

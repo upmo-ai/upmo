@@ -258,7 +258,32 @@ GRANT SELECT, INSERT ON agents.versions TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON agents.lessons TO upmo_app;
 GRANT UPDATE (title, cue, body, always_inline, updated_at) ON agents.lessons TO upmo_app;
 
+-- The ids of every agent that depends on a provider account: its default
+-- model on that provider, or a route linked to it. Brain filters them by the
+-- caller's own visibility before it names any; the ids alone are never shown.
+-- +goose StatementBegin
+CREATE FUNCTION agents.provider_agent_ids(provider text, models text[], routes text[])
+RETURNS SETOF uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT a.id
+  FROM agents.agents AS a
+  WHERE (lower(COALESCE(a.default_model_provider, '')) = lower(provider_agent_ids.provider)
+         AND a.default_model_id = ANY (COALESCE(provider_agent_ids.models, '{}')))
+     OR a.default_route = ANY (COALESCE(provider_agent_ids.routes, '{}'))
+  ORDER BY a.id
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION agents.provider_agent_ids(text, text[], text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION agents.provider_agent_ids(text, text[], text[]) TO upmo_app;
+
 -- +goose Down
+
+DROP FUNCTION IF EXISTS agents.provider_agent_ids(text, text[], text[]);
 
 DROP TABLE IF EXISTS agents.lessons;
 DROP TABLE IF EXISTS agents.versions;

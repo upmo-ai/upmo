@@ -5,7 +5,7 @@ You need Docker and nothing else. Every command runs in a container that `compos
 ## Run locally
 
 ```sh
-make up               # start brain and postgres, brain listens on localhost:8080
+make up               # start the worker, brain and postgres, brain listens on localhost:8080
 curl -fsS localhost:8080/healthz
 make down
 ```

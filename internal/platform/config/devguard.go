@@ -59,6 +59,12 @@ var knownDevDigests = map[string]bool{
 	"07c69b4fc5934597a9301d5fa7ce7d79ecc1791a71a67aa50a03f08f6a9b29ce": true,
 	// The compose database app-role password.
 	"f5462226c6de4a946f199fb284973f1a5e54a50c80bc631fdab4586fa8120045": true,
+	// The compose database gateway-role password.
+	"9bafec2c8b2b71262605db1c20f82924bbc88af30598fcc12fb4e9833e1bd609": true,
+	// The compose database sandbox-role password.
+	"40138018dd8f4de2facbfe2a27ee3fc883005d89832ab1cbb87b12f834fec730": true,
+	// The compose database runner-role password.
+	"0c4abf20162db3c903e946e75ca7d770cb1e4f0e835bff4395e0ce0c307ecb6b": true,
 	// compose.yml UPMO_CREDENTIAL_house.
 	"b6b52de7d120f1f660456fc30084ecf688c237e021b30a52ec55968732aada18": true,
 }
@@ -219,12 +225,13 @@ func CheckConfig(cfg Config, requireMasterKey bool, lookup func(string) (string,
 		PublicURL:        cfg.PublicURL,
 		RequireMasterKey: requireMasterKey,
 	}
-	if cfg.DatabaseURL != "" {
-		g.DatabaseURLs = append(g.DatabaseURLs, Setting{Name: "UPMO_DATABASE_URL", Value: cfg.DatabaseURL})
-	}
-	if cfg.DatabaseAppURL != "" {
-		g.DatabaseURLs = append(g.DatabaseURLs, Setting{Name: "UPMO_DATABASE_APP_URL", Value: cfg.DatabaseAppURL})
-	}
+	g.DatabaseURLs = nonEmpty(
+		Setting{Name: "UPMO_DATABASE_URL", Value: cfg.DatabaseURL},
+		Setting{Name: "UPMO_DATABASE_APP_URL", Value: cfg.DatabaseAppURL},
+		Setting{Name: "UPMO_DATABASE_RUNNER_URL", Value: cfg.DatabaseRunnerURL},
+		Setting{Name: "UPMO_DATABASE_GATEWAY_URL", Value: cfg.DatabaseGatewayURL},
+		Setting{Name: "UPMO_DATABASE_SANDBOX_URL", Value: cfg.DatabaseSandboxURL},
+	)
 	g.ServiceKeys = append(g.ServiceKeys, nonEmpty(
 		Setting{Name: "UPMO_GATEWAY_KEY", Value: cfg.GatewayKey},
 		Setting{Name: "UPMO_GATEWAY_KEY_PREVIOUS", Value: cfg.GatewayKeyPrevious},
@@ -246,10 +253,12 @@ func CheckConfig(cfg Config, requireMasterKey bool, lookup func(string) (string,
 	return CheckGuard(g, lookup, environ)
 }
 
-// CheckSandboxd runs the guard for a loaded Sandboxd config: keys only,
-// since sandboxd opens no database and seals nothing.
+// CheckSandboxd runs the guard for a loaded Sandboxd config: its keys and
+// its database URL, since sandboxd seals nothing.
 func CheckSandboxd(cfg Sandboxd, lookup func(string) (string, bool), environ []string) error {
-	g := Guard{Env: cfg.Env, ServiceKeys: nonEmpty(
+	g := Guard{Env: cfg.Env, DatabaseURLs: nonEmpty(
+		Setting{Name: "UPMO_DATABASE_SANDBOX_URL", Value: cfg.DatabaseSandboxURL},
+	), ServiceKeys: nonEmpty(
 		Setting{Name: "UPMO_SANDBOXD_KEY", Value: cfg.SandboxdKey},
 		Setting{Name: "UPMO_SANDBOXD_KEY_PREVIOUS", Value: cfg.SandboxdKeyPrevious},
 		Setting{Name: "UPMO_EDITOR_KEY", Value: cfg.EditorKey},

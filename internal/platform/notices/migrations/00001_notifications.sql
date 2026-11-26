@@ -34,7 +34,42 @@ GRANT SELECT, INSERT ON notices.notifications TO upmo_app;
 GRANT UPDATE (dismissed_at) ON notices.notifications TO upmo_app;
 REVOKE ALL ON notices.goose_db_version FROM upmo_app;
 
+-- The gateway tells settings managers about an unpriced model. It may write a
+-- notice only for a person identity.settings_manager_ids() returns, and reads
+-- none back.
+-- +goose StatementBegin
+CREATE FUNCTION notices.insert_for_manager(target uuid, kind text, title text)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_id uuid;
+  v_prev text := current_setting('upmo.user_id', true);
+BEGIN
+  IF target IS NULL OR NOT EXISTS (
+    SELECT 1 FROM identity.settings_manager_ids() AS m(id) WHERE m.id = target
+  ) THEN
+    RAISE EXCEPTION 'notices: not a settings manager' USING ERRCODE = '42501';
+  END IF;
+  PERFORM set_config('upmo.user_id', target::text, true);
+  INSERT INTO notices.notifications (user_id, kind, title)
+  VALUES (target, insert_for_manager.kind, insert_for_manager.title)
+  RETURNING id INTO v_id;
+  PERFORM set_config('upmo.user_id', COALESCE(v_prev, ''), true);
+  RETURN v_id;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION notices.insert_for_manager(uuid, text, text) FROM PUBLIC;
+GRANT USAGE ON SCHEMA notices TO upmo_gateway;
+GRANT EXECUTE ON FUNCTION notices.insert_for_manager(uuid, text, text) TO upmo_gateway;
+
 -- +goose Down
 
+DROP FUNCTION IF EXISTS notices.insert_for_manager(uuid, text, text);
 DROP TABLE IF EXISTS notices.notifications;
 REVOKE USAGE ON SCHEMA notices FROM upmo_app;

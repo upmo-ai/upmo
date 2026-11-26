@@ -29,6 +29,57 @@ services:
   go:
     <<: *go
 
+  # The one process that holds the privileged database role. It migrates,
+  # gives each serving role its password, runs the jobs that read every
+  # person's rows, and serves /api/v1/provision/* on its internal listener,
+  # which is never published on the host. brain, gateway and sandboxd start
+  # after it and never get UPMO_DATABASE_URL.
+  worker:
+    <<: *go
+    volumes:
+      - .:/src
+      - upmo-gomodcache:/go/pkg/mod
+      - upmo-gocache:/root/.cache/go-build
+      - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
+      - avatars-data:/var/upmo/avatars
+    command:
+      - sh
+      - -c
+      - >-
+        go build -ldflags "-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$${UPMO_VERSION:-dev} -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$$(git rev-parse HEAD 2>/dev/null || echo unknown) -X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o /tmp/upmo ./cmd/upmo && exec /tmp/upmo worker
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *go-env
+      UPMO_ENV: development
+      # Dev only. Never reuse outside the local compose stack.
+      UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
+      # The worker sets each serving role's password from its URL.
+      UPMO_DATABASE_APP_URL: postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable
+      UPMO_DATABASE_RUNNER_URL: postgres://upmo_runner:upmo_runner@postgres:5432/upmo?sslmode=disable
+      UPMO_DATABASE_GATEWAY_URL: postgres://upmo_gateway:upmo_gateway@postgres:5432/upmo?sslmode=disable
+      UPMO_DATABASE_SANDBOX_URL: postgres://upmo_sandbox:upmo_sandbox@postgres:5432/upmo?sslmode=disable
+      UPMO_PUBLIC_URL: http://localhost:5173
+      UPMO_WORKER_LISTEN_ADDR: ":8090"
+      UPMO_AVATARS_DIR: /var/upmo/avatars
+      # Optional comma-separated upmo_svc_* keys for /api/v1/provision/* control-plane
+      # routes (supports key rotation). Leave empty/unset to disable provisioning (404).
+      # UPMO_PROVISION_KEYS: ""
+      # Dev only. Never reuse outside the local compose stack. The same value
+      # as brain and gateway.
+      UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
+      UPMO_MASTER_KEY_ID: k1
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 120s
+
   brain:
     <<: *go
     volumes:
@@ -52,17 +103,18 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
-      postgres:
+      worker:
         condition: service_healthy
     environment:
       <<: *go-env
       # The local stack runs with the development-only keys and passwords
       # embedded below, so it says so.
       UPMO_ENV: development
-      UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
       # Dev only. Never reuse outside the local compose stack. The request
-      # pool logs in as the app role, which owns nothing.
+      # pool logs in as the app role and the task runner as the runner role;
+      # neither owns anything. Brain never gets UPMO_DATABASE_URL.
       UPMO_DATABASE_APP_URL: postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable
+      UPMO_DATABASE_RUNNER_URL: postgres://upmo_runner:upmo_runner@postgres:5432/upmo?sslmode=disable
       UPMO_PUBLIC_URL: http://localhost:5173
       # brain reaches sandboxd only over HTTP, signed with the sandboxd key; it
       # never gets the engine socket. A task that needs a sandbox
@@ -91,9 +143,6 @@ services:
       # UPMO_LISTEN_ADDR. Keep it internal.
       # UPMO_METRICS_ADDR: ":9090"
       # UPMO_METRICS_TOKEN: upmo_mtr_dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ
-      # Optional comma-separated upmo_svc_* keys for /api/v1/provision/* control-plane
-      # routes (supports key rotation). Leave empty/unset to disable provisioning (404).
-      # UPMO_PROVISION_KEYS: ""
       # Dev only. Never reuse outside the local compose stack. Seals the provider
       # keys people add (base64 of 32 bytes). brain and gateway need the same value.
       # Default `upmo backup` archives are sealed with this key; restore needs
@@ -121,14 +170,16 @@ services:
     ports:
       - "127.0.0.1:8082:8082"
     depends_on:
-      postgres:
+      worker:
         condition: service_healthy
     environment:
       <<: *go-env
       # The local stack runs with the development-only keys and passwords
       # embedded below, so it says so.
       UPMO_ENV: development
-      UPMO_DATABASE_URL: postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
+      # Dev only. Gateway dispatches as upmo_gateway and never gets
+      # UPMO_DATABASE_URL.
+      UPMO_DATABASE_GATEWAY_URL: postgres://upmo_gateway:upmo_gateway@postgres:5432/upmo?sslmode=disable
       UPMO_PUBLIC_URL: http://127.0.0.1:8082
       UPMO_LISTEN_ADDR: ":8082"
       # Dev only. Never reuse outside the local compose stack.
@@ -161,6 +212,10 @@ services:
     networks:
       - dev
       - sandbox-egress
+    # The worker sets the upmo_sandbox password before sandboxd logs in.
+    depends_on:
+      worker:
+        condition: service_healthy
     # The go volumes, plus the engine socket for the Docker driver. Only the
     # sandboxd process gets the socket; the driver never mounts it into a
     # sandbox, and brain never gets it. :ro stops the path being
@@ -190,6 +245,9 @@ services:
       # Dev only. Never reuse outside the local compose stack.
       UPMO_SANDBOXD_KEY: upmo_svc_sandboxd_c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M
       UPMO_EDITOR_KEY: upmo_edk_ZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWU
+      # Dev only. Sandboxd logs in as upmo_sandbox and never gets
+      # UPMO_DATABASE_URL; it refuses to start when that is set.
+      UPMO_DATABASE_SANDBOX_URL: postgres://upmo_sandbox:upmo_sandbox@postgres:5432/upmo?sslmode=disable
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8083/healthz"]
       interval: 5s

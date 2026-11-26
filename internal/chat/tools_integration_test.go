@@ -21,6 +21,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/tasks"
+	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
 const (
@@ -142,7 +143,7 @@ func newToolsRig(t *testing.T) (*rig, rigActionTools) {
 		t.Fatal(err)
 	}
 	tools := rigActionTools{
-		tasks:  tasks.NewStore(r.pool, r.owner, r.work),
+		tasks:  tasks.NewStore(r.pool, pgtest.Runner(t, r.owner), r.work),
 		agents: r.agents,
 		memory: memory.NewFacts(r.pool),
 	}

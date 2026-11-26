@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"embed"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -123,7 +124,7 @@ func Mount(mux *http.ServeMux, pool *pgxpool.Pool, secrets app.Secrets, log *slo
 				if err != nil {
 					return err
 				}
-				_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
+				_, err = notices.InsertForManagerTx(ctx, tx, uid, notices.KindFailed, title)
 				return err
 			},
 		}
@@ -310,3 +311,27 @@ const (
 
 // Build returns the provider-neutral request for in.
 func Build(in Input) (Request, error) { return domain.Build(in) }
+
+// SchemaVersions returns each schema's applied migration head through the
+// gateway.schema_versions definer, for a serving role that may not read the
+// goose tables. It is the map migrate.SchemaVersions returns.
+func SchemaVersions(ctx context.Context, pool *pgxpool.Pool) (map[string]int64, error) {
+	rows, err := pool.Query(ctx, `SELECT schema_name, version FROM gateway.schema_versions()`)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: schema versions: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var schema string
+		var version int64
+		if err := rows.Scan(&schema, &version); err != nil {
+			return nil, fmt.Errorf("gateway: schema versions: %w", err)
+		}
+		out[schema] = version
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("gateway: schema versions: %w", err)
+	}
+	return out, nil
+}

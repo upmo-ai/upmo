@@ -10,13 +10,26 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 )
 
-func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
-	driver := riverpgxv5.New(pool)
-	migrator, err := rivermigrate.New(driver, &rivermigrate.Config{Schema: Schema})
+func riverUp(ctx context.Context, pool *pgxpool.Pool, schema string) error {
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), &rivermigrate.Config{Schema: schema})
 	if err != nil {
 		return err
 	}
-	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+	_, err = migrator.Migrate(ctx, rivermigrate.DirectionUp, nil)
+	return err
+}
+
+// migrateWorkerRiver creates WorkerSchema and River's tables in it. No serving
+// role gets a privilege there: only the owner's worker runs those jobs.
+func migrateWorkerRiver(ctx context.Context, pool *pgxpool.Pool) error {
+	if _, err := pool.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+WorkerSchema); err != nil {
+		return err
+	}
+	return riverUp(ctx, pool, WorkerSchema)
+}
+
+func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
+	if err := riverUp(ctx, pool, Schema); err != nil {
 		return err
 	}
 	if _, err := pool.Exec(ctx, `

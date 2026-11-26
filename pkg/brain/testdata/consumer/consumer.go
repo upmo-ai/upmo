@@ -12,12 +12,12 @@ import (
 // importing only pkg/brain and the standard library.
 func Compose(ctx context.Context) (*brain.App, error) {
 	cfg := brain.Config{
-		DatabaseURL:     "postgres://upmo:upmo@localhost:5432/upmo?sslmode=disable",
-		DatabaseAppURL:  "postgres://upmo_app:upmo_app@localhost:5432/upmo?sslmode=disable",
-		PublicURL:       "http://localhost:5173",
-		WebAuthnRPID:    "localhost",
-		ListenAddr:      ":8080",
-		ShutdownTimeout: 5 * time.Second,
+		DatabaseAppURL:    "postgres://upmo_app:upmo_app@localhost:5432/upmo?sslmode=disable",
+		DatabaseRunnerURL: "postgres://upmo_runner:upmo_runner@localhost:5432/upmo?sslmode=disable",
+		PublicURL:         "http://localhost:5173",
+		WebAuthnRPID:      "localhost",
+		ListenAddr:        ":8080",
+		ShutdownTimeout:   5 * time.Second,
 	}
 	return brain.New(ctx, cfg,
 		brain.WithExtraRoutes(func(mux *http.ServeMux, deps brain.Deps) {

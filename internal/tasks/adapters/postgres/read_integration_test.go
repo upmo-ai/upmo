@@ -57,7 +57,7 @@ func reach(t *testing.T, store postgres.Store, goal string, status domain.Status
 
 func TestViewCollapsesEachStatusAndKeepsThePhase(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	tests := []struct {
 		state  domain.Status
@@ -101,7 +101,7 @@ func TestViewCollapsesEachStatusAndKeepsThePhase(t *testing.T) {
 
 func TestListShapeAndOrder(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	first := openRoot(t, store, "First")
 	second := openRoot(t, store, "Second")
@@ -131,7 +131,7 @@ func TestListShapeAndOrder(t *testing.T) {
 
 func TestViewMergesTaskAndChatEventsInTimeOrder(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "File the receipts", domain.Working)
 	step := func(input domain.Input) {
@@ -180,7 +180,7 @@ func TestViewMergesTaskAndChatEventsInTimeOrder(t *testing.T) {
 
 func TestViewListsOnlyDirectChildrenAsSubtasks(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	one, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
@@ -214,7 +214,7 @@ func TestViewListsOnlyDirectChildrenAsSubtasks(t *testing.T) {
 
 func TestViewListsOnlyTheSubtasksThePersonCanSee(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	shown, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
@@ -287,7 +287,7 @@ func TestViewListsOnlyTheSubtasksThePersonCanSee(t *testing.T) {
 
 func TestViewRendersResultAndDetail(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
@@ -323,7 +323,7 @@ func TestViewRendersResultAndDetail(t *testing.T) {
 
 func TestAnotherPersonSeesNothing(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "Sort the mail", domain.Working)
 
@@ -338,7 +338,7 @@ func TestAnotherPersonSeesNothing(t *testing.T) {
 
 func TestHTTPServesTheReadModel(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	serve := func(access app.Access) http.Handler {
 		mux := http.NewServeMux()
 		tasks.Handler{

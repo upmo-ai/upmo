@@ -49,7 +49,7 @@ func TestBrainChatActionToolsRespectAuthorNarrowedRLS(t *testing.T) {
 	}
 	pool := pgtest.App(t, owner)
 	members := identity.Members(pool, nil, "", nil, nil)
-	taskStore := tasks.NewStore(pool, owner, nil)
+	taskStore := tasks.NewStore(pool, pgtest.Runner(t, owner), nil)
 	agentStore := agents.NewStore(pool)
 	memoryFacts := memory.NewFacts(pool)
 

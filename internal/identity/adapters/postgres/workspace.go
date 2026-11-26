@@ -29,39 +29,26 @@ func scanWorkspace(row pgx.Row) (domain.Workspace, error) {
 	return w, err
 }
 
-// WorkspaceTimeZone reads the workspace's configured time zone on the owner pool.
-func WorkspaceTimeZone(ctx context.Context, owner *pgxpool.Pool) (string, error) {
-	if owner == nil {
+// WorkspaceTimeZone reads the workspace's configured time zone through the
+// identity.workspace_time_zone definer, so any serving role may ask.
+func WorkspaceTimeZone(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	if pool == nil {
 		return "UTC", nil
 	}
 	var tz string
-	err := owner.QueryRow(ctx, `SELECT time_zone FROM identity.workspace WHERE id = true`).Scan(&tz)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "UTC", nil
-	}
-	if err != nil {
+	if err := pool.QueryRow(ctx, `SELECT identity.workspace_time_zone()`).Scan(&tz); err != nil {
 		return "", err
-	}
-	if tz == "" {
-		return "UTC", nil
 	}
 	return tz, nil
 }
 
 // SettingsManagers returns the IDs of all active (joined, non-disabled) users
-// holding settings:manage, read on the owner pool.
-func SettingsManagers(ctx context.Context, owner *pgxpool.Pool) ([]string, error) {
-	if owner == nil {
+// holding settings:manage, through the identity.settings_manager_ids definer.
+func SettingsManagers(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	if pool == nil {
 		return nil, nil
 	}
-	rows, err := owner.Query(ctx, `
-		SELECT u.id::text
-		FROM identity.users AS u
-		JOIN identity.roles AS r ON r.id = u.role_id
-		WHERE u.joined_at IS NOT NULL
-		  AND u.disabled_at IS NULL
-		  AND 'settings:manage' = ANY (identity.role_permissions(r.key, r.permissions))
-		ORDER BY u.id`)
+	rows, err := pool.Query(ctx, `SELECT id::text FROM identity.settings_manager_ids() AS id`)
 	if err != nil {
 		return nil, err
 	}

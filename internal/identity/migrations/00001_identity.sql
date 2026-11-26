@@ -316,7 +316,33 @@ END
 $$;
 -- +goose StatementEnd
 
+-- The other serving roles follow the same rule: NOLOGIN until the worker
+-- sets a password from their URL, NOSUPERUSER, NOBYPASSRLS, and owner of no
+-- table. upmo_gateway dispatches model calls, upmo_sandbox reads one bound
+-- credential through gateway.credential_for_sandbox, and upmo_runner writes
+-- the task runner columns brain may not write as upmo_app.
+
+-- +goose StatementBegin
+DO $$
+BEGIN
+  BEGIN
+    CREATE ROLE upmo_gateway NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
+  END;
+  BEGIN
+    CREATE ROLE upmo_sandbox NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
+  END;
+  BEGIN
+    CREATE ROLE upmo_runner NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
+  END;
+END
+$$;
+-- +goose StatementEnd
+
 GRANT USAGE ON SCHEMA identity TO upmo_app;
+GRANT USAGE ON SCHEMA identity TO upmo_gateway, upmo_runner;
 GRANT SELECT ON identity.roles TO upmo_app;
 GRANT SELECT ON identity.users TO upmo_app;
 GRANT UPDATE (password_hash, webauthn_handle, joined_at, passkey_offered_at) ON identity.users TO upmo_app;
@@ -659,15 +685,18 @@ REVOKE ALL ON FUNCTION identity.may_manage(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.may_manage(uuid, text) TO upmo_app;
 
 -- +goose StatementBegin
-CREATE FUNCTION identity.teams_of(person uuid) RETURNS uuid[]
-LANGUAGE sql STABLE SET search_path = pg_catalog
+-- The team ids of one person, and nothing else about anyone. Gateway routes
+-- a call through it instead of reading identity.team_members.
+CREATE FUNCTION identity.teams_of(user_id uuid) RETURNS uuid[]
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
-  SELECT COALESCE(array_agg(team_id), '{}'::uuid[])
-  FROM identity.team_members WHERE user_id = person;
+  SELECT COALESCE(array_agg(m.team_id ORDER BY m.team_id), '{}'::uuid[])
+  FROM identity.team_members AS m WHERE m.user_id = teams_of.user_id;
 $$;
 -- +goose StatementEnd
 
 REVOKE ALL ON FUNCTION identity.teams_of(uuid) FROM PUBLIC, upmo_app;
+GRANT EXECUTE ON FUNCTION identity.teams_of(uuid) TO upmo_gateway;
 
 -- Pure catalog expansion matching domain.SystemPermissions and domain.known.
 -- +goose StatementBegin
@@ -1545,6 +1574,117 @@ $$;
 REVOKE ALL ON FUNCTION identity.sso_sign_in_state(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.sso_sign_in_state(uuid) TO upmo_app;
 
+-- Definers for the serving roles. Each returns the least the caller needs:
+-- ids, one time zone, a name, a flag. None returns email or password_hash.
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.workspace_time_zone()
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT COALESCE(NULLIF((SELECT w.time_zone FROM identity.workspace AS w WHERE w.id), ''), 'UTC')
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.workspace_time_zone() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.workspace_time_zone() TO upmo_app, upmo_gateway;
+
+-- +goose StatementBegin
+CREATE FUNCTION identity.settings_manager_ids()
+RETURNS SETOF uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT u.id
+  FROM identity.users AS u
+  JOIN identity.roles AS r ON r.id = u.role_id
+  WHERE u.joined_at IS NOT NULL
+    AND u.disabled_at IS NULL
+    AND 'settings:manage' = ANY (identity.role_permissions(r.key, r.permissions))
+  ORDER BY u.id
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.settings_manager_ids() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.settings_manager_ids() TO upmo_app, upmo_gateway;
+
+-- Password sign-in finds the person by an email hash before any session
+-- exists. The sealed password is not returned.
+-- +goose StatementBegin
+CREATE FUNCTION identity.password_account(email_hash bytea[])
+RETURNS TABLE (id uuid, name text, found boolean)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT u.id, u.name, true
+  FROM identity.users AS u
+  WHERE u.email_hash = ANY (password_account.email_hash)
+    AND u.disabled_at IS NULL
+  LIMIT 1
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.password_account(bytea[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.password_account(bytea[]) TO upmo_app;
+
+-- Discoverable passkey sign-in: the one enabled account behind a credential
+-- and its handle. There is no session yet.
+-- +goose StatementBegin
+CREATE FUNCTION identity.account_by_credential(credential_id bytea, webauthn_handle bytea)
+RETURNS TABLE (id uuid, name text, webauthn_handle bytea)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT person.id, person.name, person.webauthn_handle
+  FROM identity.passkeys AS passkey
+  JOIN identity.users AS person ON person.id = passkey.user_id
+  WHERE passkey.credential_id = account_by_credential.credential_id
+    AND person.webauthn_handle = account_by_credential.webauthn_handle
+    AND person.disabled_at IS NULL
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.account_by_credential(bytea, bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.account_by_credential(bytea, bytea) TO upmo_app;
+
+-- Whether the session's own person has a password. The person comes from
+-- the session hash, never from upmo.user_id.
+-- +goose StatementBegin
+CREATE FUNCTION identity.has_password(actor_token_hash bytea)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_has boolean;
+BEGIN
+  SELECT u.password_hash IS NOT NULL INTO v_has
+  FROM identity.sessions AS s
+  JOIN identity.users AS u ON u.id = s.user_id
+  WHERE s.token_hash = actor_token_hash
+    AND u.disabled_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+  RETURN v_has;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.has_password(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.has_password(bytea) TO upmo_app;
+
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA identity FROM PUBLIC;
 
 -- +goose StatementBegin
@@ -1559,6 +1699,11 @@ $$;
 
 -- +goose Down
 
+DROP FUNCTION IF EXISTS identity.has_password(bytea);
+DROP FUNCTION IF EXISTS identity.account_by_credential(bytea, bytea);
+DROP FUNCTION IF EXISTS identity.password_account(bytea[]);
+DROP FUNCTION IF EXISTS identity.settings_manager_ids();
+DROP FUNCTION IF EXISTS identity.workspace_time_zone();
 DROP FUNCTION IF EXISTS identity.sso_sign_in_state(uuid);
 DROP POLICY IF EXISTS workspace_update ON identity.workspace;
 DROP POLICY IF EXISTS workspace_select ON identity.workspace;

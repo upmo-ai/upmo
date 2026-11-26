@@ -25,15 +25,16 @@ type TaskSandboxes struct {
 
 var _ app.TaskSandboxStore = TaskSandboxes{}
 
-// Claim inserts a pending task sandbox that lapses after ttl.
-func (s TaskSandboxes) Claim(ctx context.Context, taskID string, ttl time.Duration) error {
+// Claim inserts a pending task sandbox that lapses after ttl, with the hash
+// of its proxy secret. upmo_app may insert the hash but never read it back.
+func (s TaskSandboxes) Claim(ctx context.Context, taskID string, ttl time.Duration, secretHash []byte) error {
 	if s.Pool == nil {
 		return errNoDatabase
 	}
 	_, err := s.Pool.Exec(ctx, `
-		INSERT INTO runtime.task_sandboxes (task_id, expires_at)
-		VALUES ($1::uuid, now() + make_interval(secs => $2::double precision))`,
-		taskID, ttl.Seconds())
+		INSERT INTO runtime.task_sandboxes (task_id, expires_at, proxy_secret_hash)
+		VALUES ($1::uuid, now() + make_interval(secs => $2::double precision), $3)`,
+		taskID, ttl.Seconds(), secretHash)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return app.ErrAlreadyHeld
@@ -44,7 +45,9 @@ func (s TaskSandboxes) Claim(ctx context.Context, taskID string, ttl time.Durati
 	return nil
 }
 
-// Fill records the sandbox on a row that is still pending.
+// Fill records the sandbox on a row that is pending or already holds that
+// sandbox, through runtime.fill_task_sandbox: upmo_app may not write
+// sandbox_id itself.
 func (s TaskSandboxes) Fill(ctx context.Context, taskID, sandboxID string, expires time.Time) (bool, error) {
 	if s.Pool == nil {
 		return false, errNoDatabase
@@ -53,15 +56,13 @@ func (s TaskSandboxes) Fill(ctx context.Context, taskID, sandboxID string, expir
 	if !expires.IsZero() {
 		until = &expires
 	}
-	tag, err := s.Pool.Exec(ctx, `
-		UPDATE runtime.task_sandboxes
-		SET sandbox_id = $2, expires_at = coalesce($3::timestamptz, expires_at)
-		WHERE task_id = $1::uuid AND sandbox_id IS NULL`,
-		taskID, sandboxID, until)
+	var filled bool
+	err := s.Pool.QueryRow(ctx, `SELECT runtime.fill_task_sandbox($1::uuid, $2, $3::timestamptz)`,
+		taskID, sandboxID, until).Scan(&filled)
 	if err != nil {
 		return false, fmt.Errorf("runtime: fill task sandbox: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return filled, nil
 }
 
 // Lookup reads the sandbox a task holds.

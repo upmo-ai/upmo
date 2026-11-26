@@ -20,7 +20,7 @@ import (
 
 func TestSpawnOpensAChildAndDoesNotAdmit(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 
@@ -50,7 +50,7 @@ func TestSpawnOpensAChildAndDoesNotAdmit(t *testing.T) {
 
 func TestSpawnCeilings(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 
@@ -106,7 +106,7 @@ func TestSpawnCeilings(t *testing.T) {
 
 func TestAwaitReportsOpenChildren(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 
@@ -142,7 +142,7 @@ func TestAwaitReportsOpenChildren(t *testing.T) {
 
 func TestSendReachesAChildOnly(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
@@ -179,7 +179,7 @@ func TestSendReachesAChildOnly(t *testing.T) {
 
 func TestCancelDoesNotPropagate(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	first, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
@@ -222,7 +222,7 @@ func TestCancelDoesNotPropagate(t *testing.T) {
 
 func TestDirectWriteKeepsTheCeilings(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 1, "task:view")
@@ -323,7 +323,7 @@ func TestOpenChildCount_UPM252_CountsEveryOpenChildForAnOwnerThatIsNeitherSuperu
 
 func TestDirectChildInsertRefusesPausedOrTerminalParent(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 
 	paused := openRoot(t, store, "File the receipts")
@@ -366,7 +366,7 @@ func TestDirectChildInsertRefusesPausedOrTerminalParent(t *testing.T) {
 
 func TestDirectChildInsertCountsParentSpent(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -451,7 +451,7 @@ func TestDirectChildInsertCountsParentSpent(t *testing.T) {
 
 func TestOverlappingDirectChildInsertsReserveOnce(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	if held := childMoney(t, owner, `SELECT held FROM tasks.tasks WHERE id = $1`, parent.ID); held != 0 {

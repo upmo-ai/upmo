@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start Postgres, gateway and brain for this checkout's e2e project, and print one
+# Start Postgres, the worker, gateway and brain for this checkout's e2e project, and print one
 # sign-in link. A second run recovers instead of bootstrapping again. In an
 # e2e project (upmo-e2e-*) every run also resets the e2e person and empties the
 # identity throttle with e2e/reset.sql, and replaces their tasks with the fixed
@@ -37,7 +37,8 @@ dc up -d --wait postgres
 
 issue() {
   out=$(mktemp)
-  if ! dc run --rm --no-deps brain sh -c "go build -o /tmp/upmo ./cmd/upmo && /tmp/upmo $1" >"$out"; then
+  # The worker service holds UPMO_DATABASE_URL; brain never does.
+  if ! dc run --rm --no-deps worker sh -c "go build -o /tmp/upmo ./cmd/upmo && /tmp/upmo $1" >"$out"; then
     cat "$out" >&2
     rm -f "$out"
     return 1
@@ -63,9 +64,10 @@ case $link in
     ;;
 esac
 
-# The gateway answers the chat replies of e2e/composer.mjs.
-say "starting gateway and brain"
-dc up -d --wait gateway brain
+# The gateway answers the chat replies of e2e/composer.mjs. Both wait for the
+# worker, which migrates and sets their database passwords.
+say "starting the worker, gateway and brain"
+dc up -d --wait worker gateway brain
 
 # Last, so the throttle is empty when the browser starts.
 case $project in

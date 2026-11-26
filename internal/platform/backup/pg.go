@@ -78,7 +78,10 @@ var (
 	keyIDRE          = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
 )
 
-func checkPrivileges(ctx context.Context, pool *pgxpool.Pool) error {
+// CheckPrivileges refuses a pool whose role is neither a superuser nor
+// BYPASSRLS: backup, restore and the worker command read and move rows of
+// every person, which row security would hide.
+func CheckPrivileges(ctx context.Context, pool *pgxpool.Pool) error {
 	var role string
 	var privileged bool
 	if err := pool.QueryRow(ctx, `

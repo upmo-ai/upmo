@@ -87,7 +87,8 @@ func frames(t *testing.T, body []byte) []frame {
 	return out
 }
 
-const createJSON = `{"task_id":"018f3b2c-7a10-7c4a-8e11-111111111111","image":"upmo/sandbox:base","tier":"container","ttl_seconds":600,"allow":["github.com"]}`
+// createJSON carries a proxy_secret of 32 bytes of 'a'.
+const createJSON = `{"task_id":"018f3b2c-7a10-7c4a-8e11-111111111111","image":"upmo/sandbox:base","tier":"container","ttl_seconds":600,"allow":["github.com"],"proxy_secret":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="}`
 
 func TestCreateThenDestroy(t *testing.T) {
 	mux := serve(t)
@@ -493,4 +494,53 @@ func TestExecBudget(t *testing.T) {
 			t.Errorf("execBudget(%v) = %v, want %v", timeout, got, want)
 		}
 	}
+}
+
+// Create refuses a request without a 32-byte proxy secret, and creates nothing.
+func TestCreateRefusesAMissingOrShortProxySecret(t *testing.T) {
+	driver := &countingCreate{fake: fake{Driver: stub.New(nil)}}
+	mux := serveWith(t, driver)
+	const secret = `,"proxy_secret":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="`
+	for name, body := range map[string]string{
+		"missing":  strings.Replace(createJSON, secret, "", 1),
+		"null":     strings.Replace(createJSON, secret, `,"proxy_secret":null`, 1),
+		"empty":    strings.Replace(createJSON, secret, `,"proxy_secret":""`, 1),
+		"31 bytes": strings.Replace(createJSON, secret, `,"proxy_secret":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ=="`, 1),
+		"33 bytes": strings.Replace(createJSON, secret, `,"proxy_secret":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh"`, 1),
+	} {
+		if body == createJSON {
+			t.Fatalf("%s: body unchanged", name)
+		}
+		rec := post(mux, PathCreate, body)
+		if rec.Code != http.StatusBadRequest || rec.Header().Get(HeaderError) != CodeSpec {
+			t.Errorf("%s = %d %q %s, want 400 %q", name, rec.Code, rec.Header().Get(HeaderError), rec.Body, CodeSpec)
+		}
+	}
+	if n := driver.creates.Load(); n != 0 {
+		t.Fatalf("creates = %d, want 0", n)
+	}
+	rec := post(mux, PathCreate, createJSON)
+	if rec.Code != http.StatusOK || driver.creates.Load() != 1 {
+		t.Fatalf("32 bytes = %d %s, creates %d", rec.Code, rec.Body, driver.creates.Load())
+	}
+	if want := []byte(strings.Repeat("a", 32)); !bytes.Equal(driver.secret, want) {
+		t.Fatalf("secret handed to the provider = %q, want %q", driver.secret, want)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "YWFhYWFh") || strings.Contains(body, strings.Repeat("a", 32)) {
+		t.Fatalf("create response carries the proxy secret: %s", body)
+	}
+}
+
+// countingCreate counts the Create calls that reach the provider and keeps
+// the last proxy secret it was handed.
+type countingCreate struct {
+	fake
+	creates atomic.Int64
+	secret  []byte
+}
+
+func (c *countingCreate) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox, error) {
+	c.creates.Add(1)
+	c.secret = spec.ProxySecret
+	return c.fake.Create(ctx, spec)
 }

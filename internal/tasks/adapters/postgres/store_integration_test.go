@@ -21,7 +21,7 @@ import (
 
 func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil || opened.Status != domain.Preparing {
@@ -112,7 +112,7 @@ func TestTransitionWalksToCheckingAndAppendsEvents(t *testing.T) {
 
 func TestTransitionPlansFromPreparingAndRejectsAnAdvanceEdgeToPlanning(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestTransitionPlansFromPreparingAndRejectsAnAdvanceEdgeToPlanning(t *testin
 
 func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -173,7 +173,7 @@ func TestTransitionStoresTurnBodyWithoutTheSentinel(t *testing.T) {
 
 func TestTransitionFailThenChatStops(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Close the week"})
 	if err != nil {
@@ -197,7 +197,7 @@ func TestTransitionFailThenChatStops(t *testing.T) {
 
 func TestFailedChecksAreStoredAndDoNotPass(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openAtChecking(t, store, "File the receipts")
 	if passed, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil || !passed {
@@ -230,7 +230,7 @@ func TestFailedChecksAreStoredAndDoNotPass(t *testing.T) {
 
 func TestChecksBeforeCheckingAreRefused(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestChecksBeforeCheckingAreRefused(t *testing.T) {
 
 func TestTransitionHidesATaskFromAnotherPerson(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openAtChecking(t, store, "Sort the mail")
 	if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
@@ -290,7 +290,7 @@ func TestTransitionHidesATaskFromAnotherPerson(t *testing.T) {
 
 func TestEvidenceAndEventsCannotBeRewritten(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	opened, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -354,7 +354,7 @@ var (
 
 func TestOpenUsesDefaultBudget(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {

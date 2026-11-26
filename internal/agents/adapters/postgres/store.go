@@ -206,17 +206,16 @@ const providerUsesMatch = `(
 )`
 
 // SystemProviderAgentIDs returns the ids of every agent that depends on a
-// provider account, read on the owner pool. The ids are only a filter for a
-// caller's own visibility rules elsewhere; they are never shown.
-func SystemProviderAgentIDs(ctx context.Context, owner *pgxpool.Pool, provider string, models, routes []string) ([]string, error) {
-	if owner == nil || (len(models) == 0 && len(routes) == 0) {
+// provider account, through the agents.provider_agent_ids definer, so the
+// request pool reads them without seeing the agents. The ids are only a filter
+// for a caller's own visibility rules elsewhere; they are never shown.
+func SystemProviderAgentIDs(ctx context.Context, pool *pgxpool.Pool, provider string, models, routes []string) ([]string, error) {
+	if pool == nil || (len(models) == 0 && len(routes) == 0) {
 		return []string{}, nil
 	}
-	rows, err := owner.Query(ctx, `
-		SELECT id::text
-		FROM agents.agents
-		WHERE `+providerUsesMatch+`
-		ORDER BY id`, provider, nonNilStrings(models), nonNilStrings(routes))
+	rows, err := pool.Query(ctx, `
+		SELECT id::text FROM agents.provider_agent_ids($1, $2::text[], $3::text[]) AS id`,
+		provider, nonNilStrings(models), nonNilStrings(routes))
 	if err != nil {
 		return nil, fmt.Errorf("agents: system provider agent ids: %w", err)
 	}

@@ -5,11 +5,9 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,14 +16,12 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
-	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
-	"github.com/upmo-ai/upmo/internal/platform/migrate"
-	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
@@ -51,28 +47,15 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := openPool(ctx, cfg.DatabaseURL)
+	// Gateway logs in as upmo_gateway: not a superuser, not BYPASSRLS, and
+	// owner of no table. The worker command migrates; gateway only reads the
+	// schema heads through a definer.
+	pool, err := brainops.OpenServingPool(ctx, "UPMO_DATABASE_GATEWAY_URL", cfg.DatabaseGatewayURL, "", "upmo_gateway")
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-	// The audit schema migrates first: identity's grants and the request
-	// pools assume the audit role and tables already exist. Accounts shared
-	// with a team then point at identity's teams. brain does the same before
-	// it migrates gateway.
-	if err := migrate.Up(ctx, pool, audit.Schema, audit.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
-		return err
-	}
-	if err := migrate.Up(ctx, pool, gateway.Schema, gateway.Migrations()); err != nil {
-		return err
-	}
-	if err := notices.Up(ctx, pool); err != nil {
-		return err
-	}
-	schemaVersions, err := migrate.SchemaVersions(ctx, pool)
+	schemaVersions, err := gateway.SchemaVersions(ctx, pool)
 	if err != nil {
 		return err
 	}
@@ -160,30 +143,4 @@ func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) (gateway.Chain, er
 		chain = append(chain, gateway.DBSecrets{Pool: pool, Keys: keys})
 	}
 	return append(chain, fromEnv[1:]...), nil
-}
-
-// openPool opens the gateway pool without exposing UPMO_DATABASE_URL in parse
-// or connect errors. It dials once, so an unreachable database fails here
-// instead of in the first migration. pgx names the user and host in a connect
-// error, so that error is replaced, not wrapped.
-func openPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		return nil, poolURLError("UPMO_DATABASE_URL", databaseURL)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, errors.New("gateway: UPMO_DATABASE_URL could not be opened")
-	}
-	return pool, nil
-}
-
-// poolURLError reports a Postgres URL that could not be opened. The parse and
-// connect errors name the URL, which holds the password and would reach the
-// gateway stopped log, so only the host is kept from it.
-func poolURLError(envName, rawURL string) error {
-	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
-		return fmt.Errorf("gateway: %s could not be opened (host %s)", envName, u.Host)
-	}
-	return fmt.Errorf("gateway: %s could not be opened", envName)
 }

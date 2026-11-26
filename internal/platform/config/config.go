@@ -47,12 +47,29 @@ type Config struct {
 	// development for the local stack. Production refuses the development
 	// keys and passwords compose.yml embeds.
 	Env Env
-	// DatabaseURL is the Postgres URL (UPMO_DATABASE_URL). It is required.
+	// DatabaseURL is the privileged Postgres URL (UPMO_DATABASE_URL): a
+	// superuser or BYPASSRLS role that owns the tables. Only the worker and
+	// the upmo commands read it; brain, gateway and sandboxd never do.
 	DatabaseURL string
 	// DatabaseAppURL is the Postgres URL the request pool logs in with, as
 	// the upmo_app role (UPMO_DATABASE_APP_URL). It is required for brain;
-	// gateway and sandboxd never read it.
+	// the worker reads it to set the role's password.
 	DatabaseAppURL string
+	// DatabaseRunnerURL is the Postgres URL brain's task runner logs in with,
+	// as the upmo_runner role (UPMO_DATABASE_RUNNER_URL). It is required for
+	// brain; the worker reads it to set the role's password.
+	DatabaseRunnerURL string
+	// DatabaseGatewayURL is the Postgres URL gateway logs in with, as the
+	// upmo_gateway role (UPMO_DATABASE_GATEWAY_URL). It is required for
+	// gateway; the worker reads it to set the role's password.
+	DatabaseGatewayURL string
+	// DatabaseSandboxURL is the Postgres URL sandboxd logs in with, as the
+	// upmo_sandbox role (UPMO_DATABASE_SANDBOX_URL). The worker reads it to
+	// set the role's password.
+	DatabaseSandboxURL string
+	// WorkerListenAddr is the worker's internal HTTP listener
+	// (UPMO_WORKER_LISTEN_ADDR), :8090 by default. It serves provisioning.
+	WorkerListenAddr string
 	// SessionIdle ends a session with no requests (UPMO_SESSION_IDLE_TIMEOUT).
 	SessionIdle time.Duration
 	// SessionMaxAge is the absolute session lifetime (UPMO_SESSION_MAX_AGE).
@@ -165,6 +182,17 @@ const (
 	refuseSandboxd = "config: UPMO_SERVICE_KEY is not read; set UPMO_SANDBOXD_KEY and UPMO_EDITOR_KEY"
 )
 
+// Which database URLs a process reads.
+const (
+	// dbOwner is the worker and the upmo commands: the privileged URL, and
+	// the serving roles' URLs to set their passwords.
+	dbOwner = iota
+	// dbBrain is brain HTTP: the app and runner URLs, never the owner URL.
+	dbBrain
+	// dbGateway is gateway: its own URL, never the owner URL.
+	dbGateway
+)
+
 // Load reads configuration and requires the master key used by secret-using
 // Upmo commands, while development keys and passwords remain allowed locally.
 func Load() (Config, error) {
@@ -205,7 +233,7 @@ func LoadGateway() (Config, error) {
 }
 
 func loadGateway(lookup func(string) (string, bool)) (Config, error) {
-	cfg, err := loadWith(lookup, refuseGateway, false)
+	cfg, err := loadWith(lookup, refuseGateway, false, dbGateway)
 	if err != nil {
 		return Config{}, err
 	}
@@ -216,25 +244,18 @@ func loadGateway(lookup func(string) (string, bool)) (Config, error) {
 }
 
 func loadBrain(lookup func(string) (string, bool)) (Config, error) {
-	cfg, err := load(lookup)
-	if err != nil {
-		return Config{}, err
-	}
-	if cfg.DatabaseAppURL == "" {
-		return Config{}, fmt.Errorf("config: UPMO_DATABASE_APP_URL is required")
-	}
-	return cfg, nil
+	return loadWith(lookup, refuseBrain, true, dbBrain)
 }
 
-// load reads the configuration brain and its commands share.
+// load reads the configuration of the worker and the upmo commands.
 func load(lookup func(string) (string, bool)) (Config, error) {
-	return loadWith(lookup, refuseBrain, true)
+	return loadWith(lookup, refuseBrain, true, dbOwner)
 }
 
 // loadWith reads the shared configuration and refuses UPMO_SERVICE_KEY with
 // the process's own refusal. Only brain reads the keys of other audiences,
 // so a gateway never holds them.
-func loadWith(lookup func(string) (string, bool), refusal string, brain bool) (Config, error) {
+func loadWith(lookup func(string) (string, bool), refusal string, brain bool, db int) (Config, error) {
 	if err := refuseServiceKey(lookup, refusal); err != nil {
 		return Config{}, err
 	}
@@ -248,25 +269,14 @@ func loadWith(lookup func(string) (string, bool), refusal string, brain bool) (C
 		SessionMaxAge:      14 * 24 * time.Hour,
 		AuditRetentionDays: 365,
 	}
-	v, ok := lookup("UPMO_DATABASE_URL")
-	if !ok || v == "" {
-		return Config{}, fmt.Errorf("config: UPMO_DATABASE_URL is required")
-	}
 	envValue, _ := lookup("UPMO_ENV")
 	env, err := ParseEnv(envValue)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.Env = env
-	if err := tlscheck.PostgresURL("UPMO_DATABASE_URL", v); err != nil {
+	if err := readDatabaseURLs(lookup, &cfg, db); err != nil {
 		return Config{}, err
-	}
-	cfg.DatabaseURL = v
-	if v, ok := lookup("UPMO_DATABASE_APP_URL"); ok && v != "" {
-		if err := tlscheck.PostgresURL("UPMO_DATABASE_APP_URL", v); err != nil {
-			return Config{}, err
-		}
-		cfg.DatabaseAppURL = v
 	}
 	public, ok := lookup("UPMO_PUBLIC_URL")
 	if !ok || public == "" {
@@ -449,12 +459,17 @@ func loadWith(lookup func(string) (string, bool), refusal string, brain bool) (C
 	return cfg, nil
 }
 
-// Sandboxd holds the settings sandboxd reads at start. It has no database.
+// Sandboxd holds the settings sandboxd reads at start.
 type Sandboxd struct {
 	// Env is the deployment environment (UPMO_ENV): production by default,
 	// development for the local stack. Production refuses the development
 	// service key compose.yml embeds.
 	Env Env
+	// DatabaseSandboxURL is the Postgres URL sandboxd logs in with, as the
+	// upmo_sandbox role (UPMO_DATABASE_SANDBOX_URL). Empty opens no database,
+	// and every credential read fails closed. Sandboxd never reads
+	// UPMO_DATABASE_URL and refuses to start when it is set.
+	DatabaseSandboxURL string
 	// ListenAddr serves the SandboxProvider port (UPMO_LISTEN_ADDR), :8083 by default.
 	ListenAddr string
 	// ProxyAddr serves the egress proxy to sandboxes (UPMO_PROXY_ADDR), :3128 by default.
@@ -617,6 +632,15 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		return Sandboxd{}, err
 	}
 	cfg.Env = env
+	if _, ok := lookup("UPMO_DATABASE_URL"); ok {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_DATABASE_URL must not be set for sandboxd; it logs in as upmo_sandbox on UPMO_DATABASE_SANDBOX_URL")
+	}
+	if v, ok := lookup("UPMO_DATABASE_SANDBOX_URL"); ok && v != "" {
+		if err := tlscheck.PostgresURL("UPMO_DATABASE_SANDBOX_URL", v, env == EnvDevelopment); err != nil {
+			return Sandboxd{}, err
+		}
+		cfg.DatabaseSandboxURL = v
+	}
 	if v, ok := lookup("UPMO_EDITOR_IMAGE"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" && strings.ContainsAny(v, " \t\r\n") {
@@ -625,6 +649,56 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		cfg.EditorImage = v
 	}
 	return cfg, nil
+}
+
+// readDatabaseURLs reads the database URLs the process holds and checks each
+// one's TLS for the environment. Brain and gateway never read
+// UPMO_DATABASE_URL, so they cannot open the privileged role.
+func readDatabaseURLs(lookup func(string) (string, bool), cfg *Config, db int) error {
+	development := cfg.Env == EnvDevelopment
+	read := func(name string, required bool, into *string) error {
+		v, ok := lookup(name)
+		if !ok || v == "" {
+			if required {
+				return fmt.Errorf("config: %s is required", name)
+			}
+			return nil
+		}
+		if err := tlscheck.PostgresURL(name, v, development); err != nil {
+			return err
+		}
+		*into = v
+		return nil
+	}
+	switch db {
+	case dbBrain:
+		if err := read("UPMO_DATABASE_APP_URL", true, &cfg.DatabaseAppURL); err != nil {
+			return err
+		}
+		return read("UPMO_DATABASE_RUNNER_URL", true, &cfg.DatabaseRunnerURL)
+	case dbGateway:
+		return read("UPMO_DATABASE_GATEWAY_URL", true, &cfg.DatabaseGatewayURL)
+	}
+	for _, s := range []struct {
+		name     string
+		required bool
+		into     *string
+	}{
+		{"UPMO_DATABASE_URL", true, &cfg.DatabaseURL},
+		{"UPMO_DATABASE_APP_URL", false, &cfg.DatabaseAppURL},
+		{"UPMO_DATABASE_RUNNER_URL", false, &cfg.DatabaseRunnerURL},
+		{"UPMO_DATABASE_GATEWAY_URL", false, &cfg.DatabaseGatewayURL},
+		{"UPMO_DATABASE_SANDBOX_URL", false, &cfg.DatabaseSandboxURL},
+	} {
+		if err := read(s.name, s.required, s.into); err != nil {
+			return err
+		}
+	}
+	cfg.WorkerListenAddr = ":8090"
+	if v, ok := lookup("UPMO_WORKER_LISTEN_ADDR"); ok && v != "" {
+		cfg.WorkerListenAddr = v
+	}
+	return nil
 }
 
 // refuseServiceKey fails when the retired service master is set at all,

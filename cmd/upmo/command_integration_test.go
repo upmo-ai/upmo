@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -14,6 +15,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
@@ -213,9 +217,6 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		t.Fatalf("upmo_app owns %d app tables, want 0", ownedTables)
 	}
 
-	type rolePrivs struct {
-		Table, Select, Insert, Update []string
-	}
 	wantPrivs := map[string]rolePrivs{
 		"agents.agents": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
@@ -356,6 +357,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Select: []string{"account_id", "listed", "misses", "model", "position", "retired"},
 			Insert: []string{"account_id", "listed", "misses", "model", "position", "retired"},
 		},
+		"gateway.sandbox_credential_refs": {},
 		"gateway.route_links": {
 			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},
 			Select: []string{"id", "model", "position", "provider_account_id", "required_capabilities", "retry_budget", "route_id", "weight"},
@@ -547,10 +549,10 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"runtime.goose_db_version": {},
 		"runtime.task_sandboxes": {
-			Table:  []string{"DELETE", "INSERT", "SELECT"},
+			Table:  []string{"DELETE"},
 			Select: []string{"created_at", "expires_at", "sandbox_id", "task_id"},
-			Insert: []string{"created_at", "expires_at", "sandbox_id", "task_id"},
-			Update: []string{"expires_at", "sandbox_id"},
+			Insert: []string{"created_at", "expires_at", "proxy_secret_hash", "sandbox_id", "task_id"},
+			Update: []string{"expires_at"},
 		},
 		"tasks.action_logs": {
 			Table:  []string{"INSERT", "SELECT"},
@@ -641,13 +643,55 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 	}
 
-	gotPrivs := make(map[string]rolePrivs, len(wantPrivs))
+	gotPrivs := grantMap(t, owner, "upmo_app", wantSchemas)
+	compareGrantMap(t, "upmo_app", gotPrivs, wantPrivs)
+	var redactedTurnsAppExec, redactedTurnsPublicExec bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_function_privilege('upmo_app', p.oid, 'EXECUTE'),
+		       EXISTS (
+		         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) AS acl
+		         WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+		       )
+		FROM pg_catalog.pg_proc AS p
+		WHERE p.oid = 'chat.redacted_turn_metadata(uuid)'::regprocedure`).Scan(&redactedTurnsAppExec, &redactedTurnsPublicExec); err != nil {
+		t.Fatal(err)
+	}
+	if !redactedTurnsAppExec || redactedTurnsPublicExec {
+		t.Fatalf("chat.redacted_turn_metadata EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", redactedTurnsAppExec, redactedTurnsPublicExec)
+	}
+	var branchAppExec, branchPublicExec bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_function_privilege('upmo_app', p.oid, 'EXECUTE'),
+		       EXISTS (
+		         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) AS acl
+		         WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+		       )
+		FROM pg_catalog.pg_proc AS p
+		WHERE p.oid = 'chat.branch_chat(uuid, uuid)'::regprocedure`).Scan(&branchAppExec, &branchPublicExec); err != nil {
+		t.Fatal(err)
+	}
+	if !branchAppExec || branchPublicExec {
+		t.Fatalf("chat.branch_chat EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", branchAppExec, branchPublicExec)
+	}
+}
+
+type rolePrivs struct {
+	Table, Select, Insert, Update []string
+}
+
+// grantMap reads every table in schemas with role's table privileges and
+// column privileges, sorted. A table the role has nothing on is an empty
+// entry, so a new table shows up as a difference.
+func grantMap(t *testing.T, owner *pgxpool.Pool, role string, schemas []string) map[string]rolePrivs {
+	t.Helper()
+	ctx := context.Background()
+	gotPrivs := map[string]rolePrivs{}
 	tblRows, err := owner.Query(ctx, `
 		SELECT table_schema || '.' || table_name
 		FROM information_schema.tables
 		WHERE table_schema = ANY($1)
 		  AND table_type IN ('BASE TABLE', 'VIEW')
-		ORDER BY 1`, wantSchemas)
+		ORDER BY 1`, schemas)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,8 +712,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	tpRows, err := owner.Query(ctx, `
 		SELECT table_schema || '.' || table_name, privilege_type
 		FROM information_schema.table_privileges
-		WHERE grantee = 'upmo_app' AND table_schema = ANY($1)
-		ORDER BY 1, 2`, wantSchemas)
+		WHERE grantee = $2 AND table_schema = ANY($1)
+		ORDER BY 1, 2`, schemas, role)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,8 +736,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	cpRows, err := owner.Query(ctx, `
 		SELECT table_schema || '.' || table_name, column_name, privilege_type
 		FROM information_schema.column_privileges
-		WHERE grantee = 'upmo_app' AND table_schema = ANY($1)
-		ORDER BY 1, 3, 2`, wantSchemas)
+		WHERE grantee = $2 AND table_schema = ANY($1)
+		ORDER BY 1, 3, 2`, schemas, role)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -723,9 +767,14 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	}
 	cpRows.Close()
 
+	return gotPrivs
+}
+
+func compareGrantMap(t *testing.T, role string, gotPrivs, wantPrivs map[string]rolePrivs) {
+	t.Helper()
 	for tbl := range gotPrivs {
 		if _, ok := wantPrivs[tbl]; !ok {
-			t.Errorf("unexpected table %s in schemas", tbl)
+			t.Errorf("%s: unexpected table %s in schemas", role, tbl)
 		}
 	}
 	var wantTables []string
@@ -736,49 +785,144 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	for _, tbl := range wantTables {
 		got, ok := gotPrivs[tbl]
 		if !ok {
-			t.Errorf("missing table %s in schemas", tbl)
+			t.Errorf("%s: missing table %s in schemas", role, tbl)
 			continue
 		}
 		want := wantPrivs[tbl]
 		if !slices.Equal(got.Table, want.Table) {
-			t.Errorf("%s table privileges = %v, want %v", tbl, got.Table, want.Table)
+			t.Errorf("%s: %s table privileges = %v, want %v", role, tbl, got.Table, want.Table)
 		}
 		if !slices.Equal(got.Select, want.Select) {
-			t.Errorf("%s SELECT columns = %v, want %v", tbl, got.Select, want.Select)
+			t.Errorf("%s: %s SELECT columns = %v, want %v", role, tbl, got.Select, want.Select)
 		}
 		if !slices.Equal(got.Insert, want.Insert) {
-			t.Errorf("%s INSERT columns = %v, want %v", tbl, got.Insert, want.Insert)
+			t.Errorf("%s: %s INSERT columns = %v, want %v", role, tbl, got.Insert, want.Insert)
 		}
 		if !slices.Equal(got.Update, want.Update) {
-			t.Errorf("%s UPDATE columns = %v, want %v", tbl, got.Update, want.Update)
+			t.Errorf("%s: %s UPDATE columns = %v, want %v", role, tbl, got.Update, want.Update)
 		}
 	}
-	var redactedTurnsAppExec, redactedTurnsPublicExec bool
-	if err := owner.QueryRow(ctx, `
-		SELECT has_function_privilege('upmo_app', p.oid, 'EXECUTE'),
-		       EXISTS (
-		         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) AS acl
-		         WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
-		       )
-		FROM pg_catalog.pg_proc AS p
-		WHERE p.oid = 'chat.redacted_turn_metadata(uuid)'::regprocedure`).Scan(&redactedTurnsAppExec, &redactedTurnsPublicExec); err != nil {
+}
+
+// TestRunnerGrantMap pins every table and column privilege upmo_runner holds:
+// only what the runner transactions run (Record, the plan and brake writes,
+// Spend, Taint and the agent loop's turn commit). It holds nothing on the
+// sealed email or password, the credentials, the proxy secret hash or any
+// goose table.
+func TestRunnerGrantMap(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	if !redactedTurnsAppExec || redactedTurnsPublicExec {
-		t.Fatalf("chat.redacted_turn_metadata EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", redactedTurnsAppExec, redactedTurnsPublicExec)
+	schemas := []string{
+		"audit", "identity", "memory", "knowledge", "tasks", "chat",
+		"decisions", "artifacts", "runtime", "gateway", "notices", "platform", "agents", "worker",
 	}
-	var branchAppExec, branchPublicExec bool
-	if err := owner.QueryRow(ctx, `
-		SELECT has_function_privilege('upmo_app', p.oid, 'EXECUTE'),
-		       EXISTS (
-		         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) AS acl
-		         WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
-		       )
-		FROM pg_catalog.pg_proc AS p
-		WHERE p.oid = 'chat.branch_chat(uuid, uuid)'::regprocedure`).Scan(&branchAppExec, &branchPublicExec); err != nil {
+	got := grantMap(t, owner, "upmo_runner", schemas)
+	want := map[string]rolePrivs{}
+	for tbl := range got {
+		want[tbl] = rolePrivs{}
+	}
+	taskCols := []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "result", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"}
+	want["tasks.tasks"] = rolePrivs{
+		Table:  []string{"SELECT"},
+		Select: taskCols,
+		Update: []string{"cause", "failures", "last_gap", "passes", "paused", "plan", "plan_digest", "private_read", "replanned", "spent", "stalls", "status", "tainted", "updated_at"},
+	}
+	checkCols := []string{"at", "batch", "code", "criterion", "digest", "excerpt", "kind", "name", "regressed", "seq", "task_id", "unit", "verdict"}
+	want["tasks.checks"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: checkCols, Insert: checkCols}
+	findingCols := []string{"at", "blocking", "criterion", "detail", "evidence", "round", "seq", "settled_by", "state", "task_id", "title", "unit"}
+	want["tasks.review_findings"] = rolePrivs{Table: []string{"SELECT"}, Select: findingCols}
+	turnCols := []string{"body", "cost_micro_usd", "created_at", "id", "input_tokens", "is_error", "model", "offloaded", "output_tokens", "private_read", "role", "run_id", "seq", "tainted", "task_id", "tool_calls", "tool_id", "tool_name"}
+	want["tasks.turns"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: turnCols, Insert: turnCols}
+	approvalCols := []string{"action", "answer", "calls", "created_at", "decided_at", "from_status", "id", "preview", "reason", "state", "task_id", "tool", "untrusted_origin", "user_id"}
+	want["tasks.approvals"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: approvalCols, Insert: approvalCols, Update: []string{"decided_at", "state"}}
+	eventCols := []string{"at", "from_status", "id", "input", "seq", "task_id", "to_status"}
+	want["tasks.task_events"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: eventCols, Insert: eventCols}
+	compareGrantMap(t, "upmo_runner", got, want)
+
+	runner := pgtest.Login(t, owner, "upmo_runner")
+	for _, stmt := range []string{
+		`SELECT email FROM identity.users`,
+		`SELECT password_hash FROM identity.users`,
+		`SELECT * FROM gateway.credentials`,
+		`SELECT proxy_secret_hash FROM runtime.task_sandboxes`,
+		`SELECT * FROM tasks.goose_db_version`,
+	} {
+		if _, err := runner.Exec(ctx, stmt); pgCode(err) != "42501" {
+			t.Errorf("runner %q = %v, want 42501", stmt, err)
+		}
+	}
+	var serving, dispatching bool
+	if err := runner.QueryRow(ctx, `SELECT gateway.serving(), gateway.dispatching()`).Scan(&serving, &dispatching); err == nil {
+		t.Fatalf("runner reached the gateway schema: serving=%t dispatching=%t", serving, dispatching)
+	}
+	var super, bypass bool
+	if err := owner.QueryRow(ctx, `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'upmo_runner'`).Scan(&super, &bypass); err != nil || super || bypass {
+		t.Fatalf("upmo_runner rolsuper=%t rolbypassrls=%t %v", super, bypass, err)
+	}
+	// upmo_app still may not write the runner columns.
+	app := pgtest.AppLogin(t, owner)
+	if _, err := app.Exec(ctx, `UPDATE tasks.tasks SET spent = 1`); pgCode(err) != "42501" {
+		t.Fatalf("app UPDATE tasks.tasks.spent = %v, want 42501", err)
+	}
+}
+
+// TestSandboxGrantMap pins upmo_sandbox's privileges: no table or column
+// privilege anywhere in the upmo schemas, and EXECUTE granted on exactly the
+// two gateway definers sandboxd calls.
+func TestSandboxGrantMap(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	if !branchAppExec || branchPublicExec {
-		t.Fatalf("chat.branch_chat EXECUTE: upmo_app=%t PUBLIC=%t, want true/false", branchAppExec, branchPublicExec)
+	schemas := []string{
+		"audit", "identity", "memory", "knowledge", "tasks", "chat",
+		"decisions", "artifacts", "runtime", "gateway", "notices", "platform", "agents", "worker",
 	}
+	got := grantMap(t, owner, "upmo_sandbox", schemas)
+	want := map[string]rolePrivs{}
+	for tbl := range got {
+		want[tbl] = rolePrivs{}
+	}
+	compareGrantMap(t, "upmo_sandbox", got, want)
+
+	rows, err := owner.Query(ctx, `
+		SELECT n.nspname || '.' || p.proname
+		FROM pg_proc AS p
+		JOIN pg_namespace AS n ON n.oid = p.pronamespace
+		CROSS JOIN LATERAL aclexplode(p.proacl) AS a
+		WHERE n.nspname = ANY($1)
+		  AND a.grantee = 'upmo_sandbox'::regrole
+		  AND a.privilege_type = 'EXECUTE'
+		ORDER BY 1`, schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var funcs []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		funcs = append(funcs, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if wantFuncs := []string{"gateway.attach_sandbox_credential", "gateway.credential_for_sandbox"}; !slices.Equal(funcs, wantFuncs) {
+		t.Fatalf("upmo_sandbox EXECUTE = %v, want %v", funcs, wantFuncs)
+	}
+}
+
+func pgCode(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code
+	}
+	return ""
 }

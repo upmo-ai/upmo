@@ -35,7 +35,6 @@ func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	appPool := pgtest.App(t, owner)
 	root := t.TempDir()
 	cfg := Config{
 		Env:          "development",
@@ -46,7 +45,7 @@ func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
 	}
 	for start := 0; start < 2; start++ {
 		app, err := New(ctx, cfg,
-			WithPools(owner, appPool),
+			servingPools(t, owner),
 			WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		)
 		if err != nil {
@@ -101,7 +100,6 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	appPool := pgtest.App(t, owner)
 
 	provKey := svcsig.KeyPrefix + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'p'}, 32))
 	cfg := Config{
@@ -118,7 +116,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	var capturedDeps Deps
 
 	app, err := New(ctx, cfg,
-		WithPools(owner, appPool),
+		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		WithExtraWorkers(func(_ *river.Workers, deps Deps) {
 			extraWorkersCalled = true
@@ -139,7 +137,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 	if !extraWorkersCalled {
 		t.Fatal("WithExtraWorkers hook was not called")
 	}
-	if capturedDeps.Owner == nil || capturedDeps.App == nil || capturedDeps.Members == nil || capturedDeps.Identity == nil || capturedDeps.Logger == nil {
+	if capturedDeps.App == nil || capturedDeps.Members == nil || capturedDeps.Identity == nil || capturedDeps.Logger == nil {
 		t.Fatalf("Deps missing required fields: %+v", capturedDeps)
 	}
 
@@ -150,81 +148,22 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 		t.Fatalf("GET /api/ee/ping = %d %q", eeRec.Code, eeRec.Body.String())
 	}
 
-	// Default /api/v1/provision/status route verifies svcsig and answers 200.
-	unauth := httptest.NewRecorder()
-	app.Handler().ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/api/v1/provision/status", nil))
-	if unauth.Code != http.StatusUnauthorized {
-		t.Fatalf("unauth /api/v1/provision/status = %d, want 401", unauth.Code)
-	}
-
-	master, err := svcsig.ParseKey(provKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := svcsig.Derive(master, svcsig.AudienceProvision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tok, err := svcsig.SignRequest(derived, svcsig.AudienceProvision, http.MethodGet, "/api/v1/provision/status", "", nil, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/provision/status", nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
+	// Provisioning is the worker's route now: brain answers 404 even with
+	// provision keys configured.
 	statusRec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(statusRec, req)
-	if statusRec.Code != http.StatusOK {
-		t.Fatalf("signed /api/v1/provision/status = %d %s", statusRec.Code, statusRec.Body.String())
-	}
-	var payload struct {
-		Ready          bool             `json:"ready"`
-		SchemaVersions map[string]int64 `json:"schema_versions"`
-	}
-	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if !payload.Ready || payload.SchemaVersions["identity"] != 1 {
-		t.Fatalf("unexpected status payload: %+v", payload)
+	app.Handler().ServeHTTP(statusRec, httptest.NewRequest(http.MethodGet, "/api/v1/provision/status", nil))
+	if statusRec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/provision/status on brain = %d, want 404", statusRec.Code)
 	}
 
-	// The provision nonce sweep is a periodic job that runs on start, and its
-	// worker is registered: a completed job proves both.
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		var swept int
-		if err := owner.QueryRow(ctx, `
-			SELECT count(*) FROM platform.river_job
-			WHERE kind = 'provision_nonce_sweep' AND state = 'completed'`).Scan(&swept); err != nil {
-			t.Fatal(err)
-		}
-		if swept > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("provision nonce sweep did not complete on the brain app")
-		}
-		time.Sleep(100 * time.Millisecond)
+	// The schema heads come through the definer the app role may call.
+	versionRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(versionRec, httptest.NewRequest(http.MethodGet, "/version", nil))
+	var version struct {
+		Schemas map[string]int64 `json:"schema_versions"`
 	}
-
-	// WithProvisioner overrides default provisioning handler.
-	appCustom, err := New(ctx, cfg,
-		WithPools(owner, appPool),
-		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-		WithProvisioner(func(mux *http.ServeMux, _ Deps) {
-			mux.HandleFunc("GET /api/v1/provision/status", func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusTeapot)
-			})
-		}),
-	)
-	if err != nil {
-		t.Fatalf("brain.New(WithProvisioner): %v", err)
-	}
-	defer appCustom.Close()
-
-	customRec := httptest.NewRecorder()
-	appCustom.Handler().ServeHTTP(customRec, httptest.NewRequest(http.MethodGet, "/api/v1/provision/status", nil))
-	if customRec.Code != http.StatusTeapot {
-		t.Fatalf("custom provisioner = %d, want 418", customRec.Code)
+	if err := json.Unmarshal(versionRec.Body.Bytes(), &version); err != nil || versionRec.Code != http.StatusOK || version.Schemas["identity"] != 1 || version.Schemas["platform"] != 1 {
+		t.Fatalf("GET /version = %d %s %v", versionRec.Code, versionRec.Body.String(), err)
 	}
 }
 
@@ -234,7 +173,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
 	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	cfg := Config{
-		DatabaseURL:     "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable",
+		DatabaseAppURL:  "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable",
 		PublicURL:       "http://localhost:5173",
 		WebAuthnRPID:    "localhost",
 		GatewayKey:      "upmo_svc_gateway_" + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'g'}, 32)),
@@ -246,7 +185,7 @@ func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "UPMO_MASTER_KEY uses a development or weak key") {
 		t.Fatalf("New err = %v", err)
 	}
-	if strings.Contains(err.Error(), cfg.DatabaseURL) {
+	if strings.Contains(err.Error(), cfg.DatabaseAppURL) {
 		t.Fatalf("New err holds a value: %v", err)
 	}
 }
@@ -284,7 +223,7 @@ func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
 	var workerJobs, periodicJobs JobClient
 	worker := &hookJobWorker{done: make(chan struct{}, 2)}
 	app, err := New(ctx, cfg,
-		WithPools(owner, pgtest.App(t, owner)),
+		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		WithExtraWorkers(func(workers *river.Workers, deps Deps) {
 			workerJobs = deps.Jobs
@@ -345,7 +284,7 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	}
 	app, err := New(ctx, cfg,
-		WithPools(owner, appPool),
+		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 	)
 	if err != nil {
@@ -506,7 +445,7 @@ func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	}
 	app, err := New(ctx, cfg,
-		WithPools(owner, appPool),
+		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 	)
 	if err != nil {

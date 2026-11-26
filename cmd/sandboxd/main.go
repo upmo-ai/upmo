@@ -16,6 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
@@ -41,6 +44,14 @@ func run() error {
 	log := logging.New(os.Stdout, cfg.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	db, err := openDatabase(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 
 	network := sandboxd.Network{Name: cfg.SandboxNetwork, ProxyURL: cfg.EgressProxyURL}
 	driver, err := sandboxd.Open(ctx, cfg.Driver, network, cfg.EditorImage, cfg.EditorBaseURL, log)
@@ -91,4 +102,15 @@ func run() error {
 		errs[i] = <-errc
 	}
 	return errors.Join(errs...)
+}
+
+// openDatabase opens the upmo_sandbox pool, or none when
+// UPMO_DATABASE_SANDBOX_URL is unset: every credential read then fails
+// closed. The role must be upmo_sandbox, not a superuser, not BYPASSRLS, and
+// owner of no table, so gateway.serving() is false for it.
+func openDatabase(ctx context.Context, cfg config.Sandboxd) (*pgxpool.Pool, error) {
+	if cfg.DatabaseSandboxURL == "" {
+		return nil, nil
+	}
+	return brainops.OpenServingPool(ctx, "UPMO_DATABASE_SANDBOX_URL", cfg.DatabaseSandboxURL, "", "upmo_sandbox")
 }

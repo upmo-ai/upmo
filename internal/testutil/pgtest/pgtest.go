@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -55,8 +57,22 @@ func New(t *testing.T) *pgxpool.Pool {
 // App returns a pool on the same database as owner that runs as upmo_app.
 func App(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 	t.Helper()
+	return As(t, owner, "upmo_app")
+}
+
+// Runner returns a pool on the same database as owner that runs as
+// upmo_runner.
+func Runner(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	return As(t, owner, "upmo_runner")
+}
+
+// As returns a pool on the same database as owner that switches to role on
+// every connection. The migrations must have created the role already.
+func As(t *testing.T, owner *pgxpool.Pool, role string) *pgxpool.Pool {
+	t.Helper()
 	cfg := owner.Config()
-	useAppRole(cfg)
+	useRole(cfg, role)
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -65,10 +81,10 @@ func App(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 	return pool
 }
 
-// appLoginPassword is the fixed password AppLogin logs in with. The role is
+// loginPassword is the fixed password the login helpers set. The roles are
 // cluster-wide, so parallel test packages would race on per-call passwords;
 // one fixed test-cluster password has nothing to race on.
-const appLoginPassword = "pgtest-upmo-app" // #nosec G101 -- a test cluster's password, never a real credential
+const loginPassword = "pgtest-upmo-login" // #nosec G101 -- a test cluster's password, never a real credential
 
 // AppLogin returns a pool on the same database as owner that really logs in
 // as upmo_app with a password, the way the brain request pool does: no SET
@@ -76,7 +92,21 @@ const appLoginPassword = "pgtest-upmo-app" // #nosec G101 -- a test cluster's pa
 // other) must have created the role already.
 func AppLogin(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 	t.Helper()
-	cfg, err := pgxpool.ParseConfig(AppLoginURL(t, owner))
+	return Login(t, owner, "upmo_app")
+}
+
+// AppLoginURL sets the app role's password through owner and returns a URL
+// that logs in as upmo_app on owner's own database.
+func AppLoginURL(t *testing.T, owner *pgxpool.Pool) string {
+	t.Helper()
+	return LoginURL(t, owner, "upmo_app")
+}
+
+// Login returns a pool on owner's database that logs in as role with a
+// password: no SET ROLE, the login itself is the role.
+func Login(t *testing.T, owner *pgxpool.Pool, role string) *pgxpool.Pool {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(LoginURL(t, owner, role))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,20 +119,30 @@ func AppLogin(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 	return pool
 }
 
-// AppLoginURL sets the app role's password through owner and returns a URL
-// that logs in as upmo_app on owner's own database.
-func AppLoginURL(t *testing.T, owner *pgxpool.Pool) string {
+// LoginURL sets role's password through owner and returns a URL that logs in
+// as role on owner's own database.
+func LoginURL(t *testing.T, owner *pgxpool.Pool, role string) string {
 	t.Helper()
 	var stmt string
 	if err := owner.QueryRow(context.Background(),
-		"SELECT format('ALTER ROLE upmo_app WITH LOGIN PASSWORD %L', $1::text)", appLoginPassword,
+		"SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', $1::text, $2::text)", role, loginPassword,
 	).Scan(&stmt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.Exec(context.Background(), stmt); err != nil {
+	// Roles are cluster-wide and test packages run in parallel, so the same
+	// ALTER ROLE from another package can fail with "tuple concurrently updated".
+	var err error
+	for range 5 {
+		var pgErr *pgconn.PgError
+		if _, err = owner.Exec(context.Background(), stmt); !errors.As(err, &pgErr) || pgErr.Code != "XX000" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
-	return loginURL(t, owner, "upmo_app", appLoginPassword)
+	return loginURL(t, owner, role, loginPassword)
 }
 
 // loginURL builds a URL for user with password on owner's own database. The
@@ -119,9 +159,9 @@ func loginURL(t *testing.T, owner *pgxpool.Pool, user, password string) string {
 	return u.String()
 }
 
-func useAppRole(cfg *pgxpool.Config) {
+func useRole(cfg *pgxpool.Config, role string) {
 	setRole := func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, "SET ROLE upmo_app")
+		_, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{role}.Sanitize())
 		return err
 	}
 	cfg.AfterConnect = setRole

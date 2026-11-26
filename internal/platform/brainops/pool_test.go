@@ -55,9 +55,20 @@ func TestDatabaseURLErrorScrubsPassword(t *testing.T) {
 		},
 		{
 			name:    "parseListenConfig",
-			envName: "UPMO_DATABASE_URL",
+			envName: "UPMO_DATABASE_APP_URL",
 			open: func(rawURL string) error {
-				_, err := ParseListenConfig(rawURL)
+				_, err := ParseListenConfig("UPMO_DATABASE_APP_URL", rawURL)
+				return err
+			},
+		},
+		{
+			name:    "openServingPool",
+			envName: "UPMO_DATABASE_GATEWAY_URL",
+			open: func(rawURL string) error {
+				pool, err := OpenServingPool(context.Background(), "UPMO_DATABASE_GATEWAY_URL", rawURL, "", "upmo_gateway")
+				if pool != nil {
+					pool.Close()
+				}
 				return err
 			},
 		},
@@ -149,5 +160,20 @@ func TestPoolURLErrorKeepsOnlyHostOnClosedPortURL(t *testing.T) {
 				t.Fatalf("error = %q, want %q", msg, tc.want)
 			}
 		})
+	}
+}
+
+// A serving pool that parses but cannot connect names neither the user nor
+// the host: pgx puts both in its connect error, so the error is replaced.
+func TestOpenServingPoolScrubsUserAndHostOnConnectFailure(t *testing.T) {
+	const user = "connect-user-marker"
+	pool, err := OpenServingPool(context.Background(), "UPMO_DATABASE_GATEWAY_URL",
+		"postgres://"+user+":pw-marker@127.0.0.1:1/upmo?connect_timeout=2", "", "upmo_gateway")
+	if pool != nil {
+		pool.Close()
+	}
+	const want = "brain: UPMO_DATABASE_GATEWAY_URL could not be opened"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }

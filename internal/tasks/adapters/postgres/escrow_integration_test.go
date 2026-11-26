@@ -25,7 +25,7 @@ import (
 
 func TestEscrowHoldsTheChildBudgetAndReleasesIt(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -72,7 +72,7 @@ func TestEscrowHoldsTheChildBudgetAndReleasesIt(t *testing.T) {
 
 func TestSpendExhaustionPausesAndNotifiesOnce(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 10, "task:view")
@@ -123,7 +123,7 @@ func TestSpendExhaustionPausesAndNotifiesOnce(t *testing.T) {
 
 func TestOverspendPreservesFullActualSpendAndPauses(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "File them", 10, "task:view")
@@ -163,7 +163,7 @@ func TestOverspendPreservesFullActualSpendAndPauses(t *testing.T) {
 
 func TestTaintSpreadsAndAuthorityStaysNarrow(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "File the receipts")
 	first, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Read the folder", 1, "task:view")
@@ -200,7 +200,7 @@ func TestTaintSpreadsAndAuthorityStaysNarrow(t *testing.T) {
 
 func TestSpendOnZeroBudgetPausesOnceAndThenRefuses(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	tx, err := owner.Begin(ctx)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestSpendOnZeroBudgetPausesOnceAndThenRefuses(t *testing.T) {
 
 func TestFundTopUpIncreasesRootBudgetClearsPausedAndRejectsInvalidUpdates(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -371,7 +371,7 @@ func TestFundWithSpentNearMaxInt64AndLiveHoldStaysPaused(t *testing.T) {
 	const spent int64 = math.MaxInt64
 
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -419,7 +419,7 @@ func TestFundWithSpentNearMaxInt64AndLiveHoldStaysPaused(t *testing.T) {
 
 func TestChildBudgetCannotBeRaisedDirectly(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -472,7 +472,7 @@ func TestChildBudgetCannotBeRaisedDirectly(t *testing.T) {
 
 func TestBudgetNoticeSkipsNonExhaustedPause(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRoot(t, store, "File the receipts")
 	if _, err := owner.Exec(ctx, `
@@ -496,7 +496,7 @@ func TestConcurrentChildExhaustionWritesDistinctNoticeSeq(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(wide.Close)
-	store := postgres.Store{Pool: wide, Owner: owner}
+	store := postgres.Store{Pool: wide, Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 
 	// ChildCap is 6 open children. The notice race needs 32, so the insert
@@ -576,7 +576,7 @@ func TestConcurrentChildExhaustionWritesDistinctNoticeSeq(t *testing.T) {
 
 func TestReleaseEscrowSettlesFinishedChildSpend(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "File the receipts"})
 	if err != nil {
@@ -642,7 +642,7 @@ func TestReleaseEscrowSettlesFinishedChildSpend(t *testing.T) {
 
 func TestSpendUpdatesTaskTimestamp(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRoot(t, store, "File the receipts")
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)

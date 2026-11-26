@@ -20,7 +20,7 @@ type Memory struct {
 var _ runtime.TaskSandboxStore = (*Memory)(nil)
 
 // Claim records a pending task sandbox, or answers runtime.ErrAlreadyHeld.
-func (m *Memory) Claim(_ context.Context, taskID string, _ time.Duration) error {
+func (m *Memory) Claim(_ context.Context, taskID string, _ time.Duration, _ []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, taken := m.rows[taskID]; taken {

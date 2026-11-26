@@ -38,11 +38,8 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
-	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
-	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/platform/trustfence"
-	"github.com/upmo-ai/upmo/internal/provision"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
 )
@@ -156,9 +153,9 @@ type Sealer interface {
 // Deps exposes composed services and configuration to extension options.
 // Every field is set when the worker and periodic hooks run. Jobs is a
 // client that enqueues once the job workers are open, so a hook may keep it
-// but must not call InsertTx before brain.New returns.
+// but must not call InsertTx before brain.New returns. Brain holds no
+// privileged pool: App logs in as upmo_app.
 type Deps struct {
-	Owner          *pgxpool.Pool
 	App            *pgxpool.Pool
 	Identity       IdentityService
 	Members        MemberService
@@ -242,7 +239,7 @@ type internalDeps struct {
 	teams       identity.TeamService
 	tokens      identity.TokenService
 	workspace   identity.WorkspaceService
-	provision   identity.ProvisionStore
+	runner      *pgxpool.Pool
 	providers   gateway.Providers
 	routes      gateway.RouteService
 	routeBook   gateway.RouteBook
@@ -255,11 +252,10 @@ type internalDeps struct {
 }
 
 type options struct {
-	owner         *pgxpool.Pool
 	app           *pgxpool.Pool
+	runner        *pgxpool.Pool
 	logger        *slog.Logger
 	extraRoutes   []func(mux *http.ServeMux, deps Deps)
-	provisioner   func(mux *http.ServeMux, deps Deps)
 	extraWorkers  []func(workers *river.Workers, deps Deps)
 	extraPeriodic []func(deps Deps) []*river.PeriodicJob
 }
@@ -273,13 +269,6 @@ func WithExtraRoutes(fn func(mux *http.ServeMux, deps Deps)) Option {
 		if fn != nil {
 			o.extraRoutes = append(o.extraRoutes, fn)
 		}
-	}
-}
-
-// WithProvisioner replaces the default /api/v1/provision/* mount hook.
-func WithProvisioner(fn func(mux *http.ServeMux, deps Deps)) Option {
-	return func(o *options) {
-		o.provisioner = fn
 	}
 }
 
@@ -301,11 +290,12 @@ func WithExtraPeriodic(fn func(deps Deps) []*river.PeriodicJob) Option {
 	}
 }
 
-// WithPools injects pre-opened owner and app pools (primarily for tests).
-func WithPools(owner, app *pgxpool.Pool) Option {
+// WithPools injects pre-opened app and runner pools (primarily for tests).
+// They pass the same role check as the pools brain opens itself.
+func WithPools(app, runner *pgxpool.Pool) Option {
 	return func(o *options) {
-		o.owner = owner
 		o.app = app
+		o.runner = runner
 	}
 }
 
@@ -326,7 +316,8 @@ type App struct {
 	boxes       *runtime.TaskSandboxes
 	streams     *tasks.StreamHub
 	chatStreams *chat.StreamHub
-	ownsOwner   bool
+	runner      *pgxpool.Pool
+	ownsRunner  bool
 	ownsApp     bool
 	closeOnce   sync.Once
 	stopOnce    sync.Once
@@ -380,8 +371,8 @@ func (a *App) Close() {
 		if a.ownsApp && a.deps.App != nil {
 			a.deps.App.Close()
 		}
-		if a.ownsOwner && a.deps.Owner != nil {
-			a.deps.Owner.Close()
+		if a.ownsRunner && a.runner != nil {
+			a.runner.Close()
 		}
 	})
 }
@@ -517,84 +508,59 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		log = logging.New(os.Stdout, cfg.LogLevel)
 	}
 
-	provisionKeys, err := provision.ParseKeys(cfg.ProvisionKeys)
-	if err != nil {
-		return nil, err
-	}
-
-	// Built on every start, before any pool opens: a plaintext Vault address
-	// with a token fails brain start however the audit push is configured.
-	secrets, err := secretchain.FromEnv(os.LookupEnv)
-	if err != nil {
-		return nil, err
-	}
-
-	owner := o.owner
-	ownsOwner := false
-	if owner == nil {
-		owner, err = brainops.OpenOwnerPool(ctx, cfg.DatabaseURL)
+	// Brain opens only the app and runner roles. Neither is a superuser,
+	// BYPASSRLS, or the owner of a table: row security binds both.
+	pool := o.app
+	ownsApp := false
+	if pool == nil {
+		pool, err = brainops.OpenServingPool(ctx, "UPMO_DATABASE_APP_URL", cfg.DatabaseAppURL, "upmo_app", "upmo_app")
 		if err != nil {
 			return nil, err
 		}
-		ownsOwner = true
-		if err := brainops.MigrateAll(ctx, owner); err != nil {
-			owner.Close()
+		ownsApp = true
+	} else if err := brainops.CheckServingRole(ctx, pool, "UPMO_DATABASE_APP_URL", "upmo_app"); err != nil {
+		return nil, err
+	}
+	runner := o.runner
+	ownsRunner := false
+	if runner == nil {
+		runner, err = brainops.OpenServingPool(ctx, "UPMO_DATABASE_RUNNER_URL", cfg.DatabaseRunnerURL, "", "upmo_runner")
+		if err != nil {
+			if ownsApp {
+				pool.Close()
+			}
+			return nil, err
+		}
+		ownsRunner = true
+	}
+	cleanupPools := func() {
+		if ownsApp {
+			pool.Close()
+		}
+		if ownsRunner {
+			runner.Close()
+		}
+	}
+	if !ownsRunner {
+		if err := brainops.CheckServingRole(ctx, runner, "UPMO_DATABASE_RUNNER_URL", "upmo_runner"); err != nil {
+			cleanupPools()
 			return nil, err
 		}
 	}
-	cleanupOnErr := func() {
-		if ownsOwner {
-			owner.Close()
-		}
-	}
 
-	schemaVersions, err := migrate.SchemaVersions(ctx, owner)
+	schemaVersions, err := gateway.SchemaVersions(ctx, pool)
 	if err != nil {
-		cleanupOnErr()
+		cleanupPools()
 		return nil, err
 	}
 	schemaLookup := func(context.Context) (map[string]int64, error) {
 		return maps.Clone(schemaVersions), nil
 	}
 
-	pool := o.app
-	ownsApp := false
-	if pool == nil {
-		if err := brainops.EnableAppLogin(ctx, owner, cfg.DatabaseAppURL); err != nil {
-			cleanupOnErr()
-			return nil, err
-		}
-		pool, err = brainops.OpenAppPool(ctx, owner, cfg.DatabaseAppURL)
-		if err != nil {
-			cleanupOnErr()
-			return nil, err
-		}
-		ownsApp = true
-	}
-	cleanupPools := func() {
-		if ownsApp {
-			pool.Close()
-		}
-		cleanupOnErr()
-	}
-
 	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
 		cleanupPools()
 		return nil, err
-	}
-
-	// Rows sealed with a key the ring does not hold can never open; say so
-	// once per store, without stopping start-up. So does a counting error.
-	if unknown, err := brainops.UnknownKeyRows(ctx, owner, masterKeys); err != nil {
-		log.Warn("counting sealed rows by key failed", "err", err)
-	} else {
-		for _, count := range unknown {
-			if count.Unknown > 0 {
-				log.Warn("sealed rows use a master key that is not loaded",
-					"store", count.Store, "rows", count.Unknown, "key_ids", count.UnknownKeyIDs)
-			}
-		}
 	}
 
 	internalCfg := toInternalConfig(cfg)
@@ -612,7 +578,6 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	roles := identity.Roles(pool, log)
 	teams := identity.Teams(pool, log)
 	workspace := identity.Workspace(pool)
-	provIdentity := identity.WithProvisionAvatars(identity.Provision(owner, emails, cfg.PublicURL), cfg.AvatarsDir)
 	idFacade := identity.New(sessions, passkeys, passwords)
 
 	providers := gateway.NewProviders(pool, masterKeys, log)
@@ -659,7 +624,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return members.EffectiveAllow(ctx, person)
 	}
 	usageLimits.TimeZone = func(ctx context.Context) (string, error) {
-		return identity.WorkspaceTimeZone(ctx, owner)
+		return identity.WorkspaceTimeZone(ctx, pool)
 	}
 	usageLimits.PersonExists = func(ctx context.Context, id string) (bool, error) {
 		names, _, err := members.NamesOf(ctx, []string{id}, nil)
@@ -708,24 +673,22 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		} else if !ok {
 			return []string{}, nil
 		}
-		agentIDs, err := agents.SystemProviderAgentIDs(ctx, owner, provider, models, routes)
+		agentIDs, err := agents.SystemProviderAgentIDs(ctx, pool, provider, models, routes)
 		if err != nil {
 			return nil, err
 		}
-		return tasks.NewStore(pool, owner, nil).AutomationUses(ctx, access, agentIDs)
+		return tasks.NewStore(pool, runner, nil).AutomationUses(ctx, access, agentIDs)
 	}
 	noticeStore := notices.Store{Pool: pool}
 
 	var reg *metrics.Registry
 	if cfg.MetricsAddr != "" {
 		reg = metrics.NewRegistry()
-		brainops.RegisterUnknownKeyMetric(reg, owner, masterKeys)
 	}
 
 	pubBuild, rawBuild := resolveBuildInfo()
 	lazy := &lazyJobs{}
 	deps := Deps{
-		Owner:          owner,
 		App:            pool,
 		Identity:       identityAdapter{id: idFacade},
 		Members:        memberAdapter{members: members},
@@ -744,7 +707,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		teams:       teams,
 		tokens:      tokens,
 		workspace:   workspace,
-		provision:   provIdentity,
+		runner:      runner,
 		providers:   providers,
 		routes:      routesSvc,
 		routeBook:   routeBook,
@@ -756,72 +719,12 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		buildRaw:    rawBuild,
 	}
 
+	// The audit sealer, retention, verifier and pusher, the spend, usage,
+	// provider and catalog jobs, and the provision nonce sweep run in the
+	// worker command on the privileged pool, never here.
 	workers := river.NewWorkers()
-	// The sealer runs on the owner pool: pending and sealed events are the
-	// app role's to insert and read, never to move. The owner pool stays
-	// open until work.Stop has drained the workers at shutdown.
-	audit.AddSealer(workers, owner, os.Stdout)
-	audit.AddRetention(workers, owner, cfg.AuditRetentionDays)
-	audit.AddVerifier(workers, owner)
-	workspaceZone := func(ctx context.Context) (string, error) {
-		return identity.WorkspaceTimeZone(ctx, owner)
-	}
-	gateway.AddSpendChecker(workers, owner, workspaceZone, reg, log)
-	gateway.AddUsageRollup(workers, owner, workspaceZone, log)
-	checkSecrets := append(slices.Clone(secrets), gateway.DBSecrets{Pool: owner, Keys: masterKeys})
-	gateway.AddProviderChecker(workers, gateway.ProviderCheckDeps{
-		Owner:    owner,
-		App:      pool,
-		Enqueuer: lazy,
-		Secrets:  checkSecrets,
-		AgentModelUses: func(ctx context.Context, provider string, models []string) ([]string, error) {
-			return agents.SystemProviderModelUses(ctx, owner, provider, models)
-		},
-		AutomationModelUses: func(context.Context, string, []string) ([]string, error) {
-			return nil, nil
-		},
-		ActiveUser: func(ctx context.Context, userID string) (bool, error) {
-			return identity.ActiveUser(ctx, owner, userID)
-		},
-		SettingsManagers: func(ctx context.Context) ([]string, error) {
-			return identity.SettingsManagers(ctx, owner)
-		},
-		Notify: func(ctx context.Context, tx pgx.Tx, userID, title string) error {
-			uid, err := uuid.Parse(userID)
-			if err != nil {
-				return err
-			}
-			_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
-			return err
-		},
-		Log: log,
-	})
-	gateway.AddCatalogRefresher(workers, gateway.CatalogRefreshDeps{
-		Owner: owner,
-		SettingsManagers: func(ctx context.Context) ([]string, error) {
-			return identity.SettingsManagers(ctx, owner)
-		},
-		Notify: func(ctx context.Context, tx pgx.Tx, userID, title string) error {
-			uid, err := uuid.Parse(userID)
-			if err != nil {
-				return err
-			}
-			_, err = notices.InsertTx(ctx, tx, uid, notices.KindFailed, title, nil)
-			return err
-		},
-		Log: log,
-	})
-	auditPush := cfg.AuditWebhookURL != "" || cfg.AuditSyslogAddr != ""
-	if auditPush {
-		audit.AddPusher(workers, owner, audit.PushConfig{
-			WebhookURL: cfg.AuditWebhookURL,
-			SyslogAddr: cfg.AuditSyslogAddr,
-			Secrets:    secrets,
-		})
-	}
 	memoryFacts := memory.NewFacts(pool)
 	chat.AddSweepWorker(workers, chat.NewStore(pool, nil))
-	provision.AddNonceSweep(workers, provIdentity)
 	if cfg.GatewayURL != "" && cfg.GatewayKey != "" {
 		embedRoute := cfg.EmbedRoute
 		if embedRoute == "" {
@@ -834,7 +737,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		}
 		knowledgeBook := knowledge.NewStore(pool, nil)
 		tasks.AddScoutWorker(workers, tasks.ScoutDeps{
-			Goals:  tasks.NewStore(pool, owner, nil),
+			Goals:  tasks.NewStore(pool, runner, nil),
 			Chat:   scoutChat{store: chat.NewStore(pool, nil), members: members},
 			Memory: scoutMemory{editor: memoryFacts},
 			Knowledge: scoutKnowledge{
@@ -871,7 +774,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			Turns:     chatTurns,
 			Memory:    chatMemoryLookup{facts: memoryFacts, embed: func(userID string) memory.Embedder { return gw.For(userID) }},
 			Knowledge: chatKnowledgeLookup{folders: knowledgeBook, finder: knowledgeBook, embedFor: func(userID string) knowledge.Embedder { return gw.For(userID) }, members: members},
-			Tools:     chatActionTools{tasks: tasks.NewStore(pool, owner, lazy), agents: agentStore, memory: memoryFacts, members: members},
+			Tools:     chatActionTools{tasks: tasks.NewStore(pool, runner, lazy), agents: agentStore, memory: memoryFacts, members: members},
 			Access: func(ctx context.Context, userID string) (chat.Access, bool, error) {
 				person, err := identity.ParseUserID(userID)
 				if err != nil {
@@ -889,16 +792,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		fn(workers, deps)
 	}
 
-	periodic := []*river.PeriodicJob{
-		chat.SweepPeriodic(), audit.SealPeriodic(),
-		audit.RetentionPeriodic(), audit.VerifyPeriodic(),
-		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
-		gateway.ProviderCheckPeriodic(), gateway.CatalogRefreshPeriodic(),
-		gateway.UsageRollupPeriodic(),
-	}
-	if auditPush {
-		periodic = append(periodic, audit.PushPeriodic())
-	}
+	periodic := []*river.PeriodicJob{chat.SweepPeriodic()}
 	for _, fn := range o.extraPeriodic {
 		periodic = append(periodic, fn(deps)...)
 	}
@@ -927,16 +821,17 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// The stream LISTEN connections log in as upmo_app too.
 	var listenConn *pgx.ConnConfig
-	if cfg.DatabaseURL != "" {
-		listenConn, err = brainops.ParseListenConfig(cfg.DatabaseURL)
+	if cfg.DatabaseAppURL != "" {
+		listenConn, err = brainops.ParseListenConfig("UPMO_DATABASE_APP_URL", cfg.DatabaseAppURL)
 		if err != nil {
 			_ = work.Stop(ctx)
 			cleanupPools()
 			return nil, err
 		}
 	} else {
-		listenConn = owner.Config().ConnConfig.Copy()
+		listenConn = pool.Config().ConnConfig.Copy()
 	}
 
 	streams := tasks.NewStreamHub(pool, listenConn, log, tasks.StreamConfig{})
@@ -944,7 +839,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	chatStreams := chat.NewStreamHub(pool, listenConn, log, chat.StreamConfig{})
 	chatStreams.Start(ctx)
 
-	handler, err := buildHandler(deps, ideps, boxes, work, streams, chatStreams, provisionKeys, o)
+	handler, err := buildHandler(deps, ideps, boxes, work, streams, chatStreams, o)
 	if err != nil {
 		streams.Close()
 		chatStreams.Close()
@@ -962,7 +857,8 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		boxes:       boxes,
 		streams:     streams,
 		chatStreams: chatStreams,
-		ownsOwner:   ownsOwner,
+		runner:      runner,
+		ownsRunner:  ownsRunner,
 		ownsApp:     ownsApp,
 	}, nil
 }
@@ -974,7 +870,6 @@ func buildHandler(
 	work *jobs.Client,
 	streams *tasks.StreamHub,
 	chatStreams *chat.StreamHub,
-	provisionKeys []provision.Key,
 	o options,
 ) (http.Handler, error) {
 	pool := deps.App
@@ -999,7 +894,7 @@ func buildHandler(
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
 	identity.MountWorkspace(mux, ideps.workspace, sessions)
 
-	taskBook := tasks.NewStore(pool, deps.Owner, work)
+	taskBook := tasks.NewStore(pool, ideps.runner, work)
 	taskBook.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	var editorSigner tasks.EditorSigner
 	if cfg.EditorKey != "" {
@@ -1255,7 +1150,7 @@ func buildHandler(
 	usage.Teams = ideps.providers.Teams
 	// The workspace zone for everyone until a person can choose their own.
 	usage.TimeZone = func(ctx context.Context, _ string) (string, error) {
-		return identity.WorkspaceTimeZone(ctx, deps.Owner)
+		return identity.WorkspaceTimeZone(ctx, pool)
 	}
 	usage.People = func(ctx context.Context, ids []string) (map[string]string, error) {
 		names, _, err := members.NamesOf(ctx, ids, nil)
@@ -1355,17 +1250,8 @@ func buildHandler(
 
 	(&audit.ReadHandler{Pool: pool}).Mount(mux, audit.Guard(auditCallers{sessions: sessions, tokens: tokens, members: members}))
 
-	if o.provisioner != nil {
-		o.provisioner(mux, deps)
-	} else {
-		provision.Handler{
-			Owner:      deps.Owner,
-			Identity:   ideps.provision,
-			MasterKeys: ideps.keyring,
-			Keys:       provisionKeys,
-			Log:        log,
-		}.Mount(mux)
-	}
+	// /api/v1/provision/* is served by the worker command, which holds the
+	// privileged pool provisioning writes with.
 	for _, fn := range o.extraRoutes {
 		fn(mux, deps)
 	}

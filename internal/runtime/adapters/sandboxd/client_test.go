@@ -61,9 +61,13 @@ func TestClientCreateAndDestroySigned(t *testing.T) {
 		TTL:         time.Hour,
 		Allow:       []string{"github.com"},
 		Credentials: []app.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:GITHUB_TOKEN", Host: "github.com"}},
+		ProxySecret: []byte(strings.Repeat("p", 32)),
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if created["proxy_secret"] != base64.StdEncoding.EncodeToString([]byte(strings.Repeat("p", 32))) {
+		t.Fatalf("proxy_secret = %v", created["proxy_secret"])
 	}
 	if box.ID != "box-1" || box.Shape.Exec != 15*time.Minute || box.Shape.PIDs != 256 || box.Expires.IsZero() {
 		t.Fatalf("box = %+v", box)

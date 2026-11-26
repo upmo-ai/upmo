@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+
+	"github.com/upmo-ai/upmo/internal/testutil/pgtls"
 )
 
 // The development values compose.yml embeds, rebuilt the way compose builds
@@ -78,7 +80,7 @@ func freshPassword(t *testing.T) string {
 
 func freshDBURL(t *testing.T) string {
 	t.Helper()
-	return "postgres://upmo:" + freshPassword(t) + "@postgres:5432/upmo?sslmode=disable"
+	return pgtls.URL(t, "upmo:"+freshPassword(t))
 }
 
 func TestParseEnv(t *testing.T) {
@@ -210,6 +212,9 @@ func TestCheckGuardProductionRefuses(t *testing.T) {
 		}{
 			{"owner", composeDBURL(), "upmo"},
 			{"app role", "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable", "upmo_app"},
+			{"gateway role", "postgres://upmo_gateway:upmo_gateway@postgres:5432/upmo?sslmode=disable", "upmo_gateway"},
+			{"sandbox role", "postgres://upmo_sandbox:upmo_sandbox@postgres:5432/upmo?sslmode=disable", "upmo_sandbox"},
+			{"runner role", "postgres://upmo_runner:upmo_runner@postgres:5432/upmo?sslmode=disable", "upmo_runner"},
 			{"empty password", "postgres://upmo@postgres:5432/upmo?sslmode=disable", ""},
 		} {
 			urls := []Setting{{Name: "UPMO_DATABASE_URL", Value: tc.url}}
@@ -330,7 +335,7 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 	}
 	t.Run("database url", func(t *testing.T) {
 		base(t)
-		t.Setenv("UPMO_DATABASE_URL", composeDBURL())
+		t.Setenv("UPMO_DATABASE_URL", pgtls.URL(t, "upmo:upmo"))
 		_, err := Load()
 		if err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_URL uses a development or empty password") {
 			t.Fatalf("Load err = %v", err)
@@ -342,6 +347,7 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 	t.Run("missing master key", func(t *testing.T) {
 		base(t)
 		t.Setenv("UPMO_DATABASE_APP_URL", freshDBURL(t))
+		t.Setenv("UPMO_DATABASE_RUNNER_URL", freshDBURL(t))
 		t.Setenv("UPMO_MASTER_KEY", "")
 		_, err := LoadBrain()
 		if err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
@@ -353,6 +359,7 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Setenv("UPMO_ENV", "development")
 		t.Setenv("UPMO_DATABASE_URL", composeDBURL())
 		t.Setenv("UPMO_DATABASE_APP_URL", "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable")
+		t.Setenv("UPMO_DATABASE_RUNNER_URL", "postgres://upmo_runner:upmo_runner@postgres:5432/upmo?sslmode=disable")
 		t.Setenv("UPMO_MASTER_KEY", "")
 		for name, load := range map[string]func() (Config, error){"brain": LoadBrain, "gateway": Load} {
 			if _, err := load(); err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
@@ -366,6 +373,7 @@ func TestLoadAcceptsFreshValuesInProduction(t *testing.T) {
 	t.Setenv("UPMO_ENV", "")
 	t.Setenv("UPMO_DATABASE_URL", freshDBURL(t))
 	t.Setenv("UPMO_DATABASE_APP_URL", freshDBURL(t))
+	t.Setenv("UPMO_DATABASE_RUNNER_URL", freshDBURL(t))
 	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
 	t.Setenv("UPMO_MASTER_KEY", freshKey(t))
 	t.Setenv("UPMO_GATEWAY_KEY", "upmo_svc_gateway_"+freshKey(t))
@@ -383,6 +391,7 @@ func TestLoadDevelopmentRule(t *testing.T) {
 	t.Setenv("UPMO_ENV", "development")
 	t.Setenv("UPMO_DATABASE_URL", composeDBURL())
 	t.Setenv("UPMO_DATABASE_APP_URL", "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable")
+	t.Setenv("UPMO_DATABASE_RUNNER_URL", "postgres://upmo_runner:upmo_runner@postgres:5432/upmo?sslmode=disable")
 	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
 	t.Setenv("UPMO_MASTER_KEY", composeMasterKey())
 	for _, c := range composeKeys() {

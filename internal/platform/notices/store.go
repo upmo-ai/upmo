@@ -118,6 +118,24 @@ func InsertTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind, title stri
 	return id, nil
 }
 
+// InsertForManagerTx adds one notice for a settings manager through the
+// notices.insert_for_manager definer, the only notice write the gateway role
+// has. A target who is not a settings manager is SQLSTATE 42501.
+func InsertForManagerTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, kind, title string) (uuid.UUID, error) {
+	cleanTitle, err := validateInsert(kind, title, nil)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if tx == nil {
+		return uuid.Nil, fmt.Errorf("notices: no transaction")
+	}
+	var id uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT notices.insert_for_manager($1, $2, $3)`, userID, kind, cleanTitle).Scan(&id); err != nil {
+		return uuid.Nil, fmt.Errorf("notices: insert for manager: %w", err)
+	}
+	return id, nil
+}
+
 // List returns the notices for userID that are not dismissed, newest first,
 // at most limit of them.
 func (s Store) List(ctx context.Context, userID uuid.UUID, limit int) ([]Notice, error) {

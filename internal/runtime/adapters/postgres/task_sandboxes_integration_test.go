@@ -3,7 +3,9 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"slices"
@@ -21,6 +23,9 @@ import (
 )
 
 const task = "018f3b2c-7a10-7c4a-8e11-111111111111"
+
+// hash is the shape of a stored proxy secret hash: 32 bytes.
+var hash = bytes.Repeat([]byte{0x61}, 32)
 
 func TestMigrationRecordsItsVersionInTheRuntimeSchema(t *testing.T) {
 	owner := up(t)
@@ -51,10 +56,10 @@ func TestSeatClaimFillAndDrop(t *testing.T) {
 	if _, held, err := book.Lookup(ctx, task); err != nil || held {
 		t.Fatalf("row before claim = %t %v", held, err)
 	}
-	if err := book.Claim(ctx, task, 10*time.Minute); err != nil {
+	if err := book.Claim(ctx, task, 10*time.Minute, hash); err != nil {
 		t.Fatal(err)
 	}
-	if err := book.Claim(ctx, task, 10*time.Minute); !errors.Is(err, runtime.ErrAlreadyHeld) {
+	if err := book.Claim(ctx, task, 10*time.Minute, hash); !errors.Is(err, runtime.ErrAlreadyHeld) {
 		t.Fatalf("second claim = %v", err)
 	}
 	if id, held, err := book.Lookup(ctx, task); err != nil || !held || id != "" {
@@ -110,7 +115,7 @@ func TestSeatFillAfterADroppedClaimRecordsNothing(t *testing.T) {
 	owner := up(t)
 	book := postgres.TaskSandboxes{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
-	if err := book.Claim(ctx, task, time.Minute); err != nil {
+	if err := book.Claim(ctx, task, time.Minute, hash); err != nil {
 		t.Fatal(err)
 	}
 	if err := book.Drop(ctx, task, ""); err != nil {
@@ -128,10 +133,10 @@ func TestSeatRefusesABadRow(t *testing.T) {
 	owner := up(t)
 	book := postgres.TaskSandboxes{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
-	if err := book.Claim(ctx, "00000000-0000-0000-0000-000000000000", time.Minute); err == nil {
+	if err := book.Claim(ctx, "00000000-0000-0000-0000-000000000000", time.Minute, hash); err == nil {
 		t.Fatal("claimed a nil task id")
 	}
-	if err := book.Claim(ctx, task, time.Minute); err != nil {
+	if err := book.Claim(ctx, task, time.Minute, hash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := book.Fill(ctx, task, " box-1", time.Time{}); err == nil {
@@ -199,6 +204,55 @@ func TestSeatsReleaseKeepsTheSeatWhenDestroyFails(t *testing.T) {
 	}
 }
 
+// Start chooses the proxy secret: the row upmo_app inserts holds the SHA-256
+// of the exact secret Create received, and a second Start picks a new one.
+func TestStartStoresTheHashOfTheSecretCreateSent(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	provider := &fakeProvider{}
+	boxes := &runtime.TaskSandboxes{Provider: provider, Store: runtime.NewTaskSandboxStore(pgtest.App(t, owner))}
+	stored := func() []byte {
+		t.Helper()
+		var h []byte
+		if err := owner.QueryRow(ctx, `SELECT proxy_secret_hash FROM runtime.task_sandboxes WHERE task_id = $1`, task).Scan(&h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	spec := runtime.Spec{Image: "upmo/sandbox:base", Tier: runtime.TierContainer, TTL: time.Minute, ProxySecret: bytes.Repeat([]byte{0x7a}, 32)}
+	if _, err := boxes.Start(ctx, task, spec); err != nil {
+		t.Fatal(err)
+	}
+	first := stored()
+	provider.mu.Lock()
+	sent := slices.Clone(provider.secrets)
+	provider.mu.Unlock()
+	if len(sent) != 1 || len(sent[0]) != 32 {
+		t.Fatalf("secrets sent = %x, want one of 32 bytes", sent)
+	}
+	if bytes.Equal(sent[0], spec.ProxySecret) {
+		t.Fatal("Start sent the caller's secret, want its own")
+	}
+	if sum := sha256.Sum256(sent[0]); !bytes.Equal(first, sum[:]) {
+		t.Fatalf("stored hash = %x, want SHA-256 of the sent secret %x", first, sum)
+	}
+	if err := boxes.Release(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := boxes.Start(ctx, task, spec); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	second := slices.Clone(provider.secrets[1])
+	provider.mu.Unlock()
+	if bytes.Equal(second, sent[0]) {
+		t.Fatal("second Start reused the secret")
+	}
+	if sum := sha256.Sum256(second); !bytes.Equal(stored(), sum[:]) {
+		t.Fatalf("second stored hash = %x, want %x", stored(), sum)
+	}
+}
+
 // up migrates identity first, because it creates upmo_app, then runtime.
 func up(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -218,6 +272,7 @@ type fakeProvider struct {
 	mu         sync.Mutex
 	destroyed  []string
 	destroyErr error
+	secrets    [][]byte
 }
 
 var _ runtime.SandboxProvider = (*fakeProvider)(nil)
@@ -235,6 +290,9 @@ func (f *fakeProvider) destroyedIDs() []string {
 }
 
 func (f *fakeProvider) Create(_ context.Context, spec runtime.Spec) (runtime.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.secrets = append(f.secrets, slices.Clone(spec.ProxySecret))
 	return runtime.Sandbox{ID: "box-1", Tier: spec.Tier, Expires: time.Now().Add(spec.TTL)}, nil
 }
 

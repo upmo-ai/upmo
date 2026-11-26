@@ -15,7 +15,7 @@ import (
 
 func TestAdmitQueuesTheThirdRunForOnePerson(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 
@@ -44,7 +44,7 @@ func TestAdmitQueuesTheThirdRunForOnePerson(t *testing.T) {
 
 func TestEndThenSweepAdmitsTheQueuedRun(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 
@@ -83,7 +83,7 @@ func TestEndThenSweepAdmitsTheQueuedRun(t *testing.T) {
 
 func TestAdmissionCapIsPerPerson(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	ownerTask := openRunTask(t, store, ownerAccess, "File the receipts")
 
@@ -107,7 +107,7 @@ func TestAdmissionCapIsPerPerson(t *testing.T) {
 
 func TestAdmitRefusesADoneTaskWithoutStoringARun(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 
@@ -150,7 +150,7 @@ func TestAdmitRefusesADoneTaskWithoutStoringARun(t *testing.T) {
 
 func TestDirectUpdateCannotAdmitAThirdRun(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 
@@ -182,7 +182,7 @@ func TestDirectUpdateCannotAdmitAThirdRun(t *testing.T) {
 
 func TestRunEventsCannotBeUpdatedOrDeleted(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
@@ -204,7 +204,7 @@ func TestRunEventsCannotBeUpdatedOrDeleted(t *testing.T) {
 
 func TestReadmittingAnAdmittedRunIsIdempotent(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := openRunTask(t, store, ownerAccess, "File the receipts")
 	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")

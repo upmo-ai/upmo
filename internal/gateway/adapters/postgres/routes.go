@@ -36,29 +36,16 @@ func accountReach(alias string) string {
 	return fmt.Sprintf(`COALESCE(%s.owner_user_id::text, ''), %s.visibility, `+accountTeams, alias, alias, alias)
 }
 
-// TeamsOf lists the ids of the teams a person is on, by id. It reads the
-// identity tables as the table owner, like the rest of Store, so the caller
-// settles what the person may do with them. A person that is not a UUID is on
-// no team.
+// TeamsOf lists the ids of the teams a person is on, by id, through the
+// identity.teams_of definer, which returns team ids and nothing else. The
+// caller settles what the person may do with them. A person that is not a
+// UUID is on no team.
 func (s Store) TeamsOf(ctx context.Context, user string) ([]string, error) {
 	if _, err := uuid.Parse(user); err != nil {
 		return nil, nil
 	}
-	rows, err := s.Pool.Query(ctx, `
-		SELECT team_id::text FROM identity.team_members WHERE user_id = $1::uuid ORDER BY team_id`, user)
-	if err != nil {
-		return nil, fmt.Errorf("gateway: teams of a person: %w", err)
-	}
-	defer rows.Close()
 	out := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("gateway: teams of a person: %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
+	if err := s.Pool.QueryRow(ctx, `SELECT identity.teams_of($1::uuid)::text[]`, user).Scan(&out); err != nil {
 		return nil, fmt.Errorf("gateway: teams of a person: %w", err)
 	}
 	return out, nil

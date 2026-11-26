@@ -26,7 +26,7 @@ import (
 
 func TestOpenPermitsPreparingPlanningAndWorkingAndRefusesVerifyingOrDone(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	for _, to := range []domain.Status{domain.Preparing, domain.Planning, domain.Working} {
 		task, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Open " + string(to), To: to})
@@ -84,7 +84,7 @@ func TestOpenPermitsPreparingPlanningAndWorkingAndRefusesVerifyingOrDone(t *test
 
 func TestFollowTriggerRequiresEveryPlannedCriterionToPassOrHaveAcceptedFinding(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "Check the books", domain.Verifying)
 	plan, digest, err := domain.AcceptPlan(domain.FlowStandard, []domain.Unit{
@@ -153,7 +153,7 @@ func TestFollowTriggerRequiresEveryPlannedCriterionToPassOrHaveAcceptedFinding(t
 
 func TestFollowRejectsEmptyUnitsAndAMismatchedDigest(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	open := reach(t, store, "No plan", domain.Verifying)
 	passed, err := store.Record(ctx, ownerAccess, open.ID, []domain.Check{{Name: "go test", Code: 0, Verdict: domain.VerdictPass}}, nil)
@@ -201,7 +201,7 @@ func TestFollowRejectsEmptyUnitsAndAMismatchedDigest(t *testing.T) {
 func TestAppRoleColumnLockAndMonotonicExposureAndInsertTaintSpread(t *testing.T) {
 	owner := up(t)
 	appPool := pgtest.App(t, owner)
-	store := postgres.Store{Pool: appPool, Owner: owner}
+	store := postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "Lock the columns", domain.Verifying)
 	for _, set := range []string{
@@ -284,7 +284,7 @@ func TestSharedEditorCannotForgeAPassWaiverOrSpend(t *testing.T) {
 	owner := up(t)
 	appPool := pgtest.App(t, owner)
 	ctx := context.Background()
-	plain := postgres.Store{Pool: appPool, Owner: owner}
+	plain := postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)}
 	task := reach(t, plain, "Shared books", domain.Verifying)
 	editor := app.Access{
 		UserID: otherUser, Allow: "task:view,task:edit",
@@ -309,8 +309,8 @@ func TestSharedEditorCannotForgeAPassWaiverOrSpend(t *testing.T) {
 		t.Fatalf("privileges insert=%t update=%t %v", checkInsert, findingUpdate, err)
 	}
 
-	role, rolePool := tableOwner(t, owner, []string{"tasks.tasks", "tasks.checks", "tasks.review_findings"}, nil, true)
-	store := postgres.Store{Pool: appPool, Owner: rolePool}
+	role, _ := tableOwner(t, owner, []string{"tasks.tasks", "tasks.checks", "tasks.review_findings"}, nil, true)
+	store := postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)}
 	spent := taskInt(t, owner, `SELECT spent FROM tasks.tasks WHERE id = $1`, task.ID)
 	if err := store.Spend(ctx, editor, task.ID, 1); err == nil {
 		t.Fatalf("editor spend = nil, spent = %d", taskInt(t, owner, `SELECT spent FROM tasks.tasks WHERE id = $1`, task.ID))
@@ -414,7 +414,7 @@ func TestSharedEditorCannotForgeAPassWaiverOrSpend(t *testing.T) {
 
 func TestKeepResultAllowsRootAndSubtaskUpdateInWorkingAndVerifyingAndReworkResetsPasses(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "File the receipts", domain.Verifying)
 	if err := app.SaveResult(ctx, store, ownerAccess, task.ID, "Filed", "two pages"); err != nil {
@@ -440,7 +440,7 @@ func TestKeepResultAllowsRootAndSubtaskUpdateInWorkingAndVerifyingAndReworkReset
 
 func TestViewAndTailAfterAskPlanReworkReplanAndHold(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	cases := []struct {
 		status  domain.Status
@@ -473,7 +473,7 @@ func TestViewAndTailAfterAskPlanReworkReplanAndHold(t *testing.T) {
 
 func TestResumeWhilePendingApprovalIsRefused(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "Wait here", domain.Verifying)
 	if err := store.SaveBrake(ctx, ownerAccess, task.ID, domain.BrakeState{Stalls: 2, Failures: 2, LastGap: "g1"}); err != nil {
@@ -528,7 +528,7 @@ func TestResumeWhilePendingApprovalIsRefused(t *testing.T) {
 func TestApprovalReasonRoutingSharedViewerSelectAndEditorDecide(t *testing.T) {
 	owner := up(t)
 	appPool := pgtest.App(t, owner)
-	store := postgres.Store{Pool: appPool, Owner: owner}
+	store := postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 
 	planTask := reach(t, store, "Plan the books", domain.Planning)
@@ -635,7 +635,7 @@ func TestApprovalReasonRoutingSharedViewerSelectAndEditorDecide(t *testing.T) {
 
 func TestBatchHoldFromVerifyingUsesHold(t *testing.T) {
 	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Owner: owner}
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "Batch the books", domain.Verifying)
 	if _, err := store.RequestBatchApproval(ctx, ownerAccess, task.ID, "mail.send", agentloop.BatchHold{
@@ -672,10 +672,10 @@ func TestOwnerRLSOnEscrowReleaseTaintAndBudgetNotice(t *testing.T) {
 	owner := up(t)
 	appPool := pgtest.App(t, owner)
 	ctx := context.Background()
-	role, rolePool := tableOwner(t, owner, []string{"tasks.tasks", "tasks.chat_events"}, []string{
+	role, _ := tableOwner(t, owner, []string{"tasks.tasks", "tasks.chat_events"}, []string{
 		"tasks.escrow_child()", "tasks.release_escrow()", "tasks.spread_taint()", "tasks.budget_notice()",
 	}, true)
-	store := postgres.Store{Pool: appPool, Owner: owner}
+	store := postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)}
 
 	parent, err := app.ApplyTransition(ctx, store, ownerAccess, "", domain.Input{Kind: domain.Open, Goal: "Private parent"})
 	if err != nil {
@@ -845,7 +845,7 @@ func TestOwnerRLSOnEscrowReleaseTaintAndBudgetNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn := postgres.TaskTurnStore{
-		Store: postgres.Store{Pool: appPool, Owner: rolePool},
+		Store: postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)},
 		Scope: agentloop.AccessScope{
 			UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: budgetChild.ID,
 			SharedView: "{" + budgetParent.ID + "," + budgetChild.ID + "}",
@@ -877,7 +877,7 @@ func TestOwnerRLSOnEscrowReleaseTaintAndBudgetNotice(t *testing.T) {
 
 	// The child owner cannot edit the parent. The notice insert depends on the probe.
 	childTurn := postgres.TaskTurnStore{
-		Store: postgres.Store{Pool: appPool, Owner: rolePool},
+		Store: postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)},
 		Scope: agentloop.AccessScope{
 			UserID: otherUser, Allow: stranger.Allow, ObjectID: childID,
 		},
@@ -900,7 +900,7 @@ func TestOwnerRLSOnEscrowReleaseTaintAndBudgetNotice(t *testing.T) {
 func TestAppRoleCannotUseTheEscrowProbe(t *testing.T) {
 	owner := up(t)
 	appPool := pgtest.App(t, owner)
-	store := postgres.Store{Pool: appPool, Owner: owner}
+	store := postgres.Store{Pool: appPool, Runner: pgtest.Runner(t, owner)}
 	ctx := context.Background()
 	parent := openRoot(t, store, "Probe parent")
 	child, err := app.Spawn(ctx, store, ownerAccess, parent.ID, "Probe child", 100_000, "task:view")

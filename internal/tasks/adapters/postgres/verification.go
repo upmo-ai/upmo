@@ -33,9 +33,9 @@ INSERT INTO tasks.checks (
   $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )`
 
-// Record locks the task on the owner pool, appends one check batch, and records whether it passed.
+// Record locks the task on the runner pool, appends one check batch, and records whether it passed.
 func (s Store) Record(ctx context.Context, access app.Access, taskID string, checks []domain.Check, inputs map[int]string) (bool, error) {
-	tx, err := s.beginOwner(ctx, access)
+	tx, err := s.beginRunner(ctx, access)
 	if err != nil {
 		return false, err
 	}
@@ -234,13 +234,13 @@ func loadFindings(ctx context.Context, tx pgx.Tx, taskID string) ([]domain.Revie
 	return out, nil
 }
 
-// SavePlan stores a plan on a task that is still open. The owner pool writes it.
+// SavePlan stores a plan on a task that is still open. The runner pool writes it.
 func (s Store) SavePlan(ctx context.Context, access app.Access, taskID string, plan domain.TaskPlan, digest string) error {
 	raw, err := json.Marshal(plan)
 	if err != nil {
 		return domain.ErrPlan
 	}
-	return s.ownerWrite(ctx, access, taskID, `
+	return s.runnerWrite(ctx, access, taskID, `
 		UPDATE tasks.tasks
 		SET plan = $2::jsonb, plan_digest = $3, passes = false, updated_at = now()
 		WHERE id = $1::uuid
@@ -250,7 +250,7 @@ func (s Store) SavePlan(ctx context.Context, access app.Access, taskID string, p
 
 // SaveBrake stores the loop-brake counters on a task that is still open.
 func (s Store) SaveBrake(ctx context.Context, access app.Access, taskID string, state domain.BrakeState) error {
-	return s.ownerWrite(ctx, access, taskID, `
+	return s.runnerWrite(ctx, access, taskID, `
 		UPDATE tasks.tasks
 		SET stalls = $2, failures = $3, replanned = $4, last_gap = $5, updated_at = now()
 		WHERE id = $1::uuid
@@ -258,8 +258,8 @@ func (s Store) SaveBrake(ctx context.Context, access app.Access, taskID string, 
 		  AND status NOT IN ('Done', 'Failed')`, state.Stalls, state.Failures, state.Replanned, state.LastGap)
 }
 
-func (s Store) ownerWrite(ctx context.Context, access app.Access, taskID, query string, args ...any) error {
-	tx, err := s.beginOwner(ctx, access)
+func (s Store) runnerWrite(ctx context.Context, access app.Access, taskID, query string, args ...any) error {
+	tx, err := s.beginRunner(ctx, access)
 	if err != nil {
 		return err
 	}

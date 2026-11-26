@@ -84,8 +84,8 @@ lint-terms: ## Check every tracked file for retired words
 fmt: ## Format Go code with gofmt and goimports
 	$(LINT) golangci-lint fmt ./...
 
-up: ## Start brain and postgres
-	$(COMPOSE) up -d --wait brain postgres
+up: ## Start the worker, brain and postgres
+	$(COMPOSE) up -d --wait worker brain postgres
 
 down: ## Stop the dev stack
 	$(COMPOSE) down

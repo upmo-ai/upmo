@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -49,9 +51,10 @@ var (
 // task sandbox outlives the process that created it. Task ids are canonical uuids.
 // A task sandbox with no sandbox id is a Create still in flight.
 type TaskSandboxStore interface {
-	// Claim records a pending task sandbox for taskID that lapses after ttl. It
+	// Claim records a pending task sandbox for taskID that lapses after ttl,
+	// with secretHash, the SHA-256 of the proxy secret Create sends. It
 	// answers ErrAlreadyHeld when the task already holds a sandbox.
-	Claim(ctx context.Context, taskID string, ttl time.Duration) error
+	Claim(ctx context.Context, taskID string, ttl time.Duration, secretHash []byte) error
 	// Fill records sandboxID on taskID's pending task sandbox, and expires when it
 	// is not zero. It reports false when no pending task sandbox is left, because a
 	// Release dropped it.
@@ -327,7 +330,9 @@ func (s *TaskSandboxes) spec(taskID, repo string) Spec {
 // Start admits spec, claims taskID's task sandbox, creates its sandbox and records
 // it. A blank spec task takes taskID; a different one is refused with
 // ErrSpec. A sandbox that cannot be recorded is destroyed, so no sandbox is
-// left that a restarted brain could not release.
+// left that a restarted brain could not release. Start chooses the proxy
+// secret itself, whatever spec carries: the claim stores its SHA-256 and
+// Create sends the secret.
 func (s *TaskSandboxes) Start(ctx context.Context, taskID string, spec Spec) (Sandbox, error) {
 	if s == nil || s.Provider == nil {
 		return Sandbox{}, ErrSandboxdUnset
@@ -350,7 +355,12 @@ func (s *TaskSandboxes) Start(ctx context.Context, taskID string, spec Spec) (Sa
 		return Sandbox{}, ErrSpec
 	}
 
-	if err := s.Store.Claim(ctx, key, spec.TTL); err != nil {
+	spec.ProxySecret = make([]byte, 32)
+	if _, err := rand.Read(spec.ProxySecret); err != nil {
+		return Sandbox{}, err
+	}
+	hash := sha256.Sum256(spec.ProxySecret)
+	if err := s.Store.Claim(ctx, key, spec.TTL, hash[:]); err != nil {
 		return Sandbox{}, err
 	}
 	box, err := s.Provider.Create(ctx, spec)

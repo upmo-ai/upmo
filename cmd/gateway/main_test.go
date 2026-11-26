@@ -2,12 +2,13 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
+
+	"github.com/upmo-ai/upmo/internal/testutil/pgtls"
 )
 
 // run() reads the real environment, so its guard runs on t.Setenv values. An
@@ -28,12 +29,12 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 		if _, err := rand.Read(raw); err != nil {
 			t.Fatal(err)
 		}
-		return "postgres://upmo:" + hex.EncodeToString(raw) + "@postgres:5432/upmo?sslmode=disable"
+		return pgtls.URL(t, "upmo_gateway:"+hex.EncodeToString(raw))
 	}
 	base := func(t *testing.T) {
 		t.Helper()
 		t.Setenv("UPMO_ENV", "")
-		t.Setenv("UPMO_DATABASE_URL", freshDBURL(t))
+		t.Setenv("UPMO_DATABASE_GATEWAY_URL", freshDBURL(t))
 		t.Setenv("UPMO_PUBLIC_URL", "http://127.0.0.1:8082")
 		t.Setenv("UPMO_MASTER_KEY", freshKey(t))
 		t.Setenv("UPMO_GATEWAY_KEY", "upmo_svc_gateway_"+freshKey(t))
@@ -80,12 +81,12 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 	}
 	t.Run("database url", func(t *testing.T) {
 		base(t)
-		t.Setenv("UPMO_DATABASE_URL", "postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable")
+		t.Setenv("UPMO_DATABASE_GATEWAY_URL", pgtls.URL(t, "upmo_gateway:upmo_gateway"))
 		err := run()
-		if err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_URL uses a development or empty password") {
+		if err == nil || !strings.Contains(err.Error(), "UPMO_DATABASE_GATEWAY_URL uses a development or empty password") {
 			t.Fatalf("run err = %v", err)
 		}
-		if strings.Contains(err.Error(), "upmo:upmo") {
+		if strings.Contains(err.Error(), "upmo_gateway:upmo_gateway") {
 			t.Fatalf("run err holds the credentials: %v", err)
 		}
 	})
@@ -121,101 +122,5 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 				t.Fatalf("run err = %v, want %q", err, tc.want)
 			}
 		})
-	}
-}
-
-func TestOpenPoolScrubsPassword(t *testing.T) {
-	const marker = "owner-secret-marker"
-
-	cases := []struct {
-		name     string
-		rawURL   string
-		wantHost string
-	}{
-		{
-			name:   "malformed port",
-			rawURL: "postgres://upmo:" + marker + "@127.0.0.1:notaport/upmo",
-		},
-		{
-			name:   "invalid scheme without host",
-			rawURL: "://upmo:" + marker + "@",
-		},
-		{
-			name:   "empty host with userinfo and invalid param",
-			rawURL: "postgres://upmo:" + marker + "@?connect_timeout=notanint",
-		},
-		{
-			name:   "keyword DSN without host",
-			rawURL: "host=127.0.0.1 user=upmo password=" + marker + " port=notaport",
-		},
-		{
-			name:     "valid host with invalid param",
-			rawURL:   "postgres://upmo:" + marker + "@127.0.0.1:5432/upmo?sslmode=bogus",
-			wantHost: "127.0.0.1:5432",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pool, err := openPool(context.Background(), tc.rawURL)
-			if pool != nil {
-				pool.Close()
-			}
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			msg := err.Error()
-			if strings.Contains(msg, marker) {
-				t.Fatalf("error leaked password marker: %q", msg)
-			}
-			if strings.Contains(msg, "upmo:") {
-				t.Fatalf("error leaked userinfo: %q", msg)
-			}
-			const wantPrefix = "gateway: UPMO_DATABASE_URL could not be opened"
-			if !strings.Contains(msg, wantPrefix) {
-				t.Fatalf("error = %q, want prefix %q", msg, wantPrefix)
-			}
-			if tc.wantHost != "" {
-				if !strings.Contains(msg, "(host "+tc.wantHost+")") {
-					t.Fatalf("error = %q, want host %q", msg, tc.wantHost)
-				}
-			} else if strings.Contains(msg, "(host ") {
-				t.Fatalf("error = %q, did not expect host", msg)
-			}
-		})
-	}
-}
-
-func TestPoolURLErrorKeepsOnlyHostOnClosedPortURL(t *testing.T) {
-	const marker = "owner-secret-marker"
-	err := poolURLError("UPMO_DATABASE_URL", "postgres://upmo:"+marker+"@127.0.0.1:59999/upmo")
-	msg := err.Error()
-	if strings.Contains(msg, marker) || strings.Contains(msg, "upmo:") {
-		t.Fatalf("error leaked credentials: %q", msg)
-	}
-	const want = "gateway: UPMO_DATABASE_URL could not be opened (host 127.0.0.1:59999)"
-	if msg != want {
-		t.Fatalf("error = %q, want %q", msg, want)
-	}
-}
-
-func TestOpenPoolScrubsUserAndHostOnConnectFailure(t *testing.T) {
-	const user = "connect-user-marker"
-	pool, err := openPool(context.Background(), "postgres://"+user+":pw-marker@127.0.0.1:1/upmo?connect_timeout=2")
-	if pool != nil {
-		pool.Close()
-	}
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	msg := err.Error()
-	for _, leak := range []string{user, "pw-marker", "127.0.0.1"} {
-		if strings.Contains(msg, leak) {
-			t.Fatalf("error leaked %q: %q", leak, msg)
-		}
-	}
-	const want = "gateway: UPMO_DATABASE_URL could not be opened"
-	if msg != want {
-		t.Fatalf("error = %q, want %q", msg, want)
 	}
 }
