@@ -472,6 +472,36 @@ func TestProxyRefusesUnlistedHost(t *testing.T) {
 	}
 }
 
+func TestProxyResolvesNoCredentialFromTheEnvironment(t *testing.T) {
+	t.Setenv("ALLOWED_REF", "sk-test-allowed")
+	driver := Stub()
+	s := spec()
+	s.Allow = []string{"github.com"}
+	s.Credentials = []runtime.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:ALLOWED_REF", Host: "github.com"}}
+	box, err := driver.Create(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	p := Proxy(driver, slog.New(slog.NewTextHandler(&logs, nil)))
+	r := httptest.NewRequest(http.MethodConnect, "github.com:443", nil)
+	u := &http.Request{Header: http.Header{}}
+	u.SetBasicAuth(box.ID, "")
+	r.Header.Set("Proxy-Authorization", u.Header.Get("Authorization"))
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, r)
+	// A resolved credential would reach the tunnel step (500 on a recorder);
+	// a refused one stops at 502 before any dial.
+	if rec.Code != http.StatusBadGateway || rec.Body.String() != "credential unavailable\n" {
+		t.Fatalf("CONNECT = %d %q, want 502 credential unavailable", rec.Code, rec.Body.String())
+	}
+	for _, out := range []string{rec.Body.String(), logs.String(), fmt.Sprint(rec.Header())} {
+		if strings.Contains(out, "sk-test-allowed") {
+			t.Fatalf("credential value leaked: %s", out)
+		}
+	}
+}
+
 // swept is a driver that records sweeps.
 type swept struct {
 	Driver

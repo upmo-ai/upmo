@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -31,16 +32,21 @@ func (Refuse) Resolve(context.Context, string) (string, error) {
 	return "", ErrNoBackend
 }
 
-// Env resolves refs of the form env:NAME from the process environment.
-// Other schemes, a blank name, or a missing or empty value
-// report ErrNoBackend.
-type Env struct{}
+// Env resolves refs of the form env:NAME from the process environment, only
+// for a NAME on Allow (exact match). A name with the UPMO_ prefix is never
+// resolved, even when listed, so sandboxd's own secrets cannot leave. The
+// zero Env resolves nothing. Other schemes, a blank or unlisted name, or a
+// missing or empty value report ErrNoBackend.
+type Env struct {
+	// Allow lists the variable names Resolve may read.
+	Allow []string
+}
 
-// Resolve returns the value of NAME when ref is env:NAME and that name is
-// set to a non-empty value in the process environment.
-func (Env) Resolve(_ context.Context, ref string) (string, error) {
+// Resolve returns the value of NAME when ref is env:NAME, NAME is on Allow,
+// does not start with UPMO_, and is set to a non-empty value.
+func (e Env) Resolve(_ context.Context, ref string) (string, error) {
 	name, ok := strings.CutPrefix(strings.TrimSpace(ref), "env:")
-	if !ok || !envName(name) {
+	if !ok || !envName(name) || strings.HasPrefix(name, "UPMO_") || !slices.Contains(e.Allow, name) {
 		return "", ErrNoBackend
 	}
 	value, ok := os.LookupEnv(name)
