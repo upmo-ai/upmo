@@ -1,0 +1,5 @@
+# self-repository wants uses: $/... but actionlint 1.7.12 rejects that
+# syntax. Re-enable when actionlint accepts the self-repository form.
+rules:
+  self-repository:
+    disable: true
