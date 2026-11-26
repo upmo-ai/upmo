@@ -103,7 +103,7 @@ func newRouteVisWorld(t *testing.T) *routeVisWorld {
 		u := r.Header.Get("X-Test-User")
 		return u, u != ""
 	}
-	ProvidersHandler{Service: providers, Access: access}.MountProviders(mux, nil)
+	ProvidersHandler{Service: providers, Access: access, StepUp: func(*http.Request) bool { return true }}.MountProviders(mux, nil)
 	RoutesHandler{
 		Book:     NewRouteBook(appPool),
 		Service:  routesSvc,

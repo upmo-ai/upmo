@@ -279,7 +279,7 @@ func (h Passkeys) addFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Passkeys) rename(w http.ResponseWriter, r *http.Request) {
-	session, ok := h.session(w, r)
+	session, ok := h.stepUp(w, r)
 	if !ok {
 		return
 	}
@@ -346,6 +346,24 @@ func (h Passkeys) fresh(w http.ResponseWriter, r *http.Request) (app.Session, bo
 		return app.Session{}, false
 	}
 	return session, true
+}
+
+func (h Passkeys) stepUp(w http.ResponseWriter, r *http.Request) (app.Session, bool) {
+	session, ok := h.session(w, r)
+	if !ok || !allowStepUp(w, r, h.Pass, session) {
+		return app.Session{}, false
+	}
+	return session, true
+}
+
+// allowStepUp answers 403 unless the session may make a sensitive change.
+func allowStepUp(w http.ResponseWriter, r *http.Request, pass app.Passkeys, session app.Session) bool {
+	ok, err := pass.StepUp(r.Context(), session)
+	if err != nil || !ok {
+		writeRaw(w, http.StatusForbidden, signInAgain)
+		return false
+	}
+	return true
 }
 
 func refuseSignedOut(w http.ResponseWriter, err error) bool {

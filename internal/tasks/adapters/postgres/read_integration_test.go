@@ -342,7 +342,8 @@ func TestHTTPServesTheReadModel(t *testing.T) {
 	serve := func(access app.Access) http.Handler {
 		mux := http.NewServeMux()
 		tasks.Handler{
-			Book: store, List: store, View: store,
+			StepUp: func(*http.Request) bool { return true },
+			Book:   store, List: store, View: store,
 			Access: func(*http.Request) (app.Access, bool) { return access, true },
 		}.Mount(mux, nil)
 		return mux

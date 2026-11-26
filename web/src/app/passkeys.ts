@@ -139,15 +139,17 @@ export async function addPasskey(): Promise<void> {
 }
 
 export async function renamePasskey(id: string, name: string): Promise<void> {
-  const response = await fetch(`/api/passkeys/${id}`, {
-    method: "PATCH",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
+  await withStepUp(async () => {
+    const response = await fetch(`/api/passkeys/${id}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) {
+      throw await parseError(response);
+    }
   });
-  if (!response.ok) {
-    throw await parseError(response);
-  }
 }
 
 export async function removePasskey(id: string): Promise<void> {
@@ -284,6 +286,27 @@ export async function fresh<T>(action: () => Promise<T>): Promise<T | undefined>
     } catch (stepUpErr) {
       if (isCanceled(stepUpErr)) {
         return undefined;
+      }
+      throw stepUpErr;
+    }
+    return await action();
+  }
+}
+
+// Runs a gated change. On a 403 "sign in again" it asks for the passkey once and
+// retries. A canceled prompt throws the original error, so the page shows it.
+export async function withStepUp<T>(action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (err) {
+    if (!isStale(err)) {
+      throw err;
+    }
+    try {
+      await stepUp();
+    } catch (stepUpErr) {
+      if (isCanceled(stepUpErr)) {
+        throw err;
       }
       throw stepUpErr;
     }

@@ -5,13 +5,21 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button, ConfirmDialog, ConnectorCard, Input } from "@upmo-ai/components";
 
-import { CONNECTORS_KEY, connectorsQueryKey, useApi, type ConnectorGrant } from "../../app/api";
+import { BrainError, CONNECTORS_KEY, connectorsQueryKey, useApi, type ConnectorGrant } from "../../app/api";
+import { withStepUp } from "../../app/passkeys";
 import { ConnectorRulesRow } from "./connector-rules";
 
 export interface KnownConnector {
   id: string;
   name: string;
   description: string;
+}
+
+// A refused grant write, with the brain's error code so withStepUp can see "sign in again".
+export async function grantError(res: Response, message: string): Promise<BrainError> {
+  const body: unknown = await res.json().catch(() => null);
+  const code = body && typeof body === "object" && "error" in body ? String(body.error) : undefined;
+  return new BrainError(res.status, code, message);
 }
 
 export const KNOWN_CONNECTORS: KnownConnector[] = [
@@ -101,11 +109,13 @@ function ConnectorsView({ live }: { live: boolean }) {
   const removeMutation = useMutation({
     mutationFn: async (connector: string) => {
       if (live) {
-        const res = await fetch(`/api/connector-grants/${connector}`, {
-          method: "DELETE",
-          credentials: "include",
+        await withStepUp(async () => {
+          const res = await fetch(`/api/connector-grants/${connector}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+          if (!res.ok) throw await grantError(res, "Failed to disconnect");
         });
-        if (!res.ok) throw new Error("Failed to disconnect");
         return;
       }
       return api.connectors.remove(connector);

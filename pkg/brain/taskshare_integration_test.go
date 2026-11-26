@@ -71,6 +71,7 @@ func shareSetup(t *testing.T) *shareEnv {
 	store.ReplaceTaskGrants = taskGrants{members: members}.ReplaceTaskGrantsTx
 	mux := http.NewServeMux()
 	tasks.Handler{
+		StepUp: func(*http.Request) bool { return true },
 		Book:   store,
 		List:   store,
 		View:   store,

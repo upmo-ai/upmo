@@ -30,6 +30,9 @@ type ProvidersHandler struct {
 	Access func(r *http.Request) (userID string, ok bool)
 	// Log records unexpected failures. It never receives a key.
 	Log *slog.Logger
+	// StepUp reports whether the person behind r may create, replace or
+	// delete a provider credential. Nil refuses.
+	StepUp func(r *http.Request) bool
 }
 
 // MountProviders registers the provider routes. guard runs first.
@@ -165,6 +168,15 @@ func (h ProvidersHandler) person(w http.ResponseWriter, r *http.Request) (string
 		return "", false
 	}
 	return userID, true
+}
+
+// stepUp answers 403 unless the person may change a provider credential.
+func (h ProvidersHandler) stepUp(w http.ResponseWriter, r *http.Request) bool {
+	if h.StepUp == nil || !h.StepUp(r) {
+		writeRouteError(w, http.StatusForbidden, "sign in again")
+		return false
+	}
+	return true
 }
 
 // decode reads a bounded JSON body. It answers 400 or 413 itself on failure.
@@ -459,7 +471,7 @@ func (h ProvidersHandler) deleteOverride(w http.ResponseWriter, r *http.Request)
 
 func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
-	if !ok {
+	if !ok || !h.stepUp(w, r) {
 		return
 	}
 	if !h.Service.Keys.Ready() {
@@ -500,7 +512,7 @@ func (h ProvidersHandler) add(w http.ResponseWriter, r *http.Request) {
 
 func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
-	if !ok {
+	if !ok || !h.stepUp(w, r) {
 		return
 	}
 	if !h.Service.Keys.Ready() {
@@ -539,7 +551,7 @@ func (h ProvidersHandler) change(w http.ResponseWriter, r *http.Request) {
 
 func (h ProvidersHandler) remove(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.person(w, r)
-	if !ok {
+	if !ok || !h.stepUp(w, r) {
 		return
 	}
 	if !h.Service.Keys.Ready() {

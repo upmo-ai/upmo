@@ -65,6 +65,9 @@ type Handler struct {
 	Ledger app.Ledger
 	// Now returns the current time. Nil uses time.Now().
 	Now func() time.Time
+	// StepUp reports whether the person behind r may make a sensitive
+	// change: sharing, approving, opening an editor or funding. Nil refuses.
+	StepUp func(r *http.Request) bool
 }
 
 // Mount registers the task routes. guard runs first.
@@ -126,7 +129,7 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request) {
 
 func (h Handler) editor(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
-	if !ok {
+	if !ok || !h.stepUp(w, r) {
 		return
 	}
 	now := time.Now
@@ -219,6 +222,9 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := domain.Kind(strings.TrimSpace(input.Kind))
 	if kind == domain.Fund {
+		if !h.stepUp(w, r) {
+			return
+		}
 		if input.Amount == nil {
 			refuse(w, domain.ErrBudget)
 			return
@@ -287,6 +293,15 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, boo
 		return app.Access{}, false
 	}
 	return access, true
+}
+
+// stepUp answers 403 unless the person may make a sensitive change.
+func (h Handler) stepUp(w http.ResponseWriter, r *http.Request) bool {
+	if h.StepUp == nil || !h.StepUp(r) {
+		writeError(w, http.StatusForbidden, "sign in again")
+		return false
+	}
+	return true
 }
 
 func taskJSON(task app.Task) map[string]string {

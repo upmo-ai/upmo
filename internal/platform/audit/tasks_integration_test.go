@@ -293,9 +293,10 @@ func TestTaskRoutesSealTheirOwnEvents(t *testing.T) {
 
 	mux := http.NewServeMux()
 	tasks.Handler{
-		Book: store,
-		List: store,
-		View: store,
+		StepUp: func(*http.Request) bool { return true },
+		Book:   store,
+		List:   store,
+		View:   store,
 		Access: func(r *http.Request) (app.Access, bool) {
 			audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: taskAccess.UserID, CredentialType: "session"})
 			return taskAccess, true
@@ -677,6 +678,7 @@ func TestTaskEditorOpenSealsItsSensitiveEvent(t *testing.T) {
 	editor := &stubEditorSandboxes{url: "http://127.0.0.1:9999"}
 	mux := http.NewServeMux()
 	tasks.Handler{
+		StepUp:       func(*http.Request) bool { return true },
 		View:         store,
 		PublicURL:    "http://localhost:5173",
 		Editor:       editor,
@@ -723,9 +725,10 @@ func TestTaskRouteRefusalRecordsDenied(t *testing.T) {
 	stranger := app.Access{UserID: "018f3b2c-7a10-7c4a-8e11-444444444444"}
 	mux := http.NewServeMux()
 	tasks.Handler{
-		Book: store,
-		List: store,
-		View: store,
+		StepUp: func(*http.Request) bool { return true },
+		Book:   store,
+		List:   store,
+		View:   store,
 		Access: func(r *http.Request) (app.Access, bool) {
 			audit.WithActor(r.Context(), audit.Actor{Type: "user", ID: stranger.UserID, CredentialType: "session"})
 			// Signed in, but no task permission: the handler refuses.

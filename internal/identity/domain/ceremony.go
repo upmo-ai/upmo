@@ -41,6 +41,12 @@ func Fresh(signedIn, now time.Time) bool {
 	return !now.After(signedIn.Add(StepUpWindow))
 }
 
+// StepUp reports whether a session may make a sensitive change: it is Fresh
+// and, when the account has a passkey, the last sign-in used that passkey.
+func StepUp(signedIn, now time.Time, method string, hasPasskey bool) bool {
+	return Fresh(signedIn, now) && (!hasPasskey || method == "passkey")
+}
+
 // LinkLifetime is how long a link of that purpose lasts.
 func LinkLifetime(purpose string) (time.Duration, bool) {
 	switch purpose {

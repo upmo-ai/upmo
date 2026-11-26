@@ -28,6 +28,9 @@ type Handler struct {
 	Metrics   *metrics.Registry
 	Access    func(r *http.Request) (app.Access, bool)
 	Renew     func(ctx context.Context, r *http.Request) (app.Access, bool, error)
+	// StepUp reports whether the person behind r may share a chat or approve
+	// a hold. Nil refuses.
+	StepUp func(r *http.Request) bool
 }
 
 // Mount registers the chat routes. guard runs first.
@@ -56,7 +59,7 @@ func (h Handler) Mount(mux *http.ServeMux, guard func(http.Handler) http.Handler
 
 func (h Handler) approveHold(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
-	if !ok {
+	if !ok || !h.stepUp(w, r) {
 		return
 	}
 	var input struct {
@@ -373,6 +376,15 @@ func (h Handler) person(w http.ResponseWriter, r *http.Request) (app.Access, boo
 		return app.Access{}, false
 	}
 	return access, true
+}
+
+// stepUp answers 403 unless the person may make a sensitive change.
+func (h Handler) stepUp(w http.ResponseWriter, r *http.Request) bool {
+	if h.StepUp == nil || !h.StepUp(r) {
+		writeError(w, http.StatusForbidden, "sign in again")
+		return false
+	}
+	return true
 }
 
 func refuse(w http.ResponseWriter, err error) bool {

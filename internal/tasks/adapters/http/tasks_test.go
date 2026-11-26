@@ -258,6 +258,7 @@ func callEditor(t *testing.T, book *fakeBook, editor app.EditorSandboxes, signer
 	t.Helper()
 	mux := http.NewServeMux()
 	Handler{
+		StepUp:       func(*http.Request) bool { return true },
 		Book:         book,
 		Ledger:       book,
 		List:         book,
@@ -279,6 +280,7 @@ func callEditor(t *testing.T, book *fakeBook, editor app.EditorSandboxes, signer
 func handlerWithProgress(book *fakeBook, progress app.Progresses, allow bool) http.Handler {
 	mux := http.NewServeMux()
 	Handler{
+		StepUp:   func(*http.Request) bool { return true },
 		Book:     book,
 		Ledger:   book,
 		List:     book,

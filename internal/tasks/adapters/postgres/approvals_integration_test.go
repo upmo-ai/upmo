@@ -48,7 +48,8 @@ func request(t *testing.T, store postgres.Store, taskID string) app.Approval {
 func approvalServer(store postgres.Store, people map[string]app.Access) http.Handler {
 	mux := http.NewServeMux()
 	tasks.Handler{
-		Book: store, List: store, View: store, Approvals: store,
+		StepUp: func(*http.Request) bool { return true },
+		Book:   store, List: store, View: store, Approvals: store,
 		Access: func(r *http.Request) (app.Access, bool) {
 			access, ok := people[r.Header.Get("X-As")]
 			return access, ok

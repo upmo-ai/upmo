@@ -1141,6 +1141,7 @@ func TestFeature_UPM354_OverridesRequireSettingsManageAndAudit(t *testing.T) {
 
 	mux := http.NewServeMux()
 	ProvidersHandler{
+		StepUp:  func(*http.Request) bool { return true },
 		Service: r.svc,
 		Access: func(req *http.Request) (string, bool) {
 			user := req.Header.Get("X-User")
@@ -3336,7 +3337,7 @@ func TestFeature_UPM387_PricingMapRequiresSettingsManageAndAudit(t *testing.T) {
 		return "", nil
 	}
 	mux := http.NewServeMux()
-	ProvidersHandler{Service: r.svc, Access: func(req *http.Request) (string, bool) {
+	ProvidersHandler{Service: r.svc, StepUp: func(*http.Request) bool { return true }, Access: func(req *http.Request) (string, bool) {
 		return req.Header.Get("X-User"), req.Header.Get("X-User") != ""
 	}}.MountProviders(mux, nil)
 	r.handler = audit.Middleware(audit.Routes(), mux, r.app, "brain", nil, slog.Default())(httpserver.Protect(mux))

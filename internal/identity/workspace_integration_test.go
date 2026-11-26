@@ -255,8 +255,12 @@ func TestWorkspaceMigrationDownUp(t *testing.T) {
 func TestWorkspaceHTTP(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
+	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	mux := http.NewServeMux()
-	identity.MountWorkspace(mux, identity.Workspace(pool), sessions)
+	identity.MountWorkspace(mux, identity.Workspace(pool), passkeys)
 
 	seedUserWithRole(t, ownerPool, ctx, "ada@example.com", "Ada", "owner")
 	adminID := seedUserWithRole(t, ownerPool, ctx, "bob@example.com", "Bob", "admin")
@@ -423,7 +427,7 @@ func TestSSOEnforcement(t *testing.T) {
 	mux := http.NewServeMux()
 	identity.MountSessions(mux, sessions, log, passwords.HasPassword)
 	identity.MountPasskeys(mux, passkeys, passwords, nil)
-	identity.MountWorkspace(mux, identity.Workspace(pool), sessions)
+	identity.MountWorkspace(mux, identity.Workspace(pool), passkeys)
 
 	ownerID := seedUserWithRole(t, ownerPool, ctx, "ada@example.com", "Ada", "owner")
 	adminID := seedUserWithRole(t, ownerPool, ctx, "bob@example.com", "Bob", "admin")
