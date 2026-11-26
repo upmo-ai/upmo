@@ -182,7 +182,8 @@ func (p Passwords) Verify(ctx context.Context, user domain.UserID, sessionID str
 		return 0, ErrNoSealer
 	}
 	match := false
-	if sendable(email, password) {
+	// The session body sends no address, so only the password is bounded.
+	if password != "" && len(password) <= MaxPasswordBytes {
 		if match, _, err = p.Keys.VerifySession(ctx, tokenHash, password); err != nil {
 			return keysRetry(ctx, err), err
 		}
