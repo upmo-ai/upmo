@@ -818,3 +818,55 @@ func TestResealCountsAnIndexHashCollisionFailedAndMovesOn(t *testing.T) {
 		t.Fatalf("second email tally = %+v, want the collision failed again", got)
 	}
 }
+
+// Invariant 13: with k2 current and k1 previous a k1 row still unwraps;
+// reseal moves it to k2 under a new data key and a new wrap, and it still
+// opens. A row under k9, which the ring does not hold, counts as unknown and
+// is left as it is.
+func TestResealMovesAK1RowAndCountsK9AsUnknown(t *testing.T) {
+	owner := newResealDB(t)
+	ctx := context.Background()
+	seedCredential(t, owner, reseedRing(t, "k1"), "GITHUB", "sk-test-allowed")
+	seedCredential(t, owner, reseedRing(t, "k9"), "LOST", "sk-test-lost")
+	before := map[string]storedCredential{}
+	for _, c := range readCredentials(t, owner) {
+		before[c.ref] = c
+	}
+	ring := reseedRing(t, "k2", "k1")
+	open := func(c storedCredential) (string, error) {
+		return ring.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce})
+	}
+	if got, err := open(before["GITHUB"]); err != nil || got != "sk-test-allowed" {
+		t.Fatalf("k1 row under the k2 ring = %q %v", got, err)
+	}
+	unknown, err := UnknownKeyRows(ctx, owner, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range unknown {
+		if c.Store == StoreCredentials && (c.Unknown != 1 || len(c.UnknownKeyIDs) != 1 || c.UnknownKeyIDs[0] != "k9") {
+			t.Fatalf("unknown credentials = %+v, want one under k9", c)
+		}
+	}
+	result, err := Reseal(ctx, owner, ring, ResealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeCount(t, result, StoreCredentials); got.Resealed != 1 || got.Unknown != 1 || got.Failed != 0 {
+		t.Fatalf("credentials tally = %+v, want one resealed and one unknown", got)
+	}
+	after := map[string]storedCredential{}
+	for _, c := range readCredentials(t, owner) {
+		after[c.ref] = c
+	}
+	moved := after["GITHUB"]
+	if moved.keyID != "k2" || bytes.Equal(moved.wrapped, before["GITHUB"].wrapped) || bytes.Equal(moved.ciphertext, before["GITHUB"].ciphertext) {
+		t.Fatalf("GITHUB after reseal: key %q, wrap or payload unchanged", moved.keyID)
+	}
+	if got, err := open(moved); err != nil || got != "sk-test-allowed" {
+		t.Fatalf("GITHUB after reseal opens to %q %v", got, err)
+	}
+	if lost := after["LOST"]; lost.keyID != "k9" || !bytes.Equal(lost.wrapped, before["LOST"].wrapped) || !bytes.Equal(lost.ciphertext, before["LOST"].ciphertext) {
+		t.Fatalf("the k9 row changed: key %q", lost.keyID)
+	}
+}

@@ -28,6 +28,9 @@ const (
 	PathReady  = "/internal/keys/ready"
 	PathWrap   = "/internal/keys/wrap"
 	PathUnwrap = "/internal/keys/unwrap"
+	// PathProviderTest probes a saved provider account with its saved key,
+	// which only the worker opens.
+	PathProviderTest = "/internal/keys/provider-test"
 )
 
 // KindCredential is the one kind wrap and unwrap serve in this release.
@@ -38,6 +41,14 @@ const MaxBody = 4096
 
 // Timeout bounds one call to the worker.
 const Timeout = 2 * time.Second
+
+// ProviderTestTimeout bounds one provider-test call: the worker's probe may
+// take up to its own 10 s limit, so 2 s would cut every slow provider off.
+const ProviderTestTimeout = 12 * time.Second
+
+// MaxProviderTestBody caps a provider-test answer, which carries the model
+// list a provider returned (up to 2,000 models).
+const MaxProviderTestBody = 8 << 20
 
 // ErrUnavailable is every failed call: a dial error, a timeout and any
 // status other than 200. It carries no bytes from the worker.
@@ -71,6 +82,24 @@ type UnwrapResponse struct {
 	DataKey []byte `json:"data_key"`
 }
 
+// ProviderTestRequest is the body of POST /internal/keys/provider-test:
+// the account and the hash of the signed-in person's session or API token.
+// The worker reads the adapter and base URL from the account, never from
+// the caller.
+type ProviderTestRequest struct {
+	AccountID      string `json:"account_id"`
+	ActorTokenHash []byte `json:"actor_token_hash"`
+}
+
+// ProviderTestResponse is the outcome of a provider-test. Error is the
+// fixed probe message, empty when OK. Models are the listed models in the
+// stored model list's JSON form. It never carries a key.
+type ProviderTestResponse struct {
+	OK     bool              `json:"ok"`
+	Error  string            `json:"error"`
+	Models []json.RawMessage `json:"models"`
+}
+
 // Options configure a client.
 type Options struct {
 	// URL is UPMO_WORKER_URL: https, or http where tlscheck allows it.
@@ -90,6 +119,8 @@ type Options struct {
 type Client struct {
 	base string
 	http *http.Client
+	// slow is http with the longer provider-test timeout.
+	slow *http.Client
 }
 
 // Open builds a client. A bad URL, key or CA file is an error, so a process
@@ -119,20 +150,18 @@ func Open(o Options) (Client, error) {
 	if err != nil {
 		return Client{}, err
 	}
+	// A redirect is a refusal: a key never follows one.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return Client{
 		base: u.Scheme + "://" + u.Host,
-		http: &http.Client{
-			Transport: transport,
-			Timeout:   Timeout,
-			// A redirect is a refusal: a key never follows one.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		http: &http.Client{Transport: transport, Timeout: Timeout, CheckRedirect: noRedirect},
+		slow: &http.Client{Transport: transport, Timeout: ProviderTestTimeout, CheckRedirect: noRedirect},
 	}, nil
 }
 
 // Ready reports whether the worker's ring is ready and accepts this key.
 func (c Client) Ready(ctx context.Context) error {
-	body, err := c.call(ctx, http.MethodGet, PathReady, nil)
+	body, err := c.call(ctx, c.http, http.MethodGet, PathReady, nil, MaxBody)
 	if err != nil {
 		return err
 	}
@@ -162,12 +191,44 @@ func (c Client) UnwrapCredential(ctx context.Context, ref string) ([]byte, error
 	return out.DataKey, nil
 }
 
+// UnwrapForSandbox asks for the data key of the credential row ref, as
+// sandboxd for sandboxID, proving the sandbox with its 32-byte proxy secret.
+// The worker answers only while the sandbox's task is live and the ref is
+// bound to it. The caller opens the payload and then wipes the key.
+func (c Client) UnwrapForSandbox(ctx context.Context, sandboxID, ref string, proxySecret []byte) ([]byte, error) {
+	var out UnwrapResponse
+	in := UnwrapRequest{Kind: KindCredential, Ref: ref, SandboxID: sandboxID, ProxySecret: proxySecret}
+	if err := c.post(ctx, PathUnwrap, in, &out); err != nil {
+		return nil, err
+	}
+	return out.DataKey, nil
+}
+
+// ProviderTest asks the worker to probe a saved account with its saved key,
+// for the person whose session or API token hashes to actorTokenHash. A
+// refusal, like any failure, is ErrUnavailable.
+func (c Client) ProviderTest(ctx context.Context, accountID string, actorTokenHash []byte) (ProviderTestResponse, error) {
+	raw, err := json.Marshal(ProviderTestRequest{AccountID: accountID, ActorTokenHash: actorTokenHash})
+	if err != nil {
+		return ProviderTestResponse{}, ErrUnavailable
+	}
+	body, err := c.call(ctx, c.slow, http.MethodPost, PathProviderTest, raw, MaxProviderTestBody)
+	if err != nil {
+		return ProviderTestResponse{}, err
+	}
+	var out ProviderTestResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return ProviderTestResponse{}, ErrUnavailable
+	}
+	return out, nil
+}
+
 func (c Client) post(ctx context.Context, path string, in, out any) error {
 	raw, err := json.Marshal(in)
 	if err != nil {
 		return ErrUnavailable
 	}
-	body, err := c.call(ctx, http.MethodPost, path, raw)
+	body, err := c.call(ctx, c.http, http.MethodPost, path, raw, MaxBody)
 	if err != nil {
 		return err
 	}
@@ -180,8 +241,8 @@ func (c Client) post(ctx context.Context, path string, in, out any) error {
 
 // call sends one signed request and returns the body of a 200. Anything else
 // is ErrUnavailable with no bytes.
-func (c Client) call(ctx context.Context, method, path string, raw []byte) ([]byte, error) {
-	if c.http == nil {
+func (c Client) call(ctx context.Context, client *http.Client, method, path string, raw []byte, limit int64) ([]byte, error) {
+	if client == nil {
 		return nil, ErrUnavailable
 	}
 	var reader io.Reader = http.NoBody
@@ -195,13 +256,13 @@ func (c Client) call(ctx context.Context, method, path string, raw []byte) ([]by
 	if raw != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	res, err := c.http.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
 	defer func() { _ = res.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(res.Body, MaxBody+1))
-	if err != nil || res.StatusCode != http.StatusOK || len(body) > MaxBody {
+	body, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	if err != nil || res.StatusCode != http.StatusOK || int64(len(body)) > limit {
 		clear(body)
 		return nil, ErrUnavailable
 	}

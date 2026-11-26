@@ -5,6 +5,7 @@ package audit_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 const (
@@ -49,15 +51,55 @@ func providerRig(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
 // with this person's sharing permission and teams held fixed.
 func providerService(t *testing.T, appPool *pgxpool.Pool, allow string, teams []string) gatewayapp.Providers {
 	t.Helper()
-	keys, err := domain.NewKeyring("k1", map[string][]byte{"k1": bytes.Repeat([]byte{1}, domain.MasterKeyLen)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc := gateway.NewProviders(appPool, keys, nil)
+	svc := gateway.NewProviders(appPool, providerKeys(t), nil)
 	svc.Allow = func(context.Context, string) (string, error) { return allow, nil }
 	svc.Teams = func(context.Context, string) ([]string, error) { return teams, nil }
 	svc.LocalPlan = func(context.Context, string) bool { return true }
 	return svc
+}
+
+func providerKeys(t *testing.T) gateway.Keyring {
+	t.Helper()
+	keys, err := domain.NewKeyring("k1", map[string][]byte{"k1": bytes.Repeat([]byte{1}, domain.MasterKeyLen)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
+// throughWorker seals and tests saved keys through the worker's real key
+// service, as brain does, and returns the hash of a live session of the
+// account owner, who becomes the install's joined owner, so provider-test
+// can resolve them.
+func throughWorker(t *testing.T, owner *pgxpool.Pool, svc *gatewayapp.Providers) []byte {
+	t.Helper()
+	sealer := workerkeys.Start(t, owner, providerKeys(t)).Sealer(t)
+	svc.Keys, svc.Saved = sealer, sealer
+	ctx := context.Background()
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES ($1::uuid, 'own@example.test', sha256('own@example.test'::bytea), 'k1', 'Own', (SELECT id FROM identity.roles WHERE key = 'owner'), now())`, providerOwnerID); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256([]byte("provider owner session"))
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1::uuid, $2, now(), now(), now() + interval '1 hour')`, providerOwnerID, hash[:]); err != nil {
+		t.Fatal(err)
+	}
+	return hash[:]
+}
+
+// keysThenProviderTest checks the rows of one saved-key test: the worker's
+// keys.provider_test for brain, then the store's provider.test, which it
+// returns.
+func keysThenProviderTest(t *testing.T, rows []audit.Row) audit.Row {
+	t.Helper()
+	if len(rows) != 2 || rows[0].Action != "keys.provider_test" || rows[0].Service != "brain" || rows[0].Outcome != audit.Success ||
+		rows[1].Action != audit.ProviderTest {
+		t.Fatalf("events = %v, want keys.provider_test then provider.test", actions(rows))
+	}
+	return rows[1]
 }
 
 func newTeam(t *testing.T, owner *pgxpool.Pool, name string) string {
@@ -185,18 +227,17 @@ func TestProviderUpdateSealsItsChangedFields(t *testing.T) {
 	owner, appPool := providerRig(t)
 	sealed := newSealer(t, owner)
 	svc := providerService(t, appPool, "", nil)
+	actor := throughWorker(t, owner, &svc)
 	ctx := context.Background()
 
 	made := addedAccount(t, svc)
 	sealed()
 	// A test of the saved account stores the status the probe found, so the
 	// change below has a status to reset.
-	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID}); err != nil || !result.OK {
+	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID, ActorTokenHash: actor}); err != nil || !result.OK {
 		t.Fatalf("test = %+v %v, want a working test", result, err)
 	}
-	if rows := sealed(); len(rows) != 1 || rows[0].Action != audit.ProviderTest {
-		t.Fatalf("events = %v, want one provider.test", actions(rows))
-	}
+	keysThenProviderTest(t, sealed())
 
 	changed, err := svc.Change(ctx, providerOwnerID, made.ID, gatewayapp.ProviderChange{
 		Name:    strPtr("Second Name"),
@@ -207,11 +248,12 @@ func TestProviderUpdateSealsItsChangedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The new key is wrapped by the worker first.
 	rows := sealed()
-	if len(rows) != 1 || rows[0].Action != audit.ProviderUpdate {
-		t.Fatalf("events = %v, want one provider.update", actions(rows))
+	if len(rows) != 2 || rows[0].Action != "keys.wrap" || rows[1].Action != audit.ProviderUpdate {
+		t.Fatalf("events = %v, want keys.wrap then provider.update", actions(rows))
 	}
-	row := rows[0]
+	row := rows[1]
 	if row.TargetID != changed.ID || row.Reason != "" {
 		t.Fatalf("event = %s %s, want the store's own update", row.TargetID, row.Reason)
 	}
@@ -297,26 +339,26 @@ func TestProviderTestSealsItsOutcome(t *testing.T) {
 	owner, appPool := providerRig(t)
 	sealed := newSealer(t, owner)
 	svc := providerService(t, appPool, "", nil)
+	actor := throughWorker(t, owner, &svc)
 	ctx := context.Background()
 
 	made := addedAccount(t, svc)
 	sealed()
 
-	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID}); err != nil || !result.OK {
+	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID, ActorTokenHash: actor}); err != nil || !result.OK {
 		t.Fatalf("test = %+v %v, want a working test", result, err)
 	}
 	rows := sealed()
-	if len(rows) != 1 || rows[0].Action != audit.ProviderTest {
-		t.Fatalf("events = %v, want one provider.test", actions(rows))
+	row := keysThenProviderTest(t, rows)
+	if row.Outcome != audit.Success || row.TargetID != made.ID || row.Reason != "" {
+		t.Fatalf("event = %s %s %q, want the store's own success", row.Outcome, row.TargetID, row.Reason)
 	}
-	if rows[0].Outcome != audit.Success || rows[0].TargetID != made.ID || rows[0].Reason != "" {
-		t.Fatalf("event = %s %s %q, want the store's own success", rows[0].Outcome, rows[0].TargetID, rows[0].Reason)
-	}
+	mustNotContain(t, row, "sk-own-key", "https://own.example", "Own Account")
 	mustNotContain(t, rows[0], "sk-own-key", "https://own.example", "Own Account")
 
-	// A probe that fails the key leaves a failure event.
+	// A probe in brain that fails a typed key leaves a failure event.
 	svc.Probes[domain.AdapterFake] = failingProbe{}
-	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID}); err != nil || result.OK {
+	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID, APIKey: "sk-typed-key"}); err != nil || result.OK {
 		t.Fatalf("failing test = %+v %v, want a refusal", result, err)
 	}
 	rows = sealed()
@@ -420,10 +462,11 @@ func TestProviderModelsReadSealsAndRefusesInvisibleAccount(t *testing.T) {
 	owner, appPool := providerRig(t)
 	sealed := newSealer(t, owner)
 	svc := providerService(t, appPool, "", nil)
+	actor := throughWorker(t, owner, &svc)
 	ctx := context.Background()
 
 	made := addedAccount(t, svc)
-	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID}); err != nil || !result.OK {
+	if result, err := svc.Test(ctx, providerOwnerID, gatewayapp.TestRequest{ID: made.ID, ActorTokenHash: actor}); err != nil || !result.OK {
 		t.Fatalf("test = %+v %v, want a working test", result, err)
 	}
 	sealed()

@@ -1,5 +1,5 @@
 // Package workerkeys starts the worker's real key service for integration
-// tests: gateway.KeysHandler over the owner pool and a real ring, behind an
+// tests: brainops.KeysHandler over the owner pool and a real ring, behind an
 // httptest listener, with one fresh audience key per caller. Callers reach
 // it through the real keys client.
 package workerkeys
@@ -15,6 +15,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
+	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
@@ -45,7 +46,7 @@ func Start(t *testing.T, owner *pgxpool.Pool, ring gateway.Keyring) *Worker {
 		w.Key[audience] = "upmo_svc_" + audience + "_" + base64.RawStdEncoding.EncodeToString(raw)
 		verify[audience] = [][]byte{raw}
 	}
-	h, err := gateway.KeysHandler(owner, ring, verify, nil)
+	h, err := brainops.KeysHandler(owner, ring, verify, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

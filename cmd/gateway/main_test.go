@@ -37,6 +37,8 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Setenv("UPMO_DATABASE_GATEWAY_URL", freshDBURL(t))
 		t.Setenv("UPMO_PUBLIC_URL", "http://127.0.0.1:8082")
 		t.Setenv("UPMO_GATEWAY_KEY", "upmo_svc_gateway_"+freshKey(t))
+		t.Setenv("UPMO_WORKER_URL", "https://worker.example.com")
+		t.Setenv("UPMO_WORKER_GATEWAY_KEY", "upmo_svc_worker-gateway_"+freshKey(t))
 	}
 	for _, tc := range []struct {
 		name, key, value, want string
@@ -119,7 +121,8 @@ func TestRunRefusesDevelopmentValuesInProduction(t *testing.T) {
 		{"worker sandboxd key", map[string]string{"UPMO_WORKER_SANDBOXD_KEY": "upmo_svc_worker-sandboxd_" + freshKey(t)}, "config: UPMO_WORKER_SANDBOXD_KEY must not be set for gateway"},
 		{"worker sandboxd previous key empty", map[string]string{"UPMO_WORKER_SANDBOXD_KEY_PREVIOUS": ""}, "config: UPMO_WORKER_SANDBOXD_KEY_PREVIOUS must not be set for gateway"},
 		{"brain key as worker gateway key", map[string]string{"UPMO_WORKER_GATEWAY_KEY": "upmo_svc_worker-brain_" + freshKey(t)}, "config: UPMO_WORKER_GATEWAY_KEY: svcsig: key is not a worker-gateway key"},
-		{"worker url without key", map[string]string{"UPMO_WORKER_URL": "https://worker.example.com"}, "config: UPMO_WORKER_GATEWAY_KEY is required when UPMO_WORKER_URL is set"},
+		{"worker url missing", map[string]string{"UPMO_WORKER_URL": ""}, "config: UPMO_WORKER_URL is required"},
+		{"worker url without key", map[string]string{"UPMO_WORKER_GATEWAY_KEY": ""}, "config: UPMO_WORKER_GATEWAY_KEY is required when UPMO_WORKER_URL is set"},
 		{"plaintext worker in production", map[string]string{"UPMO_WORKER_URL": "http://worker:8090", "UPMO_WORKER_GATEWAY_KEY": "upmo_svc_worker-gateway_" + freshKey(t)}, "config: UPMO_WORKER_URL must be https"},
 		{"metrics with a service key as token", map[string]string{"UPMO_METRICS_ADDR": "127.0.0.1:9090", "UPMO_METRICS_TOKEN": "upmo_svc_gateway_" + freshKey(t)}, "config: UPMO_METRICS_TOKEN: metrics: token is not upmo_mtr_ followed by base64 of at least 32 bytes"},
 	} {

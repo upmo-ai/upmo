@@ -31,7 +31,7 @@ Each process gets only the keys it signs or checks. A key for another service, o
 | `UPMO_ENV` | `production` | `production` or `development`. Production refuses the development keys and passwords `compose.yml` embeds. |
 | `UPMO_DATABASE_SANDBOX_URL` | unset | Postgres URL sandboxd logs in with, as the `upmo_sandbox` role. Unset opens no database, and every credential read fails closed. |
 | `UPMO_WORKER_LISTEN_ADDR` | `:8090` | The `upmo worker` internal listener. It serves `/api/v1/provision/*` and the key service at `/internal/keys/*`. Never publish it on the host. |
-| `UPMO_WORKER_URL` | unset | The worker's key service, for brain, gateway and sandboxd. It must be https in production; development allows http on loopback or one DNS label. When set, the process's own worker key is required and the worker must answer at start. Unset, brain cannot save a provider key and gateway reads keys only from the environment and Vault. |
+| `UPMO_WORKER_URL` | required for brain and gateway | The worker's key service, for brain, gateway and sandboxd. It must be https in production; development allows http on loopback or one DNS label. The process's own worker key is required with it, and the worker must answer at start. Brain and gateway stop without it. Sandboxd may leave it unset until its proxy opens credentials; then it has no worker client. |
 | `UPMO_LISTEN_ADDR` | `:8080` (`sandboxd`: `:8083`; `compose.yml` sets gateway to `:8082`) | Listen address. |
 | `UPMO_PROXY_ADDR`, `UPMO_EDITOR_ADDR` | `:3128`, `:8084` | `sandboxd` egress proxy and editor addresses. |
 | `UPMO_SANDBOX_DRIVER` | `auto` | `auto`, `docker`, `kubernetes` or `stub`. |

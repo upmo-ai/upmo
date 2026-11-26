@@ -58,6 +58,9 @@ type Principal struct {
 	Method    string
 	SignedIn  time.Time
 	RoleID    string
+	// TokenHash is the hash of the session token, which the worker's
+	// provider-test resolves to this person again. It is never logged.
+	TokenHash []byte
 }
 
 // User returns the principal's user ID.
@@ -105,6 +108,7 @@ func RequireSession(sessions app.Service, next http.Handler) http.Handler {
 			Method:    session.Method,
 			SignedIn:  session.SignedIn,
 			RoleID:    session.RoleID,
+			TokenHash: session.TokenHash,
 		}
 		ctx := WithPrincipal(r.Context(), p)
 		audit.WithActor(ctx, audit.Actor{Type: "user", ID: session.UserID.String(), RoleID: session.RoleID, CredentialType: "session", CredentialID: session.ID})
@@ -136,6 +140,7 @@ func Recheck(ctx context.Context, sessions app.Service, r *http.Request) (Princi
 		Method:    session.Method,
 		SignedIn:  session.SignedIn,
 		RoleID:    session.RoleID,
+		TokenHash: session.TokenHash,
 	}, true, nil
 }
 
@@ -181,6 +186,13 @@ func WorkspaceTimeZone(ctx context.Context, pool *pgxpool.Pool) (string, error) 
 // through a definer any serving pool may call.
 func SettingsManagers(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 	return postgres.SettingsManagers(ctx, pool)
+}
+
+// ActorOfTokenHash names the joined, enabled person whose unexpired session
+// or API token hashes to hash. It reads the hash columns, so only the owner
+// pool may call it.
+func ActorOfTokenHash(ctx context.Context, owner *pgxpool.Pool, hash []byte) (string, bool, error) {
+	return postgres.ActorOfTokenHash(ctx, owner, hash)
 }
 
 // ActiveUser reports whether userID is a joined, non-disabled user.

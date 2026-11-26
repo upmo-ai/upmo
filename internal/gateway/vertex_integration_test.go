@@ -127,7 +127,7 @@ func TestFeature_UPM401_VertexProviderAddTestChangeAndSecretHygiene(t *testing.T
 	}
 
 	// Test saved account: returns OK=true, Models=nil, updates status to Connected.
-	testRes, err := r.svc.Test(ctx, ada, app.TestRequest{ID: created.ID})
+	testRes, err := r.svc.Test(ctx, ada, app.TestRequest{ID: created.ID, ActorTokenHash: r.session(ada)})
 	if err != nil || !testRes.OK || testRes.Models != nil {
 		t.Fatalf("Test = %+v err=%v", testRes, err)
 	}

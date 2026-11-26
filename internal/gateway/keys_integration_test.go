@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/identity"
 	workerkeys "github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -42,7 +42,31 @@ func startKeyWorker(t *testing.T, r *rig, ring Keyring) *keyWorker {
 		w.key[audience] = "upmo_svc_" + audience + "_" + base64.RawStdEncoding.EncodeToString(raw)
 		verify[audience] = [][]byte{raw}
 	}
-	h, err := KeysHandler(r.owner, ring, verify, nil)
+	// The worker applies the rig's rules for sharing, teams and the local
+	// plan, read when each test runs, and resolves the person from a real
+	// session row.
+	providers := WorkerProviders(r.owner, nil)
+	// The adapters a test points at its own listeners are the worker's too.
+	providers.Probes = r.svc.Probes
+	providers.Allow = func(ctx context.Context, user string) (string, error) {
+		if r.svc.Allow == nil {
+			return "", nil
+		}
+		return r.svc.Allow(ctx, user)
+	}
+	providers.Teams = func(ctx context.Context, user string) ([]string, error) {
+		if r.svc.Teams == nil {
+			return nil, nil
+		}
+		return r.svc.Teams(ctx, user)
+	}
+	providers.LocalPlan = func(ctx context.Context, user string) bool {
+		return r.svc.LocalPlan != nil && r.svc.LocalPlan(ctx, user)
+	}
+	actor := func(ctx context.Context, hash []byte) (string, bool, error) {
+		return identity.ActorOfTokenHash(ctx, r.owner, hash)
+	}
+	h, err := KeysHandler(r.owner, ring, verify, providers, actor, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +98,7 @@ func pgCode(err error) string {
 func TestBrainSavesAKeyThroughTheWorkerAndGatewayOpensIt(t *testing.T) {
 	ring := masterKeys(t, 'a')
 	r := newRig(t, ring)
-	worker := startKeyWorker(t, r, ring)
-	r.svc.Keys = WorkerSealer{Keys: worker.client(t, svcsig.AudienceWorkerBrain)}
-	r.mount(slog.New(slog.NewJSONHandler(r.logs, nil)))
+	worker := r.worker
 
 	prov := newFakeProvider(t)
 	made := r.mustAdd(ada, body("Mine", prov.url(), adaKey))
@@ -170,4 +192,49 @@ func TestBrainCannotReadASavedKeyBack(t *testing.T) {
 	if pgCode(err) != "23502" {
 		t.Fatalf("a key without its wrap = %v, want 23502", err)
 	}
+}
+
+// Invariant 5, brain's part: with no typed key, a saved key is tested by
+// the worker at its saved address only. Another base URL or adapter is the
+// fixed refusal before any worker call; the saved address goes through the
+// worker's provider-test and stores its status.
+func TestSavedKeyTestGoesOnlyToItsSavedAddress(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	prov, other := newFakeProvider(t), newFakeProvider(t)
+	made := r.mustAdd(ada, body("Saved", prov.url(), adaKey))
+	workerCalls := func() int {
+		return r.count(`SELECT count(*) FROM audit.pending WHERE action = 'keys.provider_test'`)
+	}
+	before := prov.hits.Load()
+	for name, req := range map[string]map[string]any{
+		"another base URL": {"id": made.ID, "base_url": other.url()},
+		"another adapter":  {"id": made.ID, "adapter": "anthropic"},
+	} {
+		code, raw := r.call(ada, http.MethodPost, "/api/providers/test", req)
+		res := decode[app.TestResult](t, raw)
+		if code != http.StatusOK || res.OK || res.Error != "Enter the key again to test a new address." {
+			t.Fatalf("%s = %d %s", name, code, raw)
+		}
+	}
+	if n := workerCalls(); n != 0 || prov.hits.Load() != before || other.hits.Load() != 0 {
+		t.Fatalf("refusals reached: worker %d, saved %d, other %d", n, prov.hits.Load()-before, other.hits.Load())
+	}
+	code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+	if res := decode[app.TestResult](t, raw); code != http.StatusOK || !res.OK {
+		t.Fatalf("saved address = %d %s", code, raw)
+	}
+	if n := workerCalls(); n != 1 || prov.hits.Load() != before+1 || prov.lastAuth() != "Bearer "+adaKey || other.hits.Load() != 0 {
+		t.Fatalf("saved address: worker %d, saved %d (%q), other %d", n, prov.hits.Load()-before, prov.lastAuth(), other.hits.Load())
+	}
+	// A typed key still probes in brain, at any address, with no worker call.
+	code, raw = r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID, "base_url": other.url(), "api_key": newKey})
+	if res := decode[app.TestResult](t, raw); code != http.StatusOK || !res.OK || other.hits.Load() != 1 || workerCalls() != 1 {
+		t.Fatalf("typed key elsewhere = %d %s, other %d, worker %d", code, raw, other.hits.Load(), workerCalls())
+	}
+	// Without the worker a saved-key test is the plain 503.
+	r.worker.srv.Close()
+	if code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID}); code != http.StatusServiceUnavailable {
+		t.Fatalf("saved key with the worker gone = %d %s", code, raw)
+	}
+	r.assertNoSecrets(adaKey, newKey)
 }

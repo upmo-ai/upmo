@@ -226,6 +226,15 @@ type CredentialSealer interface {
 	SealCredential(ctx context.Context, ref, plaintext string) (domain.Sealed, error)
 }
 
+// SavedTester tests a saved account with its saved key in the worker, the
+// one process that opens it. The worker reads the adapter and base URL from
+// the stored account and applies the manageable rule to the person whose
+// session or API token hashes to actorTokenHash. Any refusal or failure is
+// an error.
+type SavedTester interface {
+	ProviderTest(ctx context.Context, accountID string, actorTokenHash []byte) (TestResult, error)
+}
+
 // Providers is the use case behind a person's provider settings.
 type Providers struct {
 	Accounts Accounts
@@ -233,6 +242,9 @@ type Providers struct {
 	Catalog CatalogReader
 	// Keys seals the keys a person adds. Brain never opens one again.
 	Keys CredentialSealer
+	// Saved tests a saved key through the worker. Nil refuses a saved-key
+	// test with ErrKeysUnavailable.
+	Saved SavedTester
 	// Known reports whether the gateway has an adapter by that key.
 	Known func(adapter string) bool
 	// Probes holds the test call of each adapter that has one.
@@ -301,16 +313,25 @@ type ProviderChange struct {
 }
 
 // TestRequest is what a person sends to test an account. With an ID and no
-// APIKey the saved key is used.
+// APIKey the saved key is used, through the worker, which ActorTokenHash
+// (the hash of the person's session token) proves the person to.
 type TestRequest struct {
-	ID       string
-	Provider string
-	Adapter  string
-	PlanKind string
-	APIKey   string
-	BaseURL  string
-	Model    string
+	ID             string
+	Provider       string
+	Adapter        string
+	PlanKind       string
+	APIKey         string
+	BaseURL        string
+	Model          string
+	ActorTokenHash []byte
 }
+
+// NewAddressRefusal is the answer to a saved-key test aimed at another
+// adapter or base URL: the saved key only goes to its saved address.
+const NewAddressRefusal = "Enter the key again to test a new address."
+
+// SavedKeyUnreadable is the answer when the worker cannot open a saved key.
+const SavedKeyUnreadable = "The saved key could not be read. Enter it again."
 
 // TestResult is the answer to a test. Error is a fixed plain message.
 // Models carries the discovered models when the auth call worked and the list
@@ -703,28 +724,50 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		return refuse(err.Error())
 	}
 	unsavedKey := key != ""
-	if key == "" && saved.HasKey {
-		// shortcut: brain cannot read a saved key; the worker's provider-test lands next and replaces this refusal.
-		return refuse("The saved key could not be read. Enter it again.")
+	savedKey := !unsavedKey && saved.HasKey
+	// Brain cannot open a saved key; the worker tests it at its saved address
+	// only, so another address needs the key typed again.
+	if savedKey && (adapter != saved.Adapter || base != saved.BaseURL) {
+		return refuse(NewAddressRefusal)
 	}
-	if err := domain.NeedKey(plan, key, false); err != nil {
-		return refuse(err.Error())
+	if !savedKey {
+		if err := domain.NeedKey(plan, key, false); err != nil {
+			return refuse(err.Error())
+		}
 	}
 	probe := s.Probes[adapter]
 	if probe == nil {
 		return refuse("That adapter cannot be tested.")
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
-	defer cancel()
-	models, class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
-	result := TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}
+	var result TestResult
+	var status string
+	if savedKey {
+		if s.Saved == nil {
+			return TestResult{}, ErrKeysUnavailable
+		}
+		tested, err := s.Saved.ProviderTest(ctx, in.ID, in.ActorTokenHash)
+		if err != nil {
+			return TestResult{}, ErrKeysUnavailable
+		}
+		if !tested.OK && tested.Error == SavedKeyUnreadable {
+			return refuse(SavedKeyUnreadable)
+		}
+		result, status = tested, messageStatus(tested)
+	} else {
+		callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
+		models, class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
+		cancel()
+		result = TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}
+		status = ProbeStatus(class)
+	}
+	models := result.Models
 	if err := s.sealTest(ctx, in.ID, result.OK); err != nil {
 		return TestResult{}, err
 	}
 	sameEndpoint := in.ID != "" && !unsavedKey && adapter == saved.Adapter && base == saved.BaseURL
 	if sameEndpoint {
-		if err := s.Accounts.Note(ctx, who, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
+		if err := s.Accounts.Note(ctx, who, in.ID, status); err != nil && s.Log != nil {
 			s.Log.Warn("provider status not stored", "account", in.ID, "owner", user)
 		}
 		if result.OK && models != nil {
@@ -740,6 +783,70 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		}
 	}
 	return result, nil
+}
+
+// ProbeSaved is the worker's half of a saved-key test. It applies the same
+// manageable rule as Test to user, then calls allowed, then opens the
+// account's saved key with open and probes the stored adapter, plan and
+// base URL. It stores nothing: brain stores the status it returns. A house
+// account, an account the person may not change, a local plan they may not
+// test and an account with no saved key are each an error.
+func (s Providers) ProbeSaved(ctx context.Context, user, id string, allowed func() error, open func(ref string) (string, error)) (TestResult, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return TestResult{}, err
+	}
+	saved, err := s.manageable(ctx, who, id)
+	if err != nil {
+		return TestResult{}, err
+	}
+	if !saved.HasKey || s.Known == nil || !s.Known(saved.Adapter) {
+		return TestResult{}, ErrNotFound
+	}
+	plan := saved.PlanKind
+	if plan == "" {
+		plan = domain.PlanMetered
+	}
+	if plan, err = domain.CleanPlan(plan); err != nil {
+		return TestResult{}, err
+	}
+	if plan == domain.PlanLocal && !s.mayLocal(ctx, user) {
+		return TestResult{}, ErrLocalPlan
+	}
+	base, err := domain.CleanBaseURLForAdapter(saved.Adapter, plan, saved.BaseURL)
+	if err != nil || base != saved.BaseURL {
+		return TestResult{}, ErrNotFound
+	}
+	probe := s.Probes[saved.Adapter]
+	if probe == nil {
+		return TestResult{}, ErrNotFound
+	}
+	if err := allowed(); err != nil {
+		return TestResult{}, err
+	}
+	key, err := open(saved.CredentialRef)
+	if err != nil || key == "" {
+		return TestResult{Error: SavedKeyUnreadable}, nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
+	defer cancel()
+	models, class, _ := probe.Probe(callCtx, Attempt{Adapter: saved.Adapter, BaseURL: base, Secret: key, PlanKind: plan})
+	return TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}, nil
+}
+
+// messageStatus is the status a worker's test result leaves on an account:
+// the worker answers with ProbeMessage, which names one class each.
+func messageStatus(r TestResult) string {
+	switch {
+	case r.OK:
+		return ProbeStatus(domain.ClassOK)
+	case r.Error == ProbeMessage(domain.ClassCredential):
+		return ProbeStatus(domain.ClassCredential)
+	case r.Error == ProbeMessage(domain.ClassRateLimit):
+		return ProbeStatus(domain.ClassRateLimit)
+	default:
+		return ProbeStatus(domain.ClassTransient)
+	}
 }
 
 // SeenModels returns the discovered models stored for an account the person

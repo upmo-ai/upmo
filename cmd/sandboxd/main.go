@@ -21,8 +21,10 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	workerkeys "github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/sandboxd"
 )
 
@@ -44,6 +46,12 @@ func run() error {
 	log := logging.New(os.Stdout, cfg.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The proxy still refuses every credential (UPM-406 wires the unwrap),
+	// so the client is only checked here.
+	if _, err := openWorkerKeys(ctx, cfg); err != nil {
+		return err
+	}
 
 	db, err := openDatabase(ctx, cfg)
 	if err != nil {
@@ -102,6 +110,30 @@ func run() error {
 		errs[i] = <-errc
 	}
 	return errors.Join(errs...)
+}
+
+// openWorkerKeys builds the key service client when UPMO_WORKER_URL and
+// UPMO_WORKER_SANDBOXD_KEY are set, and checks, signed, that the worker is
+// ready. With neither set there is no client and every credential read
+// fails closed. Sandboxd never holds the master key.
+func openWorkerKeys(ctx context.Context, cfg config.Sandboxd) (*workerkeys.Client, error) {
+	if cfg.WorkerURL == "" {
+		return nil, nil
+	}
+	client, err := workerkeys.Open(workerkeys.Options{
+		URL:         cfg.WorkerURL,
+		Key:         cfg.WorkerSandboxdKey,
+		Audience:    svcsig.AudienceWorkerSandboxd,
+		Development: cfg.Env == config.EnvDevelopment,
+		CAFile:      os.Getenv("UPMO_TLS_CA_FILE"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Ready(ctx); err != nil {
+		return nil, errors.New("config: worker is not ready")
+	}
+	return &client, nil
 }
 
 // openDatabase opens the upmo_sandbox pool, or none when

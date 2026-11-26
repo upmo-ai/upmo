@@ -33,6 +33,10 @@ type ProvidersHandler struct {
 	// StepUp reports whether the person behind r may create, replace or
 	// delete a provider credential. Nil refuses.
 	StepUp func(r *http.Request) bool
+	// ActorTokenHash is the hash of the session token behind r, which a
+	// saved-key test hands the worker to prove the person. Nil sends none,
+	// and the worker refuses.
+	ActorTokenHash func(r *http.Request) []byte
 }
 
 // MountProviders registers the provider routes. guard runs first.
@@ -582,14 +586,19 @@ func (h ProvidersHandler) test(w http.ResponseWriter, r *http.Request) {
 	if !decodeProvider(w, r, &body) {
 		return
 	}
+	var actor []byte
+	if h.ActorTokenHash != nil {
+		actor = h.ActorTokenHash(r)
+	}
 	result, err := h.Service.Test(r.Context(), user, app.TestRequest{
-		ID:       body.ID,
-		Provider: body.Provider,
-		Adapter:  body.Adapter,
-		PlanKind: body.PlanKind,
-		APIKey:   body.APIKey,
-		BaseURL:  body.BaseURL,
-		Model:    body.Model,
+		ID:             body.ID,
+		Provider:       body.Provider,
+		Adapter:        body.Adapter,
+		PlanKind:       body.PlanKind,
+		APIKey:         body.APIKey,
+		BaseURL:        body.BaseURL,
+		Model:          body.Model,
+		ActorTokenHash: actor,
 	})
 	if err != nil {
 		h.refuse(w, err)

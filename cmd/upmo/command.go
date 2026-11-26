@@ -642,7 +642,7 @@ func workerHandler(owner *pgxpool.Pool, cfg config.Config, ring gateway.Keyring,
 	if err != nil {
 		return nil, err
 	}
-	keyRoutes, err := gateway.KeysHandler(owner, ring, verify, log)
+	keyRoutes, err := brainops.KeysHandler(owner, ring, verify, cfg.PublicURL, log)
 	if err != nil {
 		return nil, err
 	}

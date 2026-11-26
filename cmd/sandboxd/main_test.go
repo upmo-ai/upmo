@@ -118,3 +118,37 @@ func TestRunRefusesTheOwnerDatabaseURL(t *testing.T) {
 		t.Fatalf("run err = %v, want a refusal naming UPMO_DATABASE_URL", err)
 	}
 }
+
+// Invariant 2 and 3 through the real entry point: sandboxd stops on a master
+// key, current or previous, even empty, and on another caller's worker key,
+// before any driver, listener or pool opens.
+func TestRunRefusesTheMasterKeyAndForeignWorkerKeys(t *testing.T) {
+	for _, tc := range []struct{ name, value, want string }{
+		{"UPMO_MASTER_KEY", repeated("", 'm'), "config: UPMO_MASTER_KEY is refused"},
+		{"UPMO_MASTER_KEY", "", "config: UPMO_MASTER_KEY is refused"},
+		{"UPMO_MASTER_KEY_PREVIOUS_k0", repeated("", 'm'), "config: UPMO_MASTER_KEY is refused"},
+		{"UPMO_MASTER_KEY_PREVIOUS_k0", "", "config: UPMO_MASTER_KEY is refused"},
+		{"UPMO_WORKER_BRAIN_KEY", repeated("upmo_svc_worker-brain_", 'b'), "config: UPMO_WORKER_BRAIN_KEY must not be set for sandboxd"},
+		{"UPMO_WORKER_GATEWAY_KEY", repeated("upmo_svc_worker-gateway_", 'g'), "config: UPMO_WORKER_GATEWAY_KEY must not be set for sandboxd"},
+	} {
+		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
+			keys(t)
+			t.Setenv(tc.name, tc.value)
+			if err := run(); err == nil || err.Error() != tc.want {
+				t.Fatalf("run err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Sandboxd checks the worker, signed, at start when it is configured, and
+// stops when it does not answer.
+func TestRunNeedsAReadyWorkerWhenConfigured(t *testing.T) {
+	keys(t)
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv("UPMO_WORKER_URL", "http://127.0.0.1:1")
+	t.Setenv("UPMO_WORKER_SANDBOXD_KEY", "upmo_svc_worker-sandboxd_"+base64.RawStdEncoding.EncodeToString([]byte("worker-sandboxd-key-for-the-test")))
+	if err := run(); err == nil || err.Error() != "config: worker is not ready" {
+		t.Fatalf("run err = %v, want config: worker is not ready", err)
+	}
+}

@@ -2628,7 +2628,8 @@ func TestFeature_UPM354_PricingVendorFollowsEndpointAndDiscovery(t *testing.T) {
 		t.Fatalf("seen after saved probe = %+v err=%v", seenBefore, err)
 	}
 
-	// Now test an unsaved URL against that saved account ID -> must NOT persist unsavedSrv's price list!
+	// Now test an unsaved URL against that saved account ID with no key:
+	// the saved key never goes to another address, and nothing is stored.
 	code, raw = r.call(bob, http.MethodPost, "/api/providers/test", map[string]any{
 		"id":       probeAcct.ID,
 		"base_url": unsavedSrv.URL,
@@ -2637,7 +2638,7 @@ func TestFeature_UPM354_PricingVendorFollowsEndpointAndDiscovery(t *testing.T) {
 		t.Fatalf("unsaved url test = %d %s", code, raw)
 	}
 	testRes := decode[app.TestResult](t, raw)
-	if !testRes.OK || len(testRes.Models) != 1 || testRes.Models[0].ID != "unsaved-m" {
+	if testRes.OK || testRes.Error != app.NewAddressRefusal || len(testRes.Models) != 0 {
 		t.Fatalf("unsaved url test result = %+v", testRes)
 	}
 	seenAfterUnsavedTest, err := r.svc.SeenModels(ctx, bob, probeAcct.ID)

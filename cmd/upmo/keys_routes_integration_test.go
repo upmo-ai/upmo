@@ -295,7 +295,8 @@ func TestKeysRoutesNeedAWorkerAudienceBearer(t *testing.T) {
 }
 
 // Invariant 4, the gateway part: brain wraps, gateway unwraps, and every
-// other combination is 403 keys: refused with no key bytes.
+// other combination is 403 keys: refused with no key bytes. Sandboxd's live
+// sandbox cases are TestKeysSandboxSecretAndLiveness.
 func TestKeysRoutesRefuseEveryOtherCaller(t *testing.T) {
 	w := startKeyWorker(t)
 	w.seed("GITHUB", allowedKey)
@@ -314,7 +315,7 @@ func TestKeysRoutesRefuseEveryOtherCaller(t *testing.T) {
 		{"gateway naming a sandbox", svcsig.AudienceWorkerGateway, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"sb-1"}`},
 		{"gateway with a proxy secret", svcsig.AudienceWorkerGateway, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"","proxy_secret":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x61}, 32)) + `"}`},
 		{"gateway sending a wrapped key", svcsig.AudienceWorkerGateway, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"","wrapped_key":"AAAA"}`},
-		{"sandboxd before its proof lands", svcsig.AudienceWorkerSandboxd, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"sb-1","proxy_secret":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x61}, 32)) + `"}`},
+		{"sandboxd with no live sandbox", svcsig.AudienceWorkerSandboxd, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"sb-1","proxy_secret":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x61}, 32)) + `"}`},
 		{"two objects", svcsig.AudienceWorkerGateway, keys.PathUnwrap, unwrapGITHUB + unwrapGITHUB},
 	} {
 		code, body := w.call(tc.audience, http.MethodPost, tc.path, tc.body)

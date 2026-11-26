@@ -765,7 +765,7 @@ var workerKeys = []struct {
 
 // readWorkerKeys reads the worker keys for one process. The worker and the
 // upmo commands read all three. Brain and gateway read their own, refuse the
-// others even when empty, and read UPMO_WORKER_URL, which needs their key.
+// others even when empty, and require UPMO_WORKER_URL and their own key.
 func readWorkerKeys(lookup func(string) (string, bool), cfg *Config, db int) error {
 	into := map[string][2]*string{
 		"UPMO_WORKER_BRAIN_KEY":    {&cfg.WorkerBrainKey, &cfg.WorkerBrainKeyPrevious},
@@ -794,7 +794,12 @@ func readWorkerKeys(lookup func(string) (string, bool), cfg *Config, db int) err
 	if err != nil {
 		return err
 	}
-	if workerURL != "" && *into[own][0] == "" {
+	// Brain seals and gateway opens every saved provider key through the
+	// worker, in every environment.
+	if workerURL == "" {
+		return errors.New("config: UPMO_WORKER_URL is required")
+	}
+	if *into[own][0] == "" {
 		return fmt.Errorf("config: %s is required when UPMO_WORKER_URL is set", own)
 	}
 	cfg.WorkerURL = workerURL

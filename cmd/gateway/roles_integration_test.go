@@ -314,6 +314,10 @@ func gatewayEnv(t *testing.T, dbURL string) string {
 	t.Setenv("UPMO_PUBLIC_URL", "http://127.0.0.1:8082")
 	t.Setenv("UPMO_LISTEN_ADDR", addr)
 	t.Setenv("UPMO_GATEWAY_KEY", mustMaster(t))
+	// A worker nobody listens on: a test that gets past the pool checks
+	// starts a real one and points these at it.
+	t.Setenv("UPMO_WORKER_URL", "http://127.0.0.1:1")
+	t.Setenv("UPMO_WORKER_GATEWAY_KEY", svcsig.KeyPrefix+"worker-gateway_"+base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'w'}, 32)))
 	return addr
 }
 

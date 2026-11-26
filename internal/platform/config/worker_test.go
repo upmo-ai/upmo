@@ -156,6 +156,39 @@ func TestWorkerURLMustBeHTTPSInProduction(t *testing.T) {
 	}
 }
 
+// The orchestrator's rule: brain and gateway need the worker in every
+// environment; sandboxd does not until its proxy unwraps.
+func TestWorkerURLIsRequiredOnBrainAndGateway(t *testing.T) {
+	for _, process := range []string{"brain", "gateway"} {
+		for _, env := range []string{"production", "development"} {
+			e := processEnv(t, process)
+			e["UPMO_ENV"] = env
+			if _, _, err := loadProcess(process, e); err == nil || err.Error() != "config: UPMO_WORKER_URL is required" {
+				t.Errorf("%s %s without UPMO_WORKER_URL = %v", process, env, err)
+			}
+			withWorker(e, process)
+			if _, _, err := loadProcess(process, e); err != nil {
+				t.Errorf("%s %s with the worker = %v", process, env, err)
+			}
+		}
+	}
+	if url, _, err := loadProcess("sandboxd", processEnv(t, "sandboxd")); err != nil || url != "" {
+		t.Fatalf("sandboxd without the worker = %q %v", url, err)
+	}
+}
+
+// withWorker sets UPMO_WORKER_URL and the process's own worker key in env.
+func withWorker(env map[string]string, process string) map[string]string {
+	env["UPMO_WORKER_URL"] = "https://worker.example.com"
+	switch process {
+	case "brain":
+		env["UPMO_WORKER_BRAIN_KEY"] = workerBrainKey
+	case "gateway":
+		env["UPMO_WORKER_GATEWAY_KEY"] = workerGatewayKey
+	}
+	return env
+}
+
 // Invariant 2, the refusal itself: a master key current or previous, even
 // empty, stops gateway and sandboxd.
 func TestRefuseMasterKey(t *testing.T) {

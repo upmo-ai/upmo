@@ -43,6 +43,7 @@ func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
 		ArtifactsDir: filepath.Join(root, "artifacts"),
 		KnowledgeDir: filepath.Join(root, "knowledge"),
 	}
+	withWorker(t, owner, &cfg)
 	for start := 0; start < 2; start++ {
 		app, err := New(ctx, cfg,
 			servingPools(t, owner),
@@ -111,6 +112,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 		ProvisionKeys:   []string{provKey},
 	}
+	withWorker(t, owner, &cfg)
 
 	extraWorkersCalled := false
 	var capturedDeps Deps
@@ -220,6 +222,7 @@ func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	}
 
+	withWorker(t, owner, &cfg)
 	var workerJobs, periodicJobs JobClient
 	worker := &hookJobWorker{done: make(chan struct{}, 2)}
 	app, err := New(ctx, cfg,
@@ -445,6 +448,7 @@ func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
 		WebAuthnRPID:    "localhost",
 		ShutdownTimeout: 2 * time.Second,
 	}
+	withWorker(t, owner, &cfg)
 	app, err := New(ctx, cfg,
 		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),

@@ -7,6 +7,7 @@ package keyservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -33,8 +35,16 @@ const (
 
 // The audit actions this service writes through audit.record_keys.
 const (
-	actionWrap   = "keys.wrap"
-	actionUnwrap = "keys.unwrap"
+	actionWrap         = "keys.wrap"
+	actionUnwrap       = "keys.unwrap"
+	actionProviderTest = "keys.provider_test"
+)
+
+// proxySecretLen is the size of a sandbox's proxy secret, and actorHashLen
+// the size of a session or API token hash.
+const (
+	proxySecretLen = 32
+	actorHashLen   = sha256.Size
 )
 
 var (
@@ -52,13 +62,23 @@ var (
 // first, then the previous one. Every audience needs at least one.
 type Verify map[string][][]byte
 
+// ProviderTester probes a saved provider account with its saved key, for
+// the person whose unexpired session or API token hashes to actor, when
+// that person may manage the account. Once that rule holds, and before it
+// opens the key, it calls allowed, and stops when allowed fails. Any error
+// is a refusal. The answer never carries the key.
+type ProviderTester func(ctx context.Context, accountID string, actor []byte, allowed func() error) (keys.ProviderTestResponse, error)
+
 // New returns the handler for /internal/keys/*. The owner pool reads the
-// wrap columns and writes the audit rows. A missing pool, an empty ring or a
-// missing audience key is an error, so the worker cannot serve a route that
-// fails open.
-func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, log *slog.Logger) (http.Handler, error) {
+// wrap columns and writes the audit rows; test serves provider-test. A
+// missing pool, ring, tester or audience key is an error, so the worker
+// cannot serve a route that fails open.
+func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderTester, log *slog.Logger) (http.Handler, error) {
 	if owner == nil {
 		return nil, errors.New("keyservice: no database")
+	}
+	if test == nil {
+		return nil, errors.New("keyservice: no provider tester")
 	}
 	if !ring.Ready() {
 		return nil, domain.ErrNoMasterKey
@@ -66,7 +86,7 @@ func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, log *slog.Logg
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &server{owner: owner, ring: ring, log: log, limit: &limiter{at: map[string][]time.Time{}}}
+	s := &server{owner: owner, ring: ring, test: test, log: log, limit: &limiter{at: map[string][]time.Time{}}}
 	d := dispatch{}
 	for audience := range service {
 		h, err := svcsig.Handler(verify[audience], audience, keys.MaxBody, s.routes(audience))
@@ -98,6 +118,7 @@ func (d dispatch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type server struct {
 	owner *pgxpool.Pool
 	ring  domain.Keyring
+	test  ProviderTester
 	log   *slog.Logger
 	limit *limiter
 }
@@ -117,6 +138,8 @@ func (s *server) routes(audience string) http.Handler {
 			s.wrap(w, r, audience)
 		case r.Method == http.MethodPost && r.URL.Path == keys.PathUnwrap:
 			s.unwrap(w, r, audience)
+		case r.Method == http.MethodPost && r.URL.Path == keys.PathProviderTest:
+			s.providerTest(w, r, audience)
 		default:
 			http.NotFound(w, r)
 		}
@@ -167,10 +190,7 @@ func (s *server) unwrap(w http.ResponseWriter, r *http.Request, audience string)
 		return
 	}
 	s.describe(changes, in.Kind, in.Ref, in.SandboxID)
-	// Gateway unwraps a credential with no sandbox and no proxy secret.
-	// Brain never unwraps; sandboxd's proof lands with its proxy.
-	if audience != svcsig.AudienceWorkerGateway || in.Kind != domain.KindCredential || !refPattern.MatchString(in.Ref) ||
-		in.SandboxID != "" || len(in.ProxySecret) != 0 {
+	if !s.mayUnwrap(ctx, audience, in) {
 		s.deny(w, ctx, http.StatusForbidden, actionUnwrap, audience, changes)
 		return
 	}
@@ -198,6 +218,86 @@ func (s *server) unwrap(w http.ResponseWriter, r *http.Request, audience string)
 	}
 	defer clear(dataKey)
 	respond(w, keys.UnwrapResponse{DataKey: dataKey})
+}
+
+// mayUnwrap is the unwrap rule. Gateway unwraps a credential with no
+// sandbox and no proxy secret. Sandboxd unwraps one only for a sandbox whose
+// task is live, whose bound refs hold ref and whose stored proxy secret hash
+// is the SHA-256 of the secret it sends. Brain never unwraps.
+func (s *server) mayUnwrap(ctx context.Context, audience string, in keys.UnwrapRequest) bool {
+	if in.Kind != domain.KindCredential || !refPattern.MatchString(in.Ref) {
+		return false
+	}
+	switch audience {
+	case svcsig.AudienceWorkerGateway:
+		return in.SandboxID == "" && len(in.ProxySecret) == 0
+	case svcsig.AudienceWorkerSandboxd:
+		if !sandboxPattern.MatchString(in.SandboxID) || len(in.ProxySecret) != proxySecretLen {
+			return false
+		}
+		hash := sha256.Sum256(in.ProxySecret)
+		var open bool
+		err := s.owner.QueryRow(ctx, `SELECT gateway.sandbox_may_open($1, $2, $3)`, in.SandboxID, in.Ref, hash[:]).Scan(&open)
+		if err != nil {
+			s.log.Warn("keys: check a sandbox", "err", err)
+			return false
+		}
+		return open
+	default:
+		return false
+	}
+}
+
+// providerTest probes a saved account for brain. The adapter and base URL
+// come from the stored account; the body names only the account and the
+// person, so a caller cannot point the saved key at another address.
+func (s *server) providerTest(w http.ResponseWriter, r *http.Request, audience string) {
+	ctx := r.Context()
+	changes := map[string]string{"audience": audience}
+	if !s.limit.take(audience, time.Now()) {
+		s.deny(w, ctx, http.StatusTooManyRequests, actionProviderTest, audience, changes)
+		return
+	}
+	var in keys.ProviderTestRequest
+	if !decode(r, &in) {
+		s.deny(w, ctx, http.StatusForbidden, actionProviderTest, audience, changes)
+		return
+	}
+	if _, err := uuid.Parse(in.AccountID); err == nil && len(in.AccountID) == 36 {
+		changes["account_id"] = in.AccountID
+	} else {
+		changes["ref_digest"] = s.ring.AuditDigest([]byte(in.AccountID))
+		s.deny(w, ctx, http.StatusForbidden, actionProviderTest, audience, changes)
+		return
+	}
+	if audience != svcsig.AudienceWorkerBrain || len(in.ActorTokenHash) != actorHashLen {
+		s.deny(w, ctx, http.StatusForbidden, actionProviderTest, audience, changes)
+		return
+	}
+	// The success row is written once the person may manage the account and
+	// before the saved key is opened; a refusal before that is denied.
+	recorded := false
+	out, err := s.test(ctx, in.AccountID, in.ActorTokenHash, func() error {
+		recorded = true
+		return s.record(ctx, actionProviderTest, "success", audience, changes)
+	})
+	if err != nil {
+		if recorded {
+			s.log.Warn("keys: a provider test stopped after its audit row", "err", err)
+			refuse(w, http.StatusForbidden)
+			return
+		}
+		s.deny(w, ctx, http.StatusForbidden, actionProviderTest, audience, changes)
+		return
+	}
+	if !recorded {
+		refuse(w, http.StatusForbidden)
+		return
+	}
+	if out.Models == nil {
+		out.Models = []json.RawMessage{}
+	}
+	respond(w, out)
 }
 
 // describe fills the audit changes from the caller's fields. A ref or

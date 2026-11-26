@@ -33,8 +33,8 @@ type Config struct {
 	RunKeyPrevious        string
 	MetricsToken          string
 	// WorkerURL is the worker's key service (UPMO_WORKER_URL), signed with
-	// WorkerBrainKey (UPMO_WORKER_BRAIN_KEY). Empty leaves brain unable to
-	// save a provider key.
+	// WorkerBrainKey (UPMO_WORKER_BRAIN_KEY). Both are required: brain seals
+	// and tests every saved provider key through the worker.
 	WorkerURL              string
 	WorkerBrainKey         string
 	WorkerBrainKeyPrevious string

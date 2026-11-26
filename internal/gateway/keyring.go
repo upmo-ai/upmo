@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -185,11 +186,77 @@ func (w WorkerSealer) SealCredential(ctx context.Context, ref, plaintext string)
 	}, ref, plaintext)
 }
 
+// ProviderTest asks the worker to test a saved account with its saved key
+// for the person whose session hashes to actorTokenHash. Brain never sees
+// the key. Any failure, a refusal included, is app.ErrKeysUnavailable.
+func (w WorkerSealer) ProviderTest(ctx context.Context, accountID string, actorTokenHash []byte) (app.TestResult, error) {
+	if w.Keys == nil {
+		return app.TestResult{}, app.ErrKeysUnavailable
+	}
+	out, err := w.Keys.ProviderTest(ctx, accountID, actorTokenHash)
+	if err != nil {
+		return app.TestResult{}, app.ErrKeysUnavailable
+	}
+	result := app.TestResult{OK: out.OK, Error: out.Error}
+	if len(out.Models) > 0 {
+		result.Models = make([]domain.SeenModel, 0, len(out.Models))
+		for _, raw := range out.Models {
+			var m domain.SeenModel
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return app.TestResult{}, app.ErrKeysUnavailable
+			}
+			result.Models = append(result.Models, m)
+		}
+	}
+	return result, nil
+}
+
 // KeysVerify holds the worker audience keys the key service verifies.
 type KeysVerify = keyservice.Verify
 
+// ActorOfTokenHash names the person whose unexpired session or API token
+// hashes to hash. The worker wires identity's owner-pool lookup.
+type ActorOfTokenHash func(ctx context.Context, hash []byte) (user string, ok bool, err error)
+
 // KeysHandler serves the worker's /internal/keys/* routes with the
 // in-process ring, reading wrap columns and writing audit rows as owner.
-func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, log *slog.Logger) (http.Handler, error) {
-	return keyservice.New(owner, ring, verify, log)
+// providers is the worker's provider use case on the owner pool, wired with
+// the same Allow, Teams and LocalPlan rules brain uses; actor resolves the
+// person behind a provider-test.
+func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers app.Providers, actor ActorOfTokenHash, log *slog.Logger) (http.Handler, error) {
+	if actor == nil {
+		return nil, fmt.Errorf("gateway: provider test needs an actor lookup")
+	}
+	secrets := DBSecrets{Pool: owner, Keys: ring}
+	test := func(ctx context.Context, accountID string, hash []byte, allowed func() error) (workerkeys.ProviderTestResponse, error) {
+		user, ok, err := actor(ctx, hash)
+		if err != nil || !ok {
+			return workerkeys.ProviderTestResponse{}, app.ErrNotFound
+		}
+		result, err := providers.ProbeSaved(ctx, user, accountID, allowed, secrets.Get)
+		if err != nil {
+			return workerkeys.ProviderTestResponse{}, err
+		}
+		out := workerkeys.ProviderTestResponse{OK: result.OK, Error: result.Error, Models: make([]json.RawMessage, 0, len(result.Models))}
+		for _, m := range result.Models {
+			raw, err := json.Marshal(m)
+			if err != nil {
+				return workerkeys.ProviderTestResponse{}, err
+			}
+			out.Models = append(out.Models, raw)
+		}
+		return out, nil
+	}
+	return keyservice.New(owner, ring, verify, test, log)
+}
+
+// WorkerProviders is the worker's provider use case for provider-test: the
+// owner pool and the adapters' probes, with no sealer, since the worker
+// only opens saved keys. The caller sets Allow, Teams,
+// MemberProvidersAllowed and LocalPlan as brain does.
+func WorkerProviders(owner *pgxpool.Pool, log *slog.Logger) app.Providers {
+	p := NewProviders(owner, nil, log)
+	p.Limiter = nil
+	p.SealTest = nil
+	return p
 }

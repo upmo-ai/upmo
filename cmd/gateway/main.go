@@ -94,12 +94,12 @@ func run() error {
 // maxBody caps every signed request body gateway reads and hashes.
 const maxBody = 8 << 20
 
-// openWorkerKeys builds the key service client when UPMO_WORKER_URL is set
-// and checks, signed, that the worker is ready. Unset, gateway reads keys
-// only from the environment and Vault.
+// openWorkerKeys builds the key service client and checks, signed, that
+// the worker is ready. Gateway opens every saved provider key through it,
+// so UPMO_WORKER_URL is required.
 func openWorkerKeys(ctx context.Context, cfg config.Config) (*keys.Client, error) {
 	if cfg.WorkerURL == "" {
-		return nil, nil
+		return nil, errors.New("config: UPMO_WORKER_URL is required")
 	}
 	client, err := keys.Open(keys.Options{
 		URL:         cfg.WorkerURL,

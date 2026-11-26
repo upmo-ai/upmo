@@ -1086,6 +1086,10 @@ func buildHandler(
 			}
 			return person.UserID.String(), true
 		},
+		ActorTokenHash: func(r *http.Request) []byte {
+			person, _ := identity.SessionFrom(r.Context())
+			return person.TokenHash
+		},
 	}.MountProviders(mux, func(next http.Handler) http.Handler {
 		return identity.RequireSession(sessions, next)
 	})
@@ -1734,12 +1738,12 @@ func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query stri
 	return out, nil
 }
 
-// workerSealer builds the key service client when WorkerURL is set and
-// checks, signed, that the worker is ready. Unset, brain cannot save a
-// provider key.
+// workerSealer builds the key service client and checks, signed, that the
+// worker is ready. Brain seals and tests every saved provider key through
+// it, so it is required.
 func workerSealer(ctx context.Context, cfg Config) (gateway.WorkerSealer, error) {
 	if cfg.WorkerURL == "" {
-		return gateway.WorkerSealer{}, nil
+		return gateway.WorkerSealer{}, errors.New("config: UPMO_WORKER_URL is required")
 	}
 	client, err := keys.Open(keys.Options{
 		URL:         cfg.WorkerURL,
