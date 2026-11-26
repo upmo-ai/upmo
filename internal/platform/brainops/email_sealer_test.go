@@ -151,6 +151,27 @@ func TestEmailSealerRefusesABlankAddress(t *testing.T) {
 	}
 }
 
+// The sealer takes the same longest address as WorkerEmails, so bootstrap
+// never stores one brain cannot look up.
+func TestEmailSealerRefusesALongAddress(t *testing.T) {
+	sealer := NewEmailSealer(ring(t, "k1", 'a'))
+	longest := strings.Repeat("a", 308) + "@example.com"
+	if len(longest) != 320 {
+		t.Fatalf("longest = %d bytes, want 320", len(longest))
+	}
+	stored, _, _, err := sealer.Seal(t.Context(), " "+longest+" ")
+	if err != nil {
+		t.Fatalf("Seal of 320 bytes: %v", err)
+	}
+	if got, err := sealer.Open(stored, indexHashes(t, sealer, longest)[0]); err != nil || got != longest {
+		t.Fatalf("Open of 320 bytes = %d bytes, %v", len(got), err)
+	}
+	stored, hash, keyID, err := sealer.Seal(t.Context(), "a"+longest)
+	if !errors.Is(err, errEmptyEmail) || stored != "" || hash != nil || keyID != "" {
+		t.Fatalf("Seal of 321 bytes = %q %x %q, %v", stored, hash, keyID, err)
+	}
+}
+
 func indexHashes(t *testing.T, s identity.EmailSealer, address string) [][]byte {
 	t.Helper()
 	hashes, err := s.IndexHashes(t.Context(), address)

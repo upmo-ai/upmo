@@ -398,6 +398,13 @@ func (s *server) providerTest(w http.ResponseWriter, r *http.Request, audience s
 	respond(w, out)
 }
 
+// indexMACBody is keys.IndexMACRequest as read: all is a pointer so an
+// absent or null all is refused, never read as false.
+type indexMACBody struct {
+	Address string `json:"address"`
+	All     *bool  `json:"all"`
+}
+
 // indexMAC computes an address's index MACs for brain, so brain holds no
 // index key. The address and the MACs never reach the audit row.
 func (s *server) indexMAC(w http.ResponseWriter, r *http.Request, audience string) {
@@ -407,8 +414,8 @@ func (s *server) indexMAC(w http.ResponseWriter, r *http.Request, audience strin
 		s.deny(w, ctx, http.StatusTooManyRequests, actionIndexMAC, audience, changes)
 		return
 	}
-	var in keys.IndexMACRequest
-	if !decode(r, &in) || audience != svcsig.AudienceWorkerBrain {
+	var in indexMACBody
+	if !decode(r, &in) || in.All == nil || audience != svcsig.AudienceWorkerBrain {
 		s.deny(w, ctx, http.StatusForbidden, actionIndexMAC, audience, changes)
 		return
 	}
@@ -430,7 +437,7 @@ func (s *server) indexMAC(w http.ResponseWriter, r *http.Request, audience strin
 		return
 	}
 	macs := [][]byte{mac}
-	if in.All {
+	if *in.All {
 		macs = s.ring.IndexMACs(normal)
 	}
 	respond(w, keys.IndexMACResponse{KeyID: keyID, MACs: macs})

@@ -35,7 +35,7 @@ func (s emailSealer) Seal(_ context.Context, address string) (string, []byte, st
 		return "", nil, "", identity.ErrNoEmailSealer
 	}
 	a := strings.TrimSpace(address)
-	if a == "" {
+	if a == "" || len(a) > maxEmailBytes {
 		return "", nil, "", errEmptyEmail
 	}
 	keyID, hash, err := s.keys.IndexMAC([]byte(identity.NormalEmail(a)))
