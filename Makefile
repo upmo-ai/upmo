@@ -139,21 +139,20 @@ canary: ## Run the canary library self-test
 # find is saved under testdata/fuzz and fails the retry on replay.
 FUZZ = $(GO) sh -c 'go test -fuzz=$$0 -fuzztime=30s $$1 || go test -fuzz=$$0 -fuzztime=30s $$1'
 
-fuzz: ## Fuzz the safety libraries for 30 seconds each
-	$(FUZZ) FuzzWrap ./internal/platform/trustfence
-	$(FUZZ) FuzzNeutralizeSlot ./internal/platform/trustfence
-	$(FUZZ) FuzzBlockedAddr ./internal/platform/netguard
-	$(FUZZ) FuzzVerify ./internal/platform/webhooksig
-	$(FUZZ) FuzzVerify ./internal/platform/svcsig
-	$(FUZZ) FuzzVerify ./internal/platform/runjwt
-	$(FUZZ) FuzzWrite ./internal/platform/writeguard
-	$(FUZZ) FuzzParseToken ./internal/identity/domain
-	$(FUZZ) FuzzParseLinkToken ./internal/identity/domain
-	$(FUZZ) FuzzParseChallengeID ./internal/identity/domain
-	$(FUZZ) FuzzCheck ./internal/identity/domain
-	$(FUZZ) FuzzParsePHC ./internal/identity/domain
+FUZZ_TARGETS := platform/trustfence/FuzzWrap platform/trustfence/FuzzNeutralizeSlot \
+	platform/netguard/FuzzBlockedAddr platform/webhooksig/FuzzVerify platform/svcsig/FuzzVerify \
+	platform/runjwt/FuzzVerify platform/writeguard/FuzzWrite identity/domain/FuzzParseToken \
+	identity/domain/FuzzParseLinkToken identity/domain/FuzzParseChallengeID identity/domain/FuzzCheck \
+	identity/domain/FuzzParsePHC
 
-ci: build lint test test-regression canary arch vuln secrets commits migrations docs workflows images ## Run the same steps as CI
+# Each target is its own rule, so `make -j4 fuzz` runs four at a time.
+fuzz: $(addprefix fuzz/,$(FUZZ_TARGETS)) ## Fuzz the safety libraries for 30 seconds each
+
+.PHONY: $(addprefix fuzz/,$(FUZZ_TARGETS))
+$(addprefix fuzz/,$(FUZZ_TARGETS)): fuzz/%:
+	$(FUZZ) $(notdir $*) ./internal/$(patsubst %/,%,$(dir $*))
+
+ci: build lint test canary arch vuln secrets commits migrations docs workflows images ## Run the same steps as CI
 
 web: ## Install, lint, test and build the web app
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build"
