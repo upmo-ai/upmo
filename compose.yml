@@ -434,7 +434,7 @@ services:
     entrypoint: ["trivy", "image", "--no-progress", "--exit-code", "1", "--severity", "HIGH,CRITICAL", "--ignore-unfixed"]
 
   bash:
-    image: bash:5.3.15-alpine3.24@sha256:a19c811ee9e97fa8a080001d82b8e0ded303f0795cffdb1cbd162731bc8ce208
+    image: bash:5.3.20-alpine3.24@sha256:589adbc588d8ef3c1ec3c68333faf4baf5dccb65d3cb50f6cf3d78cad2d6e1b0
     profiles: ["tools"]
     working_dir: /scripts
     volumes:
