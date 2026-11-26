@@ -111,7 +111,7 @@ jobs:
           fail_ci_if_error: false
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Go Tests
           status: ${{ job.status }}
@@ -143,7 +143,7 @@ jobs:
           fail_ci_if_error: false
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Go Integration Tests
           status: ${{ job.status }}
@@ -166,7 +166,7 @@ jobs:
           make test-regression 2>&1 | tee reports/regression.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Regression Tests
           status: ${{ job.status }}
@@ -189,7 +189,7 @@ jobs:
           make canary 2>&1 | tee reports/canary.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Canary
           status: ${{ job.status }}
@@ -219,7 +219,7 @@ jobs:
           make "$@" 2>&1 | tee -a reports/lint.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Lint
           status: ${{ job.status }}
@@ -242,7 +242,7 @@ jobs:
           make arch 2>&1 | tee reports/arch.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Architecture Check
           status: ${{ job.status }}
@@ -274,7 +274,7 @@ jobs:
           fail_ci_if_error: false
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Web Checks
           status: ${{ job.status }}
@@ -297,7 +297,7 @@ jobs:
           make e2e 2>&1 | tee reports/e2e.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: End-to-End Tests
           status: ${{ job.status }}
@@ -318,7 +318,7 @@ jobs:
           make vuln 2>&1 | tee reports/vuln.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Vulnerability Scan
           status: ${{ job.status }}
@@ -340,7 +340,7 @@ jobs:
           make secrets 2>&1 | tee reports/secrets.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Secret Scan
           status: ${{ job.status }}
@@ -382,7 +382,7 @@ jobs:
           make title 2>&1 | tee reports/title.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Commit Messages
           status: ${{ job.status }}
@@ -405,7 +405,7 @@ jobs:
           make docs 2>&1 | tee reports/docs.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Docs Check
           status: ${{ job.status }}
@@ -428,7 +428,7 @@ jobs:
           make fuzz 2>&1 | tee reports/fuzz.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Fuzz Tests
           status: ${{ job.status }}
@@ -451,7 +451,7 @@ jobs:
           make workflows 2>&1 | tee reports/workflows.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Workflow Security
           status: ${{ job.status }}
@@ -474,7 +474,7 @@ jobs:
           make images 2>&1 | tee reports/images.log
       - name: Write Summary
         if: always()
-        uses: ./.github/actions/summary
+        uses: $/.github/actions/summary
         with:
           title: Container Images
           status: ${{ job.status }}

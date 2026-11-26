@@ -9,15 +9,22 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: scorecard-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scorecard:
     name: OpenSSF Scorecard
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # Upload Scorecard SARIF to the code scanning dashboard.
       security-events: write
+      # Request the OIDC token Scorecard uses to publish results.
       id-token: write
       contents: read
+      # Read workflow files Scorecard inspects for the Actions check.
       actions: read
     steps:
       - name: Check Out
