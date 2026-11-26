@@ -244,6 +244,32 @@ CREATE TABLE identity.throttle (
 
 CREATE INDEX throttle_updated ON identity.throttle (updated_at);
 
+-- Password checks per address, counted by the worker as the owner: subject
+-- is the current email index MAC of the address, so an unknown address
+-- counts the same as a real one. A worker restart keeps the count. No
+-- serving role may read or write it.
+CREATE TABLE identity.password_verify_window (
+  subject bytea PRIMARY KEY CHECK (octet_length(subject) = 32),
+  window_start timestamptz NOT NULL,
+  attempts integer NOT NULL CHECK (attempts BETWEEN 1 AND 6)
+);
+
+CREATE INDEX password_verify_window_start ON identity.password_verify_window (window_start);
+
+ALTER TABLE identity.password_verify_window ENABLE ROW LEVEL SECURITY;
+ALTER TABLE identity.password_verify_window FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY password_verify_window_owner ON identity.password_verify_window
+  FOR ALL
+  USING (current_user = (
+    SELECT pg_catalog.pg_get_userbyid(c.relowner)
+    FROM pg_catalog.pg_class AS c
+    WHERE c.oid = 'identity.password_verify_window'::regclass))
+  WITH CHECK (current_user = (
+    SELECT pg_catalog.pg_get_userbyid(c.relowner)
+    FROM pg_catalog.pg_class AS c
+    WHERE c.oid = 'identity.password_verify_window'::regclass));
+
 CREATE TABLE identity.api_tokens (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   user_id uuid NOT NULL REFERENCES identity.users (id) ON DELETE CASCADE,
@@ -344,7 +370,10 @@ $$;
 GRANT USAGE ON SCHEMA identity TO upmo_app;
 GRANT USAGE ON SCHEMA identity TO upmo_gateway, upmo_runner;
 GRANT SELECT ON identity.roles TO upmo_app;
-GRANT SELECT ON identity.users TO upmo_app;
+-- Every column but password_hash: brain never reads a stored password. The
+-- worker verifies it, and brain asks has_password or has_password_of.
+GRANT SELECT (id, email, email_hash, email_hash_key_id, name, external_id, role_id, invited_at, joined_at,
+  disabled_at, webauthn_handle, passkey_offered_at, time_zone, locale, avatar_key) ON identity.users TO upmo_app;
 GRANT UPDATE (password_hash, webauthn_handle, joined_at, passkey_offered_at) ON identity.users TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   identity.teams,
@@ -1685,6 +1714,35 @@ $$;
 REVOKE ALL ON FUNCTION identity.has_password(bytea) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.has_password(bytea) TO upmo_app;
 
+-- Whether an enabled person has a password, by id, for the paths with no
+-- session: a link redeem and the credential change lock. A disabled or
+-- unknown person raises.
+-- +goose StatementBegin
+CREATE FUNCTION identity.has_password_of(user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_has boolean;
+BEGIN
+  SELECT u.password_hash IS NOT NULL INTO v_has
+  FROM identity.users AS u
+  WHERE u.id = has_password_of.user_id
+    AND u.disabled_at IS NULL;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: no such person' USING ERRCODE = '42501';
+  END IF;
+  RETURN v_has;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.has_password_of(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.has_password_of(uuid) TO upmo_app;
+
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA identity FROM PUBLIC;
 
 -- +goose StatementBegin
@@ -1699,6 +1757,7 @@ $$;
 
 -- +goose Down
 
+DROP FUNCTION IF EXISTS identity.has_password_of(uuid);
 DROP FUNCTION IF EXISTS identity.has_password(bytea);
 DROP FUNCTION IF EXISTS identity.account_by_credential(bytea, bytea);
 DROP FUNCTION IF EXISTS identity.password_account(bytea[]);
@@ -1740,6 +1799,7 @@ DROP TABLE IF EXISTS identity.workspace;
 DROP TABLE IF EXISTS identity.connector_grants;
 DROP TABLE IF EXISTS identity.api_tokens;
 DROP TABLE IF EXISTS identity.throttle;
+DROP TABLE IF EXISTS identity.password_verify_window;
 DROP TABLE IF EXISTS identity.sign_in_links;
 DROP TABLE IF EXISTS identity.webauthn_challenges;
 DROP TABLE IF EXISTS identity.passkeys;

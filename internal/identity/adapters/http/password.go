@@ -91,7 +91,7 @@ func (h Passkeys) passwordVerify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "password", http.StatusInternalServerError)
 		return
 	}
-	retry, err := h.Password.Verify(r.Context(), session.UserID, session.ID, email, input.Password, httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted))
+	retry, err := h.Password.Verify(r.Context(), session.UserID, session.ID, session.TokenHash, email, input.Password, httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted))
 	if writePasswordErr(w, retry, err) {
 		return
 	}

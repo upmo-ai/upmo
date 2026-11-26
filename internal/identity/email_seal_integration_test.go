@@ -29,6 +29,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/testutil/sealer"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 // sealedForm is the stored shape of a sealed address.
@@ -89,10 +90,12 @@ func (k *emailKit) members(emails identity.EmailSealer) app.Members {
 	return identity.Members(k.pool, emails, "https://upmo.test", nil, nil)
 }
 
-func (k *emailKit) passwords(t *testing.T, emails identity.EmailSealer) app.Passwords {
+// passwords is the password use case over ring's email sealer and a real
+// worker holding the same ring, so both find a person by the same index.
+func (k *emailKit) passwords(t *testing.T, ring gateway.Keyring) app.Passwords {
 	t.Helper()
-	passwords := identity.Passwords(k.pool, emails, k.sessions)
-	passwords.Sealer = sealer.New(t)
+	passwords := identity.Passwords(k.pool, brainops.NewEmailSealer(ring), k.sessions)
+	passwords.Keys = sealer.PasswordsOn(t, workerkeys.Start(t, k.owner, ring))
 	return passwords
 }
 
@@ -239,7 +242,7 @@ func TestSealedEmailFlows(t *testing.T) {
 	k := newEmailKit(t)
 	emails := sealer.NewEmail(t)
 	members := k.members(emails)
-	passwords := k.passwords(t, emails)
+	passwords := k.passwords(t, sealer.Ring(t))
 	store := k.store(emails)
 	if _, err := k.passkeys(t, emails).Bootstrap(k.ctx, "Ada@Example.com", "Ada"); err != nil {
 		t.Fatal(err)
@@ -392,9 +395,12 @@ func TestInviteSameAddressInOtherCasingConflicts(t *testing.T) {
 
 func TestEmailRotation(t *testing.T) {
 	k := newEmailKit(t)
-	one := brainops.NewEmailSealer(emailRing(t, "k1", keyOneByte, nil))
-	twoOne := brainops.NewEmailSealer(emailRing(t, "k2", keyTwoByte, map[string]byte{"k1": keyOneByte}))
-	two := brainops.NewEmailSealer(emailRing(t, "k2", keyTwoByte, nil))
+	ringOne := emailRing(t, "k1", keyOneByte, nil)
+	ringTwoOne := emailRing(t, "k2", keyTwoByte, map[string]byte{"k1": keyOneByte})
+	ringTwo := emailRing(t, "k2", keyTwoByte, nil)
+	one := brainops.NewEmailSealer(ringOne)
+	twoOne := brainops.NewEmailSealer(ringTwoOne)
+	two := brainops.NewEmailSealer(ringTwo)
 	quiet := []string{"grace@example.com", keyText(keyOneByte), keyText(keyTwoByte)}
 
 	session := k.ownerSession(t, one, "owner@example.com")
@@ -406,7 +412,7 @@ func TestEmailRotation(t *testing.T) {
 	if _, err := k.owner.Exec(k.ctx, `UPDATE identity.users SET joined_at = now() WHERE id = $1`, grace.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.passwords(t, one).Set(k.ctx, grace.ID, "", "Grace@Example.com", "Grace", emailPassword); err != nil {
+	if err := k.passwords(t, ringOne).Set(k.ctx, grace.ID, "", "Grace@Example.com", "Grace", emailPassword); err != nil {
 		t.Fatal(err)
 	}
 	if r := k.row(t, grace.ID); r.keyID != "k1" || !strings.HasPrefix(r.email, "k1:") {
@@ -414,7 +420,7 @@ func TestEmailRotation(t *testing.T) {
 	}
 
 	// k2 current, k1 previous: the row is found by its k1 index hash.
-	if token, _, _, err := k.passwords(t, twoOne).SignIn(k.ctx, "grace@example.com", emailPassword, "198.51.100.40", ""); err != nil || token == "" {
+	if token, _, _, err := k.passwords(t, ringTwoOne).SignIn(k.ctx, "grace@example.com", emailPassword, "198.51.100.40", ""); err != nil || token == "" {
 		t.Fatalf("sign-in after rotation %q %v", token, err)
 	}
 	if email, _, err := k.store(twoOne).Profile(k.ctx, grace.ID); err != nil || email != "Grace@Example.com" {
@@ -423,7 +429,7 @@ func TestEmailRotation(t *testing.T) {
 
 	// k2 alone: the address is neither found nor opened.
 	sessions := k.count(t, `SELECT count(*) FROM identity.sessions WHERE user_id = $1`, grace.ID)
-	_, _, _, err = k.passwords(t, two).SignIn(k.ctx, "grace@example.com", emailPassword, "198.51.100.41", "")
+	_, _, _, err = k.passwords(t, ringTwo).SignIn(k.ctx, "grace@example.com", emailPassword, "198.51.100.41", "")
 	if !errors.Is(err, app.ErrWrong) {
 		t.Fatalf("sign-in without k1 = %v, want ErrWrong", err)
 	}

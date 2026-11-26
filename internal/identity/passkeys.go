@@ -11,6 +11,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/webauthn"
 	"github.com/upmo-ai/upmo/internal/identity/app"
+	"github.com/upmo-ai/upmo/internal/identity/domain"
 )
 
 // PasskeyService is the passkey use case. Commands use this name so they do not import the app package.
@@ -32,17 +33,29 @@ func Passkeys(pool *pgxpool.Pool, emails EmailSealer, sessions app.Service, publ
 	}, nil
 }
 
-// PasswordSealer seals and opens a stored password hash. The brain wires it
-// from the master keyring.
-type PasswordSealer = app.PasswordSealer
+// PasswordKeys is the worker's side of a password: brain seals a hash under
+// a data key the worker wraps, and the worker checks a password. Brain wires
+// it from the key service client.
+type PasswordKeys = app.PasswordKeys
 
 // EmailSealer seals a person's email address for storage and computes the
 // keyed index hashes used to find it. The brain wires it from the master keyring.
 type EmailSealer = app.EmailSealer
 
 var (
-	// ErrNoSealer means no master key is wired, so no password hash can be stored.
+	// ErrNoSealer means no key service is wired, so no password hash can be
+	// stored or checked.
 	ErrNoSealer = app.ErrNoSealer
+	// ErrLimited is a password guess over a limit.
+	ErrLimited = app.ErrLimited
+	// ErrBusy means the password could not be checked now; the person tries
+	// again.
+	ErrBusy = domain.ErrBusy
+	// VerifyPassword checks a password against a PHC string; rehash is set
+	// when the stored settings are not the current ones.
+	VerifyPassword = domain.VerifyPassword
+	// DummyPasswordHash spends one hash, as a verify would.
+	DummyPasswordHash = domain.DummyPasswordHash
 	// ErrNoEmailSealer means no master key is wired, so no email address can be stored.
 	ErrNoEmailSealer = app.ErrNoEmailSealer
 	// ErrStoredEmail is every reason a stored address does not open; the text
@@ -59,7 +72,7 @@ var (
 )
 
 // Passwords builds the password use case on the same pool as the passkeys.
-// The caller sets the returned value's Sealer from the master keyring; emails
+// The caller sets the returned value's Keys from the key service; emails
 // stores and finds the accounts' addresses.
 func Passwords(pool *pgxpool.Pool, emails EmailSealer, sessions app.Service) app.Passwords {
 	return app.Passwords{Sessions: sessions, Store: postgres.Passkeys{Pool: pool, Emails: emails}}

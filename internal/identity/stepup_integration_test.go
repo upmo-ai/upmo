@@ -59,7 +59,7 @@ func newStepUpRig(t *testing.T) *stepUpRig {
 	}
 	passkeys.Now = now
 	passwords := identity.Passwords(pool, emails, sessions)
-	passwords.Sealer = sealer.New(t)
+	passwords.Keys = sealer.Passwords(t, owner)
 	passwords.Now = now
 	mux := http.NewServeMux()
 	identity.MountSessions(mux, sessions, log, passwords.HasPassword)

@@ -261,10 +261,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatalf("lookup owner role: %v", err)
 	}
 	userID := uuid.New()
-	sealedPW, err := brainops.NewPasswordSealer(ring1).Seal(userID.String(), passwordHashText)
-	if err != nil {
-		t.Fatalf("seal password hash: %v", err)
-	}
+	sealedPW := sealPasswordText(t, ring1, userID, passwordHashText)
 	if _, err := srcOwner.Exec(ctx, `
 		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at, password_hash)
 		VALUES ($1, 'founder@example.com', sha256('founder@example.com'::bytea), 'k1', 'Founder', $2, now(), now(), $3)`,
@@ -561,7 +558,7 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	if gotRoleID != ownerRoleID {
 		t.Fatalf("restored role_id = %s, want %s", gotRoleID, ownerRoleID)
 	}
-	unsealedPW, err := brainops.NewPasswordSealer(ring1).Open(userID.String(), gotPassword)
+	unsealedPW, err := openPasswordText(t, ring1, userID, gotPassword)
 	if err != nil || unsealedPW != passwordHashText {
 		t.Fatalf("unseal restored password hash: got=%q err=%v", unsealedPW, err)
 	}
@@ -2236,4 +2233,44 @@ func archiveEntries(t *testing.T, archive string) map[string][]byte {
 	}
 	read("", raw)
 	return out
+}
+
+// sealPasswordText stores hash for user as the worker does: five fields,
+// a new data key wrapped for v1:password:<uuid>, the payload sealed for
+// identity:password:<uuid>.
+func sealPasswordText(t *testing.T, ring gateway.Keyring, user uuid.UUID, hash string) string {
+	t.Helper()
+	person, err := identity.ParseUserID(user.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ring.WrapNew(gateway.KindPassword, person.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(w.DataKey)
+	sealed, err := gateway.SealWithDataKey(w, identity.PasswordRef(person), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gateway.SealedText(sealed)
+}
+
+// openPasswordText opens a five-field stored password with ring.
+func openPasswordText(t *testing.T, ring gateway.Keyring, user uuid.UUID, stored string) (string, error) {
+	t.Helper()
+	person, err := identity.ParseUserID(user.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := gateway.ParseSealedText(stored)
+	if err != nil {
+		return "", err
+	}
+	dataKey, err := ring.Unwrap(gateway.KindPassword, person.String(), s.KeyID, s.WrapNonce, s.WrappedKey)
+	if err != nil {
+		return "", err
+	}
+	defer clear(dataKey)
+	return gateway.OpenData(dataKey, identity.PasswordRef(person), s.Ciphertext, s.Nonce)
 }

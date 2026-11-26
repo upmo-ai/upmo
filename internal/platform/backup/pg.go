@@ -222,7 +222,7 @@ func querySealedKeyIDs(ctx context.Context, tx pgx.Tx, tables []TableMeta) ([]st
 		rows, err := tx.Query(ctx, `
 			SELECT DISTINCT split_part(password_hash, ':', 1)
 			FROM identity.users
-			WHERE password_hash ~ '^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+$'`)
+			WHERE password_hash ~ '^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+:[^:]+:[^:]+$'`)
 		if err != nil {
 			return nil, fmt.Errorf("backup: scan identity password key IDs: %w", err)
 		}

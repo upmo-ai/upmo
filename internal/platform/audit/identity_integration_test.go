@@ -48,7 +48,7 @@ func newKit(t *testing.T) *kit {
 		t.Fatal(err)
 	}
 	passwords := identity.Passwords(appPool, sealer.NewEmail(t), sessions)
-	passwords.Sealer = sealer.New(t)
+	passwords.Keys = sealer.Passwords(t, owner)
 	mux := http.NewServeMux()
 	// MountAPITokens registers the session routes and accepts a bearer on
 	// GET /api/session, as brain does; there is no separate MountSessions.

@@ -8,11 +8,13 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // MasterKeyLen is the length of a master key in bytes (AES-256).
@@ -46,6 +48,10 @@ type Sealed struct {
 
 // KindCredential is the kind a credential's data key is wrapped for.
 const KindCredential = "credential"
+
+// KindPassword is the kind a stored password hash's data key is wrapped
+// for. Its ref is the person's uuid in lower case.
+const KindPassword = "password"
 
 // DataKeyLen is the length of a data key in bytes (AES-256).
 const DataKeyLen = 32
@@ -327,4 +333,30 @@ func dataCipher(dataKey []byte) (cipher.AEAD, error) {
 		return nil, ErrUnseal
 	}
 	return cipher.NewGCM(block)
+}
+
+// SealedText is s as one text value of five colon-separated fields: key id,
+// wrap nonce, wrapped key, payload nonce and payload, each byte field in
+// standard base64 with padding. A password is stored this way.
+func SealedText(s Sealed) string {
+	enc := base64.StdEncoding.EncodeToString
+	return strings.Join([]string{s.KeyID, enc(s.WrapNonce), enc(s.WrappedKey), enc(s.Nonce), enc(s.Ciphertext)}, ":")
+}
+
+// ParseSealedText reads a value SealedText wrote. Any other shape, a three-
+// field value included, is ErrUnseal.
+func ParseSealedText(stored string) (Sealed, error) {
+	parts := strings.Split(stored, ":")
+	if len(parts) != 5 || !ValidKeyID(parts[0]) {
+		return Sealed{}, ErrUnseal
+	}
+	raw := make([][]byte, 4)
+	for i, part := range parts[1:] {
+		b, err := base64.StdEncoding.DecodeString(part)
+		if err != nil || len(b) == 0 {
+			return Sealed{}, ErrUnseal
+		}
+		raw[i] = b
+	}
+	return Sealed{KeyID: parts[0], WrapNonce: raw[0], WrappedKey: raw[1], Nonce: raw[2], Ciphertext: raw[3]}, nil
 }

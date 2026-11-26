@@ -4,6 +4,7 @@ package identity_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/argon2"
 
 	"github.com/upmo-ai/upmo/internal/identity"
@@ -29,14 +31,16 @@ import (
 
 func TestPasswordSignIn(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
-	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	// The worker checks a session against the database clock, so the rig's
+	// clock starts now.
+	now := time.Now().UTC().Truncate(time.Second)
 	var clock time.Time
 	clock = now
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
 	emails := sealer.NewEmail(t)
 	passwords := identity.Passwords(pool, emails, sessions)
-	passwords.Sealer = sealer.New(t)
+	passwords.Keys = sealer.Passwords(t, ownerPool)
 	passwords.Now = sessions.Now
 	passkeys, err := identity.Passkeys(pool, emails, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -123,10 +127,7 @@ func TestPasswordSignIn(t *testing.T) {
 	salt := []byte("salt-is-16-bytes")
 	key := argon2.IDKey([]byte(password), salt, 1, 8, 1, 16)
 	weak := "$argon2id$v=19$m=8,t=1,p=1$" + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(key)
-	sealedWeak, err := passwords.Sealer.Seal(identity.PasswordRef(user), weak)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sealedWeak := sealer.Seal(t, user, weak)
 	if _, err := pool.Exec(ctx, `UPDATE identity.users SET password_hash = $2 WHERE id = $1`, user, sealedWeak); err != nil {
 		t.Fatal(err)
 	}
@@ -135,13 +136,13 @@ func TestPasswordSignIn(t *testing.T) {
 		t.Fatalf("rehash sign-in %d %s", replaced.Code, replaced.Body.String())
 	}
 	var stored string
-	if err := pool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&stored); err != nil {
+	if err := ownerPool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if strings.HasPrefix(stored, "$argon2id$") {
-		t.Fatalf("the rehash left a plain hash: %s", stored)
+	if strings.Contains(stored, "$argon2id$") || strings.Count(stored, ":") != 4 || stored == sealedWeak {
+		t.Fatalf("the rehash stored %s, want a new five-field value", stored)
 	}
-	rehashed, err := passwords.Sealer.Open(identity.PasswordRef(user), stored)
+	rehashed, err := sealer.Open(t, user, stored)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +150,8 @@ func TestPasswordSignIn(t *testing.T) {
 		t.Fatalf("stored hash = %s", rehashed)
 	}
 
+	// Each address takes five checks a minute; start a fresh window.
+	resetPasswordWindows(t, ownerPool)
 	wrong := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "ada@example.com", "password": "not the password!!"})
 	unknown := postPassword(t, mux, http.MethodPost, "/api/sign-in/password", "", map[string]string{"email": "noone@example.com", "password": password})
 	if _, err := ownerPool.Exec(ctx, `
@@ -167,17 +170,6 @@ func TestPasswordSignIn(t *testing.T) {
 		t.Fatalf("answers differ: %d %s / %d %s / %d %s / %d %s", wrong.Code, wrong.Body.String(), unknown.Code, unknown.Body.String(), none.Code, none.Body.String(), disabled.Code, disabled.Body.String())
 	}
 
-	for range 10 {
-		_, _, _, err := passwords.SignIn(ctx, "limited@example.com", password, "198.51.100.77", "")
-		if !errors.Is(err, app.ErrWrong) {
-			t.Fatal(err)
-		}
-	}
-	_, _, retry, err := passwords.SignIn(ctx, "limited@example.com", password, "198.51.100.77", "")
-	if !errors.Is(err, app.ErrLimited) || retry < time.Second {
-		t.Fatalf("account limit %v retry %s", err, retry)
-	}
-
 	release, ok := domain.FillHashGate()
 	if !ok {
 		t.Fatal("hash gate")
@@ -194,6 +186,47 @@ func TestPasswordSignIn(t *testing.T) {
 	removed := postPassword(t, mux, http.MethodDelete, "/api/password", passwordCookie, nil)
 	if removed.Code != http.StatusConflict || !bytes.Contains(removed.Body.Bytes(), []byte("the last way to sign in cannot be removed")) {
 		t.Fatalf("last way %d %s", removed.Code, removed.Body.String())
+	}
+}
+
+// The worker counts five checks per address a minute, for an unknown
+// address too, and brain's own account and address throttle still holds.
+func TestPasswordSignInLimits(t *testing.T) {
+	ownerPool, pool, ctx := upBoth(t)
+	passwords := identity.Passwords(pool, sealer.NewEmail(t), identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge))
+	passwords.Keys = sealer.Passwords(t, ownerPool)
+	const password = "correct horse battery"
+	for range 5 {
+		if _, _, _, err := passwords.SignIn(ctx, "limited@example.com", password, "198.51.100.77", ""); !errors.Is(err, app.ErrWrong) {
+			t.Fatal(err)
+		}
+	}
+	_, _, retry, err := passwords.SignIn(ctx, "limited@example.com", password, "198.51.100.77", "")
+	if !errors.Is(err, app.ErrLimited) || retry < time.Second {
+		t.Fatalf("worker limit %v retry %s", err, retry)
+	}
+
+	// A fresh worker, and a fresh window before each call: brain's bucket of
+	// ten guesses per account and address is what refuses the eleventh.
+	passwords.Keys = sealer.Passwords(t, ownerPool)
+	for range domain.AccountIPBurst {
+		resetPasswordWindows(t, ownerPool)
+		if _, _, _, err := passwords.SignIn(ctx, "throttled@example.com", password, "198.51.100.78", ""); !errors.Is(err, app.ErrWrong) {
+			t.Fatal(err)
+		}
+	}
+	resetPasswordWindows(t, ownerPool)
+	_, _, retry, err = passwords.SignIn(ctx, "throttled@example.com", password, "198.51.100.78", "")
+	if !errors.Is(err, app.ErrLimited) || retry < time.Second {
+		t.Fatalf("account limit %v retry %s", err, retry)
+	}
+}
+
+// resetPasswordWindows empties the worker's per-address windows, as the owner.
+func resetPasswordWindows(t *testing.T, owner *pgxpool.Pool) {
+	t.Helper()
+	if _, err := owner.Exec(context.Background(), `DELETE FROM identity.password_verify_window`); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -276,7 +309,7 @@ func TestPasswordStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored string
-	if err := pool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&stored); err != nil {
+	if err := ownerPool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored != "replacement-hash" {
@@ -298,7 +331,7 @@ func TestPasswordStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gone *string
-	if err := pool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&gone); err != nil {
+	if err := ownerPool.QueryRow(ctx, `SELECT password_hash FROM identity.users WHERE id = $1`, user).Scan(&gone); err != nil {
 		t.Fatal(err)
 	}
 	if gone != nil {

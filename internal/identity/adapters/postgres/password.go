@@ -12,28 +12,23 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
-func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.UserID, string, string, bool, error) {
+// PasswordAccount finds the enabled person behind an address through the
+// password_account definer, which never returns the stored hash.
+func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.UserID, string, bool, error) {
 	hashes, err := indexEmailHashes(p.Emails, email)
 	if err != nil {
-		return domain.UserID{}, "", "", false, err
+		return domain.UserID{}, "", false, err
 	}
 	var id domain.UserID
-	var hash *string
 	var name string
-	err = p.Pool.QueryRow(ctx, `
-		SELECT id, password_hash, name FROM identity.users
-		WHERE email_hash = ANY($1) AND disabled_at IS NULL`, hashes).Scan(&id, &hash, &name)
+	err = p.Pool.QueryRow(ctx, `SELECT id, name FROM identity.password_account($1)`, hashes).Scan(&id, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.UserID{}, "", "", false, nil
+		return domain.UserID{}, "", false, nil
 	}
 	if err != nil {
-		return domain.UserID{}, "", "", false, err
+		return domain.UserID{}, "", false, err
 	}
-	stored := ""
-	if hash != nil {
-		stored = *hash
-	}
-	return id, stored, name, true, nil
+	return id, name, true, nil
 }
 
 func (p Passkeys) PersonByEmail(ctx context.Context, email string) (domain.UserID, bool, bool, error) {
@@ -116,7 +111,9 @@ func (p Passkeys) RemovePassword(ctx context.Context, user domain.UserID, keep s
 			return c.RemovePassword()
 		},
 		func(tx pgx.Tx) error {
-			tag, err := tx.Exec(ctx, `UPDATE identity.users SET password_hash = NULL WHERE id = $1 AND password_hash IS NOT NULL`, user)
+			// The rule above saw a password under the row lock, so the
+			// WHERE need not read the column brain may not select.
+			tag, err := tx.Exec(ctx, `UPDATE identity.users SET password_hash = NULL WHERE id = $1`, user)
 			if err != nil {
 				return err
 			}
@@ -136,9 +133,10 @@ func (p Passkeys) ClearPassword(ctx context.Context, user domain.UserID) error {
 	return p.RemovePassword(ctx, user, "")
 }
 
+// HasPassword asks has_password_of, which answers only for an enabled person.
 func (p Passkeys) HasPassword(ctx context.Context, user domain.UserID) (bool, error) {
 	var has bool
-	err := p.Pool.QueryRow(ctx, `SELECT password_hash IS NOT NULL FROM identity.users WHERE id = $1`, user).Scan(&has)
+	err := p.Pool.QueryRow(ctx, `SELECT identity.has_password_of($1)`, user).Scan(&has)
 	return has, err
 }
 

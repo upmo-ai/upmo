@@ -736,9 +736,10 @@ func openWorkerJobs(owner *pgxpool.Pool, cfg config.Config, secrets secretchain.
 	})
 	emails := brainops.NewEmailSealer(ring)
 	provision.AddNonceSweep(workers, identity.Provision(owner, emails, cfg.PublicURL))
+	brainops.AddPasswordWindowSweep(workers, owner)
 	periodic := []*river.PeriodicJob{
 		audit.SealPeriodic(), audit.RetentionPeriodic(), audit.VerifyPeriodic(),
-		provision.NonceSweepPeriodic(), gateway.SpendCheckPeriodic(),
+		provision.NonceSweepPeriodic(), brainops.PasswordWindowSweepPeriodic(), gateway.SpendCheckPeriodic(),
 		gateway.ProviderCheckPeriodic(), gateway.CatalogRefreshPeriodic(),
 		gateway.UsageRollupPeriodic(),
 	}

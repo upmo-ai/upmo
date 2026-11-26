@@ -98,7 +98,7 @@ func seedPerson(t *testing.T, owner *pgxpool.Pool, ring gateway.Keyring, address
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedHash, err := NewPasswordSealer(ring).Seal(identity.PasswordRef(user), hash)
+	storedHash, err := sealPassword(ring, user, hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,10 @@ func checkPersonOpen(t *testing.T, p storedPerson, ring gateway.Keyring, hash, a
 	if prefix, _, _ := strings.Cut(p.passwordHash, ":"); prefix != keyID {
 		t.Fatalf("password is under key %q, want %q", prefix, keyID)
 	}
-	gotHash, err := NewPasswordSealer(ring).Open(identity.PasswordRef(user), p.passwordHash)
+	if n := strings.Count(p.passwordHash, ":"); n != 4 {
+		t.Fatalf("password has %d fields, want 5", n+1)
+	}
+	gotHash, err := openPassword(ring, user, p.passwordHash)
 	if err != nil || gotHash != hash {
 		t.Fatalf("password opens to %q, %v", gotHash, err)
 	}
@@ -406,7 +409,7 @@ func TestResealedRowsOpenWithTheOldKeyRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := NewPasswordSealer(only2).Open(identity.PasswordRef(user), person.passwordHash); err != nil || got != "ada-hash" {
+	if got, err := openPassword(only2, user, person.passwordHash); err != nil || got != "ada-hash" {
 		t.Fatalf("password opens to %q, %v without the old key", got, err)
 	}
 
