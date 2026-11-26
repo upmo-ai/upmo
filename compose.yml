@@ -6,6 +6,8 @@ x-go-env: &go-env
   GOMODCACHE: /go/pkg/mod
   GOCACHE: /root/.cache/go-build
   GOTOOLCHAIN: local
+  # CI sets -count=1 so restored build caches never replay test results.
+  GOFLAGS: ${UPMO_GOFLAGS:-}
   GIT_CONFIG_COUNT: "1"
   GIT_CONFIG_KEY_0: safe.directory
   GIT_CONFIG_VALUE_0: "*"
@@ -15,8 +17,8 @@ x-go: &go
   working_dir: /src
   volumes:
     - .:/src
-    - upmo-gomodcache:/go/pkg/mod
-    - upmo-gocache:/root/.cache/go-build
+    - ${UPMO_GOMODCACHE:-upmo-gomodcache}:/go/pkg/mod
+    - ${UPMO_GOCACHE:-upmo-gocache}:/root/.cache/go-build
     # Git history for repolint and go build. The Makefile points this at the
     # common git directory when the checkout is a worktree; otherwise it is
     # the checkout's own .git.
@@ -38,8 +40,8 @@ services:
     <<: *go
     volumes:
       - .:/src
-      - upmo-gomodcache:/go/pkg/mod
-      - upmo-gocache:/root/.cache/go-build
+      - ${UPMO_GOMODCACHE:-upmo-gomodcache}:/go/pkg/mod
+      - ${UPMO_GOCACHE:-upmo-gocache}:/root/.cache/go-build
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - avatars-data:/var/upmo/avatars
     command:
@@ -91,8 +93,8 @@ services:
     <<: *go
     volumes:
       - .:/src
-      - upmo-gomodcache:/go/pkg/mod
-      - upmo-gocache:/root/.cache/go-build
+      - ${UPMO_GOMODCACHE:-upmo-gomodcache}:/go/pkg/mod
+      - ${UPMO_GOCACHE:-upmo-gocache}:/root/.cache/go-build
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - artifacts-data:/var/upmo/artifacts
       - knowledge-data:/var/upmo/knowledge
@@ -235,8 +237,8 @@ services:
     # replaced, not API calls, so the socket still grants full engine access.
     volumes:
       - .:/src
-      - upmo-gomodcache:/go/pkg/mod
-      - upmo-gocache:/root/.cache/go-build
+      - ${UPMO_GOMODCACHE:-upmo-gomodcache}:/go/pkg/mod
+      - ${UPMO_GOCACHE:-upmo-gocache}:/root/.cache/go-build
       - ${UPMO_GIT_DIR:-./.git}:${UPMO_GIT_DIR:-/src/.git}:ro
       - ${UPMO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
     environment:
@@ -311,9 +313,9 @@ services:
     working_dir: /src
     volumes:
       - .:/src
-      - upmo-gomodcache:/go/pkg/mod
-      - upmo-gocache:/root/.cache/go-build
-      - upmo-golangci-cache:/root/.cache/golangci-lint
+      - ${UPMO_GOMODCACHE:-upmo-gomodcache}:/go/pkg/mod
+      - ${UPMO_GOCACHE:-upmo-gocache}:/root/.cache/go-build
+      - ${UPMO_GOLANGCI_CACHE:-upmo-golangci-cache}:/root/.cache/golangci-lint
     environment:
       GOMODCACHE: /go/pkg/mod
       GOCACHE: /root/.cache/go-build
@@ -465,6 +467,8 @@ services:
       POSTGRES_USER: upmo
       POSTGRES_PASSWORD: upmo
       POSTGRES_DB: upmo
+    # CI turns durability off for test runs (UPMO_PG_DURABLE=off). Local runs keep it on.
+    command: ["postgres", "-c", "fsync=${UPMO_PG_DURABLE:-on}", "-c", "synchronous_commit=${UPMO_PG_DURABLE:-on}", "-c", "full_page_writes=${UPMO_PG_DURABLE:-on}"]
     volumes:
       - upmo-pgdata:/var/lib/postgresql
     networks:
