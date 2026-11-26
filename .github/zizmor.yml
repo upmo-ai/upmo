@@ -1,5 +1,9 @@
 # self-repository wants uses: $/... but actionlint 1.7.12 rejects that
 # syntax. Re-enable when actionlint accepts the self-repository form.
+# CODECOV_TOKEN is a repo secret on coverage upload jobs. Moving it into a
+# GitHub Environment is a separate ops change; re-enable when that lands.
 rules:
   self-repository:
+    disable: true
+  secrets-outside-env:
     disable: true
