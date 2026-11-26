@@ -11,6 +11,7 @@ make build    # build the Go module and the web app
 make up       # start the worker, brain and postgres
 make test     # run the tests
 make lint     # run the linters
+make hooks    # turn on the git hooks once (commit rules, migrations, secrets)
 make ci       # run the same checks as CI
 ```
 
@@ -34,7 +35,7 @@ Name each GitHub workflow, job and step in words, in title case. Examples: `CI`,
 
 Every pull request and every push to `main` runs the `CI` workflow. The `CI Result` job lists every other job and fails when one fails or is canceled. It is the only check the `main` ruleset requires, so a new job must be added to its `needs` list.
 
-The `Changes` job runs first and turns on only the jobs a change needs. Go changes (`cmd/`, `internal/`, `pkg/`, `tools/`, `go.mod`, `go.sum`), files at the repository root and `web/package.json` run the Go jobs, because repolint tests check those files. Changes under `web/` run Web Checks. End-to-End Tests run for changes under `cmd/`, `internal/`, `pkg/`, `web/`, `e2e/` or `deploy/` and for `go.mod` or `go.sum`. Container Images run for `deploy/` and Dockerfiles. Docs Check runs for Markdown, HTML, `docs/`, `LICENSE` and `lychee.toml`. Canary runs for `scripts/`, and Workflow Security for `.github/`. Lint always checks retired words and adds golangci-lint for Go changes and shellcheck for `scripts/`. Vulnerability Scan, Secret Scan and Commit Messages always run, and Dependency Review runs on every pull request. A change to `.github/`, the `Makefile`, `compose.yml` or a root dotfile such as `.golangci.yml`, and the weekly run, turn on every job. `CI Result` counts a skipped job as passed.
+The `Changes` job runs first and turns on only the jobs a change needs. Go changes (`cmd/`, `internal/`, `pkg/`, `tools/`, `go.mod`, `go.sum`), files at the repository root and `web/package.json` run the Go jobs, because repolint tests check those files. Changes under `web/` run Web Checks. End-to-End Tests run for changes under `cmd/`, `internal/`, `pkg/`, `web/`, `e2e/` or `deploy/` and for `go.mod` or `go.sum`. Container Images run for `deploy/` and Dockerfiles. Docs Check runs for Markdown, HTML, `docs/`, `LICENSE` and `lychee.toml`. Canary runs for `scripts/` and `.githooks/`, and Workflow Security for `.github/`. Lint always checks retired words and adds golangci-lint for Go changes and shellcheck for `scripts/` and `.githooks/`. Changes to `.githooks/` also run Go Tests, which run the hooks against a scratch repository. Vulnerability Scan, Secret Scan and Commit Messages always run, and Dependency Review runs on every pull request. A change to `.github/`, the `Makefile`, `compose.yml` or a root dotfile such as `.golangci.yml`, and the weekly run, turn on every job. `CI Result` counts a skipped job as passed.
 
 Each job writes a summary on the run page, pass or fail. Jobs that run tests with a report add test counts, the names of failed tests and coverage. A failed job adds the last lines of its output. `repolint summary` builds it from the reports in `reports/`.
 
@@ -44,6 +45,8 @@ Each job writes a summary on the run page, pass or fail. Jobs that run tests wit
 
 The `main` ruleset requires a pull request, one approval, code owner review, a passing `CI Result` and an up-to-date branch. It blocks force pushes and deletion and keeps history linear.
 
+Commit Messages checks every commit message on the branch (subject and body), refuses new migration files, and on a pull request checks the title, which becomes the squash commit subject on `main`.
+
 ## Before you open a pull request
 
-Run `make ci`. CI runs the same checks. See [CONTRIBUTING.md](../CONTRIBUTING.md) for commit rules and writing style.
+Run `make hooks` once, then `make ci`. CI runs the same checks. See [CONTRIBUTING.md](../CONTRIBUTING.md) for commit rules and writing style.

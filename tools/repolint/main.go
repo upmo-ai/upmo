@@ -1,15 +1,19 @@
 // Command repolint checks repository conventions that no general linter covers:
-// Conventional Commit subjects, retired glossary words and going-public checks.
+// Conventional Commit messages and pull request titles without AI attribution,
+// new migration files, retired glossary words and going-public checks.
 //
 // Usage:
 //
 //	repolint commits [-range base..head]
+//	repolint migrations [-range base...head]
+//	repolint title
 //	repolint terms
 //	repolint public [-dir path]
 //	repolint summary -title name -status status [-file path]...
 //
 // Commands exit non-zero when a check fails. terms reads file paths on stdin,
-// one per line. summary writes a Markdown job summary and exits 0.
+// one per line. title reads the pull request title from PR_TITLE. summary
+// writes a Markdown job summary and exits 0.
 package main
 
 import (
@@ -32,12 +36,16 @@ func printf(w io.Writer, format string, args ...any) {
 // 0 for success, 1 for a failed check, 2 for a usage or runtime error.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printf(stderr, "usage: repolint commits [-range base..head] | repolint terms | repolint public [-dir path] | repolint summary -title name -status status [-file path]...\n")
+		printf(stderr, "usage: repolint commits [-range base..head] | repolint migrations [-range base...head] | repolint title | repolint terms | repolint public [-dir path] | repolint summary -title name -status status [-file path]...\n")
 		return 2
 	}
 	switch args[0] {
 	case "commits":
 		return runCommits(args[1:], stdout, stderr)
+	case "migrations":
+		return runMigrations(args[1:], stdout, stderr)
+	case "title":
+		return runTitle(args[1:], stdout, stderr)
 	case "terms":
 		return runTerms(args[1:], stdin, stdout, stderr)
 	case "public":

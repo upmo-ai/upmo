@@ -17,8 +17,9 @@ Include:
 1. Sign the [Contributor License Agreement](CLA.md). CLA Assistant asks you once, on your first pull request. You keep the copyright in your work. The agreement lets the maintainer ship it under the AGPL and in the hosted Upmo service.
 2. For a big change, open an issue first and agree on the plan.
 3. Fork the repository and make your change.
-4. Run `make ci`. CI runs the same checks. See [docs/development.md](docs/development.md) for setup.
-5. Open the pull request and watch CI.
+4. Run `make hooks` once. It turns on the git hooks in `.githooks/`, which check each commit for new migration files, secrets and the commit rules below. The secret check needs Docker. CI runs the same checks without the hooks.
+5. Run `make ci`. CI runs the same checks. See [docs/development.md](docs/development.md) for setup.
+6. Open the pull request and watch CI.
 
 Internal changes reference their task ID (`UPM-n`) in the pull request. As an outside contributor, reference your issue instead.
 
@@ -26,6 +27,9 @@ Internal changes reference their task ID (`UPM-n`) in the pull request. As an ou
 
 - Use [Conventional Commits](https://www.conventionalcommits.org): `<type>[optional scope]: <description>`. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `build`, `ci`, `revert`.
 - Write the subject in lower case. Keep it to 72 characters. Do not end it with a period. The body says why.
+- The pull request title follows the same rules. We squash merge, so the title is the commit subject on `main`.
+- Do not credit an AI or tool. No `Co-authored-by` trailer for Claude, Copilot or a similar tool, no "Generated with" line, no robot emoji. CI fails the pull request when a commit message or the title has one.
+- Do not add a new migration file before beta. Edit the existing migration in place. CI fails a pull request that adds or renames a `.sql` file under a `migrations/` directory.
 - Do not add a `Signed-off-by` line. The CLA already covers your rights.
 - Do not add a license header to each file. `LICENSE`, the license section of the README and the `license` field of `web/package.json` carry the notice.
 

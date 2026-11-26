@@ -1,0 +1,30 @@
+#!/bin/sh
+# Upmo pre-commit hook. Turn it on once with `make hooks`. CI runs the same
+# checks, so the hook only gives faster feedback. Never bypass it with
+# --no-verify.
+set -u
+top=$(git rev-parse --show-toplevel) || exit 1
+
+# 1. No new migration files before beta: edit the existing ones in place.
+if ! staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=AR); then
+  echo "pre-commit: could not list the staged files" >&2
+  exit 1
+fi
+new=$(printf '%s\n' "$staged" | grep -E '(^|/)migrations/[^/]+\.sql$')
+if [ -n "$new" ]; then
+  echo "pre-commit: new migration file(s) refused before beta; edit the existing migration in place:" >&2
+  printf '%s\n' "$new" >&2
+  exit 1
+fi
+
+# 2. Secrets in the staged changes, with the same pinned gitleaks image and
+# config as `make secrets`. A scanner that cannot run blocks the commit.
+gitdir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
+proj=hook$(basename "$top" | tr -cd 'a-z0-9')
+if ! out=$(cd "$top" && UPMO_GIT_DIR=$gitdir docker compose -p "$proj" --profile tools run --rm -T \
+      gitleaks git --pre-commit --staged --no-banner --redact --config /src/.gitleaks.toml /src 2>&1); then
+  if [ -n "$out" ]; then printf '%s\n' "$out" | tail -25 >&2; fi
+  echo "pre-commit: gitleaks found a secret in the staged changes, or could not run (is Docker up?). Fix it; never use --no-verify." >&2
+  exit 1
+fi
+exit 0
