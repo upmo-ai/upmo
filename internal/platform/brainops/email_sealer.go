@@ -10,11 +10,23 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 )
 
+// RingEmails is the in-process EmailSealer, which also opens a stored
+// address with the ring.
+type RingEmails interface {
+	identity.EmailSealer
+	// Open returns the address of stored, which was sealed for hash.
+	Open(stored string, hash []byte) (string, error)
+}
+
 // NewEmailSealer returns the in-process EmailSealer backed by keys. Only the
 // worker and the upmo commands hold a ring; brain uses WorkerEmails.
-func NewEmailSealer(keys gateway.Keyring) identity.EmailSealer {
+func NewEmailSealer(keys gateway.Keyring) RingEmails {
 	return emailSealer{keys: keys}
 }
+
+// errNoEmailOp is an email op asked of the ring sealer: the worker opens an
+// address for a proof only on its key route, never for an in-process caller.
+var errNoEmailOp = errors.New("brain: the ring sealer answers no email op")
 
 // errEmptyEmail means the address to seal is blank or longer than the
 // worker takes. The text never carries it.
@@ -56,6 +68,15 @@ func (s emailSealer) Seal(_ context.Context, address string) (string, []byte, st
 
 func (s emailSealer) Open(stored string, hash []byte) (string, error) {
 	return openEmail(s.keys, stored, hash)
+}
+
+func (emailSealer) OwnEmail(context.Context, []byte) (string, error)  { return "", errNoEmailOp }
+func (emailSealer) LinkEmail(context.Context, []byte) (string, error) { return "", errNoEmailOp }
+func (emailSealer) MemberEmail(context.Context, []byte, identity.UserID) (string, error) {
+	return "", errNoEmailOp
+}
+func (emailSealer) EmailDirectory(context.Context, []byte) (map[identity.UserID]string, error) {
+	return nil, errNoEmailOp
 }
 
 func (s emailSealer) IndexHashes(_ context.Context, address string) ([][]byte, error) {

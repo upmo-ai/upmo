@@ -71,10 +71,11 @@ services:
       # Optional comma-separated upmo_svc_* keys for /api/v1/provision/* control-plane
       # routes (supports key rotation). Leave empty/unset to disable provisioning (404).
       # UPMO_PROVISION_KEYS: ""
-      # Dev only. Never reuse outside the local compose stack. The same value
-      # as brain, which still seals email with it. The worker alone wraps and
-      # unwraps the data keys of provider keys and passwords, and alone
-      # checks a password.
+      # Dev only. Never reuse outside the local compose stack. Only the worker
+      # holds the master key: it alone wraps and unwraps data keys, checks a
+      # password and opens a stored address. Default `upmo backup` archives
+      # are sealed with this key; restore needs it (or
+      # UPMO_MASTER_KEY_PREVIOUS_<id> for the same id).
       UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
       UPMO_MASTER_KEY_ID: k1
       # Dev only. Never reuse outside the local compose stack. The worker
@@ -153,15 +154,11 @@ services:
       # UPMO_LISTEN_ADDR. Keep it internal.
       # UPMO_METRICS_ADDR: ":9090"
       # UPMO_METRICS_TOKEN: upmo_mtr_dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ
-      # Dev only. Never reuse outside the local compose stack. Seals email
-      # (base64 of 32 bytes); the worker needs the same value. Provider keys
-      # and passwords are sealed under data keys the worker wraps, and the
-      # worker checks passwords: brain never opens a stored one.
-      # Default `upmo backup` archives are sealed with this key; restore needs
-      # it (or UPMO_MASTER_KEY_PREVIOUS_<id> for the same id). Sealed values in
-      # any archive still need their key id here, even with --passphrase-env.
-      UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
-      UPMO_MASTER_KEY_ID: k1
+      # Brain holds no master key and refuses to start with one. Provider
+      # keys, passwords and email addresses are sealed under data keys the
+      # worker wraps; the worker checks passwords and opens stored addresses.
+      # Run `upmo backup`, `restore`, `keys`, `recover` and `bootstrap` in the
+      # worker container, which has the key.
       # The worker's key service, on the compose network only. Dev only. Never
       # reuse outside the local compose stack.
       UPMO_WORKER_URL: http://worker:8090

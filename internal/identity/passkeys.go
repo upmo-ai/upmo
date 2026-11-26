@@ -38,8 +38,9 @@ func Passkeys(pool *pgxpool.Pool, emails EmailSealer, sessions app.Service, publ
 // it from the key service client.
 type PasswordKeys = app.PasswordKeys
 
-// EmailSealer seals a person's email address for storage and computes the
-// keyed index hashes used to find it. The brain wires it from the master keyring.
+// EmailSealer seals a person's email address for storage, computes the keyed
+// index hashes used to find it, and asks the worker for a stored address.
+// Brain wires it from the worker's key service.
 type EmailSealer = app.EmailSealer
 
 var (
@@ -63,6 +64,8 @@ var (
 	ErrStoredEmail = app.ErrStoredEmail
 	// ErrInvalidLink means a sign-in link token was missing, expired, or already used.
 	ErrInvalidLink = app.ErrInvalidLink
+	// ErrNotSignedIn means no live session, or a disabled person.
+	ErrNotSignedIn = app.ErrNotSignedIn
 	// PasswordRef is the seal ref of one person's stored password hash.
 	PasswordRef = app.PasswordRef
 	// EmailRef is the seal ref of a stored email address with index hash h.

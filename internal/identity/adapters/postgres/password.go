@@ -51,18 +51,18 @@ func (p Passkeys) PersonByEmail(ctx context.Context, email string) (domain.UserI
 	return id, disabled, true, nil
 }
 
-func (p Passkeys) Profile(ctx context.Context, user domain.UserID) (string, string, error) {
-	var stored string
-	var hash []byte
+// Profile is the signed-in person's address, from the worker for the
+// session tokenHash, and name.
+func (p Passkeys) Profile(ctx context.Context, user domain.UserID, tokenHash []byte) (string, string, error) {
 	var name string
-	err := p.Pool.QueryRow(ctx, `SELECT email, email_hash, name FROM identity.users WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&stored, &hash, &name)
+	err := p.Pool.QueryRow(ctx, `SELECT name FROM identity.users WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", app.ErrNotSignedIn
 	}
 	if err != nil {
 		return "", "", err
 	}
-	email, err := openStoredEmail(p.Emails, stored, hash)
+	email, err := p.OwnEmail(ctx, tokenHash)
 	if err != nil {
 		return "", "", err
 	}

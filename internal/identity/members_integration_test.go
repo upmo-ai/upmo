@@ -27,7 +27,7 @@ func TestMembersIntegration(t *testing.T) {
 	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
 	mux := handler.(*http.ServeMux)
 	sent := &sentMail{}
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, ownerPool)
 	members := identity.Members(pool, emails, "https://upmo.test", sent, nil)
 	members.Now = func() time.Time { return now }
 	identity.MountMembers(mux, members, passkeys.Sessions)
@@ -127,7 +127,8 @@ func TestMembersIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "recover bob@example.com https://upmo.test/login/link#" + recovered; sent.last() != want {
+	// R14: recover mails the address it was given, trimmed, case kept.
+	if want := "recover BOB@example.com https://upmo.test/login/link#" + recovered; sent.last() != want {
 		t.Fatalf("recover mail = %q, want %q", sent.last(), want)
 	}
 	again := call(mux, http.MethodPost, "/api/members/"+invited.ID+"/reset-link", ownerCookie, nil)

@@ -37,6 +37,21 @@ const (
 	// PathIndexMAC computes an address's email index MACs, whose key only
 	// the worker holds.
 	PathIndexMAC = "/internal/keys/index-mac"
+	// PathEmail opens one stored address, or every enabled person's, for
+	// one op and its proof. Only the worker opens a stored address.
+	PathEmail = "/internal/keys/email"
+)
+
+// The ops of PathEmail.
+const (
+	// EmailOwn is the address of the person behind a live session.
+	EmailOwn = "own"
+	// EmailLink is the address of the person an unspent sign-in link is for.
+	EmailLink = "link"
+	// EmailMember is the address of a person the session's person manages.
+	EmailMember = "member"
+	// EmailDirectory is every enabled person's address, for a joined person.
+	EmailDirectory = "directory"
 )
 
 // KindCredential is the kind of a provider credential's data key. Only
@@ -54,6 +69,10 @@ const KindEmail = "email"
 
 // MaxBody caps every request and response body of the key service.
 const MaxBody = 4096
+
+// MaxEmailBody caps an email answer, which for directory carries every
+// enabled person's address.
+const MaxEmailBody = 4 << 20
 
 // Timeout bounds one call to the worker.
 const Timeout = 2 * time.Second
@@ -73,6 +92,10 @@ var ErrUnavailable = errors.New("keys: worker unavailable")
 // ErrLimited is a password check or an index MAC the worker refused with
 // 429: too many for that address, or for brain, in the current window.
 var ErrLimited = errors.New("keys: slow down")
+
+// ErrRefused is an email op the worker refused with 403: a proof that does
+// not hold, or a body it does not take. It says nothing about which.
+var ErrRefused = errors.New("keys: refused")
 
 // WrapRequest is the body of POST /internal/keys/wrap.
 type WrapRequest struct {
@@ -149,6 +172,29 @@ type IndexMACRequest struct {
 type IndexMACResponse struct {
 	KeyID string   `json:"key_id"`
 	MACs  [][]byte `json:"macs"`
+}
+
+// EmailRequest is the body of POST /internal/keys/email. Each op sends
+// exactly its own fields: own and directory the session's token hash, link
+// the link's token hash, member the session's token hash and the person.
+type EmailRequest struct {
+	Op             string `json:"op"`
+	ActorTokenHash []byte `json:"actor_token_hash,omitempty"`
+	LinkHash       []byte `json:"link_hash,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+}
+
+// EmailAddress is one person's address in a directory answer.
+type EmailAddress struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
+}
+
+// EmailResponse is an email op's answer: Address for own, link and member,
+// Addresses, ordered by id, for directory.
+type EmailResponse struct {
+	Address   string         `json:"address"`
+	Addresses []EmailAddress `json:"addresses"`
 }
 
 // Options configure a client.
@@ -329,6 +375,30 @@ func (c Client) IndexMAC(ctx context.Context, address string, all bool) (keyID s
 		return "", nil, ErrUnavailable
 	}
 	return out.KeyID, out.MACs, nil
+}
+
+// Email asks the worker to open the address in, as brain. A 403 is
+// ErrRefused, a 429 ErrLimited, and any other failure ErrUnavailable.
+func (c Client) Email(ctx context.Context, in EmailRequest) (EmailResponse, error) {
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return EmailResponse{}, ErrUnavailable
+	}
+	body, status, err := c.do(ctx, c.http, http.MethodPost, PathEmail, raw, MaxEmailBody)
+	switch {
+	case status == http.StatusForbidden:
+		return EmailResponse{}, ErrRefused
+	case status == http.StatusTooManyRequests:
+		return EmailResponse{}, ErrLimited
+	case err != nil:
+		return EmailResponse{}, err
+	}
+	defer clear(body)
+	var out EmailResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return EmailResponse{}, ErrUnavailable
+	}
+	return out, nil
 }
 
 func (c Client) post(ctx context.Context, path string, in, out any) error {

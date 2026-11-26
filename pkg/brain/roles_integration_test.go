@@ -3,9 +3,7 @@
 package brain
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
@@ -47,7 +45,6 @@ func roleTestConfig() Config {
 // Brain refuses a superuser on either of its pools, whether it opens the pool
 // from a URL or is handed one: a superuser ignores every row policy.
 func TestBrainRefusesPrivilegedPools(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -105,7 +102,6 @@ func TestBrainStartsWithoutOwnerURL(t *testing.T) {
 	t.Setenv("UPMO_DATABASE_APP_URL", pgtest.AppLoginURL(t, owner))
 	t.Setenv("UPMO_DATABASE_RUNNER_URL", pgtest.LoginURL(t, owner, "upmo_runner"))
 	t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	// Off the default volume roots, which other test packages read.
 	for _, dir := range []string{"UPMO_ARTIFACTS_DIR", "UPMO_KNOWLEDGE_DIR", "UPMO_AVATARS_DIR"} {
 		t.Setenv(dir, t.TempDir())

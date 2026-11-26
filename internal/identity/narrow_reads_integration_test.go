@@ -18,7 +18,7 @@ import (
 // secretColumns lists the columns upmo_app cannot read; every other column of
 // the same table stays granted.
 var secretColumns = map[string][]string{
-	"users":               {"password_hash"},
+	"users":               {"password_hash", "email"},
 	"sessions":            {"token_hash"},
 	"api_tokens":          {"token_hash"},
 	"sign_in_links":       {"token_hash"},

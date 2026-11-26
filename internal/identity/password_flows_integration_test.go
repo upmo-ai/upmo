@@ -60,7 +60,8 @@ func TestPasswordFlowsThroughTheWorker(t *testing.T) {
 	clock := dbNow(t, ctx, owner)
 	now := func() time.Time { return clock }
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	emails := sealer.NewEmail(t)
+	worker := workerkeys.Start(t, owner, sealer.Ring(t))
+	emails := sealer.WorkerEmailOn(t, worker)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = now
 	passkeys, err := identity.Passkeys(pool, emails, sessions, "http://localhost:5173", "localhost", log)
@@ -68,7 +69,6 @@ func TestPasswordFlowsThroughTheWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	passkeys.Now = now
-	worker := workerkeys.Start(t, owner, sealer.Ring(t))
 	passwords := identity.Passwords(pool, emails, sessions)
 	passwords.Keys = sealer.PasswordsOn(t, worker)
 	passwords.Now = now

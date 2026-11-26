@@ -20,10 +20,10 @@ import (
 )
 
 func TestConnectorGrants(t *testing.T) {
-	pool, ctx := up(t)
+	owner, pool, ctx := upBoth(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, time.Hour, 24*time.Hour)
-	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(pool, sealer.WorkerEmail(t, owner), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}

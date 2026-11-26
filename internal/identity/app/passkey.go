@@ -42,7 +42,12 @@ type PassStore interface {
 	FindLink(ctx context.Context, hash []byte, now time.Time) (user domain.UserID, purpose string, ok bool, err error)
 	SpendLink(ctx context.Context, hash []byte, now time.Time) error
 	Handle(ctx context.Context, user domain.UserID, fresh []byte) ([]byte, error)
+	// Account is the person's WebAuthn account with no Name.
 	Account(ctx context.Context, user domain.UserID) (domain.Account, error)
+	// OwnEmail and LinkEmail are the address registration start names the
+	// passkey with, from the worker for a live session or an unspent link.
+	OwnEmail(ctx context.Context, tokenHash []byte) (string, error)
+	LinkEmail(ctx context.Context, linkHash []byte) (string, error)
 	AccountByCredential(ctx context.Context, credentialID, userHandle []byte) (domain.Account, error)
 	InsertPasskey(ctx context.Context, user domain.UserID, item domain.Credential, name string, now time.Time) (string, error)
 	TouchPasskey(ctx context.Context, credentialID []byte, count uint32, now time.Time) error
@@ -84,7 +89,7 @@ func (p Passkeys) now() time.Time {
 
 // BeginSignIn starts a discoverable passkey sign-in. The cookie text is new.
 func (p Passkeys) BeginSignIn(ctx context.Context) (cookie string, options []byte, err error) {
-	return p.begin(ctx, "sign-in", nil)
+	return p.begin(ctx, "sign-in", nil, "")
 }
 
 // FinishSignIn opens a session when the passkey checks out.
@@ -118,18 +123,19 @@ func (p Passkeys) BeginLink(ctx context.Context, token string) (cookie string, o
 	if err != nil {
 		return "", nil, ErrInvalidLink
 	}
-	user, _, ok, err := p.Store.FindLink(ctx, domain.Hash(raw), p.now())
+	linkHash := domain.Hash(raw)
+	user, _, ok, err := p.Store.FindLink(ctx, linkHash, p.now())
 	if err != nil || !ok {
 		if err != nil {
 			return "", nil, err
 		}
 		return "", nil, ErrInvalidLink
 	}
-	account, err := p.account(ctx, user)
+	name, err := p.Store.LinkEmail(ctx, linkHash)
 	if err != nil {
-		return "", nil, ErrInvalidLink
+		return "", nil, err
 	}
-	return p.begin(ctx, "link", &account.ID)
+	return p.begin(ctx, "link", &user, name)
 }
 
 // FinishLink spends the link, keeps the passkey and opens a session.
@@ -279,10 +285,14 @@ func checkSSOSignIn(ctx context.Context, store interface {
 	return nil
 }
 
-// BeginAdd starts another passkey. The caller has already checked the sign-in is fresh.
-func (p Passkeys) BeginAdd(ctx context.Context, user domain.UserID) (cookie string, options []byte, err error) {
+// BeginAdd starts another passkey for the person behind the session
+// tokenHash. The caller has already checked the sign-in is fresh.
+func (p Passkeys) BeginAdd(ctx context.Context, user domain.UserID, tokenHash []byte) (cookie string, options []byte, err error) {
 	account, err := p.account(ctx, user)
 	if err != nil {
+		return "", nil, err
+	}
+	if account.Name, err = p.Store.OwnEmail(ctx, tokenHash); err != nil {
 		return "", nil, err
 	}
 	options, session, err := p.Ceremony.BeginRegistration(account)
@@ -427,7 +437,9 @@ func (p Passkeys) Bootstrap(ctx context.Context, email, name string) (string, er
 	return text, nil
 }
 
-func (p Passkeys) begin(ctx context.Context, purpose string, user *domain.UserID) (string, []byte, error) {
+// begin starts a ceremony. A registration names the passkey with name, the
+// address only BeginRegistration reads.
+func (p Passkeys) begin(ctx context.Context, purpose string, user *domain.UserID, name string) (string, []byte, error) {
 	var options, session []byte
 	var err error
 	if purpose == "sign-in" {
@@ -435,8 +447,9 @@ func (p Passkeys) begin(ctx context.Context, purpose string, user *domain.UserID
 	} else {
 		account, accountErr := p.account(ctx, *user)
 		if accountErr != nil {
-			return "", nil, accountErr
+			return "", nil, ErrInvalidLink
 		}
+		account.Name = name
 		options, session, err = p.Ceremony.BeginRegistration(account)
 	}
 	if err != nil {

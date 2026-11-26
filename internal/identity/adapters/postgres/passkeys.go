@@ -100,21 +100,17 @@ func (p Passkeys) Handle(ctx context.Context, user domain.UserID, fresh []byte) 
 	return handle, err
 }
 
+// Account is the person's WebAuthn account with no Name: only registration
+// start reads the address, which its caller asks the worker for.
 func (p Passkeys) Account(ctx context.Context, user domain.UserID) (domain.Account, error) {
 	var account domain.Account
-	var stored string
-	var hash []byte
 	err := p.Pool.QueryRow(ctx, `
-		SELECT id, webauthn_handle, email, email_hash, name
+		SELECT id, webauthn_handle, name
 		FROM identity.users
-		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&account.ID, &account.Handle, &stored, &hash, &account.Display)
+		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&account.ID, &account.Handle, &account.Display)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, app.ErrNotSignedIn
 	}
-	if err != nil {
-		return domain.Account{}, err
-	}
-	account.Name, err = openStoredEmail(p.Emails, stored, hash)
 	if err != nil {
 		return domain.Account{}, err
 	}

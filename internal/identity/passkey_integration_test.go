@@ -31,12 +31,14 @@ import (
 
 func TestPasskeySignIn(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
-	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	// The worker checks links and sessions against the database clock, so
+	// the rig's clock starts at the database's now.
+	now := dbNow(t, ctx, ownerPool)
 	var clock time.Time
 	clock = now
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	passkeys, err := identity.Passkeys(pool, sealer.WorkerEmail(t, ownerPool), sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +364,7 @@ func TestTwoRemovalsCannotBothPass(t *testing.T) {
 }
 
 func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
-	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	ownerPool, pool, mux, passkeys, ctx := identityMuxWithOwner(t, now)
 	token, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
 	if err != nil {
@@ -426,7 +428,7 @@ func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 }
 
 func TestTwoFinishesRedeemOneLink(t *testing.T) {
-	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	ownerPool, pool, mux, passkeys, ctx := identityMuxWithOwner(t, now)
 	if _, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada"); err != nil {
 		t.Fatal(err)
@@ -568,7 +570,9 @@ func identityMux(t *testing.T, now time.Time) (*pgxpool.Pool, http.Handler, app.
 func identityMuxWithOwner(t *testing.T, now time.Time) (*pgxpool.Pool, *pgxpool.Pool, http.Handler, app.Passkeys, context.Context) {
 	t.Helper()
 	owner, pool, ctx := upBoth(t)
-	emails := sealer.NewEmail(t)
+	// The worker opens a link's address against the database clock: now is
+	// a time near it.
+	emails := sealer.WorkerEmail(t, owner)
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return now }
 	passkeys, err := identity.Passkeys(pool, emails, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))

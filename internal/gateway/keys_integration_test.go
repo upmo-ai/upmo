@@ -72,7 +72,7 @@ func startKeyWorker(t *testing.T, r *rig, ring Keyring) *keyWorker {
 	actor := func(ctx context.Context, hash []byte) (string, bool, error) {
 		return identity.ActorOfTokenHash(ctx, r.owner, hash)
 	}
-	h, err := KeysHandler(r.owner, ring, verify, providers, actor, noPasswords{}, nil)
+	h, err := KeysHandler(r.owner, ring, verify, providers, actor, noPasswords{}, noEmails{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,6 +348,24 @@ func TestSavedKeyTestKeepsEmptyModelsApartFromNone(t *testing.T) {
 	}
 }
 
+// noEmails finds no stored address: these tests serve provider-test only,
+// and the email route has its own suite in cmd/upmo.
+type noEmails struct{}
+
+func (noEmails) Own(context.Context, []byte) (KeysEmailRow, bool, error) {
+	return KeysEmailRow{}, false, nil
+}
+func (noEmails) Link(context.Context, []byte) (KeysEmailRow, bool, error) {
+	return KeysEmailRow{}, false, nil
+}
+func (noEmails) Member(context.Context, []byte, string) (KeysEmailRow, bool, error) {
+	return KeysEmailRow{}, false, nil
+}
+func (noEmails) Directory(context.Context, []byte) ([]KeysEmailRow, bool, error) {
+	return nil, false, nil
+}
+func (noEmails) Open(string, []byte) (string, error) { return "", ErrKeysStoredPassword }
+
 // noPasswords refuses every password check: these tests serve provider-test
 // only, and password-verify has its own suite in cmd/upmo.
 type noPasswords struct{}
@@ -358,7 +376,9 @@ func (noPasswords) ByAddress(context.Context, string) (KeysPasswordAccount, erro
 func (noPasswords) BySession(context.Context, []byte) (KeysPasswordAccount, bool, error) {
 	return KeysPasswordAccount{}, false, nil
 }
-func (noPasswords) Take(context.Context, []byte) (int, error) { return 0, errors.New("no password check here") }
+func (noPasswords) Take(context.Context, []byte) (int, error) {
+	return 0, errors.New("no password check here")
+}
 func (noPasswords) Check(context.Context, KeysPasswordAccount, string) (bool, bool, error) {
 	return false, false, ErrKeysStoredPassword
 }

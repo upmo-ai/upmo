@@ -69,6 +69,7 @@ func TestRoutePermissionRefusal_UPM243_KeepsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withWorkerAt(t, owner, &cfg)
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -38,7 +38,7 @@ func TestPasswordSignIn(t *testing.T) {
 	clock = now
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, ownerPool)
 	passwords := identity.Passwords(pool, emails, sessions)
 	passwords.Keys = sealer.Passwords(t, ownerPool)
 	passwords.Now = sessions.Now

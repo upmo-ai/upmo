@@ -51,9 +51,19 @@ func (p Passkeys) ListRoles(ctx context.Context) ([]domain.MemberRole, error) {
 }
 
 // ListMembers returns enabled people with their teams, ordered by address.
-func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
+// The addresses come from the worker's directory for the session tokenHash;
+// a person missing from it is an error, never an empty address.
+func (p Passkeys) ListMembers(ctx context.Context, tokenHash []byte) ([]domain.Member, error) {
+	emails, err := readyEmails(p.Emails)
+	if err != nil {
+		return nil, err
+	}
+	directory, err := emails.EmailDirectory(ctx, tokenHash)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := p.Pool.Query(ctx, `
-		SELECT person.id::text, person.email, person.email_hash, person.name,
+		SELECT person.id::text, person.name,
 		       role.id::text, role.name, COALESCE(role.key, ''),
 		       person.joined_at IS NULL, COALESCE(team.name, ''),
 		       COALESCE(person.avatar_key, '')
@@ -70,10 +80,8 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 	var out []domain.Member
 	for rows.Next() {
 		var id, name, roleID, roleName, system, team, avatarKey string
-		var stored string
-		var hash []byte
 		var invited bool
-		if err := rows.Scan(&id, &stored, &hash, &name, &roleID, &roleName, &system, &invited, &team, &avatarKey); err != nil {
+		if err := rows.Scan(&id, &name, &roleID, &roleName, &system, &invited, &team, &avatarKey); err != nil {
 			return nil, err
 		}
 		userID, err := domain.ParseUserID(id)
@@ -90,9 +98,9 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 			}
 			continue
 		}
-		email, err := openStoredEmail(p.Emails, stored, hash)
-		if err != nil {
-			return nil, err
+		email, ok := directory[userID]
+		if !ok {
+			return nil, errNoAddress
 		}
 		member := domain.Member{
 			ID: userID, Email: email, Name: name,
@@ -117,6 +125,9 @@ func (p Passkeys) ListMembers(ctx context.Context) ([]domain.Member, error) {
 	})
 	return out, nil
 }
+
+// errNoAddress is a listed person the worker's directory did not name.
+var errNoAddress = errors.New("identity: a member's address is missing")
 
 // MemberActor loads an enabled person for an access check.
 func (p Passkeys) MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error) {
@@ -230,6 +241,8 @@ func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email
 	if err != nil {
 		return domain.Member{}, err
 	}
+	// The invite holds the address it sealed: brain reads no stored one.
+	member.Email = strings.TrimSpace(email)
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.MemberInvite,
 		Outcome:  audit.Success,
@@ -380,20 +393,14 @@ func mapIdentityDefinerError(err error) error {
 func (p Passkeys) memberByID(ctx context.Context, tx pgx.Tx, id domain.UserID) (domain.Member, error) {
 	var member domain.Member
 	var idText, roleText, avatarKey string
-	var stored string
-	var hash []byte
 	err := tx.QueryRow(ctx, `
-		SELECT person.id::text, person.email, person.email_hash, person.name,
+		SELECT person.id::text, person.name,
 		       role.id::text, role.name, COALESCE(role.key, ''),
 		       person.joined_at IS NULL, COALESCE(person.avatar_key, '')
 		FROM identity.users AS person
 		JOIN identity.roles AS role ON role.id = person.role_id
 		WHERE person.id = $1`, id).Scan(
-		&idText, &stored, &hash, &member.Name, &roleText, &member.RoleName, &member.System, &member.Invited, &avatarKey)
-	if err != nil {
-		return domain.Member{}, err
-	}
-	member.Email, err = openStoredEmail(p.Emails, stored, hash)
+		&idText, &member.Name, &roleText, &member.RoleName, &member.System, &member.Invited, &avatarKey)
 	if err != nil {
 		return domain.Member{}, err
 	}

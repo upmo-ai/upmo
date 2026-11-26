@@ -419,7 +419,7 @@ func TestSSOEnforcement(t *testing.T) {
 	passwords := identity.Passwords(pool, sealer.NewEmail(t), sessions)
 	passwords.Keys = sealer.Passwords(t, ownerPool)
 	passwords.Now = nowFn
-	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(pool, sealer.WorkerEmail(t, ownerPool), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}

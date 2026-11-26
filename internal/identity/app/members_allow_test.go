@@ -87,8 +87,8 @@ type allowFake struct {
 	askedTeams []string
 }
 
-func (f allowFake) ListRoles(context.Context) ([]domain.MemberRole, error) { return nil, nil }
-func (f allowFake) ListMembers(context.Context) ([]domain.Member, error)   { return nil, nil }
+func (f allowFake) ListRoles(context.Context) ([]domain.MemberRole, error)       { return nil, nil }
+func (f allowFake) ListMembers(context.Context, []byte) ([]domain.Member, error) { return nil, nil }
 func (f allowFake) MemberActor(context.Context, domain.UserID) (domain.RoleID, string, bool, []string, error) {
 	return domain.RoleID{}, f.system, f.joined, nil, nil
 }
@@ -131,8 +131,8 @@ func (f allowFake) RemoveMember(context.Context, []byte, domain.UserID, time.Tim
 func (f allowFake) ReplaceMemberLink(context.Context, domain.UserID, string, []byte, time.Time, func(string, bool) error) error {
 	return nil
 }
-func (f allowFake) Profile(context.Context, domain.UserID) (string, string, error) {
-	return "", "", nil
+func (f allowFake) MemberEmail(context.Context, []byte, domain.UserID) (string, error) {
+	return "", nil
 }
 func (f allowFake) SetAvatar(context.Context, []byte, domain.UserID, string) (string, error) {
 	return "", nil

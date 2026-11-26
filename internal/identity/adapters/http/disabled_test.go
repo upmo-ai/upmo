@@ -107,7 +107,7 @@ func (disabledPassword) PasswordAccount(context.Context, string) (domain.UserID,
 func (disabledPassword) PersonByEmail(context.Context, string) (domain.UserID, bool, bool, error) {
 	return domain.UserID{}, false, false, nil
 }
-func (disabledPassword) Profile(context.Context, domain.UserID) (string, string, error) {
+func (disabledPassword) Profile(context.Context, domain.UserID, []byte) (string, string, error) {
 	return "", "", app.ErrNotSignedIn
 }
 func (disabledPassword) SetPassword(context.Context, domain.UserID, string) error { return nil }
@@ -144,6 +144,12 @@ func (disabledPass) Handle(context.Context, domain.UserID, []byte) ([]byte, erro
 }
 func (disabledPass) Account(context.Context, domain.UserID) (domain.Account, error) {
 	return domain.Account{}, app.ErrNotSignedIn
+}
+func (disabledPass) OwnEmail(context.Context, []byte) (string, error) {
+	return "", app.ErrNotSignedIn
+}
+func (disabledPass) LinkEmail(context.Context, []byte) (string, error) {
+	return "", app.ErrInvalidLink
 }
 func (disabledPass) AccountByCredential(context.Context, []byte, []byte) (domain.Account, error) {
 	return domain.Account{}, app.ErrNotSignedIn

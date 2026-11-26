@@ -190,7 +190,6 @@ type internalDeps struct {
 	routes      gateway.RouteService
 	routeBook   gateway.RouteBook
 	usageLimits gateway.UsageLimits
-	keyring     gateway.Keyring
 	agents      agents.Store
 	notices     notices.Store
 	metrics     *metrics.Registry
@@ -422,9 +421,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Brain never holds a master key: the worker seals, opens and checks for
+	// it, so a key in brain's environment refuses to start.
+	if err := config.RefuseMasterKey(os.LookupEnv, os.Environ()); err != nil {
+		return nil, err
+	}
 	internal := toInternalConfig(cfg)
 	internal.Env = env
-	if err := config.CheckConfig(internal, true, os.LookupEnv, os.Environ()); err != nil {
+	if err := config.CheckConfig(internal, false, os.LookupEnv, os.Environ()); err != nil {
 		return nil, err
 	}
 	if cfg.ArtifactsDir != "" {
@@ -503,23 +507,17 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return maps.Clone(schemaVersions), nil
 	}
 
-	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
-	if err != nil {
-		cleanupPools()
-		return nil, err
-	}
-
 	internalCfg := toInternalConfig(cfg)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	// Brain holds no master key for passwords or credentials: the worker
-	// wraps every data key, checks every password and computes every email
-	// index MAC. The master key it still holds only opens stored addresses.
+	// Brain holds no master key for passwords, credentials or addresses: the
+	// worker wraps every data key, checks every password, computes every
+	// email index MAC and opens every stored address.
 	workerKeys, err := workerClient(ctx, cfg)
 	if err != nil {
 		cleanupPools()
 		return nil, err
 	}
-	emails := brainops.WorkerEmails{Keys: workerKeys, Ring: masterKeys}
+	emails := brainops.WorkerEmails{Keys: workerKeys}
 	passwords := identity.Passwords(pool, emails, sessions)
 	passwords.Keys = brainops.WorkerPasswords{Keys: workerKeys}
 	tokens := identity.APITokens(pool, log)
@@ -534,8 +532,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	workspace := identity.Workspace(pool)
 	idFacade := identity.New(sessions, passkeys, passwords)
 
-	// Brain seals a provider key under a data key the worker wraps; the
-	// master key it still holds serves email only.
+	// Brain seals a provider key under a data key the worker wraps.
 	providers := gateway.NewProviders(pool, gateway.WorkerSealer{Keys: workerKeys}, log)
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		id, err := identity.ParseUserID(user)
@@ -667,7 +664,6 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		routes:      routesSvc,
 		routeBook:   routeBook,
 		usageLimits: usageLimits,
-		keyring:     masterKeys,
 		agents:      agentStore,
 		notices:     noticeStore,
 		metrics:     reg,

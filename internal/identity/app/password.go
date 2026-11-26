@@ -52,7 +52,9 @@ type PasswordStore interface {
 	PasswordAccount(ctx context.Context, email string) (user domain.UserID, personName string, found bool, err error)
 	// PersonByEmail resolves a person for sign-in failure audit only.
 	PersonByEmail(ctx context.Context, email string) (user domain.UserID, disabled, found bool, err error)
-	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
+	// Profile is the signed-in person's address, from the worker for the
+	// session tokenHash, and name.
+	Profile(ctx context.Context, user domain.UserID, tokenHash []byte) (email, name string, err error)
 	SetPassword(ctx context.Context, user domain.UserID, hash string) error
 	ClearPassword(ctx context.Context, user domain.UserID) error
 	HasPassword(ctx context.Context, user domain.UserID) (bool, error)

@@ -29,7 +29,6 @@ import (
 )
 
 func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	ctx := context.Background()
 	owner := pgtest.New(t)
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -72,7 +71,6 @@ func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
 }
 
 func TestBrainNewVolumeDirFailureBeforePools(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
@@ -95,7 +93,6 @@ func TestBrainNewVolumeDirFailureBeforePools(t *testing.T) {
 }
 
 func TestBrainNewAndExtensionOptions(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -173,7 +170,6 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 // compose development values refuse brain in production before any pool or
 // database is touched. An empty Env is production, like an unset one.
 func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	cfg := Config{
 		DatabaseAppURL:  "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable",
 		PublicURL:       "http://localhost:5173",
@@ -184,12 +180,50 @@ func TestBrainNewRefusesDevelopmentValuesInProduction(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	}
 	_, err := New(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "UPMO_MASTER_KEY uses a development or weak key") {
+	if err == nil || err.Error() != "config: UPMO_GATEWAY_KEY uses a development or weak key; set a unique key or UPMO_ENV=development" {
 		t.Fatalf("New err = %v", err)
 	}
-	if strings.Contains(err.Error(), cfg.DatabaseAppURL) {
+	if strings.Contains(err.Error(), cfg.DatabaseAppURL) || strings.Contains(err.Error(), cfg.GatewayKey) {
 		t.Fatalf("New err holds a value: %v", err)
 	}
+}
+
+// Invariant 9: brain never holds a master key. New, which brain.Run and every
+// embedder call, refuses UPMO_MASTER_KEY or a previous key alone before any
+// pool opens, in development too, and starts with neither set.
+func TestBrainRefusesTheMasterKey(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Env:             "development",
+		SessionIdle:     identity.IdleTimeout,
+		SessionMaxAge:   identity.MaxAge,
+		PublicURL:       "http://localhost:5173",
+		WebAuthnRPID:    "localhost",
+		ShutdownTimeout: 2 * time.Second,
+	}
+	withWorker(t, owner, &cfg)
+	quiet := WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, name := range []string{"UPMO_MASTER_KEY", "UPMO_MASTER_KEY_PREVIOUS_k0"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'q'}, 32)))
+			app, err := New(ctx, cfg, servingPools(t, owner), quiet)
+			if app != nil {
+				app.Close()
+			}
+			if err == nil || err.Error() != "config: UPMO_MASTER_KEY is refused" {
+				t.Fatalf("New with %s = %v, want config: UPMO_MASTER_KEY is refused", name, err)
+			}
+		})
+	}
+	app, err := New(ctx, cfg, servingPools(t, owner), quiet)
+	if err != nil {
+		t.Fatalf("New with no master key: %v", err)
+	}
+	app.Close()
 }
 
 type hookJobArgs struct{}
@@ -207,7 +241,6 @@ func (w *hookJobWorker) Work(context.Context, *river.Job[hookJobArgs]) error {
 }
 
 func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -275,8 +308,6 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 	}
 	appPool := pgtest.App(t, owner)
 
-	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
-	t.Setenv(gateway.EnvMasterKeyID, "k1")
 
 	cfg := Config{
 		Env:             "development",
@@ -432,7 +463,6 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 }
 
 func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
@@ -550,8 +580,6 @@ func TestBrainStartNeedsAReadyWorker(t *testing.T) {
 	if err := brainops.MigrateAll(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
-	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	cfg := Config{
 		Env:             "development",
 		SessionIdle:     identity.IdleTimeout,

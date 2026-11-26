@@ -157,7 +157,7 @@ type memberFake struct {
 func (f *memberFake) ListRoles(context.Context) ([]domain.MemberRole, error) {
 	return []domain.MemberRole{{ID: f.memberRole, Name: "Member", System: "member"}}, nil
 }
-func (f *memberFake) ListMembers(context.Context) ([]domain.Member, error) {
+func (f *memberFake) ListMembers(context.Context, []byte) ([]domain.Member, error) {
 	return nil, nil
 }
 func (f *memberFake) MemberActor(context.Context, domain.UserID) (domain.RoleID, string, bool, []string, error) {
@@ -214,8 +214,8 @@ func (f *memberFake) RemoveMember(_ context.Context, _ []byte, _ domain.UserID, 
 func (f *memberFake) ReplaceMemberLink(_ context.Context, _ domain.UserID, _ string, _ []byte, _ time.Time, rule func(string, bool) error) error {
 	return rule("member", f.invited)
 }
-func (f *memberFake) Profile(context.Context, domain.UserID) (string, string, error) {
-	return "", "", nil
+func (f *memberFake) MemberEmail(context.Context, []byte, domain.UserID) (string, error) {
+	return "", nil
 }
 func (f *memberFake) SetAvatar(context.Context, []byte, domain.UserID, string) (string, error) {
 	return "", nil

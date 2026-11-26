@@ -62,6 +62,7 @@ func TestReadyAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withWorkerAt(t, owner, &cfg)
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -148,8 +149,9 @@ func TestRequireSessionSeamIntegration(t *testing.T) {
 		WebAuthnRPID:  "localhost",
 	}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passwords := identity.Passwords(pool, sealer.NewEmail(t), sessions)
-	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	emails := sealer.WorkerEmail(t, owner)
+	passwords := identity.Passwords(pool, emails, sessions)
+	passkeys, err := identity.Passkeys(pool, emails, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,9 +232,9 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		}
 		return &http.Cookie{Name: "__Host-upmo_session", Value: token, Path: "/", Secure: true, HttpOnly: true}
 	}
-	serve := func(masterKey string) http.Handler {
+	worker := withWorkerAt(t, owner, &cfg)
+	serve := func() http.Handler {
 		t.Helper()
-		t.Setenv("UPMO_MASTER_KEY", masterKey)
 		boxes, err := taskSandboxes(cfg, pool, log)
 		if err != nil {
 			t.Fatal(err)
@@ -263,7 +265,7 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 	const add = `{"provider":"custom","name":"Mine","adapter":"openai_compat","plan_kind":"local","base_url":"http://127.0.0.1:11434","models":["m"]}`
 	ada, bob := signIn("ada@example.com", "owner"), signIn("bob@example.com", "member")
 
-	with := serve(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'m'}, 32)))
+	with := serve()
 	if rec := do(with, nil, http.MethodGet, "/api/providers", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no session = %d, want 401", rec.Code)
 	}
@@ -285,25 +287,14 @@ func TestProvidersThroughTheBrainRoutes(t *testing.T) {
 		t.Fatalf("cross-site add = %d, want 403", cross.Code)
 	}
 
-	// No master key: the brain still serves, lists, and refuses to save.
-	without := serve("")
-	if rec := do(without, ada, http.MethodGet, "/api/providers", ""); rec.Code != http.StatusOK {
-		t.Fatalf("list without a master key = %d", rec.Code)
+	// The worker down: brain still lists, and refuses to save a key.
+	worker.Stop()
+	if rec := do(with, ada, http.MethodGet, "/api/providers", ""); rec.Code != http.StatusOK {
+		t.Fatalf("list with the worker down = %d", rec.Code)
 	}
-	if rec := do(without, ada, http.MethodPost, "/api/providers", add); rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("add without a master key = %d, want 503", rec.Code)
-	}
-	t.Setenv("UPMO_MASTER_KEY", "not base64 at all")
-	boxes, err := taskSandboxes(cfg, pool, log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	work, err := jobs.Open(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil); err == nil {
-		t.Fatal("brain started with a malformed master key")
+	keyed := `{"provider":"custom","name":"Keyed","adapter":"openai_compat","plan_kind":"local","base_url":"http://127.0.0.1:11434","api_key":"sk-test-key","models":["m"]}`
+	if rec := do(with, ada, http.MethodPost, "/api/providers", keyed); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("add a key with the worker down = %d %s, want 503", rec.Code, rec.Body.String())
 	}
 }
 
@@ -377,6 +368,7 @@ func TestBrainVersionAndReadyzRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withWorkerAt(t, owner, &cfg)
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(versions), nil
 	}, nil)
@@ -448,6 +440,7 @@ func TestBrainMetricsInternalOnlyAndInstrumented(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withWorkerAt(t, owner, &cfg)
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, reg)
 	if err != nil {
 		t.Fatal(err)
@@ -594,6 +587,7 @@ func newAgentsRig(t *testing.T) agentsRig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	withWorkerAt(t, owner, &cfg)
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

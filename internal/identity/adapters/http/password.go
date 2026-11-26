@@ -44,12 +44,8 @@ func (h Passkeys) passwordSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": domain.ErrPasswordShort.Error()})
 		return
 	}
-	email, name, err := h.Password.Store.Profile(r.Context(), session.UserID)
-	if refuseSignedOut(w, err) {
-		return
-	}
-	if err != nil {
-		http.Error(w, "password", http.StatusInternalServerError)
+	email, name, err := h.Password.Store.Profile(r.Context(), session.UserID, session.TokenHash)
+	if writePasswordErr(w, time.Second, err) {
 		return
 	}
 	if err := h.Password.Set(r.Context(), session.UserID, session.ID, email, name, input.Password); err != nil {
@@ -83,12 +79,8 @@ func (h Passkeys) passwordVerify(w http.ResponseWriter, r *http.Request) {
 		writeRaw(w, http.StatusUnauthorized, wrongPassword)
 		return
 	}
-	email, _, err := h.Password.Store.Profile(r.Context(), session.UserID)
-	if refuseSignedOut(w, err) {
-		return
-	}
-	if err != nil {
-		http.Error(w, "password", http.StatusInternalServerError)
+	email, _, err := h.Password.Store.Profile(r.Context(), session.UserID, session.TokenHash)
+	if writePasswordErr(w, time.Second, err) {
 		return
 	}
 	retry, err := h.Password.Verify(r.Context(), session.UserID, session.ID, session.TokenHash, email, input.Password, httpserver.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.Trusted))

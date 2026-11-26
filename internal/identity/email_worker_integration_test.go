@@ -33,7 +33,7 @@ func TestBrainEmailThroughTheWorker(t *testing.T) {
 	// and stays up, the other serves brain's email calls and is stopped.
 	checks := workerkeys.Start(t, k.owner, ring)
 	index := workerkeys.Start(t, k.owner, ring)
-	emails := brainops.WorkerEmails{Keys: index.Client(t, svcsig.AudienceWorkerBrain), Ring: ring}
+	emails := brainops.WorkerEmails{Keys: index.Client(t, svcsig.AudienceWorkerBrain)}
 	mail := &sentMail{}
 	members := identity.Members(k.pool, emails, "https://upmo.test", mail, nil)
 	passkeys := k.passkeys(t, emails)

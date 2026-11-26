@@ -109,6 +109,19 @@ func (k *emailKit) passkeys(t *testing.T, emails identity.EmailSealer) app.Passk
 	return passkeys
 }
 
+// workerEmails is brain's email sealer over a real worker holding ring.
+func (k *emailKit) workerEmails(t *testing.T, ring gateway.Keyring) brainops.WorkerEmails {
+	t.Helper()
+	return sealer.WorkerEmailOn(t, workerkeys.Start(t, k.owner, ring))
+}
+
+// profile is user's address and name as the password page reads them: the
+// worker opens the address for a live session of user's.
+func (k *emailKit) profile(t *testing.T, emails identity.EmailSealer, user domain.UserID) (string, string, error) {
+	t.Helper()
+	return k.store(emails).Profile(k.ctx, user, k.session(t, user).TokenHash)
+}
+
 func (k *emailKit) store(emails identity.EmailSealer) postgres.Passkeys {
 	return postgres.Passkeys{Pool: k.pool, Emails: emails}
 }
@@ -214,7 +227,7 @@ func emailsOf(members []domain.Member) []string {
 
 func TestEmailIsStoredSealed(t *testing.T) {
 	k := newEmailKit(t)
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, k.owner)
 	members := k.members(emails)
 	session := k.ownerSession(t, emails, "owner@example.com")
 	grace, _, err := members.Invite(k.ctx, session, "Grace.Hopper@Example.com", "Grace", k.role(t, "member"))
@@ -226,7 +239,7 @@ func TestEmailIsStoredSealed(t *testing.T) {
 	if r.keyID != "k1" {
 		t.Fatalf("email_hash_key_id = %q, want k1", r.keyID)
 	}
-	email, _, err := k.store(emails).Profile(k.ctx, grace.ID)
+	email, _, err := k.profile(t, emails, grace.ID)
 	if err != nil || email != "Grace.Hopper@Example.com" {
 		t.Fatalf("profile %q %v, want the address with its casing", email, err)
 	}
@@ -241,7 +254,7 @@ func TestEmailIsStoredSealed(t *testing.T) {
 
 func TestSealedEmailFlows(t *testing.T) {
 	k := newEmailKit(t)
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, k.owner)
 	members := k.members(emails)
 	passwords := k.passwords(t, sealer.Ring(t))
 	store := k.store(emails)
@@ -260,9 +273,11 @@ func TestSealedEmailFlows(t *testing.T) {
 	if token, _, _, err := passwords.SignIn(k.ctx, "ADA@example.COM", emailPassword, "198.51.100.30", ""); err != nil || token == "" {
 		t.Fatalf("sign-in in other casing %q %v", token, err)
 	}
+	// R12: the account names no address; only registration start asks the
+	// worker for one.
 	account, err := store.Account(k.ctx, owner)
-	if err != nil || account.Name != "Ada@Example.com" {
-		t.Fatalf("passkey account %q %v, want the address", account.Name, err)
+	if err != nil || account.Name != "" || account.Display != "Ada" {
+		t.Fatalf("passkey account %q %q %v, want no address and the name", account.Name, account.Display, err)
 	}
 
 	session := k.session(t, owner)
@@ -284,7 +299,7 @@ func TestSealedEmailFlows(t *testing.T) {
 	if n := k.count(t, `SELECT count(*) FROM identity.users`); n != 2 {
 		t.Fatalf("users = %d, want 2", n)
 	}
-	if email, _, err := store.Profile(k.ctx, bob.ID); err != nil || email != "Bob@Example.com" {
+	if email, _, err := k.profile(t, emails, bob.ID); err != nil || email != "Bob@Example.com" {
 		t.Fatalf("re-invited profile %q %v", email, err)
 	}
 
@@ -321,7 +336,7 @@ func TestProvisionWithSealedEmail(t *testing.T) {
 	if after.email == before.email || bytes.Equal(after.hash, before.hash) {
 		t.Fatal("changing the address kept the stored value or its hash")
 	}
-	if email, _, err := k.store(emails).Profile(k.ctx, grace); err != nil || email != "grace.new@example.com" {
+	if email, _, err := k.profile(t, sealer.WorkerEmail(t, k.owner), grace); err != nil || email != "grace.new@example.com" {
 		t.Fatalf("profile %q %v, want the new address", email, err)
 	}
 
@@ -334,7 +349,7 @@ func TestProvisionWithSealedEmail(t *testing.T) {
 
 func TestListMembersSortsByAddress(t *testing.T) {
 	k := newEmailKit(t)
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, k.owner)
 	members := k.members(emails)
 	session := k.ownerSession(t, emails, "owner@example.com")
 	role := k.role(t, "member")
@@ -399,9 +414,9 @@ func TestEmailRotation(t *testing.T) {
 	ringOne := emailRing(t, "k1", keyOneByte, nil)
 	ringTwoOne := emailRing(t, "k2", keyTwoByte, map[string]byte{"k1": keyOneByte})
 	ringTwo := emailRing(t, "k2", keyTwoByte, nil)
-	one := brainops.NewEmailSealer(ringOne)
-	twoOne := brainops.NewEmailSealer(ringTwoOne)
-	two := brainops.NewEmailSealer(ringTwo)
+	one := k.workerEmails(t, ringOne)
+	twoOne := k.workerEmails(t, ringTwoOne)
+	two := k.workerEmails(t, ringTwo)
 	quiet := []string{"grace@example.com", keyText(keyOneByte), keyText(keyTwoByte)}
 
 	session := k.ownerSession(t, one, "owner@example.com")
@@ -424,7 +439,7 @@ func TestEmailRotation(t *testing.T) {
 	if token, _, _, err := k.passwords(t, ringTwoOne).SignIn(k.ctx, "grace@example.com", emailPassword, "198.51.100.40", ""); err != nil || token == "" {
 		t.Fatalf("sign-in after rotation %q %v", token, err)
 	}
-	if email, _, err := k.store(twoOne).Profile(k.ctx, grace.ID); err != nil || email != "Grace@Example.com" {
+	if email, _, err := k.profile(t, twoOne, grace.ID); err != nil || email != "Grace@Example.com" {
 		t.Fatalf("profile after rotation %q %v", email, err)
 	}
 
@@ -438,9 +453,11 @@ func TestEmailRotation(t *testing.T) {
 	if n := k.count(t, `SELECT count(*) FROM identity.sessions WHERE user_id = $1`, grace.ID); n != sessions {
 		t.Fatalf("sessions %d -> %d, want no session started", sessions, n)
 	}
-	email, _, err := k.store(two).Profile(k.ctx, grace.ID)
-	if !errors.Is(err, identity.ErrStoredEmail) || email != "" {
-		t.Fatalf("profile without k1 %q %v, want ErrStoredEmail", email, err)
+	// The worker without k1 cannot open the address: a 500 to brain, which
+	// is try again and never an address.
+	email, _, err := k.profile(t, two, grace.ID)
+	if !errors.Is(err, identity.ErrBusy) || email != "" {
+		t.Fatalf("profile without k1 %q %v, want try again", email, err)
 	}
 	assertQuiet(t, err, quiet...)
 
@@ -461,7 +478,7 @@ func TestEmailRotation(t *testing.T) {
 	if r.keyID != "k2" || !strings.HasPrefix(r.email, "k2:") {
 		t.Fatalf("re-invite stored under %q (%q), want k2", r.keyID, r.email)
 	}
-	if email, _, err := k.store(two).Profile(k.ctx, grace.ID); err != nil || email != "grace@example.com" {
+	if email, _, err := k.profile(t, two, grace.ID); err != nil || email != "grace@example.com" {
 		t.Fatalf("profile under k2 alone after re-seal %q %v", email, err)
 	}
 }
@@ -503,7 +520,7 @@ func TestInviteRefusesAnAddressStoredUnderTwoKeys(t *testing.T) {
 
 func TestPlainEmailIsRefused(t *testing.T) {
 	k := newEmailKit(t)
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, k.owner)
 	session := k.ownerSession(t, emails, "owner@example.com")
 	var id string
 	if err := k.owner.QueryRow(k.ctx, `
@@ -514,15 +531,18 @@ func TestPlainEmailIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := parseUser(t, id)
-	store := k.store(emails)
-	_, _, profileErr := store.Profile(k.ctx, plain)
+	// The worker refuses to open the plain value (500); brain says try
+	// again and shows no address. The account reads no address at all.
+	_, _, profileErr := k.profile(t, emails, plain)
 	_, listErr := k.members(emails).List(k.ctx, session)
-	_, accountErr := store.Account(k.ctx, plain)
-	for what, err := range map[string]error{"profile": profileErr, "list": listErr, "account": accountErr} {
-		if !errors.Is(err, identity.ErrStoredEmail) {
-			t.Fatalf("%s = %v, want ErrStoredEmail", what, err)
+	for what, err := range map[string]error{"profile": profileErr, "list": listErr} {
+		if !errors.Is(err, identity.ErrBusy) {
+			t.Fatalf("%s = %v, want try again", what, err)
 		}
 		assertQuiet(t, err, "plain@example.com", keyText('t'))
+	}
+	if account, err := k.store(emails).Account(k.ctx, plain); err != nil || account.Name != "" {
+		t.Fatalf("account = %q %v, want no address", account.Name, err)
 	}
 }
 

@@ -217,13 +217,17 @@ func Load() (Config, error) {
 }
 
 // LoadBrain reads the brain configuration. Brain opens a request pool and
-// requires UPMO_DATABASE_APP_URL and UPMO_MASTER_KEY in every environment.
+// requires UPMO_DATABASE_APP_URL in every environment. Brain never holds a
+// master key: the worker seals, opens and checks for it.
 func LoadBrain() (Config, error) {
+	if err := RefuseMasterKey(os.LookupEnv, os.Environ()); err != nil {
+		return Config{}, err
+	}
 	cfg, err := loadBrain(os.LookupEnv)
 	if err != nil {
 		return Config{}, err
 	}
-	if err := CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
+	if err := CheckConfig(cfg, false, os.LookupEnv, os.Environ()); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

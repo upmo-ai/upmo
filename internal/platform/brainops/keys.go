@@ -2,6 +2,7 @@ package brainops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -47,7 +48,91 @@ func KeysHandler(owner *pgxpool.Pool, ring gateway.Keyring, verify gateway.KeysV
 		return identity.ActorOfTokenHash(ctx, owner, hash)
 	}
 	passwords := passwordCheck{owner: owner, ring: ring, emails: emails}
-	return gateway.KeysHandler(owner, ring, verify, providers, actor, passwords, log)
+	return gateway.KeysHandler(owner, ring, verify, providers, actor, passwords, emailLookup{owner: owner, members: members, emails: emails}, log)
+}
+
+// emailLookup is the worker's email route over the owner pool and the
+// in-process ring: it checks each op's proof as brain's rules would and
+// opens the address here. It satisfies gateway.KeysEmails.
+type emailLookup struct {
+	owner   *pgxpool.Pool
+	members identity.MemberService
+	emails  RingEmails
+}
+
+func (l emailLookup) Own(ctx context.Context, tokenHash []byte) (gateway.KeysEmailRow, bool, error) {
+	row, ok, err := identity.StoredEmailOfSession(ctx, l.owner, tokenHash)
+	return gateway.KeysEmailRow(row), ok, err
+}
+
+func (l emailLookup) Link(ctx context.Context, linkHash []byte) (gateway.KeysEmailRow, bool, error) {
+	row, ok, err := identity.StoredEmailOfLink(ctx, l.owner, linkHash)
+	return gateway.KeysEmailRow(row), ok, err
+}
+
+// Member applies identity.MayManage to the session's person, joined and
+// enabled, and user's system role, and refuses a disabled or unknown user.
+func (l emailLookup) Member(ctx context.Context, tokenHash []byte, user string) (gateway.KeysEmailRow, bool, error) {
+	actor, ok, err := l.actor(ctx, tokenHash)
+	if err != nil || !ok {
+		return gateway.KeysEmailRow{}, false, err
+	}
+	target, err := identity.ParseUserID(user)
+	if err != nil {
+		return gateway.KeysEmailRow{}, false, nil
+	}
+	if err := l.members.MayManagePerson(ctx, actor, target); err != nil {
+		return gateway.KeysEmailRow{}, false, refusal(err)
+	}
+	row, ok, err := identity.StoredEmailOfPerson(ctx, l.owner, target.String())
+	return gateway.KeysEmailRow(row), ok, err
+}
+
+// Directory is every enabled person, for a joined, enabled actor.
+func (l emailLookup) Directory(ctx context.Context, tokenHash []byte) ([]gateway.KeysEmailRow, bool, error) {
+	actor, ok, err := l.actor(ctx, tokenHash)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	if err := l.members.Joined(ctx, actor); err != nil {
+		return nil, false, refusal(err)
+	}
+	rows, err := identity.StoredEmailDirectory(ctx, l.owner)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]gateway.KeysEmailRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, gateway.KeysEmailRow(row))
+	}
+	return out, true, nil
+}
+
+func (l emailLookup) Open(stored string, hash []byte) (string, error) {
+	return l.emails.Open(stored, hash)
+}
+
+// actor is the enabled person behind an unexpired session, never an API
+// token.
+func (l emailLookup) actor(ctx context.Context, tokenHash []byte) (identity.UserID, bool, error) {
+	user, ok, err := identity.SessionPerson(ctx, l.owner, tokenHash)
+	if err != nil || !ok {
+		return identity.UserID{}, false, err
+	}
+	id, err := identity.ParseUserID(user)
+	if err != nil {
+		return identity.UserID{}, false, err
+	}
+	return id, true, nil
+}
+
+// refusal is nil for an access rule's answer, which the route refuses, and
+// err for a failure that could not tell.
+func refusal(err error) error {
+	if errors.Is(err, identity.ErrNoSuchMember) || errors.Is(err, identity.ErrNotPermitted) || errors.Is(err, identity.ErrOwnersOnly) {
+		return nil
+	}
+	return err
 }
 
 // MemberProvidersAllowed reports identity.member_providers_allowed() for
