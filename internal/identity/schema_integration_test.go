@@ -28,7 +28,7 @@ func TestEmailUniqueIgnoringCase(t *testing.T) {
 	seedSealedOwner(t, pool, ctx, emails, "ada@example.com")
 	// The index hash is computed over the trimmed lower-case address, so the
 	// same address in a different casing still conflicts.
-	stored, hash, keyID, err := emails.Seal("Ada@example.com")
+	stored, hash, keyID, err := emails.Seal(t.Context(), "Ada@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,19 +38,19 @@ func TestEmailUniqueIgnoringCase(t *testing.T) {
 	if err == nil {
 		t.Fatal("email with a different case was accepted")
 	}
-	storedA, hashA, keyIDA, err := emails.Seal("a@example.com")
+	storedA, hashA, keyIDA, err := emails.Seal(t.Context(), "a@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedB, hashB, keyIDB, err := emails.Seal("b@example.com")
+	storedB, hashB, keyIDB, err := emails.Seal(t.Context(), "b@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedC, hashC, keyIDC, err := emails.Seal("c@example.com")
+	storedC, hashC, keyIDC, err := emails.Seal(t.Context(), "c@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedD, hashD, keyIDD, err := emails.Seal("d@example.com")
+	storedD, hashD, keyIDD, err := emails.Seal(t.Context(), "d@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func seedOwner(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email stri
 // SQL seed of a sealed person needs them.
 func sealUser(t *testing.T, emails identity.EmailSealer, email string) []any {
 	t.Helper()
-	stored, hash, keyID, err := emails.Seal(email)
+	stored, hash, keyID, err := emails.Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func userByEmail(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email st
 	var id string
 	if err := pool.QueryRow(ctx, `
 		SELECT id::text FROM identity.users WHERE email_hash = ANY($1)`,
-		sealer.NewEmail(t).IndexHashes(email)).Scan(&id); err != nil {
+		sealer.Hashes(t, email)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id

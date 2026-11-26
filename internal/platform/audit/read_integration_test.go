@@ -114,7 +114,7 @@ func (c auditCallers) Session(ctx context.Context, r *http.Request) (audit.Reade
 func (rig *readRig) openSession(t *testing.T, email, role string) string {
 	t.Helper()
 	ctx := context.Background()
-	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}

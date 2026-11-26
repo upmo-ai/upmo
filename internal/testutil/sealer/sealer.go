@@ -26,6 +26,17 @@ func NewEmail(t *testing.T) identity.EmailSealer {
 	return brainops.NewEmailSealer(Ring(t))
 }
 
+// Hashes returns the index hashes NewEmail finds address under, current key
+// first.
+func Hashes(t *testing.T, address string) [][]byte {
+	t.Helper()
+	hashes, err := NewEmail(t).IndexHashes(t.Context(), address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hashes
+}
+
 // Passwords starts the real worker key service over owner and the test
 // master key, so it finds people by the index hashes NewEmail writes, and
 // returns brain's password port over it.

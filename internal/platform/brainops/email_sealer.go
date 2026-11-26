@@ -1,7 +1,8 @@
 package brainops
 
 import (
-	"encoding/base64"
+	"context"
+	"encoding/hex"
 	"errors"
 	"strings"
 
@@ -9,67 +10,91 @@ import (
 	"github.com/upmo-ai/upmo/internal/identity"
 )
 
-// NewEmailSealer returns an EmailSealer backed by keys.
+// NewEmailSealer returns the in-process EmailSealer backed by keys. Only the
+// worker and the upmo commands hold a ring; brain uses WorkerEmails.
 func NewEmailSealer(keys gateway.Keyring) identity.EmailSealer {
 	return emailSealer{keys: keys}
 }
 
-// errEmptyEmail means the address to seal is blank. The text never carries it.
+// errEmptyEmail means the address to seal is blank or longer than the
+// worker takes. The text never carries it.
 var errEmptyEmail = errors.New("brain: email address")
 
-// emailSealer stores a person's email address through the master keyring as
-// "<key id>:<base64 nonce>:<base64 ciphertext>", bound to the address's index
-// hash. It satisfies identity.EmailSealer by structure.
+// emailSealer stores a person's email address as the five-field text: a
+// data key wrapped under the master for v1:email:<hex MAC>, and the address
+// sealed under it for identity:email:<hex MAC>. It satisfies
+// identity.EmailSealer by structure.
 type emailSealer struct {
 	keys gateway.Keyring
 }
 
 func (s emailSealer) Ready() bool { return s.keys.Ready() }
 
-func (s emailSealer) Seal(address string) (string, []byte, string, error) {
+func (s emailSealer) Seal(_ context.Context, address string) (string, []byte, string, error) {
 	if !s.keys.Ready() {
 		return "", nil, "", identity.ErrNoEmailSealer
 	}
 	a := strings.TrimSpace(address)
-	if a == "" {
+	if a == "" || len(a) > maxEmailBytes {
 		return "", nil, "", errEmptyEmail
 	}
 	keyID, hash, err := s.keys.IndexMAC([]byte(identity.NormalEmail(a)))
 	if err != nil {
 		return "", nil, "", err
 	}
-	sealed, err := s.keys.Seal(identity.EmailRef(hash), a)
+	w, err := s.keys.WrapNew(gateway.KindEmail, hex.EncodeToString(hash))
 	if err != nil {
 		return "", nil, "", err
 	}
-	return strings.Join([]string{
-		sealed.KeyID,
-		base64.StdEncoding.EncodeToString(sealed.Nonce),
-		base64.StdEncoding.EncodeToString(sealed.Ciphertext),
-	}, ":"), hash, keyID, nil
+	defer clear(w.DataKey)
+	stored, err := sealEmailWith(w, hash, a)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return stored, hash, keyID, nil
 }
 
 func (s emailSealer) Open(stored string, hash []byte) (string, error) {
-	id, rest, ok := strings.Cut(stored, ":")
-	nonce, ciphertext, ok2 := strings.Cut(rest, ":")
-	if !ok || !ok2 || strings.Contains(ciphertext, ":") || len(hash) == 0 {
+	return openEmail(s.keys, stored, hash)
+}
+
+func (s emailSealer) IndexHashes(_ context.Context, address string) ([][]byte, error) {
+	macs := s.keys.IndexMACs([]byte(identity.NormalEmail(address)))
+	if len(macs) == 0 {
+		return nil, identity.ErrNoEmailSealer
+	}
+	return macs, nil
+}
+
+// sealEmailWith seals address under w's data key as the stored five-field
+// text, for the index MAC hash.
+func sealEmailWith(w gateway.Wrapped, hash []byte, address string) (string, error) {
+	sealed, err := gateway.SealWithDataKey(w, identity.EmailRef(hash), address)
+	if err != nil {
+		return "", err
+	}
+	return gateway.SealedText(sealed), nil
+}
+
+// openEmail opens a five-field stored address sealed for hash with ring. Any
+// other shape, an unknown key, another row's hash or altered bytes is
+// identity.ErrStoredEmail.
+func openEmail(ring gateway.Keyring, stored string, hash []byte) (string, error) {
+	if len(hash) == 0 {
 		return "", identity.ErrStoredEmail
 	}
-	rawNonce, err := base64.StdEncoding.DecodeString(nonce)
+	s, err := gateway.ParseSealedText(stored)
 	if err != nil {
 		return "", identity.ErrStoredEmail
 	}
-	rawCiphertext, err := base64.StdEncoding.DecodeString(ciphertext)
+	dataKey, err := ring.Unwrap(gateway.KindEmail, hex.EncodeToString(hash), s.KeyID, s.WrapNonce, s.WrappedKey)
 	if err != nil {
 		return "", identity.ErrStoredEmail
 	}
-	address, err := s.keys.Open(identity.EmailRef(hash), gateway.Sealed{Ciphertext: rawCiphertext, Nonce: rawNonce, KeyID: id})
+	defer clear(dataKey)
+	address, err := gateway.OpenData(dataKey, identity.EmailRef(hash), s.Ciphertext, s.Nonce)
 	if err != nil {
 		return "", identity.ErrStoredEmail
 	}
 	return address, nil
-}
-
-func (s emailSealer) IndexHashes(address string) [][]byte {
-	return s.keys.IndexMACs([]byte(identity.NormalEmail(address)))
 }

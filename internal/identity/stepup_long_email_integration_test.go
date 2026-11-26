@@ -3,11 +3,14 @@
 package identity_test
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/upmo-ai/upmo/internal/gateway"
+	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 )
@@ -25,7 +28,7 @@ func TestStepUpPasswordVerifyWithLongStoredEmail(t *testing.T) {
 	if err := r.owner.QueryRow(r.ctx, `
 		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)
 		VALUES ($1, $2, $3, 'Cy', (SELECT id FROM identity.roles WHERE key = 'member'), now())
-		RETURNING id::text`, sealUser(t, sealer.NewEmail(t), long)...).Scan(&id); err != nil {
+		RETURNING id::text`, sealLongEmail(t, long)...).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	cy, err := domain.ParseUserID(id)
@@ -61,4 +64,25 @@ func TestStepUpPasswordVerifyWithLongStoredEmail(t *testing.T) {
 	if method, signed := r.signedIn(t, cy); method != "password" || !signed.Equal(*r.clock) {
 		t.Fatalf("session after right verify = %s %s, want password %s", method, signed, *r.clock)
 	}
+}
+
+// sealLongEmail stores address the way the sealer does but past its 320-byte
+// bound, for a row written before the bound.
+func sealLongEmail(t *testing.T, address string) []any {
+	t.Helper()
+	ring := sealer.Ring(t)
+	keyID, hash, err := ring.IndexMAC([]byte(identity.NormalEmail(address)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ring.WrapNew(gateway.KindEmail, hex.EncodeToString(hash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(w.DataKey)
+	sealed, err := gateway.SealWithDataKey(w, identity.EmailRef(hash), address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []any{gateway.SealedText(sealed), hash, keyID}
 }

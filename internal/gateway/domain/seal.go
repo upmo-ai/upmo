@@ -53,6 +53,10 @@ const KindCredential = "credential"
 // for. Its ref is the person's uuid in lower case.
 const KindPassword = "password"
 
+// KindEmail is the kind a stored email address's data key is wrapped for.
+// Its ref is the 64 lowercase hex characters of the address's index MAC.
+const KindEmail = "email"
+
 // DataKeyLen is the length of a data key in bytes (AES-256).
 const DataKeyLen = 32
 

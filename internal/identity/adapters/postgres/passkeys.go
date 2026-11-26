@@ -264,7 +264,7 @@ func (p Passkeys) Take(ctx context.Context, key string, now time.Time, burst, pe
 }
 
 func (p Passkeys) UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error) {
-	hashes, err := indexEmailHashes(p.Emails, email)
+	hashes, err := indexEmailHashes(ctx, p.Emails, email)
 	if err != nil {
 		return domain.UserID{}, false, err
 	}
@@ -299,7 +299,7 @@ func (p Passkeys) SignInPolicy(ctx context.Context, user domain.UserID) (bool, s
 }
 
 func (p Passkeys) Bootstrap(ctx context.Context, email, name string, hash []byte, now, expires time.Time) (domain.UserID, error) {
-	stored, hashes, keyID, err := sealEmail(p.Emails, email)
+	stored, hashes, keyID, err := sealEmail(ctx, p.Emails, email)
 	if err != nil {
 		return domain.UserID{}, err
 	}

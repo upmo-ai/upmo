@@ -81,7 +81,7 @@ func TestAppCannotInsertUsersOrTokensDirectly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stored, hash, keyID, err := sealer.NewEmail(t).Seal("rogue@example.com")
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(t.Context(), "rogue@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestAppCannotDeleteUsers(t *testing.T) {
 	appPool := pgtest.AppLogin(t, owner)
 	seedOwner(t, owner, ctx, "ada@example.com")
 	var memberID string
-	mStored, mHash, mKeyID, err := sealer.NewEmail(t).Seal("lee@example.com")
+	mStored, mHash, mKeyID, err := sealer.NewEmail(t).Seal(t.Context(), "lee@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func assertDenied(t *testing.T, label string, err error) {
 // in the order member_invite takes them.
 func inviteEmail(t *testing.T, email string) []any {
 	t.Helper()
-	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func seedPerson(t *testing.T, pool *pgxpool.Pool, ctx context.Context, email, ro
 	if disabled {
 		disabledAt = now
 	}
-	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}

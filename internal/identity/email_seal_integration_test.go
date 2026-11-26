@@ -32,8 +32,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
-// sealedForm is the stored shape of a sealed address.
-var sealedForm = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+$`)
+// sealedForm is the stored shape of a sealed address: key id, wrap nonce,
+// wrapped key, payload nonce and payload.
+var sealedForm = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+:[^:]+:[^:]+$`)
 
 const (
 	emailPassword = "correct horse battery"
@@ -388,7 +389,7 @@ func TestInviteSameAddressInOtherCasingConflicts(t *testing.T) {
 	if _, _, err := members.Invite(k.ctx, session, "ADA@example.com", "Ada", role); !errors.Is(err, domain.ErrAlreadyMember) {
 		t.Fatalf("second invite = %v, want ErrAlreadyMember", err)
 	}
-	if n := k.count(t, `SELECT count(*) FROM identity.users WHERE email_hash = ANY($1)`, emails.IndexHashes("ada@example.com")); n != 1 {
+	if n := k.count(t, `SELECT count(*) FROM identity.users WHERE email_hash = ANY($1)`, sealer.Hashes(t, "ada@example.com")); n != 1 {
 		t.Fatalf("rows for the address = %d, want 1", n)
 	}
 }

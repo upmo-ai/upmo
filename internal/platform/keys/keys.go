@@ -34,6 +34,9 @@ const (
 	// PathPasswordVerify checks a password against the stored hash, which
 	// only the worker opens.
 	PathPasswordVerify = "/internal/keys/password-verify"
+	// PathIndexMAC computes an address's email index MACs, whose key only
+	// the worker holds.
+	PathIndexMAC = "/internal/keys/index-mac"
 )
 
 // KindCredential is the kind of a provider credential's data key. Only
@@ -43,6 +46,11 @@ const KindCredential = "credential"
 // KindPassword is the kind of a stored password hash's data key, with the
 // person's lower-case uuid as ref. Brain wraps it; nobody unwraps it.
 const KindPassword = "password"
+
+// KindEmail is the kind of a stored email address's data key, with the 64
+// lowercase hex characters of the address's index MAC as ref. Brain wraps
+// it; nobody unwraps it.
+const KindEmail = "email"
 
 // MaxBody caps every request and response body of the key service.
 const MaxBody = 4096
@@ -62,8 +70,8 @@ const MaxProviderTestBody = 8 << 20
 // status other than 200. It carries no bytes from the worker.
 var ErrUnavailable = errors.New("keys: worker unavailable")
 
-// ErrLimited is a password check the worker refused with 429: too many for
-// that address, or for brain, in the current window.
+// ErrLimited is a password check or an index MAC the worker refused with
+// 429: too many for that address, or for brain, in the current window.
 var ErrLimited = errors.New("keys: slow down")
 
 // WrapRequest is the body of POST /internal/keys/wrap.
@@ -126,6 +134,21 @@ type PasswordVerifyRequest struct {
 type PasswordVerifyResponse struct {
 	Match  bool `json:"match"`
 	Rehash bool `json:"rehash"`
+}
+
+// IndexMACRequest is the body of POST /internal/keys/index-mac: the address,
+// 1 to 320 bytes, and whether to return the MAC under every loaded key.
+type IndexMACRequest struct {
+	Address string `json:"address"`
+	All     bool   `json:"all"`
+}
+
+// IndexMACResponse is the current key's id and the address's index MACs:
+// one, or with All the current key's first, then one per previous key in
+// key-id order.
+type IndexMACResponse struct {
+	KeyID string   `json:"key_id"`
+	MACs  [][]byte `json:"macs"`
 }
 
 // Options configure a client.
@@ -283,6 +306,29 @@ func (c Client) verifyPassword(ctx context.Context, in PasswordVerifyRequest) (b
 		return false, false, ErrUnavailable
 	}
 	return out.Match, out.Rehash, nil
+}
+
+// IndexMAC asks for the index MACs of address, as brain: the current key's
+// alone, or with all every loaded key's, the current one first. A 429 is
+// ErrLimited; any other failure is ErrUnavailable.
+func (c Client) IndexMAC(ctx context.Context, address string, all bool) (keyID string, macs [][]byte, err error) {
+	raw, err := json.Marshal(IndexMACRequest{Address: address, All: all})
+	if err != nil {
+		return "", nil, ErrUnavailable
+	}
+	body, status, err := c.do(ctx, c.http, http.MethodPost, PathIndexMAC, raw, MaxBody)
+	if status == http.StatusTooManyRequests {
+		return "", nil, ErrLimited
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	defer clear(body)
+	var out IndexMACResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", nil, ErrUnavailable
+	}
+	return out.KeyID, out.MACs, nil
 }
 
 func (c Client) post(ctx context.Context, path string, in, out any) error {
