@@ -16,12 +16,16 @@ if ! printf '%s\n' "$subject" | grep -qE "^Merge branch '.+'"; then
     echo "commit-msg: subject is $length characters, the limit is 72" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$subject" | grep -qE "^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [a-z0-9][^A-Z]*$"; then
+  # One trailing ` (UPM-<n>)` or ` (#<n>)` reference is allowed; the length
+  # above counts it, the rules below check the subject without it.
+  rest=$(printf '%s\n' "$subject" | sed -E 's/^(.+) \((UPM-[0-9]+|#[0-9]+)\)$/\1/')
+  if printf '%s\n' "$rest" | grep -qE '\((#|[Uu][Pp][Mm]-)[0-9]*\)$' ||
+    ! printf '%s\n' "$rest" | grep -qE "^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [a-z0-9][^A-Z]*$"; then
     echo "commit-msg: subject must be a Conventional Commit, lowercase after the colon:" >&2
     echo "  $subject" >&2
     exit 1
   fi
-  case $subject in
+  case $rest in
     *.)
       echo "commit-msg: subject must not end with a period" >&2
       exit 1

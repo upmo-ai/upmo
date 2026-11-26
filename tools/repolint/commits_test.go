@@ -63,6 +63,49 @@ func TestCheckSubject(t *testing.T) {
 	}
 }
 
+// TestCheckSubjectReference pins the trailing ticket or pull request
+// reference our squash subjects carry, using main's own subjects.
+func TestCheckSubjectReference(t *testing.T) {
+	const (
+		pattern = "subject must look like type(optional scope): lowercase description, " +
+			"with type one of feat, fix, docs, style, refactor, perf, test, chore, build, ci, revert"
+		lower  = "description must be lowercase"
+		period = "subject must not end with a period"
+	)
+	exact := "feat: " + strings.Repeat("a", maxSubjectLength-len("feat:  (UPM-418)")) + " (UPM-418)"
+	tests := []struct {
+		subject, want string
+	}{
+		{"fix(identity): require a passkey step-up for sensitive changes (UPM-418)", ""},
+		{"fix(platform): request pools that cannot bypass row security (UPM-418)", ""},
+		{"chore(deps): bump tools images, yaml/v3 and react-query (#55)", ""},
+		{"feat: add login (#1)", ""},
+		{exact, ""},
+		{exact + "a", "subject is 73 characters, the limit is 72"},
+		{"feat: add login (upm-418)", pattern},
+		{"feat: add login (UPM-)", pattern},
+		{"feat: add login (#)", pattern},
+		{"feat: add login (UPM-418) (#55)", pattern},
+		{"feat: add login (#1) (#2)", pattern},
+		{"feat: add login (UPM-418) extra", lower},
+		{"feat: add login (UPM-418).", lower},
+		{"feat: add Login (UPM-418)", lower},
+		{"feat: add login. (UPM-418)", period},
+		{"feat:  (UPM-418)", pattern},
+		{"feat: (UPM-418)", pattern},
+		{"add login (UPM-418)", pattern},
+	}
+	for _, tt := range tests {
+		got := ""
+		if err := checkSubject(tt.subject); err != nil {
+			got = err.Error()
+		}
+		if got != tt.want {
+			t.Errorf("checkSubject(%q) = %q, want %q", tt.subject, got, tt.want)
+		}
+	}
+}
+
 func TestRangePattern(t *testing.T) {
 	for _, ok := range []string{"origin/main..HEAD", "main..HEAD", "HEAD~3..HEAD", "abc123..def456", "HEAD"} {
 		if !rangePattern.MatchString(ok) {
