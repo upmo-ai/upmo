@@ -449,7 +449,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Update: []string{"key", "tokens", "updated_at"},
 		},
 		"identity.users": {
-			Select: []string{"avatar_key", "disabled_at", "email", "email_hash", "email_hash_key_id", "external_id", "id", "invited_at", "joined_at", "locale", "name", "passkey_offered_at", "role_id", "time_zone", "webauthn_handle"},
+			Select: []string{"avatar_key", "disabled_at", "email_hash", "email_hash_key_id", "external_id", "id", "invited_at", "joined_at", "locale", "name", "passkey_offered_at", "role_id", "time_zone", "webauthn_handle"},
 			Update: []string{"joined_at", "passkey_offered_at", "password_hash", "webauthn_handle"},
 		},
 		"identity.webauthn_challenges": {

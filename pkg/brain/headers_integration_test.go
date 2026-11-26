@@ -61,6 +61,7 @@ func securityHeadersHandler(t *testing.T) http.Handler {
 			<-r.Context().Done()
 		})
 	})
+	withWorkerAt(t, owner, &cfg)
 	handler, err := routes(pool, cfg, log, boxes, work, notices.Store{Pool: pool}, nil, nil, nil, nil, stream)
 	if err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"os"
 	"strings"
 	"testing"
 
@@ -294,6 +295,16 @@ func TestCheckGuardDevelopment(t *testing.T) {
 	}
 }
 
+// unsetMasterKey unsets UPMO_MASTER_KEY for the rest of t; t.Setenv
+// restores it after.
+func unsetMasterKey(t *testing.T) {
+	t.Helper()
+	t.Setenv("UPMO_MASTER_KEY", "")
+	if err := os.Unsetenv("UPMO_MASTER_KEY"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The exported loaders read the real environment, so their guard runs on
 // t.Setenv values. An empty UPMO_ENV is production, like an unset one.
 func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
@@ -346,14 +357,25 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 			t.Fatalf("Load err holds the credentials: %v", err)
 		}
 	})
-	t.Run("missing master key", func(t *testing.T) {
+	// Brain holds no master key: unset starts, and any value, even an empty
+	// one or a previous key alone, is refused.
+	t.Run("brain master key", func(t *testing.T) {
 		base(t)
 		t.Setenv("UPMO_DATABASE_APP_URL", freshDBURL(t))
 		t.Setenv("UPMO_DATABASE_RUNNER_URL", freshDBURL(t))
-		t.Setenv("UPMO_MASTER_KEY", "")
-		_, err := LoadBrain()
-		if err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
-			t.Fatalf("LoadBrain err = %v", err)
+		for _, value := range []string{freshKey(t), ""} {
+			t.Setenv("UPMO_MASTER_KEY", value)
+			if _, err := LoadBrain(); err == nil || err.Error() != "config: UPMO_MASTER_KEY is refused" {
+				t.Fatalf("LoadBrain with UPMO_MASTER_KEY=%q err = %v", value, err)
+			}
+		}
+		unsetMasterKey(t)
+		if _, err := LoadBrain(); err != nil {
+			t.Fatalf("LoadBrain without a master key: %v", err)
+		}
+		t.Setenv("UPMO_MASTER_KEY_PREVIOUS_k0", freshKey(t))
+		if _, err := LoadBrain(); err == nil || err.Error() != "config: UPMO_MASTER_KEY is refused" {
+			t.Fatalf("LoadBrain with a previous key alone err = %v", err)
 		}
 	})
 	t.Run("development missing master key", func(t *testing.T) {
@@ -363,10 +385,12 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Setenv("UPMO_DATABASE_APP_URL", "postgres://upmo_app:upmo_app@postgres:5432/upmo?sslmode=disable")
 		t.Setenv("UPMO_DATABASE_RUNNER_URL", "postgres://upmo_runner:upmo_runner@postgres:5432/upmo?sslmode=disable")
 		t.Setenv("UPMO_MASTER_KEY", "")
-		for name, load := range map[string]func() (Config, error){"brain": LoadBrain, "gateway": Load} {
-			if _, err := load(); err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
-				t.Errorf("development %s missing-key err = %v", name, err)
-			}
+		if _, err := Load(); err == nil || err.Error() != "config: UPMO_MASTER_KEY is required; set a key" {
+			t.Errorf("development missing-key err = %v", err)
+		}
+		unsetMasterKey(t)
+		if _, err := LoadBrain(); err != nil {
+			t.Errorf("development brain without a master key: %v", err)
 		}
 	})
 }
@@ -386,6 +410,7 @@ func TestLoadAcceptsFreshValuesInProduction(t *testing.T) {
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	unsetMasterKey(t)
 	if _, err := LoadBrain(); err != nil {
 		t.Fatalf("LoadBrain: %v", err)
 	}
@@ -404,9 +429,11 @@ func TestLoadDevelopmentRule(t *testing.T) {
 	t.Setenv("UPMO_CREDENTIAL_house", composeHouseValue())
 	t.Setenv("UPMO_WORKER_URL", "http://worker:8090")
 	t.Setenv("UPMO_WORKER_BRAIN_KEY", "upmo_svc_worker-brain_"+freshKey(t))
+	unsetMasterKey(t)
 	if _, err := LoadBrain(); err != nil {
 		t.Fatalf("LoadBrain with the compose values in development: %v", err)
 	}
+	t.Setenv("UPMO_MASTER_KEY", composeMasterKey())
 	t.Setenv("UPMO_PUBLIC_URL", "https://upmo.example.com")
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "config: UPMO_ENV=development is refused with a public https UPMO_PUBLIC_URL") {

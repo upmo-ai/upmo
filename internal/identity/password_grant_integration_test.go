@@ -48,8 +48,8 @@ func TestAppCannotReadAPasswordHash(t *testing.T) {
 		}
 	}
 	var n int
-	if err := app.QueryRow(ctx, `SELECT count(*) FROM (SELECT id, email, name FROM identity.users) AS u`).Scan(&n); err != nil || n != 3 {
-		t.Fatalf("SELECT id, email, name = %d %v", n, err)
+	if err := app.QueryRow(ctx, `SELECT count(*) FROM (SELECT id, email_hash, name FROM identity.users) AS u`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("SELECT id, email_hash, name = %d %v", n, err)
 	}
 	for id, want := range map[string]bool{ada: true, bob: false} {
 		var has bool
@@ -104,5 +104,48 @@ func TestPasswordWindowsBelongToTheOwner(t *testing.T) {
 		if _, err := owner.Exec(ctx, stmt); sqlState(err) != "23514" {
 			t.Errorf("%s = %v, want 23514", stmt, err)
 		}
+	}
+}
+
+// Invariant 8 (4d2): upmo_app, logged in as itself, reads no stored
+// address, not even through a WHERE. It still counts and names people, and
+// a session setting does not narrow what it sees.
+func TestAppCannotReadAnEmail(t *testing.T) {
+	owner, ctx := upOwner(t)
+	app := pgtest.AppLogin(t, owner)
+	ada := seedOwner(t, owner, ctx, "ada@example.com")
+	bob := seedOwner(t, owner, ctx, "bob@example.com")
+	for _, stmt := range []string{
+		`SELECT email FROM identity.users`,
+		`SELECT password_hash FROM identity.users`,
+		`SELECT id FROM identity.users WHERE email = 'ada@example.com'`,
+		`SELECT count(*) FROM identity.users WHERE email LIKE '%@%'`,
+		`SELECT * FROM identity.users`,
+	} {
+		if _, err := app.Exec(ctx, stmt); sqlState(err) != "42501" {
+			t.Errorf("%s = %v, want 42501", stmt, err)
+		}
+	}
+	var n int
+	if err := app.QueryRow(ctx, `SELECT count(*) FROM identity.users`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("count(*) = %d %v, want 2", n, err)
+	}
+	tx, err := app.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true)`, bob); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM identity.users`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("count(*) as %s = %d %v, want 2", bob, n, err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var id, name string
+	if err := app.QueryRow(ctx, `SELECT id::text, name FROM identity.users WHERE id = $1`, ada).Scan(&id, &name); err != nil || id != ada || name != "Ada" {
+		t.Fatalf("SELECT id, name = %q %q %v, want %s Ada", id, name, err, ada)
 	}
 }

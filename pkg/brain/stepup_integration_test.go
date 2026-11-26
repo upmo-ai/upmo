@@ -3,9 +3,7 @@
 package brain
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -19,7 +17,6 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/upmo-ai/upmo/internal/chat"
-	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
@@ -55,8 +52,6 @@ func newStepUpEnv(t *testing.T) *stepUpEnv {
 		t.Fatal(err)
 	}
 	pool := pgtest.App(t, owner)
-	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
-	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{
 		SessionIdle:   identity.IdleTimeout,
@@ -64,6 +59,7 @@ func newStepUpEnv(t *testing.T) *stepUpEnv {
 		PublicURL:     "http://localhost:5173",
 		WebAuthnRPID:  "localhost",
 	}
+	withWorkerAt(t, owner, &cfg)
 	boxes, err := taskSandboxes(cfg, pool, log)
 	if err != nil {
 		t.Fatal(err)
@@ -422,12 +418,13 @@ func TestIdentityServiceFreshUsesStepUp(t *testing.T) {
 	now := func() time.Time { return stepUpNow }
 	sessions := identity.Sessions(pool, identity.IdleTimeout, identity.MaxAge)
 	sessions.Now = now
-	passkeys, err := identity.Passkeys(pool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	emails := sealer.WorkerEmail(t, owner)
+	passkeys, err := identity.Passkeys(pool, emails, sessions, "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	passkeys.Now = now
-	adapter := identityAdapter{id: identity.New(sessions, passkeys, identity.Passwords(pool, sealer.NewEmail(t), sessions))}
+	adapter := identityAdapter{id: identity.New(sessions, passkeys, identity.Passwords(pool, emails, sessions))}
 	var ada string
 	if err := owner.QueryRow(ctx, `
 		INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, joined_at)

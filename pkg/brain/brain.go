@@ -190,7 +190,6 @@ type internalDeps struct {
 	routes      gateway.RouteService
 	routeBook   gateway.RouteBook
 	usageLimits gateway.UsageLimits
-	keyring     gateway.Keyring
 	agents      agents.Store
 	notices     notices.Store
 	metrics     *metrics.Registry
@@ -422,9 +421,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Brain never holds a master key: the worker seals, opens and checks for
+	// it, so a key in brain's environment refuses to start.
+	if err := config.RefuseMasterKey(os.LookupEnv, os.Environ()); err != nil {
+		return nil, err
+	}
 	internal := toInternalConfig(cfg)
 	internal.Env = env
-	if err := config.CheckConfig(internal, true, os.LookupEnv, os.Environ()); err != nil {
+	if err := config.CheckConfig(internal, false, os.LookupEnv, os.Environ()); err != nil {
 		return nil, err
 	}
 	if cfg.ArtifactsDir != "" {
@@ -501,12 +505,6 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	}
 	schemaLookup := func(context.Context) (map[string]int64, error) {
 		return maps.Clone(schemaVersions), nil
-	}
-
-	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
-	if err != nil {
-		cleanupPools()
-		return nil, err
 	}
 
 	internalCfg := toInternalConfig(cfg)
@@ -666,7 +664,6 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		routes:      routesSvc,
 		routeBook:   routeBook,
 		usageLimits: usageLimits,
-		keyring:     masterKeys,
 		agents:      agentStore,
 		notices:     noticeStore,
 		metrics:     reg,

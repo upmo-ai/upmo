@@ -6,7 +6,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -20,12 +19,14 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/sealer"
 	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
@@ -60,16 +61,21 @@ func routesAt(
 	reg *metrics.Registry,
 	opts ...Option,
 ) (http.Handler, error) {
-	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	// Brain holds no ring: as in New, the worker cfg names seals, opens and
+	// checks every key, address and password.
+	// The test worker listens on loopback http, which the client allows only
+	// in development, whatever cfg.Env says.
+	client, err := keys.Open(keys.Options{URL: cfg.WorkerURL, Key: cfg.WorkerBrainKey, Audience: svcsig.AudienceWorkerBrain, Development: true})
 	if err != nil {
 		return nil, err
 	}
+	workerKeys := &client
+	emails := brainops.WorkerEmails{Keys: workerKeys}
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
-	passwords := identity.Passwords(pool, brainops.NewEmailSealer(masterKeys), sessions)
-	// No pkg/brain test signs in or sets a password here: Keys stays unset,
-	// which refuses every password call (the identity suites drive the worker).
+	passwords := identity.Passwords(pool, emails, sessions)
+	passwords.Keys = brainops.WorkerPasswords{Keys: workerKeys}
 	tokens := identity.APITokens(pool, log)
-	passkeys, err := identity.Passkeys(pool, brainops.NewEmailSealer(masterKeys), sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
+	passkeys, err := identity.Passkeys(pool, emails, sessions, cfg.PublicURL, cfg.WebAuthnRPID, log)
 	if err != nil {
 		return nil, err
 	}
@@ -80,8 +86,8 @@ func routesAt(
 		passkeys.Sessions = sessions
 		passwords.Sessions = sessions
 	}
-	members := identity.WithAvatars(identity.Members(pool, brainops.NewEmailSealer(masterKeys), cfg.PublicURL, brainops.LinkMail(cfg.Env, cfg.SMTP), log), cfg.AvatarsDir)
-	providers := gateway.NewProviders(pool, masterKeys, log)
+	members := identity.WithAvatars(identity.Members(pool, emails, cfg.PublicURL, brainops.LinkMail(cfg.Env, cfg.SMTP), log), cfg.AvatarsDir)
+	providers := gateway.NewProviders(pool, gateway.WorkerSealer{Keys: workerKeys}, log)
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		id, err := identity.ParseUserID(user)
 		if err != nil {
@@ -137,7 +143,6 @@ func routesAt(
 		providers: providers,
 		routes:    routesSvc,
 		routeBook: gateway.NewRouteBook(pool),
-		keyring:   masterKeys,
 		agents:    agents.NewStore(pool),
 		notices:   noticeStore,
 		metrics:   reg,
@@ -156,15 +161,21 @@ func routesAt(
 // servingPools injects the two pools brain runs on as the roles brain logs in
 // as in production: a real upmo_app login and a real upmo_runner login. A
 // superuser session that switched role would fail brain's role check.
-// withWorker starts the worker's real key service over owner with the ring
-// the environment names, and points cfg at it as brain's key service.
+// withWorker starts the worker's real key service over owner with the test
+// master key, built here and never read from brain's environment, and
+// points cfg at it as brain's key service.
 func withWorker(t *testing.T, owner *pgxpool.Pool, cfg *Config) *workerkeys.Worker {
 	t.Helper()
-	ring, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := workerkeys.Start(t, owner, ring)
+	w := workerkeys.Start(t, owner, sealer.Ring(t))
+	cfg.WorkerURL = w.URL
+	cfg.WorkerBrainKey = w.Key[svcsig.AudienceWorkerBrain]
+	return w
+}
+
+// withWorkerAt is withWorker for the internal config routes takes.
+func withWorkerAt(t *testing.T, owner *pgxpool.Pool, cfg *config.Config) *workerkeys.Worker {
+	t.Helper()
+	w := workerkeys.Start(t, owner, sealer.Ring(t))
 	cfg.WorkerURL = w.URL
 	cfg.WorkerBrainKey = w.Key[svcsig.AudienceWorkerBrain]
 	return w

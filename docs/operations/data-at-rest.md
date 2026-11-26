@@ -30,7 +30,7 @@ These values are sealed with `UPMO_MASTER_KEY`:
 
 Credentials, password hashes and email addresses use a per-row data key wrapped by the master key. Only `upmo worker` wraps and unwraps those data keys. Brain seals a new password hash under a data key the worker wraps, and asks the worker to check a password. Brain never opens a stored password hash, and its database role cannot read the column.
 
-Brain seals a new email address the same way, under a data key the worker wraps for the address's index hash. Brain asks the worker for every index hash, so only the worker holds the index key. Until brain stops loading `UPMO_MASTER_KEY`, it still opens stored addresses itself.
+Brain seals a new email address the same way, under a data key the worker wraps for the address's index hash. Brain asks the worker for every index hash, so only the worker holds the index key. Brain never opens a stored address: the worker opens one only for a proof, such as a live session or an unused sign-in link, and brain's database role cannot read the column.
 
 Everything else stays in clear text inside Postgres. That includes chat, tasks, knowledge, memory, agents, audit records and other identity display fields. Row security, volume encryption and encrypted backups protect them. Column encryption would break full-text search and vector indexes.
 
@@ -50,12 +50,12 @@ A passphrase archive still needs every master key id listed in its `db/meta.json
 
 To retire a key:
 
-1. Set the new key as `UPMO_MASTER_KEY` with a new `UPMO_MASTER_KEY_ID`. Keep the old key as `UPMO_MASTER_KEY_PREVIOUS_<old id>`. Restart brain and gateway.
+1. On the worker, set the new key as `UPMO_MASTER_KEY` with a new `UPMO_MASTER_KEY_ID`. Keep the old key as `UPMO_MASTER_KEY_PREVIOUS_<old id>`. Restart the worker.
 2. Run `upmo keys reseal --dry-run` to see the counts. Then run `upmo keys reseal`.
    - It seals these again under the current key, in batches: stored provider credentials (`gateway.credentials`), password hashes and email addresses, each under a new data key. An email address also gets a new index hash.
    - It records `keys.reseal` audit events.
    - You can stop it and run it again.
-3. A row sealed with a key that is not loaded is left alone. The command then exits with a non-zero code. Brain also warns at start-up and exports `upmo_sealed_rows_unknown_key{store}`.
+3. A row sealed with a key that is not loaded is left alone. The command then exits with a non-zero code. The worker also warns at start-up and exports `upmo_sealed_rows_unknown_key{store}`.
 4. When the command exits with 0, take a fresh backup. Then remove `UPMO_MASTER_KEY_PREVIOUS_<old id>` and restart.
 
 Old archives still need the old key to restore. Keep the old key with those archives.
@@ -64,7 +64,7 @@ Old archives still need the old key to restore. Keep the old key with those arch
 
 `UPMO_ENV` is `production` by default. The other value is `development`.
 
-Brain, gateway and `upmo` commands that use secrets need `UPMO_MASTER_KEY` in every environment.
+The worker and the `upmo` commands that use secrets need `UPMO_MASTER_KEY` in every environment. Run `upmo backup`, `restore`, `keys`, `recover` and `bootstrap` where the master key is set. In compose, that is the worker container. Brain, gateway and sandboxd refuse to start when it is set.
 
 Production refuses:
 

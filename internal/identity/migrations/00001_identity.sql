@@ -370,9 +370,10 @@ $$;
 GRANT USAGE ON SCHEMA identity TO upmo_app;
 GRANT USAGE ON SCHEMA identity TO upmo_gateway, upmo_runner;
 GRANT SELECT ON identity.roles TO upmo_app;
--- Every column but password_hash: brain never reads a stored password. The
--- worker verifies it, and brain asks has_password or has_password_of.
-GRANT SELECT (id, email, email_hash, email_hash_key_id, name, external_id, role_id, invited_at, joined_at,
+-- Every column but password_hash and email: brain never reads a stored
+-- password or a stored address. The worker verifies a password and opens an
+-- address for a proof, and brain asks has_password or has_password_of.
+GRANT SELECT (id, email_hash, email_hash_key_id, name, external_id, role_id, invited_at, joined_at,
   disabled_at, webauthn_handle, passkey_offered_at, time_zone, locale, avatar_key) ON identity.users TO upmo_app;
 GRANT UPDATE (password_hash, webauthn_handle, joined_at, passkey_offered_at) ON identity.users TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON

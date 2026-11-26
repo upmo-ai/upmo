@@ -299,31 +299,71 @@ func TestKeysEmailDirectory(t *testing.T) {
 	}
 }
 
-// Invariant 6 (D7): email shares index-mac's 30 calls per 10 s from brain.
+// Invariant 6 (D7, D9): own, link and member share index-mac's 30 calls
+// per 10 s from brain; directory is counted apart.
 func TestKeysEmailSharesTheLimit(t *testing.T) {
 	w := startKeyWorker(t)
 	w.person(adaID, "Ada@Example.com", "owner", "", false)
+	w.person(bobID, "Bob@Example.com", "member", "", false)
 	ada := w.session(adaID, time.Hour)
+	link := w.link(bobID, time.Hour, false)
 	mac := `{"address":"Ada@Example.com","all":false}`
+	ops := []string{
+		emailOp("own", ada, nil, ""),
+		emailOp("link", nil, link, ""),
+		emailOp("member", ada, nil, bobID),
+	}
 	for i := range 20 {
 		if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, mac); code != http.StatusOK {
 			t.Fatalf("index-mac %d = %d %s", i+1, code, got)
 		}
 	}
 	for i := range 10 {
-		if code, got := w.email(svcsig.AudienceWorkerBrain, emailOp("own", ada, nil, "")); code != http.StatusOK {
+		if code, got := w.email(svcsig.AudienceWorkerBrain, ops[i%len(ops)]); code != http.StatusOK {
 			t.Fatalf("email %d after 20 index-mac calls = %d %s", i+1, code, got)
 		}
 	}
-	if code, got := w.email(svcsig.AudienceWorkerBrain, emailOp("own", ada, nil, "")); code != http.StatusTooManyRequests || got != "keys: refused" {
-		t.Fatalf("email 11 = %d %q, want 429 keys: refused", code, got)
+	for _, op := range ops {
+		if code, got := w.email(svcsig.AudienceWorkerBrain, op); code != http.StatusTooManyRequests || got != "keys: refused" {
+			t.Fatalf("%s after 30 = %d %q, want 429 keys: refused", op, code, got)
+		}
 	}
 	if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, mac); code != http.StatusTooManyRequests || got != "keys: refused" {
 		t.Fatalf("index-mac 21 = %d %q, want 429 keys: refused", code, got)
 	}
-	// The 100 key calls are counted apart.
+	// A body whose op cannot be read takes EmailRate too.
+	if code, got := w.email(svcsig.AudienceWorkerBrain, `{"op":`); code != http.StatusTooManyRequests || got != "keys: refused" {
+		t.Fatalf("an unreadable body after 30 = %d %q, want 429 keys: refused", code, got)
+	}
+	// Directory and the 100 key calls are counted apart.
+	if code, got := w.email(svcsig.AudienceWorkerBrain, emailOp("directory", ada, nil, "")); code != http.StatusOK {
+		t.Fatalf("directory after 30 email calls = %d %s", code, got)
+	}
 	if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathWrap, `{"kind":"credential","ref":"GITHUB"}`); code != http.StatusOK {
 		t.Fatalf("a wrap after 31 email calls = %d %s", code, got)
+	}
+}
+
+// Invariant 6 (D9): directory takes 300 calls per 10 s from brain, apart
+// from index-mac and the other email ops.
+func TestKeysEmailDirectoryLimit(t *testing.T) {
+	w := startKeyWorker(t)
+	w.person(adaID, "Ada@Example.com", "owner", "", false)
+	ada := w.session(adaID, time.Hour)
+	directory := emailOp("directory", ada, nil, "")
+	for i := range 300 {
+		if code, got := w.email(svcsig.AudienceWorkerBrain, directory); code != http.StatusOK {
+			t.Fatalf("directory %d = %d %s", i+1, code, got)
+		}
+	}
+	if code, got := w.email(svcsig.AudienceWorkerBrain, directory); code != http.StatusTooManyRequests || got != "keys: refused" {
+		t.Fatalf("directory 301 = %d %q, want 429 keys: refused", code, got)
+	}
+	if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, `{"address":"Ada@Example.com","all":false}`); code != http.StatusOK {
+		t.Fatalf("index-mac after 301 directory calls = %d %s", code, got)
+	}
+	if code, got := w.email(svcsig.AudienceWorkerBrain, emailOp("own", ada, nil, "")); code != http.StatusOK {
+		t.Fatalf("own after 301 directory calls = %d %s", code, got)
 	}
 }
 

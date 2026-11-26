@@ -20,7 +20,7 @@ Agents hold stand-in values. The real credential never enters the sandbox.
 
 Sandboxd swaps a stand-in for the real value on the way out. It does this only toward the host that the credential names. Brain never holds a real value (`internal/sandboxd/inject`). If sandboxd cannot resolve a credential that a host needs, it does not open the connection to that host.
 
-Stored provider credentials, password hashes and email addresses are sealed in the database with `UPMO_MASTER_KEY`. See [Data at rest](operations/data-at-rest.md).
+Stored provider credentials, password hashes and email addresses are sealed in the database. The worker seals them with `UPMO_MASTER_KEY`. See [Data at rest](operations/data-at-rest.md).
 
 ## Least access per task
 
@@ -59,7 +59,7 @@ API responses from brain send `Content-Security-Policy: default-src 'none'` and 
 ## Keys and secrets
 
 - Production refuses the development keys and passwords that `compose.yml` embeds. It also refuses any key made of one repeated byte.
-- `UPMO_MASTER_KEY` is required in every environment.
+- `UPMO_MASTER_KEY` is required on the worker, on `upmo backup`, on `upmo keys`, on `upmo recover`, and on `upmo bootstrap`. Brain, gateway, and sandboxd refuse to start when it is set. Brain does not receive a password hash or a provider credential from the worker.
 - To rotate the master key, see [Data at rest](operations/data-at-rest.md#key-loss-and-retirement).
 
 ## Not covered yet

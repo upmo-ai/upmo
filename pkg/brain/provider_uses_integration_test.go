@@ -3,9 +3,7 @@
 package brain
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -16,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -42,8 +39,6 @@ func newUsesRig(t *testing.T) usesRig {
 		t.Fatal(err)
 	}
 	appPool := pgtest.App(t, owner)
-	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
-	t.Setenv(gateway.EnvMasterKeyID, "k1")
 	cfg := Config{
 		Env:             "development",
 		SessionIdle:     identity.IdleTimeout,

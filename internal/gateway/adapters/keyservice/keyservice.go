@@ -45,9 +45,15 @@ const (
 	PasswordAttempts = 5
 )
 
-// EmailRate is how many index-mac and email calls brain may make per
-// Window, counted together and apart from Rate and PasswordRate.
-const EmailRate = 30
+// EmailRate is how many index-mac and own, link and member email calls
+// brain may make per Window, counted together and apart from Rate and
+// PasswordRate. DirectoryRate is how many directory email calls brain may
+// make per Window, counted apart from all of them: the members list asks
+// for one each time a page loads.
+const (
+	EmailRate     = 30
+	DirectoryRate = 300
+)
 
 // The bounds of a password-verify body, in bytes.
 const (
@@ -185,9 +191,10 @@ func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderT
 	}
 	s := &server{
 		owner: owner, ring: ring, test: test, passwords: passwords, emails: emails, log: log,
-		limit:         &limiter{rate: Rate, at: map[string][]time.Time{}},
-		passwordLimit: &limiter{rate: PasswordRate, at: map[string][]time.Time{}},
-		emailLimit:    &limiter{rate: EmailRate, at: map[string][]time.Time{}},
+		limit:          &limiter{rate: Rate, at: map[string][]time.Time{}},
+		passwordLimit:  &limiter{rate: PasswordRate, at: map[string][]time.Time{}},
+		emailLimit:     &limiter{rate: EmailRate, at: map[string][]time.Time{}},
+		directoryLimit: &limiter{rate: DirectoryRate, at: map[string][]time.Time{}},
 	}
 	d := dispatch{}
 	for audience := range service {
@@ -227,8 +234,11 @@ type server struct {
 	limit     *limiter
 	// passwordLimit counts password-verify calls apart from limit.
 	passwordLimit *limiter
-	// emailLimit counts index-mac and email calls apart from both.
+	// emailLimit counts index-mac and the own, link and member email calls
+	// apart from both.
 	emailLimit *limiter
+	// directoryLimit counts directory email calls apart from all three.
+	directoryLimit *limiter
 }
 
 // routes serves one verified audience.
@@ -562,12 +572,26 @@ func (b emailBody) proof() (p emailProof, raw []byte, ok bool) {
 func (s *server) email(w http.ResponseWriter, r *http.Request, audience string) {
 	ctx := r.Context()
 	changes := map[string]string{"audience": audience, "kind": domain.KindEmail}
-	if !s.emailLimit.take(audience, time.Now()) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.deny(w, ctx, http.StatusForbidden, actionEmail, audience, changes)
+		return
+	}
+	// Read only the op to pick the counter; a body whose op cannot be read
+	// takes EmailRate.
+	var head struct {
+		Op string `json:"op"`
+	}
+	limit := s.emailLimit
+	if json.Unmarshal(body, &head) == nil && head.Op == keys.EmailDirectory {
+		limit = s.directoryLimit
+	}
+	if !limit.take(audience, time.Now()) {
 		s.deny(w, ctx, http.StatusTooManyRequests, actionEmail, audience, changes)
 		return
 	}
 	var in emailBody
-	if !decode(r, &in) || audience != svcsig.AudienceWorkerBrain {
+	if !decodeBytes(body, &in) || audience != svcsig.AudienceWorkerBrain {
 		s.deny(w, ctx, http.StatusForbidden, actionEmail, audience, changes)
 		return
 	}
@@ -584,7 +608,6 @@ func (s *server) email(w http.ResponseWriter, r *http.Request, audience string) 
 	}
 	var rows []EmailRow
 	var found bool
-	var err error
 	switch proof.op {
 	case keys.EmailOwn:
 		var row EmailRow
@@ -802,7 +825,16 @@ func (s *server) record(ctx context.Context, action, outcome, audience string, c
 
 // decode reads exactly one JSON object with no unknown field.
 func decode(r *http.Request, into any) bool {
-	dec := json.NewDecoder(r.Body)
+	return decodeFrom(r.Body, into)
+}
+
+// decodeBytes is decode over a body already read.
+func decodeBytes(body []byte, into any) bool {
+	return decodeFrom(bytes.NewReader(body), into)
+}
+
+func decodeFrom(body io.Reader, into any) bool {
+	dec := json.NewDecoder(body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
 		return false
