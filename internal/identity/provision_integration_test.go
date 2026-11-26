@@ -207,13 +207,15 @@ func TestSSOStepUpRefreshesSessionAndFreshSucceeds(t *testing.T) {
 
 func TestSSORedeemHTTPAndFreshIntegration(t *testing.T) {
 	owner, appPool, ctx := upBoth(t)
-	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	// The worker checks the session against the database clock when the
+	// passkey add starts, so the rig's clock starts at the database's now.
+	now := dbNow(t, ctx, owner)
 	clock := now
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(appPool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = func() time.Time { return clock }
-	passkeys, err := identity.Passkeys(appPool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
+	passkeys, err := identity.Passkeys(appPool, sealer.WorkerEmail(t, owner), sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}

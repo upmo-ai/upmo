@@ -28,13 +28,41 @@ func indexEmailHashes(ctx context.Context, emails app.EmailSealer, address strin
 	return emails.IndexHashes(ctx, address)
 }
 
-// openStoredEmail returns the address of stored, which was sealed for hash. A
-// value that does not open is ErrStoredEmail; the text never carries the value.
-func openStoredEmail(emails app.EmailSealer, stored string, hash []byte) (string, error) {
+// readyEmails is emails when it is wired and ready. Brain reads no stored
+// address: every one it shows or mails comes from the worker, for one proof.
+func readyEmails(emails app.EmailSealer) (app.EmailSealer, error) {
 	if emails == nil || !emails.Ready() {
-		return "", app.ErrNoEmailSealer
+		return nil, app.ErrNoEmailSealer
 	}
-	return emails.Open(stored, hash)
+	return emails, nil
+}
+
+// OwnEmail is the address of the person behind the live session tokenHash.
+func (p Passkeys) OwnEmail(ctx context.Context, tokenHash []byte) (string, error) {
+	emails, err := readyEmails(p.Emails)
+	if err != nil {
+		return "", err
+	}
+	return emails.OwnEmail(ctx, tokenHash)
+}
+
+// LinkEmail is the address of the person the unspent link linkHash is for.
+func (p Passkeys) LinkEmail(ctx context.Context, linkHash []byte) (string, error) {
+	emails, err := readyEmails(p.Emails)
+	if err != nil {
+		return "", err
+	}
+	return emails.LinkEmail(ctx, linkHash)
+}
+
+// MemberEmail is user's address, for the session tokenHash whose person
+// manages user.
+func (p Passkeys) MemberEmail(ctx context.Context, tokenHash []byte, user domain.UserID) (string, error) {
+	emails, err := readyEmails(p.Emails)
+	if err != nil {
+		return "", err
+	}
+	return emails.MemberEmail(ctx, tokenHash, user)
 }
 
 // sealEmail returns the stored form of address and its index hashes under

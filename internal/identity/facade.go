@@ -211,6 +211,40 @@ func StoredPasswordOfSession(ctx context.Context, owner *pgxpool.Pool, tokenHash
 	return postgres.StoredPasswordOfSession(ctx, owner, tokenHash)
 }
 
+// StoredEmail is one person's stored address as the worker reads it.
+type StoredEmail = postgres.StoredEmail
+
+// StoredEmailOfSession is the enabled person behind an unexpired session
+// hash, with their stored address. Only the worker's owner pool may call it.
+func StoredEmailOfSession(ctx context.Context, owner *pgxpool.Pool, tokenHash []byte) (StoredEmail, bool, error) {
+	return postgres.StoredEmailOfSession(ctx, owner, tokenHash)
+}
+
+// StoredEmailOfLink is the enabled person an unused, unexpired sign-in link
+// hash is for, with their stored address. Only the worker's owner pool may
+// call it.
+func StoredEmailOfLink(ctx context.Context, owner *pgxpool.Pool, linkHash []byte) (StoredEmail, bool, error) {
+	return postgres.StoredEmailOfLink(ctx, owner, linkHash)
+}
+
+// StoredEmailOfPerson is an enabled person's stored address. Only the
+// worker's owner pool may call it.
+func StoredEmailOfPerson(ctx context.Context, owner *pgxpool.Pool, user string) (StoredEmail, bool, error) {
+	return postgres.StoredEmailOfPerson(ctx, owner, user)
+}
+
+// StoredEmailDirectory is every enabled person's stored address, ordered by
+// id. Only the worker's owner pool may call it.
+func StoredEmailDirectory(ctx context.Context, owner *pgxpool.Pool) ([]StoredEmail, error) {
+	return postgres.StoredEmailDirectory(ctx, owner)
+}
+
+// SessionPerson is the enabled person behind an unexpired session hash,
+// never an API token's. Only the worker's owner pool may call it.
+func SessionPerson(ctx context.Context, owner *pgxpool.Pool, tokenHash []byte) (string, bool, error) {
+	return postgres.SessionPerson(ctx, owner, tokenHash)
+}
+
 // TakePasswordVerify counts one password check for an address's window and
 // returns the count, at most 6. Only the worker's owner pool may call it.
 func TakePasswordVerify(ctx context.Context, owner *pgxpool.Pool, subject []byte) (int, error) {

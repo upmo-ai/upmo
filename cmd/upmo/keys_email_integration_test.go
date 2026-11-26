@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/upmo-ai/upmo/internal/gateway"
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
@@ -102,13 +103,15 @@ func checkFiveFields(t *testing.T, ring gateway.Keyring, stored string, hash []b
 }
 
 // Invariant 1 (4d1): brain's address, sealed through the worker on the
-// bootstrap path, and the worker's own are five fields; brain and the
-// worker each open both, and neither opens a moved or a three-field value.
+// bootstrap path, and the worker's own are five fields; the worker opens
+// both, and opens no moved or three-field value. Brain opens none itself:
+// it asks the worker for its own address, and a stored value that does not
+// open is a 500 that names neither the value nor the address (4d2).
 func TestKeysEmailIsFiveFields(t *testing.T) {
 	w := startKeyWorker(t)
 	ctx := context.Background()
 	brain := w.client(svcsig.AudienceWorkerBrain)
-	brainEmails := brainops.WorkerEmails{Keys: &brain, Ring: w.ring}
+	brainEmails := brainops.WorkerEmails{Keys: &brain}
 	workerEmails := brainops.NewEmailSealer(w.ring)
 
 	passkeys, err := identity.Passkeys(w.owner, brainEmails, identity.Sessions(w.owner, identity.IdleTimeout, identity.MaxAge), "http://localhost:5173", "localhost", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -118,9 +121,9 @@ func TestKeysEmailIsFiveFields(t *testing.T) {
 	if _, err := passkeys.Bootstrap(ctx, "Ada@Example.com", "Ada"); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	var stored, keyID string
+	var id, stored, keyID string
 	var hash []byte
-	if err := w.owner.QueryRow(ctx, `SELECT email, email_hash, email_hash_key_id FROM identity.users`).Scan(&stored, &hash, &keyID); err != nil {
+	if err := w.owner.QueryRow(ctx, `SELECT id::text, email, email_hash, email_hash_key_id FROM identity.users`).Scan(&id, &stored, &hash, &keyID); err != nil {
 		t.Fatal(err)
 	}
 	if want := macOf(t, w.ring, "ada@example.com"); !bytes.Equal(hash, want) || keyID != "k1" {
@@ -139,22 +142,37 @@ func TestKeysEmailIsFiveFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	three := strings.Join([]string{old.KeyID, base64.StdEncoding.EncodeToString(old.Nonce), base64.StdEncoding.EncodeToString(old.Ciphertext)}, ":")
-	for name, sealer := range map[string]identity.EmailSealer{"brain": brainEmails, "worker": workerEmails} {
-		if got, err := sealer.Open(stored, hash); err != nil || got != "Ada@Example.com" {
-			t.Errorf("%s opens brain's address to %q %v", name, got, err)
+	if got, err := workerEmails.Open(stored, hash); err != nil || got != "Ada@Example.com" {
+		t.Errorf("the worker opens brain's address to %q %v", got, err)
+	}
+	if got, err := workerEmails.Open(workerStored, workerHash); err != nil || got != "Grace@Example.org" {
+		t.Errorf("the worker opens its own address to %q %v", got, err)
+	}
+	for what, value := range map[string][2]string{
+		"moved to grace's hash": {stored, string(workerHash)},
+		"three fields":          {three, string(hash)},
+	} {
+		got, err := workerEmails.Open(value[0], []byte(value[1]))
+		if !errors.Is(err, identity.ErrStoredEmail) || err.Error() != "identity: stored email address" || got != "" {
+			t.Errorf("the worker opens a value %s = %q %v, want ErrStoredEmail", what, got, err)
 		}
-		if got, err := sealer.Open(workerStored, workerHash); err != nil || got != "Grace@Example.org" {
-			t.Errorf("%s opens the worker's address to %q %v", name, got, err)
-		}
-		for what, value := range map[string][2]string{
-			"moved to grace's hash": {stored, string(workerHash)},
-			"three fields":          {three, string(hash)},
-		} {
-			got, err := sealer.Open(value[0], []byte(value[1]))
-			if !errors.Is(err, identity.ErrStoredEmail) || err.Error() != "identity: stored email address" || got != "" {
-				t.Errorf("%s opens a value %s = %q %v, want ErrStoredEmail", name, what, got, err)
-			}
-		}
+	}
+
+	// Brain asks for Ada's address with her session; a three-field value
+	// under her row is a 500 to brain, which is try again, never an address.
+	session := w.session(id, time.Hour)
+	if got, err := brainEmails.OwnEmail(ctx, session); err != nil || got != "Ada@Example.com" {
+		t.Fatalf("brain's own email = %q %v", got, err)
+	}
+	if _, err := w.owner.Exec(ctx, `UPDATE identity.users SET email = $1`, three); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"op":"own","actor_token_hash":"` + base64.StdEncoding.EncodeToString(session) + `"}`
+	if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathEmail, body); code != http.StatusInternalServerError || got != "keys: refused" {
+		t.Fatalf("own over a three-field value = %d %q, want 500 keys: refused", code, got)
+	}
+	if got, err := brainEmails.OwnEmail(ctx, session); !errors.Is(err, keys.ErrUnavailable) || !errors.Is(err, identity.ErrBusy) || got != "" {
+		t.Fatalf("brain's own email over a three-field value = %q %v, want keys: worker unavailable", got, err)
 	}
 }
 

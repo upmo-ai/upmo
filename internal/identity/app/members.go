@@ -25,7 +25,9 @@ type AvatarBlobs interface {
 // MemberStore is the members tables and the task share rows.
 type MemberStore interface {
 	ListRoles(ctx context.Context) ([]domain.MemberRole, error)
-	ListMembers(ctx context.Context) ([]domain.Member, error)
+	// ListMembers lists the enabled people, with their addresses from the
+	// worker for the session tokenHash.
+	ListMembers(ctx context.Context, tokenHash []byte) ([]domain.Member, error)
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 	MemberTeams(ctx context.Context, id domain.UserID) ([]string, error)
 	SharedObjects(ctx context.Context, objectType domain.ObjectType, user domain.UserID, teams []string, role domain.RoleID) ([]ObjectShare, error)
@@ -41,7 +43,9 @@ type MemberStore interface {
 	InviteMember(ctx context.Context, actorTokenHash []byte, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)
 	RemoveMember(ctx context.Context, actorTokenHash []byte, id domain.UserID, now time.Time, rule func(system string) error) error
 	ReplaceMemberLink(ctx context.Context, id domain.UserID, purpose string, hash []byte, expires time.Time, rule func(system string, invited bool) error) error
-	Profile(ctx context.Context, user domain.UserID) (email, name string, err error)
+	// MemberEmail is user's address from the worker, for the session
+	// tokenHash whose person manages user.
+	MemberEmail(ctx context.Context, tokenHash []byte, user domain.UserID) (string, error)
 	SetAvatar(ctx context.Context, actorTokenHash []byte, user domain.UserID, avatarKey string) (oldKey string, err error)
 	ClearAvatar(ctx context.Context, actorTokenHash []byte, user domain.UserID) (oldKey string, err error)
 	LookupAvatarKey(ctx context.Context, user domain.UserID) (string, error)
@@ -80,7 +84,7 @@ func (m Members) List(ctx context.Context, session Session) ([]domain.Member, er
 	if _, err := m.actor(ctx, session.UserID); err != nil {
 		return nil, err
 	}
-	return m.Store.ListMembers(ctx)
+	return m.Store.ListMembers(ctx, session.TokenHash)
 }
 
 // Invite creates or restores a person and returns the invite token text.
@@ -144,10 +148,12 @@ func (m Members) Remove(ctx context.Context, session Session, target domain.User
 	})
 }
 
-// Recover issues a recover link for an enabled person. An unknown email and a
-// disabled person are the same answer.
+// Recover issues a recover link for an enabled person and mails it to the
+// address it was given, trimmed. An unknown email and a disabled person are
+// the same answer.
 func (m Members) Recover(ctx context.Context, email string) (string, error) {
-	id, ok, err := m.Store.UserByEmail(ctx, strings.TrimSpace(email))
+	email = strings.TrimSpace(email)
+	id, ok, err := m.Store.UserByEmail(ctx, email)
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +169,7 @@ func (m Members) Recover(ctx context.Context, email string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	m.sendTo(ctx, "recover", id, text)
+	m.send(ctx, "recover", id, email, text)
 	return text, nil
 }
 
@@ -201,16 +207,17 @@ func (m Members) replace(ctx context.Context, session Session, target domain.Use
 	if err != nil {
 		return "", err
 	}
-	m.sendTo(ctx, purpose, target, text)
+	m.sendTo(ctx, purpose, session, target, text)
 	return text, nil
 }
 
-// sendTo emails the link to the person's stored address.
-func (m Members) sendTo(ctx context.Context, purpose string, id domain.UserID, token string) {
+// sendTo emails the link to target's stored address, which the worker opens
+// for the session whose person manages target.
+func (m Members) sendTo(ctx context.Context, purpose string, session Session, id domain.UserID, token string) {
 	if m.Mail == nil {
 		return
 	}
-	email, _, err := m.Store.Profile(ctx, id)
+	email, err := m.Store.MemberEmail(ctx, session.TokenHash, id)
 	if err != nil {
 		m.warn(purpose, id, err)
 		return
@@ -377,6 +384,28 @@ func (m Members) ShareAccess(ctx context.Context, id domain.UserID, objectType d
 		SharedView: domain.UUIDArray(view),
 		SharedEdit: domain.UUIDArray(edit),
 	}, nil
+}
+
+// Joined is nil when id is a joined, enabled person, and
+// domain.ErrNoSuchMember otherwise.
+func (m Members) Joined(ctx context.Context, id domain.UserID) error {
+	_, err := m.actor(ctx, id)
+	return err
+}
+
+// MayManagePerson is nil when the joined, enabled person actor may invite,
+// re-link or remove the enabled person target, by target's system role. An
+// unknown or disabled target is domain.ErrNoSuchMember.
+func (m Members) MayManagePerson(ctx context.Context, actor, target domain.UserID) error {
+	subject, err := m.actor(ctx, actor)
+	if err != nil {
+		return err
+	}
+	_, system, _, _, err := m.Store.MemberActor(ctx, target)
+	if err != nil {
+		return err
+	}
+	return domain.MayManage(subject, system)
 }
 
 func (m Members) actor(ctx context.Context, id domain.UserID) (domain.Subject, error) {

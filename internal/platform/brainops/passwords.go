@@ -120,7 +120,7 @@ func openPassword(ring gateway.Keyring, user identity.UserID, stored string) (st
 type passwordCheck struct {
 	owner  *pgxpool.Pool
 	ring   gateway.Keyring
-	emails identity.EmailSealer
+	emails RingEmails
 }
 
 // ByAddress keys the window by the address's current index MAC, and finds

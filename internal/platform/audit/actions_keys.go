@@ -18,13 +18,16 @@ const (
 	// KeysIndexMAC is one email index MAC the worker computed for brain, or
 	// refused to.
 	KeysIndexMAC Action = "keys.index_mac"
+	// KeysEmail is one stored address the worker opened for brain, for one
+	// op and its proof, or refused to.
+	KeysEmail Action = "keys.email"
 )
 
 func init() {
 	register(KeysReseal, "master_key", classAPIActivity, activityUnknown, "store", "key_id", "from_key_ids", "count")
 	// The worker writes these through audit.record_keys, never through Record,
 	// in the same {fields, values} shape, so the sealer keeps the values.
-	for _, a := range []Action{KeysWrap, KeysUnwrap, KeysProviderTest, KeysPasswordVerify, KeysIndexMAC} {
+	for _, a := range []Action{KeysWrap, KeysUnwrap, KeysProviderTest, KeysPasswordVerify, KeysIndexMAC, KeysEmail} {
 		register(a, "data_key", classAPIActivity, activityUnknown, "account_id", "audience", "kind", "op", "ref", "ref_digest", "sandbox_id")
 	}
 }

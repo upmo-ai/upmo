@@ -45,8 +45,8 @@ const (
 	PasswordAttempts = 5
 )
 
-// EmailRate is how many index-mac calls brain may make per Window, counted
-// apart from Rate and PasswordRate.
+// EmailRate is how many index-mac and email calls brain may make per
+// Window, counted together and apart from Rate and PasswordRate.
 const EmailRate = 30
 
 // The bounds of a password-verify body, in bytes.
@@ -62,6 +62,7 @@ const (
 	actionProviderTest   = "keys.provider_test"
 	actionPasswordVerify = "keys.password_verify"
 	actionIndexMAC       = "keys.index_mac"
+	actionEmail          = "keys.email"
 )
 
 var (
@@ -96,6 +97,33 @@ type Passwords interface {
 	// Take counts one check for subject and returns the window's count.
 	Take(ctx context.Context, subject []byte) (int, error)
 	Check(ctx context.Context, account PasswordAccount, password string) (match, rehash bool, err error)
+}
+
+// EmailRow is one person's stored address as the worker reads it on the
+// owner pool: the person's id, the stored text and its index hash.
+type EmailRow struct {
+	User   string
+	Stored string
+	Hash   []byte
+}
+
+// Emails is what the email route needs from identity, on the owner pool.
+// Each lookup answers false when its proof does not hold, and an error only
+// when it could not tell.
+type Emails interface {
+	// Own is the enabled person behind an unexpired session hash.
+	Own(ctx context.Context, tokenHash []byte) (EmailRow, bool, error)
+	// Link is the enabled person an unused, unexpired sign-in link hash is
+	// for.
+	Link(ctx context.Context, linkHash []byte) (EmailRow, bool, error)
+	// Member is user, enabled, when the joined, enabled person behind an
+	// unexpired session hash may manage user's system role.
+	Member(ctx context.Context, tokenHash []byte, user string) (EmailRow, bool, error)
+	// Directory is every enabled person, ordered by id, for the joined,
+	// enabled person behind an unexpired session hash.
+	Directory(ctx context.Context, tokenHash []byte) ([]EmailRow, bool, error)
+	// Open returns the address of stored, sealed for hash.
+	Open(stored string, hash []byte) (string, error)
 }
 
 // proxySecretLen is the size of a sandbox's proxy secret, and actorHashLen
@@ -136,7 +164,7 @@ type ProviderTester func(ctx context.Context, accountID string, actor []byte, al
 // passwords serves password-verify. A missing pool, ring, tester, password
 // check or audience key is an error, so the worker cannot serve a route
 // that fails open.
-func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderTester, passwords Passwords, log *slog.Logger) (http.Handler, error) {
+func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderTester, passwords Passwords, emails Emails, log *slog.Logger) (http.Handler, error) {
 	if owner == nil {
 		return nil, errors.New("keyservice: no database")
 	}
@@ -146,6 +174,9 @@ func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderT
 	if passwords == nil {
 		return nil, errors.New("keyservice: no password check")
 	}
+	if emails == nil {
+		return nil, errors.New("keyservice: no email lookup")
+	}
 	if !ring.Ready() {
 		return nil, domain.ErrNoMasterKey
 	}
@@ -153,7 +184,7 @@ func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderT
 		log = slog.New(slog.DiscardHandler)
 	}
 	s := &server{
-		owner: owner, ring: ring, test: test, passwords: passwords, log: log,
+		owner: owner, ring: ring, test: test, passwords: passwords, emails: emails, log: log,
 		limit:         &limiter{rate: Rate, at: map[string][]time.Time{}},
 		passwordLimit: &limiter{rate: PasswordRate, at: map[string][]time.Time{}},
 		emailLimit:    &limiter{rate: EmailRate, at: map[string][]time.Time{}},
@@ -191,11 +222,12 @@ type server struct {
 	ring      domain.Keyring
 	test      ProviderTester
 	passwords Passwords
+	emails    Emails
 	log       *slog.Logger
 	limit     *limiter
 	// passwordLimit counts password-verify calls apart from limit.
 	passwordLimit *limiter
-	// emailLimit counts index-mac calls apart from both.
+	// emailLimit counts index-mac and email calls apart from both.
 	emailLimit *limiter
 }
 
@@ -220,6 +252,8 @@ func (s *server) routes(audience string) http.Handler {
 			s.passwordVerify(w, r, audience)
 		case r.Method == http.MethodPost && r.URL.Path == keys.PathIndexMAC:
 			s.indexMAC(w, r, audience)
+		case r.Method == http.MethodPost && r.URL.Path == keys.PathEmail:
+			s.email(w, r, audience)
 		default:
 			http.NotFound(w, r)
 		}
@@ -441,6 +475,170 @@ func (s *server) indexMAC(w http.ResponseWriter, r *http.Request, audience strin
 		macs = s.ring.IndexMACs(normal)
 	}
 	respond(w, keys.IndexMACResponse{KeyID: keyID, MACs: macs})
+}
+
+// emailBody is keys.EmailRequest as read: each field stays raw so a null
+// counts as present, and each op must name exactly its own fields.
+type emailBody struct {
+	Op             string          `json:"op"`
+	ActorTokenHash json.RawMessage `json:"actor_token_hash"`
+	LinkHash       json.RawMessage `json:"link_hash"`
+	UserID         json.RawMessage `json:"user_id"`
+}
+
+// emailProof is an email body that has exactly its op's fields, each the
+// right size.
+type emailProof struct {
+	op        string
+	tokenHash []byte
+	linkHash  []byte
+	user      string
+}
+
+// proof reads the op's fields. raw is the caller's proof bytes, for the
+// audit digest, whether or not they are taken.
+func (b emailBody) proof() (p emailProof, raw []byte, ok bool) {
+	var actor, link, user bool
+	switch b.Op {
+	case keys.EmailOwn, keys.EmailDirectory:
+		actor = true
+	case keys.EmailLink:
+		link = true
+	case keys.EmailMember:
+		actor, user = true, true
+	default:
+		return emailProof{}, nil, false
+	}
+	p.op = b.Op
+	ok = true
+	read := func(field json.RawMessage, want bool) []byte {
+		if field == nil {
+			ok = ok && !want
+			return nil
+		}
+		if !want {
+			ok = false
+			raw = append(raw, field...)
+			return nil
+		}
+		var value []byte
+		if err := json.Unmarshal(field, &value); err != nil {
+			ok = false
+			raw = append(raw, field...)
+			return nil
+		}
+		raw = append(raw, value...)
+		if len(value) != actorHashLen {
+			ok = false
+			return nil
+		}
+		return value
+	}
+	p.tokenHash = read(b.ActorTokenHash, actor)
+	p.linkHash = read(b.LinkHash, link)
+	switch {
+	case b.UserID == nil:
+		ok = ok && !user
+	case !user:
+		ok = false
+		raw = append(raw, b.UserID...)
+	default:
+		if err := json.Unmarshal(b.UserID, &p.user); err != nil {
+			ok = false
+			raw = append(raw, b.UserID...)
+			break
+		}
+		raw = append(raw, p.user...)
+		ok = ok && personPattern.MatchString(p.user)
+	}
+	return p, raw, ok
+}
+
+// email opens stored addresses for brain, for one op whose proof the worker
+// checks as owner: a live session, an unspent link, or a session whose
+// person may manage the one asked for. Every refusal is the same 403, so no
+// answer tells a known address from an unknown one. The audit row holds the
+// op and a digest of the proof, never an address, a hash or a user id.
+func (s *server) email(w http.ResponseWriter, r *http.Request, audience string) {
+	ctx := r.Context()
+	changes := map[string]string{"audience": audience, "kind": domain.KindEmail}
+	if !s.emailLimit.take(audience, time.Now()) {
+		s.deny(w, ctx, http.StatusTooManyRequests, actionEmail, audience, changes)
+		return
+	}
+	var in emailBody
+	if !decode(r, &in) || audience != svcsig.AudienceWorkerBrain {
+		s.deny(w, ctx, http.StatusForbidden, actionEmail, audience, changes)
+		return
+	}
+	proof, raw, ok := in.proof()
+	if proof.op != "" {
+		changes["op"] = proof.op
+	}
+	if raw != nil {
+		changes["ref_digest"] = s.ring.AuditDigest(raw)
+	}
+	if !ok {
+		s.deny(w, ctx, http.StatusForbidden, actionEmail, audience, changes)
+		return
+	}
+	var rows []EmailRow
+	var found bool
+	var err error
+	switch proof.op {
+	case keys.EmailOwn:
+		var row EmailRow
+		row, found, err = s.emails.Own(ctx, proof.tokenHash)
+		rows = []EmailRow{row}
+	case keys.EmailLink:
+		var row EmailRow
+		row, found, err = s.emails.Link(ctx, proof.linkHash)
+		rows = []EmailRow{row}
+	case keys.EmailMember:
+		var row EmailRow
+		row, found, err = s.emails.Member(ctx, proof.tokenHash, proof.user)
+		rows = []EmailRow{row}
+	case keys.EmailDirectory:
+		rows, found, err = s.emails.Directory(ctx, proof.tokenHash)
+	}
+	if err != nil {
+		s.log.Warn("keys: find a stored address", "op", proof.op, "err", err)
+		s.deny(w, ctx, http.StatusServiceUnavailable, actionEmail, audience, changes)
+		return
+	}
+	if !found {
+		s.deny(w, ctx, http.StatusForbidden, actionEmail, audience, changes)
+		return
+	}
+	addresses := make([]keys.EmailAddress, 0, len(rows))
+	for _, row := range rows {
+		address, err := s.emails.Open(row.Stored, row.Hash)
+		if err != nil {
+			// Name the key only when the value has its shape.
+			if parts := strings.Split(row.Stored, ":"); len(parts) == 5 && domain.ValidKeyID(parts[0]) {
+				s.log.Warn("keys: a stored address did not open", "key_id", parts[0])
+			} else {
+				s.log.Warn("keys: a stored address did not open")
+			}
+			s.deny(w, ctx, http.StatusInternalServerError, actionEmail, audience, changes)
+			return
+		}
+		addresses = append(addresses, keys.EmailAddress{ID: row.User, Address: address})
+	}
+	if err := s.record(ctx, actionEmail, "success", audience, changes); err != nil {
+		s.log.Warn("keys: audit refused an email", "err", err)
+		refuse(w, http.StatusForbidden)
+		return
+	}
+	if proof.op == keys.EmailDirectory {
+		respond(w, struct {
+			Addresses []keys.EmailAddress `json:"addresses"`
+		}{addresses})
+		return
+	}
+	respond(w, struct {
+		Address string `json:"address"`
+	}{addresses[0].Address})
 }
 
 // passwordVerifyBody is the password-verify body as read: the two proofs

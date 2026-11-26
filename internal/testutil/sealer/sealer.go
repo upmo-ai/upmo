@@ -19,11 +19,27 @@ import (
 	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
-// NewEmail returns a real email sealer for the identity suites: the brainops
-// sealer over the test master key, current id "k1".
-func NewEmail(t *testing.T) identity.EmailSealer {
+// NewEmail returns the worker's in-process email sealer for the identity
+// suites: the brainops sealer over the test master key, current id "k1". It
+// opens a stored address itself and answers no email op, so a brain path
+// that shows or mails an address uses WorkerEmail.
+func NewEmail(t *testing.T) brainops.RingEmails {
 	t.Helper()
 	return brainops.NewEmailSealer(Ring(t))
+}
+
+// WorkerEmail starts the real worker key service over owner and the test
+// master key, and returns brain's email sealer over it: every address brain
+// shows or mails is opened by that worker.
+func WorkerEmail(t *testing.T, owner *pgxpool.Pool) brainops.WorkerEmails {
+	t.Helper()
+	return WorkerEmailOn(t, workerkeys.Start(t, owner, Ring(t)))
+}
+
+// WorkerEmailOn is brain's email sealer over a running worker.
+func WorkerEmailOn(t *testing.T, w *workerkeys.Worker) brainops.WorkerEmails {
+	t.Helper()
+	return brainops.WorkerEmails{Keys: w.Client(t, svcsig.AudienceWorkerBrain)}
 }
 
 // Hashes returns the index hashes NewEmail finds address under, current key

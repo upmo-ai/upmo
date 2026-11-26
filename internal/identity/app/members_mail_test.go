@@ -58,16 +58,22 @@ func TestResetLinkEmailsTheRecoverLinkToTheStoredAddress(t *testing.T) {
 	}
 }
 
-func TestRecoverEmailsTheRecoverLinkToTheStoredAddress(t *testing.T) {
+// Recover mails the address it was given, trimmed and with its case kept,
+// and asks for no stored one.
+func TestRecoverEmailsTheRecoverLinkToTheGivenAddress(t *testing.T) {
 	sender := &fakeSender{}
-	members := mailMembers(&mailStore{known: true, email: "bob@example.com"}, sender, nil)
-	token, err := members.Recover(context.Background(), "BOB@example.com")
+	store := &mailStore{known: true, email: "bob@example.com"}
+	members := mailMembers(store, sender, nil)
+	token, err := members.Recover(context.Background(), " BOB@example.com ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := sent{"recover", "bob@example.com", "https://upmo.test/login/link#" + token}
+	want := sent{"recover", "BOB@example.com", "https://upmo.test/login/link#" + token}
 	if len(sender.sent) != 1 || sender.sent[0] != want {
 		t.Fatalf("sent = %+v, want %+v", sender.sent, want)
+	}
+	if store.profiles != 0 {
+		t.Fatalf("stored address reads = %d, want 0", store.profiles)
 	}
 }
 
@@ -166,8 +172,12 @@ func mailMembers(store *mailStore, sender *fakeSender, log *slog.Logger) Members
 	}
 }
 
+// mailSessionHash is the token hash of mailSession, which the member op is
+// asked with.
+var mailSessionHash = []byte("hash of the actor's session token")
+
 func mailSession() Session {
-	return Session{UserID: mailActor, SignedIn: mailNow}
+	return Session{UserID: mailActor, SignedIn: mailNow, TokenHash: mailSessionHash}
 }
 
 type sent struct {
@@ -223,9 +233,14 @@ func (f *mailStore) ReplaceMemberLink(_ context.Context, _ domain.UserID, _ stri
 	}
 	return rule("member", f.invited)
 }
-func (f *mailStore) Profile(context.Context, domain.UserID) (string, string, error) {
+
+// MemberEmail answers only for the actor's session and the target.
+func (f *mailStore) MemberEmail(_ context.Context, tokenHash []byte, id domain.UserID) (string, error) {
 	f.profiles++
-	return f.email, "Bob", f.profileErr
+	if !bytes.Equal(tokenHash, mailSessionHash) || id != mailTarget {
+		return "", domain.ErrNoSuchMember
+	}
+	return f.email, f.profileErr
 }
 
 func mustUser(s string) domain.UserID {

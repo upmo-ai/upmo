@@ -68,7 +68,7 @@ func newAvatarRig(t *testing.T) *avatarRig {
 	owner, pool, ctx := upBoth(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	avatarsDir := t.TempDir()
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, owner)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)

@@ -34,6 +34,8 @@ var (
 	ParseRoleID     = domain.ParseRoleID
 	ErrNoSuchPerson = domain.ErrNoSuchPerson
 	ErrNoSuchMember = domain.ErrNoSuchMember
+	ErrNotPermitted = domain.ErrNotPermitted
+	ErrOwnersOnly   = domain.ErrOwnersOnly
 	ErrLastPasskey  = domain.ErrLastPasskey
 	NewUser         = domain.NewUser
 )

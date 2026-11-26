@@ -43,18 +43,19 @@ func newKit(t *testing.T) *kit {
 	owner, appPool := setup(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(appPool, identity.IdleTimeout, identity.MaxAge)
-	passkeys, err := identity.Passkeys(appPool, sealer.NewEmail(t), sessions, "http://localhost:5173", "localhost", log)
+	emails := sealer.WorkerEmail(t, owner)
+	passkeys, err := identity.Passkeys(appPool, emails, sessions, "http://localhost:5173", "localhost", log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	passwords := identity.Passwords(appPool, sealer.NewEmail(t), sessions)
+	passwords := identity.Passwords(appPool, emails, sessions)
 	passwords.Keys = sealer.Passwords(t, owner)
 	mux := http.NewServeMux()
 	// MountAPITokens registers the session routes and accepts a bearer on
 	// GET /api/session, as brain does; there is no separate MountSessions.
 	identity.MountAPITokens(mux, sessions, identity.APITokens(appPool, log), log, passwords.HasPassword, appPool, nil)
 	identity.MountPasskeys(mux, passkeys, passwords, nil)
-	identity.MountMembers(mux, identity.Members(appPool, sealer.NewEmail(t), "http://localhost:5173", nil, log), sessions)
+	identity.MountMembers(mux, identity.Members(appPool, emails, "http://localhost:5173", nil, log), sessions)
 	identity.MountRoles(mux, identity.Roles(appPool, log), sessions)
 	identity.MountTeams(mux, identity.Teams(appPool, log), sessions)
 	identity.MountConnectorGrants(mux, identity.ConnectorGrants(appPool), passkeys)

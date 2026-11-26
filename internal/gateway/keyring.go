@@ -223,6 +223,13 @@ type (
 	KeysPasswordAccount = keyservice.PasswordAccount
 )
 
+// KeysEmails is what the key service's email route needs from identity;
+// KeysEmailRow is one stored address it reads.
+type (
+	KeysEmails   = keyservice.Emails
+	KeysEmailRow = keyservice.EmailRow
+)
+
 var (
 	// ErrKeysHashBusy is a password check with every hash slot in use.
 	ErrKeysHashBusy = keyservice.ErrHashBusy
@@ -267,8 +274,9 @@ type ActorOfTokenHash func(ctx context.Context, hash []byte) (user string, ok bo
 // in-process ring, reading wrap columns and writing audit rows as owner.
 // providers is the worker's provider use case on the owner pool, wired with
 // the same Allow, Teams and LocalPlan rules brain uses; actor resolves the
-// person behind a provider-test; passwords serves password-verify.
-func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers app.Providers, actor ActorOfTokenHash, passwords KeysPasswords, log *slog.Logger) (http.Handler, error) {
+// person behind a provider-test; passwords serves password-verify and
+// emails the email route.
+func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers app.Providers, actor ActorOfTokenHash, passwords KeysPasswords, emails KeysEmails, log *slog.Logger) (http.Handler, error) {
 	if actor == nil {
 		return nil, fmt.Errorf("gateway: provider test needs an actor lookup")
 	}
@@ -295,7 +303,7 @@ func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers
 		}
 		return out, nil
 	}
-	return keyservice.New(owner, ring, verify, test, passwords, log)
+	return keyservice.New(owner, ring, verify, test, passwords, emails, log)
 }
 
 // WorkerProviders is the worker's provider use case for provider-test: the

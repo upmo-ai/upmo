@@ -52,7 +52,7 @@ func newStepUpRig(t *testing.T) *stepUpRig {
 	day := dbNow(t, ctx, owner).Truncate(time.Minute).Add(-11 * time.Minute)
 	clock := day.Add(11 * time.Minute)
 	now := func() time.Time { return clock }
-	emails := sealer.NewEmail(t)
+	emails := sealer.WorkerEmail(t, owner)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)
 	sessions.Now = now

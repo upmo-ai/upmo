@@ -214,6 +214,8 @@ func memberStatus(err error) (int, string, bool) {
 		return http.StatusBadRequest, "a person needs an email address, a name and a role", true
 	case errors.Is(err, domain.ErrNoSuchMember), errors.Is(err, app.ErrNotSignedIn):
 		return http.StatusNotFound, "no such member", true
+	case errors.Is(err, app.ErrLimited):
+		return http.StatusTooManyRequests, "slow down", true
 	default:
 		return 0, "", false
 	}

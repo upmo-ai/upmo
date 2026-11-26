@@ -15,17 +15,17 @@ import (
 // maxEmailBytes is the longest address the worker computes an index MAC for.
 const maxEmailBytes = 320
 
-// WorkerEmails is brain's EmailSealer: the worker computes every index MAC
-// and wraps every data key, and brain seals the address here under that key
-// and wipes it. Ring only opens stored addresses, until the worker does.
-// A worker that refuses is keys.ErrLimited (429) or keys.ErrUnavailable,
-// each also identity.ErrBusy, so a sign-in says try again.
+// WorkerEmails is brain's EmailSealer: the worker computes every index MAC,
+// wraps every data key and opens every stored address, and brain seals the
+// address here under the wrapped key and wipes it. Brain opens no stored
+// address. A worker that refuses to seal or index is keys.ErrLimited (429)
+// or keys.ErrUnavailable, each also identity.ErrBusy, so a sign-in says try
+// again.
 type WorkerEmails struct {
 	Keys *keys.Client
-	Ring gateway.Keyring
 }
 
-func (w WorkerEmails) Ready() bool { return w.Keys != nil && w.Ring.Ready() }
+func (w WorkerEmails) Ready() bool { return w.Keys != nil }
 
 func (w WorkerEmails) Seal(ctx context.Context, address string) (string, []byte, string, error) {
 	if w.Keys == nil {
@@ -60,10 +60,6 @@ func (w WorkerEmails) Seal(ctx context.Context, address string) (string, []byte,
 	return stored, hash, keyID, nil
 }
 
-func (w WorkerEmails) Open(stored string, hash []byte) (string, error) {
-	return openEmail(w.Ring, stored, hash)
-}
-
 func (w WorkerEmails) IndexHashes(ctx context.Context, address string) ([][]byte, error) {
 	if w.Keys == nil {
 		return nil, identity.ErrNoEmailSealer
@@ -96,4 +92,77 @@ func workerEmailErr(err error) error {
 		err = keys.ErrUnavailable
 	}
 	return fmt.Errorf("%w: %w", err, identity.ErrBusy)
+}
+
+// OwnEmail asks the worker for the address of the person behind the session
+// tokenHash. A refusal is identity.ErrNotSignedIn.
+func (w WorkerEmails) OwnEmail(ctx context.Context, tokenHash []byte) (string, error) {
+	return w.one(ctx, keys.EmailRequest{Op: keys.EmailOwn, ActorTokenHash: tokenHash}, identity.ErrNotSignedIn)
+}
+
+// LinkEmail asks the worker for the address of the person the sign-in link
+// linkHash is for. A refusal is identity.ErrInvalidLink.
+func (w WorkerEmails) LinkEmail(ctx context.Context, linkHash []byte) (string, error) {
+	return w.one(ctx, keys.EmailRequest{Op: keys.EmailLink, LinkHash: linkHash}, identity.ErrInvalidLink)
+}
+
+// MemberEmail asks the worker for user's address, for the person behind the
+// session tokenHash, who must manage user. A refusal is
+// identity.ErrNoSuchMember.
+func (w WorkerEmails) MemberEmail(ctx context.Context, tokenHash []byte, user identity.UserID) (string, error) {
+	return w.one(ctx, keys.EmailRequest{Op: keys.EmailMember, ActorTokenHash: tokenHash, UserID: user.String()}, identity.ErrNoSuchMember)
+}
+
+// EmailDirectory asks the worker for every enabled person's address, for
+// the joined person behind the session tokenHash. A refusal is
+// identity.ErrNotSignedIn.
+func (w WorkerEmails) EmailDirectory(ctx context.Context, tokenHash []byte) (map[identity.UserID]string, error) {
+	if w.Keys == nil {
+		return nil, identity.ErrNoEmailSealer
+	}
+	out, err := w.Keys.Email(ctx, keys.EmailRequest{Op: keys.EmailDirectory, ActorTokenHash: tokenHash})
+	if err != nil {
+		return nil, emailOpErr(err, identity.ErrNotSignedIn)
+	}
+	addresses := make(map[identity.UserID]string, len(out.Addresses))
+	for _, a := range out.Addresses {
+		id, err := identity.ParseUserID(a.ID)
+		if err != nil || a.Address == "" {
+			return nil, workerEmailErr(keys.ErrUnavailable)
+		}
+		addresses[id] = a.Address
+	}
+	if len(addresses) == 0 {
+		return nil, workerEmailErr(keys.ErrUnavailable)
+	}
+	return addresses, nil
+}
+
+// one asks for a single address; refused is the caller's answer to a 403.
+func (w WorkerEmails) one(ctx context.Context, in keys.EmailRequest, refused error) (string, error) {
+	if w.Keys == nil {
+		return "", identity.ErrNoEmailSealer
+	}
+	out, err := w.Keys.Email(ctx, in)
+	if err != nil {
+		return "", emailOpErr(err, refused)
+	}
+	if out.Address == "" {
+		return "", workerEmailErr(keys.ErrUnavailable)
+	}
+	return out.Address, nil
+}
+
+// emailOpErr maps an email op's failure: a refusal is the caller's own
+// error, a limit is also identity.ErrLimited so a page says slow down, and
+// anything else is identity.ErrBusy. None is ever an empty address.
+func emailOpErr(err, refused error) error {
+	switch {
+	case errors.Is(err, keys.ErrRefused):
+		return refused
+	case errors.Is(err, keys.ErrLimited):
+		return fmt.Errorf("%w: %w: %w", keys.ErrLimited, identity.ErrLimited, identity.ErrBusy)
+	default:
+		return workerEmailErr(err)
+	}
 }

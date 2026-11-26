@@ -248,7 +248,7 @@ func (h Passkeys) addOptions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cookie, options, err := h.Pass.BeginAdd(r.Context(), session.UserID)
+	cookie, options, err := h.Pass.BeginAdd(r.Context(), session.UserID, session.TokenHash)
 	if refuseSignedOut(w, err) {
 		return
 	}

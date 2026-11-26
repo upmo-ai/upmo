@@ -20,7 +20,7 @@ func TestRolesIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
 	mux := handler.(*http.ServeMux)
-	members := identity.Members(pool, sealer.NewEmail(t), "", nil, nil)
+	members := identity.Members(pool, sealer.WorkerEmail(t, ownerPool), "", nil, nil)
 	members.Now = func() time.Time { return now }
 	roles := identity.Roles(pool, nil)
 	roles.Now = members.Now
