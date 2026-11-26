@@ -16,6 +16,6 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY main.py .
 
-USER nobody
+USER 65534
 EXPOSE 8000
 ENTRYPOINT ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
