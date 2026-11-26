@@ -393,7 +393,8 @@ services:
     working_dir: /scripts
     volumes:
       - ./scripts:/scripts:ro
-    command: ["canary/lib.sh", "canary/selftest.sh"]
+      - ./.githooks:/githooks:ro
+    command: ["canary/lib.sh", "canary/selftest.sh", "/githooks/pre-commit", "/githooks/commit-msg"]
 
   # Workflow files: actionlint checks syntax and shell steps, zizmor checks
   # for security mistakes (unpinned actions, token scope, injection).

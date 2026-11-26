@@ -65,13 +65,13 @@ jobs:
           known='^([^/]+\.md|LICENSE|Makefile|compose\.yml|go\.(mod|sum)|lychee\.toml|codecov\.yml|osv-scanner\.toml|\.editorconfig|\.env\.example|\.gitignore|\.gitleaks\.toml|\.golangci\.yml|\.hadolint\.yaml|\.markdownlint-cli2\.jsonc)$'
           if has '^(\.github/workflows/ci\.yml|Makefile|compose\.yml)$|^\.github/actions/'; then all=true; fi
           if grep -E '^[^/]+$' <<< "$files" | grep -Evq "$known"; then all=true; fi
-          go='^(cmd|internal|pkg|tools)/|^go\.(mod|sum)$|^(README\.md|LICENSE|SECURITY\.md|CONTRIBUTING\.md|\.gitignore)$|^web/package\.json$|(^|/)(\.env(\.[^/]*)?|AGENTS\.md|CLAUDE\.md)$|(^|/)\.(claude|cursor|kiro|gemini)/'
+          go='^(cmd|internal|pkg|tools|\.githooks)/|^go\.(mod|sum)$|^(README\.md|LICENSE|SECURITY\.md|CONTRIBUTING\.md|\.gitignore)$|^web/package\.json$|(^|/)(\.env(\.[^/]*)?|AGENTS\.md|CLAUDE\.md)$|(^|/)\.(claude|cursor|kiro|gemini)/'
           on() { if [ "$all" = true ] || has "$2"; then echo "$1=true"; else echo "$1=false"; fi; }
           {
             on go "$go"
             on golint "$go|^\.golangci\.yml$"
             on web '^web/'
-            on shell '^scripts/'
+            on shell '^(scripts|\.githooks)/'
             on e2e '^(cmd|internal|pkg|web|e2e|deploy)/|^go\.(mod|sum)$'
             on images '^deploy/|(^|/)Dockerfile$|^\.hadolint\.yaml$'
             on docs '\.md$|\.html$|^docs/|^LICENSE$|^lychee\.toml$|^\.markdownlint-cli2\.jsonc$'
@@ -365,13 +365,28 @@ jobs:
         run: |
           mkdir -p reports
           make commits COMMITS_RANGE="$RANGE" 2>&1 | tee reports/commits.log
+      - name: Run Migration Check
+        env:
+          RANGE: ${{ github.event_name == 'pull_request' && format('origin/{0}...{1}', github.base_ref, github.event.pull_request.head.sha) || 'origin/main...HEAD' }}
+        run: |
+          mkdir -p reports
+          make migrations MIGRATIONS_RANGE="$RANGE" 2>&1 | tee reports/migrations.log
+      # The squash merge uses the title as the subject on main. The title
+      # reaches the check only through env, never inside the run line.
+      - name: Run Title Check
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          mkdir -p reports
+          make title 2>&1 | tee reports/title.log
       - name: Write Summary
         if: always()
         uses: ./.github/actions/summary
         with:
           title: Commit Messages
           status: ${{ job.status }}
-          files:  reports/commits.log
+          files:  reports/commits.log reports/migrations.log reports/title.log
 
   docs:
     name: Docs Check

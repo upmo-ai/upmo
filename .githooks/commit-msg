@@ -1,0 +1,36 @@
+#!/bin/sh
+# Upmo commit-msg hook. Turn it on once with `make hooks`. It applies the
+# same rules as `repolint commits` (tools/repolint/commits.go and
+# attribution.go): a Conventional Commit subject and no AI or tool attribution.
+set -u
+# Byte-wise matching, like the ASCII classes in subjectPattern.
+export LC_ALL=C
+msg=$(grep -v '^#' "$1")
+subject=$(printf '%s\n' "$msg" | sed -n '1p')
+types='feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert'
+tools='claude|anthropic|cursor|codex|openai|copilot|kiro|gemini|glm|kimi|opencode|agy'
+
+if ! printf '%s\n' "$subject" | grep -qE "^Merge branch '.+'"; then
+  length=$(printf '%s' "$subject" | wc -c | tr -d ' ')
+  if [ "$length" -gt 72 ]; then
+    echo "commit-msg: subject is $length characters, the limit is 72" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$subject" | grep -qE "^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?: [a-z0-9][^A-Z]*$"; then
+    echo "commit-msg: subject must be a Conventional Commit, lowercase after the colon:" >&2
+    echo "  $subject" >&2
+    exit 1
+  fi
+  case $subject in
+    *.)
+      echo "commit-msg: subject must not end with a period" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if printf '%s\n' "$msg" | grep -qiE "co-authored-by:.*[^a-z0-9]($tools)([^a-z0-9]|$)|generated (with|by).*[^a-z0-9]($tools|ai)([^a-z0-9]|$)|$(printf '\360\237\244\226')"; then
+  echo "commit-msg: AI or tool attribution is not allowed" >&2
+  exit 1
+fi
+exit 0

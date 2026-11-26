@@ -16,6 +16,8 @@ export UPMO_GIT_DIR
 # main when there is no origin/main yet.
 COMMITS_BASE := $(shell git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main || echo main)
 COMMITS_RANGE ?= $(COMMITS_BASE)..HEAD
+# Changes to check for new migration files: three dots diff against the merge base.
+MIGRATIONS_RANGE ?= $(COMMITS_BASE)...HEAD
 
 # Dev only database for integration tests, served by the compose postgres.
 TEST_DATABASE_URL := postgres://upmo:upmo@postgres:5432/upmo?sslmode=disable
@@ -33,7 +35,7 @@ LDFLAGS := -X github.com/upmo-ai/upmo/internal/platform/buildinfo.Version=$(VERS
 	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.Commit=$(COMMIT) \
 	-X github.com/upmo-ai/upmo/internal/platform/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: help build build-go build-web test test-go test-web test-integration test-live test-regression lint lint-go lint-shell lint-web lint-terms fmt up down ci web e2e arch vuln secrets commits docs fuzz canary workflows images
+.PHONY: help build build-go build-web test test-go test-web test-integration test-live test-regression lint lint-go lint-shell lint-web lint-terms fmt up down ci web e2e arch vuln secrets commits migrations title hooks docs fuzz canary workflows images
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-18s %s\n", $$1, $$2}'
@@ -72,7 +74,7 @@ lint: lint-go lint-shell lint-web lint-terms ## Run golangci-lint (linters and f
 lint-go: ## Run golangci-lint (linters and format check)
 	$(LINT) golangci-lint run ./...
 
-lint-shell: ## Run shellcheck on the scripts
+lint-shell: ## Run shellcheck on the scripts and the git hooks
 	$(TOOL) shellcheck
 
 lint-web: ## Run the web lint
@@ -115,6 +117,16 @@ images: ## Test the markitdown image, lint the Dockerfiles with hadolint and sca
 commits: ## Check Conventional Commit subjects on this branch
 	$(GO) go run ./tools/repolint commits -range $(COMMITS_RANGE)
 
+migrations: ## Refuse new migration files on this branch (edit existing ones before beta)
+	$(GO) go run ./tools/repolint migrations -range $(MIGRATIONS_RANGE)
+
+# CI only: the title comes from the pull request event through PR_TITLE.
+title: ## Check the pull request title in PR_TITLE (the squash commit subject)
+	$(COMPOSE) run --rm -e PR_TITLE go go run ./tools/repolint title
+
+hooks: ## Turn on the versioned git hooks in .githooks (optional, CI runs the same checks)
+	git config core.hooksPath .githooks
+
 docs: ## Check markdown style and links
 	$(TOOL) markdownlint
 	$(TOOL) lychee
@@ -141,7 +153,7 @@ fuzz: ## Fuzz the safety libraries for 30 seconds each
 	$(FUZZ) FuzzCheck ./internal/identity/domain
 	$(FUZZ) FuzzParsePHC ./internal/identity/domain
 
-ci: build lint test test-regression canary arch vuln secrets commits docs workflows images ## Run the same steps as CI
+ci: build lint test test-regression canary arch vuln secrets commits migrations docs workflows images ## Run the same steps as CI
 
 web: ## Install, lint, test and build the web app
 	$(WEB) sh -c "pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build"
