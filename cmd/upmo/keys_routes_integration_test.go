@@ -159,11 +159,14 @@ func (w *keyWorker) seed(ref, plaintext string) gateway.Sealed {
 	return sealed
 }
 
-// auditRows returns the changes and outcomes of the pending rows for action.
+// auditRows returns the outcomes of the pending rows for action, and their
+// changes as one flat object of each value's "to", which is every value the
+// row holds: the worker stores no "from".
 func (w *keyWorker) auditRows(action string) (changes []string, outcomes []string) {
 	w.t.Helper()
 	rows, err := w.owner.Query(context.Background(), `
-		SELECT changes::text, outcome, service, actor_type, credential_type
+		SELECT COALESCE((SELECT jsonb_object_agg(k, v->'to') FROM jsonb_each(changes->'values') AS e(k, v)), '{}'::jsonb)::text,
+		       outcome, service, actor_type, credential_type
 		FROM audit.pending WHERE action = $1 ORDER BY occurred_at, id`, action)
 	if err != nil {
 		w.t.Fatal(err)
@@ -230,6 +233,7 @@ func TestKeysRoutesNeedAWorkerAudienceBearer(t *testing.T) {
 		{http.MethodGet, keys.PathReady, ""},
 		{http.MethodPost, keys.PathWrap, wrapBody},
 		{http.MethodPost, keys.PathUnwrap, unwrapGITHUB},
+		{http.MethodPost, keys.PathProviderTest, `{"account_id":"018f3b2c-7a10-7c4a-8e11-777777777777","actor_token_hash":"AAAA"}`},
 	} {
 		if code, _ := w.send(route.method, route.path, "", route.body); code != http.StatusUnauthorized {
 			t.Errorf("unsigned %s = %d, want 401", route.path, code)
@@ -317,6 +321,7 @@ func TestKeysRoutesRefuseEveryOtherCaller(t *testing.T) {
 		{"gateway sending a wrapped key", svcsig.AudienceWorkerGateway, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"","wrapped_key":"AAAA"}`},
 		{"sandboxd with no live sandbox", svcsig.AudienceWorkerSandboxd, keys.PathUnwrap, `{"kind":"credential","ref":"GITHUB","sandbox_id":"sb-1","proxy_secret":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x61}, 32)) + `"}`},
 		{"two objects", svcsig.AudienceWorkerGateway, keys.PathUnwrap, unwrapGITHUB + unwrapGITHUB},
+		{"an object then junk", svcsig.AudienceWorkerGateway, keys.PathUnwrap, unwrapGITHUB + " junk"},
 	} {
 		code, body := w.call(tc.audience, http.MethodPost, tc.path, tc.body)
 		if code != http.StatusForbidden || body != "keys: refused" {
@@ -349,17 +354,20 @@ func TestKeysAuditRowsComeFirst(t *testing.T) {
 	if err := w.owner.QueryRow(ctx, `SELECT count(*) FROM audit.pending`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.owner.Exec(ctx, `SELECT audit.record_keys('keys.unwrap', 'success', 'sandboxd', '{"audience":"worker-sandboxd","kind":"credential","ref":"GITHUB"}')`); err != nil {
+	if _, err := w.owner.Exec(ctx, `SELECT audit.record_keys('keys.unwrap', 'success', 'sandboxd', '{"fields":["audience","kind","ref"],"values":{"audience":{"from":null,"to":"worker-sandboxd"},"kind":{"from":null,"to":"credential"},"ref":{"from":null,"to":"GITHUB"}}}')`); err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range []string{
 		`SELECT audit.record_keys('auth.sign_in', 'success', 'brain', '{}')`,
 		`SELECT audit.record_keys('keys.unwrap', 'failure', 'gateway', '{}')`,
 		`SELECT audit.record_keys('keys.unwrap', 'success', 'worker', '{}')`,
-		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"data_key":"x"}')`,
-		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"proxy_secret":"x"}')`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"fields":["data_key"],"values":{"data_key":{"from":null,"to":"x"}}}')`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"fields":["proxy_secret"],"values":{"proxy_secret":{"from":null,"to":"x"}}}')`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"fields":["secret"],"values":{}}')`,
 		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '[]')`,
-		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', jsonb_build_object('ref', repeat('a', 1100)))`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"audience":"worker-gateway"}')`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', '{"fields":[],"values":{},"ref":"GITHUB"}')`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'gateway', jsonb_build_object('fields', '["ref"]'::jsonb, 'values', jsonb_build_object('ref', jsonb_build_object('from', null, 'to', repeat('a', 1100)))))`,
 	} {
 		if _, err := w.owner.Exec(ctx, bad); err == nil {
 			t.Errorf("%s inserted", bad)

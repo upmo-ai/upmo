@@ -684,6 +684,9 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		if saved, err = s.manageable(ctx, who, in.ID); err != nil {
 			return TestResult{}, err
 		}
+		if visibilityOf(saved) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+			return TestResult{}, ErrMemberProvidersDisabled
+		}
 		if adapter == "" {
 			adapter = saved.Adapter
 		}
@@ -789,7 +792,8 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 // manageable rule as Test to user, then calls allowed, then opens the
 // account's saved key with open and probes the stored adapter, plan and
 // base URL. It stores nothing: brain stores the status it returns. A house
-// account, an account the person may not change, a local plan they may not
+// account, an account the person may not change, a private account while
+// the workspace has turned off member providers, a local plan they may not
 // test and an account with no saved key are each an error.
 func (s Providers) ProbeSaved(ctx context.Context, user, id string, allowed func() error, open func(ref string) (string, error)) (TestResult, error) {
 	who, err := s.caller(ctx, user)
@@ -799,6 +803,9 @@ func (s Providers) ProbeSaved(ctx context.Context, user, id string, allowed func
 	saved, err := s.manageable(ctx, who, id)
 	if err != nil {
 		return TestResult{}, err
+	}
+	if visibilityOf(saved) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+		return TestResult{}, ErrMemberProvidersDisabled
 	}
 	if !saved.HasKey || s.Known == nil || !s.Known(saved.Adapter) {
 		return TestResult{}, ErrNotFound

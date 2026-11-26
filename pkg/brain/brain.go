@@ -95,25 +95,6 @@ type MemberService interface {
 	TeamsOf(ctx context.Context, userID string) ([]string, error)
 }
 
-func providerMembersAllowed(ctx context.Context, pool *pgxpool.Pool, user string) (bool, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return false, fmt.Errorf("brain: member providers setting: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT set_config('upmo.user_id', $1, true)`, user); err != nil {
-		return false, fmt.Errorf("brain: member providers setting: %w", err)
-	}
-	var allowed bool
-	if err := tx.QueryRow(ctx, `SELECT identity.member_providers_allowed()`).Scan(&allowed); err != nil {
-		return false, fmt.Errorf("brain: member providers setting: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("brain: member providers setting: %w", err)
-	}
-	return allowed, nil
-}
-
 // JobClient enqueues background River jobs inside a caller transaction.
 type JobClient interface {
 	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
@@ -580,7 +561,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return names, err
 	}
 	providers.MemberProvidersAllowed = func(ctx context.Context, user string) (bool, error) {
-		return providerMembersAllowed(ctx, pool, user)
+		return brainops.MemberProvidersAllowed(ctx, pool, user)
 	}
 	routesSvc := gateway.NewRoutes(pool, log)
 	routesSvc.Allow = providers.Allow

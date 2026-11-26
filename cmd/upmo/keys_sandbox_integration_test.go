@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -274,5 +276,163 @@ func TestKeysProviderTestKeepsTheKey(t *testing.T) {
 	}
 	if len(changes) != 9 || success != 2 {
 		t.Fatalf("provider_test audit = %d rows, %d success: %v %v", len(changes), success, changes, outcomes)
+	}
+}
+
+// Invariant 6 once sealed: the sealer keeps each key-route row's values, so
+// audit.events and the OCSF line still name the audience, kind, ref or its
+// digest, the sandbox and the account, and the chain verifies.
+func TestKeysAuditValuesSurviveTheSealer(t *testing.T) {
+	w := startKeyWorker(t)
+	ctx := context.Background()
+	provider := newListener(t)
+	manager := person(t, w, sandboxOwner, "owner")
+	w.seed("GITHUB", allowedKey)
+	w.seed("own_sealed_test", allowedKey)
+	var account string
+	if err := w.owner.QueryRow(ctx, `
+		INSERT INTO gateway.provider_accounts (owner_user_id, name, provider, adapter, credential_ref, plan_kind, house, base_url)
+		VALUES ($1::uuid, 'Saved', 'custom', 'openai_compat', 'own_sealed_test', 'local', false, $2)
+		RETURNING id::text`, sandboxOwner, provider.srv.URL).Scan(&account); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.owner.Exec(ctx, `DELETE FROM audit.pending WHERE action LIKE 'keys.%'`); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathWrap, `{"kind":"credential","ref":"GITHUB"}`); code != http.StatusOK {
+		t.Fatalf("wrap = %d %s", code, body)
+	}
+	if code, body := w.call(svcsig.AudienceWorkerGateway, http.MethodPost, keys.PathUnwrap, `{"kind":"credential","ref":"not a ref","sandbox_id":"sb-1"}`); code != http.StatusForbidden {
+		t.Fatalf("unwrap of not a ref = %d %s", code, body)
+	}
+	test := `{"account_id":"` + account + `","actor_token_hash":"` + base64.StdEncoding.EncodeToString(manager) + `"}`
+	if code, body := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathProviderTest, test); code != http.StatusOK {
+		t.Fatalf("provider-test = %d %s", code, body)
+	}
+
+	var ocsf bytes.Buffer
+	if _, err := audit.SealOnce(ctx, w.owner, &ocsf); err != nil {
+		t.Fatal(err)
+	}
+	var head int64
+	if err := w.owner.QueryRow(ctx, `SELECT position FROM audit.head WHERE one`).Scan(&head); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := audit.Verify(ctx, w.owner, 1, head); err != nil || !res.OK {
+		t.Fatalf("verify 1..%d = %+v %v", head, res, err)
+	}
+
+	to := func(v string) audit.Change { return audit.Change{To: v} }
+	want := []struct {
+		action, outcome string
+		changes         audit.Changes
+	}{
+		{"keys.wrap", "success", audit.Changes{
+			Fields: []string{"audience", "kind", "ref"},
+			Values: map[string]audit.Change{"audience": to("worker-brain"), "kind": to("credential"), "ref": to("GITHUB")},
+		}},
+		{"keys.unwrap", "denied", audit.Changes{
+			Fields: []string{"audience", "kind", "ref_digest", "sandbox_id"},
+			Values: map[string]audit.Change{"audience": to("worker-gateway"), "kind": to("credential"), "ref_digest": to(w.ring.AuditDigest([]byte("not a ref"))), "sandbox_id": to("sb-1")},
+		}},
+		{"keys.provider_test", "success", audit.Changes{
+			Fields: []string{"account_id", "audience"},
+			Values: map[string]audit.Change{"account_id": to(account), "audience": to("worker-brain")},
+		}},
+	}
+	rows, err := w.owner.Query(ctx, `SELECT id::text, action, outcome, changes FROM audit.events WHERE action LIKE 'keys.%' ORDER BY position`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type sealedRow struct {
+		id, action, outcome string
+		changes             audit.Changes
+	}
+	var got []sealedRow
+	for rows.Next() {
+		var r sealedRow
+		var raw []byte
+		if err := rows.Scan(&r.id, &r.action, &r.outcome, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &r.changes); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sealed key rows = %+v, want %d", got, len(want))
+	}
+	lines := map[string]audit.Changes{}
+	for _, line := range strings.Split(strings.TrimSpace(ocsf.String()), "\n") {
+		var event struct {
+			Metadata struct {
+				UID string `json:"uid"`
+			} `json:"metadata"`
+			Unmapped struct {
+				Changes audit.Changes `json:"changes"`
+			} `json:"unmapped"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		lines[event.Metadata.UID] = event.Unmapped.Changes
+	}
+	for i, exp := range want {
+		if got[i].action != exp.action || got[i].outcome != exp.outcome || !reflect.DeepEqual(got[i].changes, exp.changes) {
+			t.Errorf("sealed row %d = %s %s %+v, want %s %s %+v", i, got[i].action, got[i].outcome, got[i].changes, exp.action, exp.outcome, exp.changes)
+		}
+		if line, ok := lines[got[i].id]; !ok || !reflect.DeepEqual(line, exp.changes) {
+			t.Errorf("OCSF changes of %s = %+v, want %+v", exp.action, line, exp.changes)
+		}
+	}
+}
+
+// Member providers off (the workspace setting, read by the real worker):
+// the worker refuses a member's saved-key test of their private account,
+// and serves it again once the setting is back on.
+func TestKeysProviderTestHonorsMemberProvidersOff(t *testing.T) {
+	w := startKeyWorker(t)
+	ctx := context.Background()
+	person(t, w, sandboxOwner, "owner")
+	member := person(t, w, otherPerson, "member")
+	w.seed("own_member_test", allowedKey)
+	var account string
+	// The fake adapter needs no address: a member may not test a local plan,
+	// and a metered one may not dial loopback.
+	if err := w.owner.QueryRow(ctx, `
+		INSERT INTO gateway.provider_accounts (owner_user_id, name, provider, adapter, credential_ref, plan_kind, house, base_url, visibility)
+		VALUES ($1::uuid, 'Mine', 'fake', 'fake', 'own_member_test', 'metered', false, '', 'private')
+		RETURNING id::text`, otherPerson).Scan(&account); err != nil {
+		t.Fatal(err)
+	}
+	test := func() (int, string) {
+		t.Helper()
+		body := `{"account_id":"` + account + `","actor_token_hash":"` + base64.StdEncoding.EncodeToString(member) + `"}`
+		return w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathProviderTest, body)
+	}
+	setting := func(on bool) {
+		t.Helper()
+		if _, err := w.owner.Exec(ctx, `UPDATE identity.workspace SET allow_member_providers = $1 WHERE id`, on); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	setting(false)
+	if code, out := test(); code != http.StatusForbidden || out != "keys: refused" {
+		t.Fatalf("member providers off = %d %q, want 403 keys: refused", code, out)
+	}
+	if _, outcomes := w.auditRows("keys.provider_test"); len(outcomes) != 1 || outcomes[0] != "denied" {
+		t.Fatalf("audit with member providers off = %v", outcomes)
+	}
+	setting(true)
+	code, out := test()
+	var got keys.ProviderTestResponse
+	if err := json.Unmarshal([]byte(out), &got); code != http.StatusOK || err != nil || !got.OK || len(got.Models) != 4 {
+		t.Fatalf("member providers on = %d %s", code, out)
 	}
 }

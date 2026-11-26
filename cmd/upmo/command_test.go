@@ -152,6 +152,7 @@ func TestSecretCommandsRefuseMissingMasterKeyBeforeOpeningDatabase(t *testing.T)
 		"keys":      {"reseal"},
 		"bootstrap": {"--email", "a@example.com", "--name", "A"},
 		"recover":   {"--email", "a@example.com"},
+		"worker":    nil,
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := command(name, args)

@@ -42,9 +42,9 @@ func startKeyWorker(t *testing.T, r *rig, ring Keyring) *keyWorker {
 		w.key[audience] = "upmo_svc_" + audience + "_" + base64.RawStdEncoding.EncodeToString(raw)
 		verify[audience] = [][]byte{raw}
 	}
-	// The worker applies the rig's rules for sharing, teams and the local
-	// plan, read when each test runs, and resolves the person from a real
-	// session row.
+	// The worker applies the rig's rules for sharing, teams, member
+	// providers and the local plan, read when each test runs, and resolves
+	// the person from a real session row.
 	providers := WorkerProviders(r.owner, nil)
 	// The adapters a test points at its own listeners are the worker's too.
 	providers.Probes = r.svc.Probes
@@ -59,6 +59,12 @@ func startKeyWorker(t *testing.T, r *rig, ring Keyring) *keyWorker {
 			return nil, nil
 		}
 		return r.svc.Teams(ctx, user)
+	}
+	providers.MemberProvidersAllowed = func(ctx context.Context, user string) (bool, error) {
+		if r.svc.MemberProvidersAllowed == nil {
+			return true, nil
+		}
+		return r.svc.MemberProvidersAllowed(ctx, user)
 	}
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		return r.svc.LocalPlan != nil && r.svc.LocalPlan(ctx, user)
@@ -237,4 +243,107 @@ func TestSavedKeyTestGoesOnlyToItsSavedAddress(t *testing.T) {
 		t.Fatalf("saved key with the worker gone = %d %s", code, raw)
 	}
 	r.assertNoSecrets(adaKey, newKey)
+}
+
+// With member providers turned off, a member's saved-key test is refused by
+// brain before any worker call, and by the worker when asked directly; the
+// saved address is never dialed. Turned back on, both work.
+func TestSavedKeyTestHonorsMemberProvidersOff(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	memberProviders := true
+	r.svc.MemberProvidersAllowed = func(context.Context, string) (bool, error) { return memberProviders, nil }
+	r.mount(nil)
+	if _, err := r.owner.Exec(context.Background(), `
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		VALUES
+		  ($1::uuid, 'eve@example.test', sha256('eve@example.test'::bytea), 'k1', 'Eve', (SELECT id FROM identity.roles WHERE key = 'owner'), now()),
+		  ($2::uuid, 'ada@example.test', sha256('ada@example.test'::bytea), 'k1', 'Ada', (SELECT id FROM identity.roles WHERE key = 'member'), now())`, eve, ada); err != nil {
+		t.Fatal(err)
+	}
+	prov := newFakeProvider(t)
+	made := r.mustAdd(ada, body("Saved", prov.url(), adaKey))
+	workerCalls := func() int {
+		return r.count(`SELECT count(*) FROM audit.pending WHERE action = 'keys.provider_test'`)
+	}
+	brain := r.worker.client(t, svcsig.AudienceWorkerBrain)
+	ctx := context.Background()
+
+	memberProviders = false
+	code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+	if code != http.StatusForbidden || message(t, raw) != "Your workspace has turned off member providers." {
+		t.Fatalf("brain test with member providers off = %d %s", code, raw)
+	}
+	if n := workerCalls(); n != 0 || prov.hits.Load() != 0 {
+		t.Fatalf("brain refusal reached: worker %d, provider %d", n, prov.hits.Load())
+	}
+	if res, err := brain.ProviderTest(ctx, made.ID, r.session(ada)); err == nil || err.Error() != "keys: worker unavailable" {
+		t.Fatalf("worker test with member providers off = %+v %v", res, err)
+	}
+	if n := r.count(`SELECT count(*) FROM audit.pending WHERE action = 'keys.provider_test' AND outcome = 'denied'`); n != 1 || workerCalls() != 1 || prov.hits.Load() != 0 {
+		t.Fatalf("worker refusal: %d denied of %d rows, provider %d", n, workerCalls(), prov.hits.Load())
+	}
+
+	memberProviders = true
+	code, raw = r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+	if res := decode[app.TestResult](t, raw); code != http.StatusOK || !res.OK {
+		t.Fatalf("brain test with member providers on = %d %s", code, raw)
+	}
+	if res, err := brain.ProviderTest(ctx, made.ID, r.session(ada)); err != nil || !res.OK {
+		t.Fatalf("worker test with member providers on = %+v %v", res, err)
+	}
+	if prov.hits.Load() != 2 || prov.lastAuth() != "Bearer "+adaKey {
+		t.Fatalf("provider after turning it on = %d %q", prov.hits.Load(), prov.lastAuth())
+	}
+	r.assertNoSecrets(adaKey)
+}
+
+// nilModels is an OK probe that lists no models at all, as Vertex does.
+type nilModels struct{}
+
+func (nilModels) Probe(context.Context, app.Attempt) ([]domain.SeenModel, domain.FailureClass, error) {
+	return nil, domain.ClassOK, nil
+}
+
+// A saved-key test keeps an empty model list apart from none: a provider
+// that lists no models clears the seen models, as a typed-key test does,
+// and an adapter that cannot list them leaves the seen models alone.
+func TestSavedKeyTestKeepsEmptyModelsApartFromNone(t *testing.T) {
+	r := newRig(t, masterKeys(t, 'a'))
+	prov := newFakeProvider(t)
+	made := r.mustAdd(ada, body("Saved", prov.url(), adaKey))
+	seen := func() int {
+		return r.count(`SELECT count(*) FROM gateway.account_models_seen WHERE account_id = $1::uuid`, made.ID)
+	}
+	plant := func() {
+		t.Helper()
+		if _, err := r.owner.Exec(context.Background(), `
+			INSERT INTO gateway.account_models_seen (account_id, model_id, position) VALUES ($1::uuid, 'old-model', 1)
+			ON CONFLICT DO NOTHING`, made.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	test := func() {
+		t.Helper()
+		code, raw := r.call(ada, http.MethodPost, "/api/providers/test", map[string]any{"id": made.ID})
+		if res := decode[app.TestResult](t, raw); code != http.StatusOK || !res.OK {
+			t.Fatalf("saved-key test = %d %s", code, raw)
+		}
+	}
+
+	// The OpenAI-compatible probe reads {"data":[]}: an empty list.
+	plant()
+	test()
+	if n := seen(); n != 0 || prov.hits.Load() != 1 {
+		t.Fatalf("after an empty list: %d seen models, provider %d, want 0 and 1", n, prov.hits.Load())
+	}
+
+	// An OK probe with no list keeps what was seen.
+	keep := r.svc.Probes[domain.AdapterOpenAI]
+	r.svc.Probes[domain.AdapterOpenAI] = nilModels{}
+	t.Cleanup(func() { r.svc.Probes[domain.AdapterOpenAI] = keep })
+	plant()
+	test()
+	if n := seen(); n != 1 {
+		t.Fatalf("after no list: %d seen models, want 1", n)
+	}
 }

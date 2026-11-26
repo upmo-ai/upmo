@@ -198,7 +198,9 @@ func (w WorkerSealer) ProviderTest(ctx context.Context, accountID string, actorT
 		return app.TestResult{}, app.ErrKeysUnavailable
 	}
 	result := app.TestResult{OK: out.OK, Error: out.Error}
-	if len(out.Models) > 0 {
+	// An empty list stays empty and null stays nil: brain clears the seen
+	// models for the first only.
+	if out.Models != nil {
 		result.Models = make([]domain.SeenModel, 0, len(out.Models))
 		for _, raw := range out.Models {
 			var m domain.SeenModel
@@ -237,7 +239,10 @@ func KeysHandler(owner *pgxpool.Pool, ring Keyring, verify KeysVerify, providers
 		if err != nil {
 			return workerkeys.ProviderTestResponse{}, err
 		}
-		out := workerkeys.ProviderTestResponse{OK: result.OK, Error: result.Error, Models: make([]json.RawMessage, 0, len(result.Models))}
+		out := workerkeys.ProviderTestResponse{OK: result.OK, Error: result.Error}
+		if result.Models != nil {
+			out.Models = make([]json.RawMessage, 0, len(result.Models))
+		}
 		for _, m := range result.Models {
 			raw, err := json.Marshal(m)
 			if err != nil {

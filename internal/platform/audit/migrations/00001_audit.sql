@@ -124,8 +124,8 @@ $$;
 -- The worker's key service writes one row per wrap, unwrap and provider
 -- test through this definer, as the owner. It is the allow list for those
 -- actions: another action, an outcome other than success or denied, a
--- changes object over 1024 bytes, or one naming key material raises, and
--- nothing is inserted.
+-- changes object over 1024 bytes, one not in the {fields, values} shape the
+-- sealer reads, or one naming key material raises, and nothing is inserted.
 -- +goose StatementBegin
 CREATE FUNCTION audit.record_keys(action text, outcome text, service text, changes jsonb)
 RETURNS void
@@ -144,8 +144,16 @@ BEGIN
     RAISE EXCEPTION 'audit: keys service refused' USING ERRCODE = '22023';
   END IF;
   IF record_keys.changes IS NULL OR jsonb_typeof(record_keys.changes) <> 'object'
-     OR octet_length(record_keys.changes::text) > 1024
-     OR record_keys.changes ?| ARRAY['address', 'mac', 'ciphertext', 'data_key', 'master', 'password', 'email', 'secret', 'proxy_secret', 'api_key'] THEN
+     OR octet_length(record_keys.changes::text) > 1024 THEN
+    RAISE EXCEPTION 'audit: keys changes refused' USING ERRCODE = '22023';
+  END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_object_keys(record_keys.changes) AS k WHERE k NOT IN ('fields', 'values'))
+     OR jsonb_typeof(record_keys.changes->'fields') IS DISTINCT FROM 'array'
+     OR jsonb_typeof(record_keys.changes->'values') IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'audit: keys changes refused' USING ERRCODE = '22023';
+  END IF;
+  IF record_keys.changes->'values' ?| ARRAY['address', 'mac', 'ciphertext', 'data_key', 'master', 'password', 'email', 'secret', 'proxy_secret', 'api_key']
+     OR record_keys.changes->'fields' ?| ARRAY['address', 'mac', 'ciphertext', 'data_key', 'master', 'password', 'email', 'secret', 'proxy_secret', 'api_key'] THEN
     RAISE EXCEPTION 'audit: keys changes refused' USING ERRCODE = '22023';
   END IF;
   INSERT INTO audit.pending (service, action, outcome, actor_type, actor_id, credential_type, changes)

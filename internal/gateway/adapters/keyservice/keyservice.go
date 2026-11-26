@@ -10,9 +10,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 )
@@ -294,7 +297,10 @@ func (s *server) providerTest(w http.ResponseWriter, r *http.Request, audience s
 		refuse(w, http.StatusForbidden)
 		return
 	}
-	if out.Models == nil {
+	// A failed probe lists no models. An OK one keeps nil (the adapter lists
+	// none, like Vertex) apart from empty (it listed none), so brain clears
+	// the seen models only for the second.
+	if !out.OK && out.Models == nil {
 		out.Models = []json.RawMessage{}
 	}
 	respond(w, out)
@@ -330,8 +336,16 @@ func (s *server) deny(w http.ResponseWriter, ctx context.Context, status int, ac
 	refuse(w, status)
 }
 
+// record writes changes in the audit.Changes shape the sealer reads, each
+// value as its "to".
 func (s *server) record(ctx context.Context, action, outcome, audience string, changes map[string]string) error {
-	raw, err := json.Marshal(changes)
+	stored := audit.Changes{Fields: make([]string, 0, len(changes)), Values: make(map[string]audit.Change, len(changes))}
+	for field, value := range changes {
+		stored.Fields = append(stored.Fields, field)
+		stored.Values[field] = audit.Change{To: value}
+	}
+	sort.Strings(stored.Fields)
+	raw, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}
@@ -347,7 +361,7 @@ func decode(r *http.Request, into any) bool {
 		return false
 	}
 	var extra json.RawMessage
-	return dec.Decode(&extra) != nil
+	return errors.Is(dec.Decode(&extra), io.EOF)
 }
 
 // refuse writes the one refusal body every key route uses.
