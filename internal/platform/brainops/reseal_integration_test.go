@@ -71,13 +71,13 @@ func reseedRing(t *testing.T, current string, previous ...string) gateway.Keyrin
 // seedCredential seals one provider key under ring's current key.
 func seedCredential(t *testing.T, owner *pgxpool.Pool, ring gateway.Keyring, ref, secret string) {
 	t.Helper()
-	sealed, err := ring.Seal(ref, secret)
+	sealed, err := ring.SealCredential(context.Background(), ref, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(context.Background(), `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)`, ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID); err != nil {
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)`, ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID, sealed.WrappedKey, sealed.WrapNonce); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -121,13 +121,15 @@ type storedCredential struct {
 	ciphertext []byte
 	nonce      []byte
 	keyID      string
+	wrapped    []byte
+	wrapNonce  []byte
 }
 
 // readCredentials returns every credential row in primary-key order.
 func readCredentials(t *testing.T, owner *pgxpool.Pool) []storedCredential {
 	t.Helper()
 	rows, err := owner.Query(context.Background(), `
-		SELECT ref, ciphertext, nonce, key_id FROM gateway.credentials ORDER BY ref`)
+		SELECT ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce FROM gateway.credentials ORDER BY ref`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +137,7 @@ func readCredentials(t *testing.T, owner *pgxpool.Pool) []storedCredential {
 	var out []storedCredential
 	for rows.Next() {
 		var c storedCredential
-		if err := rows.Scan(&c.ref, &c.ciphertext, &c.nonce, &c.keyID); err != nil {
+		if err := rows.Scan(&c.ref, &c.ciphertext, &c.nonce, &c.keyID, &c.wrapped, &c.wrapNonce); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, c)
@@ -254,6 +256,10 @@ func TestResealMovesEveryRowToTheCurrentKey(t *testing.T) {
 	ada := seedPerson(t, owner, ring1, "ada@example.com", "ada-hash")
 	lee := seedPerson(t, owner, ring1, "lee@example.com", "lee-hash")
 
+	credsBefore := map[string]storedCredential{}
+	for _, c := range readCredentials(t, owner) {
+		credsBefore[c.ref] = c
+	}
 	ring2 := reseedRing(t, "k2", "k1")
 	result, err := Reseal(ctx, owner, ring2, ResealOptions{})
 	if err != nil {
@@ -268,7 +274,11 @@ func TestResealMovesEveryRowToTheCurrentKey(t *testing.T) {
 		if c.keyID != "k2" {
 			t.Fatalf("credential %s is under key %s, want k2", c.ref, c.keyID)
 		}
-		got, err := ring2.Open(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID})
+		// A new data key, wrapped under k2: the payload and the wrap both change.
+		if bytes.Equal(c.wrapped, credsBefore[c.ref].wrapped) || bytes.Equal(c.ciphertext, credsBefore[c.ref].ciphertext) {
+			t.Fatalf("credential %s kept its wrap or payload across the reseal", c.ref)
+		}
+		got, err := ring2.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce})
 		if err != nil || got != secrets[c.ref] {
 			t.Fatalf("credential %s opens to %q, %v", c.ref, got, err)
 		}
@@ -342,7 +352,7 @@ func TestResealStoppedHalfWayFinishesOnTheNextRun(t *testing.T) {
 
 	var moved int
 	for _, c := range readCredentials(t, owner) {
-		got, err := ring2.Open(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID})
+		got, err := ring2.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce})
 		if err != nil || got != secrets[c.ref] {
 			t.Fatalf("credential %s opens to %q, %v", c.ref, got, err)
 		}
@@ -365,7 +375,7 @@ func TestResealStoppedHalfWayFinishesOnTheNextRun(t *testing.T) {
 		if c.keyID != "k2" {
 			t.Fatalf("credential %s is still under %s after the finishing run", c.ref, c.keyID)
 		}
-		if got, err := ring2.Open(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID}); err != nil || got != secrets[c.ref] {
+		if got, err := ring2.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce}); err != nil || got != secrets[c.ref] {
 			t.Fatalf("credential %s opens to %q, %v", c.ref, got, err)
 		}
 	}
@@ -387,7 +397,7 @@ func TestResealedRowsOpenWithTheOldKeyRemoved(t *testing.T) {
 
 	only2 := reseedRing(t, "k2")
 	for _, c := range readCredentials(t, owner) {
-		if got, err := only2.Open(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID}); err != nil || got != "sk-alpha-secret" {
+		if got, err := only2.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce}); err != nil || got != "sk-alpha-secret" {
 			t.Fatalf("credential %s opens to %q, %v without the old key", c.ref, got, err)
 		}
 	}
@@ -493,7 +503,7 @@ func snapshotRows(t *testing.T, owner *pgxpool.Pool, people ...string) (map[stri
 	t.Helper()
 	creds := map[string]string{}
 	for _, c := range readCredentials(t, owner) {
-		creds[c.ref] = string(c.ciphertext) + string(c.nonce) + c.keyID
+		creds[c.ref] = string(c.ciphertext) + string(c.nonce) + c.keyID + string(c.wrapped) + string(c.wrapNonce)
 	}
 	snapshots := map[string]string{}
 	for _, id := range people {
@@ -677,7 +687,7 @@ func TestResealCountsACorruptRowFailedAndMovesOn(t *testing.T) {
 		if c.keyID != "k2" {
 			t.Fatalf("the whole row is under key %s, want k2", c.keyID)
 		}
-		if got, err := ring2.Open(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID}); err != nil || got != "sk-whole-secret" {
+		if got, err := ring2.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce}); err != nil || got != "sk-whole-secret" {
 			t.Fatalf("the whole row opens to %q, %v", got, err)
 		}
 	}
@@ -806,5 +816,57 @@ func TestResealCountsAnIndexHashCollisionFailedAndMovesOn(t *testing.T) {
 	}
 	if got := storeCount(t, again, StoreEmails); got.Failed != 1 {
 		t.Fatalf("second email tally = %+v, want the collision failed again", got)
+	}
+}
+
+// Invariant 13: with k2 current and k1 previous a k1 row still unwraps;
+// reseal moves it to k2 under a new data key and a new wrap, and it still
+// opens. A row under k9, which the ring does not hold, counts as unknown and
+// is left as it is.
+func TestResealMovesAK1RowAndCountsK9AsUnknown(t *testing.T) {
+	owner := newResealDB(t)
+	ctx := context.Background()
+	seedCredential(t, owner, reseedRing(t, "k1"), "GITHUB", "sk-test-allowed")
+	seedCredential(t, owner, reseedRing(t, "k9"), "LOST", "sk-test-lost")
+	before := map[string]storedCredential{}
+	for _, c := range readCredentials(t, owner) {
+		before[c.ref] = c
+	}
+	ring := reseedRing(t, "k2", "k1")
+	open := func(c storedCredential) (string, error) {
+		return ring.OpenCredential(c.ref, gateway.Sealed{Ciphertext: c.ciphertext, Nonce: c.nonce, KeyID: c.keyID, WrappedKey: c.wrapped, WrapNonce: c.wrapNonce})
+	}
+	if got, err := open(before["GITHUB"]); err != nil || got != "sk-test-allowed" {
+		t.Fatalf("k1 row under the k2 ring = %q %v", got, err)
+	}
+	unknown, err := UnknownKeyRows(ctx, owner, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range unknown {
+		if c.Store == StoreCredentials && (c.Unknown != 1 || len(c.UnknownKeyIDs) != 1 || c.UnknownKeyIDs[0] != "k9") {
+			t.Fatalf("unknown credentials = %+v, want one under k9", c)
+		}
+	}
+	result, err := Reseal(ctx, owner, ring, ResealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeCount(t, result, StoreCredentials); got.Resealed != 1 || got.Unknown != 1 || got.Failed != 0 {
+		t.Fatalf("credentials tally = %+v, want one resealed and one unknown", got)
+	}
+	after := map[string]storedCredential{}
+	for _, c := range readCredentials(t, owner) {
+		after[c.ref] = c
+	}
+	moved := after["GITHUB"]
+	if moved.keyID != "k2" || bytes.Equal(moved.wrapped, before["GITHUB"].wrapped) || bytes.Equal(moved.ciphertext, before["GITHUB"].ciphertext) {
+		t.Fatalf("GITHUB after reseal: key %q, wrap or payload unchanged", moved.keyID)
+	}
+	if got, err := open(moved); err != nil || got != "sk-test-allowed" {
+		t.Fatalf("GITHUB after reseal opens to %q %v", got, err)
+	}
+	if lost := after["LOST"]; lost.keyID != "k9" || !bytes.Equal(lost.wrapped, before["LOST"].wrapped) || !bytes.Equal(lost.ciphertext, before["LOST"].ciphertext) {
+		t.Fatalf("the k9 row changed: key %q", lost.keyID)
 	}
 }

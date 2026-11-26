@@ -49,6 +49,12 @@ var knownDevDigests = map[string]bool{
 	"37d3c698d078e796f1cc10396948e8e5aad7925bd77cd3077dea3d357ac64533": true,
 	// compose.yml UPMO_MARKITDOWN_KEY.
 	"3c22fa382072b44da164bc05df41f31ba9004d8f479353544b806e208a7bc456": true,
+	// compose.yml UPMO_WORKER_BRAIN_KEY.
+	"4c81959230ff750ac463bc5ad481ed64565926696eeb64340dc8a841f281a280": true,
+	// compose.yml UPMO_WORKER_GATEWAY_KEY.
+	"62fe3c3daac177e35e7832b2b69edaea19a749084d0af242dbb6a7be22b7b210": true,
+	// compose.yml UPMO_WORKER_SANDBOXD_KEY.
+	"cc510ce49c5643208f8671afa8241a44eeeb277a4da3230c5ddbccc82cd24f9b": true,
 	// compose.yml UPMO_EDITOR_KEY.
 	"a56282befedd89a4c6fb3ae7e34e16cbfe20680c0606581babf500cbe4adf1c6": true,
 	// compose.yml UPMO_RUN_KEY.
@@ -244,6 +250,12 @@ func CheckConfig(cfg Config, requireMasterKey bool, lookup func(string) (string,
 		Setting{Name: "UPMO_RUN_KEY", Value: cfg.RunKey},
 		Setting{Name: "UPMO_RUN_KEY_PREVIOUS", Value: cfg.RunKeyPrevious},
 		Setting{Name: "UPMO_METRICS_TOKEN", Value: cfg.MetricsToken},
+		Setting{Name: "UPMO_WORKER_BRAIN_KEY", Value: cfg.WorkerBrainKey},
+		Setting{Name: "UPMO_WORKER_BRAIN_KEY_PREVIOUS", Value: cfg.WorkerBrainKeyPrevious},
+		Setting{Name: "UPMO_WORKER_GATEWAY_KEY", Value: cfg.WorkerGatewayKey},
+		Setting{Name: "UPMO_WORKER_GATEWAY_KEY_PREVIOUS", Value: cfg.WorkerGatewayKeyPrevious},
+		Setting{Name: "UPMO_WORKER_SANDBOXD_KEY", Value: cfg.WorkerSandboxdKey},
+		Setting{Name: "UPMO_WORKER_SANDBOXD_KEY_PREVIOUS", Value: cfg.WorkerSandboxdKeyPrevious},
 	)...)
 	for _, key := range cfg.ProvisionKeys {
 		if key != "" {
@@ -264,6 +276,8 @@ func CheckSandboxd(cfg Sandboxd, lookup func(string) (string, bool), environ []s
 		Setting{Name: "UPMO_EDITOR_KEY", Value: cfg.EditorKey},
 		Setting{Name: "UPMO_EDITOR_KEY_PREVIOUS", Value: cfg.EditorKeyPrevious},
 		Setting{Name: "UPMO_METRICS_TOKEN", Value: cfg.MetricsToken},
+		Setting{Name: "UPMO_WORKER_SANDBOXD_KEY", Value: cfg.WorkerSandboxdKey},
+		Setting{Name: "UPMO_WORKER_SANDBOXD_KEY_PREVIOUS", Value: cfg.WorkerSandboxdKeyPrevious},
 	)}
 	return CheckGuard(g, lookup, environ)
 }

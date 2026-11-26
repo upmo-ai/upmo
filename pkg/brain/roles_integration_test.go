@@ -110,6 +110,10 @@ func TestBrainStartsWithoutOwnerURL(t *testing.T) {
 	for _, dir := range []string{"UPMO_ARTIFACTS_DIR", "UPMO_KNOWLEDGE_DIR", "UPMO_AVATARS_DIR"} {
 		t.Setenv(dir, t.TempDir())
 	}
+	var worker Config
+	w := withWorker(t, owner, &worker)
+	t.Setenv("UPMO_WORKER_URL", w.URL)
+	t.Setenv("UPMO_WORKER_BRAIN_KEY", worker.WorkerBrainKey)
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig without UPMO_DATABASE_URL: %v", err)

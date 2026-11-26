@@ -152,8 +152,8 @@ func (w *visWorld) insertAccount(account visAccount) {
 		INSERT INTO gateway.provider_models (account_id, model, position)
 		VALUES ($1::uuid, 'm', 1)`, account.id)
 	w.exec(`
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, decode('00', 'hex'), decode('000000000000000000000000', 'hex'), 'k')`, account.ref)
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, decode('00', 'hex'), decode('000000000000000000000000', 'hex'), 'k', decode('00', 'hex'), decode('000000000000000000000000', 'hex'))`, account.ref)
 }
 
 func (w *visWorld) exec(sql string, args ...any) {

@@ -173,8 +173,8 @@ func TestSandboxDefinerLiveSecret(t *testing.T) {
 	}
 	github := []byte("sealed-github-token")
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES
-		  ('GITHUB', $1, $2, 'k1'), ('OTHER', 'sealed-other', $2, 'k1')`, github, bytes.Repeat([]byte{1}, 12)); err != nil {
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce) VALUES
+		  ('GITHUB', $1, $2, 'k1', 'wrapped-github', $2), ('OTHER', 'sealed-other', $2, 'k1', 'wrapped-other', $2)`, github, bytes.Repeat([]byte{1}, 12)); err != nil {
 		t.Fatal(err)
 	}
 	// The task row is set straight to each status: the transition triggers
@@ -211,6 +211,19 @@ func TestSandboxDefinerLiveSecret(t *testing.T) {
 	got, err := open(sandbox, "GITHUB", sandboxSecret(0x61))
 	if err != nil || !bytes.Equal(got, github) {
 		t.Fatalf("live Working GITHUB = %q %v, want the GITHUB ciphertext", got, err)
+	}
+	// The definer hands sandboxd the payload only, never the wrapped data key.
+	rows, err := sandbox.Query(ctx, `SELECT * FROM gateway.credential_for_sandbox('sb-1', 'GITHUB', $1)`, sandboxSecret(0x61))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var columns []string
+	for _, f := range rows.FieldDescriptions() {
+		columns = append(columns, f.Name)
+	}
+	rows.Close()
+	if strings.Join(columns, ",") != "ciphertext,nonce,key_id" {
+		t.Fatalf("credential_for_sandbox columns = %v, want ciphertext, nonce, key_id", columns)
 	}
 	got, err = open(sandbox, "OTHER", sandboxSecret(0x61))
 	mustCode(t, "OTHER ref", err, "42501")
@@ -334,7 +347,12 @@ func TestWorkerServesProvision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := workerHandler(owner, config.Config{PublicURL: "http://localhost:5173", AvatarsDir: t.TempDir()}, gateway.Keyring{}, keys, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cfg, _ := workerKeyConfig(t)
+	cfg.PublicURL, cfg.AvatarsDir = "http://localhost:5173", t.TempDir()
+	h, err := workerHandler(owner, cfg, workerRing(t, "k1"), keys, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ready := httptest.NewRecorder()
 	h.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -448,13 +466,13 @@ func TestWorkerWarnsAndExportsSealedRowsOfAnUnloadedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := old.Seal("own_gone", "sk-gone-secret")
+	sealed, err := old.SealCredential(ctx, "own_gone", "sk-gone-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES ($1, $2, $3, $4)`,
-		"own_gone", sealed.Ciphertext, sealed.Nonce, sealed.KeyID); err != nil {
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce) VALUES ($1, $2, $3, $4, $5, $6)`,
+		"own_gone", sealed.Ciphertext, sealed.Nonce, sealed.KeyID, sealed.WrappedKey, sealed.WrapNonce); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))

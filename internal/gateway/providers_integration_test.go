@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -40,6 +41,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/netguard"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
 )
 
@@ -114,11 +116,14 @@ type rig struct {
 	owner   *pgxpool.Pool
 	app     *pgxpool.Pool
 	keys    Keyring
+	worker  *keyWorker
 	svc     app.Providers
 	handler http.Handler
-	logs    *syncBuf
-	mu      sync.Mutex
-	bodies  [][]byte
+	// sessions holds each person's session token hash, made on first use.
+	sessions map[string][]byte
+	logs     *syncBuf
+	mu       sync.Mutex
+	bodies   [][]byte
 }
 
 // newRig tests with a limit on tests loose enough that only the rate limit
@@ -131,9 +136,17 @@ func newRigLimited(t *testing.T, keys Keyring, max int) *rig {
 	t.Helper()
 	owner := pgtest.New(t)
 	migrateWithIdentity(t, owner)
-	r := &rig{t: t, owner: owner, app: pgtest.App(t, owner), keys: keys, logs: &syncBuf{}}
+	r := &rig{t: t, owner: owner, app: pgtest.App(t, owner), keys: keys, logs: &syncBuf{}, sessions: map[string][]byte{}}
 	log := slog.New(slog.NewJSONHandler(r.logs, nil))
 	r.svc = NewProviders(r.app, keys, log)
+	// Brain seals through the worker's wrap and tests a saved key through
+	// its provider-test, as brain.New wires it; the worker holds keys. With
+	// no master key there is no worker, and brain cannot save a key.
+	if keys.Ready() {
+		r.worker = startKeyWorker(t, r, keys)
+		sealer := WorkerSealer{Keys: r.worker.client(t, svcsig.AudienceWorkerBrain)}
+		r.svc.Keys, r.svc.Saved = sealer, sealer
+	}
 	// The rig stands in for the brain's wiring: here every person may use a
 	// local-plan account.
 	r.svc.LocalPlan = func(context.Context, string) bool { return true }
@@ -157,8 +170,47 @@ func (r *rig) mount(log *slog.Logger) {
 			user := req.Header.Get("X-User")
 			return user, user != ""
 		},
+		ActorTokenHash: func(req *http.Request) []byte {
+			return r.session(req.Header.Get("X-User"))
+		},
 	}.MountProviders(mux, nil)
 	r.handler = mux
+}
+
+// session returns the token hash of a live session row for user, adding
+// the person (a joined member, or the owner when there is none, when the
+// test has not added them) and the
+// session on first use. The worker resolves a saved-key test's person from
+// it.
+func (r *rig) session(user string) []byte {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if hash, ok := r.sessions[user]; ok {
+		return hash
+	}
+	ctx := context.Background()
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		SELECT $1::uuid, $1 || '@rig.test', sha256(($1 || '@rig.test')::bytea), 'k1', 'Rig',
+		       (SELECT id FROM identity.roles WHERE key = CASE WHEN EXISTS (
+		          SELECT 1 FROM identity.users AS u JOIN identity.roles AS o ON o.id = u.role_id
+		          WHERE o.key = 'owner' AND u.joined_at IS NOT NULL) THEN 'member' ELSE 'owner' END), now()
+		ON CONFLICT (id) DO NOTHING`, user); err != nil {
+		r.t.Fatal(err)
+	}
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		r.t.Fatal(err)
+	}
+	sum := sha256.Sum256(token)
+	if _, err := r.owner.Exec(ctx, `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1::uuid, $2, now(), now(), now() + interval '1 hour')`, user, sum[:]); err != nil {
+		r.t.Fatal(err)
+	}
+	r.sessions[user] = sum[:]
+	return sum[:]
 }
 
 func (r *rig) call(user, method, path string, body any) (int, []byte) {
@@ -1206,11 +1258,13 @@ func TestTestRouteWithASavedAccountUsesItsKeyAndStoresTheStatus(t *testing.T) {
 	if got, _ := (DBSecrets{Pool: r.owner, Keys: r.keys}).Get(ref); got != adaKey {
 		t.Fatalf("a test replaced the saved key with %q", got)
 	}
-	// The saved key cannot be opened by the wrong master key: say so, plainly.
-	other := NewProviders(r.app, masterKeys(t, 'b'), nil)
+	// The saved key cannot be opened by a worker with the wrong master key:
+	// say so, plainly.
+	wrong := startKeyWorker(t, r, masterKeys(t, 'b'))
+	other := NewProviders(r.app, WorkerSealer{Keys: wrong.client(t, svcsig.AudienceWorkerBrain)}, nil)
 	other.LocalPlan = func(context.Context, string) bool { return true }
-	res, err := other.Test(context.Background(), ada, app.TestRequest{ID: made.ID})
-	if err != nil || res.OK || res.Error == "" || strings.Contains(res.Error, adaKey) {
+	res, err := other.Test(context.Background(), ada, app.TestRequest{ID: made.ID, ActorTokenHash: r.session(ada)})
+	if err != nil || res.OK || res.Error != app.SavedKeyUnreadable || strings.Contains(res.Error, adaKey) {
 		t.Fatalf("wrong master key: %+v, %v", res, err)
 	}
 	r.assertNoSecrets(adaKey, newKey)

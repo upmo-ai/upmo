@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/provision"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 type testEnv struct {
@@ -543,24 +545,26 @@ func TestProvisionProvidersQuotasAndBypassResistance(t *testing.T) {
 		t.Fatalf("house=%v visibility=%q, want true everyone", house, vis)
 	}
 	var (
-		credRef    string
-		ciphertext []byte
-		nonce      []byte
-		keyID      string
+		credRef string
+		sealed  gateway.Sealed
 	)
 	if err := env.owner.QueryRow(ctx, `
-		SELECT a.credential_ref, c.ciphertext, c.nonce, c.key_id
+		SELECT a.credential_ref, c.ciphertext, c.nonce, c.key_id, c.wrapped_key, c.wrap_nonce
 		FROM gateway.provider_accounts AS a
 		JOIN gateway.credentials AS c ON c.ref = a.credential_ref
-		WHERE a.name = 'Managed OpenAI'`).Scan(&credRef, &ciphertext, &nonce, &keyID); err != nil {
+		WHERE a.name = 'Managed OpenAI'`).Scan(&credRef, &sealed.Ciphertext, &sealed.Nonce, &sealed.KeyID, &sealed.WrappedKey, &sealed.WrapNonce); err != nil {
 		t.Fatal(err)
 	}
-	if len(ciphertext) == 0 || bytes.Contains(ciphertext, []byte(secret)) || len(nonce) != 12 || keyID != "k1" {
-		t.Fatalf("unexpected sealed credential: len=%d nonce=%d key_id=%q", len(ciphertext), len(nonce), keyID)
+	if len(sealed.Ciphertext) == 0 || bytes.Contains(sealed.Ciphertext, []byte(secret)) || len(sealed.Nonce) != 12 || sealed.KeyID != "k1" || len(sealed.WrapNonce) != 12 {
+		t.Fatalf("unexpected sealed credential: len=%d nonce=%d key_id=%q wrap nonce=%d", len(sealed.Ciphertext), len(sealed.Nonce), sealed.KeyID, len(sealed.WrapNonce))
 	}
-	openedSecret, err := env.keyring.Open(credRef, gateway.Sealed{Ciphertext: ciphertext, Nonce: nonce, KeyID: keyID})
+	// Provision seals under a data key the master wraps, never under the master.
+	if _, err := env.keyring.Open(credRef, sealed); err == nil {
+		t.Fatal("the master opened the payload")
+	}
+	openedSecret, err := env.keyring.OpenCredential(credRef, sealed)
 	if err != nil || openedSecret != secret {
-		t.Fatalf("keyring.Open = (%q, %v), want %q", openedSecret, err, secret)
+		t.Fatalf("keyring.OpenCredential = (%q, %v), want %q", openedSecret, err, secret)
 	}
 
 	// 2. Quotas: negative -> 422; valid -> 200; settings:manage PUT /api/workspace cannot change/raise it!
@@ -1205,5 +1209,77 @@ func TestProvisionNonceStoreFailureIntegration(t *testing.T) {
 	}
 	if teams != 0 {
 		t.Fatalf("teams after nonce store failure = %d, want 0", teams)
+	}
+}
+
+// Invariants 10 and 12: a key provision stores opens for gateway through the
+// worker's unwrap, as upmo_gateway, and for the daily checker in the
+// worker's own ring; each upstream call carries the provisioned key.
+func TestProvisionedKeyOpensForDispatchAndTheChecker(t *testing.T) {
+	env := newTestEnv(t, true)
+	ctx := context.Background()
+	const secret = "sk-test-allowed"
+	var hits atomic.Int32
+	var auth atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		auth.Store(r.Header.Get("Authorization"))
+		if r.URL.Path == "/v1/chat/completions" {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"hello from provider"}}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"m1"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	if rec := env.signedDo(t, env.rawKey1, http.MethodPut, "/api/v1/provision/providers", map[string]any{
+		"providers": []map[string]any{{
+			"name": "Provisioned", "provider": "custom", "adapter": "openai_compat", "plan_kind": "local",
+			"base_url": upstream.URL, "api_key": secret, "models": []string{"m1"},
+		}},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("provision = %d %s", rec.Code, rec.Body.String())
+	}
+	var account string
+	if err := env.owner.QueryRow(ctx, `SELECT id::text FROM gateway.provider_accounts WHERE name = 'Provisioned'`).Scan(&account); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.owner.Exec(ctx, `INSERT INTO gateway.routes (name, capability, installed) VALUES ('provisioned', 'chat', true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.owner.Exec(ctx, `
+		INSERT INTO gateway.route_links (route_id, position, provider_account_id, model, retry_budget)
+		SELECT id, 1, $1::uuid, 'm1', 0 FROM gateway.routes WHERE name = 'provisioned'`, account); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dispatch: gateway as upmo_gateway, its key from the worker's unwrap.
+	worker := workerkeys.Start(t, env.owner, env.keyring)
+	gatewayPool := pgtest.Login(t, env.owner, "upmo_gateway")
+	mux := http.NewServeMux()
+	gateway.Mount(mux, gatewayPool, gateway.Chain{gateway.DBSecrets{Pool: gatewayPool, Unwrap: worker.Client(t, svcsig.AudienceWorkerGateway)}}, nil)
+	// A house account serves a call that names no key of its own.
+	raw, _ := json.Marshal(map[string]any{"route": "provisioned", "prompt": "hi", "source": "system"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/upmo.gateway.v1.Gateway/Chat", bytes.NewReader(raw)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "hello from provider") || auth.Load() != "Bearer "+secret {
+		t.Fatalf("dispatch = %d %s, upstream saw %v", rec.Code, rec.Body.String(), auth.Load())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("the dispatch answer holds the key: %s", rec.Body.String())
+	}
+
+	// The daily checker: the worker opens the same row in process.
+	before := hits.Load()
+	auth.Store("")
+	deps := gateway.ProviderCheckDeps{Owner: env.owner, Secrets: gateway.Chain{gateway.DBSecrets{Pool: env.owner, Keys: env.keyring}}}
+	if err := gateway.CheckAccountOnce(ctx, deps, account); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := env.owner.QueryRow(ctx, `SELECT status FROM gateway.provider_accounts WHERE id = $1::uuid`, account).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != before+1 || auth.Load() != "Bearer "+secret || status != "Connected" {
+		t.Fatalf("checker: %d calls, auth %v, status %q", hits.Load()-before, auth.Load(), status)
 	}
 }

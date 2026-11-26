@@ -38,7 +38,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/brainops"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 func poolURL(t *testing.T, pool *pgxpool.Pool) string {
@@ -282,14 +284,14 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	}
 
 	// Seed gateway sealed credential + provider account + route + route link.
-	sealedCred, err := ring1.Seal(credRef, apiKeyPlaintext)
+	sealedCred, err := ring1.SealCredential(ctx, credRef, apiKeyPlaintext)
 	if err != nil {
 		t.Fatalf("seal provider cred: %v", err)
 	}
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)`,
-		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID,
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID, sealedCred.WrappedKey, sealedCred.WrapNonce,
 	); err != nil {
 		t.Fatalf("seed gateway.credentials: %v", err)
 	}
@@ -588,6 +590,18 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	unsealedAPIKey, err := (gateway.DBSecrets{Pool: freshOwner, Keys: ring1}).Get(credRef)
 	if err != nil || unsealedAPIKey != apiKeyPlaintext {
 		t.Fatalf("DBSecrets.Get after restore: got=%q err=%v", unsealedAPIKey, err)
+	}
+	// Invariant 14: the row comes back with both wrap columns, and gateway,
+	// as upmo_gateway, opens it through the worker's unwrap.
+	var restoredWrap, restoredWrapNonce []byte
+	if err := freshOwner.QueryRow(ctx, `SELECT wrapped_key, wrap_nonce FROM gateway.credentials WHERE ref = $1`, credRef).Scan(&restoredWrap, &restoredWrapNonce); err != nil ||
+		!bytes.Equal(restoredWrap, sealedCred.WrappedKey) || !bytes.Equal(restoredWrapNonce, sealedCred.WrapNonce) || len(restoredWrapNonce) != 12 {
+		t.Fatalf("restored wrap columns: wrapped %d bytes nonce %d bytes err=%v", len(restoredWrap), len(restoredWrapNonce), err)
+	}
+	restoredWorker := workerkeys.Start(t, freshOwner, ring1)
+	viaGateway, err := (gateway.DBSecrets{Pool: pgtest.Login(t, freshOwner, "upmo_gateway"), Unwrap: restoredWorker.Client(t, svcsig.AudienceWorkerGateway)}).Get(credRef)
+	if err != nil || viaGateway != apiKeyPlaintext {
+		t.Fatalf("gateway open after restore: got=%q err=%v", viaGateway, err)
 	}
 
 	gotArtBytes, err := os.ReadFile(filepath.Join(dstArtDir, filepath.FromSlash(artifactRel)))
@@ -985,14 +999,14 @@ func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) 
 
 	const credRef = "pass_cred_1"
 	const credSecret = "sk-passphrase-test-secret" // #nosec G101 -- test fixture secret
-	sealedCred, err := ring1.Seal(credRef, credSecret)
+	sealedCred, err := ring1.SealCredential(ctx, credRef, credSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)`,
-		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID,
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID, sealedCred.WrappedKey, sealedCred.WrapNonce,
 	); err != nil {
 		t.Fatal(err)
 	}

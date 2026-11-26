@@ -152,7 +152,7 @@ func newRouteVisWorld(t *testing.T) *routeVisWorld {
 			VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, 'fake', $4, 'metered', $5, 'fake', $6, $7::uuid[], 'Connected')`,
 			id, owner, ref, ref, house, vis, teams)
 		w.exec(`INSERT INTO gateway.provider_models (account_id, model, position) VALUES ($1::uuid, 'm', 1)`, id)
-		w.exec(`INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES ($1, decode('00', 'hex'), decode('000000000000000000000000', 'hex'), 'k')`, ref)
+		w.exec(`INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce) VALUES ($1, decode('00', 'hex'), decode('000000000000000000000000', 'hex'), 'k', decode('00', 'hex'), decode('000000000000000000000000', 'hex'))`, ref)
 	}
 
 	w.sharedAcc["private"] = "20000000-0000-7000-8000-000000000001"

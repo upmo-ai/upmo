@@ -303,6 +303,8 @@ func TestLoadRefusesDevelopmentValuesInProduction(t *testing.T) {
 		t.Setenv("UPMO_DATABASE_URL", freshDBURL(t))
 		t.Setenv("UPMO_PUBLIC_URL", "http://localhost:5173")
 		t.Setenv("UPMO_MASTER_KEY", freshKey(t))
+		t.Setenv("UPMO_WORKER_URL", "https://worker.example.com")
+		t.Setenv("UPMO_WORKER_BRAIN_KEY", "upmo_svc_worker-brain_"+freshKey(t))
 	}
 	for _, tc := range []struct {
 		name, key, value, want string
@@ -379,6 +381,8 @@ func TestLoadAcceptsFreshValuesInProduction(t *testing.T) {
 	t.Setenv("UPMO_GATEWAY_KEY", "upmo_svc_gateway_"+freshKey(t))
 	t.Setenv("UPMO_RUN_KEY", "upmo_rnk_"+freshKey(t))
 	t.Setenv("UPMO_CREDENTIAL_house", "sk-real-provider-key")
+	t.Setenv("UPMO_WORKER_URL", "https://worker.example.com")
+	t.Setenv("UPMO_WORKER_BRAIN_KEY", "upmo_svc_worker-brain_"+freshKey(t))
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -398,6 +402,8 @@ func TestLoadDevelopmentRule(t *testing.T) {
 		t.Setenv(c.Name, c.Value)
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", composeHouseValue())
+	t.Setenv("UPMO_WORKER_URL", "http://worker:8090")
+	t.Setenv("UPMO_WORKER_BRAIN_KEY", "upmo_svc_worker-brain_"+freshKey(t))
 	if _, err := LoadBrain(); err != nil {
 		t.Fatalf("LoadBrain with the compose values in development: %v", err)
 	}

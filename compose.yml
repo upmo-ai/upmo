@@ -70,9 +70,16 @@ services:
       # routes (supports key rotation). Leave empty/unset to disable provisioning (404).
       # UPMO_PROVISION_KEYS: ""
       # Dev only. Never reuse outside the local compose stack. The same value
-      # as brain and gateway.
+      # as brain, which still seals passwords and email with it. The worker
+      # alone wraps and unwraps provider key data keys.
       UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
       UPMO_MASTER_KEY_ID: k1
+      # Dev only. Never reuse outside the local compose stack. The worker
+      # verifies each caller's key on /internal/keys/*: brain, gateway and
+      # sandboxd each hold only their own.
+      UPMO_WORKER_BRAIN_KEY: upmo_svc_worker-brain_QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI
+      UPMO_WORKER_GATEWAY_KEY: upmo_svc_worker-gateway_R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0c
+      UPMO_WORKER_SANDBOXD_KEY: upmo_svc_worker-sandboxd_U1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1M
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8090/readyz"]
       interval: 5s
@@ -143,13 +150,18 @@ services:
       # UPMO_LISTEN_ADDR. Keep it internal.
       # UPMO_METRICS_ADDR: ":9090"
       # UPMO_METRICS_TOKEN: upmo_mtr_dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ
-      # Dev only. Never reuse outside the local compose stack. Seals the provider
-      # keys people add (base64 of 32 bytes). brain and gateway need the same value.
+      # Dev only. Never reuse outside the local compose stack. Seals passwords
+      # and email (base64 of 32 bytes); the worker needs the same value.
+      # Provider keys are sealed under data keys the worker wraps.
       # Default `upmo backup` archives are sealed with this key; restore needs
       # it (or UPMO_MASTER_KEY_PREVIOUS_<id> for the same id). Sealed values in
       # any archive still need their key id here, even with --passphrase-env.
       UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
       UPMO_MASTER_KEY_ID: k1
+      # The worker's key service, on the compose network only. Dev only. Never
+      # reuse outside the local compose stack.
+      UPMO_WORKER_URL: http://worker:8090
+      UPMO_WORKER_BRAIN_KEY: upmo_svc_worker-brain_QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 5s
@@ -185,10 +197,11 @@ services:
       # Dev only. Never reuse outside the local compose stack.
       UPMO_GATEWAY_KEY: upmo_svc_gateway_Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2c
       UPMO_CREDENTIAL_house: local-dev-not-a-provider-key
-      # Dev only. Never reuse outside the local compose stack. Seals the provider
-      # keys people add (base64 of 32 bytes). brain and gateway need the same value.
-      UPMO_MASTER_KEY: bW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0=
-      UPMO_MASTER_KEY_ID: k1
+      # Gateway holds no master key: the worker unwraps each saved provider
+      # key's data key for it. Dev only. Never reuse outside the local
+      # compose stack.
+      UPMO_WORKER_URL: http://worker:8090
+      UPMO_WORKER_GATEWAY_KEY: upmo_svc_worker-gateway_R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0c
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8082/healthz"]
       interval: 5s
@@ -245,6 +258,10 @@ services:
       # Dev only. Never reuse outside the local compose stack.
       UPMO_SANDBOXD_KEY: upmo_svc_sandboxd_c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M
       UPMO_EDITOR_KEY: upmo_edk_ZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWU
+      # The worker's key service. Dev only. Never reuse outside the local
+      # compose stack.
+      UPMO_WORKER_URL: http://worker:8090
+      UPMO_WORKER_SANDBOXD_KEY: upmo_svc_worker-sandboxd_U1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1M
       # Dev only. Sandboxd logs in as upmo_sandbox and never gets
       # UPMO_DATABASE_URL; it refuses to start when that is set.
       UPMO_DATABASE_SANDBOX_URL: postgres://upmo_sandbox:upmo_sandbox@postgres:5432/upmo?sslmode=disable

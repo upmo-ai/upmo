@@ -85,14 +85,20 @@ CREATE TABLE gateway.provider_models (
 
 CREATE UNIQUE INDEX provider_models_position ON gateway.provider_models (account_id, position);
 
+-- A provider key: the payload sealed under its own data key (ciphertext,
+-- nonce), and that data key wrapped by the master key key_id names
+-- (wrapped_key, wrap_nonce). Only the worker holds a master key.
 CREATE TABLE gateway.credentials (
   ref text PRIMARY KEY,
   ciphertext bytea NOT NULL,
   nonce bytea NOT NULL,
   key_id text NOT NULL,
+  wrapped_key bytea NOT NULL,
+  wrap_nonce bytea NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT credentials_ref_check CHECK (ref ~ '^[A-Za-z0-9_]+$'),
   CONSTRAINT credentials_nonce_check CHECK (octet_length(nonce) = 12),
+  CONSTRAINT credentials_wrap_nonce_check CHECK (octet_length(wrap_nonce) = 12),
   CONSTRAINT credentials_key_id_check CHECK (key_id ~ '^[A-Za-z0-9_]{1,32}$')
 );
 
@@ -930,8 +936,12 @@ GRANT UPDATE (
   key_hint, key_changed_at, key_changed_by, updated_at, visibility, team_ids
 ) ON gateway.provider_accounts TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.provider_models TO upmo_app;
-GRANT SELECT, INSERT, DELETE ON gateway.credentials TO upmo_app;
-GRANT UPDATE (ciphertext, nonce, key_id, created_at) ON gateway.credentials TO upmo_app;
+-- Brain writes the keys people save and never reads one back: it sees a
+-- credential's ref, key id and age, not its ciphertext or its wrap.
+GRANT SELECT (ref, key_id, created_at) ON gateway.credentials TO upmo_app;
+GRANT INSERT (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce, created_at) ON gateway.credentials TO upmo_app;
+GRANT UPDATE (ciphertext, nonce, key_id, wrapped_key, wrap_nonce, created_at) ON gateway.credentials TO upmo_app;
+GRANT DELETE ON gateway.credentials TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.account_models_seen TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON gateway.price_overrides TO upmo_app;
 GRANT SELECT, INSERT, DELETE ON gateway.routes TO upmo_app;

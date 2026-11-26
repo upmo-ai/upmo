@@ -260,7 +260,7 @@ func UpsertHouseProviders(
 			if !keys.Ready() {
 				return nil, domain.ErrNoMasterKey
 			}
-			sealed, err := keys.Seal(credRef, item.apiKey)
+			sealed, err := keys.SealCredential(ctx, credRef, item.apiKey)
 			if err != nil {
 				return nil, err
 			}

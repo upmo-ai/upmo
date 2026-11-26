@@ -281,7 +281,7 @@ func TestLoadRefusesWrongKeys(t *testing.T) {
 			}
 		})
 	}
-	env := map[string]string{"UPMO_SERVICE_KEY": "upmo_svc_x"}
+	env := withWorker(map[string]string{"UPMO_SERVICE_KEY": "upmo_svc_x"}, "gateway")
 	for k, v := range base {
 		env[k] = v
 	}
@@ -322,7 +322,7 @@ func allKeys(t *testing.T) map[string]string {
 }
 
 func TestLoadGatewayHoldsOnlyItsOwnKeys(t *testing.T) {
-	cfg, err := loadGateway(lookupFrom(allKeys(t)))
+	cfg, err := loadGateway(lookupFrom(withWorker(allKeys(t), "gateway")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestLoadGatewayHoldsOnlyItsOwnKeys(t *testing.T) {
 		t.Errorf("gateway ProvisionKeys = %v, want nil", cfg.ProvisionKeys)
 	}
 	// A malformed foreign key does not stop gateway, since it never reads one.
-	env := allKeys(t)
+	env := withWorker(allKeys(t), "gateway")
 	env["UPMO_SANDBOXD_KEY"] = gwKey
 	if _, err := loadGateway(lookupFrom(env)); err != nil {
 		t.Fatalf("gateway read the sandboxd key: %v", err)
@@ -383,10 +383,10 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 }
 
 func TestLoadDatabaseAppURL(t *testing.T) {
-	base := map[string]string{
+	base := withWorker(map[string]string{
 		"UPMO_DATABASE_URL": pgtls.URL(t, "upmo"),
 		"UPMO_PUBLIC_URL":   "http://localhost:5173",
-	}
+	}, "brain")
 	cfg, err := load(lookupFrom(base))
 	if err != nil {
 		t.Fatal(err)
@@ -516,7 +516,10 @@ func TestLoadDatabaseURLProductionNeedsVerifyFull(t *testing.T) {
 // on every pool URL and the error names that variable. Development keeps it.
 func TestLoadRefusesSocketHostInProduction(t *testing.T) {
 	const socket = "postgres://x:s3cret@/upmo?host=/var/run/postgresql"
-	brain := func(env map[string]string) error { _, err := loadBrain(lookupFrom(env)); return err }
+	brain := func(env map[string]string) error {
+		_, err := loadBrain(lookupFrom(withWorker(env, "brain")))
+		return err
+	}
 	for _, tc := range []struct {
 		name string
 		env  map[string]string
@@ -526,7 +529,7 @@ func TestLoadRefusesSocketHostInProduction(t *testing.T) {
 			func(env map[string]string) error { _, err := load(lookupFrom(env)); return err }},
 		{"UPMO_DATABASE_APP_URL", map[string]string{"UPMO_PUBLIC_URL": "http://localhost:5173", "UPMO_DATABASE_RUNNER_URL": pgtls.URL(t, "upmo_runner:s3cret")}, brain},
 		{"UPMO_DATABASE_RUNNER_URL", map[string]string{"UPMO_PUBLIC_URL": "http://localhost:5173", "UPMO_DATABASE_APP_URL": pgtls.URL(t, "upmo_app:s3cret")}, brain},
-		{"UPMO_DATABASE_GATEWAY_URL", allKeys(t),
+		{"UPMO_DATABASE_GATEWAY_URL", withWorker(allKeys(t), "gateway"),
 			func(env map[string]string) error { _, err := loadGateway(lookupFrom(env)); return err }},
 		{"UPMO_DATABASE_SANDBOX_URL", map[string]string{"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey},
 			func(env map[string]string) error { _, err := loadSandboxd(lookupFrom(env)); return err }},

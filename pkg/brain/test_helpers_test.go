@@ -22,9 +22,11 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 func routes(
@@ -119,7 +121,6 @@ func routesAt(
 		Members:        memberAdapter{members: members},
 		Notices:        noticeStore,
 		Jobs:           work,
-		Sealer:         sealerAdapter{keys: masterKeys},
 		Logger:         log,
 		Config:         fromInternalConfig(cfg),
 		BuildInfo:      pubBuild,
@@ -154,6 +155,20 @@ func routesAt(
 // servingPools injects the two pools brain runs on as the roles brain logs in
 // as in production: a real upmo_app login and a real upmo_runner login. A
 // superuser session that switched role would fail brain's role check.
+// withWorker starts the worker's real key service over owner with the ring
+// the environment names, and points cfg at it as brain's key service.
+func withWorker(t *testing.T, owner *pgxpool.Pool, cfg *Config) *workerkeys.Worker {
+	t.Helper()
+	ring, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := workerkeys.Start(t, owner, ring)
+	cfg.WorkerURL = w.URL
+	cfg.WorkerBrainKey = w.Key[svcsig.AudienceWorkerBrain]
+	return w
+}
+
 func servingPools(t *testing.T, owner *pgxpool.Pool) Option {
 	t.Helper()
 	return WithPools(pgtest.AppLogin(t, owner), pgtest.Login(t, owner, "upmo_runner"))

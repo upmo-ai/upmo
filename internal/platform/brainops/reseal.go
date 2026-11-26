@@ -196,7 +196,7 @@ func resealCredentials(ctx context.Context, owner *pgxpool.Pool, ring gateway.Ke
 			return count, fmt.Errorf("brain: re-seal %s: begin: %w", StoreCredentials, err)
 		}
 		rows, err := tx.Query(ctx, `
-			SELECT ref, ciphertext, nonce, key_id
+			SELECT ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce
 			FROM gateway.credentials
 			WHERE key_id <> $1
 			  AND key_id <> ALL (coalesce($2::text[], '{}'::text[]))
@@ -209,15 +209,13 @@ func resealCredentials(ctx context.Context, owner *pgxpool.Pool, ring gateway.Ke
 			return count, fmt.Errorf("brain: re-seal %s: select: %w", StoreCredentials, err)
 		}
 		type sealedRow struct {
-			ref        string
-			ciphertext []byte
-			nonce      []byte
-			keyID      string
+			ref string
+			gateway.Sealed
 		}
 		var page []sealedRow
 		for rows.Next() {
 			var r sealedRow
-			if err := rows.Scan(&r.ref, &r.ciphertext, &r.nonce, &r.keyID); err != nil {
+			if err := rows.Scan(&r.ref, &r.Ciphertext, &r.Nonce, &r.KeyID, &r.WrappedKey, &r.WrapNonce); err != nil {
 				rows.Close()
 				_ = tx.Rollback(ctx)
 				return count, fmt.Errorf("brain: re-seal %s: scan: %w", StoreCredentials, err)
@@ -237,24 +235,27 @@ func resealCredentials(ctx context.Context, owner *pgxpool.Pool, ring gateway.Ke
 		var changed int64
 		var fromIDs []string
 		for _, r := range page {
-			if !ring.Has(r.keyID) {
+			if !ring.Has(r.KeyID) {
 				continue // its key left the ring after the count
 			}
-			plain, err := ring.Open(r.ref, gateway.Sealed{Ciphertext: r.ciphertext, Nonce: r.nonce, KeyID: r.keyID})
+			// A new data key, wrapped under the current master: a reseal
+			// never leaves a payload under a key the retired master opens.
+			plain, err := ring.OpenCredential(r.ref, r.Sealed)
 			if err != nil {
 				count.Failed++
 				continue
 			}
-			sealed, err := ring.Seal(r.ref, plain)
+			sealed, err := ring.SealCredential(ctx, r.ref, plain)
 			if err != nil {
 				count.Failed++
 				continue
 			}
 			tag, err := tx.Exec(ctx, `
 				UPDATE gateway.credentials
-				SET ciphertext = $2, nonce = $3, key_id = $4
-				WHERE ref = $1 AND ciphertext = $5 AND nonce = $6 AND key_id = $7`,
-				r.ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID, r.ciphertext, r.nonce, r.keyID)
+				SET ciphertext = $2, nonce = $3, key_id = $4, wrapped_key = $5, wrap_nonce = $6
+				WHERE ref = $1 AND ciphertext = $7 AND nonce = $8 AND key_id = $9`,
+				r.ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID, sealed.WrappedKey, sealed.WrapNonce,
+				r.Ciphertext, r.Nonce, r.KeyID)
 			if err != nil {
 				_ = tx.Rollback(ctx)
 				return count, fmt.Errorf("brain: re-seal %s: update: %w", StoreCredentials, err)
@@ -263,8 +264,8 @@ func resealCredentials(ctx context.Context, owner *pgxpool.Pool, ring gateway.Ke
 				continue // the row changed meanwhile; keep what is there now
 			}
 			changed++
-			if !slices.Contains(fromIDs, r.keyID) {
-				fromIDs = append(fromIDs, r.keyID)
+			if !slices.Contains(fromIDs, r.KeyID) {
+				fromIDs = append(fromIDs, r.KeyID)
 			}
 		}
 		if err := recordReseal(ctx, tx, StoreCredentials, current, fromIDs, changed); err != nil {

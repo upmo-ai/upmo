@@ -43,6 +43,7 @@ func TestBrainNewCreatesConfiguredVolumeDirs(t *testing.T) {
 		ArtifactsDir: filepath.Join(root, "artifacts"),
 		KnowledgeDir: filepath.Join(root, "knowledge"),
 	}
+	withWorker(t, owner, &cfg)
 	for start := 0; start < 2; start++ {
 		app, err := New(ctx, cfg,
 			servingPools(t, owner),
@@ -111,6 +112,7 @@ func TestBrainNewAndExtensionOptions(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 		ProvisionKeys:   []string{provKey},
 	}
+	withWorker(t, owner, &cfg)
 
 	extraWorkersCalled := false
 	var capturedDeps Deps
@@ -220,6 +222,7 @@ func TestExtensionHooksCanEnqueueJobs(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	}
 
+	withWorker(t, owner, &cfg)
 	var workerJobs, periodicJobs JobClient
 	worker := &hookJobWorker{done: make(chan struct{}, 2)}
 	app, err := New(ctx, cfg,
@@ -283,6 +286,7 @@ func TestFeature_UPM365_UsesIncludesTeamSharedAgentsThroughBrain(t *testing.T) {
 		WebAuthnRPID:    "localhost",
 		ShutdownTimeout: 2 * time.Second,
 	}
+	withWorker(t, owner, &cfg)
 	app, err := New(ctx, cfg,
 		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
@@ -444,6 +448,7 @@ func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
 		WebAuthnRPID:    "localhost",
 		ShutdownTimeout: 2 * time.Second,
 	}
+	withWorker(t, owner, &cfg)
 	app, err := New(ctx, cfg,
 		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
@@ -534,5 +539,34 @@ func TestFeature_UPM357_BrainUsageLimitsRoute(t *testing.T) {
 	}
 	if memberView.Rows != nil {
 		t.Fatalf("member view rows = %+v, want nil", *memberView.Rows)
+	}
+}
+
+// Brain saves provider keys through the worker, so it checks the worker,
+// signed, at start: a worker that is gone stops brain before it serves.
+func TestBrainStartNeedsAReadyWorker(t *testing.T) {
+	owner := pgtest.New(t)
+	ctx := context.Background()
+	if err := brainops.MigrateAll(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	cfg := Config{
+		Env:             "development",
+		SessionIdle:     identity.IdleTimeout,
+		SessionMaxAge:   identity.MaxAge,
+		PublicURL:       "http://localhost:5173",
+		WebAuthnRPID:    "localhost",
+		ShutdownTimeout: 2 * time.Second,
+	}
+	worker := withWorker(t, owner, &cfg)
+	worker.Stop()
+	app, err := New(ctx, cfg, servingPools(t, owner), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	if err == nil {
+		app.Close()
+	}
+	if err == nil || err.Error() != "config: worker is not ready" {
+		t.Fatalf("brain.New with the worker down = %v", err)
 	}
 }

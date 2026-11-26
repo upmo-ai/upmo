@@ -46,6 +46,9 @@ var (
 	ErrMemberProvidersDisabled = errors.New("gateway: member providers disabled")
 	// ErrNoMasterKey is a server that has no master key, so it cannot hold keys.
 	ErrNoMasterKey = domain.ErrNoMasterKey
+	// ErrKeysUnavailable is a key service that did not answer, so a key
+	// could not be sealed now.
+	ErrKeysUnavailable = errors.New("gateway: key service unavailable")
 )
 
 // InUseError is an account some routes still link to.
@@ -156,8 +159,6 @@ type Accounts interface {
 	// Remove deletes the account, its models and its key in one transaction.
 	// It returns ErrNotFound, or InUseError while a route links to it.
 	Remove(ctx context.Context, who Caller, id string) error
-	// Sealed returns the stored key for an account's ref, or ErrNotFound.
-	Sealed(ctx context.Context, who Caller, ref string) (domain.Sealed, error)
 	// Note stores the status a test found for an account.
 	Note(ctx context.Context, who Caller, id, status string) error
 	// PutSeenModels replaces the discovered model list stored for an account.
@@ -217,13 +218,33 @@ type Prober interface {
 	Probe(ctx context.Context, attempt Attempt) ([]domain.SeenModel, domain.FailureClass, error)
 }
 
+// CredentialSealer seals a provider key for its ref under a new data key
+// wrapped by the master key, which brain does not hold. Ready is false when
+// no key service is set up.
+type CredentialSealer interface {
+	Ready() bool
+	SealCredential(ctx context.Context, ref, plaintext string) (domain.Sealed, error)
+}
+
+// SavedTester tests a saved account with its saved key in the worker, the
+// one process that opens it. The worker reads the adapter and base URL from
+// the stored account and applies the manageable rule to the person whose
+// session or API token hashes to actorTokenHash. Any refusal or failure is
+// an error.
+type SavedTester interface {
+	ProviderTest(ctx context.Context, accountID string, actorTokenHash []byte) (TestResult, error)
+}
+
 // Providers is the use case behind a person's provider settings.
 type Providers struct {
 	Accounts Accounts
 	// Catalog reads model kinds and vendor catalog rows from gateway.prices.
 	Catalog CatalogReader
-	// Keys seals and opens the keys a person adds.
-	Keys domain.Keyring
+	// Keys seals the keys a person adds. Brain never opens one again.
+	Keys CredentialSealer
+	// Saved tests a saved key through the worker. Nil refuses a saved-key
+	// test with ErrKeysUnavailable.
+	Saved SavedTester
 	// Known reports whether the gateway has an adapter by that key.
 	Known func(adapter string) bool
 	// Probes holds the test call of each adapter that has one.
@@ -292,16 +313,25 @@ type ProviderChange struct {
 }
 
 // TestRequest is what a person sends to test an account. With an ID and no
-// APIKey the saved key is used.
+// APIKey the saved key is used, through the worker, which ActorTokenHash
+// (the hash of the person's session token) proves the person to.
 type TestRequest struct {
-	ID       string
-	Provider string
-	Adapter  string
-	PlanKind string
-	APIKey   string
-	BaseURL  string
-	Model    string
+	ID             string
+	Provider       string
+	Adapter        string
+	PlanKind       string
+	APIKey         string
+	BaseURL        string
+	Model          string
+	ActorTokenHash []byte
 }
+
+// NewAddressRefusal is the answer to a saved-key test aimed at another
+// adapter or base URL: the saved key only goes to its saved address.
+const NewAddressRefusal = "Enter the key again to test a new address."
+
+// SavedKeyUnreadable is the answer when the worker cannot open a saved key.
+const SavedKeyUnreadable = "The saved key could not be read. Enter it again."
 
 // TestResult is the answer to a test. Error is a fixed plain message.
 // Models carries the discovered models when the auth call worked and the list
@@ -433,7 +463,7 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 	}
 	var sealed *domain.Sealed
 	if key != "" {
-		boxed, err := s.Keys.Seal(ref, key)
+		boxed, err := s.Keys.SealCredential(ctx, ref, key)
 		if err != nil {
 			return domain.Provider{}, err
 		}
@@ -562,7 +592,7 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	}
 	var sealed *domain.Sealed
 	if key != "" {
-		boxed, err := s.Keys.Seal(cur.CredentialRef, key)
+		boxed, err := s.Keys.SealCredential(ctx, cur.CredentialRef, key)
 		if err != nil {
 			return domain.Provider{}, err
 		}
@@ -654,6 +684,9 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		if saved, err = s.manageable(ctx, who, in.ID); err != nil {
 			return TestResult{}, err
 		}
+		if visibilityOf(saved) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+			return TestResult{}, ErrMemberProvidersDisabled
+		}
 		if adapter == "" {
 			adapter = saved.Adapter
 		}
@@ -694,38 +727,50 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		return refuse(err.Error())
 	}
 	unsavedKey := key != ""
-	if key == "" && saved.HasKey {
-		boxed, err := s.Accounts.Sealed(ctx, who, saved.CredentialRef)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return TestResult{}, fmt.Errorf("gateway: read saved key: %w", err)
-		}
-		if err == nil {
-			if !s.Keys.Ready() {
-				return TestResult{}, ErrNoMasterKey
-			}
-			if key, err = s.Keys.Open(saved.CredentialRef, boxed); err != nil {
-				return refuse("The saved key could not be read. Enter it again.")
-			}
-		}
+	savedKey := !unsavedKey && saved.HasKey
+	// Brain cannot open a saved key; the worker tests it at its saved address
+	// only, so another address needs the key typed again.
+	if savedKey && (adapter != saved.Adapter || base != saved.BaseURL) {
+		return refuse(NewAddressRefusal)
 	}
-	if err := domain.NeedKey(plan, key, false); err != nil {
-		return refuse(err.Error())
+	if !savedKey {
+		if err := domain.NeedKey(plan, key, false); err != nil {
+			return refuse(err.Error())
+		}
 	}
 	probe := s.Probes[adapter]
 	if probe == nil {
 		return refuse("That adapter cannot be tested.")
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
-	defer cancel()
-	models, class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
-	result := TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}
+	var result TestResult
+	var status string
+	if savedKey {
+		if s.Saved == nil {
+			return TestResult{}, ErrKeysUnavailable
+		}
+		tested, err := s.Saved.ProviderTest(ctx, in.ID, in.ActorTokenHash)
+		if err != nil {
+			return TestResult{}, ErrKeysUnavailable
+		}
+		if !tested.OK && tested.Error == SavedKeyUnreadable {
+			return refuse(SavedKeyUnreadable)
+		}
+		result, status = tested, messageStatus(tested)
+	} else {
+		callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
+		models, class, _ := probe.Probe(callCtx, Attempt{Adapter: adapter, BaseURL: base, Model: in.Model, Secret: key, PlanKind: plan})
+		cancel()
+		result = TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}
+		status = ProbeStatus(class)
+	}
+	models := result.Models
 	if err := s.sealTest(ctx, in.ID, result.OK); err != nil {
 		return TestResult{}, err
 	}
 	sameEndpoint := in.ID != "" && !unsavedKey && adapter == saved.Adapter && base == saved.BaseURL
 	if sameEndpoint {
-		if err := s.Accounts.Note(ctx, who, in.ID, ProbeStatus(class)); err != nil && s.Log != nil {
+		if err := s.Accounts.Note(ctx, who, in.ID, status); err != nil && s.Log != nil {
 			s.Log.Warn("provider status not stored", "account", in.ID, "owner", user)
 		}
 		if result.OK && models != nil {
@@ -741,6 +786,74 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 		}
 	}
 	return result, nil
+}
+
+// ProbeSaved is the worker's half of a saved-key test. It applies the same
+// manageable rule as Test to user, then calls allowed, then opens the
+// account's saved key with open and probes the stored adapter, plan and
+// base URL. It stores nothing: brain stores the status it returns. A house
+// account, an account the person may not change, a private account while
+// the workspace has turned off member providers, a local plan they may not
+// test and an account with no saved key are each an error.
+func (s Providers) ProbeSaved(ctx context.Context, user, id string, allowed func() error, open func(ref string) (string, error)) (TestResult, error) {
+	who, err := s.caller(ctx, user)
+	if err != nil {
+		return TestResult{}, err
+	}
+	saved, err := s.manageable(ctx, who, id)
+	if err != nil {
+		return TestResult{}, err
+	}
+	if visibilityOf(saved) == domain.VisibilityPrivate && !who.MemberProvidersAllowed {
+		return TestResult{}, ErrMemberProvidersDisabled
+	}
+	if !saved.HasKey || s.Known == nil || !s.Known(saved.Adapter) {
+		return TestResult{}, ErrNotFound
+	}
+	plan := saved.PlanKind
+	if plan == "" {
+		plan = domain.PlanMetered
+	}
+	if plan, err = domain.CleanPlan(plan); err != nil {
+		return TestResult{}, err
+	}
+	if plan == domain.PlanLocal && !s.mayLocal(ctx, user) {
+		return TestResult{}, ErrLocalPlan
+	}
+	base, err := domain.CleanBaseURLForAdapter(saved.Adapter, plan, saved.BaseURL)
+	if err != nil || base != saved.BaseURL {
+		return TestResult{}, ErrNotFound
+	}
+	probe := s.Probes[saved.Adapter]
+	if probe == nil {
+		return TestResult{}, ErrNotFound
+	}
+	if err := allowed(); err != nil {
+		return TestResult{}, err
+	}
+	key, err := open(saved.CredentialRef)
+	if err != nil || key == "" {
+		return TestResult{Error: SavedKeyUnreadable}, nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, TestTimeout)
+	defer cancel()
+	models, class, _ := probe.Probe(callCtx, Attempt{Adapter: saved.Adapter, BaseURL: base, Secret: key, PlanKind: plan})
+	return TestResult{OK: class == domain.ClassOK, Error: ProbeMessage(class), Models: models}, nil
+}
+
+// messageStatus is the status a worker's test result leaves on an account:
+// the worker answers with ProbeMessage, which names one class each.
+func messageStatus(r TestResult) string {
+	switch {
+	case r.OK:
+		return ProbeStatus(domain.ClassOK)
+	case r.Error == ProbeMessage(domain.ClassCredential):
+		return ProbeStatus(domain.ClassCredential)
+	case r.Error == ProbeMessage(domain.ClassRateLimit):
+		return ProbeStatus(domain.ClassRateLimit)
+	default:
+		return ProbeStatus(domain.ClassTransient)
+	}
 }
 
 // SeenModels returns the discovered models stored for an account the person

@@ -85,6 +85,31 @@ func ActiveUser(ctx context.Context, owner *pgxpool.Pool, userID string) (bool, 
 	return active, err
 }
 
+// ActorOfTokenHash names the joined, enabled person whose unexpired session
+// or API token hashes to hash, on the owner pool. No match is false.
+func ActorOfTokenHash(ctx context.Context, owner *pgxpool.Pool, hash []byte) (string, bool, error) {
+	if owner == nil || len(hash) == 0 {
+		return "", false, nil
+	}
+	var user string
+	err := owner.QueryRow(ctx, `
+		SELECT person.id::text
+		FROM identity.users AS person
+		WHERE person.joined_at IS NOT NULL
+		  AND person.disabled_at IS NULL
+		  AND (EXISTS (SELECT 1 FROM identity.sessions AS s
+		               WHERE s.user_id = person.id AND s.token_hash = $1 AND s.expires_at > now())
+		    OR EXISTS (SELECT 1 FROM identity.api_tokens AS t
+		               WHERE t.user_id = person.id AND t.token_hash = $1 AND t.expires_at > now()))`, hash).Scan(&user)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return user, true, nil
+}
+
 // GetWorkspace reads the single-row workspace settings under row security for actor.
 func (p Passkeys) GetWorkspace(ctx context.Context, actor domain.UserID) (domain.Workspace, error) {
 	tx, err := p.Pool.Begin(ctx)

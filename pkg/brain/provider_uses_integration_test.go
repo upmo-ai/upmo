@@ -44,14 +44,16 @@ func newUsesRig(t *testing.T) usesRig {
 	appPool := pgtest.App(t, owner)
 	t.Setenv(gateway.EnvMasterKey, base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32)))
 	t.Setenv(gateway.EnvMasterKeyID, "k1")
-	app, err := New(ctx, Config{
+	cfg := Config{
 		Env:             "development",
 		SessionIdle:     identity.IdleTimeout,
 		SessionMaxAge:   identity.MaxAge,
 		PublicURL:       "http://localhost:5173",
 		WebAuthnRPID:    "localhost",
 		ShutdownTimeout: 2 * time.Second,
-	},
+	}
+	withWorker(t, owner, &cfg)
+	app, err := New(ctx, cfg,
 		servingPools(t, owner),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 	)
