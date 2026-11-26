@@ -1,10 +1,10 @@
 #!/bin/sh
 # Install Playwright into the /opt/playwright volume when it is missing or
-# another version. The image tag and this version stay on the same 1.61.1
+# another version. The image tag and this version stay on the same 1.65.1
 # release so the baked browsers match the library.
 set -eu
 
-version=1.61.1
+version=1.65.1
 prefix=/opt/playwright
 pkg="$prefix/node_modules/playwright/package.json"
 
