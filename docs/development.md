@@ -45,7 +45,7 @@ Each job writes a summary on the run page, pass or fail. Jobs that run tests wit
 - **Security.** Vulnerability Scan (govulncheck, osv-scanner), Secret Scan (gitleaks), Dependency Review (pull requests only, fails on high severity and on GPL-2.0-only, SSPL-1.0 and BUSL-1.1), Workflow Security (actionlint, zizmor) and Container Images (hadolint, then Trivy on the built images, failing on high or critical findings that have a fix). GitHub's default setup runs CodeQL. The `Scorecard` workflow runs OpenSSF Scorecard on `main` and weekly.
 - **Local runs.** `make ci` runs every job above except Go Integration Tests, End-to-End Tests, Fuzz Tests and Dependency Review. Those need a Docker socket, a browser, 30 seconds per fuzz target, or the pull request context. Run them with `make test-integration`, `make e2e` and `make fuzz`.
 
-The `main` ruleset requires a pull request, one approval, code owner review, a passing `CI Result` and an up-to-date branch. It blocks force pushes and deletion and keeps history linear.
+The `main` ruleset requires a pull request merged by squash, resolved review threads, signed commits, a passing `CI Result` and an up-to-date branch. It needs no approval. It blocks force pushes and deletion and keeps history linear. Rebase locally so your commits stay signed. A rebase done by GitHub (`gh pr update-branch --rebase` or the Update branch button) leaves them unsigned, and the ruleset then blocks the merge.
 
 Commit Messages checks every commit message on the branch (subject and body), refuses new migration files, and on a pull request checks the title, which becomes the squash commit subject on `main`.
 
