@@ -236,6 +236,9 @@ type Wrapped = domain.Wrapped
 // KindPassword is the kind a stored password's data key is wrapped for.
 const KindPassword = domain.KindPassword
 
+// KindEmail is the kind a stored email address's data key is wrapped for.
+const KindEmail = domain.KindEmail
+
 // ValidKeyID reports whether id can name a master key.
 func ValidKeyID(id string) bool { return domain.ValidKeyID(id) }
 

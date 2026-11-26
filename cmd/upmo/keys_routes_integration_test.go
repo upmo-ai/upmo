@@ -81,10 +81,15 @@ type keyWorker struct {
 
 func startKeyWorker(t *testing.T) *keyWorker {
 	t.Helper()
+	return startKeyWorkerOn(t, workerRing(t, "k1"))
+}
+
+// startKeyWorkerOn is startKeyWorker over ring.
+func startKeyWorkerOn(t *testing.T, ring gateway.Keyring) *keyWorker {
+	t.Helper()
 	owner := migrated(t)
 	cfg, keyByAudience := workerKeyConfig(t)
 	cfg.PublicURL, cfg.AvatarsDir = "http://localhost:5173", t.TempDir()
-	ring := workerRing(t, "k1")
 	h, err := workerHandler(owner, cfg, ring, []provision.Key{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

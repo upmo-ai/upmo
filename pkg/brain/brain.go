@@ -510,15 +510,16 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	}
 
 	internalCfg := toInternalConfig(cfg)
-	emails := brainops.NewEmailSealer(masterKeys)
 	sessions := identity.Sessions(pool, cfg.SessionIdle, cfg.SessionMaxAge)
 	// Brain holds no master key for passwords or credentials: the worker
-	// wraps every data key, and checks every password.
+	// wraps every data key, checks every password and computes every email
+	// index MAC. The master key it still holds only opens stored addresses.
 	workerKeys, err := workerClient(ctx, cfg)
 	if err != nil {
 		cleanupPools()
 		return nil, err
 	}
+	emails := brainops.WorkerEmails{Keys: workerKeys, Ring: masterKeys}
 	passwords := identity.Passwords(pool, emails, sessions)
 	passwords.Keys = brainops.WorkerPasswords{Keys: workerKeys}
 	tokens := identity.APITokens(pool, log)

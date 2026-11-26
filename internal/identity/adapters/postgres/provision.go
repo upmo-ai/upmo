@@ -143,7 +143,7 @@ func (s ProvisionStore) CreateMember(ctx context.Context, in ProvisionMemberInpu
 		active = *in.Active
 	}
 
-	stored, hashes, keyID, err := sealEmail(s.Emails, email)
+	stored, hashes, keyID, err := sealEmail(ctx, s.Emails, email)
 	if err != nil {
 		return ProvisionMember{}, err
 	}
@@ -257,7 +257,7 @@ func (s ProvisionStore) UpdateMember(ctx context.Context, externalID string, in 
 		return ProvisionMember{}, err
 	}
 
-	stored, hashes, keyID, err := sealEmail(s.Emails, email)
+	stored, hashes, keyID, err := sealEmail(ctx, s.Emails, email)
 	if err != nil {
 		return ProvisionMember{}, err
 	}

@@ -675,7 +675,7 @@ func TestBackupRestoreVersion1ArchiveToEmptyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	emails := brainops.NewEmailSealer(ring1)
-	stored, hash, keyID, err := emails.Seal("src@example.com")
+	stored, hash, keyID, err := emails.Seal(t.Context(), "src@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}

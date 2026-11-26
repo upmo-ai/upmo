@@ -289,7 +289,7 @@ func memberIDByEmail(t *testing.T, owner *pgxpool.Pool, email string) string {
 	t.Helper()
 	var id string
 	if err := owner.QueryRow(context.Background(),
-		`SELECT id::text FROM identity.users WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes(email)).Scan(&id); err != nil {
+		`SELECT id::text FROM identity.users WHERE email_hash = ANY($1)`, sealer.Hashes(t, email)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -297,7 +297,7 @@ func memberIDByEmail(t *testing.T, owner *pgxpool.Pool, email string) string {
 
 func seedJoinedMember(t *testing.T, owner *pgxpool.Pool, email, name string) string {
 	t.Helper()
-	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func adaHandle(t *testing.T, owner *pgxpool.Pool) []byte {
 	t.Helper()
 	var handle []byte
 	if err := owner.QueryRow(context.Background(),
-		`SELECT webauthn_handle FROM identity.users WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes("ada@example.com")).Scan(&handle); err != nil {
+		`SELECT webauthn_handle FROM identity.users WHERE email_hash = ANY($1)`, sealer.Hashes(t, "ada@example.com")).Scan(&handle); err != nil {
 		t.Fatal(err)
 	}
 	return handle

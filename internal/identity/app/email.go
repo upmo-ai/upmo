@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -15,18 +16,19 @@ var ErrNoEmailSealer = errors.New("identity: email storage needs a master key")
 var ErrStoredEmail = errors.New("identity: stored email address")
 
 // EmailSealer seals a person's email address for storage and computes the keyed
-// index hashes used to find it. The brain wires it from the master keyring.
+// index hashes used to find it. Brain wires the worker's key service; the
+// worker and the upmo commands wire the master keyring.
 type EmailSealer interface {
 	Ready() bool
 	// Seal returns the stored form of address (trimmed, casing kept), its index hash
 	// under the current key and that key's id. The seal is bound to the hash.
-	Seal(address string) (stored string, hash []byte, hashKeyID string, err error)
+	Seal(ctx context.Context, address string) (stored string, hash []byte, hashKeyID string, err error)
 	// Open returns the address of stored, which was sealed for hash.
 	Open(stored string, hash []byte) (string, error)
 	// IndexHashes returns the index hash of address under every loaded key, the
 	// current key first. Lookups match any of them, so rows sealed before a key
 	// rotation are still found.
-	IndexHashes(address string) [][]byte
+	IndexHashes(ctx context.Context, address string) ([][]byte, error)
 }
 
 // EmailRef is the seal ref (associated data) of an address with index hash h,

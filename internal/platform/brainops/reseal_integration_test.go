@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"maps"
@@ -103,7 +104,7 @@ func seedPerson(t *testing.T, owner *pgxpool.Pool, ring gateway.Keyring, address
 	if err != nil {
 		t.Fatal(err)
 	}
-	storedEmail, emailHash, emailKeyID, err := NewEmailSealer(ring).Seal(address)
+	storedEmail, emailHash, emailKeyID, err := NewEmailSealer(ring).Seal(t.Context(), address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +236,9 @@ func checkPersonOpen(t *testing.T, p storedPerson, ring gateway.Keyring, hash, a
 	}
 	if prefix, _, _ := strings.Cut(p.email, ":"); prefix != keyID || p.emailHashKeyID != keyID {
 		t.Fatalf("email is under keys %q and %q, want %q", prefix, p.emailHashKeyID, keyID)
+	}
+	if n := strings.Count(p.email, ":"); n != 4 {
+		t.Fatalf("email has %d fields, want 5", n+1)
 	}
 	gotAddress, err := NewEmailSealer(ring).Open(p.email, p.emailHash)
 	if err != nil || gotAddress != address {
@@ -417,7 +421,7 @@ func TestResealedRowsOpenWithTheOldKeyRemoved(t *testing.T) {
 	var found int
 	if err := owner.QueryRow(context.Background(), `
 		SELECT count(*) FROM identity.users WHERE email_hash = ANY($1)`,
-		NewEmailSealer(only2).IndexHashes("ada@example.com")).Scan(&found); err != nil {
+		only2.IndexMACs([]byte("ada@example.com"))).Scan(&found); err != nil {
 		t.Fatal(err)
 	}
 	if found != 1 {
@@ -615,15 +619,15 @@ func TestResealMovesAnOldIndexHashToTheCurrentKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := ring2.Seal(identity.EmailRef(hash), "mixed@example.com")
+	wrapped, err := ring2.WrapNew(gateway.KindEmail, hex.EncodeToString(hash))
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored := strings.Join([]string{
-		sealed.KeyID,
-		base64.StdEncoding.EncodeToString(sealed.Nonce),
-		base64.StdEncoding.EncodeToString(sealed.Ciphertext),
-	}, ":")
+	stored, err := sealEmailWith(wrapped, hash, "mixed@example.com")
+	clear(wrapped.DataKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := owner.Exec(ctx, `
 		UPDATE identity.users
 		SET email = $2, email_hash = $3, email_hash_key_id = $4

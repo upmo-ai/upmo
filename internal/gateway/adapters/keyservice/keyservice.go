@@ -45,6 +45,10 @@ const (
 	PasswordAttempts = 5
 )
 
+// EmailRate is how many index-mac calls brain may make per Window, counted
+// apart from Rate and PasswordRate.
+const EmailRate = 30
+
 // The bounds of a password-verify body, in bytes.
 const (
 	maxEmailBytes    = 320
@@ -57,6 +61,7 @@ const (
 	actionUnwrap         = "keys.unwrap"
 	actionProviderTest   = "keys.provider_test"
 	actionPasswordVerify = "keys.password_verify"
+	actionIndexMAC       = "keys.index_mac"
 )
 
 var (
@@ -105,6 +110,8 @@ var (
 	sandboxPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 	// personPattern is a password ref: a person's uuid in lower case.
 	personPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	// macPattern is an email ref: the address's index MAC in lowercase hex.
+	macPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	// service is the audit service each worker audience acts for.
 	service = map[string]string{
 		svcsig.AudienceWorkerBrain:    "brain",
@@ -149,6 +156,7 @@ func New(owner *pgxpool.Pool, ring domain.Keyring, verify Verify, test ProviderT
 		owner: owner, ring: ring, test: test, passwords: passwords, log: log,
 		limit:         &limiter{rate: Rate, at: map[string][]time.Time{}},
 		passwordLimit: &limiter{rate: PasswordRate, at: map[string][]time.Time{}},
+		emailLimit:    &limiter{rate: EmailRate, at: map[string][]time.Time{}},
 	}
 	d := dispatch{}
 	for audience := range service {
@@ -187,6 +195,8 @@ type server struct {
 	limit     *limiter
 	// passwordLimit counts password-verify calls apart from limit.
 	passwordLimit *limiter
+	// emailLimit counts index-mac calls apart from both.
+	emailLimit *limiter
 }
 
 // routes serves one verified audience.
@@ -208,6 +218,8 @@ func (s *server) routes(audience string) http.Handler {
 			s.providerTest(w, r, audience)
 		case r.Method == http.MethodPost && r.URL.Path == keys.PathPasswordVerify:
 			s.passwordVerify(w, r, audience)
+		case r.Method == http.MethodPost && r.URL.Path == keys.PathIndexMAC:
+			s.indexMAC(w, r, audience)
 		default:
 			http.NotFound(w, r)
 		}
@@ -226,8 +238,8 @@ func (s *server) wrap(w http.ResponseWriter, r *http.Request, audience string) {
 		return
 	}
 	s.describe(changes, in.Kind, in.Ref, "")
-	// Brain alone wraps: a credential for its ref, or a password for the
-	// person's uuid.
+	// Brain alone wraps: a credential for its ref, a password for the
+	// person's uuid, or an email for its index MAC in hex.
 	if audience != svcsig.AudienceWorkerBrain || !mayWrap(in.Kind, in.Ref) {
 		s.deny(w, r.Context(), http.StatusForbidden, actionWrap, audience, changes)
 		return
@@ -296,6 +308,8 @@ func mayWrap(kind, ref string) bool {
 		return refPattern.MatchString(ref)
 	case domain.KindPassword:
 		return personPattern.MatchString(ref)
+	case domain.KindEmail:
+		return macPattern.MatchString(ref)
 	default:
 		return false
 	}
@@ -382,6 +396,44 @@ func (s *server) providerTest(w http.ResponseWriter, r *http.Request, audience s
 		out.Models = []json.RawMessage{}
 	}
 	respond(w, out)
+}
+
+// indexMAC computes an address's index MACs for brain, so brain holds no
+// index key. The address and the MACs never reach the audit row.
+func (s *server) indexMAC(w http.ResponseWriter, r *http.Request, audience string) {
+	ctx := r.Context()
+	changes := map[string]string{"audience": audience, "kind": domain.KindEmail}
+	if !s.emailLimit.take(audience, time.Now()) {
+		s.deny(w, ctx, http.StatusTooManyRequests, actionIndexMAC, audience, changes)
+		return
+	}
+	var in keys.IndexMACRequest
+	if !decode(r, &in) || audience != svcsig.AudienceWorkerBrain {
+		s.deny(w, ctx, http.StatusForbidden, actionIndexMAC, audience, changes)
+		return
+	}
+	if len(in.Address) == 0 || len(in.Address) > maxEmailBytes {
+		changes["ref_digest"] = s.ring.AuditDigest([]byte(in.Address))
+		s.deny(w, ctx, http.StatusForbidden, actionIndexMAC, audience, changes)
+		return
+	}
+	if err := s.record(ctx, actionIndexMAC, "success", audience, changes); err != nil {
+		s.log.Warn("keys: audit refused an index mac", "err", err)
+		refuse(w, http.StatusForbidden)
+		return
+	}
+	// identity.NormalEmail: trimmed and lower case.
+	normal := []byte(strings.ToLower(strings.TrimSpace(in.Address)))
+	keyID, mac, err := s.ring.IndexMAC(normal)
+	if err != nil {
+		refuse(w, http.StatusForbidden)
+		return
+	}
+	macs := [][]byte{mac}
+	if in.All {
+		macs = s.ring.IndexMACs(normal)
+	}
+	respond(w, keys.IndexMACResponse{KeyID: keyID, MACs: macs})
 }
 
 // passwordVerifyBody is the password-verify body as read: the two proofs
@@ -499,10 +551,11 @@ func (b passwordVerifyBody) proof() (email string, tokenHash, raw []byte, ok boo
 // sandbox id that misses its pattern is kept only as a keyed digest.
 func (s *server) describe(changes map[string]string, kind, ref, sandboxID string) {
 	switch kind {
-	case domain.KindCredential, "password", "email":
+	case domain.KindCredential, domain.KindPassword, domain.KindEmail:
 		changes["kind"] = kind
 	}
-	if refPattern.MatchString(ref) || (kind == domain.KindPassword && personPattern.MatchString(ref)) {
+	// An email ref is an index MAC, which no audit row holds.
+	if kind != domain.KindEmail && (refPattern.MatchString(ref) || (kind == domain.KindPassword && personPattern.MatchString(ref))) {
 		changes["ref"] = ref
 	} else {
 		changes["ref_digest"] = s.ring.AuditDigest([]byte(ref))

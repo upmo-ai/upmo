@@ -28,13 +28,10 @@ const (
 // defaultResealBatch is the batch size when ResealOptions.BatchSize is <= 0.
 const defaultResealBatch = 200
 
-// storedFormat matches a sealed email address as stored:
-// "<key id>:<base64 nonce>:<base64 ciphertext>".
-const storedFormat = `^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+$`
-
-// passwordFormat matches a sealed password hash as stored: "<key id>:<wrap
-// nonce>:<wrapped key>:<payload nonce>:<payload>". Field 1 is the key id.
-const passwordFormat = `^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+:[^:]+:[^:]+$` // #nosec G101 -- a pattern, not a credential
+// sealedFormat matches a sealed password hash or email address as stored:
+// "<key id>:<wrap nonce>:<wrapped key>:<payload nonce>:<payload>". Field 1
+// is the key id.
+const sealedFormat = `^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+:[^:]+:[^:]+$` // #nosec G101 -- a pattern, not a credential
 
 // uniqueViolation is SQLSTATE 23505: a row's UPDATE hit a unique index.
 const uniqueViolation = "23505"
@@ -116,7 +113,7 @@ func UnknownKeyRows(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyri
 	byKey, err = countByKey(ctx, owner, `
 		SELECT split_part(password_hash, ':', 1), count(*)
 		FROM identity.users
-		WHERE password_hash ~ '`+passwordFormat+`'
+		WHERE password_hash ~ '`+sealedFormat+`'
 		  AND split_part(password_hash, ':', 1) <> $1
 		GROUP BY 1`, current)
 	if err != nil {
@@ -130,7 +127,7 @@ func UnknownKeyRows(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyri
 	rows, err := owner.Query(ctx, `
 		SELECT split_part(email, ':', 1), email_hash_key_id, count(*)
 		FROM identity.users
-		WHERE email ~ '`+storedFormat+`'
+		WHERE email ~ '`+sealedFormat+`'
 		  AND (split_part(email, ':', 1) <> $1 OR email_hash_key_id <> $1)
 		GROUP BY 1, 2`, current)
 	if err != nil {
@@ -304,7 +301,7 @@ func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 	byKey, err := countByKey(ctx, owner, `
 		SELECT split_part(password_hash, ':', 1), count(*)
 		FROM identity.users
-		WHERE password_hash ~ '`+passwordFormat+`'
+		WHERE password_hash ~ '`+sealedFormat+`'
 		  AND split_part(password_hash, ':', 1) <> $1
 		GROUP BY 1`, current)
 	if err != nil {
@@ -315,7 +312,7 @@ func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*)
 		FROM identity.users
-		WHERE password_hash ~ '`+passwordFormat+`'
+		WHERE password_hash ~ '`+sealedFormat+`'
 		  AND split_part(password_hash, ':', 1) = $1`, current,
 	).Scan(&count.Current); err != nil {
 		return count, fmt.Errorf("brain: re-seal %s: count: %w", StorePasswords, err)
@@ -324,7 +321,7 @@ func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 		SELECT count(*)
 		FROM identity.users
 		WHERE password_hash IS NOT NULL
-		  AND password_hash !~ '`+passwordFormat+`'`).Scan(&count.Failed); err != nil {
+		  AND password_hash !~ '`+sealedFormat+`'`).Scan(&count.Failed); err != nil {
 		return count, fmt.Errorf("brain: re-seal %s: count: %w", StorePasswords, err)
 	}
 	if opts.DryRun {
@@ -348,7 +345,7 @@ func resealPasswords(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 		rows, err := tx.Query(ctx, `
 			SELECT id::text, password_hash
 			FROM identity.users
-			WHERE password_hash ~ '`+passwordFormat+`'
+			WHERE password_hash ~ '`+sealedFormat+`'
 			  AND split_part(password_hash, ':', 1) <> $1
 			  AND split_part(password_hash, ':', 1) <> ALL (coalesce($2::text[], '{}'::text[]))
 			  AND ($3::uuid IS NULL OR id > $3)
@@ -450,7 +447,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 	byKey, err := countByKey(ctx, owner, `
 		SELECT split_part(email, ':', 1), count(*)
 		FROM identity.users
-		WHERE email ~ '`+storedFormat+`'
+		WHERE email ~ '`+sealedFormat+`'
 		  AND (split_part(email, ':', 1) <> $1 OR email_hash_key_id <> $1)
 		GROUP BY 1`, current)
 	if err != nil {
@@ -462,7 +459,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 		SELECT count(*)
 		FROM identity.users
 		WHERE email_hash_key_id = $1
-		  AND email ~ '`+storedFormat+`'
+		  AND email ~ '`+sealedFormat+`'
 		  AND split_part(email, ':', 1) = $1`, current,
 	).Scan(&count.Current); err != nil {
 		return count, fmt.Errorf("brain: re-seal %s: count: %w", StoreEmails, err)
@@ -470,7 +467,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 	if err := owner.QueryRow(ctx, `
 		SELECT count(*)
 		FROM identity.users
-		WHERE email !~ '`+storedFormat+`'`,
+		WHERE email !~ '`+sealedFormat+`'`,
 	).Scan(&count.Failed); err != nil {
 		return count, fmt.Errorf("brain: re-seal %s: count: %w", StoreEmails, err)
 	}
@@ -496,7 +493,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 		rows, err := tx.Query(ctx, `
 			SELECT id::text, email, email_hash
 			FROM identity.users
-			WHERE email ~ '`+storedFormat+`'
+			WHERE email ~ '`+sealedFormat+`'
 			  AND (split_part(email, ':', 1) <> $1 OR email_hash_key_id <> $1)
 			  AND split_part(email, ':', 1) <> ALL (coalesce($2::text[], '{}'::text[]))
 			  AND ($3::uuid IS NULL OR id > $3)
@@ -543,7 +540,7 @@ func resealEmails(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyring
 				count.Failed++
 				continue
 			}
-			stored, hash, keyID, err := emails.Seal(address)
+			stored, hash, keyID, err := emails.Seal(ctx, address)
 			if err != nil {
 				count.Failed++
 				continue

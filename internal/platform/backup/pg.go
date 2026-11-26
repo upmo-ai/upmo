@@ -244,7 +244,7 @@ func querySealedKeyIDs(ctx context.Context, tx pgx.Tx, tables []TableMeta) ([]st
 	if hasTableCol("identity", "users", "email_hash_key_id") {
 		rows, err := tx.Query(ctx, `
 			SELECT split_part(email, ':', 1) FROM identity.users
-			WHERE email ~ '^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+$'
+			WHERE email ~ '^[A-Za-z0-9_]{1,32}:[^:]+:[^:]+:[^:]+:[^:]+$'
 			UNION
 			SELECT email_hash_key_id FROM identity.users
 			WHERE email_hash_key_id ~ '^[A-Za-z0-9_]{1,32}$'`)

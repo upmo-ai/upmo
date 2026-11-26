@@ -199,7 +199,7 @@ func (p Passkeys) RoleSystem(ctx context.Context, id domain.RoleID) (string, err
 
 // InviteMember inserts a person, or brings a disabled row back, and stores one invite link.
 func (p Passkeys) InviteMember(ctx context.Context, actorTokenHash []byte, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error) {
-	stored, hashes, keyID, err := sealEmail(p.Emails, email)
+	stored, hashes, keyID, err := sealEmail(ctx, p.Emails, email)
 	if err != nil {
 		return domain.Member{}, err
 	}

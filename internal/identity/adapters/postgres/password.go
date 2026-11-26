@@ -15,7 +15,7 @@ import (
 // PasswordAccount finds the enabled person behind an address through the
 // password_account definer, which never returns the stored hash.
 func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.UserID, string, bool, error) {
-	hashes, err := indexEmailHashes(p.Emails, email)
+	hashes, err := indexEmailHashes(ctx, p.Emails, email)
 	if err != nil {
 		return domain.UserID{}, "", false, err
 	}
@@ -32,7 +32,7 @@ func (p Passkeys) PasswordAccount(ctx context.Context, email string) (domain.Use
 }
 
 func (p Passkeys) PersonByEmail(ctx context.Context, email string) (domain.UserID, bool, bool, error) {
-	hashes, err := indexEmailHashes(p.Emails, email)
+	hashes, err := indexEmailHashes(ctx, p.Emails, email)
 	if err != nil {
 		return domain.UserID{}, false, false, err
 	}

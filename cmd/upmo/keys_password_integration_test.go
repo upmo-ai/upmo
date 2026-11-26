@@ -60,7 +60,7 @@ func phcOf(password string, salt []byte, memory, timeCost uint32, threads uint8,
 func (w *keyWorker) person(id, address, role, hash string, disabled bool) string {
 	w.t.Helper()
 	ctx := context.Background()
-	stored, emailHash, keyID, err := brainops.NewEmailSealer(w.ring).Seal(address)
+	stored, emailHash, keyID, err := brainops.NewEmailSealer(w.ring).Seal(w.t.Context(), address)
 	if err != nil {
 		w.t.Fatal(err)
 	}

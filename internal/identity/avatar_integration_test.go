@@ -110,7 +110,7 @@ func newAvatarRig(t *testing.T) *avatarRig {
 
 func (h *avatarRig) seedUser(t *testing.T, email, name, roleKey string) (domain.UserID, string, identity.Session) {
 	t.Helper()
-	stored, hash, keyID, err := h.emails.Seal(email)
+	stored, hash, keyID, err := h.emails.Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}

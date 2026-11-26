@@ -56,7 +56,7 @@ func mount(t *testing.T, mux *http.ServeMux, app *pgxpool.Pool) http.Handler {
 
 func seedPerson(t *testing.T, pool *pgxpool.Pool, email string) (string, string) {
 	t.Helper()
-	stored, hash, keyID, err := sealer.NewEmail(t).Seal(email)
+	stored, hash, keyID, err := sealer.NewEmail(t).Seal(t.Context(), email)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func lookupPerson(t *testing.T, owner *pgxpool.Pool, email string) (string, stri
 	t.Helper()
 	var userID, roleID string
 	if err := owner.QueryRow(context.Background(), `
-		SELECT id::text, role_id::text FROM identity.users WHERE email_hash = ANY($1)`, sealer.NewEmail(t).IndexHashes(email),
+		SELECT id::text, role_id::text FROM identity.users WHERE email_hash = ANY($1)`, sealer.Hashes(t, email),
 	).Scan(&userID, &roleID); err != nil {
 		t.Fatal(err)
 	}

@@ -21,11 +21,11 @@ type Store struct {
 
 // indexEmailHashes returns the index hashes of address under every loaded key,
 // current key first. Without a ready sealer it fails before any lookup runs.
-func indexEmailHashes(emails app.EmailSealer, address string) ([][]byte, error) {
+func indexEmailHashes(ctx context.Context, emails app.EmailSealer, address string) ([][]byte, error) {
 	if emails == nil || !emails.Ready() {
 		return nil, app.ErrNoEmailSealer
 	}
-	return emails.IndexHashes(address), nil
+	return emails.IndexHashes(ctx, address)
 }
 
 // openStoredEmail returns the address of stored, which was sealed for hash. A
@@ -39,16 +39,20 @@ func openStoredEmail(emails app.EmailSealer, stored string, hash []byte) (string
 
 // sealEmail returns the stored form of address and its index hashes under
 // every loaded key, the current key's hash first, without duplicates.
-func sealEmail(emails app.EmailSealer, address string) (stored string, hashes [][]byte, hashKeyID string, err error) {
+func sealEmail(ctx context.Context, emails app.EmailSealer, address string) (stored string, hashes [][]byte, hashKeyID string, err error) {
 	if emails == nil || !emails.Ready() {
 		return "", nil, "", app.ErrNoEmailSealer
 	}
-	stored, hash, hashKeyID, err := emails.Seal(address)
+	stored, hash, hashKeyID, err := emails.Seal(ctx, address)
+	if err != nil {
+		return "", nil, "", err
+	}
+	all, err := emails.IndexHashes(ctx, address)
 	if err != nil {
 		return "", nil, "", err
 	}
 	hashes = [][]byte{hash}
-	for _, other := range emails.IndexHashes(address) {
+	for _, other := range all {
 		if !bytes.Equal(other, hash) {
 			hashes = append(hashes, other)
 		}
