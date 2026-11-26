@@ -407,7 +407,7 @@ services:
     command: ["-color"]
 
   zizmor:
-    image: ghcr.io/zizmorcore/zizmor:1.5.2@sha256:2eec97e326025cebb147a380011ff40402866275cbb9e85968a471ca592c00a3
+    image: ghcr.io/zizmorcore/zizmor:1.33.1@sha256:ecd3ffe6158de1322e05a044ed43749bee12b1dccb7e1a7859bc6ac4b2a1c516
     profiles: ["tools"]
     working_dir: /src
     volumes:
