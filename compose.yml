@@ -417,7 +417,7 @@ services:
   # Dockerfiles: hadolint lints the files, trivy scans the images built by
   # `make images`. trivy reads them through the engine socket.
   hadolint:
-    image: hadolint/hadolint:v2.12.0-alpine@sha256:3c206a451cec6d486367e758645269fd7d696c5ccb6ff59d8b03b0e45268a199
+    image: hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552
     profiles: ["tools"]
     working_dir: /src
     volumes:
