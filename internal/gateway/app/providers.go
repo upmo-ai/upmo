@@ -46,6 +46,9 @@ var (
 	ErrMemberProvidersDisabled = errors.New("gateway: member providers disabled")
 	// ErrNoMasterKey is a server that has no master key, so it cannot hold keys.
 	ErrNoMasterKey = domain.ErrNoMasterKey
+	// ErrKeysUnavailable is a key service that did not answer, so a key
+	// could not be sealed now.
+	ErrKeysUnavailable = errors.New("gateway: key service unavailable")
 )
 
 // InUseError is an account some routes still link to.
@@ -156,8 +159,6 @@ type Accounts interface {
 	// Remove deletes the account, its models and its key in one transaction.
 	// It returns ErrNotFound, or InUseError while a route links to it.
 	Remove(ctx context.Context, who Caller, id string) error
-	// Sealed returns the stored key for an account's ref, or ErrNotFound.
-	Sealed(ctx context.Context, who Caller, ref string) (domain.Sealed, error)
 	// Note stores the status a test found for an account.
 	Note(ctx context.Context, who Caller, id, status string) error
 	// PutSeenModels replaces the discovered model list stored for an account.
@@ -217,13 +218,21 @@ type Prober interface {
 	Probe(ctx context.Context, attempt Attempt) ([]domain.SeenModel, domain.FailureClass, error)
 }
 
+// CredentialSealer seals a provider key for its ref under a new data key
+// wrapped by the master key, which brain does not hold. Ready is false when
+// no key service is set up.
+type CredentialSealer interface {
+	Ready() bool
+	SealCredential(ctx context.Context, ref, plaintext string) (domain.Sealed, error)
+}
+
 // Providers is the use case behind a person's provider settings.
 type Providers struct {
 	Accounts Accounts
 	// Catalog reads model kinds and vendor catalog rows from gateway.prices.
 	Catalog CatalogReader
-	// Keys seals and opens the keys a person adds.
-	Keys domain.Keyring
+	// Keys seals the keys a person adds. Brain never opens one again.
+	Keys CredentialSealer
 	// Known reports whether the gateway has an adapter by that key.
 	Known func(adapter string) bool
 	// Probes holds the test call of each adapter that has one.
@@ -433,7 +442,7 @@ func (s Providers) Add(ctx context.Context, user string, in NewProvider) (domain
 	}
 	var sealed *domain.Sealed
 	if key != "" {
-		boxed, err := s.Keys.Seal(ref, key)
+		boxed, err := s.Keys.SealCredential(ctx, ref, key)
 		if err != nil {
 			return domain.Provider{}, err
 		}
@@ -562,7 +571,7 @@ func (s Providers) Change(ctx context.Context, user, id string, in ProviderChang
 	}
 	var sealed *domain.Sealed
 	if key != "" {
-		boxed, err := s.Keys.Seal(cur.CredentialRef, key)
+		boxed, err := s.Keys.SealCredential(ctx, cur.CredentialRef, key)
 		if err != nil {
 			return domain.Provider{}, err
 		}
@@ -695,18 +704,8 @@ func (s Providers) Test(ctx context.Context, user string, in TestRequest) (TestR
 	}
 	unsavedKey := key != ""
 	if key == "" && saved.HasKey {
-		boxed, err := s.Accounts.Sealed(ctx, who, saved.CredentialRef)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return TestResult{}, fmt.Errorf("gateway: read saved key: %w", err)
-		}
-		if err == nil {
-			if !s.Keys.Ready() {
-				return TestResult{}, ErrNoMasterKey
-			}
-			if key, err = s.Keys.Open(saved.CredentialRef, boxed); err != nil {
-				return refuse("The saved key could not be read. Enter it again.")
-			}
-		}
+		// shortcut: brain cannot read a saved key; the worker's provider-test lands next and replaces this refusal.
+		return refuse("The saved key could not be read. Enter it again.")
 	}
 	if err := domain.NeedKey(plan, key, false); err != nil {
 		return refuse(err.Error())

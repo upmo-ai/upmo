@@ -39,12 +39,15 @@ type storedCredential struct {
 	ciphertext []byte
 	nonce      []byte
 	keyID      string
+	wrapped    []byte
+	wrapNonce  []byte
 }
 
 // sameStored reports whether two reads of one credential row are
 // byte-for-byte equal.
 func (c storedCredential) same(other storedCredential) bool {
-	return c.keyID == other.keyID && bytes.Equal(c.ciphertext, other.ciphertext) && bytes.Equal(c.nonce, other.nonce)
+	return c.keyID == other.keyID && bytes.Equal(c.ciphertext, other.ciphertext) && bytes.Equal(c.nonce, other.nonce) &&
+		bytes.Equal(c.wrapped, other.wrapped) && bytes.Equal(c.wrapNonce, other.wrapNonce)
 }
 
 // readCredential reads one credential's sealed columns.
@@ -52,8 +55,8 @@ func readCredential(t *testing.T, owner *pgxpool.Pool, ref string) storedCredent
 	t.Helper()
 	var c storedCredential
 	if err := owner.QueryRow(context.Background(),
-		`SELECT ciphertext, nonce, key_id FROM gateway.credentials WHERE ref = $1`, ref,
-	).Scan(&c.ciphertext, &c.nonce, &c.keyID); err != nil {
+		`SELECT ciphertext, nonce, key_id, wrapped_key, wrap_nonce FROM gateway.credentials WHERE ref = $1`, ref,
+	).Scan(&c.ciphertext, &c.nonce, &c.keyID, &c.wrapped, &c.wrapNonce); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -63,13 +66,13 @@ func readCredential(t *testing.T, owner *pgxpool.Pool, ref string) storedCredent
 // names and stores it, the way a rotation leaves rows behind.
 func seedKeyCredential(t *testing.T, owner *pgxpool.Pool, ref, secret string) {
 	t.Helper()
-	sealed, err := keyringFromEnv(t).Seal(ref, secret)
+	sealed, err := keyringFromEnv(t).SealCredential(context.Background(), ref, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.Exec(context.Background(), `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)`, ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID); err != nil {
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)`, ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID, sealed.WrappedKey, sealed.WrapNonce); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -130,7 +133,7 @@ func TestKeysResealCommandMovesLoadedKeyRowsAndRefusesUnloadedOnes(t *testing.T)
 	if here.keyID != "k2" {
 		t.Fatalf("the k1 row is under key %s after the reseal, want k2", here.keyID)
 	}
-	if got, err := only2.Open("own_here", gateway.Sealed{Ciphertext: here.ciphertext, Nonce: here.nonce, KeyID: here.keyID}); err != nil || got != "sk-here-secret" {
+	if got, err := only2.OpenCredential("own_here", gateway.Sealed{Ciphertext: here.ciphertext, Nonce: here.nonce, KeyID: here.keyID, WrappedKey: here.wrapped, WrapNonce: here.wrapNonce}); err != nil || got != "sk-here-secret" {
 		t.Fatalf("the resealed row opens to %q, %v with the k2-only ring", got, err)
 	}
 	var events int

@@ -193,9 +193,13 @@ func defaultProbes() map[string]app.Prober {
 }
 
 // NewProviders is the use case behind the provider settings. It seals the
-// keys a person adds with keys; a zero Keyring leaves it unable to save one.
-// Nobody may share an account until the caller sets Allow.
-func NewProviders(pool *pgxpool.Pool, keys Keyring, log *slog.Logger) app.Providers {
+// keys a person adds with keys: brain passes a WorkerSealer, and a sealer
+// that is not Ready leaves it unable to save one. Nobody may share an
+// account until the caller sets Allow.
+func NewProviders(pool *pgxpool.Pool, keys app.CredentialSealer, log *slog.Logger) app.Providers {
+	if keys == nil {
+		keys = Keyring{}
+	}
 	table := adapters()
 	accounts := postgres.Providers{Pool: pool}
 	catalog := postgres.Store{Pool: pool}

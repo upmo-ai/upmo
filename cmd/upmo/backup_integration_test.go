@@ -282,14 +282,14 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 	}
 
 	// Seed gateway sealed credential + provider account + route + route link.
-	sealedCred, err := ring1.Seal(credRef, apiKeyPlaintext)
+	sealedCred, err := ring1.SealCredential(ctx, credRef, apiKeyPlaintext)
 	if err != nil {
 		t.Fatalf("seal provider cred: %v", err)
 	}
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)`,
-		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID,
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID, sealedCred.WrappedKey, sealedCred.WrapNonce,
 	); err != nil {
 		t.Fatalf("seed gateway.credentials: %v", err)
 	}
@@ -985,14 +985,14 @@ func TestBackupRestoreModesPassphraseNoEncryptAndRequireEncrypted(t *testing.T) 
 
 	const credRef = "pass_cred_1"
 	const credSecret = "sk-passphrase-test-secret" // #nosec G101 -- test fixture secret
-	sealedCred, err := ring1.Seal(credRef, credSecret)
+	sealedCred, err := ring1.SealCredential(ctx, credRef, credSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srcOwner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)`,
-		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID,
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		credRef, sealedCred.Ciphertext, sealedCred.Nonce, sealedCred.KeyID, sealedCred.WrappedKey, sealedCred.WrapNonce,
 	); err != nil {
 		t.Fatal(err)
 	}

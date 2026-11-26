@@ -26,7 +26,9 @@ import (
 	"github.com/upmo-ai/upmo/internal/gateway/domain"
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 // dispatchPool is the pool gateway runs on in production: a real upmo_gateway
@@ -67,7 +69,8 @@ func TestGatewayRoleGrants(t *testing.T) {
 	}
 	sealed := []byte("sealed-house-key")
 	if _, err := owner.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES ('house', $1, $2, 'k1')`, sealed, bytes.Repeat([]byte{7}, 12)); err != nil {
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ('house', $1, $2, 'k1', $3, $2)`, sealed, bytes.Repeat([]byte{7}, 12), []byte("wrapped-house-key")); err != nil {
 		t.Fatal(err)
 	}
 	gw := dispatchPool(t, owner)
@@ -169,7 +172,17 @@ func TestGatewayRoleGrants(t *testing.T) {
 		serving || !dispatching || bypass || create {
 		t.Fatalf("serving=%t dispatching=%t bypassrls=%t create=%t %v", serving, dispatching, bypass, create, err)
 	}
+	// Gateway reads a credential's payload, never its wrapped data key: only
+	// the worker unwraps.
+	var ref string
+	var ciphertext, nonce []byte
+	var keyID string
+	if err := gw.QueryRow(ctx, `SELECT ref, ciphertext, nonce, key_id FROM gateway.credentials`).Scan(&ref, &ciphertext, &nonce, &keyID); err != nil || ref != "house" {
+		t.Fatalf("upmo_gateway SELECT ref, ciphertext, nonce, key_id = %q %v", ref, err)
+	}
 	for _, stmt := range []string{
+		`SELECT wrapped_key FROM gateway.credentials`,
+		`SELECT wrap_nonce FROM gateway.credentials`,
 		`UPDATE gateway.credentials SET key_id = 'k2'`,
 		`SELECT * FROM gateway.sandbox_credential_refs`,
 		`SELECT email FROM identity.users`,
@@ -300,14 +313,8 @@ func gatewayEnv(t *testing.T, dbURL string) string {
 	t.Setenv("UPMO_DATABASE_GATEWAY_URL", dbURL)
 	t.Setenv("UPMO_PUBLIC_URL", "http://127.0.0.1:8082")
 	t.Setenv("UPMO_LISTEN_ADDR", addr)
-	t.Setenv("UPMO_MASTER_KEY", mustMasterKey(t))
 	t.Setenv("UPMO_GATEWAY_KEY", mustMaster(t))
 	return addr
-}
-
-func mustMasterKey(t *testing.T) string {
-	t.Helper()
-	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'1'}, 32))
 }
 
 func ownerURL(t *testing.T, owner *pgxpool.Pool) string {
@@ -354,6 +361,19 @@ func TestGatewayStartsAsUpmoGatewayWithoutMigrating(t *testing.T) {
 		t.Fatalf("upmo_gateway CREATE on gateway = %t %v", create, err)
 	}
 	addr := gatewayEnv(t, pgtest.LoginURL(t, owner, "upmo_gateway"))
+	// The real entry point checks the worker, signed, before it serves.
+	ring, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
+		if name == gateway.EnvMasterKey {
+			return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'1'}, 32)), true
+		}
+		return "", false
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := workerkeys.Start(t, owner, ring)
+	t.Setenv("UPMO_WORKER_URL", worker.URL)
+	t.Setenv("UPMO_WORKER_GATEWAY_KEY", worker.Key[svcsig.AudienceWorkerGateway])
 	done := make(chan error, 1)
 	go func() { done <- run() }()
 	deadline := time.Now().Add(30 * time.Second)

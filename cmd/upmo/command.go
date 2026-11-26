@@ -34,6 +34,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/platform/tlscheck"
 	"github.com/upmo-ai/upmo/internal/provision"
 )
@@ -534,6 +535,9 @@ func workerCommand() error {
 	if err != nil {
 		return err
 	}
+	if _, err := workerVerifyKeys(cfg); err != nil {
+		return err
+	}
 	ring, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
 	if err != nil {
 		return err
@@ -582,8 +586,12 @@ func workerCommand() error {
 		}
 	}()
 
+	handler, err := workerHandler(owner, cfg, ring, provisionKeys, log)
+	if err != nil {
+		return err
+	}
 	log.Info("worker started", "listen", cfg.WorkerListenAddr)
-	servers := []*http.Server{httpserver.New(cfg.WorkerListenAddr, workerHandler(owner, cfg, ring, provisionKeys, log))}
+	servers := []*http.Server{httpserver.New(cfg.WorkerListenAddr, handler)}
 	if reg != nil {
 		servers = append(servers, metrics.Server(cfg.MetricsAddr, reg, cfg.MetricsToken))
 	}
@@ -627,10 +635,20 @@ func checkSealedKeys(ctx context.Context, owner *pgxpool.Pool, ring gateway.Keyr
 }
 
 // workerHandler is the worker's one HTTP surface: provisioning, with its own
-// key check, on the owner pool, and the health routes compose waits on.
-func workerHandler(owner *pgxpool.Pool, cfg config.Config, ring gateway.Keyring, keys []provision.Key, log *slog.Logger) http.Handler {
+// key check, the key service under /internal/keys/, signed per caller
+// audience, both on the owner pool, and the health routes compose waits on.
+func workerHandler(owner *pgxpool.Pool, cfg config.Config, ring gateway.Keyring, keys []provision.Key, log *slog.Logger) (http.Handler, error) {
+	verify, err := workerVerifyKeys(cfg)
+	if err != nil {
+		return nil, err
+	}
+	keyRoutes, err := gateway.KeysHandler(owner, ring, verify, log)
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, owner.Ping)
+	mux.Handle("/internal/keys/", keyRoutes)
 	provision.Handler{
 		Owner:      owner,
 		Identity:   identity.WithProvisionAvatars(identity.Provision(owner, brainops.NewEmailSealer(ring), cfg.PublicURL), cfg.AvatarsDir),
@@ -638,7 +656,33 @@ func workerHandler(owner *pgxpool.Pool, cfg config.Config, ring gateway.Keyring,
 		Keys:       keys,
 		Log:        log,
 	}.Mount(mux)
-	return mux
+	return mux, nil
+}
+
+// workerVerifyKeys parses the three worker audience keys, each current key
+// then its previous one. The worker refuses to start without all three.
+func workerVerifyKeys(cfg config.Config) (gateway.KeysVerify, error) {
+	verify := gateway.KeysVerify{}
+	for _, k := range []struct{ name, audience, current, previous string }{
+		{"UPMO_WORKER_BRAIN_KEY", svcsig.AudienceWorkerBrain, cfg.WorkerBrainKey, cfg.WorkerBrainKeyPrevious},
+		{"UPMO_WORKER_GATEWAY_KEY", svcsig.AudienceWorkerGateway, cfg.WorkerGatewayKey, cfg.WorkerGatewayKeyPrevious},
+		{"UPMO_WORKER_SANDBOXD_KEY", svcsig.AudienceWorkerSandboxd, cfg.WorkerSandboxdKey, cfg.WorkerSandboxdKeyPrevious},
+	} {
+		if k.current == "" {
+			return nil, fmt.Errorf("config: %s is required", k.name)
+		}
+		for _, secret := range []string{k.current, k.previous} {
+			if secret == "" {
+				continue
+			}
+			key, err := svcsig.ParseAudienceKey(secret, k.audience)
+			if err != nil {
+				return nil, fmt.Errorf("config: %s: %w", k.name, err)
+			}
+			verify[k.audience] = append(verify[k.audience], key)
+		}
+	}
+	return verify, nil
 }
 
 // openWorkerJobs registers every job that reads or moves rows across people

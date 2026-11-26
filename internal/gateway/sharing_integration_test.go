@@ -11,8 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/upmo-ai/upmo/internal/gateway/adapters/postgres"
-	"github.com/upmo-ai/upmo/internal/gateway/app"
 	"github.com/upmo-ai/upmo/internal/identity"
 )
 
@@ -244,10 +242,22 @@ func TestAnAdminSharesAnAccountWithATeamAndOnlyItsMembersSeeIt(t *testing.T) {
 		t.Errorf("a request with no person sees %d team accounts", n)
 	}
 	ref := refOf(t, c.rig, made.ID)
-	if _, err := (postgres.Providers{Pool: c.app}).Sealed(context.Background(), app.Caller{User: c.finance}, ref); err == nil {
-		t.Fatal("a member of the team read the sealed key")
+	// Nobody's request reads a saved key back: brain has no SELECT on it.
+	ctx := context.Background()
+	tx, err := c.app.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The admin's request reaches the key, to replace it or to test it.
+	if err := c.asPerson(ctx, tx, c.admin, "settings:manage"); err != nil {
+		t.Fatal(err)
+	}
+	var sealed []byte
+	err = tx.QueryRow(ctx, `SELECT ciphertext FROM gateway.credentials WHERE ref = $1`, ref).Scan(&sealed)
+	_ = tx.Rollback(ctx)
+	if pgCode(err) != "42501" {
+		t.Fatalf("the admin read the sealed key: %v", err)
+	}
+	// The admin's request reaches the row, to replace or remove it.
 	if n := c.seenBy(c.admin, "settings:manage", "credentials"); n != 1 {
 		t.Errorf("the admin sees %d credentials", n)
 	}

@@ -629,6 +629,8 @@ func (h ProvidersHandler) refuse(w http.ResponseWriter, err error) {
 		writeRouteError(w, http.StatusConflict, text)
 	case errors.Is(err, app.ErrNoMasterKey):
 		writeRouteError(w, http.StatusServiceUnavailable, "Saving provider keys is not set up on this server.")
+	case errors.Is(err, app.ErrKeysUnavailable):
+		writeRouteError(w, http.StatusServiceUnavailable, "Provider keys cannot be saved right now. Try again.")
 	case errors.Is(err, app.ErrRate):
 		writeRouteError(w, http.StatusTooManyRequests, "Too many tests. Try again in a minute.")
 	case errors.Is(err, app.ErrLocalPlan):

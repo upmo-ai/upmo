@@ -108,6 +108,16 @@ type Config struct {
 	// MetricsToken is the upmo_mtr_ scrape bearer GET /metrics requires
 	// (UPMO_METRICS_TOKEN). It is required when MetricsAddr is set.
 	MetricsToken string
+	// WorkerURL is the worker's key service (UPMO_WORKER_URL), for brain and
+	// gateway. It must be https outside development.
+	WorkerURL string
+	// The worker key routes' audience keys, each with a verify-only
+	// _PREVIOUS: brain signs with UPMO_WORKER_BRAIN_KEY, gateway with
+	// UPMO_WORKER_GATEWAY_KEY, and the worker verifies all three. Each process
+	// refuses the ones it does not use.
+	WorkerBrainKey, WorkerBrainKeyPrevious       string
+	WorkerGatewayKey, WorkerGatewayKeyPrevious   string
+	WorkerSandboxdKey, WorkerSandboxdKeyPrevious string
 	// ProvisionKeys are the upmo_svc_ keys accepted on /api/v1/provision/*
 	// (UPMO_PROVISION_KEYS, comma-separated for zero-downtime key rotation).
 	// Empty disables all provisioning endpoints (returning 404).
@@ -220,16 +230,34 @@ func LoadBrain() (Config, error) {
 }
 
 // LoadGateway reads the gateway configuration. Gateway verifies calls with
-// UPMO_GATEWAY_KEY, so it is required.
+// UPMO_GATEWAY_KEY, so it is required. Gateway never holds a master key: the
+// worker unwraps each credential's data key for it.
 func LoadGateway() (Config, error) {
+	if err := RefuseMasterKey(os.LookupEnv, os.Environ()); err != nil {
+		return Config{}, err
+	}
 	cfg, err := loadGateway(os.LookupEnv)
 	if err != nil {
 		return Config{}, err
 	}
-	if err := CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
+	if err := CheckConfig(cfg, false, os.LookupEnv, os.Environ()); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// RefuseMasterKey fails when UPMO_MASTER_KEY or any UPMO_MASTER_KEY_PREVIOUS_
+// variable is set at all, for the processes that must never hold one.
+func RefuseMasterKey(lookup func(string) (string, bool), environ []string) error {
+	if _, ok := lookup("UPMO_MASTER_KEY"); ok {
+		return errors.New("config: UPMO_MASTER_KEY is refused")
+	}
+	for _, entry := range environ {
+		if strings.HasPrefix(entry, "UPMO_MASTER_KEY_PREVIOUS_") {
+			return errors.New("config: UPMO_MASTER_KEY is refused")
+		}
+	}
+	return nil
 }
 
 func loadGateway(lookup func(string) (string, bool)) (Config, error) {
@@ -354,6 +382,9 @@ func loadWith(lookup func(string) (string, bool), refusal string, brain bool, db
 		return Config{}, err
 	}
 	if cfg.MetricsToken, err = readMetricsToken(lookup, cfg.MetricsAddr); err != nil {
+		return Config{}, err
+	}
+	if err := readWorkerKeys(lookup, &cfg, db); err != nil {
 		return Config{}, err
 	}
 	if brain {
@@ -510,11 +541,18 @@ type Sandboxd struct {
 	// MetricsAddr is the internal HTTP listen address for Prometheus /metrics
 	// (UPMO_METRICS_ADDR). Empty disables the metrics listener.
 	MetricsAddr string
+	// WorkerURL is the worker's key service (UPMO_WORKER_URL), signed with
+	// UPMO_WORKER_SANDBOXD_KEY (and verify-only _PREVIOUS). Both or neither.
+	WorkerURL                                    string
+	WorkerSandboxdKey, WorkerSandboxdKeyPrevious string
 }
 
 // LoadSandboxd reads the sandboxd configuration from the environment, then
 // refuses the development service key unless UPMO_ENV is development.
 func LoadSandboxd() (Sandboxd, error) {
+	if err := RefuseMasterKey(os.LookupEnv, os.Environ()); err != nil {
+		return Sandboxd{}, err
+	}
 	cfg, err := loadSandboxd(os.LookupEnv)
 	if err != nil {
 		return Sandboxd{}, err
@@ -632,6 +670,20 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 		return Sandboxd{}, err
 	}
 	cfg.Env = env
+	for _, k := range workerKeys[:2] {
+		if err := refuseWorkerKey(lookup, k.name, -1); err != nil {
+			return Sandboxd{}, err
+		}
+	}
+	if cfg.WorkerSandboxdKey, cfg.WorkerSandboxdKeyPrevious, err = readKeys(lookup, "UPMO_WORKER_SANDBOXD_KEY", audienceKey(svcsig.AudienceWorkerSandboxd)); err != nil {
+		return Sandboxd{}, err
+	}
+	if cfg.WorkerURL, err = readWorkerURL(lookup, env == EnvDevelopment); err != nil {
+		return Sandboxd{}, err
+	}
+	if (cfg.WorkerURL == "") != (cfg.WorkerSandboxdKey == "") {
+		return Sandboxd{}, fmt.Errorf("config: UPMO_WORKER_URL and UPMO_WORKER_SANDBOXD_KEY are set together")
+	}
 	if _, ok := lookup("UPMO_DATABASE_URL"); ok {
 		return Sandboxd{}, fmt.Errorf("config: UPMO_DATABASE_URL must not be set for sandboxd; it logs in as upmo_sandbox on UPMO_DATABASE_SANDBOX_URL")
 	}
@@ -699,6 +751,86 @@ func readDatabaseURLs(lookup func(string) (string, bool), cfg *Config, db int) e
 		cfg.WorkerListenAddr = v
 	}
 	return nil
+}
+
+// The worker key variables, and which process signs with each.
+var workerKeys = []struct {
+	name, audience string
+	db             int
+}{
+	{"UPMO_WORKER_BRAIN_KEY", svcsig.AudienceWorkerBrain, dbBrain},
+	{"UPMO_WORKER_GATEWAY_KEY", svcsig.AudienceWorkerGateway, dbGateway},
+	{"UPMO_WORKER_SANDBOXD_KEY", svcsig.AudienceWorkerSandboxd, -1},
+}
+
+// readWorkerKeys reads the worker keys for one process. The worker and the
+// upmo commands read all three. Brain and gateway read their own, refuse the
+// others even when empty, and read UPMO_WORKER_URL, which needs their key.
+func readWorkerKeys(lookup func(string) (string, bool), cfg *Config, db int) error {
+	into := map[string][2]*string{
+		"UPMO_WORKER_BRAIN_KEY":    {&cfg.WorkerBrainKey, &cfg.WorkerBrainKeyPrevious},
+		"UPMO_WORKER_GATEWAY_KEY":  {&cfg.WorkerGatewayKey, &cfg.WorkerGatewayKeyPrevious},
+		"UPMO_WORKER_SANDBOXD_KEY": {&cfg.WorkerSandboxdKey, &cfg.WorkerSandboxdKeyPrevious},
+	}
+	var own string
+	for _, k := range workerKeys {
+		if db != dbOwner && k.db != db {
+			if err := refuseWorkerKey(lookup, k.name, db); err != nil {
+				return err
+			}
+			continue
+		}
+		cur, prev, err := readKeys(lookup, k.name, audienceKey(k.audience))
+		if err != nil {
+			return err
+		}
+		*into[k.name][0], *into[k.name][1] = cur, prev
+		own = k.name
+	}
+	if db == dbOwner {
+		return nil
+	}
+	workerURL, err := readWorkerURL(lookup, cfg.Env == EnvDevelopment)
+	if err != nil {
+		return err
+	}
+	if workerURL != "" && *into[own][0] == "" {
+		return fmt.Errorf("config: %s is required when UPMO_WORKER_URL is set", own)
+	}
+	cfg.WorkerURL = workerURL
+	return nil
+}
+
+// refuseWorkerKey fails when a worker key for another process is set at all.
+func refuseWorkerKey(lookup func(string) (string, bool), name string, db int) error {
+	process := map[int]string{dbBrain: "brain", dbGateway: "gateway"}[db]
+	if process == "" {
+		process = "sandboxd"
+	}
+	for _, n := range []string{name, name + "_PREVIOUS"} {
+		if _, ok := lookup(n); ok {
+			return fmt.Errorf("config: %s must not be set for %s", n, process)
+		}
+	}
+	return nil
+}
+
+// readWorkerURL reads UPMO_WORKER_URL. Outside development it must be https;
+// in development http is allowed on loopback and on one DNS label.
+func readWorkerURL(lookup func(string) (string, bool), development bool) (string, error) {
+	v, ok := lookup("UPMO_WORKER_URL")
+	if !ok || strings.TrimSpace(v) == "" {
+		return "", nil
+	}
+	u, err := url.Parse(strings.TrimSpace(v))
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("config: UPMO_WORKER_URL must be an absolute https URL with no path")
+	}
+	if u.Scheme == "http" && !tlscheck.PlaintextAllowed(development, u.Hostname()) {
+		return "", fmt.Errorf("config: UPMO_WORKER_URL must be https")
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // refuseServiceKey fails when the retired service master is set at all,

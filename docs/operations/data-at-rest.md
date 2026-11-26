@@ -28,6 +28,8 @@ These values are sealed with `UPMO_MASTER_KEY`:
 - stored provider credentials (`gateway.credentials`)
 - email addresses (`identity.users.email`), each with its keyed index hash
 
+Credentials use a per-row data key wrapped by the master key.
+
 Everything else stays in clear text inside Postgres. That includes chat, tasks, knowledge, memory, agents, audit records and other identity display fields. Row security, volume encryption and encrypted backups protect them. Column encryption would break full-text search and vector indexes.
 
 ## Backups

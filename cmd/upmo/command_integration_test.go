@@ -321,11 +321,12 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Insert: []string{"account_id", "context_length", "created", "display_name", "modalities", "model_id", "position", "pricing", "seen_at"},
 		},
 		"gateway.catalog_meta": {},
+		// Brain writes a saved key and its wrap, and reads back no part of either.
 		"gateway.credentials": {
-			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"ciphertext", "created_at", "key_id", "nonce", "ref"},
-			Insert: []string{"ciphertext", "created_at", "key_id", "nonce", "ref"},
-			Update: []string{"ciphertext", "created_at", "key_id", "nonce"},
+			Table:  []string{"DELETE"},
+			Select: []string{"created_at", "key_id", "ref"},
+			Insert: []string{"ciphertext", "created_at", "key_id", "nonce", "ref", "wrap_nonce", "wrapped_key"},
+			Update: []string{"ciphertext", "created_at", "key_id", "nonce", "wrap_nonce", "wrapped_key"},
 		},
 		"gateway.goose_db_version": {},
 		"gateway.ledger": {

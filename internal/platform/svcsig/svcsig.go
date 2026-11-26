@@ -30,6 +30,10 @@ const (
 	AudienceSandboxd   = "sandboxd"
 	AudienceMarkitdown = "markitdown"
 	AudienceProvision  = "provision"
+	// The worker's key routes: each caller signs with its own audience.
+	AudienceWorkerBrain    = "worker-brain"
+	AudienceWorkerGateway  = "worker-gateway"
+	AudienceWorkerSandboxd = "worker-sandboxd"
 )
 
 const (
@@ -406,7 +410,8 @@ func macOverV2(derived []byte, audience string, unix int64, nonce, method, path,
 
 func knownAudience(audience string) bool {
 	switch audience {
-	case AudienceGateway, AudienceSandboxd, AudienceMarkitdown, AudienceProvision:
+	case AudienceGateway, AudienceSandboxd, AudienceMarkitdown, AudienceProvision,
+		AudienceWorkerBrain, AudienceWorkerGateway, AudienceWorkerSandboxd:
 		return true
 	}
 	return false

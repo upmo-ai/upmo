@@ -12,7 +12,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,6 +28,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/migrate"
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
+	"github.com/upmo-ai/upmo/internal/testutil/workerkeys"
 )
 
 func TestGatewayDecideYesNoAndChoice(t *testing.T) {
@@ -61,7 +61,7 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
-	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,20 +157,30 @@ func TestGatewayDecideYesNoAndChoice(t *testing.T) {
 	}
 }
 
+// Gateway holds no master key: it opens a person's saved key with the data
+// key the worker unwraps for it, through the real client and the real key
+// service. With the worker stopped, the same key no longer opens.
 func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 	owner := pgtest.New(t)
 	ctx := context.Background()
 	if err := migrate.Up(ctx, owner, gateway.Schema, gateway.Migrations()); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("UPMO_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes32('m')))
-	t.Setenv("UPMO_MASTER_KEY_ID", "k7")
-	keys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
+	ring, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
+		switch name {
+		case gateway.EnvMasterKey:
+			return base64.StdEncoding.EncodeToString(bytes32('m')), true
+		case gateway.EnvMasterKeyID:
+			return "k7", true
+		}
+		return "", false
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	worker := workerkeys.Start(t, owner, ring)
 	const ref, key = "own_wiretest", "sk-own-wire-test-key"
-	sealed, err := keys.Seal(ref, key)
+	sealed, err := ring.SealCredential(ctx, ref, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +196,8 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 	}{
 		{`INSERT INTO gateway.provider_accounts (owner_user_id, name, adapter, credential_ref, plan_kind, house, base_url)
 			VALUES ('11111111-1111-4111-8111-111111111111', 'mine', 'openai_compat', $1, 'local', false, $2)`, []any{ref, provider.URL}},
-		{`INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id) VALUES ($1, $2, $3, $4)`, []any{ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID}},
+		{`INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce) VALUES ($1, $2, $3, $4, $5, $6)`,
+			[]any{ref, sealed.Ciphertext, sealed.Nonce, sealed.KeyID, sealed.WrappedKey, sealed.WrapNonce}},
 		{`INSERT INTO gateway.routes (name, capability, installed) VALUES ('draft', 'chat', true)`, nil},
 		{`INSERT INTO gateway.route_links (route_id, position, provider_account_id, model)
 			SELECT r.id, 1, a.id, 'm' FROM gateway.routes r, gateway.provider_accounts a`, nil},
@@ -196,30 +207,85 @@ func TestGatewayOpensAPersonsSealedKeyForTheirAccount(t *testing.T) {
 		}
 	}
 	master := mustMaster(t)
-	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, worker.Client(t, svcsig.AudienceWorkerGateway), nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(httpserver.Protect(handler))
 	t.Cleanup(srv.Close)
-	out := postJSON(t, srv, mustDerived(t, master), "/upmo.gateway.v1.Gateway/Chat", map[string]any{
+	body := map[string]any{
 		"route": "draft", "prompt": "hello", "credential_ref": ref,
 		"user_id": "11111111-1111-4111-8111-111111111111", "source": "chat",
-	})
-	if out["text"] != "from the person's provider" {
+	}
+	if out := postJSON(t, srv, mustDerived(t, master), "/upmo.gateway.v1.Gateway/Chat", body); out["text"] != "from the person's provider" {
 		t.Fatalf("chat = %v", out)
 	}
 	if seen.Load() != "Bearer "+key {
 		t.Fatalf("the provider was sent %q", seen.Load())
 	}
+	var stored []byte
+	if err := owner.QueryRow(ctx, `SELECT ciphertext FROM gateway.credentials WHERE ref = $1`, ref).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stored, []byte(key)) {
+		t.Fatal("the stored ciphertext holds the key")
+	}
+
+	// No cache: once the worker is gone the same ref opens nowhere.
+	worker.Stop()
+	seen.Store("")
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/upmo.gateway.v1.Gateway/Chat", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svcsig.SignRequest(mustDerived(t, master), svcsig.AudienceGateway, http.MethodPost, "/upmo.gateway.v1.Gateway/Chat", "", raw, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode == http.StatusOK || seen.Load() != "" {
+		t.Fatalf("chat with the worker stopped = %d %s, provider saw %q", res.StatusCode, got, seen.Load())
+	}
+	if bytes.Contains(got, []byte(key)) {
+		t.Fatalf("the refusal holds the key: %s", got)
+	}
 }
 
-func TestGatewayRefusesToStartWithAMalformedMasterKey(t *testing.T) {
+// Gateway checks the worker, signed, before it serves: a worker that is not
+// there, or one that does not take gateway's key, stops the start.
+func TestGatewayStartNeedsAReadyWorker(t *testing.T) {
 	owner := pgtest.New(t)
-	t.Setenv("UPMO_MASTER_KEY", "this-is-not-a-32-byte-key")
-	_, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: mustMaster(t)}, nil, nil, nil)
-	if err == nil || strings.Contains(err.Error(), "this-is-not-a-32-byte-key") {
-		t.Fatalf("routes error = %v", err)
+	ring, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
+		if name == gateway.EnvMasterKey {
+			return base64.StdEncoding.EncodeToString(bytes32('m')), true
+		}
+		return "", false
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := workerkeys.Start(t, owner, ring)
+	ctx := context.Background()
+	cfg := config.Config{Env: config.EnvDevelopment, WorkerURL: worker.URL, WorkerGatewayKey: worker.Key[svcsig.AudienceWorkerGateway]}
+	if c, err := openWorkerKeys(ctx, cfg); err != nil || c == nil {
+		t.Fatalf("open with the worker up = %v, %v", c, err)
+	}
+	wrongKey := cfg
+	wrongKey.WorkerGatewayKey = "upmo_svc_worker-gateway_" + base64.RawStdEncoding.EncodeToString(bytes32('x'))
+	if _, err := openWorkerKeys(ctx, wrongKey); err == nil || err.Error() != "config: worker is not ready" {
+		t.Fatalf("open with a key the worker does not hold = %v", err)
+	}
+	worker.Stop()
+	if _, err := openWorkerKeys(ctx, cfg); err == nil || err.Error() != "config: worker is not ready" {
+		t.Fatalf("open with the worker down = %v", err)
 	}
 }
 
@@ -288,7 +354,7 @@ func TestGatewayVersionAndReadyzRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := routes(pool, config.Config{GatewayKey: mustMaster(t)}, nil, func(context.Context) (map[string]int64, error) {
+	handler, err := routes(pool, config.Config{GatewayKey: mustMaster(t)}, nil, nil, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(versions), nil
 	}, nil)
 	if err != nil {
@@ -364,7 +430,7 @@ func TestGatewayRoutesCapTheBodyAndAcceptThePreviousKey(t *testing.T) {
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	current := svcsig.KeyPrefix + "gateway_" + base64.RawStdEncoding.EncodeToString(bytes32('h'))
 	previous := mustMaster(t)
-	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: current, GatewayKeyPrevious: previous}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: current, GatewayKeyPrevious: previous}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +571,7 @@ func TestGatewayRPCToolCallsUsageAndContextWindow(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +708,7 @@ func TestGatewayChatUsageAndMaxOutputTokensReachCallerAndLedger(t *testing.T) {
 	}
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-secret")
 	master := mustMaster(t)
-	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +837,7 @@ func TestGatewayMetricsInternalOnlyAndRecordsCalls(t *testing.T) {
 	t.Setenv("UPMO_CREDENTIAL_house", "not-a-provider-secret")
 	master := mustMaster(t)
 	reg := metrics.NewRegistry()
-	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, reg)
+	handler, err := routes(dispatchPool(t, owner), config.Config{GatewayKey: master}, nil, nil, nil, reg)
 	if err != nil {
 		t.Fatal(err)
 	}

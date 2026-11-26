@@ -543,24 +543,26 @@ func TestProvisionProvidersQuotasAndBypassResistance(t *testing.T) {
 		t.Fatalf("house=%v visibility=%q, want true everyone", house, vis)
 	}
 	var (
-		credRef    string
-		ciphertext []byte
-		nonce      []byte
-		keyID      string
+		credRef string
+		sealed  gateway.Sealed
 	)
 	if err := env.owner.QueryRow(ctx, `
-		SELECT a.credential_ref, c.ciphertext, c.nonce, c.key_id
+		SELECT a.credential_ref, c.ciphertext, c.nonce, c.key_id, c.wrapped_key, c.wrap_nonce
 		FROM gateway.provider_accounts AS a
 		JOIN gateway.credentials AS c ON c.ref = a.credential_ref
-		WHERE a.name = 'Managed OpenAI'`).Scan(&credRef, &ciphertext, &nonce, &keyID); err != nil {
+		WHERE a.name = 'Managed OpenAI'`).Scan(&credRef, &sealed.Ciphertext, &sealed.Nonce, &sealed.KeyID, &sealed.WrappedKey, &sealed.WrapNonce); err != nil {
 		t.Fatal(err)
 	}
-	if len(ciphertext) == 0 || bytes.Contains(ciphertext, []byte(secret)) || len(nonce) != 12 || keyID != "k1" {
-		t.Fatalf("unexpected sealed credential: len=%d nonce=%d key_id=%q", len(ciphertext), len(nonce), keyID)
+	if len(sealed.Ciphertext) == 0 || bytes.Contains(sealed.Ciphertext, []byte(secret)) || len(sealed.Nonce) != 12 || sealed.KeyID != "k1" || len(sealed.WrapNonce) != 12 {
+		t.Fatalf("unexpected sealed credential: len=%d nonce=%d key_id=%q wrap nonce=%d", len(sealed.Ciphertext), len(sealed.Nonce), sealed.KeyID, len(sealed.WrapNonce))
 	}
-	openedSecret, err := env.keyring.Open(credRef, gateway.Sealed{Ciphertext: ciphertext, Nonce: nonce, KeyID: keyID})
+	// Provision seals under a data key the master wraps, never under the master.
+	if _, err := env.keyring.Open(credRef, sealed); err == nil {
+		t.Fatal("the master opened the payload")
+	}
+	openedSecret, err := env.keyring.OpenCredential(credRef, sealed)
 	if err != nil || openedSecret != secret {
-		t.Fatalf("keyring.Open = (%q, %v), want %q", openedSecret, err, secret)
+		t.Fatalf("keyring.OpenCredential = (%q, %v), want %q", openedSecret, err, secret)
 	}
 
 	// 2. Quotas: negative -> 422; valid -> 200; settings:manage PUT /api/workspace cannot change/raise it!

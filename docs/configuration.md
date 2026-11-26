@@ -15,7 +15,8 @@ The service does not start if one of these is missing.
 | `UPMO_DATABASE_RUNNER_URL` | brain | Postgres URL for the `upmo_runner` role, which writes the task runner columns. |
 | `UPMO_DATABASE_GATEWAY_URL` | gateway | Postgres URL for the `upmo_gateway` role. |
 | `UPMO_PUBLIC_URL` | brain, gateway, `upmo worker`, `upmo` commands | Browser origin, an absolute http(s) URL. |
-| `UPMO_MASTER_KEY` | brain, gateway, `upmo worker`, `upmo` commands that use secrets | Base64 of exactly 32 bytes. Seals credentials and default backup archives. Needed in every environment, including development. |
+| `UPMO_MASTER_KEY` | `upmo worker`, brain (until passwords and email move), `upmo` commands that use secrets | Base64 of exactly 32 bytes. Wraps each provider credential's data key, and seals passwords, email and default backup archives. Needed in every environment, including development. Gateway and sandboxd refuse to start when it, or any `UPMO_MASTER_KEY_PREVIOUS_<id>`, is set. |
+| `UPMO_WORKER_BRAIN_KEY`, `UPMO_WORKER_GATEWAY_KEY`, `UPMO_WORKER_SANDBOXD_KEY` | `upmo worker` (all three); brain, gateway and sandboxd (their own) | `upmo_svc_worker-brain_`, `upmo_svc_worker-gateway_` or `upmo_svc_worker-sandboxd_` plus base64 of exactly 32 bytes. Each caller signs its calls to the worker's key service with its own. The worker needs all three and checks each. A process given another caller's key stops at start. |
 | `UPMO_GATEWAY_KEY` | gateway | `upmo_svc_gateway_` plus base64 of exactly 32 bytes. Gateway checks every call with it. Brain signs gateway calls with it and makes none without it. |
 | `UPMO_SANDBOXD_KEY` | sandboxd | `upmo_svc_sandboxd_` plus base64 of exactly 32 bytes. Sandboxd checks every call with it. Brain needs it when `UPMO_SANDBOXD_URL` is set. |
 | `UPMO_EDITOR_KEY` | sandboxd | `upmo_edk_` plus base64 of exactly 32 bytes. Brain signs editor links with it and sandboxd checks them. Without it, brain opens no editor. |
@@ -29,14 +30,15 @@ Each process gets only the keys it signs or checks. A key for another service, o
 | --- | --- | --- |
 | `UPMO_ENV` | `production` | `production` or `development`. Production refuses the development keys and passwords `compose.yml` embeds. |
 | `UPMO_DATABASE_SANDBOX_URL` | unset | Postgres URL sandboxd logs in with, as the `upmo_sandbox` role. Unset opens no database, and every credential read fails closed. |
-| `UPMO_WORKER_LISTEN_ADDR` | `:8090` | The `upmo worker` internal listener. It serves `/api/v1/provision/*` only. Never publish it on the host. |
+| `UPMO_WORKER_LISTEN_ADDR` | `:8090` | The `upmo worker` internal listener. It serves `/api/v1/provision/*` and the key service at `/internal/keys/*`. Never publish it on the host. |
+| `UPMO_WORKER_URL` | unset | The worker's key service, for brain, gateway and sandboxd. It must be https in production; development allows http on loopback or one DNS label. When set, the process's own worker key is required and the worker must answer at start. Unset, brain cannot save a provider key and gateway reads keys only from the environment and Vault. |
 | `UPMO_LISTEN_ADDR` | `:8080` (`sandboxd`: `:8083`; `compose.yml` sets gateway to `:8082`) | Listen address. |
 | `UPMO_PROXY_ADDR`, `UPMO_EDITOR_ADDR` | `:3128`, `:8084` | `sandboxd` egress proxy and editor addresses. |
 | `UPMO_SANDBOX_DRIVER` | `auto` | `auto`, `docker`, `kubernetes` or `stub`. |
 | `UPMO_METRICS_ADDR` | unset | `[host]:port` for a separate listener that serves Prometheus metrics at `GET /metrics`. When unset, no metrics listener runs. Must differ from `UPMO_LISTEN_ADDR` (and, for `sandboxd`, `UPMO_PROXY_ADDR` and `UPMO_EDITOR_ADDR`). Bind it to loopback or an internal network only. |
 | `UPMO_METRICS_TOKEN` | unset | `upmo_mtr_` plus base64 of at least 32 bytes. Required when `UPMO_METRICS_ADDR` is set. Scrapers send it as `Authorization: Bearer <token>`. |
 | `UPMO_RUN_KEY` | unset | `upmo_rnk_` plus base64 of exactly 32 bytes. Brain signs connector run tokens with it. |
-| `UPMO_GATEWAY_KEY_PREVIOUS`, `UPMO_SANDBOXD_KEY_PREVIOUS`, `UPMO_MARKITDOWN_KEY_PREVIOUS`, `UPMO_EDITOR_KEY_PREVIOUS`, `UPMO_RUN_KEY_PREVIOUS` | unset | The old key during a rotation. It is still checked but never signs. |
+| `UPMO_GATEWAY_KEY_PREVIOUS`, `UPMO_SANDBOXD_KEY_PREVIOUS`, `UPMO_MARKITDOWN_KEY_PREVIOUS`, `UPMO_EDITOR_KEY_PREVIOUS`, `UPMO_RUN_KEY_PREVIOUS`, `UPMO_WORKER_*_KEY_PREVIOUS` | unset | The old key during a rotation. It is still checked but never signs. |
 | `UPMO_ARTIFACTS_DIR` | `/var/upmo/artifacts` | Absolute path of the artifacts volume. Brain creates it at start. Backups include it. |
 | `UPMO_KNOWLEDGE_DIR` | `/var/upmo/knowledge` | Absolute path of the knowledge volume. Brain creates it at start. Backups include it. |
 | `UPMO_MASTER_KEY_ID` | `k1` | ID of the current master key. |

@@ -36,9 +36,11 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
+	"github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/notices"
+	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/platform/trustfence"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/tasks"
@@ -138,20 +140,6 @@ type NoticeService interface {
 	Insert(ctx context.Context, userID uuid.UUID, kind, title string, taskID *uuid.UUID) (uuid.UUID, error)
 }
 
-// Sealed holds an AEAD-encrypted secret and its key identifier.
-type Sealed struct {
-	Ciphertext []byte
-	Nonce      []byte
-	KeyID      string
-}
-
-// Sealer seals and opens secrets under the process master keyring.
-type Sealer interface {
-	Ready() bool
-	Seal(ref, plaintext string) (Sealed, error)
-	Open(ref string, sealed Sealed) (string, error)
-}
-
 // Deps exposes composed services and configuration to extension options.
 // Every field is set when the worker and periodic hooks run. Jobs is a
 // client that enqueues once the job workers are open, so a hook may keep it
@@ -163,7 +151,6 @@ type Deps struct {
 	Members        MemberService
 	Notices        NoticeService
 	Jobs           JobClient
-	Sealer         Sealer
 	Logger         *slog.Logger
 	Config         Config
 	BuildInfo      BuildInfo
@@ -208,34 +195,6 @@ func (a memberAdapter) TeamsOf(ctx context.Context, userID string) ([]string, er
 		return nil, err
 	}
 	return a.members.TeamsOf(ctx, id)
-}
-
-type sealerAdapter struct {
-	keys gateway.Keyring
-}
-
-func (a sealerAdapter) Ready() bool {
-	return a.keys.Ready()
-}
-
-func (a sealerAdapter) Seal(ref, plaintext string) (Sealed, error) {
-	s, err := a.keys.Seal(ref, plaintext)
-	if err != nil {
-		return Sealed{}, err
-	}
-	return Sealed{
-		Ciphertext: s.Ciphertext,
-		Nonce:      s.Nonce,
-		KeyID:      s.KeyID,
-	}, nil
-}
-
-func (a sealerAdapter) Open(ref string, sealed Sealed) (string, error) {
-	return a.keys.Open(ref, gateway.Sealed{
-		Ciphertext: sealed.Ciphertext,
-		Nonce:      sealed.Nonce,
-		KeyID:      sealed.KeyID,
-	})
 }
 
 type internalDeps struct {
@@ -586,7 +545,14 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	workspace := identity.Workspace(pool)
 	idFacade := identity.New(sessions, passkeys, passwords)
 
-	providers := gateway.NewProviders(pool, masterKeys, log)
+	// Brain seals a provider key under a data key the worker wraps; the
+	// master key it still holds serves passwords and email only.
+	credentials, err := workerSealer(ctx, cfg)
+	if err != nil {
+		cleanupPools()
+		return nil, err
+	}
+	providers := gateway.NewProviders(pool, credentials, log)
 	providers.LocalPlan = func(ctx context.Context, user string) bool {
 		id, err := identity.ParseUserID(user)
 		if err != nil {
@@ -700,7 +666,6 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		Members:        memberAdapter{members: members},
 		Notices:        noticeStore,
 		Jobs:           lazy,
-		Sealer:         sealerAdapter{keys: masterKeys},
 		Logger:         log,
 		Config:         cfg,
 		BuildInfo:      pubBuild,
@@ -1767,4 +1732,27 @@ func (s scoutKnowledge) Search(ctx context.Context, userID uuid.UUID, query stri
 		}
 	}
 	return out, nil
+}
+
+// workerSealer builds the key service client when WorkerURL is set and
+// checks, signed, that the worker is ready. Unset, brain cannot save a
+// provider key.
+func workerSealer(ctx context.Context, cfg Config) (gateway.WorkerSealer, error) {
+	if cfg.WorkerURL == "" {
+		return gateway.WorkerSealer{}, nil
+	}
+	client, err := keys.Open(keys.Options{
+		URL:         cfg.WorkerURL,
+		Key:         cfg.WorkerBrainKey,
+		Audience:    svcsig.AudienceWorkerBrain,
+		Development: cfg.Env == string(config.EnvDevelopment),
+		CAFile:      os.Getenv("UPMO_TLS_CA_FILE"),
+	})
+	if err != nil {
+		return gateway.WorkerSealer{}, err
+	}
+	if err := client.Ready(ctx); err != nil {
+		return gateway.WorkerSealer{}, errors.New("config: worker is not ready")
+	}
+	return gateway.WorkerSealer{Keys: &client}, nil
 }

@@ -639,28 +639,6 @@ func (p Providers) RouteUses(ctx context.Context, who app.Caller, id string) ([]
 	return out, tx.Commit(ctx)
 }
 
-// Sealed returns the stored key for an account's ref, or app.ErrNotFound. Row
-// security hands it only to the owner of a personal account and to a person
-// who may share, for a shared one; never to a member of a team it is shared
-// with.
-func (p Providers) Sealed(ctx context.Context, who app.Caller, ref string) (domain.Sealed, error) {
-	tx, err := p.begin(ctx, who)
-	if err != nil {
-		return domain.Sealed{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var s domain.Sealed
-	err = tx.QueryRow(ctx, `SELECT ciphertext, nonce, key_id FROM gateway.credentials WHERE ref = $1`, ref).
-		Scan(&s.Ciphertext, &s.Nonce, &s.KeyID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Sealed{}, app.ErrNotFound
-	}
-	if err != nil {
-		return domain.Sealed{}, err
-	}
-	return s, tx.Commit(ctx)
-}
-
 // Note stores the status a test found for an account.
 func (p Providers) Note(ctx context.Context, who app.Caller, id, status string) error {
 	if _, err := uuid.Parse(id); err != nil {
@@ -958,14 +936,16 @@ func knownTeams(ctx context.Context, tx pgx.Tx, teams []string) error {
 	return nil
 }
 
+// putSealed writes a credential's payload and its wrapped data key together.
+// It reads nothing back, so brain needs no SELECT on either: the update sets
+// the parameters, since reading EXCLUDED needs SELECT on those columns.
 func putSealed(ctx context.Context, tx pgx.Tx, ref string, s domain.Sealed) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO gateway.credentials (ref, ciphertext, nonce, key_id, wrapped_key, wrap_nonce)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (ref) DO UPDATE
-		SET ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce,
-			key_id = EXCLUDED.key_id, created_at = now()`,
-		ref, s.Ciphertext, s.Nonce, s.KeyID)
+		SET ciphertext = $2, nonce = $3, key_id = $4, wrapped_key = $5, wrap_nonce = $6, created_at = now()`,
+		ref, s.Ciphertext, s.Nonce, s.KeyID, s.WrappedKey, s.WrapNonce)
 	return err
 }
 
@@ -1063,13 +1043,28 @@ func mapWrite(err error) error {
 	return err
 }
 
-// SealedCredential returns the stored key for ref without a person in the
-// request. It is for the gateway process, which runs as the table owner and
-// is let in by the service policy; a person's request never reaches it.
+// SealedCredential returns the stored payload for ref without a person in
+// the request, and not its wrap. It is for the gateway process, which reads
+// it as upmo_gateway under the dispatch policy; a person's request never
+// reaches it.
 func (s Store) SealedCredential(ctx context.Context, ref string) (domain.Sealed, error) {
 	var out domain.Sealed
 	err := s.Pool.QueryRow(ctx, `SELECT ciphertext, nonce, key_id FROM gateway.credentials WHERE ref = $1`, ref).
 		Scan(&out.Ciphertext, &out.Nonce, &out.KeyID)
+	if err != nil {
+		return domain.Sealed{}, err
+	}
+	return out, nil
+}
+
+// WrappedCredential returns the stored payload for ref and its wrapped data
+// key. Only the worker reads the wrap, as the owner.
+func (s Store) WrappedCredential(ctx context.Context, ref string) (domain.Sealed, error) {
+	var out domain.Sealed
+	err := s.Pool.QueryRow(ctx, `
+		SELECT ciphertext, nonce, key_id, wrapped_key, wrap_nonce
+		FROM gateway.credentials WHERE ref = $1`, ref).
+		Scan(&out.Ciphertext, &out.Nonce, &out.KeyID, &out.WrappedKey, &out.WrapNonce)
 	if err != nil {
 		return domain.Sealed{}, err
 	}

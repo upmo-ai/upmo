@@ -20,6 +20,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/buildinfo"
 	"github.com/upmo-ai/upmo/internal/platform/config"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
+	"github.com/upmo-ai/upmo/internal/platform/keys"
 	"github.com/upmo-ai/upmo/internal/platform/logging"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
 	"github.com/upmo-ai/upmo/internal/platform/secretchain"
@@ -34,13 +35,10 @@ func main() {
 }
 
 func run() error {
+	// LoadGateway refuses a master key: gateway opens a saved provider key
+	// with the data key the worker unwraps for it.
 	cfg, err := config.LoadGateway()
 	if err != nil {
-		return err
-	}
-	// Gateway seals the provider keys people add, so its startup guard requires
-	// UPMO_MASTER_KEY in every environment before a pool opens.
-	if err := config.CheckConfig(cfg, true, os.LookupEnv, os.Environ()); err != nil {
 		return err
 	}
 	log := logging.New(os.Stdout, cfg.LogLevel)
@@ -67,7 +65,11 @@ func run() error {
 	if cfg.MetricsAddr != "" {
 		reg = metrics.NewRegistry()
 	}
-	handler, err := routes(pool, cfg, log, func(context.Context) (map[string]int64, error) {
+	workerKeys, err := openWorkerKeys(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	handler, err := routes(pool, cfg, workerKeys, log, func(context.Context) (map[string]int64, error) {
 		return maps.Clone(schemaVersions), nil
 	}, reg)
 	if err != nil {
@@ -92,7 +94,30 @@ func run() error {
 // maxBody caps every signed request body gateway reads and hashes.
 const maxBody = 8 << 20
 
-func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersions func(context.Context) (map[string]int64, error), reg *metrics.Registry) (http.Handler, error) {
+// openWorkerKeys builds the key service client when UPMO_WORKER_URL is set
+// and checks, signed, that the worker is ready. Unset, gateway reads keys
+// only from the environment and Vault.
+func openWorkerKeys(ctx context.Context, cfg config.Config) (*keys.Client, error) {
+	if cfg.WorkerURL == "" {
+		return nil, nil
+	}
+	client, err := keys.Open(keys.Options{
+		URL:         cfg.WorkerURL,
+		Key:         cfg.WorkerGatewayKey,
+		Audience:    svcsig.AudienceWorkerGateway,
+		Development: cfg.Env == config.EnvDevelopment,
+		CAFile:      os.Getenv("UPMO_TLS_CA_FILE"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Ready(ctx); err != nil {
+		return nil, errors.New("config: worker is not ready")
+	}
+	return &client, nil
+}
+
+func routes(pool *pgxpool.Pool, cfg config.Config, workerKeys *keys.Client, log *slog.Logger, schemaVersions func(context.Context) (map[string]int64, error), reg *metrics.Registry) (http.Handler, error) {
 	keys := make([][]byte, 0, 2)
 	for _, secret := range []string{cfg.GatewayKey, cfg.GatewayKeyPrevious} {
 		if secret == "" && len(keys) > 0 {
@@ -104,13 +129,9 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 		}
 		keys = append(keys, key)
 	}
-	masterKeys, err := gateway.KeyringFromEnv(os.LookupEnv, os.Environ())
-	if err != nil {
-		return nil, err
-	}
 	mux := http.NewServeMux()
 	httpserver.Health(mux, pool.Ping)
-	backends, err := secretBackends(pool, masterKeys)
+	backends, err := secretBackends(pool, workerKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -132,15 +153,16 @@ func routes(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger, schemaVersi
 }
 
 // secretBackends is the order a key is looked for: the environment, then the
-// keys people sealed into the database (when a master key is set), then Vault.
-func secretBackends(pool *pgxpool.Pool, keys gateway.Keyring) (gateway.Chain, error) {
+// keys people sealed into the database (when the worker's key service is
+// set up), then Vault.
+func secretBackends(pool *pgxpool.Pool, workerKeys *keys.Client) (gateway.Chain, error) {
 	fromEnv, err := secretchain.FromEnv(os.LookupEnv) // env, then Vault when set
 	if err != nil {
 		return nil, err
 	}
 	chain := gateway.Chain{fromEnv[0]}
-	if keys.Ready() {
-		chain = append(chain, gateway.DBSecrets{Pool: pool, Keys: keys})
+	if workerKeys != nil {
+		chain = append(chain, gateway.DBSecrets{Pool: pool, Unwrap: workerKeys})
 	}
 	return append(chain, fromEnv[1:]...), nil
 }
