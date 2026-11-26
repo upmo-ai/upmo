@@ -38,6 +38,13 @@ func (id Identity) Fresh(session app.Session) bool {
 	return id.Passkeys.Fresh(session)
 }
 
+// StepUp reports whether the session may make a sensitive change. It is
+// false when the passkeys could not be read.
+func (id Identity) StepUp(ctx context.Context, session app.Session) bool {
+	ok, err := id.Passkeys.StepUp(ctx, session)
+	return err == nil && ok
+}
+
 // RedeemSSOLink redeems an 'sso' or 'sso_stepup' one-time link.
 func (id Identity) RedeemSSOLink(ctx context.Context, token, activeCookie, agent string) (newCookie string, refreshed bool, err error) {
 	return id.Passkeys.RedeemSSOLink(ctx, token, activeCookie, agent)
@@ -158,9 +165,10 @@ func Workspace(pool *pgxpool.Pool) app.Workspace {
 	return app.Workspace{Store: postgres.Passkeys{Pool: pool}}
 }
 
-// MountWorkspace registers the workspace settings routes.
-func MountWorkspace(mux *http.ServeMux, workspace app.Workspace, sessions app.Service) {
-	(httpapi.Workspace{Workspace: workspace, Sessions: sessions}).Mount(mux)
+// MountWorkspace registers the workspace settings routes. passkeys looks up
+// the session and decides step-up for a change.
+func MountWorkspace(mux *http.ServeMux, workspace app.Workspace, passkeys app.Passkeys) {
+	(httpapi.Workspace{Workspace: workspace, Sessions: passkeys.Sessions, Pass: passkeys}).Mount(mux)
 }
 
 // WorkspaceTimeZone reads the workspace's configured time zone through a

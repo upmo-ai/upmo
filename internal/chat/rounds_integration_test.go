@@ -1511,6 +1511,7 @@ func TestARoundSendsTheReplyAsItsRunAndATeamChatsTeam(t *testing.T) {
 func (r *rig) httpMux(access chat.Access) *http.ServeMux {
 	mux := http.NewServeMux()
 	chat.Handler{
+		StepUp:    func(*http.Request) bool { return true },
 		Book:      r.store,
 		Converter: knowledge.Converter{Text: knowledge.PassThroughText{}},
 		Access: func(*http.Request) (chat.Access, bool) {

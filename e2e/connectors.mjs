@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { signInWithPassword, storagePath } from "./session.mjs";
+import { signInWithPassword } from "./session.mjs";
 
 const require = createRequire("/opt/playwright/package.json");
 const { chromium } = require("playwright");
@@ -14,13 +14,21 @@ const browser = await chromium.launch({
 });
 
 try {
+  // No saved state: a fresh password sign-in, so an earlier check's step-up on
+  // the shared session cannot make this one fresh already.
   const context = await browser.newContext({
-    storageState: storagePath,
     viewport: { width: 1280, height: 800 },
     colorScheme: "light",
     reducedMotion: "reduce",
   });
   const page = await context.newPage();
+  // A password session on a passkey account: grant writes need the step-up prompt.
+  const stepUps = [];
+  page.on("response", (response) => {
+    if (response.request().method() === "POST" && new URL(response.url()).pathname === "/api/passkeys/step-up/finish") {
+      stepUps.push(response.status());
+    }
+  });
   await signInWithPassword(page, url);
 
   // Connect GitHub through the wizard. Against the live brain the rules routes
@@ -32,7 +40,14 @@ try {
   }
   await page.getByRole("button", { name: "Test connection", exact: true }).click();
   await page.getByText("Connection verified").waitFor();
+  const saved = page.waitForResponse(
+    (response) => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/connector-grants/github" && response.ok(),
+  );
   await page.getByRole("button", { name: "Connect tool" }).click();
+  await saved;
+  if (stepUps.length !== 1 || stepUps[0] !== 204) {
+    throw new Error(`Connect tool ran the step-up prompt ${stepUps.length} time(s) (${stepUps.join(", ")}), want once with 204`);
+  }
   const description = page.getByText("Repositories, issues and pull requests", { exact: true });
   await description.waitFor();
   await page.getByText("Loading rules").waitFor({ state: "detached", timeout: 20000 });
@@ -54,6 +69,10 @@ try {
   await page.getByRole("dialog").getByRole("button", { name: "Disconnect connector" }).click();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   await page.getByTestId("connector-card-github").waitFor({ state: "detached" });
+  // The step-up is fresh for ten minutes, so the gated delete needed no second prompt.
+  if (stepUps.length !== 1) {
+    throw new Error(`Disconnect ran the step-up prompt again: ${stepUps.length} step-ups, want 1`);
+  }
 
   console.log("connectors check passed");
 } finally {

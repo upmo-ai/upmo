@@ -29,7 +29,7 @@ func TestConnectorGrants(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	identity.MountAPITokens(mux, sessions, identity.APITokens(pool, log), log, nil, pool, nil)
-	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), sessions)
+	identity.MountConnectorGrants(mux, identity.ConnectorGrants(pool), passkeys)
 	httpapi.Passkeys{Pass: passkeys}.Mount(mux)
 
 	token, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
@@ -41,6 +41,7 @@ func TestConnectorGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookie := finishLink(t, mux, soft, token)
+	passkeyStepUp(t, mux, soft, cookie, handleOf(t, ctx, pool))
 
 	listed := call(mux, http.MethodGet, "/api/connector-grants", cookie, nil)
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), "[]") {

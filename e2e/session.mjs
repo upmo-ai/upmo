@@ -1,10 +1,54 @@
+import { readFile, writeFile } from "node:fs/promises";
+
 // Password set by e2e/passkeys.mjs on the bootstrap person.
 const email = "ada@example.com";
 const password = "correct horse battery";
 
 export const storagePath = "/tmp/upmo-e2e-state.json";
+// The bootstrap person's passkey, private key included, saved by e2e/passkeys.mjs.
+export const passkeyPath = "/tmp/upmo-e2e-passkey.json";
 
+const authenticatorOptions = {
+  protocol: "ctap2",
+  ctap2Version: "ctap2_1",
+  transport: "internal",
+  hasResidentKey: true,
+  hasUserVerification: true,
+  isUserVerified: true,
+  automaticPresenceSimulation: true,
+};
+
+export async function savePasskey(client, authenticatorId) {
+  const { credentials } = await client.send("WebAuthn.getCredentials", { authenticatorId });
+  if (credentials.length !== 1) {
+    throw new Error(`the virtual authenticator holds ${credentials.length} passkeys, want 1`);
+  }
+  await writeFile(passkeyPath, JSON.stringify(credentials[0]));
+}
+
+// Gives the page a virtual authenticator holding the saved passkey, so the
+// step-up prompt on gated changes can be answered. Added after sign-in: on the
+// log in page it would answer the autofill prompt and sign in with the passkey.
+// Chrome allows one internal authenticator per page, and some checks sign in twice.
+const withPasskey = new WeakSet();
+
+export async function addSavedPasskey(page) {
+  if (withPasskey.has(page)) return;
+  withPasskey.add(page);
+  const credential = JSON.parse(await readFile(passkeyPath, "utf8"));
+  const client = await page.context().newCDPSession(page);
+  await client.send("WebAuthn.enable");
+  const { authenticatorId } = await client.send("WebAuthn.addVirtualAuthenticator", { options: authenticatorOptions });
+  await client.send("WebAuthn.addCredential", { authenticatorId, credential });
+}
+
+// Signs in with the password, then adds the saved passkey for step-up.
 export async function signInWithPassword(page, url) {
+  await passwordSignIn(page, url);
+  await addSavedPasskey(page);
+}
+
+async function passwordSignIn(page, url) {
   await page.goto(new URL("/", url).href, { waitUntil: "domcontentloaded", timeout: 30_000 });
   const home = page.getByRole("heading", { level: 1, name: "Home" });
   const emailField = page.getByLabel("Email");

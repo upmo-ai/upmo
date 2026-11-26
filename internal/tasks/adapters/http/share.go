@@ -60,7 +60,7 @@ func (h Handler) share(w http.ResponseWriter, r *http.Request) {
 
 func (h Handler) putShare(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.person(w, r)
-	if !ok {
+	if !ok || !h.stepUp(w, r) {
 		return
 	}
 	if h.Shares == nil || h.Grants == nil {

@@ -81,6 +81,7 @@ import { routeCapabilities, type GatewayRoute, type RouteCapability, type RouteD
 import { adapterKey } from "../features/providers/rules";
 import type { ListedProvider } from "../features/providers/sharing";
 import { formatMicroUsd } from "../features/usage/format";
+import { withStepUp } from "./passkeys";
 
 type Json = Record<string, unknown>;
 
@@ -833,6 +834,11 @@ export function providerTestBody(config: ProviderProbe): Json {
 }
 
 async function call(path: string, init?: { method: "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<unknown> {
+  // Writes may be gated on a recent passkey; reads never are.
+  return init ? withStepUp(() => send(path, init)) : send(path);
+}
+
+async function send(path: string, init?: { method: "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown }): Promise<unknown> {
   const isForm = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(path, {
     credentials: "include",

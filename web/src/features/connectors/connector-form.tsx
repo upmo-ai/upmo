@@ -23,7 +23,8 @@ import {
   type ConnectorGrant,
   type TestResult,
 } from "../../app/api";
-import { KNOWN_CONNECTORS } from "./connectors";
+import { withStepUp } from "../../app/passkeys";
+import { grantError, KNOWN_CONNECTORS } from "./connectors";
 
 interface ConnectorFormPageProps {
   mode: "create" | "edit";
@@ -156,17 +157,19 @@ export function ConnectorForm({ mode, existing, live }: ConnectorFormProps) {
       };
 
       if (live) {
-        const res = await fetch(`/api/connector-grants/${targetConnector}`, {
-          method: "PUT",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            resource_scope: payload.resource_scope,
-            resource_ids: payload.resource_ids,
-            changes: payload.changes,
-          }),
+        await withStepUp(async () => {
+          const res = await fetch(`/api/connector-grants/${targetConnector}`, {
+            method: "PUT",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              resource_scope: payload.resource_scope,
+              resource_ids: payload.resource_ids,
+              changes: payload.changes,
+            }),
+          });
+          if (!res.ok) throw await grantError(res, "Failed to save connector");
         });
-        if (!res.ok) throw new Error("Failed to save connector");
         return payload;
       }
       return api.connectors.put(payload);

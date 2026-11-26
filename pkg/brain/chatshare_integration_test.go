@@ -69,6 +69,7 @@ func chatShareSetup(t *testing.T, withReplies bool) *chatShareEnv {
 	store.ReplaceChatGrants = chatGrants{members: members}.ReplaceChatGrantsTx
 	mux := http.NewServeMux()
 	chat.Handler{
+		StepUp: func(*http.Request) bool { return true },
 		Book:   store,
 		Shares: store,
 		Grants: chatGrants{members: members},

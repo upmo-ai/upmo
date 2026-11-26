@@ -56,7 +56,7 @@ func (h Handler) deny(w http.ResponseWriter, r *http.Request) {
 
 func (h Handler) decide(w http.ResponseWriter, r *http.Request, kind domain.Kind) {
 	access, ok := h.person(w, r)
-	if !ok {
+	if !ok || (kind == domain.Approve && !h.stepUp(w, r)) {
 		return
 	}
 	if h.Approvals == nil {
