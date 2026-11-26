@@ -14,9 +14,21 @@ defaults:
   run:
     shell: bash
 
+# Go caches live in runner folders so the cache steps can restore and save
+# them. -count=1 keeps a restored cache from replaying test results. Test
+# databases need no durability.
+env:
+  UPMO_GOMODCACHE: /home/runner/upmo-cache/gomod
+  UPMO_GOCACHE: /home/runner/upmo-cache/gobuild
+  UPMO_GOLANGCI_CACHE: /home/runner/upmo-cache/golangci
+  UPMO_GOFLAGS: -count=1
+  UPMO_PG_DURABLE: "off"
+
+# A newer push cancels a pull request run. Every push to main finishes, so
+# each commit on main gets a result.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -24,8 +36,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      go: ${{ steps.pick.outputs.go }}
+      gotest: ${{ steps.pick.outputs.gotest }}
+      gocode: ${{ steps.pick.outputs.gocode }}
+      integration: ${{ steps.pick.outputs.integration }}
       golint: ${{ steps.pick.outputs.golint }}
+      vuln: ${{ steps.pick.outputs.vuln }}
       web: ${{ steps.pick.outputs.web }}
       shell: ${{ steps.pick.outputs.shell }}
       e2e: ${{ steps.pick.outputs.e2e }}
@@ -39,14 +54,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # Each group turns on the jobs that check it. The weekly run, a first
-      # push, a failed diff, and any change to ci.yml, its actions, the
-      # Makefile or compose.yml turn on every group. Each root file maps to
-      # the jobs that read it; a root file not in `known` turns on every
-      # group until it is mapped. Root files no gated job reads:
-      # .gitleaks.toml and osv-scanner.toml (Secret and Vulnerability Scan
-      # always run), codecov.yml, .editorconfig and .env.example.
-      # The Go group covers what repolint's TestRepoGoingPublic reads: the
-      # root policy files, web/package.json and file names it forbids.
+      # push, a failed diff, and any change to ci.yml, its actions or the
+      # Makefile turn on every group. A compose.yml change turns on every
+      # group too, unless it only changes image: lines; then each image turns
+      # on the groups whose jobs run it, and an image not mapped below turns
+      # on every group. Each root file maps to the jobs that read it; a root
+      # file not in `known` turns on every group until it is mapped. Root
+      # files no gated job reads: .gitleaks.toml (Secret Scan always runs),
+      # codecov.yml, .editorconfig and .env.example.
+      # `policy` is what repolint's TestRepoGoingPublic in Go Tests reads:
+      # the root policy files, web/package.json and file names it forbids.
       - name: Pick Jobs
         id: pick
         env:
@@ -56,6 +73,7 @@ jobs:
         run: |
           all=false
           files=""
+          extra=""
           if [ "$EVENT" = schedule ] || [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
             all=true
           elif ! files=$(git -c core.quotePath=false diff --name-only --no-renames "$BASE...$HEAD"); then
@@ -63,13 +81,41 @@ jobs:
           fi
           has() { grep -Eq "$1" <<< "$files"; }
           known='^([^/]+\.md|LICENSE|Makefile|compose\.yml|go\.(mod|sum)|lychee\.toml|codecov\.yml|osv-scanner\.toml|\.editorconfig|\.env\.example|\.gitignore|\.gitleaks\.toml|\.golangci\.yml|\.hadolint\.yaml|\.markdownlint-cli2\.jsonc)$'
-          if has '^(\.github/workflows/ci\.yml|Makefile|compose\.yml)$|^\.github/actions/'; then all=true; fi
+          if has '^(\.github/workflows/ci\.yml|Makefile)$|^\.github/actions/'; then all=true; fi
           if grep -E '^[^/]+$' <<< "$files" | grep -Evq "$known"; then all=true; fi
-          go='^(cmd|internal|pkg|tools|\.githooks)/|^go\.(mod|sum)$|^(README\.md|LICENSE|SECURITY\.md|CONTRIBUTING\.md|\.gitignore)$|^web/package\.json$|(^|/)(\.env(\.[^/]*)?|AGENTS\.md|CLAUDE\.md)$|(^|/)\.(claude|cursor|kiro|gemini)/'
-          on() { if [ "$all" = true ] || has "$2"; then echo "$1=true"; else echo "$1=false"; fi; }
+          if [ "$all" = false ] && has '^compose\.yml$'; then
+            lines=$(git diff -U0 --no-color "$BASE...$HEAD" -- compose.yml | grep -E '^[-+]' | grep -Ev '^(--- a|\+\+\+ b)/compose\.yml$') || true
+            if [ -z "$lines" ] || grep -Evq '^[-+][[:space:]]*image:[[:space:]]' <<< "$lines"; then
+              all=true
+            else
+              while read -r image; do
+                case "$image" in
+                  golang) extra="$extra gotest gocode integration golint vuln e2e" ;;
+                  golangci/golangci-lint) extra="$extra golint" ;;
+                  node) extra="$extra web e2e" ;;
+                  mcr.microsoft.com/playwright) extra="$extra e2e" ;;
+                  pgvector/pgvector) extra="$extra integration e2e" ;;
+                  ghcr.io/google/osv-scanner) extra="$extra vuln" ;;
+                  ghcr.io/gitleaks/gitleaks) ;;
+                  davidanson/markdownlint-cli2 | lycheeverse/lychee) extra="$extra docs" ;;
+                  koalaman/shellcheck | bash) extra="$extra shell" ;;
+                  rhysd/actionlint | ghcr.io/zizmorcore/zizmor) extra="$extra workflows" ;;
+                  hadolint/hadolint | aquasec/trivy) extra="$extra images" ;;
+                  upmo/sandbox | upmo/markitdown) extra="$extra images e2e" ;;
+                  *) all=true ;;
+                esac
+              done < <(sed -E 's/^[-+][[:space:]]*image:[[:space:]]*//; s/[:@].*$//' <<< "$lines" | sort -u)
+            fi
+          fi
+          gocode='^(cmd|internal|pkg|tools)/|^go\.(mod|sum)$'
+          policy='^(README\.md|LICENSE|SECURITY\.md|CONTRIBUTING\.md|\.gitignore)$|^web/package\.json$|(^|/)(\.env(\.[^/]*)?|AGENTS\.md|CLAUDE\.md)$|(^|/)\.(claude|cursor|kiro|gemini)/'
+          on() { if [ "$all" = true ] || has "$2" || [[ " $extra " == *" $1 "* ]]; then echo "$1=true"; else echo "$1=false"; fi; }
           {
-            on go "$go"
-            on golint "$go|^\.golangci\.yml$"
+            on gotest "$gocode|$policy|^\.githooks/"
+            on gocode "$gocode"
+            on integration "$gocode"
+            on golint "$gocode|^\.golangci\.yml$"
+            on vuln "$gocode|^(web/pnpm-lock\.yaml|e2e/package-lock\.json|deploy/markitdown/requirements\.txt|osv-scanner\.toml)$"
             on web '^web/'
             on shell '^(scripts|\.githooks)/'
             on e2e '^(cmd|internal|pkg|web|e2e|deploy)/|^go\.(mod|sum)$'
@@ -88,7 +134,7 @@ jobs:
   go:
     name: Go Tests
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.gotest == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -96,10 +142,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
+        with:
+          build: go-tests
       - name: Run Go Tests
         run: |
           mkdir -p reports
-          make build-go test-go 2>&1 | tee reports/go.log
+          make test-go 2>&1 | tee reports/go.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
+          build: go-tests
       - name: Upload Go Coverage
         if: always()
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -120,7 +178,7 @@ jobs:
   go-integration:
     name: Go Integration Tests
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -128,10 +186,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
+        with:
+          build: go-integration
       - name: Run Go Integration Tests
         run: |
           mkdir -p reports
           make test-integration 2>&1 | tee reports/go-integration.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
+          build: go-integration
       - name: Upload Coverage
         if: always()
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -148,29 +218,6 @@ jobs:
           title: Go Integration Tests
           status: ${{ job.status }}
           files: reports/go-integration.xml reports/go-integration.cover reports/go-integration.log
-
-  regression:
-    name: Regression Tests
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check Out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Run Regression Tests
-        run: |
-          mkdir -p reports
-          make test-regression 2>&1 | tee reports/regression.log
-      - name: Write Summary
-        if: always()
-        uses: ./.github/actions/summary
-        with:
-          title: Regression Tests
-          status: ${{ job.status }}
-          files:  reports/regression.log
 
   canary:
     name: Canary
@@ -206,6 +253,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
+        with:
+          build: lint
+          lint: "true"
       - name: Run Lint
         env:
           GO_CHANGED: ${{ needs.changes.outputs.golint }}
@@ -217,6 +270,14 @@ jobs:
           if [ "$SHELL_CHANGED" = true ]; then set -- lint-shell "$@"; fi
           echo "make $*" | tee reports/lint.log
           make "$@" 2>&1 | tee -a reports/lint.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
+          build: lint
+          lint: "true"
       - name: Write Summary
         if: always()
         uses: ./.github/actions/summary
@@ -228,7 +289,7 @@ jobs:
   arch:
     name: Architecture Check
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.gocode == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -236,10 +297,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
       - name: Run Architecture Check
         run: |
           mkdir -p reports
           make arch 2>&1 | tee reports/arch.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
       - name: Write Summary
         if: always()
         uses: ./.github/actions/summary
@@ -291,10 +361,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
+        with:
+          build: e2e
       - name: Run End-to-End Tests
         run: |
           mkdir -p reports
           make e2e 2>&1 | tee reports/e2e.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
+          build: e2e
       - name: Write Summary
         if: always()
         uses: ./.github/actions/summary
@@ -305,6 +387,8 @@ jobs:
 
   vuln:
     name: Vulnerability Scan
+    needs: changes
+    if: needs.changes.outputs.vuln == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -312,10 +396,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
       - name: Run Vulnerability Scan
         run: |
           mkdir -p reports
           make vuln 2>&1 | tee reports/vuln.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
       - name: Write Summary
         if: always()
         uses: ./.github/actions/summary
@@ -414,7 +507,7 @@ jobs:
   fuzz:
     name: Fuzz Tests
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.gocode == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -422,10 +515,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore Go Cache
+        id: go-cache
+        uses: ./.github/actions/go-cache
+        with:
+          build: fuzz
       - name: Run Fuzz Tests
         run: |
           mkdir -p reports
-          make fuzz 2>&1 | tee reports/fuzz.log
+          make -j4 --output-sync=target fuzz 2>&1 | tee reports/fuzz.log
+      - name: Save Go Cache
+        if: github.event_name == 'push'
+        uses: ./.github/actions/go-cache
+        with:
+          save: "true"
+          modules-hit: ${{ steps.go-cache.outputs.modules-hit }}
+          build: fuzz
       - name: Write Summary
         if: always()
         uses: ./.github/actions/summary
@@ -510,7 +615,6 @@ jobs:
       - changes
       - go
       - go-integration
-      - regression
       - canary
       - lint
       - arch

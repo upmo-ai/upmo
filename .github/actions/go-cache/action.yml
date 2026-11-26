@@ -1,0 +1,65 @@
+name: Go Cache
+description: Restore the Go module cache and one job's build cache, or save them. Only pushes to main save, so pull requests never write a cache main reads.
+
+inputs:
+  build:
+    description: Build cache name, one per job. Empty skips the build cache.
+    default: ""
+  lint:
+    description: Also the golangci-lint cache.
+    default: "false"
+  save:
+    description: Save instead of restore.
+    default: "false"
+  modules-hit:
+    description: The restore step's modules-hit output, so a save skips modules already cached.
+    default: "false"
+
+outputs:
+  modules-hit:
+    description: True when the module cache for this go.sum was restored exactly.
+    value: ${{ steps.mod.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Modules
+      id: mod
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.UPMO_GOMODCACHE }}
+        key: go-mod-${{ hashFiles('go.sum') }}
+        restore-keys: go-mod-
+    - name: Restore Build Cache
+      if: inputs.save != 'true' && inputs.build != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.UPMO_GOCACHE }}
+        key: go-build-${{ inputs.build }}-${{ github.sha }}
+        restore-keys: go-build-${{ inputs.build }}-
+    - name: Restore Lint Cache
+      if: inputs.save != 'true' && inputs.lint == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.UPMO_GOLANGCI_CACHE }}
+        key: go-lint-${{ github.sha }}
+        restore-keys: go-lint-
+    - name: Save Modules
+      if: inputs.save == 'true' && inputs.modules-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.UPMO_GOMODCACHE }}
+        key: go-mod-${{ hashFiles('go.sum') }}
+    - name: Save Build Cache
+      if: inputs.save == 'true' && inputs.build != ''
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.UPMO_GOCACHE }}
+        key: go-build-${{ inputs.build }}-${{ github.sha }}
+    - name: Save Lint Cache
+      if: inputs.save == 'true' && inputs.lint == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.UPMO_GOLANGCI_CACHE }}
+        key: go-lint-${{ github.sha }}
