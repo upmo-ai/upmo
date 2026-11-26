@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -327,5 +328,57 @@ func TestKeysIndexMACAudit(t *testing.T) {
 	}
 	if code, body := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, `{"address":"Ada@Example.com","all":false}`); code != http.StatusForbidden || body != "keys: refused" {
 		t.Fatalf("index-mac with the audit refusing = %d %q, want 403 keys: refused", code, body)
+	}
+}
+
+// Invariant 4 (4d1): brain may ask for 30 index MACs per 10 s, counted
+// apart from the 100 key calls and the 10 password checks, which neither
+// use nor fill it.
+func TestKeysIndexMACLimit(t *testing.T) {
+	w := startKeyWorker(t)
+	body := `{"address":"Ada@Example.com","all":false}`
+	for i := range 30 {
+		if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, body); code != http.StatusOK {
+			t.Fatalf("index-mac %d = %d %s", i+1, code, got)
+		}
+	}
+	if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, body); code != http.StatusTooManyRequests || got != "keys: refused" {
+		t.Fatalf("index-mac 31 = %d %q, want 429 keys: refused", code, got)
+	}
+	if code, got := w.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathWrap, `{"kind":"credential","ref":"GITHUB"}`); code != http.StatusOK {
+		t.Fatalf("a wrap after 31 index-mac calls = %d %s", code, got)
+	}
+	for i := range 10 {
+		if code, got := w.verify(verifyBody(fmt.Sprintf("person%d@example.com", i), goodPassword)); code != http.StatusOK {
+			t.Fatalf("password check %d after 31 index-mac calls = %d %s", i+1, code, got)
+		}
+	}
+	if code, _ := w.verify(verifyBody("person10@example.com", goodPassword)); code != http.StatusTooManyRequests {
+		t.Fatalf("password check 11 = %d, want 429", code)
+	}
+
+	// The other way round: 100 key calls and 10 password checks leave all
+	// 30 index MACs.
+	fresh := startKeyWorker(t)
+	for i := range 100 {
+		if code, got := fresh.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathWrap, `{"kind":"credential","ref":"GITHUB"}`); code != http.StatusOK {
+			t.Fatalf("wrap %d = %d %s", i+1, code, got)
+		}
+	}
+	if code, _ := fresh.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathWrap, `{"kind":"credential","ref":"GITHUB"}`); code != http.StatusTooManyRequests {
+		t.Fatalf("wrap 101 = %d, want 429", code)
+	}
+	for i := range 10 {
+		if code, got := fresh.verify(verifyBody(fmt.Sprintf("person%d@example.com", i), goodPassword)); code != http.StatusOK {
+			t.Fatalf("password check %d = %d %s", i+1, code, got)
+		}
+	}
+	for i := range 30 {
+		if code, got := fresh.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, body); code != http.StatusOK {
+			t.Fatalf("index-mac %d after the other limits = %d %s", i+1, code, got)
+		}
+	}
+	if code, _ := fresh.call(svcsig.AudienceWorkerBrain, http.MethodPost, keys.PathIndexMAC, body); code != http.StatusTooManyRequests {
+		t.Fatalf("index-mac 31 after the other limits = %d, want 429", code)
 	}
 }

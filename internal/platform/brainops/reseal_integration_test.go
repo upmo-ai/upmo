@@ -944,3 +944,104 @@ func TestResealFiveFields(t *testing.T) {
 		t.Fatal("the k9 row changed")
 	}
 }
+
+// Invariant 8 (4d1): a k1 five-field email moves to k2 with a new index
+// MAC, data key and payload, and the worker's sign-in still finds the
+// person and opens the address; a three-field email counts failed and is
+// left as it is; a k9 five-field email counts as unknown.
+func TestResealFiveFieldEmail(t *testing.T) {
+	owner := newResealDB(t)
+	ctx := context.Background()
+	const password = "correct horse battery"
+	salt := []byte("salt-of-16-bytes")
+	phc := "$argon2id$v=19$m=19456,t=2,p=1$" + base64.RawStdEncoding.EncodeToString(salt) + "$" +
+		base64.RawStdEncoding.EncodeToString(argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, 32))
+	ring1 := reseedRing(t, "k1")
+	ada := seedPerson(t, owner, ring1, "Ada@Example.com", phc)
+	three := seedPerson(t, owner, ring1, "ben@example.com", phc)
+	benHash := readPerson(t, owner, three).emailHash
+	old, err := ring1.Seal(identity.EmailRef(benHash), "ben@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threeText := "k1:" + base64.StdEncoding.EncodeToString(old.Nonce) + ":" + base64.StdEncoding.EncodeToString(old.Ciphertext)
+	if _, err := owner.Exec(ctx, `UPDATE identity.users SET email = $2 WHERE id = $1`, three, threeText); err != nil {
+		t.Fatal(err)
+	}
+	lost := seedPerson(t, owner, reseedRing(t, "k9"), "cara@example.com", phc)
+	before, lostBefore := readPerson(t, owner, ada), readPerson(t, owner, lost)
+	if n := strings.Count(lostBefore.email, ":"); n != 4 || lostBefore.emailHashKeyID != "k9" {
+		t.Fatalf("the k9 email = %d fields under %q, want five under k9", n+1, lostBefore.emailHashKeyID)
+	}
+
+	ring2 := reseedRing(t, "k2", "k1")
+	unknown, err := UnknownKeyRows(ctx, owner, ring2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeCount(t, ResealResult{Stores: unknown}, StoreEmails); got.Unknown != 1 || strings.Join(got.UnknownKeyIDs, ",") != "k9" {
+		t.Fatalf("unknown emails = %+v, want one under k9", got)
+	}
+	result, err := Reseal(ctx, owner, ring2, ResealOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeCount(t, result, StoreEmails); got.Resealed != 1 || got.Unknown != 1 || got.Failed != 1 || got.Current != 0 {
+		t.Fatalf("email tally = %+v, want one resealed, one unknown, one failed", got)
+	}
+
+	after := readPerson(t, owner, ada)
+	was, now := strings.Split(before.email, ":"), strings.Split(after.email, ":")
+	if len(now) != 5 || now[0] != "k2" || after.emailHashKeyID != "k2" || now[2] == was[2] || now[4] == was[4] {
+		t.Fatalf("resealed email = %d fields under %q and %q, want five under k2 with a new wrap and payload", len(now), now[0], after.emailHashKeyID)
+	}
+	if want := macOfRing(t, reseedRing(t, "k2"), "ada@example.com"); !bytes.Equal(after.emailHash, want) || bytes.Equal(after.emailHash, before.emailHash) {
+		t.Fatal("the resealed email_hash is not the k2 index MAC")
+	}
+	oldKey, newKey := emailDataKey(t, ring1, before), emailDataKey(t, reseedRing(t, "k2"), after)
+	if bytes.Equal(oldKey, newKey) {
+		t.Fatal("the reseal kept the data key")
+	}
+	only2 := reseedRing(t, "k2")
+	if got, err := NewEmailSealer(only2).Open(after.email, after.emailHash); err != nil || got != "Ada@Example.com" {
+		t.Fatalf("open with k2 alone = %q %v", got, err)
+	}
+	check := passwordCheck{owner: owner, ring: only2, emails: NewEmailSealer(only2)}
+	account, err := check.ByAddress(ctx, "ada@example.com")
+	if err != nil || account.User != ada || !account.Usable {
+		t.Fatalf("sign-in lookup after reseal = %v %v, want %s", account.User, err, ada)
+	}
+	if match, _, err := check.Check(ctx, account, password); err != nil || !match {
+		t.Fatalf("check after reseal = %t %v, want a match", match, err)
+	}
+	if got := readPerson(t, owner, three).email; got != threeText {
+		t.Fatal("the three-field email changed")
+	}
+	if got := readPerson(t, owner, lost); got.email != lostBefore.email || !bytes.Equal(got.emailHash, lostBefore.emailHash) {
+		t.Fatal("the k9 email changed")
+	}
+}
+
+// macOfRing is the index MAC of address under ring's current key.
+func macOfRing(t *testing.T, ring gateway.Keyring, address string) []byte {
+	t.Helper()
+	_, mac, err := ring.IndexMAC([]byte(address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mac
+}
+
+// emailDataKey unwraps p's email data key with ring.
+func emailDataKey(t *testing.T, ring gateway.Keyring, p storedPerson) []byte {
+	t.Helper()
+	s, err := gateway.ParseSealedText(p.email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ring.Unwrap(gateway.KindEmail, hex.EncodeToString(p.emailHash), s.KeyID, s.WrapNonce, s.WrappedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}

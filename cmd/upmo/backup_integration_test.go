@@ -844,6 +844,67 @@ func TestBackupScansThePasswordKeyOfFiveFields(t *testing.T) {
 	}
 }
 
+// Invariant 8 (4d1), the backup part: the key-id scan reads field 1 of a
+// five-field email, and never a field of the old three-field form.
+func TestBackupScansTheEmailKeyOfFiveFields(t *testing.T) {
+	t.Setenv("UPMO_ENV", "development")
+	ctx := context.Background()
+	srcOwner := pgtest.New(t)
+	if err := brainops.MigrateAll(ctx, srcOwner); err != nil {
+		t.Fatal(err)
+	}
+	key := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	ring3, err := gateway.KeyringFromEnv(func(name string) (string, bool) {
+		switch name {
+		case gateway.EnvMasterKey:
+			return key(0x63), true
+		case gateway.EnvMasterKeyID:
+			return "k3", true
+		}
+		return "", false
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	five, hash, _, err := brainops.NewEmailSealer(ring3).Seal(ctx, "five@example.com")
+	if err != nil || strings.Count(five, ":") != 4 || !strings.HasPrefix(five, "k3:") {
+		t.Fatalf("five-field email under k3: %v", err)
+	}
+	// Both index hashes are under k1, so only a stored address names k3 or k4.
+	for _, p := range []struct {
+		stored string
+		hash   []byte
+		role   string
+	}{
+		{five, hash, "owner"},
+		{"k4:bm9uY2U=:Y2lwaGVydGV4dA==", bytes.Repeat([]byte{0x04}, 32), "member"},
+	} {
+		if _, err := srcOwner.Exec(ctx, `
+			INSERT INTO identity.users (email, email_hash, email_hash_key_id, name, role_id, invited_at, joined_at)
+			SELECT $1, $2, 'k1', 'Person', id, now(), now() FROM identity.roles WHERE key = $3`,
+			p.stored, p.hash, p.role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(gateway.EnvMasterKey, key(0x61))
+	t.Setenv(gateway.EnvMasterKeyID, "k1")
+	t.Setenv("UPMO_DATABASE_URL", poolURL(t, srcOwner))
+	t.Setenv("UPMO_ARTIFACTS_DIR", t.TempDir())
+	t.Setenv("UPMO_KNOWLEDGE_DIR", t.TempDir())
+	archivePath := filepath.Join(t.TempDir(), "emails.tar.gz")
+	var out bytes.Buffer
+	if err := backupCommand([]string{"--out", archivePath, "--no-encrypt"}, &out); err != nil {
+		t.Fatalf("backupCommand: %v", err)
+	}
+	var meta backup.DBMeta
+	if err := json.Unmarshal(archiveEntries(t, archivePath)["payload.tar.gz/db/meta.json"], &meta); err != nil {
+		t.Fatalf("parse db/meta.json: %v", err)
+	}
+	if got := strings.Join(meta.KeyIDs, ","); got != "k1,k3" {
+		t.Fatalf("db/meta.json key_ids = %s, want k1,k3", got)
+	}
+}
+
 // A person's address is sealed, so no archive entry carries it, and the key it
 // was sealed under is one the restore must have loaded.
 func TestBackupSealsEmailAndRestoreNeedsItsKey(t *testing.T) {

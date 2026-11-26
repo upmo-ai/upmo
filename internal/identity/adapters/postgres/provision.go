@@ -106,7 +106,9 @@ type ProvisionQuota struct {
 
 func cleanMemberEmail(raw string) (string, error) {
 	email := strings.TrimSpace(raw)
-	if email == "" || !strings.Contains(email, "@") || utf8.RuneCountInString(email) > 320 || strings.ContainsFunc(email, unicode.IsControl) || !utf8.ValidString(email) {
+	// Bytes, not runes: brain finds a person only by an address the worker
+	// takes for an index MAC, at most 320 bytes.
+	if email == "" || !strings.Contains(email, "@") || len(email) > 320 || strings.ContainsFunc(email, unicode.IsControl) || !utf8.ValidString(email) {
 		return "", fmt.Errorf("%w: invalid email", domain.ErrInvalidProvisionInput)
 	}
 	return email, nil

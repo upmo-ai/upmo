@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -433,6 +434,54 @@ func TestProvisionMembersTeamsRevocationAndAudit(t *testing.T) {
 	}
 	if deniedMissing != 1 || deniedStale != 1 {
 		t.Fatalf("denied audit events = (missing=%d, stale=%d), want (1, 1)", deniedMissing, deniedStale)
+	}
+}
+
+// 4d1: provisioning stores no address over 320 bytes, counted in bytes,
+// since brain could never find that person by address. 320 bytes are
+// stored; 321 bytes under 320 runes are refused on create and update with
+// the input error, and nothing changes.
+func TestProvisionMemberEmailIsAtMost320Bytes(t *testing.T) {
+	env := newTestEnv(t, true)
+	ctx := context.Background()
+	fits := strings.Repeat("é", 154) + "@example.com"
+	over := strings.Repeat("é", 154) + "@example.coma"
+	if len(fits) != 320 || len(over) != 321 || utf8.RuneCountInString(over) != 167 {
+		t.Fatalf("addresses are %d and %d bytes", len(fits), len(over))
+	}
+	refused := "{\"error\":\"identity: invalid provisioning input: invalid email\"}\n"
+	if rec := env.signedDo(t, env.rawKey1, http.MethodPost, "/api/v1/provision/members", map[string]any{
+		"external_id": "idp-over", "email": over, "name": "Over", "role": "owner",
+	}); rec.Code != http.StatusUnprocessableEntity || rec.Body.String() != refused {
+		t.Fatalf("create with 321 bytes = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := env.signedDo(t, env.rawKey1, http.MethodPost, "/api/v1/provision/members", map[string]any{
+		"external_id": "idp-fits", "email": fits, "name": "Fits", "role": "owner",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create with 320 bytes = %d %s", rec.Code, rec.Body.String())
+	}
+	var stored string
+	var hash []byte
+	if err := env.owner.QueryRow(ctx, `SELECT email, email_hash FROM identity.users WHERE external_id = 'idp-fits'`).Scan(&stored, &hash); err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.signedDo(t, env.rawKey1, http.MethodPut, "/api/v1/provision/members/idp-fits", map[string]any{
+		"email": over, "name": "Fits", "role": "owner",
+	}); rec.Code != http.StatusUnprocessableEntity || rec.Body.String() != refused {
+		t.Fatalf("update to 321 bytes = %d %q", rec.Code, rec.Body.String())
+	}
+	var users int
+	var after string
+	if err := env.owner.QueryRow(ctx, `
+		SELECT count(*), max(email) FILTER (WHERE external_id = 'idp-fits')
+		FROM identity.users`).Scan(&users, &after); err != nil {
+		t.Fatal(err)
+	}
+	if users != 1 || after != stored {
+		t.Fatalf("after the refusals: %d people, address changed %t", users, after != stored)
+	}
+	if got, err := brainops.NewEmailSealer(env.keyring).Open(after, hash); err != nil || got != fits {
+		t.Fatalf("the stored address opens to %d bytes %v", len(got), err)
 	}
 }
 
