@@ -30,13 +30,15 @@ const (
 )
 
 // stepUpRig is the identity routes on a pinned clock, with Ada signed in
-// through a real passkey from the soft authenticator.
+// through a real passkey from the soft authenticator. The clock starts at
+// the database's now: the worker checks a session's expiry by that clock.
 type stepUpRig struct {
 	owner     *pgxpool.Pool
 	pool      *pgxpool.Pool
 	ctx       context.Context
 	mux       *http.ServeMux
 	clock     *time.Time
+	day       time.Time
 	passkeys  app.Passkeys
 	passwords app.Passwords
 	soft      *webauthn.Soft
@@ -47,7 +49,8 @@ type stepUpRig struct {
 func newStepUpRig(t *testing.T) *stepUpRig {
 	t.Helper()
 	owner, pool, ctx := upBoth(t)
-	clock := time.Date(2026, 11, 25, 0, 11, 0, 0, time.UTC)
+	day := dbNow(t, ctx, owner).Truncate(time.Minute).Add(-11 * time.Minute)
+	clock := day.Add(11 * time.Minute)
 	now := func() time.Time { return clock }
 	emails := sealer.NewEmail(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -75,10 +78,16 @@ func newStepUpRig(t *testing.T) *stepUpRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &stepUpRig{owner: owner, pool: pool, ctx: ctx, mux: mux, clock: &clock, passkeys: passkeys, passwords: passwords, soft: soft}
+	r := &stepUpRig{owner: owner, pool: pool, ctx: ctx, mux: mux, clock: &clock, day: day, passkeys: passkeys, passwords: passwords, soft: soft}
 	r.cookie = finishLink(t, mux, soft, token)
 	r.ada = adaID(t, ctx, pool)
 	return r
+}
+
+// when is h hours and m minutes after the rig's day began; a negative h is
+// an earlier day.
+func (r *stepUpRig) when(h, m int) time.Time {
+	return r.day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute)
 }
 
 // at sets the session's sign-in method and time on its stored row.
@@ -147,7 +156,7 @@ func refused(t *testing.T, label string, rec *httptest.ResponseRecorder) {
 
 func TestStepUpConnectorGrantPut(t *testing.T) {
 	r := newStepUpRig(t)
-	at := func(h, m int) time.Time { return time.Date(2026, 11, 25, h, m, 0, 0, time.UTC) }
+	at := r.when
 
 	r.at(t, r.ada, "password", at(0, 10))
 	refused(t, "password session on a passkey account", call(r.mux, http.MethodPut, "/api/connector-grants/github", r.cookie, []byte(grantBody)))
@@ -186,7 +195,7 @@ func TestStepUpConnectorGrantDelete(t *testing.T) {
 		t.Fatalf("PUT = %d %s", saved.Code, saved.Body.String())
 	}
 
-	r.at(t, r.ada, "passkey", time.Date(2026, 11, 24, 0, 11, 0, 0, time.UTC))
+	r.at(t, r.ada, "passkey", r.when(-24, 11))
 	refused(t, "stale DELETE", call(r.mux, http.MethodDelete, "/api/connector-grants/github", r.cookie, nil))
 	if got := r.grant(t, r.ada); got != "allow" {
 		t.Fatalf("grant after stale DELETE = %q, want allow", got)
@@ -210,7 +219,7 @@ func TestStepUpPasswordVerify(t *testing.T) {
 	verify, _ := json.Marshal(map[string]string{"password": stepUpPassword})
 
 	// One passkey: a password verify moves signed_in_at but is not a step-up.
-	r.at(t, r.ada, "passkey", time.Date(2026, 11, 24, 0, 11, 0, 0, time.UTC))
+	r.at(t, r.ada, "passkey", r.when(-24, 11))
 	if rec := call(r.mux, http.MethodPost, "/api/session/verify/password", r.cookie, verify); rec.Code != http.StatusNoContent {
 		t.Fatalf("verify = %d %s", rec.Code, rec.Body.String())
 	}
@@ -242,7 +251,7 @@ func TestStepUpPasswordVerify(t *testing.T) {
 	if err := r.passwords.Set(r.ctx, bob, bobSession.ID, "bob@example.com", "Bob", stepUpPassword); err != nil {
 		t.Fatal(err)
 	}
-	r.at(t, bob, "password", time.Date(2026, 11, 24, 0, 11, 0, 0, time.UTC))
+	r.at(t, bob, "password", r.when(-24, 11))
 	refused(t, "stale password PUT", call(r.mux, http.MethodPut, "/api/connector-grants/github", bobCookie, []byte(grantBody)))
 	if rec := call(r.mux, http.MethodPost, "/api/session/verify/password", bobCookie, verify); rec.Code != http.StatusNoContent {
 		t.Fatalf("bob verify = %d %s", rec.Code, rec.Body.String())
@@ -269,7 +278,7 @@ func TestStepUpPasskeyRename(t *testing.T) {
 		return got
 	}
 
-	r.at(t, r.ada, "password", time.Date(2026, 11, 25, 0, 10, 0, 0, time.UTC))
+	r.at(t, r.ada, "password", r.when(0, 10))
 	refused(t, "password rename", call(r.mux, http.MethodPatch, "/api/passkeys/"+id, r.cookie, []byte(`{"name":"desk"}`)))
 	if got := name(); got != before {
 		t.Fatalf("name after refused rename = %q, want %q", got, before)
@@ -294,7 +303,7 @@ func TestStepUpWorkspacePut(t *testing.T) {
 		return on
 	}
 
-	r.at(t, r.ada, "passkey", time.Date(2026, 11, 24, 0, 11, 0, 0, time.UTC))
+	r.at(t, r.ada, "passkey", r.when(-24, 11))
 	refused(t, "stale workspace PUT", callWorkspace(t, r.mux, http.MethodPut, "/api/workspace", r.cookie, workspacePayload(map[string]any{"sso_required": true})))
 	if ssoRequired() {
 		t.Fatal("sso_required = true after a refused PUT")
@@ -316,4 +325,14 @@ func sessionOf(t *testing.T, r *stepUpRig, user domain.UserID) string {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// dbNow is the database's clock, in UTC to the second.
+func dbNow(t *testing.T, ctx context.Context, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	return now.UTC().Truncate(time.Second)
 }

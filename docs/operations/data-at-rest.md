@@ -28,7 +28,7 @@ These values are sealed with `UPMO_MASTER_KEY`:
 - stored provider credentials (`gateway.credentials`)
 - email addresses (`identity.users.email`), each with its keyed index hash
 
-Credentials use a per-row data key wrapped by the master key.
+Credentials and password hashes use a per-row data key wrapped by the master key. Only `upmo worker` wraps and unwraps those data keys. Brain seals a new password hash under a data key the worker wraps, and asks the worker to check a password. Brain never opens a stored password hash, and its database role cannot read the column.
 
 Everything else stays in clear text inside Postgres. That includes chat, tasks, knowledge, memory, agents, audit records and other identity display fields. Row security, volume encryption and encrypted backups protect them. Column encryption would break full-text search and vector indexes.
 
@@ -50,7 +50,7 @@ To retire a key:
 
 1. Set the new key as `UPMO_MASTER_KEY` with a new `UPMO_MASTER_KEY_ID`. Keep the old key as `UPMO_MASTER_KEY_PREVIOUS_<old id>`. Restart brain and gateway.
 2. Run `upmo keys reseal --dry-run` to see the counts. Then run `upmo keys reseal`.
-   - It seals these again under the current key, in batches: stored provider credentials (`gateway.credentials`), password hashes, and email addresses with their index hashes.
+   - It seals these again under the current key, in batches: stored provider credentials (`gateway.credentials`) and password hashes, each under a new data key, and email addresses with their index hashes.
    - It records `keys.reseal` audit events.
    - You can stop it and run it again.
 3. A row sealed with a key that is not loaded is left alone. The command then exits with a non-zero code. Brain also warns at start-up and exports `upmo_sealed_rows_unknown_key{store}`.

@@ -32,8 +32,8 @@ import (
 func TestPasswordSignIn(t *testing.T) {
 	ownerPool, pool, ctx := upBoth(t)
 	// The worker checks a session against the database clock, so the rig's
-	// clock starts now.
-	now := time.Now().UTC().Truncate(time.Second)
+	// clock starts at the database's now.
+	now := dbNow(t, ctx, ownerPool)
 	var clock time.Time
 	clock = now
 	sessions := identity.Sessions(pool, domain.IdleTimeout, domain.MaxAge)

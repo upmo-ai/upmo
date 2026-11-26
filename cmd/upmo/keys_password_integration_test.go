@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -473,5 +474,84 @@ func TestKeysPasswordVerifyAudit(t *testing.T) {
 	w.restart()
 	if code, body := w.verify(verifyBody("Bob@Example.com", goodPassword)); code != http.StatusForbidden || body != "keys: refused" {
 		t.Fatalf("verify with the audit refusing = %d %q, want 403 keys: refused", code, body)
+	}
+}
+
+// session stores a session for user that ends after lifetime (negative: it
+// has ended) and returns its token hash.
+func (w *keyWorker) session(user string, lifetime time.Duration) []byte {
+	w.t.Helper()
+	hash := make([]byte, 32)
+	if _, err := rand.Read(hash); err != nil {
+		w.t.Fatal(err)
+	}
+	if _, err := w.owner.Exec(context.Background(), `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1, $2, now(), now(), now() + make_interval(secs => $3))`, user, hash, lifetime.Seconds()); err != nil {
+		w.t.Fatal(err)
+	}
+	return hash
+}
+
+func sessionBody(tokenHash []byte, password string) string {
+	raw, _ := json.Marshal(map[string]any{"actor_token_hash": tokenHash, "password": password})
+	return string(raw)
+}
+
+// Invariant 4: the step-up body checks the person behind a live session of
+// an enabled person, never one named by an address, and the password is 1
+// to 1024 bytes.
+func TestKeysPasswordVerifyForSession(t *testing.T) {
+	w := startKeyWorker(t)
+	w.person(adaID, "Ada@Example.com", "owner", currentPHC(goodPassword), false)
+	w.person(bobID, "Bob@Example.com", "member", currentPHC("tide-copper-leaflet"), false)
+	w.person(carolID, "Carol@Example.com", "member", currentPHC(goodPassword), true)
+	ada := w.session(adaID, time.Hour)
+	bob := w.session(bobID, time.Hour)
+	ended := w.session(adaID, -time.Second)
+	disabled := w.session(carolID, time.Hour)
+	unknown := bytes.Repeat([]byte{7}, 32)
+	both := `{"email":"Ada@Example.com","actor_token_hash":"` + base64.StdEncoding.EncodeToString(ada) + `","password":"` + goodPassword + `"}`
+	for _, tc := range []struct {
+		name, body string
+		code       int
+		want       string
+	}{
+		{"Ada's live session", sessionBody(ada, goodPassword), http.StatusOK, `{"match":true,"rehash":false}`},
+		{"a wrong password", sessionBody(ada, goodPassword+"!"), http.StatusOK, noMatch},
+		{"Bob's session with Ada's password", sessionBody(bob, goodPassword), http.StatusOK, noMatch},
+		{"an ended session", sessionBody(ended, goodPassword), http.StatusForbidden, "keys: refused"},
+		{"a disabled person's session", sessionBody(disabled, goodPassword), http.StatusForbidden, "keys: refused"},
+		{"an unknown hash", sessionBody(unknown, goodPassword), http.StatusForbidden, "keys: refused"},
+		{"an address and a session", both, http.StatusForbidden, "keys: refused"},
+	} {
+		code, body := w.verify(tc.body)
+		if code != tc.code || strings.TrimSpace(body) != tc.want {
+			t.Errorf("%s = %d %s, want %d %s", tc.name, code, body, tc.code, tc.want)
+		}
+	}
+	// A fresh worker: brain's ten checks per 10 s are spent.
+	w.restart()
+	for _, tc := range []struct {
+		name, body string
+		code       int
+		want       string
+	}{
+		{"a 1024-byte password", sessionBody(ada, strings.Repeat("p", 1024)), http.StatusOK, noMatch},
+		{"a 1025-byte password", sessionBody(ada, strings.Repeat("p", 1025)), http.StatusForbidden, "keys: refused"},
+		{"an empty password", sessionBody(ada, ""), http.StatusForbidden, "keys: refused"},
+	} {
+		code, body := w.verify(tc.body)
+		if code != tc.code || strings.TrimSpace(body) != tc.want {
+			t.Errorf("%s = %d %s, want %d %s", tc.name, code, body, tc.code, tc.want)
+		}
+	}
+	// The session body counts against the person's own address window.
+	if attempts, _ := w.window("Ada@Example.com"); attempts != 3 {
+		t.Errorf("Ada's attempts = %d, want 3", attempts)
+	}
+	_, outcomes := w.auditRows("keys.password_verify")
+	if want := "success,success,success,denied,denied,denied,denied,success,denied,denied"; strings.Join(outcomes, ",") != want {
+		t.Errorf("outcomes = %v, want %s", outcomes, want)
 	}
 }

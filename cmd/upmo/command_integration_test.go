@@ -407,7 +407,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Update: []string{"aaguid", "attestation", "backup_eligible", "backup_state", "created_at", "credential_id", "id", "last_used_at", "name", "public_key", "sign_count", "transports", "user_id"},
 		},
 		"identity.password_verify_window": {},
-		"identity.provision_nonces": {},
+		"identity.provision_nonces":       {},
 		"identity.roles": {
 			Table:  []string{"SELECT"},
 			Select: []string{"id", "key", "name", "permissions"},
