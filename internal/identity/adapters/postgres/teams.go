@@ -33,19 +33,18 @@ func (p Passkeys) ListTeams(ctx context.Context) ([]domain.Team, error) {
 	return out, rows.Err()
 }
 
-// CreateTeam inserts a team and records the team.create event in the same
-// transaction.
-func (p Passkeys) CreateTeam(ctx context.Context, name string) (domain.TeamID, error) {
+// CreateTeam creates a team for the actor and records the team.create event in
+// the same transaction.
+func (p Passkeys) CreateTeam(ctx context.Context, actorTokenHash []byte, name string) (domain.TeamID, error) {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return domain.TeamID{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var idText string
-	err = tx.QueryRow(ctx, `
-		INSERT INTO identity.teams (name) VALUES ($1) RETURNING id::text`, name).Scan(&idText)
+	err = tx.QueryRow(ctx, `SELECT * FROM identity.team_create($1, $2)`, actorTokenHash, name).Scan(&idText)
 	if err != nil {
-		return domain.TeamID{}, mapTeamWrite(err)
+		return domain.TeamID{}, mapAddTeamMember(err)
 	}
 	if err := audit.Record(ctx, tx, audit.Event{
 		Action:   audit.TeamCreate,
@@ -93,8 +92,8 @@ func (p Passkeys) AddTeamMember(ctx context.Context, actorTokenHash []byte, team
 	return tx.Commit(ctx)
 }
 
-// mapAddTeamMember maps the add_team_member and remove_team_member refusals
-// to their domain errors; any other error is a team write.
+// mapAddTeamMember maps actor-checked team write refusals to their domain
+// errors; any other error is a team write.
 func mapAddTeamMember(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -103,6 +102,8 @@ func mapAddTeamMember(err error) error {
 			return app.ErrNotSignedIn
 		case "identity: only team managers manage teams":
 			return domain.ErrTeamsOnly
+		case "identity: bad team name":
+			return domain.ErrBadTeam
 		case "identity: no such member":
 			return domain.ErrNoSuchMember
 		case "identity: not joined":

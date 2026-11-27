@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/upmo-ai/upmo/internal/identity"
 	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
@@ -592,6 +594,98 @@ func TestAppCannotWriteSharesOrTeamMembersDirectly(t *testing.T) {
 			t.Fatalf("%s grants insert=%t update=%t delete=%t select=%t, want only select",
 				table, insertGrant, updateGrant, deleteGrant, selectGrant)
 		}
+	}
+}
+
+func TestTeamCreateUsesTeamsManagePermission(t *testing.T) {
+	w := upRoleWorld(t)
+	customRole := w.seedCustomRole(t, "Team manager", []string{"teams:manage"})
+	customID := seedPerson(t, w.owner, w.ctx, "custom@example.com", customRole, true, false)
+	customSess := []byte{11, 6}
+	seedSess(t, w.owner, w.ctx, customID, customSess, w.now.Add(time.Hour))
+	var adminID string
+	if err := w.owner.QueryRow(w.ctx, `SELECT id::text FROM identity.users WHERE role_id = $1::uuid`, w.adminRole).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	adminSess := []byte{11, 7}
+	seedSess(t, w.owner, w.ctx, adminID, adminSess, w.now.Add(time.Hour))
+
+	teams := identity.Teams(w.app, nil)
+	sessions := identity.Sessions(w.app, domain.IdleTimeout, domain.MaxAge)
+	mux := http.NewServeMux()
+	identity.MountTeams(mux, teams, sessions)
+	store := postgres.Passkeys{Pool: w.app}
+	cases := []struct {
+		name string
+		id   string
+		hash []byte
+		want bool
+	}{
+		{"member", w.memberID, w.memberSess, false},
+		{"admin", adminID, adminSess, true},
+		{"custom teams:manage", customID, customSess, true},
+		{"custom role without teams:manage", w.mgrID, w.mgrSess, false},
+	}
+	for _, c := range cases {
+		_, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, $2)`, c.hash, "direct "+c.name)
+		if c.want && err != nil {
+			t.Fatalf("direct team_create as %s = %v, want success", c.name, err)
+		}
+		if !c.want && pgCode(err) != "42501" {
+			t.Fatalf("direct team_create as %s = %v, want SQLSTATE 42501", c.name, err)
+		}
+		if !c.want {
+			if _, err := store.CreateTeam(w.ctx, c.hash, "store "+c.name); !errors.Is(err, domain.ErrTeamsOnly) {
+				t.Fatalf("Store.CreateTeam as %s = %v, want ErrTeamsOnly", c.name, err)
+			}
+		}
+
+		userID, err := domain.ParseUserID(c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, _, err := sessions.Start(w.ctx, userID, "passkey", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := call(mux, http.MethodPost, "/api/teams", token, jsonBody(t, map[string]string{"name": "HTTP " + c.name}))
+		if c.want && rec.Code != http.StatusOK {
+			t.Fatalf("POST as %s = %d %s, want 200", c.name, rec.Code, rec.Body.String())
+		}
+		if !c.want && rec.Code != http.StatusForbidden {
+			t.Fatalf("POST as %s = %d %s, want 403", c.name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestAppCannotWriteTeamsDirectly(t *testing.T) {
+	owner, ctx := upOwner(t)
+	appPool := pgtest.AppLogin(t, owner)
+	var team string
+	if err := owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('T1') RETURNING id::text`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []struct {
+		name string
+		sql  string
+	}{
+		{"insert", `INSERT INTO identity.teams (name) VALUES ('T2')`},
+		{"update", `UPDATE identity.teams SET name = 'Changed' WHERE id = $1::uuid`},
+		{"delete", `DELETE FROM identity.teams WHERE id = $1::uuid`},
+	} {
+		var args []any
+		if stmt.name != "insert" {
+			args = []any{team}
+		}
+		_, err := appPool.Exec(ctx, stmt.sql, args...)
+		assertDenied(t, "teams "+stmt.name, err)
+	}
+	var count int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM identity.teams WHERE id = $1::uuid AND name = 'T1'`, team).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("seed team count = %d, want 1", count)
 	}
 }
 

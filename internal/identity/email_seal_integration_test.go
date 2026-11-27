@@ -370,7 +370,7 @@ func TestListMembersSortsByAddress(t *testing.T) {
 		"Ops":     {"Alice@example.com", "carol@example.com"},
 	} {
 		var id string
-		if err := k.pool.QueryRow(k.ctx, `INSERT INTO identity.teams (name) VALUES ($1) RETURNING id`, team).Scan(&id); err != nil {
+		if err := k.owner.QueryRow(k.ctx, `INSERT INTO identity.teams (name) VALUES ($1) RETURNING id`, team).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		for _, person := range people {

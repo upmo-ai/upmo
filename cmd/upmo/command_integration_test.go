@@ -433,10 +433,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Select: []string{"team_id", "user_id"},
 		},
 		"identity.teams": {
-			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},
+			Table:  []string{"SELECT"},
 			Select: []string{"external_id", "id", "name"},
-			Insert: []string{"external_id", "id", "name"},
-			Update: []string{"external_id", "id", "name"},
 		},
 		"identity.throttle": {
 			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},

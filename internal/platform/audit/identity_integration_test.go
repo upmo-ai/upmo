@@ -1112,6 +1112,70 @@ func TestFailedAuditInsertRollsBackRoleCreate(t *testing.T) {
 	}
 }
 
+func TestFailedAuditInsertRollsBackTeamCreate(t *testing.T) {
+	k := newKit(t)
+	cookie := k.signInOwner(t, "ada@example.com")
+	lastEvent(t, k.owner)
+	if _, err := k.owner.Exec(context.Background(), `
+		CREATE FUNCTION identity.test_team_commit_guard() RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.name = 'CommitFail' THEN RAISE EXCEPTION 'team commit refused'; END IF;
+			RETURN NEW;
+		END $$;
+		CREATE CONSTRAINT TRIGGER test_team_commit_guard
+		AFTER INSERT ON identity.teams DEFERRABLE INITIALLY DEFERRED
+		FOR EACH ROW EXECUTE FUNCTION identity.test_team_commit_guard()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = k.owner.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_team_commit_guard ON identity.teams`)
+		_, _ = k.owner.Exec(context.Background(), `DROP FUNCTION IF EXISTS identity.test_team_commit_guard()`)
+	})
+	rec := k.sessionCall(http.MethodPost, "/api/teams", cookie, map[string]string{"name": "CommitFail"})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("deferred team commit = %d %s, want 500", rec.Code, rec.Body.String())
+	}
+	var teams, pending int
+	if err := k.owner.QueryRow(context.Background(), `SELECT count(*) FROM identity.teams WHERE name = 'CommitFail'`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.owner.QueryRow(context.Background(), `SELECT count(*) FROM audit.pending WHERE action = 'team.create' AND outcome = 'success'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 0 || pending != 0 {
+		t.Fatalf("after failed team commit teams=%d team.create events=%d, want 0 and 0", teams, pending)
+	}
+	lastEvent(t, k.owner)
+	if _, err := k.owner.Exec(context.Background(), `DROP TRIGGER test_team_commit_guard ON identity.teams`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.owner.Exec(context.Background(), `DROP FUNCTION identity.test_team_commit_guard()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.owner.Exec(context.Background(), `REVOKE INSERT ON audit.pending FROM upmo_app`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = k.sessionCall(http.MethodPost, "/api/teams", cookie, map[string]string{"name": "Ghost"})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("create = %d %s, want 500", rec.Code, rec.Body.String())
+	}
+	teams, pending = 0, 0
+	if err := k.owner.QueryRow(context.Background(), `SELECT count(*) FROM identity.teams WHERE name = 'Ghost'`).Scan(&teams); err != nil {
+		t.Fatal(err)
+	}
+	if teams != 0 {
+		t.Fatalf("%d teams survived the failed audit insert, want 0", teams)
+	}
+	if err := k.owner.QueryRow(context.Background(), `SELECT count(*) FROM audit.pending`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("%d pending rows survived the refused insert, want 0", pending)
+	}
+}
+
 // TestFailedAuditInsertRollsBackRoleChange proves the coupling for PUT
 // /api/roles/{id}: when the event cannot be written, the role keeps its old
 // name and permissions.
