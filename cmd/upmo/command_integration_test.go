@@ -419,10 +419,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Update: []string{"last_seen_at", "sign_in_method", "signed_in_at"},
 		},
 		"identity.shares": {
-			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},
+			Table:  []string{"SELECT"},
 			Select: []string{"granted_by", "grantee_role_id", "id", "level", "object_id", "object_type", "team_id", "user_id"},
-			Insert: []string{"granted_by", "grantee_role_id", "id", "level", "object_id", "object_type", "team_id", "user_id"},
-			Update: []string{"granted_by", "grantee_role_id", "id", "level", "object_id", "object_type", "team_id", "user_id"},
 		},
 		"identity.sign_in_links": {
 			Table:  []string{"DELETE", "INSERT", "UPDATE"},
@@ -431,10 +429,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Update: []string{"expires_at", "id", "purpose", "token_hash", "used_at", "user_id"},
 		},
 		"identity.team_members": {
-			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},
+			Table:  []string{"SELECT"},
 			Select: []string{"team_id", "user_id"},
-			Insert: []string{"team_id", "user_id"},
-			Update: []string{"team_id", "user_id"},
 		},
 		"identity.teams": {
 			Table:  []string{"DELETE", "INSERT", "SELECT", "UPDATE"},

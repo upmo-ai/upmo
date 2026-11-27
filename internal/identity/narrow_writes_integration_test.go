@@ -526,6 +526,75 @@ func TestAppCannotWriteRolesDirectly(t *testing.T) {
 	}
 }
 
+// upmo_app only reads shares and team members. A direct insert, update or
+// delete answers 42501 and leaves the owner-seeded rows as they were.
+func TestAppCannotWriteSharesOrTeamMembersDirectly(t *testing.T) {
+	owner, ctx := upOwner(t)
+	appPool := pgtest.AppLogin(t, owner)
+	ada := seedOwner(t, owner, ctx, "ada@example.com")
+	var memberRoleID string
+	if err := owner.QueryRow(ctx, `SELECT id::text FROM identity.roles WHERE key = 'member'`).Scan(&memberRoleID); err != nil {
+		t.Fatal(err)
+	}
+	lee := seedPerson(t, owner, ctx, "lee@example.com", memberRoleID, true, false)
+	var team string
+	if err := owner.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('T1') RETURNING id::text`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, team, ada); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by)
+		VALUES ('task', uuidv7(), $1, 'viewer', $2)`, lee, ada); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, stmt := range []struct {
+		name string
+		sql  string
+		args []any
+	}{
+		{"insert shares", `INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by) VALUES ('task', uuidv7(), $1, 'editor', $2)`, []any{ada, ada}},
+		{"update shares", `UPDATE identity.shares SET level = 'editor' WHERE user_id = $1`, []any{lee}},
+		{"delete shares", `DELETE FROM identity.shares WHERE user_id = $1`, []any{lee}},
+		{"insert team_members", `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, []any{team, lee}},
+		{"update team_members", `UPDATE identity.team_members SET user_id = $2 WHERE team_id = $1`, []any{team, lee}},
+		{"delete team_members", `DELETE FROM identity.team_members WHERE team_id = $1`, []any{team}},
+	} {
+		_, err := appPool.Exec(ctx, stmt.sql, stmt.args...)
+		assertDenied(t, stmt.name, err)
+	}
+
+	var shares, members string
+	if err := owner.QueryRow(ctx, `
+		SELECT (SELECT string_agg(user_id::text || ' ' || level, ',' ORDER BY user_id) FROM identity.shares),
+		       (SELECT string_agg(user_id::text, ',' ORDER BY user_id) FROM identity.team_members)`).
+		Scan(&shares, &members); err != nil {
+		t.Fatal(err)
+	}
+	if shares != lee+" viewer" || members != ada {
+		t.Fatalf("after the refused writes shares = %q team_members = %q, want %q and %q",
+			shares, members, lee+" viewer", ada)
+	}
+
+	for _, table := range []string{"identity.shares", "identity.team_members"} {
+		var insertGrant, updateGrant, deleteGrant, selectGrant bool
+		if err := owner.QueryRow(ctx, `
+			SELECT has_table_privilege('upmo_app', $1, 'INSERT'),
+			       has_table_privilege('upmo_app', $1, 'UPDATE'),
+			       has_table_privilege('upmo_app', $1, 'DELETE'),
+			       has_table_privilege('upmo_app', $1, 'SELECT')`, table).
+			Scan(&insertGrant, &updateGrant, &deleteGrant, &selectGrant); err != nil {
+			t.Fatal(err)
+		}
+		if insertGrant || updateGrant || deleteGrant || !selectGrant {
+			t.Fatalf("%s grants insert=%t update=%t delete=%t select=%t, want only select",
+				table, insertGrant, updateGrant, deleteGrant, selectGrant)
+		}
+	}
+}
+
 func TestRoleFunctionsRefuseUnprovenOrUnauthorized(t *testing.T) {
 	w := upRoleWorld(t)
 	spare := w.seedCustomRole(t, "Spare", []string{"task:view", "task:edit"})

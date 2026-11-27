@@ -107,7 +107,7 @@ func TestMembersIntegration(t *testing.T) {
 		t.Fatalf("viewer invite %d %s", denied.Code, denied.Body.String())
 	}
 
-	if err := seedAccess(ctx, pool, owner, invited.ID, now); err != nil {
+	if err := seedAccess(ctx, ownerPool, owner, invited.ID, now); err != nil {
 		t.Fatal(err)
 	}
 	reset := call(mux, http.MethodPost, "/api/members/"+invited.ID+"/reset-link", ownerCookie, nil)
