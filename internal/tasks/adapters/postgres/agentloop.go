@@ -53,21 +53,7 @@ func (s Store) NarrowedRunnerTx(ctx context.Context, scope agentloop.AccessScope
 	return tx.Commit(ctx)
 }
 
-// SaveFinding inserts a row into tasks.findings under narrowed RLS.
-func (s Store) SaveFinding(ctx context.Context, scope agentloop.AccessScope, taskID, runID, kind, title, body, sourceRef string, untrusted bool) (string, error) {
-	if kind == "" {
-		kind = "finding"
-	}
-	var id string
-	err := s.NarrowedTx(ctx, scope, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
-			INSERT INTO tasks.findings (task_id, run_id, kind, title, body, source_ref, untrusted)
-			VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, $5, $6, $7)
-			RETURNING id::text`,
-			taskID, runID, kind, title, body, sourceRef, untrusted).Scan(&id)
-	})
-	return id, err
-}
+const defaultTurnActor = "worker" // shortcut: 237a2 maps stage to actor
 
 // RequestBatchApproval pauses the task and persists a batch hold (calls jsonb[])
 // with deterministic action/preview and untrusted_origin flag.
@@ -252,7 +238,7 @@ type TaskTurnStore struct {
 // CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.
 func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloop.TurnCommit) error {
 	return s.Store.NarrowedRunnerTx(ctx, s.Scope, func(tx pgx.Tx) error {
-		if err := InsertTurnRows(ctx, tx, commit); err != nil {
+		if err := InsertTurnRows(ctx, tx, commit, defaultTurnActor); err != nil {
 			return err
 		}
 		var owner string
@@ -308,7 +294,7 @@ func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloo
 }
 
 // InsertTurnRows writes turn transcript entries into tasks.turns inside tx.
-func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit) error {
+func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit, actor string) error {
 	seq := commit.SeqStart
 	for _, msg := range commit.Messages {
 		var toolCalls any
@@ -326,13 +312,13 @@ func InsertTurnRows(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit)
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO tasks.turns (
-				task_id, run_id, seq, role, body, tool_calls, tool_name, tool_id,
+				task_id, run_id, seq, role, actor, body, tool_calls, tool_name, tool_id,
 				is_error, offloaded, tainted, private_read, model, input_tokens, output_tokens, cost_micro_usd
 			) VALUES (
-				$1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, $7, $8,
-				$9, $10, $11, $12, $13, $14, $15, $16
+				$1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8, $9,
+				$10, $11, $12, $13, $14, $15, $16, $17
 			)`,
-			commit.ObjectID, commit.RunID, seq, string(msg.Role), msg.Text, toolCalls,
+			commit.ObjectID, commit.RunID, seq, string(msg.Role), actor, msg.Text, toolCalls,
 			msg.ToolName, msg.ToolID, msg.IsError, msg.Offload,
 			commit.Exposure.Tainted, commit.Exposure.PrivateRead,
 			commit.Model, commit.InputTokens, commit.OutputTokens, cost); err != nil {

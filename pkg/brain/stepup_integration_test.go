@@ -158,14 +158,14 @@ func (e *stepUpEnv) task(t *testing.T, goal, status string, budget, spent int64,
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(e.ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1::uuid, 1, '', 'Working', 'open')`, id); err != nil {
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1::uuid, 1, '', 'Working', 'open', 'person')`, id); err != nil {
 		t.Fatal(err)
 	}
 	if status == "Needs approval" {
 		if _, err := tx.Exec(e.ctx, `
-			INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-			VALUES ($1::uuid, 2, 'Working', 'Needs approval', 'pause')`, id); err != nil {
+			INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+			VALUES ($1::uuid, 2, 'Working', 'Needs approval', 'pause', 'person')`, id); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(e.ctx, `UPDATE tasks.tasks SET status = 'Needs approval' WHERE id = $1::uuid`, id); err != nil {

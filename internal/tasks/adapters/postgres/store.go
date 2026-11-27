@@ -390,7 +390,7 @@ func insertOpen(ctx context.Context, tx pgx.Tx, userID, allow string, input doma
 	if err != nil {
 		return app.Task{}, fmt.Errorf("tasks: open: %w", err)
 	}
-	if err := insertTaskEvent(ctx, tx, id, effect); err != nil {
+	if err := insertTaskEvent(ctx, tx, id, effect, "person"); err != nil {
 		return app.Task{}, err
 	}
 	return app.Task{ID: id, Status: next, Goal: effect.Goal}, nil
@@ -406,17 +406,20 @@ func budgetOrDefault(amount int64) int64 {
 
 func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
 	var status, goal string
-	var passes, paused bool
+	var passes, paused, runnerOwned bool
 	err := tx.QueryRow(ctx, `
-		SELECT status, goal, passes, paused
+		SELECT status, goal, passes, paused, runner_owned
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&status, &goal, &passes, &paused)
+		FOR UPDATE`, taskID).Scan(&status, &goal, &passes, &paused, &runnerOwned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Task{}, domain.Effect{}, app.ErrGone
 	}
 	if err != nil {
 		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if runnerOwned && isManualRunnerRefused(input.Kind) {
+		return app.Task{}, domain.Effect{}, app.ErrRunnerOwned
 	}
 	if input.Kind == domain.Resume {
 		var pending bool
@@ -468,7 +471,8 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 			return app.Task{}, domain.Effect{}, err
 		}
 	}
-	if err := insertTaskEvent(ctx, tx, taskID, effect); err != nil {
+	// shortcut: pause, hold and ask_plan edges from Request and insertBatchApprovalTx also record 'person'; 237a2 maps system edges to their actor.
+	if err := insertTaskEvent(ctx, tx, taskID, effect, "person"); err != nil {
 		return app.Task{}, domain.Effect{}, err
 	}
 	statusSQL := `
@@ -503,6 +507,15 @@ func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Inpu
 	return app.Task{ID: taskID, Status: next, Goal: goal}, effect, nil
 }
 
+func isManualRunnerRefused(kind domain.Kind) bool {
+	switch kind {
+	case domain.Advance, domain.Plan, domain.Chat, domain.Pass, domain.Approve, domain.Deny:
+		return true
+	default:
+		return false
+	}
+}
+
 // recordTransition seals the event of one transition: one action per
 // transition the step took, with the status edge as its safe value. The
 // event shares the transition's transaction, so a rolled-back step leaves no
@@ -533,13 +546,13 @@ func recordTransition(ctx context.Context, tx pgx.Tx, taskID string, task app.Ta
 	return audit.Record(ctx, tx, event)
 }
 
-func insertTaskEvent(ctx context.Context, tx pgx.Tx, taskID string, effect domain.Effect) error {
+func insertTaskEvent(ctx context.Context, tx pgx.Tx, taskID string, effect domain.Effect, actor string) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
 		SELECT $1::uuid,
 		       COALESCE((SELECT MAX(seq) FROM tasks.task_events WHERE task_id = $1::uuid), 0) + 1,
-		       $2, $3, $4`,
-		taskID, string(effect.From), string(effect.To), string(effect.Kind))
+		       $2, $3, $4, $5`,
+		taskID, string(effect.From), string(effect.To), string(effect.Kind), actor)
 	if err != nil {
 		return fmt.Errorf("tasks: event: %w", err)
 	}

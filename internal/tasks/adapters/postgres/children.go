@@ -78,7 +78,7 @@ func (s Store) Spawn(ctx context.Context, access app.Access, parentID, goal stri
 	if err != nil {
 		return app.Task{}, childWriteErr(err)
 	}
-	if err := insertTaskEvent(ctx, tx, id, effect); err != nil {
+	if err := insertTaskEvent(ctx, tx, id, effect, "person"); err != nil {
 		return app.Task{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -352,8 +352,8 @@ func TestDirectChildInsertRefusesPausedOrTerminalParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1::uuid, 1, '', 'Preparing', 'open')`, id); err != nil {
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1::uuid, 1, '', 'Preparing', 'open', 'person')`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -406,8 +406,8 @@ func TestDirectChildInsertCountsParentSpent(t *testing.T) {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-			VALUES ($1::uuid, 1, '', 'Preparing', 'open')`, id); err != nil {
+			INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+			VALUES ($1::uuid, 1, '', 'Preparing', 'open', 'person')`, id); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
@@ -523,8 +523,8 @@ func TestOverlappingDirectChildInsertsReserveOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1::uuid, 1, '', 'Preparing', 'open')`, id); err != nil {
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1::uuid, 1, '', 'Preparing', 'open', 'person')`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

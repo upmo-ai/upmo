@@ -40,11 +40,13 @@ CREATE TABLE tasks.tasks (
   parent_id uuid REFERENCES tasks.tasks (id),
   budget bigint NOT NULL DEFAULT 0,
   held bigint NOT NULL DEFAULT 0,
+  reserved bigint NOT NULL DEFAULT 0,
   spent bigint NOT NULL DEFAULT 0,
   paused boolean NOT NULL DEFAULT false,
   allow text NOT NULL DEFAULT '',
   tainted boolean NOT NULL DEFAULT false,
   private_read boolean NOT NULL DEFAULT false,
+  runner_owned boolean NOT NULL DEFAULT false,
   cause text NOT NULL DEFAULT '',
   result jsonb,
   worktree text NOT NULL DEFAULT '',
@@ -75,6 +77,7 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_parent_check CHECK (parent_id IS NULL OR parent_id <> id),
   CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000000),
   CONSTRAINT tasks_held_check CHECK (held BETWEEN 0 AND budget),
+  CONSTRAINT tasks_reserved_check CHECK (reserved >= 0 AND CASE WHEN reserved = 0 THEN true ELSE spent + held + reserved <= budget END),
   CONSTRAINT tasks_spent_check CHECK (spent >= 0),
   CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
   CONSTRAINT tasks_cause_check CHECK (
@@ -107,9 +110,11 @@ CREATE TABLE tasks.task_events (
   from_status text NOT NULL,
   to_status text NOT NULL,
   input text NOT NULL,
+  actor text NOT NULL,
   at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (task_id, seq),
   CONSTRAINT task_events_seq_check CHECK (seq > 0),
+  CONSTRAINT task_events_actor_check CHECK (actor IN ('person', 'planner', 'worker', 'verifier', 'core')),
   CONSTRAINT task_events_edge_check CHECK (
     (input = 'open' AND from_status = '' AND to_status IN ('Preparing', 'Planning', 'Working') AND seq = 1)
     OR (input = 'advance' AND (
@@ -286,11 +291,14 @@ CREATE POLICY task_events_select ON tasks.task_events
 
 CREATE POLICY task_events_insert ON tasks.task_events
   FOR INSERT
-  WITH CHECK (EXISTS (
-    SELECT 1 FROM tasks.tasks AS task
-    WHERE task.id = task_id
-      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
-  ));
+  WITH CHECK (
+    actor = 'person'
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+    )
+  );
 
 CREATE POLICY chat_events_select ON tasks.chat_events
   FOR SELECT
@@ -1090,7 +1098,7 @@ REVOKE UPDATE, DELETE ON tasks.run_events FROM upmo_app;
 SELECT identity.protect('tasks.tasks');
 REVOKE UPDATE (
   agent_id, agent_version, template_id, source_chat_id, up_to_line_id, dry_run,
-  tainted, private_read, held, spent,
+  tainted, private_read, runner_owned, held, reserved, spent,
   passes, flow, plan_approval, plan, plan_digest, stalls, failures, replanned, last_gap
 ) ON tasks.tasks FROM upmo_app;
 
@@ -1645,8 +1653,10 @@ CREATE TABLE tasks.findings (
   body text NOT NULL,
   source_ref text NOT NULL DEFAULT '',
   untrusted boolean NOT NULL DEFAULT false,
+  private_read boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output'))
+  CONSTRAINT findings_kind_check CHECK (kind IN ('finding', 'output', 'tool_output')),
+  CONSTRAINT findings_body_check CHECK (octet_length(body) <= 262144)
 );
 
 CREATE INDEX findings_task_idx ON tasks.findings (task_id, created_at);
@@ -1671,17 +1681,10 @@ CREATE POLICY findings_select ON tasks.findings
     SELECT 1 FROM tasks.tasks AS task
     WHERE task.id = task_id
       AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+      AND (NOT tasks.findings.private_read OR task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
   ));
 
-CREATE POLICY findings_insert ON tasks.findings
-  FOR INSERT
-  WITH CHECK (EXISTS (
-    SELECT 1 FROM tasks.tasks AS task
-    WHERE task.id = task_id
-      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
-  ));
-
-GRANT SELECT, INSERT ON tasks.findings TO upmo_app;
+GRANT SELECT ON tasks.findings TO upmo_app;
 
 CREATE TABLE tasks.turns (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -1689,6 +1692,7 @@ CREATE TABLE tasks.turns (
   run_id uuid NOT NULL REFERENCES tasks.runs (id) ON DELETE CASCADE,
   seq int NOT NULL,
   role text NOT NULL,
+  actor text NOT NULL,
   body text NOT NULL DEFAULT '',
   tool_calls jsonb,
   tool_name text NOT NULL DEFAULT '',
@@ -1704,7 +1708,9 @@ CREATE TABLE tasks.turns (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (run_id, seq),
   CONSTRAINT turns_seq_check CHECK (seq > 0),
-  CONSTRAINT turns_role_check CHECK (role IN ('user', 'assistant', 'tool', 'blocked', 'simulated'))
+  CONSTRAINT turns_role_check CHECK (role IN ('user', 'assistant', 'tool', 'blocked', 'simulated')),
+  CONSTRAINT turns_actor_check CHECK (actor IN ('person', 'planner', 'worker', 'verifier', 'core')),
+  CONSTRAINT turns_body_check CHECK (octet_length(body) <= 262144)
 );
 
 CREATE INDEX turns_task_idx ON tasks.turns (task_id, seq);
@@ -1729,17 +1735,10 @@ CREATE POLICY turns_select ON tasks.turns
     SELECT 1 FROM tasks.tasks AS task
     WHERE task.id = task_id
       AND identity.may('view', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
+      AND (NOT tasks.turns.private_read OR task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid)
   ));
 
-CREATE POLICY turns_insert ON tasks.turns
-  FOR INSERT
-  WITH CHECK (EXISTS (
-    SELECT 1 FROM tasks.tasks AS task
-    WHERE task.id = task_id
-      AND identity.may('edit', task.object_type, task.owner_user_id, task.visibility, task.visibility_team_id, task.id)
-  ));
-
-GRANT SELECT, INSERT ON tasks.turns TO upmo_app;
+GRANT SELECT ON tasks.turns TO upmo_app;
 
 CREATE TABLE tasks.action_logs (
   scope_id uuid NOT NULL,
@@ -1820,10 +1819,11 @@ GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO up
 GRANT SELECT ON tasks.tasks TO upmo_runner;
 GRANT UPDATE (
   status, cause, passes, plan, plan_digest, stalls, failures, replanned, last_gap,
-  spent, paused, tainted, private_read, updated_at
+  spent, reserved, paused, tainted, private_read, updated_at
 ) ON tasks.tasks TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.checks TO upmo_runner;
 GRANT SELECT ON tasks.review_findings TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.findings TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.turns TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.approvals TO upmo_runner;
 GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_runner;
@@ -1861,6 +1861,22 @@ CREATE POLICY review_findings_runner_select ON tasks.review_findings
     WHERE task.id = task_id
       AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
   ));
+
+CREATE POLICY findings_runner ON tasks.findings
+  FOR ALL TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (
+    kind IN ('output', 'tool_output')
+    AND EXISTS (
+      SELECT 1 FROM tasks.tasks AS task
+      WHERE task.id = task_id
+        AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+    )
+  );
 
 CREATE POLICY turns_runner ON tasks.turns
   FOR ALL TO upmo_runner
