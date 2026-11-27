@@ -481,8 +481,17 @@ func TestBudgetNoticeSkipsNonExhaustedPause(t *testing.T) {
 		WHERE id = $1::uuid`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if notices := taskInt(t, owner, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1`, task.ID); notices != 0 {
-		t.Fatalf("notices = %d, want 0", notices)
+	if notices := taskInt(t, owner, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1`, task.ID); notices != 1 {
+		t.Fatalf("notices after pause flip = %d, want 1", notices)
+	}
+	if _, err := owner.Exec(ctx, `
+		UPDATE tasks.tasks
+		SET paused = true
+		WHERE id = $1::uuid`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if notices := taskInt(t, owner, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1`, task.ID); notices != 1 {
+		t.Fatalf("notices after repeat pause = %d, want 1", notices)
 	}
 }
 

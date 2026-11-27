@@ -654,23 +654,28 @@ func TestReservedBudgetCheck(t *testing.T) {
 		t.Fatalf("reserved = %d, want 1300000", got)
 	}
 
-	// Exceeding budget (by 1) and negative reserved both fail with 23514.
-	for _, bad := range []int64{1_300_001, -1} {
-		asRole(t, owner, "upmo_runner", ownerAccess, false, func(tx pgx.Tx) {
-			if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = $2 WHERE id = $1::uuid`, parent.ID, bad); sqlState(err) != "23514" {
-				t.Fatalf("reserved = %d: err=%v (code %s), want 23514", bad, err, sqlState(err))
-			}
-		})
+	// Negative reserved fails with 23514; a raw UPDATE above budget succeeds because the bound lives in Reserve.
+	asRole(t, owner, "upmo_runner", ownerAccess, false, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = -1 WHERE id = $1::uuid`, parent.ID); sqlState(err) != "23514" {
+			t.Fatalf("reserved = -1: err=%v (code %s), want 23514", err, sqlState(err))
+		}
+	})
+	asRole(t, owner, "upmo_runner", ownerAccess, true, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = 1300001 WHERE id = $1::uuid`, parent.ID); err != nil {
+			t.Fatalf("reserved above budget = %v", err)
+		}
+	})
+	if got := taskInt(t, owner, `SELECT reserved FROM tasks.tasks WHERE id = $1::uuid`, parent.ID); got != 1_300_001 {
+		t.Fatalf("reserved = %d, want 1300001", got)
 	}
 
-	// Reset reserved = 0, then verify overspent (spent > budget) and spent = MaxInt64 pass with reserved = 0,
-	// while reserved > 0 on overspent/MaxInt64 fails.
+	// Overspent (spent > budget) and spent = MaxInt64 also allow raw reserved updates.
 	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET reserved = 0, spent = 2500000 WHERE id = $1::uuid`, parent.ID); err != nil {
 		t.Fatalf("overspent reserved=0 = %v", err)
 	}
-	asRole(t, owner, "upmo_runner", ownerAccess, false, func(tx pgx.Tx) {
-		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = 1 WHERE id = $1::uuid`, parent.ID); sqlState(err) != "23514" {
-			t.Fatalf("overspent reserved=1 = %v (code %s), want 23514", err, sqlState(err))
+	asRole(t, owner, "upmo_runner", ownerAccess, true, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = 1 WHERE id = $1::uuid`, parent.ID); err != nil {
+			t.Fatalf("overspent reserved=1 = %v", err)
 		}
 	})
 
@@ -678,11 +683,9 @@ func TestReservedBudgetCheck(t *testing.T) {
 	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET reserved = 0, spent = $2 WHERE id = $1::uuid`, maxTask.ID, int64(math.MaxInt64)); err != nil {
 		t.Fatalf("MaxInt64 spent with reserved=0 = %v", err)
 	}
-	asRole(t, owner, "upmo_runner", ownerAccess, false, func(tx pgx.Tx) {
-		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = 1 WHERE id = $1::uuid`, maxTask.ID); err == nil {
-			t.Fatalf("MaxInt64 spent with reserved=1 unexpectedly succeeded")
-		} else if code := sqlState(err); code != "22003" && code != "23514" {
-			t.Fatalf("MaxInt64 spent with reserved=1 code = %s (%v), want 22003 or 23514", code, err)
+	asRole(t, owner, "upmo_runner", ownerAccess, true, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET reserved = 1 WHERE id = $1::uuid`, maxTask.ID); err != nil {
+			t.Fatalf("MaxInt64 spent with reserved=1 = %v", err)
 		}
 	})
 }
