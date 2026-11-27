@@ -597,10 +597,11 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"tasks.runs": {
 			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"created_at", "id", "state", "task_id"},
-			Insert: []string{"created_at", "id", "state", "task_id"},
+			Select: []string{"created_at", "id", "state", "task_id", "turn_seq"},
+			Insert: []string{"created_at", "id", "state", "task_id", "turn_seq"},
 			Update: []string{"state"},
 		},
+		"tasks.settlements": {},
 		"tasks.task_events": {
 			Table:  []string{"INSERT", "SELECT"},
 			Select: []string{"actor", "at", "from_status", "id", "input", "seq", "task_id", "to_status"},
@@ -608,8 +609,8 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		},
 		"tasks.tasks": {
 			Table:  []string{"DELETE", "INSERT", "SELECT"},
-			Select: []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "reserved", "result", "runner_owned", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"},
-			Insert: []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "reserved", "result", "runner_owned", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Select: []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "claim_token", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "lease_until", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "reserved", "result", "runner_owned", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"},
+			Insert: []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "claim_token", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "lease_until", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "reserved", "result", "runner_owned", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"},
 			Update: []string{"allow", "automation_id", "budget", "cause", "goal", "id", "object_type", "parent_id", "paused", "result", "status", "updated_at", "visibility", "visibility_team_id", "worktree"},
 		},
 		"tasks.template_deliveries": {
@@ -817,11 +818,11 @@ func TestRunnerGrantMap(t *testing.T) {
 	for tbl := range got {
 		want[tbl] = rolePrivs{}
 	}
-	taskCols := []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "reserved", "result", "runner_owned", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"}
+	taskCols := []string{"agent_id", "agent_version", "allow", "automation_id", "budget", "cause", "claim_token", "dry_run", "failures", "flow", "goal", "held", "id", "last_gap", "lease_until", "object_type", "owner_user_id", "parent_id", "passes", "paused", "plan", "plan_approval", "plan_digest", "private_read", "replanned", "reserved", "result", "runner_owned", "source_chat_id", "spent", "stalls", "status", "tainted", "template_id", "up_to_line_id", "updated_at", "visibility", "visibility_team_id", "worktree"}
 	want["tasks.tasks"] = rolePrivs{
 		Table:  []string{"SELECT"},
 		Select: taskCols,
-		Update: []string{"cause", "failures", "last_gap", "passes", "paused", "plan", "plan_digest", "private_read", "replanned", "reserved", "spent", "stalls", "status", "tainted", "updated_at"},
+		Update: []string{"cause", "claim_token", "failures", "last_gap", "lease_until", "passes", "paused", "plan", "plan_digest", "private_read", "replanned", "reserved", "spent", "stalls", "status", "tainted", "updated_at"},
 	}
 	checkCols := []string{"at", "batch", "code", "criterion", "digest", "excerpt", "kind", "name", "regressed", "seq", "task_id", "unit", "verdict"}
 	want["tasks.checks"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: checkCols, Insert: checkCols}
@@ -835,6 +836,10 @@ func TestRunnerGrantMap(t *testing.T) {
 	want["tasks.approvals"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: approvalCols, Insert: approvalCols, Update: []string{"decided_at", "state"}}
 	eventCols := []string{"actor", "at", "from_status", "id", "input", "seq", "task_id", "to_status"}
 	want["tasks.task_events"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: eventCols, Insert: eventCols}
+	runCols := []string{"created_at", "id", "state", "task_id", "turn_seq"}
+	want["tasks.runs"] = rolePrivs{Table: []string{"SELECT"}, Select: runCols, Update: []string{"turn_seq"}}
+	settlementCols := []string{"amount", "at", "claim_token", "task_id"}
+	want["tasks.settlements"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: settlementCols, Insert: settlementCols}
 	compareGrantMap(t, "upmo_runner", got, want)
 
 	runner := pgtest.Login(t, owner, "upmo_runner")

@@ -47,6 +47,8 @@ CREATE TABLE tasks.tasks (
   tainted boolean NOT NULL DEFAULT false,
   private_read boolean NOT NULL DEFAULT false,
   runner_owned boolean NOT NULL DEFAULT false,
+  claim_token uuid,
+  lease_until timestamptz,
   cause text NOT NULL DEFAULT '',
   result jsonb,
   worktree text NOT NULL DEFAULT '',
@@ -77,7 +79,7 @@ CREATE TABLE tasks.tasks (
   CONSTRAINT tasks_parent_check CHECK (parent_id IS NULL OR parent_id <> id),
   CONSTRAINT tasks_budget_check CHECK (budget BETWEEN 0 AND 1000000000),
   CONSTRAINT tasks_held_check CHECK (held BETWEEN 0 AND budget),
-  CONSTRAINT tasks_reserved_check CHECK (reserved >= 0 AND CASE WHEN reserved = 0 THEN true ELSE spent + held + reserved <= budget END),
+  CONSTRAINT tasks_reserved_check CHECK (reserved >= 0),
   CONSTRAINT tasks_spent_check CHECK (spent >= 0),
   CONSTRAINT tasks_allow_check CHECK (char_length(allow) <= 400),
   CONSTRAINT tasks_cause_check CHECK (
@@ -249,8 +251,10 @@ CREATE TABLE tasks.runs (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
   task_id uuid NOT NULL REFERENCES tasks.tasks (id),
   state text NOT NULL,
+  turn_seq integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT runs_state_check CHECK (state IN ('queued', 'admitted', 'ended'))
+  CONSTRAINT runs_state_check CHECK (state IN ('queued', 'admitted', 'ended')),
+  CONSTRAINT runs_turn_seq_check CHECK (turn_seq >= 0)
 );
 
 CREATE TABLE tasks.run_events (
@@ -931,6 +935,30 @@ CREATE TRIGGER tasks_release_escrow
   EXECUTE FUNCTION tasks.release_escrow();
 
 -- +goose StatementBegin
+CREATE FUNCTION tasks.clear_terminal_claim()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF NEW.runner_owned
+     AND OLD.status NOT IN ('Done', 'Failed')
+     AND NEW.status IN ('Done', 'Failed') THEN
+    NEW.reserved := 0;
+    NEW.claim_token := NULL;
+    NEW.lease_until := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER tasks_clear_terminal_claim
+  BEFORE UPDATE OF status ON tasks.tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION tasks.clear_terminal_claim();
+
+-- +goose StatementBegin
 CREATE FUNCTION tasks.budget_notice()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -941,7 +969,7 @@ DECLARE
   notice_task uuid;
   prev text;
 BEGIN
-  IF NOT NEW.paused OR OLD.paused OR NEW.spent < NEW.budget THEN
+  IF NOT NEW.paused OR OLD.paused THEN
     RETURN NEW;
   END IF;
   notice_task := COALESCE(NEW.parent_id, NEW.id);
@@ -1098,7 +1126,7 @@ REVOKE UPDATE, DELETE ON tasks.run_events FROM upmo_app;
 SELECT identity.protect('tasks.tasks');
 REVOKE UPDATE (
   agent_id, agent_version, template_id, source_chat_id, up_to_line_id, dry_run,
-  tainted, private_read, runner_owned, held, reserved, spent,
+  tainted, private_read, runner_owned, claim_token, lease_until, held, reserved, spent,
   passes, flow, plan_approval, plan, plan_digest, stalls, failures, replanned, last_gap
 ) ON tasks.tasks FROM upmo_app;
 
@@ -1809,6 +1837,28 @@ CREATE POLICY action_logs_update ON tasks.action_logs
 GRANT SELECT, INSERT ON tasks.action_logs TO upmo_app;
 GRANT UPDATE (state, response_digest, error_text, completed_at) ON tasks.action_logs TO upmo_app;
 
+CREATE TABLE tasks.settlements (
+  task_id uuid NOT NULL REFERENCES tasks.tasks (id) ON DELETE CASCADE,
+  claim_token uuid NOT NULL,
+  amount bigint NOT NULL CHECK (amount >= 0),
+  at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (task_id, claim_token)
+);
+
+ALTER TABLE tasks.settlements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.settlements FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY settlements_owner ON tasks.settlements
+  FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.settlements'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.settlements'::regclass))
+  );
+
 -- upmo_runner writes the runner columns upmo_app may not: the check batches
 -- and passes (Record), the plan and brake counters, the spend and the taint,
 -- and the agent loop's turn commit. Brain sets the task owner's settings on
@@ -1819,7 +1869,7 @@ GRANT EXECUTE ON FUNCTION identity.may(text, text, uuid, text, uuid, uuid) TO up
 GRANT SELECT ON tasks.tasks TO upmo_runner;
 GRANT UPDATE (
   status, cause, passes, plan, plan_digest, stalls, failures, replanned, last_gap,
-  spent, reserved, paused, tainted, private_read, updated_at
+  spent, reserved, paused, tainted, private_read, claim_token, lease_until, updated_at
 ) ON tasks.tasks TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.checks TO upmo_runner;
 GRANT SELECT ON tasks.review_findings TO upmo_runner;
@@ -1828,6 +1878,9 @@ GRANT SELECT, INSERT ON tasks.turns TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.approvals TO upmo_runner;
 GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.task_events TO upmo_runner;
+GRANT SELECT ON tasks.runs TO upmo_runner;
+GRANT UPDATE (turn_seq) ON tasks.runs TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.settlements TO upmo_runner;
 
 CREATE POLICY tasks_runner_select ON tasks.tasks
   FOR SELECT TO upmo_runner
@@ -1917,8 +1970,46 @@ CREATE POLICY approvals_runner ON tasks.approvals
       AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
   ));
 
+CREATE POLICY runs_runner_select ON tasks.runs
+  FOR SELECT TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY runs_runner_update ON tasks.runs
+  FOR UPDATE TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY settlements_runner_select ON tasks.settlements
+  FOR SELECT TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY settlements_runner_insert ON tasks.settlements
+  FOR INSERT TO upmo_runner
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
 -- +goose Down
 
+DROP TABLE IF EXISTS tasks.settlements;
 DROP TABLE IF EXISTS tasks.action_logs;
 DROP TABLE IF EXISTS tasks.turns;
 DROP TABLE IF EXISTS tasks.findings;
@@ -1946,6 +2037,7 @@ DROP FUNCTION IF EXISTS tasks.keep_result();
 DROP TRIGGER IF EXISTS tasks_spread_taint ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_keep_grant ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_budget_notice ON tasks.tasks;
+DROP TRIGGER IF EXISTS tasks_clear_terminal_claim ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_release_escrow ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_escrow_child ON tasks.tasks;
 DROP TRIGGER IF EXISTS tasks_keep_parent ON tasks.tasks;
@@ -1953,6 +2045,7 @@ DROP TRIGGER IF EXISTS tasks_limit_child ON tasks.tasks;
 DROP FUNCTION IF EXISTS tasks.spread_taint();
 DROP FUNCTION IF EXISTS tasks.keep_grant();
 DROP FUNCTION IF EXISTS tasks.budget_notice();
+DROP FUNCTION IF EXISTS tasks.clear_terminal_claim();
 DROP FUNCTION IF EXISTS tasks.release_escrow();
 DROP FUNCTION IF EXISTS tasks.escrow_child();
 DROP FUNCTION IF EXISTS tasks.allow_fits(text, text);
