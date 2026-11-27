@@ -150,7 +150,7 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 	if alertProc != nil {
 		t.Fatalf("gateway.cache_hit_alert still exists: %q", *alertProc)
 	}
-	for _, present := range []string{"runtime.task_sandboxes", "agents.lessons", "agents.agents"} {
+	for _, present := range []string{"runtime.task_sandboxes", "agents.lessons", "agents.agents", "tasks.run_history"} {
 		var reg *string
 		if err := owner.QueryRow(ctx, `SELECT to_regclass($1)::text`, present).Scan(&reg); err != nil {
 			t.Fatal(err)
@@ -158,6 +158,43 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 		if reg == nil {
 			t.Fatalf("%s was not created by migrate", present)
 		}
+	}
+	var msgSeqCols int
+	if err := owner.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'tasks' AND table_name = 'runs'
+		  AND column_name = 'msg_seq' AND data_type = 'integer'`).Scan(&msgSeqCols); err != nil {
+		t.Fatal(err)
+	}
+	if msgSeqCols != 1 {
+		t.Fatalf("tasks.runs integer msg_seq columns = %d, want 1", msgSeqCols)
+	}
+	var appRunsTableInsert, appRunsMsgSeqInsert, appRunsStateInsert bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_table_privilege('upmo_app', 'tasks.runs', 'INSERT'),
+		       has_column_privilege('upmo_app', 'tasks.runs', 'msg_seq', 'INSERT'),
+		       has_column_privilege('upmo_app', 'tasks.runs', 'state', 'INSERT')`).Scan(
+		&appRunsTableInsert, &appRunsMsgSeqInsert, &appRunsStateInsert,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if appRunsTableInsert || appRunsMsgSeqInsert || !appRunsStateInsert {
+		t.Fatalf("upmo_app tasks.runs INSERT privs table=%t msg_seq=%t state=%t, want false/false/true",
+			appRunsTableInsert, appRunsMsgSeqInsert, appRunsStateInsert)
+	}
+	var runnerMsgSeqUpdate, runnerHistorySelect, runnerHistoryInsert, runnerHistoryUpdate bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_column_privilege('upmo_runner', 'tasks.runs', 'msg_seq', 'UPDATE'),
+		       has_table_privilege('upmo_runner', 'tasks.run_history', 'SELECT'),
+		       has_table_privilege('upmo_runner', 'tasks.run_history', 'INSERT'),
+		       has_column_privilege('upmo_runner', 'tasks.run_history', 'history', 'UPDATE')`).Scan(
+		&runnerMsgSeqUpdate, &runnerHistorySelect, &runnerHistoryInsert, &runnerHistoryUpdate,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !runnerMsgSeqUpdate || !runnerHistorySelect || !runnerHistoryInsert || !runnerHistoryUpdate {
+		t.Fatalf("upmo_runner evidence privs msg_seq_upd=%t hist_sel=%t hist_ins=%t hist_upd=%t, want all true",
+			runnerMsgSeqUpdate, runnerHistorySelect, runnerHistoryInsert, runnerHistoryUpdate)
 	}
 	var lessonCol int
 	if err := owner.QueryRow(ctx, `
@@ -595,10 +632,11 @@ func TestMigrateCommandAppliesAllSchemasAndAgents(t *testing.T) {
 			Select: []string{"at", "from_state", "id", "input", "run_id", "seq", "to_state"},
 			Insert: []string{"at", "from_state", "id", "input", "run_id", "seq", "to_state"},
 		},
+		"tasks.run_history": {},
 		"tasks.runs": {
-			Table:  []string{"INSERT", "SELECT"},
-			Select: []string{"created_at", "id", "state", "task_id", "turn_seq"},
-			Insert: []string{"created_at", "id", "state", "task_id", "turn_seq"},
+			Table:  []string{"SELECT"},
+			Select: []string{"created_at", "id", "msg_seq", "state", "task_id", "turn_seq"},
+			Insert: []string{"created_at", "id", "state", "task_id"},
 			Update: []string{"state"},
 		},
 		"tasks.settlements": {},
@@ -836,8 +874,10 @@ func TestRunnerGrantMap(t *testing.T) {
 	want["tasks.approvals"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: approvalCols, Insert: approvalCols, Update: []string{"decided_at", "state"}}
 	eventCols := []string{"actor", "at", "from_status", "id", "input", "seq", "task_id", "to_status"}
 	want["tasks.task_events"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: eventCols, Insert: eventCols}
-	runCols := []string{"created_at", "id", "state", "task_id", "turn_seq"}
-	want["tasks.runs"] = rolePrivs{Table: []string{"SELECT"}, Select: runCols, Update: []string{"turn_seq"}}
+	runCols := []string{"created_at", "id", "msg_seq", "state", "task_id", "turn_seq"}
+	want["tasks.runs"] = rolePrivs{Table: []string{"SELECT"}, Select: runCols, Update: []string{"msg_seq", "turn_seq"}}
+	runHistoryCols := []string{"history", "run_id", "updated_at"}
+	want["tasks.run_history"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: runHistoryCols, Insert: runHistoryCols, Update: []string{"history", "updated_at"}}
 	settlementCols := []string{"amount", "at", "claim_token", "task_id"}
 	want["tasks.settlements"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: settlementCols, Insert: settlementCols}
 	compareGrantMap(t, "upmo_runner", got, want)

@@ -252,9 +252,11 @@ CREATE TABLE tasks.runs (
   task_id uuid NOT NULL REFERENCES tasks.tasks (id),
   state text NOT NULL,
   turn_seq integer NOT NULL DEFAULT 0,
+  msg_seq integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT runs_state_check CHECK (state IN ('queued', 'admitted', 'ended')),
-  CONSTRAINT runs_turn_seq_check CHECK (turn_seq >= 0)
+  CONSTRAINT runs_turn_seq_check CHECK (turn_seq >= 0),
+  CONSTRAINT runs_msg_seq_check CHECK (msg_seq >= 0)
 );
 
 CREATE TABLE tasks.run_events (
@@ -1114,7 +1116,9 @@ GRANT SELECT, INSERT ON tasks.task_events TO upmo_app;
 GRANT SELECT, INSERT ON tasks.chat_events TO upmo_app;
 GRANT SELECT ON tasks.checks TO upmo_app;
 REVOKE INSERT, UPDATE, DELETE ON tasks.checks FROM upmo_app;
-GRANT SELECT, INSERT ON tasks.runs TO upmo_app;
+GRANT SELECT ON tasks.runs TO upmo_app;
+REVOKE INSERT ON tasks.runs FROM upmo_app;
+GRANT INSERT (id, task_id, state, created_at) ON tasks.runs TO upmo_app;
 GRANT UPDATE (state) ON tasks.runs TO upmo_app;
 GRANT SELECT, INSERT ON tasks.run_events TO upmo_app;
 REVOKE UPDATE, DELETE ON tasks.task_events FROM upmo_app;
@@ -1859,6 +1863,28 @@ CREATE POLICY settlements_owner ON tasks.settlements
       (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.settlements'::regclass))
   );
 
+CREATE TABLE tasks.run_history (
+  run_id uuid PRIMARY KEY REFERENCES tasks.runs (id) ON DELETE CASCADE,
+  history jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT run_history_array_check CHECK (jsonb_typeof(history) = 'array'),
+  CONSTRAINT run_history_size_check CHECK (octet_length(history::text) <= 2097152)
+);
+
+ALTER TABLE tasks.run_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks.run_history FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY run_history_owner ON tasks.run_history
+  FOR ALL
+  USING (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.run_history'::regclass))
+  )
+  WITH CHECK (
+    current_user = pg_catalog.pg_get_userbyid(
+      (SELECT relowner FROM pg_catalog.pg_class WHERE oid = 'tasks.run_history'::regclass))
+  );
+
 -- upmo_runner writes the runner columns upmo_app may not: the check batches
 -- and passes (Record), the plan and brake counters, the spend and the taint,
 -- and the agent loop's turn commit. Brain sets the task owner's settings on
@@ -1879,8 +1905,9 @@ GRANT SELECT, INSERT ON tasks.approvals TO upmo_runner;
 GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.task_events TO upmo_runner;
 GRANT SELECT ON tasks.runs TO upmo_runner;
-GRANT UPDATE (turn_seq) ON tasks.runs TO upmo_runner;
+GRANT UPDATE (turn_seq, msg_seq) ON tasks.runs TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.settlements TO upmo_runner;
+GRANT SELECT, INSERT, UPDATE (history, updated_at) ON tasks.run_history TO upmo_runner;
 
 CREATE POLICY tasks_runner_select ON tasks.tasks
   FOR SELECT TO upmo_runner
@@ -2007,8 +2034,46 @@ CREATE POLICY settlements_runner_insert ON tasks.settlements
       AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
   ));
 
+CREATE POLICY run_history_runner_select ON tasks.run_history
+  FOR SELECT TO upmo_runner
+  USING (EXISTS (
+    SELECT 1
+    FROM tasks.runs AS run
+    JOIN tasks.tasks AS task ON task.id = run.task_id
+    WHERE run.id = run_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY run_history_runner_insert ON tasks.run_history
+  FOR INSERT TO upmo_runner
+  WITH CHECK (EXISTS (
+    SELECT 1
+    FROM tasks.runs AS run
+    JOIN tasks.tasks AS task ON task.id = run.task_id
+    WHERE run.id = run_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY run_history_runner_update ON tasks.run_history
+  FOR UPDATE TO upmo_runner
+  USING (EXISTS (
+    SELECT 1
+    FROM tasks.runs AS run
+    JOIN tasks.tasks AS task ON task.id = run.task_id
+    WHERE run.id = run_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1
+    FROM tasks.runs AS run
+    JOIN tasks.tasks AS task ON task.id = run.task_id
+    WHERE run.id = run_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
 -- +goose Down
 
+DROP TABLE IF EXISTS tasks.run_history;
 DROP TABLE IF EXISTS tasks.settlements;
 DROP TABLE IF EXISTS tasks.action_logs;
 DROP TABLE IF EXISTS tasks.turns;
