@@ -18,7 +18,11 @@ type taskGrants struct {
 var _ tasks.ShareGrants = taskGrants{}
 
 func (g taskGrants) TaskGrants(ctx context.Context, taskID string) ([]tasks.ShareMember, error) {
-	rows, err := g.members.TaskGrants(ctx, taskID)
+	hash, err := actorTokenHash(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := g.members.TaskGrants(ctx, hash, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +39,7 @@ func (g taskGrants) TaskGrants(ctx context.Context, taskID string) ([]tasks.Shar
 }
 
 func (g taskGrants) ReplaceTaskGrants(ctx context.Context, taskID string, grants []tasks.ShareGrant, grantedBy string) error {
-	by, err := identity.ParseUserID(grantedBy)
+	hash, err := grantorTokenHash(ctx, grantedBy)
 	if err != nil {
 		return err
 	}
@@ -47,11 +51,11 @@ func (g taskGrants) ReplaceTaskGrants(ctx context.Context, taskID string, grants
 			Level:       grant.Role,
 		})
 	}
-	return g.members.ReplaceTaskGrants(ctx, taskID, writes, by)
+	return g.members.ReplaceTaskGrants(ctx, hash, taskID, writes)
 }
 
 func (g taskGrants) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []tasks.ShareGrant, grantedBy string) error {
-	by, err := identity.ParseUserID(grantedBy)
+	hash, err := grantorTokenHash(ctx, grantedBy)
 	if err != nil {
 		return err
 	}
@@ -63,7 +67,7 @@ func (g taskGrants) ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID s
 			Level:       grant.Role,
 		})
 	}
-	return g.members.ReplaceTaskGrantsTx(ctx, tx, taskID, writes, by)
+	return g.members.ReplaceTaskGrantsTx(ctx, hash, tx, taskID, writes)
 }
 
 func (g taskGrants) Names(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {

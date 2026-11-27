@@ -364,7 +364,7 @@ func liveSession(t *testing.T, owner *pgxpool.Pool, user string) []byte {
 }
 
 func (g shareGrants) TaskGrants(ctx context.Context, taskID string) ([]app.ShareMember, error) {
-	rows, err := g.members.TaskGrants(ctx, taskID)
+	rows, err := g.members.TaskGrants(ctx, g.hash, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -380,11 +380,7 @@ func (g shareGrants) TaskGrants(ctx context.Context, taskID string) ([]app.Share
 	return out, nil
 }
 
-func (g shareGrants) ReplaceTaskGrants(ctx context.Context, taskID string, grants []domain.ShareGrant, grantedBy string) error {
-	by, err := identity.ParseUserID(grantedBy)
-	if err != nil {
-		return err
-	}
+func (g shareGrants) ReplaceTaskGrants(ctx context.Context, taskID string, grants []domain.ShareGrant, _ string) error {
 	writes := make([]identity.GrantWrite, 0, len(grants))
 	for _, grant := range grants {
 		writes = append(writes, identity.GrantWrite{
@@ -393,14 +389,10 @@ func (g shareGrants) ReplaceTaskGrants(ctx context.Context, taskID string, grant
 			Level:       grant.Role,
 		})
 	}
-	return g.members.ReplaceTaskGrants(ctx, taskID, writes, by)
+	return g.members.ReplaceTaskGrants(ctx, g.hash, taskID, writes)
 }
 
-func (g shareGrants) replaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []domain.ShareGrant, grantedBy string) error {
-	by, err := identity.ParseUserID(grantedBy)
-	if err != nil {
-		return err
-	}
+func (g shareGrants) replaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []domain.ShareGrant, _ string) error {
 	writes := make([]identity.GrantWrite, 0, len(grants))
 	for _, grant := range grants {
 		writes = append(writes, identity.GrantWrite{
@@ -409,7 +401,7 @@ func (g shareGrants) replaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID 
 			Level:       grant.Role,
 		})
 	}
-	return g.members.ReplaceTaskGrantsTx(ctx, tx, taskID, writes, by)
+	return g.members.ReplaceTaskGrantsTx(ctx, g.hash, tx, taskID, writes)
 }
 
 func taskShareStore(t *testing.T, appPool, owner *pgxpool.Pool, grants shareGrants) tasks.Store {

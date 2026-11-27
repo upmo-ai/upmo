@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
@@ -60,42 +61,22 @@ func (p Passkeys) CreateTeam(ctx context.Context, name string) (domain.TeamID, e
 	return domain.ParseTeamID(idText)
 }
 
-// AddTeamMember puts a joined person on a team. Adding them again changes
-// nothing and records no event. The team.member_add event records the added
-// user in the same transaction.
-func (p Passkeys) AddTeamMember(ctx context.Context, team domain.TeamID, user domain.UserID) error {
+// AddTeamMember puts a joined person on a team through
+// identity.add_team_member for the actor behind actorTokenHash. Adding them
+// again changes nothing and records no event. The team.member_add event
+// records the added user in the same transaction.
+func (p Passkeys) AddTeamMember(ctx context.Context, actorTokenHash []byte, team domain.TeamID, user domain.UserID) error {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var joined bool
-	err = tx.QueryRow(ctx, `
-		SELECT joined_at IS NOT NULL FROM identity.users
-		WHERE id = $1 AND disabled_at IS NULL`, user).Scan(&joined)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrNoSuchMember
+	var added bool
+	if err := tx.QueryRow(ctx, `SELECT * FROM identity.add_team_member($1, $2, $3)`,
+		actorTokenHash, team, user).Scan(&added); err != nil {
+		return mapAddTeamMember(err)
 	}
-	if err != nil {
-		return err
-	}
-	if !joined {
-		return domain.ErrNotJoined
-	}
-	var one int
-	if err := tx.QueryRow(ctx, `SELECT 1 FROM identity.teams WHERE id = $1`, team).Scan(&one); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrNoSuchTeam
-		}
-		return err
-	}
-	tag, err := tx.Exec(ctx, `
-		INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)
-		ON CONFLICT DO NOTHING`, team, user)
-	if err != nil {
-		return mapTeamWrite(err)
-	}
-	if tag.RowsAffected() == 0 {
+	if !added {
 		// Already on the team, so nothing changed and there is no event.
 		audit.NoChange(ctx)
 		return tx.Commit(ctx)
@@ -111,6 +92,27 @@ func (p Passkeys) AddTeamMember(ctx context.Context, team domain.TeamID, user do
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// mapAddTeamMember maps the add_team_member refusals to their domain errors;
+// any other error is a team write.
+func mapAddTeamMember(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Message {
+		case "identity: invalid actor session":
+			return app.ErrNotSignedIn
+		case "identity: only team managers manage teams":
+			return domain.ErrTeamsOnly
+		case "identity: no such member":
+			return domain.ErrNoSuchMember
+		case "identity: not joined":
+			return domain.ErrNotJoined
+		case "identity: no such team":
+			return domain.ErrNoSuchTeam
+		}
+	}
+	return mapTeamWrite(err)
 }
 
 // RemoveTeamMember takes a person off a team. Removing someone who is not on

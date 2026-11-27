@@ -29,6 +29,20 @@ func seedChatUser(t *testing.T, owner *pgxpool.Pool, id, name, roleKey string, a
 	}
 }
 
+// liveChatSession adds a live session for user and returns its token hash,
+// the hash brain reads from the request principal for the grant write.
+func liveChatSession(t *testing.T, owner *pgxpool.Pool, user string) []byte {
+	t.Helper()
+	var hash []byte
+	if err := owner.QueryRow(context.Background(), `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1::uuid, decode(md5(random()::text) || md5(random()::text), 'hex'), now(), now(), now() + interval '1 day')
+		RETURNING token_hash`, user).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	return hash
+}
+
 func TestLinesInsertRLSEnforcesAuthorID(t *testing.T) {
 	owner := up(t)
 	ctx := context.Background()
@@ -148,16 +162,13 @@ func TestSaveShareBlocksActiveAndWaitingRunsAndClearsStale(t *testing.T) {
 	pool := pgtest.App(t, owner)
 	members := identity.Members(pool, nil, "", nil, nil)
 	store := quietStore(t, owner)
+	sessions := map[string][]byte{ownerUser: liveChatSession(t, owner, ownerUser), otherUser: liveChatSession(t, owner, otherUser)}
 	store.ReplaceChatGrants = func(ctx context.Context, tx pgx.Tx, chatID string, grants []domain.ShareGrant, grantedBy string) error {
-		by, err := identity.ParseUserID(grantedBy)
-		if err != nil {
-			return err
-		}
 		writes := make([]identity.GrantWrite, 0, len(grants))
 		for _, g := range grants {
 			writes = append(writes, identity.GrantWrite{SubjectType: g.SubjectType, SubjectID: g.SubjectID, Level: g.Role})
 		}
-		return members.ReplaceChatGrantsTx(ctx, tx, chatID, writes, by)
+		return members.ReplaceChatGrantsTx(ctx, sessions[grantedBy], tx, chatID, writes)
 	}
 
 	opened, err := app.Open(ctx, store, ownerAccess)
@@ -261,16 +272,13 @@ func TestSaveShareRefusesSharedEditorSameVisibilityAndPreservesGrants(t *testing
 	pool := pgtest.App(t, owner)
 	members := identity.Members(pool, nil, "", nil, nil)
 	store := quietStore(t, owner)
+	sessions := map[string][]byte{ownerUser: liveChatSession(t, owner, ownerUser), otherUser: liveChatSession(t, owner, otherUser)}
 	store.ReplaceChatGrants = func(ctx context.Context, tx pgx.Tx, chatID string, grants []domain.ShareGrant, grantedBy string) error {
-		by, err := identity.ParseUserID(grantedBy)
-		if err != nil {
-			return err
-		}
 		writes := make([]identity.GrantWrite, 0, len(grants))
 		for _, g := range grants {
 			writes = append(writes, identity.GrantWrite{SubjectType: g.SubjectType, SubjectID: g.SubjectID, Level: g.Role})
 		}
-		return members.ReplaceChatGrantsTx(ctx, tx, chatID, writes, by)
+		return members.ReplaceChatGrantsTx(ctx, sessions[grantedBy], tx, chatID, writes)
 	}
 
 	opened, err := app.Open(ctx, store, ownerAccess)

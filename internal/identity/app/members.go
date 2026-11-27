@@ -24,19 +24,19 @@ type AvatarBlobs interface {
 
 // MemberStore is the members tables and the task share rows.
 type MemberStore interface {
-	ListRoles(ctx context.Context) ([]domain.MemberRole, error)
+	ListRoles(ctx context.Context, actorTokenHash []byte) ([]domain.MemberRole, error)
 	// ListMembers lists the enabled people, with their addresses from the
 	// worker for the session tokenHash.
 	ListMembers(ctx context.Context, tokenHash []byte) ([]domain.Member, error)
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 	MemberTeams(ctx context.Context, id domain.UserID) ([]string, error)
 	SharedObjects(ctx context.Context, objectType domain.ObjectType, user domain.UserID, teams []string, role domain.RoleID) ([]ObjectShare, error)
-	TaskGrants(ctx context.Context, taskID string) ([]TaskGrant, error)
-	ReplaceTaskGrants(ctx context.Context, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
-	ReplaceTaskGrantsTx(ctx context.Context, tx pgx.Tx, taskID string, grants []GrantWrite, grantedBy domain.UserID) error
-	ChatGrants(ctx context.Context, chatID string) ([]TaskGrant, error)
-	ReplaceChatGrants(ctx context.Context, chatID string, grants []GrantWrite, grantedBy domain.UserID) error
-	ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID string, grants []GrantWrite, grantedBy domain.UserID) error
+	TaskGrants(ctx context.Context, actorTokenHash []byte, taskID string) ([]TaskGrant, error)
+	ReplaceTaskGrants(ctx context.Context, actorTokenHash []byte, taskID string, grants []GrantWrite) error
+	ReplaceTaskGrantsTx(ctx context.Context, actorTokenHash []byte, tx pgx.Tx, taskID string, grants []GrantWrite) error
+	ChatGrants(ctx context.Context, actorTokenHash []byte, chatID string) ([]TaskGrant, error)
+	ReplaceChatGrants(ctx context.Context, actorTokenHash []byte, chatID string, grants []GrantWrite) error
+	ReplaceChatGrantsTx(ctx context.Context, actorTokenHash []byte, tx pgx.Tx, chatID string, grants []GrantWrite) error
 	NamesOf(ctx context.Context, actorTokenHash []byte, persons, teams []string) (personNames, teamNames map[string]string, err error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
@@ -76,7 +76,7 @@ func (m Members) Roles(ctx context.Context, session Session) ([]domain.MemberRol
 	if _, err := m.actor(ctx, session.UserID); err != nil {
 		return nil, err
 	}
-	return m.Store.ListRoles(ctx)
+	return m.Store.ListRoles(ctx, session.TokenHash)
 }
 
 // List returns the enabled people.

@@ -1404,6 +1404,22 @@ func actorTokenHash(ctx context.Context) ([]byte, error) {
 	return p.TokenHash, nil
 }
 
+// grantorTokenHash is the principal's session token hash for a grant write.
+// The grantor stored is always the principal, so a grantedBy naming anyone
+// else is a caller bug and is refused as ErrNotSignedIn.
+func grantorTokenHash(ctx context.Context, grantedBy string) ([]byte, error) {
+	hash, err := actorTokenHash(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p, _ := identity.SessionFrom(ctx)
+	by, err := identity.ParseUserID(grantedBy)
+	if err != nil || by != p.UserID {
+		return nil, identity.ErrNotSignedIn
+	}
+	return hash, nil
+}
+
 // personExists reports whether id is an enabled person, as the request
 // principal sees it. A failed lookup is the error, never false.
 func personExists(members identity.MemberService) func(context.Context, string) (bool, error) {
