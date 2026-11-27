@@ -36,6 +36,8 @@ type chatShareEnv struct {
 	members identity.MemberService
 	people  map[string]string
 	teams   map[string]string
+	// hashes holds each enabled person's live session token hash, by id.
+	hashes map[string][]byte
 }
 
 type noopEnqueuer struct{}
@@ -87,7 +89,7 @@ func chatShareSetup(t *testing.T, withReplies bool) *chatShareEnv {
 		},
 	}.Mount(mux, nil)
 
-	env := &chatShareEnv{owner: owner, pool: pool, handler: mux, members: members, people: map[string]string{}, teams: map[string]string{}}
+	env := &chatShareEnv{owner: owner, pool: pool, handler: mux, members: members, people: map[string]string{}, teams: map[string]string{}, hashes: map[string][]byte{}}
 	env.person(t, "Ada", "owner", false)
 	for _, name := range []string{"Bob", "Cy", "Dee", "Eve", "Gus"} {
 		env.person(t, name, "member", false)
@@ -113,6 +115,17 @@ func (e *chatShareEnv) person(t *testing.T, name, role string, disabled bool) {
 		t.Fatal(err)
 	}
 	e.people[strings.ToLower(name)] = id
+	if disabled {
+		return
+	}
+	var hash []byte
+	if err := e.owner.QueryRow(context.Background(), `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1::uuid, decode(md5(random()::text) || md5(random()::text), 'hex'), now(), now(), now() + interval '1 hour')
+		RETURNING token_hash`, id).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	e.hashes[id] = hash
 }
 
 func (e *chatShareEnv) team(t *testing.T, name string, members ...string) {
@@ -135,6 +148,10 @@ func (e *chatShareEnv) call(as, method, path, body string) (int, []byte) {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if as != "" {
 		req.Header.Set("X-As", e.people[as])
+		// The principal RequireSession puts on a signed-in request.
+		if id, err := identity.ParseUserID(e.people[as]); err == nil && e.hashes[e.people[as]] != nil {
+			req = req.WithContext(identity.WithPrincipal(req.Context(), identity.Principal{UserID: id, TokenHash: e.hashes[e.people[as]]}))
+		}
 	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, req)

@@ -113,7 +113,7 @@ func (f allowFake) ReplaceChatGrants(context.Context, string, []GrantWrite, doma
 func (f allowFake) ReplaceChatGrantsTx(context.Context, pgx.Tx, string, []GrantWrite, domain.UserID) error {
 	return nil
 }
-func (f allowFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
+func (f allowFake) NamesOf(context.Context, []byte, []string, []string) (map[string]string, map[string]string, error) {
 	return nil, nil, nil
 }
 func (f allowFake) RoleSystem(context.Context, domain.RoleID) (string, error) {

@@ -170,41 +170,29 @@ func (p Passkeys) replaceObjectGrants(ctx context.Context, tx pgx.Tx, objectType
 }
 
 // NamesOf returns the display names of the enabled people in persons and the
-// names of the teams in teams. An id that is no enabled member, or no team, is
-// missing from the answer.
-func (p Passkeys) NamesOf(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {
-	people, err := p.names(ctx, `
-		SELECT id::text, name FROM identity.users
-		WHERE disabled_at IS NULL AND id = ANY($1::uuid[])`, persons)
+// names of the teams in teams, through identity.names_of for the actor behind
+// actorTokenHash. An id that is no enabled member, or no team, is missing from
+// the answer. A hash with no live joined session is app.ErrNotSignedIn.
+func (p Passkeys) NamesOf(ctx context.Context, actorTokenHash []byte, persons, teams []string) (map[string]string, map[string]string, error) {
+	rows, err := p.Pool.Query(ctx, `SELECT * FROM identity.names_of($1, $2::uuid[], $3::uuid[])`, actorTokenHash, persons, teams)
 	if err != nil {
-		return nil, nil, err
-	}
-	teamNames, err := p.names(ctx, `
-		SELECT id::text, name FROM identity.teams
-		WHERE id = ANY($1::uuid[])`, teams)
-	if err != nil {
-		return nil, nil, err
-	}
-	return people, teamNames, nil
-}
-
-// names runs one id-and-name query.
-func (p Passkeys) names(ctx context.Context, query string, ids []string) (map[string]string, error) {
-	out := map[string]string{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	rows, err := p.Pool.Query(ctx, query, ids)
-	if err != nil {
-		return nil, err
+		return nil, nil, mapActorDefinerError(err)
 	}
 	defer rows.Close()
+	people, teamNames := map[string]string{}, map[string]string{}
 	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return nil, err
+		var kind, id, name string
+		if err := rows.Scan(&kind, &id, &name); err != nil {
+			return nil, nil, err
 		}
-		out[id] = name
+		if kind == "person" {
+			people[id] = name
+		} else {
+			teamNames[id] = name
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, mapActorDefinerError(err)
+	}
+	return people, teamNames, nil
 }

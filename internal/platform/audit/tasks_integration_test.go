@@ -345,6 +345,22 @@ func TestTaskRoutesSealTheirOwnEvents(t *testing.T) {
 // way brain wires it, so the WriteShare test replaces real grants.
 type shareGrants struct {
 	members identity.MemberService
+	// hash is the live session token hash of the person sharing, as brain
+	// reads it from the request principal.
+	hash []byte
+}
+
+// liveSession adds a live session for user and returns its token hash.
+func liveSession(t *testing.T, owner *pgxpool.Pool, user string) []byte {
+	t.Helper()
+	var hash []byte
+	if err := owner.QueryRow(context.Background(), `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1, decode(md5(random()::text) || md5(random()::text), 'hex'), now(), now(), now() + interval '1 day')
+		RETURNING token_hash`, user).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	return hash
 }
 
 func (g shareGrants) TaskGrants(ctx context.Context, taskID string) ([]app.ShareMember, error) {
@@ -403,7 +419,7 @@ func taskShareStore(t *testing.T, appPool, owner *pgxpool.Pool, grants shareGran
 }
 
 func (g shareGrants) Names(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {
-	return g.members.NamesOf(ctx, persons, teams)
+	return g.members.NamesOf(ctx, g.hash, persons, teams)
 }
 
 func (g shareGrants) TeamsOf(ctx context.Context, person string) ([]string, error) {
@@ -421,7 +437,7 @@ func TestTaskShareWriteSealsTheGrantsBeforeAndAfter(t *testing.T) {
 
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
-	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
+	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil), hash: liveSession(t, owner, ada)}
 	store := taskShareStore(t, appPool, owner, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
@@ -487,7 +503,7 @@ func TestTaskShareWriteRollsBackWhenAuditInsertFails(t *testing.T) {
 
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
-	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
+	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil), hash: liveSession(t, owner, ada)}
 	store := taskShareStore(t, appPool, owner, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 
@@ -557,7 +573,7 @@ func TestTaskShareWriteRollsBackGrantsWhenVisibilityFails(t *testing.T) {
 
 	ada := insertPerson(t, owner, "ada@example.com")
 	sam := insertPerson(t, owner, "sam@example.com")
-	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil)}
+	grants := shareGrants{members: identity.Members(appPool, nil, "", nil, nil), hash: liveSession(t, owner, ada)}
 	store := taskShareStore(t, appPool, owner, grants)
 	ownerAccess := app.Access{UserID: ada, Allow: "task:create,task:view,task:edit"}
 

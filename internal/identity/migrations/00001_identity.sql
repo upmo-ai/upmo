@@ -883,6 +883,59 @@ $$;
 REVOKE ALL ON FUNCTION identity.member_set_role(bytea, uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.member_set_role(bytea, uuid, uuid) TO upmo_app;
 
+-- names_of returns the names of the enabled people in person_ids and of the
+-- teams in team_ids, for the actor behind actor_token_hash. Any joined actor
+-- already lists every enabled member and every team, so no per-id check.
+-- +goose StatementBegin
+CREATE FUNCTION identity.names_of(
+  actor_token_hash bytea,
+  person_ids uuid[],
+  team_ids uuid[]
+)
+RETURNS TABLE (kind text, id uuid, name text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id
+  INTO v_actor_id
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  RETURN QUERY
+    SELECT 'person'::text, person.id, person.name
+    FROM identity.users AS person
+    WHERE person.id = ANY (person_ids)
+      AND person.disabled_at IS NULL;
+
+  RETURN QUERY
+    SELECT 'team'::text, team.id, team.name
+    FROM identity.teams AS team
+    WHERE team.id = ANY (team_ids);
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.names_of(bytea, uuid[], uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.names_of(bytea, uuid[], uuid[]) TO upmo_app;
+
 -- +goose StatementBegin
 CREATE FUNCTION identity.member_disable(
   actor_token_hash bytea,
@@ -1778,6 +1831,7 @@ DROP FUNCTION IF EXISTS identity.token_create(bytea, text, bytea, text[], timest
 DROP FUNCTION IF EXISTS identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz);
 DROP FUNCTION IF EXISTS identity.avatar_set(bytea, text);
 DROP FUNCTION IF EXISTS identity.member_disable(bytea, uuid, timestamptz);
+DROP FUNCTION IF EXISTS identity.names_of(bytea, uuid[], uuid[]);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);
 DROP FUNCTION IF EXISTS identity.teams_of(uuid);

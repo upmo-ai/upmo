@@ -134,14 +134,17 @@ func newCrowd(t *testing.T) *crowd {
 		}
 		return members.TeamsOf(ctx, person)
 	}
+	// The team names come from identity.names_of, which needs a live session:
+	// the founder's, added below.
+	var namesHash []byte
 	r.svc.Names = func(ctx context.Context, teams []string) (map[string]string, error) {
-		_, names, err := members.NamesOf(ctx, nil, teams)
+		_, names, err := members.NamesOf(ctx, namesHash, nil, teams)
 		return names, err
 	}
 	r.mount(nil)
 	c := &crowd{rig: r}
 	// An install always has a joined owner.
-	r.person("founder", "owner")
+	namesHash = r.session(r.person("founder", "owner"))
 	c.admin = r.person("admin", "admin")
 	c.finance = r.person("finance", "member")
 	c.ops = r.person("ops", "member")

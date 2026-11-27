@@ -557,7 +557,11 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 		return members.TeamsOf(ctx, person)
 	}
 	providers.Names = func(ctx context.Context, teamIDs []string) (map[string]string, error) {
-		_, names, err := members.NamesOf(ctx, nil, teamIDs)
+		hash, err := actorTokenHash(ctx)
+		if err != nil {
+			return nil, err
+		}
+		_, names, err := members.NamesOf(ctx, hash, nil, teamIDs)
 		return names, err
 	}
 	providers.MemberProvidersAllowed = func(ctx context.Context, user string) (bool, error) {
@@ -579,13 +583,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 	usageLimits.TimeZone = func(ctx context.Context) (string, error) {
 		return identity.WorkspaceTimeZone(ctx, pool)
 	}
-	usageLimits.PersonExists = func(ctx context.Context, id string) (bool, error) {
-		names, _, err := members.NamesOf(ctx, []string{id}, nil)
-		if err != nil {
-			return false, err
-		}
-		return names[id] != "", nil
-	}
+	usageLimits.PersonExists = personExists(members)
 	usageLimits.AutomationExists = func(ctx context.Context, id string) (bool, error) {
 		return tasks.AutomationExists(ctx, pool, id)
 	}
@@ -1118,11 +1116,19 @@ func buildHandler(
 		return identity.WorkspaceTimeZone(ctx, pool)
 	}
 	usage.People = func(ctx context.Context, ids []string) (map[string]string, error) {
-		names, _, err := members.NamesOf(ctx, ids, nil)
+		hash, err := actorTokenHash(ctx)
+		if err != nil {
+			return nil, err
+		}
+		names, _, err := members.NamesOf(ctx, hash, ids, nil)
 		return names, err
 	}
 	usage.TeamNames = func(ctx context.Context, ids []string) (map[string]string, error) {
-		_, names, err := members.NamesOf(ctx, nil, ids)
+		hash, err := actorTokenHash(ctx)
+		if err != nil {
+			return nil, err
+		}
+		_, names, err := members.NamesOf(ctx, hash, nil, ids)
 		return names, err
 	}
 	usage.Agents = func(ctx context.Context, user string, _ []string) (map[string]string, error) {
@@ -1379,8 +1385,39 @@ type agentTeamLookup struct {
 }
 
 func (a agentTeamLookup) TeamNames(ctx context.Context, teamIDs []string) (map[string]string, error) {
-	_, names, err := a.members.NamesOf(ctx, nil, teamIDs)
+	hash, err := actorTokenHash(ctx)
+	if err != nil {
+		return nil, err
+	}
+	_, names, err := a.members.NamesOf(ctx, hash, nil, teamIDs)
 	return names, err
+}
+
+// actorTokenHash is the session token hash of the request principal, which
+// the identity definers resolve to the actor. With no principal, or a
+// principal without a session hash, it is ErrNotSignedIn and nothing is asked.
+func actorTokenHash(ctx context.Context) ([]byte, error) {
+	p, ok := identity.SessionFrom(ctx)
+	if !ok || len(p.TokenHash) == 0 {
+		return nil, identity.ErrNotSignedIn
+	}
+	return p.TokenHash, nil
+}
+
+// personExists reports whether id is an enabled person, as the request
+// principal sees it. A failed lookup is the error, never false.
+func personExists(members identity.MemberService) func(context.Context, string) (bool, error) {
+	return func(ctx context.Context, id string) (bool, error) {
+		hash, err := actorTokenHash(ctx)
+		if err != nil {
+			return false, err
+		}
+		names, _, err := members.NamesOf(ctx, hash, []string{id}, nil)
+		if err != nil {
+			return false, err
+		}
+		return names[id] != "", nil
+	}
 }
 
 func chatAccess(ctx context.Context, members identity.MemberService, user identity.UserID) (chat.Access, bool, error) {

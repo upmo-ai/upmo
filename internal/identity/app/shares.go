@@ -65,8 +65,9 @@ func (m Members) ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID stri
 // NamesOf returns the display names of the enabled people in persons and the
 // names of the teams in teams. An id that is no enabled member, or no team,
 // is missing from the answer: that is how a caller refuses an unknown one.
-func (m Members) NamesOf(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {
-	return m.Store.NamesOf(ctx, persons, teams)
+// actorTokenHash is the session token hash of the person asking.
+func (m Members) NamesOf(ctx context.Context, actorTokenHash []byte, persons, teams []string) (map[string]string, map[string]string, error) {
+	return m.Store.NamesOf(ctx, actorTokenHash, persons, teams)
 }
 
 // TeamsOf returns the ids of the teams the person is on.

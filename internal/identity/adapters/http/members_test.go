@@ -187,7 +187,7 @@ func (f *memberFake) ReplaceChatGrants(context.Context, string, []app.GrantWrite
 func (f *memberFake) ReplaceChatGrantsTx(context.Context, pgx.Tx, string, []app.GrantWrite, domain.UserID) error {
 	return nil
 }
-func (f *memberFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
+func (f *memberFake) NamesOf(context.Context, []byte, []string, []string) (map[string]string, map[string]string, error) {
 	return nil, nil, nil
 }
 func (f *memberFake) RoleSystem(_ context.Context, id domain.RoleID) (string, error) {

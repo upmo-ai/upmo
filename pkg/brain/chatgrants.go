@@ -67,7 +67,11 @@ func (g chatGrants) ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID s
 }
 
 func (g chatGrants) Names(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {
-	return g.members.NamesOf(ctx, persons, teams)
+	hash, err := actorTokenHash(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g.members.NamesOf(ctx, hash, persons, teams)
 }
 
 func (g chatGrants) TeamsOf(ctx context.Context, person string) ([]string, error) {

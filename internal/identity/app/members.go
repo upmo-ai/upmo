@@ -37,7 +37,7 @@ type MemberStore interface {
 	ChatGrants(ctx context.Context, chatID string) ([]TaskGrant, error)
 	ReplaceChatGrants(ctx context.Context, chatID string, grants []GrantWrite, grantedBy domain.UserID) error
 	ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID string, grants []GrantWrite, grantedBy domain.UserID) error
-	NamesOf(ctx context.Context, persons, teams []string) (personNames, teamNames map[string]string, err error)
+	NamesOf(ctx context.Context, actorTokenHash []byte, persons, teams []string) (personNames, teamNames map[string]string, err error)
 	RoleSystem(ctx context.Context, id domain.RoleID) (string, error)
 	UserByEmail(ctx context.Context, email string) (domain.UserID, bool, error)
 	InviteMember(ctx context.Context, actorTokenHash []byte, email, name string, role domain.RoleID, handle, hash []byte, now, expires time.Time) (domain.Member, error)

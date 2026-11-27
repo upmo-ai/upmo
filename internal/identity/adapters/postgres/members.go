@@ -347,6 +347,16 @@ func (p Passkeys) changeMember(ctx context.Context, id domain.UserID, rule func(
 	return nil
 }
 
+// mapActorDefinerError maps only a definer's actor check to ErrNotSignedIn.
+// Every other error, a raw check violation included, passes unchanged.
+func mapActorDefinerError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Message == "identity: invalid actor session" {
+		return app.ErrNotSignedIn
+	}
+	return err
+}
+
 func mapIdentityDefinerError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
