@@ -223,6 +223,21 @@ func TestTeamCreateDefinerValidatesActorAndName(t *testing.T) {
 	if err := w.owner.QueryRow(w.ctx, `SELECT name FROM identity.teams WHERE name = 'Team'`).Scan(&trimmed); err != nil || trimmed != "Team" {
 		t.Fatalf("U+00A0-prefixed team name = %q, err %v, want Team", trimmed, err)
 	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, "Tail \t "); err != nil {
+		t.Fatalf("CreateTeam(trailing space) = %v, want success", err)
+	}
+	if err := w.owner.QueryRow(w.ctx, `SELECT name FROM identity.teams WHERE name = 'Tail'`).Scan(&trimmed); err != nil || trimmed != "Tail" {
+		t.Fatalf("trailing-space team name = %q, err %v, want Tail", trimmed, err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, strings.Repeat("é", 64)); err != nil {
+		t.Fatalf("CreateTeam(64 two-byte runes) = %v, want success", err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, strings.Repeat("é", 65)); !errors.Is(err, domain.ErrBadTeam) {
+		t.Fatalf("CreateTeam(65 two-byte runes) = %v, want ErrBadTeam", err)
+	}
+	if _, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, $2)`, w.ownerSess, strings.Repeat("ü", 65)); pgCode(err) != "22023" {
+		t.Fatalf("team_create(65 two-byte runes) = %v, want SQLSTATE 22023", err)
+	}
 	if _, err := store.CreateTeam(w.ctx, w.ownerSess, "Existing"); err != nil {
 		t.Fatal(err)
 	}

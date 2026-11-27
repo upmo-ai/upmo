@@ -53,6 +53,12 @@ func TestTeamsIntegration(t *testing.T) {
 	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), "a team with that name already exists") {
 		t.Fatalf("duplicate %d %s", again.Code, again.Body.String())
 	}
+	for _, bad := range []string{"", "   ", strings.Repeat("x", 65)} {
+		refused := call(mux, http.MethodPost, "/api/teams", ownerCookie, jsonBody(t, map[string]string{"name": bad}))
+		if refused.Code != http.StatusBadRequest {
+			t.Fatalf("bad name %q = %d %s, want 400", bad, refused.Code, refused.Body.String())
+		}
+	}
 	listed := call(mux, http.MethodGet, "/api/teams", ownerCookie, nil)
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"name":"Finance"`) {
 		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
