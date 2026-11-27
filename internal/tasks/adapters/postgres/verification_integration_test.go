@@ -58,8 +58,8 @@ func TestOpenPermitsPreparingPlanningAndWorkingAndRefusesVerifyingOrDone(t *test
 		// The edge check rejects an open event to Verifying or Done, so the
 		// matching event never reaches the deferred born() check.
 		_, eventErr := tx.Exec(ctx, `
-			INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-			VALUES ($1::uuid, 1, '', $2, 'open')`, id, status)
+			INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+			VALUES ($1::uuid, 1, '', $2, 'open', 'person')`, id, status)
 		_ = tx.Rollback(ctx)
 		if eventErr == nil {
 			t.Fatalf("open event to %s was stored", status)
@@ -265,8 +265,8 @@ func TestAppRoleColumnLockAndMonotonicExposureAndInsertTaintSpread(t *testing.T)
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1::uuid, 1, '', 'Preparing', 'open')`, childID); err != nil {
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1::uuid, 1, '', 'Preparing', 'open', 'person')`, childID); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
@@ -496,8 +496,8 @@ func TestResumeWhilePendingApprovalIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		SELECT $1::uuid, COALESCE(MAX(event.seq), 0) + 1, 'Needs approval', 'Working', 'resume'
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		SELECT $1::uuid, COALESCE(MAX(event.seq), 0) + 1, 'Needs approval', 'Working', 'resume', 'person'
 		FROM tasks.task_events AS event
 		WHERE event.task_id = $1::uuid`, task.ID); err != nil {
 		_ = tx.Rollback(ctx)
@@ -710,8 +710,8 @@ func TestOwnerRLSOnEscrowReleaseTaintAndBudgetNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1::uuid, 1, '', 'Preparing', 'open')`, childID); err != nil {
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1::uuid, 1, '', 'Preparing', 'open', 'person')`, childID); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
@@ -765,8 +765,8 @@ func TestOwnerRLSOnEscrowReleaseTaintAndBudgetNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := releaseTx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		SELECT $1::uuid, COALESCE(MAX(event.seq), 0) + 1, 'Verifying', 'Done', 'pass'
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		SELECT $1::uuid, COALESCE(MAX(event.seq), 0) + 1, 'Verifying', 'Done', 'pass', 'person'
 		FROM tasks.task_events AS event
 		WHERE event.task_id = $1::uuid`, releaseChild.ID); err != nil {
 		_ = releaseTx.Rollback(ctx)

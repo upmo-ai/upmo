@@ -347,8 +347,8 @@ func TestBackupRestoreFullRoundTrip(t *testing.T) {
 		t.Fatalf("seed tasks.tasks: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1, 1, '', 'Preparing', 'open')`,
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1, 1, '', 'Preparing', 'open', 'person')`,
 		taskID,
 	); err != nil {
 		t.Fatalf("seed tasks.task_events: %v", err)
@@ -700,8 +700,8 @@ func TestBackupRestoreVersion1ArchiveToEmptyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1, 1, '', 'Preparing', 'open')`,
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1, 1, '', 'Preparing', 'open', 'person')`,
 		taskID,
 	); err != nil {
 		t.Fatal(err)

@@ -126,7 +126,7 @@ func (s Store) Fire(ctx context.Context, access app.Access, automationID, dedup 
 	if err != nil {
 		return "", false, fmt.Errorf("tasks: open from automation: %w", err)
 	}
-	if err := insertTaskEvent(ctx, tx, taskID, effect); err != nil {
+	if err := insertTaskEvent(ctx, tx, taskID, effect, "person"); err != nil {
 		return "", false, err
 	}
 	// The automation fired, so the system opened the task on its owner's

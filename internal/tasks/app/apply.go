@@ -17,6 +17,8 @@ var (
 	ErrTask = errors.New("tasks: task")
 	// ErrGone is a task this person cannot see.
 	ErrGone = errors.New("tasks: no such task")
+	// ErrRunnerOwned is a manual transition refused on a runner-owned task.
+	ErrRunnerOwned = errors.New("tasks: runner owned")
 )
 
 // Access is the person and the allow list for this transaction.

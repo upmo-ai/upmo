@@ -153,8 +153,8 @@ RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, at)
-  SELECT p_task, COALESCE(MAX(event.seq), 0) + 1, p_from, p_to, p_kind, p_at
+  INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor, at)
+  SELECT p_task, COALESCE(MAX(event.seq), 0) + 1, p_from, p_to, p_kind, 'person', p_at
   FROM tasks.task_events AS event
   WHERE event.task_id = p_task;
   UPDATE tasks.tasks SET status = p_to, updated_at = p_at WHERE id = p_task;
@@ -170,8 +170,8 @@ AS $$
 BEGIN
   INSERT INTO tasks.tasks (id, owner_user_id, parent_id, goal, status, budget, spent, updated_at)
   VALUES (p_task, p_person, p_parent, p_goal, 'Preparing', p_budget, p_spent, p_at);
-  INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, at)
-  VALUES (p_task, 1, '', 'Preparing', 'open', p_at);
+  INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor, at)
+  VALUES (p_task, 1, '', 'Preparing', 'open', 'person', p_at);
 END;
 $$;
 
@@ -225,8 +225,8 @@ SET result = '{"summary": "The accounts reconcile.", "detail": "All 31 ledger en
 WHERE id = 'e2e00000-0000-7000-8000-000000000006';
 INSERT INTO tasks.checks (task_id, batch, seq, name, code, at)
 VALUES ('e2e00000-0000-7000-8000-000000000006', 1, 1, 'ledger reconciles', 0, now() - interval '34 minutes');
-INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, at)
-VALUES ('e2e00000-0000-7000-8000-000000000006', 4, 'Verifying', 'Done', 'pass', now() - interval '33 minutes');
+INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor, at)
+VALUES ('e2e00000-0000-7000-8000-000000000006', 4, 'Verifying', 'Done', 'pass', 'person', now() - interval '33 minutes');
 UPDATE tasks.tasks
 SET status = 'Done',
     passes = true,

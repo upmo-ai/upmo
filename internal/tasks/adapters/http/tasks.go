@@ -338,6 +338,8 @@ func refuse(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "unauthorized")
 	case errors.Is(err, app.ErrGone):
 		writeError(w, http.StatusNotFound, "no such task")
+	case errors.Is(err, app.ErrRunnerOwned):
+		writeError(w, http.StatusConflict, "the task is owned by a runner")
 	case errors.Is(err, app.ErrPreparing):
 		writeError(w, http.StatusNotFound, "no progress")
 	case errors.Is(err, app.ErrNoApproval):

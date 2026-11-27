@@ -141,7 +141,7 @@ func TestTasksSingleTeamRLSNarrowingAndBatchHoldAndActionLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Move taskA to Working and test batch hold + ActionLog + finding + turns.
+	// Move taskA to Working and test batch hold + ActionLog + turns.
 	if _, err := app.ApplyTransition(ctx, store, ownerAccess, taskA.ID, domain.Input{Kind: domain.Advance}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,10 +152,6 @@ func TestTasksSingleTeamRLSNarrowingAndBatchHoldAndActionLog(t *testing.T) {
 		ObjectID:         taskA.ID,
 		ObjectVisibility: agentloop.VisibilityTeam,
 		VisibilityTeamID: teamA,
-	}
-	findingID, err := store.SaveFinding(ctx, scopeOwner, taskA.ID, "", "finding", "Audit note", "body", "", false)
-	if err != nil || findingID == "" {
-		t.Fatalf("SaveFinding = %q %v", findingID, err)
 	}
 
 	batch := agentloop.BuildBatchHold("ask", []agentloop.HeldCall{
@@ -453,16 +449,17 @@ func TestTasksCommitTurnAndEnqueue(t *testing.T) {
 		t.Fatalf("enqueuedCount = %d, want 1", enqueuedCount)
 	}
 	var turnCount int
+	var turnActor string
 	var spent int64
 	var tainted bool
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turnCount); err != nil {
+	if err := owner.QueryRow(ctx, `SELECT count(*), COALESCE(min(actor), '') FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turnCount, &turnActor); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.QueryRow(ctx, `SELECT spent, tainted FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &tainted); err != nil {
 		t.Fatal(err)
 	}
-	if turnCount != 2 || spent != 250_000 || !tainted {
-		t.Fatalf("after turn 1: turns=%d spent=%d tainted=%v", turnCount, spent, tainted)
+	if turnCount != 2 || turnActor != "worker" || spent != 250_000 || !tainted {
+		t.Fatalf("after turn 1: turns=%d actor=%q spent=%d tainted=%v", turnCount, turnActor, spent, tainted)
 	}
 
 	// Turn 2: hold persists batch approval and pauses task.

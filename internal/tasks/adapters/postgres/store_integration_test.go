@@ -140,8 +140,8 @@ func TestTransitionPlansFromPreparingAndRejectsAnAdvanceEdgeToPlanning(t *testin
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input)
-		VALUES ($1, 3, 'Preparing', 'Planning', 'advance')`, opened.ID); err == nil {
+		INSERT INTO tasks.task_events (task_id, seq, from_status, to_status, input, actor)
+		VALUES ($1, 3, 'Preparing', 'Planning', 'advance', 'person')`, opened.ID); err == nil {
 		t.Fatal("an advance edge from Preparing to Planning was stored")
 	}
 }
