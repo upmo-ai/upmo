@@ -1117,7 +1117,6 @@ GRANT SELECT, INSERT ON tasks.chat_events TO upmo_app;
 GRANT SELECT ON tasks.checks TO upmo_app;
 REVOKE INSERT, UPDATE, DELETE ON tasks.checks FROM upmo_app;
 GRANT SELECT ON tasks.runs TO upmo_app;
-REVOKE INSERT ON tasks.runs FROM upmo_app;
 GRANT INSERT (id, task_id, state, created_at) ON tasks.runs TO upmo_app;
 GRANT UPDATE (state) ON tasks.runs TO upmo_app;
 GRANT SELECT, INSERT ON tasks.run_events TO upmo_app;

@@ -786,3 +786,30 @@ func TestRunnerOutputs(t *testing.T) {
 		t.Fatalf("bareRun findings count after delete = %d, want 0", got)
 	}
 }
+
+func TestRunnerSettleTurnGap(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+
+	task := reach(t, store, "Turn gap task", domain.Working)
+	markTaskRunnerOwned(t, owner, task.ID)
+	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimRun(ctx, ownerAccess, task.ID, run.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rows 1 and 3 have the right first and last seq for msgs=3 but one row is missing.
+	insertTurnsForTest(t, ctx, store, task.ID, run.ID, 1, 1)
+	insertTurnsForTest(t, ctx, store, task.ID, run.ID, 3, 1)
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim.Token, 10_000, 1, 3); !errors.Is(err, app.ErrFenced) {
+		t.Fatalf("SettleTx(msgs=3 with a gap) = %v, want ErrFenced", err)
+	}
+	if got := taskInt(t, owner, `SELECT msg_seq FROM tasks.runs WHERE id = $1::uuid`, run.ID); got != 0 {
+		t.Fatalf("msg_seq after fenced gap settle = %d, want 0", got)
+	}
+}
