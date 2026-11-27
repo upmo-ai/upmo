@@ -63,6 +63,7 @@ type (
 	StreamConfig    = app.StreamConfig
 	Stream          = app.Stream
 	LessonLookup    = app.LessonLookup
+	ProfileLookup   = app.ProfileLookup
 	MemoryLookup    = app.MemoryLookup
 	KnowledgeLookup = app.KnowledgeLookup
 	ActionTools     = app.ActionTools

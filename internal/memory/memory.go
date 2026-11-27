@@ -48,6 +48,7 @@ type (
 	Recall         = app.Recall
 	RetrievalStore = app.RetrievalStore
 	Reranker       = app.Reranker
+	ProfileReader  = app.ProfileReader
 )
 
 const SearchMemoryName = app.SearchMemoryName
@@ -86,6 +87,11 @@ func AddExtractWorker(workers *river.Workers, store app.Store, propose func(user
 // LoadPage returns the profile and facts a person sees.
 func LoadPage(ctx context.Context, editor Editor, userID string) (Page, error) {
 	return app.LoadPage(ctx, editor, userID)
+}
+
+// Profile returns one person's profile body under row security.
+func Profile(ctx context.Context, reader ProfileReader, userID string) (string, error) {
+	return app.Profile(ctx, reader, userID)
 }
 
 // SystemPrefix places the profile after the standing instructions, as the

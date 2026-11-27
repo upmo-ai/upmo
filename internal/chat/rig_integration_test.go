@@ -152,6 +152,7 @@ func newRig(t *testing.T, cfg app.ReplyConfig) *rig {
 	al := &agentLookup{store: r.agents}
 	deps.Agents = al
 	deps.Lessons = lessonLookup{store: r.agents}
+	deps.Profiles = memory.NewFacts(pool)
 	r.agentLookup = al
 	if err := chat.AddReplyWorker(workers, deps); err != nil {
 		t.Fatal(err)

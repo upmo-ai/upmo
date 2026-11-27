@@ -17,7 +17,9 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/chat/domain"
 	"github.com/upmo-ai/upmo/internal/kernel"
+	"github.com/upmo-ai/upmo/internal/memory"
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
+	"github.com/upmo-ai/upmo/internal/platform/trustfence"
 )
 
 // ReplyQueue is the River queue of reply jobs. It has workers of its own, so
@@ -211,10 +213,12 @@ type Pending struct {
 
 // Claim is one round of one reply in the worker's hands.
 type Claim struct {
-	State   ClaimState
-	Job     ReplyJobArgs
-	Token   string
-	Private bool
+	State             ClaimState
+	Job               ReplyJobArgs
+	Token             string
+	Private           bool
+	WorkspaceName     string
+	WorkspaceTimeZone string
 	// Scope is the chat's visibility, for the gateway call only (team_id).
 	Scope     agentloop.AccessScope
 	CreatedAt time.Time // chat.runs.created_at
@@ -368,6 +372,7 @@ type ReplyDeps struct {
 	Agents    AgentLookup
 	Lessons   LessonLookup
 	Turns     Turns
+	Profiles  ProfileLookup
 	Memory    MemoryLookup
 	Knowledge KnowledgeLookup
 	Tools     ActionTools
@@ -559,6 +564,15 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		}
 		agent = &got
 	}
+	var profile string
+	if claim.Private && w.deps.Profiles != nil {
+		loaded, err := w.deps.Profiles.Profile(replyCtx, args.UserID)
+		if err != nil {
+			w.log.WarnContext(replyCtx, "chat profile lookup failed; omitting profile", "error", err)
+		} else {
+			profile = loaded
+		}
+	}
 	live := &liveAccess{access: access}
 	callCtx, cancel := context.WithCancel(replyCtx)
 	defer cancel()
@@ -609,7 +623,10 @@ func (w *replyWorker) round(ctx context.Context, access Access, claim Claim) err
 		}
 		sink.notice(Notice(a))
 	}
-	turnRoute, system := w.route(args, agent)
+	turnRoute, system := w.route(args, agent, claim, profile)
+	if claim.Private && strings.TrimSpace(trustfence.NeutralizeSlot(profile)) != "" {
+		claim.Exposure.Observe(false, true)
+	}
 	outs := outputs{inner: w.deps.Rows.Outputs(args.ChatID, args.ReplyID, func() (Access, error) {
 		current, ok := live.get()
 		if !ok {
@@ -866,8 +883,9 @@ func (w *replyWorker) resolveHeldBatch(ctx context.Context, live *liveAccess, cl
 
 // route is where every round of this reply goes: the route and the pin
 // settled between the composer's picks and the agent's defaults, and the
-// agent's instructions as the system text.
-func (w *replyWorker) route(args ReplyJobArgs, agent *Agent) (TurnRoute, string) {
+// cacheable standing rules, workspace header, agent instructions, and private
+// profile as the system text.
+func (w *replyWorker) route(args ReplyJobArgs, agent *Agent, claim Claim, profile string) (TurnRoute, string) {
 	picked := domain.Picked{PinAccount: args.PinAccount, PinModel: args.PinModel}
 	install := ""
 	if args.RoutePicked {
@@ -876,11 +894,19 @@ func (w *replyWorker) route(args ReplyJobArgs, agent *Agent) (TurnRoute, string)
 		install = args.Route
 	}
 	var defaults *domain.Defaults
-	system := ""
+	var agentName, agentOverlay string
+	var cards []agentloop.LessonCard
 	if agent != nil {
 		d := agent.Defaults()
 		defaults = &d
-		system = agentloop.AssembleSystemPrefix("", agent.Name, agent.PromptOverlay, nil, agent.Cards)
+		agentName = agent.Name
+		agentOverlay = agent.PromptOverlay
+		cards = agent.Cards
+	}
+	standing := StandingRules + "\n\n" + workspaceHeader(claim.WorkspaceName, claim.WorkspaceTimeZone)
+	system := agentloop.AssembleSystemPrefix(standing, agentName, agentOverlay, nil, cards)
+	if claim.Private && strings.TrimSpace(profile) != "" {
+		system = memory.SystemPrefix(system, profile)
 	}
 	resolved := domain.Resolve(picked, defaults, install)
 	return TurnRoute{

@@ -969,8 +969,8 @@ func TestAReplyWithoutAnAgentHasNoLessonTool(t *testing.T) {
 	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
 		t.Fatalf("tools = %+v", names)
 	}
-	if call.System != "" {
-		t.Fatalf("system = %q", call.System)
+	if want := app.StandingRules + "\n\nWorkspace: Workspace\nTime zone: UTC"; call.System != want {
+		t.Fatalf("system = %q, want %q", call.System, want)
 	}
 }
 
