@@ -376,8 +376,8 @@ GRANT SELECT ON identity.roles TO upmo_app;
 GRANT SELECT (id, email_hash, email_hash_key_id, name, external_id, role_id, invited_at, joined_at,
   disabled_at, webauthn_handle, passkey_offered_at, time_zone, locale, avatar_key) ON identity.users TO upmo_app;
 GRANT UPDATE (password_hash, webauthn_handle, joined_at, passkey_offered_at) ON identity.users TO upmo_app;
+GRANT SELECT ON identity.teams TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-  identity.teams,
   identity.passkeys,
   identity.throttle,
   identity.connector_grants
@@ -1313,6 +1313,56 @@ $$;
 REVOKE ALL ON FUNCTION identity.remove_team_member(bytea, uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.remove_team_member(bytea, uuid, uuid) TO upmo_app;
 
+-- team_create lets a live team manager create a team without direct table writes.
+-- +goose StatementBegin
+CREATE FUNCTION identity.team_create(actor_token_hash bytea, name text)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_perms text[];
+  v_name text;
+  v_id uuid;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT identity.role_permissions(role.key, role.permissions)
+  INTO v_actor_perms
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT ('teams:manage' = ANY (v_actor_perms)) THEN
+    RAISE EXCEPTION 'identity: only team managers manage teams' USING ERRCODE = '42501';
+  END IF;
+
+  v_name := pg_catalog.regexp_replace(team_create.name, '^[[:space:] ]+|[[:space:] ]+$', '', 'g');
+  IF v_name IS NULL OR v_name = '' OR pg_catalog.char_length(v_name) > 64 THEN
+    RAISE EXCEPTION 'identity: bad team name' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO identity.teams AS team (name) VALUES (v_name) RETURNING team.id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.team_create(bytea, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.team_create(bytea, text) TO upmo_app;
+
 -- +goose StatementBegin
 CREATE FUNCTION identity.member_disable(
   actor_token_hash bytea,
@@ -2214,6 +2264,7 @@ DROP FUNCTION IF EXISTS identity.object_grants(bytea, text, uuid);
 DROP FUNCTION IF EXISTS identity.replace_object_grants(bytea, text, uuid, jsonb);
 DROP FUNCTION IF EXISTS identity.add_team_member(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.remove_team_member(bytea, uuid, uuid);
+DROP FUNCTION IF EXISTS identity.team_create(bytea, text);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);
 DROP FUNCTION IF EXISTS identity.teams_of(uuid);

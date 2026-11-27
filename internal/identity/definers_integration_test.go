@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/identity"
+	"github.com/upmo-ai/upmo/internal/identity/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/identity/app"
 	"github.com/upmo-ai/upmo/internal/identity/domain"
 	"github.com/upmo-ai/upmo/internal/testutil/pgtest"
@@ -34,6 +35,7 @@ var actorDefiners = []string{
 	"identity.replace_object_grants(bytea, text, uuid, jsonb)",
 	"identity.add_team_member(bytea, uuid, uuid)",
 	"identity.remove_team_member(bytea, uuid, uuid)",
+	"identity.team_create(bytea, text)",
 }
 
 // definerWorld is the cast the actor definer tests share: a joined owner
@@ -146,6 +148,7 @@ func TestActorDefinersRefuseABadHash(t *testing.T) {
 		"replace_object_grants": {`SELECT * FROM identity.replace_object_grants($1, 'task', $2::uuid, $3::jsonb)`, []any{task, grants}},
 		"add_team_member":       {`SELECT * FROM identity.add_team_member($1, $2::uuid, $3::uuid)`, []any{team, w.ownerID}},
 		"remove_team_member":    {`SELECT * FROM identity.remove_team_member($1, $2::uuid, $3::uuid)`, []any{team, w.ownerID}},
+		"team_create":           {`SELECT * FROM identity.team_create($1, $2)`, []any{"T2"}},
 	}
 	if len(calls) != len(actorDefiners) {
 		t.Fatalf("calls cover %d definers, want all %d", len(calls), len(actorDefiners))
@@ -170,6 +173,104 @@ func TestActorDefinersRefuseABadHash(t *testing.T) {
 	}
 	if got := w.count(t, "identity.team_members"); got != members {
 		t.Fatalf("team_members = %d, want %d unchanged", got, members)
+	}
+}
+
+func TestTeamCreateDefinerValidatesActorAndName(t *testing.T) {
+	w := newDefinerWorld(t)
+	store := postgres.Passkeys{Pool: w.app}
+	events := w.count(t, "audit.pending WHERE action = 'team.create'")
+
+	for name, hash := range w.bad {
+		_, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, 'Bad')`, hash)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" || pgErr.Message != "identity: invalid actor session" {
+			t.Fatalf("team_create %s = %v, want SQLSTATE 42501 identity: invalid actor session", name, err)
+		}
+		if _, err := store.CreateTeam(w.ctx, hash, "Bad"); !errors.Is(err, app.ErrNotSignedIn) {
+			t.Fatalf("CreateTeam with %s hash = %v, want ErrNotSignedIn", name, err)
+		}
+	}
+
+	for _, name := range []string{"", "   ", "\t", "\n", "\u00a0"} {
+		_, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, $2)`, w.ownerSess, name)
+		if pgCode(err) != "22023" {
+			t.Fatalf("team_create(%q) = %v, want SQLSTATE 22023", name, err)
+		}
+		if _, err := store.CreateTeam(w.ctx, w.ownerSess, name); !errors.Is(err, domain.ErrBadTeam) {
+			t.Fatalf("CreateTeam(%q) = %v, want ErrBadTeam", name, err)
+		}
+	}
+	if got := w.count(t, "audit.pending WHERE action = 'team.create'"); got != events {
+		t.Fatalf("team.create events after refused creates = %d, want %d", got, events)
+	}
+	if _, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, NULL)`, w.ownerSess); pgCode(err) != "22023" {
+		t.Fatalf("team_create(NULL) = %v, want SQLSTATE 22023", err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, strings.Repeat("x", 65)); !errors.Is(err, domain.ErrBadTeam) {
+		t.Fatalf("CreateTeam(65 runes) = %v, want ErrBadTeam", err)
+	}
+	if _, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, $2)`, w.ownerSess, strings.Repeat("x", 65)); pgCode(err) != "22023" {
+		t.Fatalf("team_create(65 runes) = %v, want SQLSTATE 22023", err)
+	}
+	if _, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, $2)`, w.ownerSess, strings.Repeat("x", 64)); err != nil {
+		t.Fatalf("team_create(64 runes) = %v, want success", err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, "\u00a0Team"); err != nil {
+		t.Fatalf("CreateTeam(U+00A0 prefix) = %v, want success", err)
+	}
+	var trimmed string
+	if err := w.owner.QueryRow(w.ctx, `SELECT name FROM identity.teams WHERE name = 'Team'`).Scan(&trimmed); err != nil || trimmed != "Team" {
+		t.Fatalf("U+00A0-prefixed team name = %q, err %v, want Team", trimmed, err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, "Tail \t "); err != nil {
+		t.Fatalf("CreateTeam(trailing space) = %v, want success", err)
+	}
+	if err := w.owner.QueryRow(w.ctx, `SELECT name FROM identity.teams WHERE name = 'Tail'`).Scan(&trimmed); err != nil || trimmed != "Tail" {
+		t.Fatalf("trailing-space team name = %q, err %v, want Tail", trimmed, err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, strings.Repeat("é", 64)); err != nil {
+		t.Fatalf("CreateTeam(64 two-byte runes) = %v, want success", err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, strings.Repeat("é", 65)); !errors.Is(err, domain.ErrBadTeam) {
+		t.Fatalf("CreateTeam(65 two-byte runes) = %v, want ErrBadTeam", err)
+	}
+	if _, err := w.app.Exec(w.ctx, `SELECT * FROM identity.team_create($1, $2)`, w.ownerSess, strings.Repeat("ü", 65)); pgCode(err) != "22023" {
+		t.Fatalf("team_create(65 two-byte runes) = %v, want SQLSTATE 22023", err)
+	}
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, "Existing"); err != nil {
+		t.Fatal(err)
+	}
+	events = w.count(t, "audit.pending WHERE action = 'team.create'")
+	if _, err := store.CreateTeam(w.ctx, w.ownerSess, "existing"); !errors.Is(err, domain.ErrTeamNameTaken) {
+		t.Fatalf("CreateTeam(case-insensitive duplicate) = %v, want ErrTeamNameTaken", err)
+	}
+	if got := w.count(t, "audit.pending WHERE action = 'team.create'"); got != events {
+		t.Fatalf("team.create events after duplicate refusal = %d, want %d", got, events)
+	}
+}
+
+func TestTeamCreateEndedSessionReturns401(t *testing.T) {
+	w := newDefinerWorld(t)
+	adminID := w.person(t, "admin@example.com", "Admin", w.roleID(t, "admin"), true, false)
+	sessions := identity.Sessions(w.app, domain.IdleTimeout, domain.MaxAge)
+	userID, err := domain.ParseUserID(adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := sessions.Start(w.ctx, userID, "passkey", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions.Store = endingSessions{Store: sessions.Store, owner: w.owner}
+	mux := http.NewServeMux()
+	identity.MountTeams(mux, identity.Teams(w.app, nil), sessions)
+	rec := call(mux, http.MethodPost, "/api/teams", token, jsonBody(t, map[string]string{"name": "Raced"}))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ended-session team create = %d %s, want 401", rec.Code, rec.Body.String())
+	}
+	if got := w.count(t, "identity.teams WHERE name = 'Raced'"); got != 0 {
+		t.Fatalf("teams after ended session = %d, want 0", got)
 	}
 }
 
