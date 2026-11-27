@@ -721,6 +721,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*App, error) {
 			Agents:    chatAgentLookup{store: agentStore, access: agentWho},
 			Lessons:   chatLessons{store: agentStore, access: agentWho},
 			Turns:     chatTurns,
+			Profiles:  memoryFacts,
 			Memory:    chatMemoryLookup{facts: memoryFacts, embed: func(userID string) memory.Embedder { return gw.For(userID) }},
 			Knowledge: chatKnowledgeLookup{folders: knowledgeBook, finder: knowledgeBook, embedFor: func(userID string) knowledge.Embedder { return gw.For(userID) }, members: members},
 			Tools:     chatActionTools{tasks: tasks.NewStore(pool, runner, lazy), agents: agentStore, memory: memoryFacts, members: members},

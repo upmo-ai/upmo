@@ -147,6 +147,10 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 	if err := tx.QueryRow(ctx, `SELECT visibility, COALESCE(visibility_team_id::text, ''), tainted, private_read, visibility = 'private' AND NOT EXISTS (SELECT 1 FROM identity.shares WHERE object_type = 'chat' AND object_id = chat.chats.id), rolling_summary, COALESCE(summary_up_to_line_id::text, ''), summary_up_to_seq FROM chat.chats WHERE id = $1::uuid`, job.ChatID).Scan(&vis, &team, &exposure.Tainted, &exposure.PrivateRead, &private, &rollingSummary, &summaryLineID, &summarySeq); err != nil {
 		return app.Claim{}, fmt.Errorf("chat: claim scope: %w", err)
 	}
+	var workspaceName, workspaceTZ string
+	if err := tx.QueryRow(ctx, `SELECT name, identity.workspace_time_zone() FROM identity.workspace WHERE id = true`).Scan(&workspaceName, &workspaceTZ); err != nil {
+		return app.Claim{}, fmt.Errorf("chat: claim workspace: %w", err)
+	}
 	claim := app.Claim{
 		Job:               job,
 		Token:             token,
@@ -155,6 +159,8 @@ func (s Store) Claim(ctx context.Context, access app.Access, job app.ReplyJobArg
 		SummaryUpToLineID: summaryLineID,
 		SummaryUpToSeq:    summarySeq,
 		Private:           private,
+		WorkspaceName:     workspaceName,
+		WorkspaceTimeZone: workspaceTZ,
 		Scope: agentloop.AccessScope{
 			UserID:           access.UserID,
 			Allow:            access.Allow,

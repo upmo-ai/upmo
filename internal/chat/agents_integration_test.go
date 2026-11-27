@@ -57,7 +57,7 @@ func TestTheAgentsInstructionsRouteAndModelReachTheGateway(t *testing.T) {
 		t.Fatalf("calls = %+v", calls)
 	}
 	call := calls[0]
-	if want := "# Agent: Research\n\nAnswer as a researcher."; call.System != want {
+	if want := app.StandingRules + "\n\nWorkspace: Workspace\nTime zone: UTC\n\n# Agent: Research\n\nAnswer as a researcher."; call.System != want {
 		t.Fatalf("system = %q, want %q", call.System, want)
 	}
 	if call.Route != "deep" {
@@ -90,7 +90,7 @@ func TestTheComposersRouteAndModelWinOverTheAgents(t *testing.T) {
 	if call.Pin == nil || call.Pin.AccountID != account || call.Pin.Model != "gpt-y" || call.Pin.Provider != "" {
 		t.Fatalf("pin = %+v, want the composer's pin alone", call.Pin)
 	}
-	if call.System != "# Agent: Research\n\nAnswer as a researcher." {
+	if call.System != app.StandingRules+"\n\nWorkspace: Workspace\nTime zone: UTC\n\n# Agent: Research\n\nAnswer as a researcher." {
 		t.Fatalf("system = %q: the agent's instructions still apply", call.System)
 	}
 }
@@ -104,8 +104,8 @@ func TestAModelOnlyAgentUsesTheInstallDefaultRoute(t *testing.T) {
 	r.sayWith(chatID, app.Picks{AgentID: agent.ID})
 
 	call := r.stub.seen()[0]
-	if call.Route != "chat" || call.System != "" || call.Pin == nil || call.Pin.Provider != "OpenAI" {
-		t.Fatalf("call = %+v, want the install route, no system text and the agent's model", call)
+	if call.Route != "chat" || call.System != app.StandingRules+"\n\nWorkspace: Workspace\nTime zone: UTC" || call.Pin == nil || call.Pin.Provider != "OpenAI" {
+		t.Fatalf("call = %+v, want the install route, standing system text and the agent's model", call)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestAGlobalAgentWorksForAMember(t *testing.T) {
 
 	r.sayWith(chatID, app.Picks{AgentID: house.ID})
 
-	if call := r.stub.seen()[0]; call.System != "# Agent: House\n\nHouse rules." {
+	if call := r.stub.seen()[0]; call.System != app.StandingRules+"\n\nWorkspace: Workspace\nTime zone: UTC\n\n# Agent: House\n\nHouse rules." {
 		t.Fatalf("system = %q", call.System)
 	}
 }

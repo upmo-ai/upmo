@@ -23,6 +23,16 @@ type Reader interface {
 	Load(ctx context.Context, userID string) (Memory, error)
 }
 
+// ProfileReader reads one person's profile body under row security.
+type ProfileReader interface {
+	Profile(ctx context.Context, userID string) (string, error)
+}
+
+// Profile reads one person's profile body.
+func Profile(ctx context.Context, reader ProfileReader, userID string) (string, error) {
+	return reader.Profile(ctx, userID)
+}
+
 // SystemPrefix places the profile after the standing instructions. The
 // caller passes the result as the chat system text, which is the cacheable
 // prefix. Extraction does not write this text.
