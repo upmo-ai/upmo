@@ -89,8 +89,11 @@ func newRouteVisWorld(t *testing.T) *routeVisWorld {
 		}
 		return members.TeamsOf(ctx, id)
 	}
+	// The team names come from identity.names_of, which needs a live session:
+	// the owner's, added below once the people exist.
+	var namesHash []byte
 	providers.Names = func(ctx context.Context, teams []string) (map[string]string, error) {
-		_, names, err := members.NamesOf(ctx, nil, teams)
+		_, names, err := members.NamesOf(ctx, namesHash, nil, teams)
 		return names, err
 	}
 	routesSvc := NewRoutes(appPool, nil)
@@ -140,6 +143,12 @@ func newRouteVisWorld(t *testing.T) *routeVisWorld {
 			person.id, person.email, person.role)
 	}
 	w.exec(`INSERT INTO identity.teams (id, name) VALUES ($1::uuid, 'Finance')`, visTeam)
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1::uuid, decode(md5(random()::text) || md5(random()::text), 'hex'), now(), now(), now() + interval '1 hour')
+		RETURNING token_hash`, visOwner).Scan(&namesHash); err != nil {
+		t.Fatal(err)
+	}
 
 	insertAcct := func(id, ref, owner, vis string, house bool) {
 		teams := "{}"

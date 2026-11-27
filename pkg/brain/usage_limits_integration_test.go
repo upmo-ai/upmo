@@ -92,6 +92,19 @@ func newLimitRig(t *testing.T) *limitRig {
 				p.id, p.email, p.role)
 		}
 	}
+	// Each enabled person gets a live session, so a request carries the
+	// principal brain's RequireSession would put on it.
+	hashes := map[string][]byte{}
+	for _, id := range []string{limOwner, limMemberA, limMemberB, limViewCustom, limManageRole} {
+		var hash []byte
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+			VALUES ($1::uuid, decode(md5(random()::text) || md5(random()::text), 'hex'), now(), now(), now() + interval '1 hour')
+			RETURNING token_hash`, id).Scan(&hash); err != nil {
+			t.Fatal(err)
+		}
+		hashes[id] = hash
+	}
 
 	var tplID, autoID string
 	if err := pool.QueryRow(ctx, `
@@ -127,13 +140,7 @@ func newLimitRig(t *testing.T) *limitRig {
 	svc.TimeZone = func(ctx context.Context) (string, error) {
 		return identity.WorkspaceTimeZone(ctx, pool)
 	}
-	svc.PersonExists = func(ctx context.Context, id string) (bool, error) {
-		names, _, err := members.NamesOf(ctx, []string{id}, nil)
-		if err != nil {
-			return false, err
-		}
-		return names[id] != "", nil
-	}
+	svc.PersonExists = personExists(members)
 	svc.AutomationExists = func(ctx context.Context, id string) (bool, error) {
 		return tasks.AutomationExists(ctx, appPool, id)
 	}
@@ -153,7 +160,14 @@ func newLimitRig(t *testing.T) *limitRig {
 	}.MountLimits(mux, nil)
 
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	rig.handler = audit.Middleware(audit.Routes(), mux, appPool, "brain", nil, discard)(mux)
+	principal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := r.Header.Get("X-Test-User")
+		if id, err := identity.ParseUserID(u); err == nil && hashes[u] != nil {
+			r = r.WithContext(identity.WithPrincipal(r.Context(), identity.Principal{UserID: id, TokenHash: hashes[u]}))
+		}
+		mux.ServeHTTP(w, r)
+	})
+	rig.handler = audit.Middleware(audit.Routes(), mux, appPool, "brain", nil, discard)(principal)
 
 	var lastPos int64
 	rig.seal = func() []audit.Row {

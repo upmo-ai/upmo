@@ -158,6 +158,8 @@ func teamStatus(err error) (int, string, bool) {
 		return http.StatusNotFound, "no such team", true
 	case errors.Is(err, domain.ErrNoSuchMember):
 		return http.StatusNotFound, "no such member", true
+	case errors.Is(err, app.ErrNotSignedIn):
+		return http.StatusUnauthorized, "unauthorized", true
 	default:
 		return 0, "", false
 	}

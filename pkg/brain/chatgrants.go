@@ -18,7 +18,11 @@ type chatGrants struct {
 var _ chat.ShareGrants = chatGrants{}
 
 func (g chatGrants) ChatGrants(ctx context.Context, chatID string) ([]chat.ShareMember, error) {
-	rows, err := g.members.ChatGrants(ctx, chatID)
+	hash, err := actorTokenHash(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := g.members.ChatGrants(ctx, hash, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +39,7 @@ func (g chatGrants) ChatGrants(ctx context.Context, chatID string) ([]chat.Share
 }
 
 func (g chatGrants) ReplaceChatGrants(ctx context.Context, chatID string, grants []chat.ShareGrant, grantedBy string) error {
-	by, err := identity.ParseUserID(grantedBy)
+	hash, err := grantorTokenHash(ctx, grantedBy)
 	if err != nil {
 		return err
 	}
@@ -47,11 +51,11 @@ func (g chatGrants) ReplaceChatGrants(ctx context.Context, chatID string, grants
 			Level:       grant.Role,
 		})
 	}
-	return g.members.ReplaceChatGrants(ctx, chatID, writes, by)
+	return g.members.ReplaceChatGrants(ctx, hash, chatID, writes)
 }
 
 func (g chatGrants) ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID string, grants []chat.ShareGrant, grantedBy string) error {
-	by, err := identity.ParseUserID(grantedBy)
+	hash, err := grantorTokenHash(ctx, grantedBy)
 	if err != nil {
 		return err
 	}
@@ -63,11 +67,15 @@ func (g chatGrants) ReplaceChatGrantsTx(ctx context.Context, tx pgx.Tx, chatID s
 			Level:       grant.Role,
 		})
 	}
-	return g.members.ReplaceChatGrantsTx(ctx, tx, chatID, writes, by)
+	return g.members.ReplaceChatGrantsTx(ctx, hash, tx, chatID, writes)
 }
 
 func (g chatGrants) Names(ctx context.Context, persons, teams []string) (map[string]string, map[string]string, error) {
-	return g.members.NamesOf(ctx, persons, teams)
+	hash, err := actorTokenHash(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return g.members.NamesOf(ctx, hash, persons, teams)
 }
 
 func (g chatGrants) TeamsOf(ctx context.Context, person string) ([]string, error) {

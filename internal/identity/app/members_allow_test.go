@@ -87,8 +87,8 @@ type allowFake struct {
 	askedTeams []string
 }
 
-func (f allowFake) ListRoles(context.Context) ([]domain.MemberRole, error)       { return nil, nil }
-func (f allowFake) ListMembers(context.Context, []byte) ([]domain.Member, error) { return nil, nil }
+func (f allowFake) ListRoles(context.Context, []byte) ([]domain.MemberRole, error) { return nil, nil }
+func (f allowFake) ListMembers(context.Context, []byte) ([]domain.Member, error)   { return nil, nil }
 func (f allowFake) MemberActor(context.Context, domain.UserID) (domain.RoleID, string, bool, []string, error) {
 	return domain.RoleID{}, f.system, f.joined, nil, nil
 }
@@ -99,21 +99,21 @@ func (f *allowFake) SharedObjects(_ context.Context, objectType domain.ObjectTyp
 	f.asked, f.askedTeams = objectType, teams
 	return f.shares, nil
 }
-func (f allowFake) TaskGrants(context.Context, string) ([]TaskGrant, error) { return nil, nil }
-func (f allowFake) ReplaceTaskGrants(context.Context, string, []GrantWrite, domain.UserID) error {
+func (f allowFake) TaskGrants(context.Context, []byte, string) ([]TaskGrant, error) { return nil, nil }
+func (f allowFake) ReplaceTaskGrants(context.Context, []byte, string, []GrantWrite) error {
 	return nil
 }
-func (f allowFake) ReplaceTaskGrantsTx(context.Context, pgx.Tx, string, []GrantWrite, domain.UserID) error {
+func (f allowFake) ReplaceTaskGrantsTx(context.Context, []byte, pgx.Tx, string, []GrantWrite) error {
 	return nil
 }
-func (f allowFake) ChatGrants(context.Context, string) ([]TaskGrant, error) { return nil, nil }
-func (f allowFake) ReplaceChatGrants(context.Context, string, []GrantWrite, domain.UserID) error {
+func (f allowFake) ChatGrants(context.Context, []byte, string) ([]TaskGrant, error) { return nil, nil }
+func (f allowFake) ReplaceChatGrants(context.Context, []byte, string, []GrantWrite) error {
 	return nil
 }
-func (f allowFake) ReplaceChatGrantsTx(context.Context, pgx.Tx, string, []GrantWrite, domain.UserID) error {
+func (f allowFake) ReplaceChatGrantsTx(context.Context, []byte, pgx.Tx, string, []GrantWrite) error {
 	return nil
 }
-func (f allowFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
+func (f allowFake) NamesOf(context.Context, []byte, []string, []string) (map[string]string, map[string]string, error) {
 	return nil, nil, nil
 }
 func (f allowFake) RoleSystem(context.Context, domain.RoleID) (string, error) {

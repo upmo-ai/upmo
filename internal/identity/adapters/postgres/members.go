@@ -15,16 +15,12 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/audit"
 )
 
-// ListRoles returns every role, system key or empty.
-func (p Passkeys) ListRoles(ctx context.Context) ([]domain.MemberRole, error) {
-	rows, err := p.Pool.Query(ctx, `
-		SELECT role.id::text, role.name, COALESCE(role.key, ''), role.permissions,
-		       (SELECT count(*) FROM identity.users AS person
-		        WHERE person.role_id = role.id AND person.disabled_at IS NULL)
-		FROM identity.roles AS role
-		ORDER BY role.name`)
+// ListRoles returns every role, system key or empty, through
+// identity.role_directory for the actor behind actorTokenHash.
+func (p Passkeys) ListRoles(ctx context.Context, actorTokenHash []byte) ([]domain.MemberRole, error) {
+	rows, err := p.Pool.Query(ctx, `SELECT * FROM identity.role_directory($1)`, actorTokenHash)
 	if err != nil {
-		return nil, err
+		return nil, mapActorDefinerError(err)
 	}
 	defer rows.Close()
 	var out []domain.MemberRole
@@ -47,7 +43,10 @@ func (p Passkeys) ListRoles(ctx context.Context) ([]domain.MemberRole, error) {
 			ID: roleID, Name: name, System: system, Permissions: permissions, Members: members,
 		})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, mapActorDefinerError(err)
+	}
+	return out, nil
 }
 
 // ListMembers returns enabled people with their teams, ordered by address.
@@ -345,6 +344,16 @@ func (p Passkeys) changeMember(ctx context.Context, id domain.UserID, rule func(
 		return mapLastOwner(err)
 	}
 	return nil
+}
+
+// mapActorDefinerError maps only a definer's actor check to ErrNotSignedIn.
+// Every other error, a raw check violation included, passes unchanged.
+func mapActorDefinerError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Message == "identity: invalid actor session" {
+		return app.ErrNotSignedIn
+	}
+	return err
 }
 
 func mapIdentityDefinerError(err error) error {

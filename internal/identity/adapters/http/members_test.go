@@ -154,7 +154,7 @@ type memberFake struct {
 	invited    bool
 }
 
-func (f *memberFake) ListRoles(context.Context) ([]domain.MemberRole, error) {
+func (f *memberFake) ListRoles(context.Context, []byte) ([]domain.MemberRole, error) {
 	return []domain.MemberRole{{ID: f.memberRole, Name: "Member", System: "member"}}, nil
 }
 func (f *memberFake) ListMembers(context.Context, []byte) ([]domain.Member, error) {
@@ -169,25 +169,25 @@ func (f *memberFake) MemberTeams(context.Context, domain.UserID) ([]string, erro
 func (f *memberFake) SharedObjects(context.Context, domain.ObjectType, domain.UserID, []string, domain.RoleID) ([]app.ObjectShare, error) {
 	return nil, nil
 }
-func (f *memberFake) TaskGrants(context.Context, string) ([]app.TaskGrant, error) {
+func (f *memberFake) TaskGrants(context.Context, []byte, string) ([]app.TaskGrant, error) {
 	return nil, nil
 }
-func (f *memberFake) ReplaceTaskGrants(context.Context, string, []app.GrantWrite, domain.UserID) error {
+func (f *memberFake) ReplaceTaskGrants(context.Context, []byte, string, []app.GrantWrite) error {
 	return nil
 }
-func (f *memberFake) ReplaceTaskGrantsTx(context.Context, pgx.Tx, string, []app.GrantWrite, domain.UserID) error {
+func (f *memberFake) ReplaceTaskGrantsTx(context.Context, []byte, pgx.Tx, string, []app.GrantWrite) error {
 	return nil
 }
-func (f *memberFake) ChatGrants(context.Context, string) ([]app.TaskGrant, error) {
+func (f *memberFake) ChatGrants(context.Context, []byte, string) ([]app.TaskGrant, error) {
 	return nil, nil
 }
-func (f *memberFake) ReplaceChatGrants(context.Context, string, []app.GrantWrite, domain.UserID) error {
+func (f *memberFake) ReplaceChatGrants(context.Context, []byte, string, []app.GrantWrite) error {
 	return nil
 }
-func (f *memberFake) ReplaceChatGrantsTx(context.Context, pgx.Tx, string, []app.GrantWrite, domain.UserID) error {
+func (f *memberFake) ReplaceChatGrantsTx(context.Context, []byte, pgx.Tx, string, []app.GrantWrite) error {
 	return nil
 }
-func (f *memberFake) NamesOf(context.Context, []string, []string) (map[string]string, map[string]string, error) {
+func (f *memberFake) NamesOf(context.Context, []byte, []string, []string) (map[string]string, map[string]string, error) {
 	return nil, nil, nil
 }
 func (f *memberFake) RoleSystem(_ context.Context, id domain.RoleID) (string, error) {

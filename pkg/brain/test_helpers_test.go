@@ -111,7 +111,11 @@ func routesAt(
 		return members.TeamsOf(ctx, person)
 	}
 	providers.Names = func(ctx context.Context, teamIDs []string) (map[string]string, error) {
-		_, names, err := members.NamesOf(ctx, nil, teamIDs)
+		hash, err := actorTokenHash(ctx)
+		if err != nil {
+			return nil, err
+		}
+		_, names, err := members.NamesOf(ctx, hash, nil, teamIDs)
 		return names, err
 	}
 	routesSvc := gateway.NewRoutes(pool, log)

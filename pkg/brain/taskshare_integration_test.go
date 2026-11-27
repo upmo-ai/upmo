@@ -47,6 +47,8 @@ type shareEnv struct {
 	handler http.Handler
 	people  map[string]string
 	teams   map[string]string
+	// hashes holds each enabled person's live session token hash, by id.
+	hashes map[string][]byte
 }
 
 // shareSetup seeds Ada (an owner, in Design and Build), Bob, Cy and Dee (no
@@ -100,7 +102,7 @@ func shareSetup(t *testing.T) *shareEnv {
 		},
 	}.Mount(mux, nil)
 
-	env := &shareEnv{owner: owner, handler: mux, people: map[string]string{}, teams: map[string]string{}}
+	env := &shareEnv{owner: owner, handler: mux, people: map[string]string{}, teams: map[string]string{}, hashes: map[string][]byte{}}
 	env.person(t, "Ada", "owner", false)
 	for _, name := range []string{"Bob", "Cy", "Dee", "Eve", "Gus"} {
 		env.person(t, name, "member", false)
@@ -126,6 +128,17 @@ func (e *shareEnv) person(t *testing.T, name, role string, disabled bool) {
 		t.Fatal(err)
 	}
 	e.people[strings.ToLower(name)] = id
+	if disabled {
+		return
+	}
+	var hash []byte
+	if err := e.owner.QueryRow(context.Background(), `
+		INSERT INTO identity.sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1::uuid, decode(md5(random()::text) || md5(random()::text), 'hex'), now(), now(), now() + interval '1 hour')
+		RETURNING token_hash`, id).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	e.hashes[id] = hash
 }
 
 func (e *shareEnv) team(t *testing.T, name string, members ...string) {
@@ -160,6 +173,10 @@ func (e *shareEnv) call(as, method, path, body string) (int, []byte) {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if as != "" {
 		req.Header.Set("X-As", e.people[as])
+		// The principal RequireSession puts on a signed-in request.
+		if id, err := identity.ParseUserID(e.people[as]); err == nil && e.hashes[e.people[as]] != nil {
+			req = req.WithContext(identity.WithPrincipal(req.Context(), identity.Principal{UserID: id, TokenHash: e.hashes[e.people[as]]}))
+		}
 	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, req)

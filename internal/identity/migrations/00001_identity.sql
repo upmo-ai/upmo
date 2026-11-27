@@ -883,6 +883,379 @@ $$;
 REVOKE ALL ON FUNCTION identity.member_set_role(bytea, uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.member_set_role(bytea, uuid, uuid) TO upmo_app;
 
+-- names_of returns the names of the enabled people in person_ids and of the
+-- teams in team_ids, for the actor behind actor_token_hash. Any joined actor
+-- already lists every enabled member and every team, so no per-id check.
+-- +goose StatementBegin
+CREATE FUNCTION identity.names_of(
+  actor_token_hash bytea,
+  person_ids uuid[],
+  team_ids uuid[]
+)
+RETURNS TABLE (kind text, id uuid, name text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id
+  INTO v_actor_id
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  RETURN QUERY
+    SELECT 'person'::text, person.id, person.name
+    FROM identity.users AS person
+    WHERE person.id = ANY (person_ids)
+      AND person.disabled_at IS NULL;
+
+  RETURN QUERY
+    SELECT 'team'::text, team.id, team.name
+    FROM identity.teams AS team
+    WHERE team.id = ANY (team_ids);
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.names_of(bytea, uuid[], uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.names_of(bytea, uuid[], uuid[]) TO upmo_app;
+
+-- role_directory lists every role with the count of its enabled people, for
+-- the actor behind actor_token_hash.
+-- +goose StatementBegin
+CREATE FUNCTION identity.role_directory(
+  actor_token_hash bytea
+)
+RETURNS TABLE (id uuid, name text, key text, permissions text[], members bigint)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id
+  INTO v_actor_id
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  RETURN QUERY
+    SELECT role.id, role.name, COALESCE(role.key, ''), role.permissions,
+           (SELECT count(*) FROM identity.users AS person
+            WHERE person.role_id = role.id AND person.disabled_at IS NULL)
+    FROM identity.roles AS role
+    ORDER BY role.name;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.role_directory(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.role_directory(bytea) TO upmo_app;
+
+-- object_grants lists the person and team grants of one task or chat with
+-- the names of their subjects, in the order they were made, for the actor
+-- behind actor_token_hash. Role grants are not listed.
+-- +goose StatementBegin
+CREATE FUNCTION identity.object_grants(
+  actor_token_hash bytea,
+  object_type text,
+  object_id uuid
+)
+RETURNS TABLE (subject_type text, subject_id uuid, name text, level text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id
+  INTO v_actor_id
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF object_grants.object_type IS NULL OR object_grants.object_type NOT IN ('task', 'chat') THEN
+    RAISE EXCEPTION 'identity: unknown object type' USING ERRCODE = '22023';
+  END IF;
+
+  RETURN QUERY
+    SELECT CASE WHEN share.user_id IS NOT NULL THEN 'person' ELSE 'team' END::text,
+           COALESCE(share.user_id, share.team_id),
+           COALESCE(person.name, team.name, ''),
+           share.level
+    FROM identity.shares AS share
+    LEFT JOIN identity.users AS person ON person.id = share.user_id
+    LEFT JOIN identity.teams AS team ON team.id = share.team_id
+    WHERE share.object_type = object_grants.object_type
+      AND share.object_id = object_grants.object_id
+      AND share.grantee_role_id IS NULL
+    ORDER BY share.id;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.object_grants(bytea, text, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.object_grants(bytea, text, uuid) TO upmo_app;
+
+-- replace_object_grants replaces the person and team grants of one task or
+-- chat in the caller's transaction: grants not listed are deleted, new ones
+-- are inserted with the actor as grantor, and a changed level is updated.
+-- Role grants are untouched. grants is a JSON array of
+-- {"subject_type": "person"|"team", "subject_id": "<uuid>", "level": "<level>"}.
+-- +goose StatementBegin
+CREATE FUNCTION identity.replace_object_grants(
+  actor_token_hash bytea,
+  object_type text,
+  object_id uuid,
+  grants jsonb
+)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+  v_grant jsonb;
+  v_type text;
+  v_id text;
+  v_keys text[] := '{}';
+  v_stored record;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id
+  INTO v_actor_id
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF replace_object_grants.object_type IS NULL OR replace_object_grants.object_type NOT IN ('task', 'chat') THEN
+    RAISE EXCEPTION 'identity: unknown object type' USING ERRCODE = '22023';
+  END IF;
+
+  IF grants IS NULL OR pg_catalog.jsonb_typeof(grants) <> 'array' THEN
+    RAISE EXCEPTION 'identity: grants must be an array' USING ERRCODE = '22023';
+  END IF;
+
+  -- Check the whole list before any write, so a refusal writes nothing.
+  FOR v_grant IN SELECT value FROM pg_catalog.jsonb_array_elements(grants) LOOP
+    v_type := v_grant ->> 'subject_type';
+    v_id := v_grant ->> 'subject_id';
+    IF v_type IS NULL OR v_type NOT IN ('person', 'team') THEN
+      RAISE EXCEPTION 'identity: unknown subject type' USING ERRCODE = '22023';
+    END IF;
+    IF v_id IS NULL OR v_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+      RAISE EXCEPTION 'identity: invalid subject id' USING ERRCODE = '22023';
+    END IF;
+    IF (v_type || ':' || v_id::uuid::text) = ANY (v_keys) THEN
+      RAISE EXCEPTION 'identity: duplicate grant subject' USING ERRCODE = '22023';
+    END IF;
+    v_keys := v_keys || (v_type || ':' || v_id::uuid::text);
+    IF v_type = 'person' AND NOT EXISTS (
+      SELECT 1 FROM identity.users AS person
+      WHERE person.id = v_id::uuid AND person.disabled_at IS NULL
+    ) THEN
+      RAISE EXCEPTION 'identity: no such grantee' USING ERRCODE = 'P0002';
+    END IF;
+    IF v_type = 'team' AND NOT EXISTS (
+      SELECT 1 FROM identity.teams AS team WHERE team.id = v_id::uuid
+    ) THEN
+      RAISE EXCEPTION 'identity: no such grantee' USING ERRCODE = 'P0002';
+    END IF;
+  END LOOP;
+
+  -- An object with no grants has no rows to lock, so two replacements would
+  -- both insert and the loser would fail the unique index: one advisory lock
+  -- per object makes the second wait and then converge.
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(replace_object_grants.object_id::text, 0::bigint));
+
+  FOR v_stored IN
+    SELECT share.id,
+           CASE WHEN share.user_id IS NOT NULL THEN 'person:' || share.user_id::text
+                ELSE 'team:' || share.team_id::text END AS subject_key,
+           share.level
+    FROM identity.shares AS share
+    WHERE share.object_type = replace_object_grants.object_type
+      AND share.object_id = replace_object_grants.object_id
+      AND share.grantee_role_id IS NULL
+    ORDER BY share.id
+    FOR UPDATE
+  LOOP
+    IF NOT (v_stored.subject_key = ANY (v_keys)) THEN
+      DELETE FROM identity.shares AS share WHERE share.id = v_stored.id;
+    END IF;
+  END LOOP;
+
+  FOR v_grant IN SELECT value FROM pg_catalog.jsonb_array_elements(grants) LOOP
+    v_type := v_grant ->> 'subject_type';
+    v_id := (v_grant ->> 'subject_id')::uuid::text;
+    IF v_type = 'person' THEN
+      UPDATE identity.shares AS share SET level = v_grant ->> 'level'
+      WHERE share.object_type = replace_object_grants.object_type
+        AND share.object_id = replace_object_grants.object_id
+        AND share.user_id = v_id::uuid
+        AND share.level IS DISTINCT FROM v_grant ->> 'level';
+      IF NOT EXISTS (
+        SELECT 1 FROM identity.shares AS share
+        WHERE share.object_type = replace_object_grants.object_type
+          AND share.object_id = replace_object_grants.object_id
+          AND share.user_id = v_id::uuid
+      ) THEN
+        INSERT INTO identity.shares (object_type, object_id, user_id, level, granted_by)
+        VALUES (replace_object_grants.object_type, replace_object_grants.object_id, v_id::uuid, v_grant ->> 'level', v_actor_id);
+      END IF;
+    ELSE
+      UPDATE identity.shares AS share SET level = v_grant ->> 'level'
+      WHERE share.object_type = replace_object_grants.object_type
+        AND share.object_id = replace_object_grants.object_id
+        AND share.team_id = v_id::uuid
+        AND share.level IS DISTINCT FROM v_grant ->> 'level';
+      IF NOT EXISTS (
+        SELECT 1 FROM identity.shares AS share
+        WHERE share.object_type = replace_object_grants.object_type
+          AND share.object_id = replace_object_grants.object_id
+          AND share.team_id = v_id::uuid
+      ) THEN
+        INSERT INTO identity.shares (object_type, object_id, team_id, level, granted_by)
+        VALUES (replace_object_grants.object_type, replace_object_grants.object_id, v_id::uuid, v_grant ->> 'level', v_actor_id);
+      END IF;
+    END IF;
+  END LOOP;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.replace_object_grants(bytea, text, uuid, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.replace_object_grants(bytea, text, uuid, jsonb) TO upmo_app;
+
+-- add_team_member puts a joined, enabled person on a team for an actor who
+-- may manage teams. It answers true when the person was added and false when
+-- they were on the team already. The caller records the audit event.
+-- +goose StatementBegin
+CREATE FUNCTION identity.add_team_member(
+  actor_token_hash bytea,
+  team_id uuid,
+  user_id uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_id uuid;
+  v_actor_perms text[];
+  v_joined boolean;
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.id, identity.role_permissions(role.key, role.permissions)
+  INTO v_actor_id, v_actor_perms
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT ('teams:manage' = ANY (v_actor_perms)) THEN
+    RAISE EXCEPTION 'identity: only team managers manage teams' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT person.joined_at IS NOT NULL
+  INTO v_joined
+  FROM identity.users AS person
+  WHERE person.id = add_team_member.user_id
+    AND person.disabled_at IS NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: no such member' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF NOT v_joined THEN
+    RAISE EXCEPTION 'identity: not joined' USING ERRCODE = 'P0002';
+  END IF;
+
+  PERFORM 1 FROM identity.teams AS team WHERE team.id = add_team_member.team_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: no such team' USING ERRCODE = 'P0002';
+  END IF;
+
+  INSERT INTO identity.team_members AS membership (team_id, user_id)
+  VALUES (add_team_member.team_id, add_team_member.user_id)
+  ON CONFLICT DO NOTHING;
+  RETURN FOUND;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.add_team_member(bytea, uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.add_team_member(bytea, uuid, uuid) TO upmo_app;
+
 -- +goose StatementBegin
 CREATE FUNCTION identity.member_disable(
   actor_token_hash bytea,
@@ -1778,6 +2151,11 @@ DROP FUNCTION IF EXISTS identity.token_create(bytea, text, bytea, text[], timest
 DROP FUNCTION IF EXISTS identity.member_invite(bytea, text, bytea[], text, text, uuid, bytea, bytea, timestamptz, timestamptz);
 DROP FUNCTION IF EXISTS identity.avatar_set(bytea, text);
 DROP FUNCTION IF EXISTS identity.member_disable(bytea, uuid, timestamptz);
+DROP FUNCTION IF EXISTS identity.names_of(bytea, uuid[], uuid[]);
+DROP FUNCTION IF EXISTS identity.role_directory(bytea);
+DROP FUNCTION IF EXISTS identity.object_grants(bytea, text, uuid);
+DROP FUNCTION IF EXISTS identity.replace_object_grants(bytea, text, uuid, jsonb);
+DROP FUNCTION IF EXISTS identity.add_team_member(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);
 DROP FUNCTION IF EXISTS identity.teams_of(uuid);
