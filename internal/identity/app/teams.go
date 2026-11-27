@@ -13,7 +13,7 @@ type TeamStore interface {
 	ListTeams(ctx context.Context) ([]domain.Team, error)
 	CreateTeam(ctx context.Context, name string) (domain.TeamID, error)
 	AddTeamMember(ctx context.Context, actorTokenHash []byte, team domain.TeamID, user domain.UserID) error
-	RemoveTeamMember(ctx context.Context, team domain.TeamID, user domain.UserID) error
+	RemoveTeamMember(ctx context.Context, actorTokenHash []byte, team domain.TeamID, user domain.UserID) error
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
 }
 
@@ -75,7 +75,7 @@ func (t Teams) Remove(ctx context.Context, session Session, team domain.TeamID, 
 	if err := t.gate(ctx, session, "team member refused"); err != nil {
 		return err
 	}
-	if err := t.Store.RemoveTeamMember(ctx, team, user); err != nil {
+	if err := t.Store.RemoveTeamMember(ctx, session.TokenHash, team, user); err != nil {
 		return t.refuse("team member refused", session, err)
 	}
 	return nil

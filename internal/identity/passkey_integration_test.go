@@ -422,7 +422,7 @@ func TestRecoverLinkJoinsAnInvitedPerson(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO identity.teams (name) VALUES ('Ship') RETURNING id`).Scan(&team); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, team, leeID); err != nil {
+	if _, err := ownerPool.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, team, leeID); err != nil {
 		t.Fatal(err)
 	}
 }

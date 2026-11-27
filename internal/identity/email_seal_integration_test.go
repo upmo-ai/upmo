@@ -374,7 +374,7 @@ func TestListMembersSortsByAddress(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, person := range people {
-			if _, err := k.pool.Exec(k.ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, id, invited[person]); err != nil {
+			if _, err := k.owner.Exec(k.ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, id, invited[person]); err != nil {
 				t.Fatal(err)
 			}
 		}

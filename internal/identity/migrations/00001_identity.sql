@@ -378,12 +378,13 @@ GRANT SELECT (id, email_hash, email_hash_key_id, name, external_id, role_id, inv
 GRANT UPDATE (password_hash, webauthn_handle, joined_at, passkey_offered_at) ON identity.users TO upmo_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   identity.teams,
-  identity.team_members,
-  identity.shares,
   identity.passkeys,
   identity.throttle,
   identity.connector_grants
 TO upmo_app;
+-- upmo_app only reads shares and team members. It writes them only through
+-- a definer that checks the actor's session.
+GRANT SELECT ON identity.team_members, identity.shares TO upmo_app;
 GRANT SELECT (id, user_id, created_at, last_seen_at, expires_at, sign_in_method, signed_in_at, user_agent) ON identity.sessions TO upmo_app;
 GRANT INSERT, DELETE ON identity.sessions TO upmo_app;
 GRANT UPDATE (last_seen_at, sign_in_method, signed_in_at) ON identity.sessions TO upmo_app;
@@ -1255,6 +1256,62 @@ $$;
 
 REVOKE ALL ON FUNCTION identity.add_team_member(bytea, uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.add_team_member(bytea, uuid, uuid) TO upmo_app;
+
+-- remove_team_member takes a person off a team for an actor who may manage
+-- teams. It answers true when a membership was deleted and false when the
+-- person was not on the team. The caller records the audit event.
+-- +goose StatementBegin
+CREATE FUNCTION identity.remove_team_member(
+  actor_token_hash bytea,
+  team_id uuid,
+  user_id uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_actor_perms text[];
+BEGIN
+  IF actor_token_hash IS NULL THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT identity.role_permissions(role.key, role.permissions)
+  INTO v_actor_perms
+  FROM identity.sessions AS session
+  JOIN identity.users AS person ON person.id = session.user_id
+  JOIN identity.roles AS role ON role.id = person.role_id
+  WHERE session.token_hash = actor_token_hash
+    AND session.expires_at > pg_catalog.now()
+    AND person.disabled_at IS NULL
+    AND person.joined_at IS NOT NULL;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: invalid actor session' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT ('teams:manage' = ANY (v_actor_perms)) THEN
+    RAISE EXCEPTION 'identity: only team managers manage teams' USING ERRCODE = '42501';
+  END IF;
+
+  PERFORM 1 FROM identity.teams AS team WHERE team.id = remove_team_member.team_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'identity: no such team' USING ERRCODE = 'P0002';
+  END IF;
+
+  DELETE FROM identity.team_members AS membership
+  WHERE membership.team_id = remove_team_member.team_id
+    AND membership.user_id = remove_team_member.user_id;
+  RETURN FOUND;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.remove_team_member(bytea, uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.remove_team_member(bytea, uuid, uuid) TO upmo_app;
 
 -- +goose StatementBegin
 CREATE FUNCTION identity.member_disable(
@@ -2156,6 +2213,7 @@ DROP FUNCTION IF EXISTS identity.role_directory(bytea);
 DROP FUNCTION IF EXISTS identity.object_grants(bytea, text, uuid);
 DROP FUNCTION IF EXISTS identity.replace_object_grants(bytea, text, uuid, jsonb);
 DROP FUNCTION IF EXISTS identity.add_team_member(bytea, uuid, uuid);
+DROP FUNCTION IF EXISTS identity.remove_team_member(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);
 DROP FUNCTION IF EXISTS identity.teams_of(uuid);

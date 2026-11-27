@@ -33,6 +33,7 @@ var actorDefiners = []string{
 	"identity.object_grants(bytea, text, uuid)",
 	"identity.replace_object_grants(bytea, text, uuid, jsonb)",
 	"identity.add_team_member(bytea, uuid, uuid)",
+	"identity.remove_team_member(bytea, uuid, uuid)",
 }
 
 // definerWorld is the cast the actor definer tests share: a joined owner
@@ -144,6 +145,7 @@ func TestActorDefinersRefuseABadHash(t *testing.T) {
 		"object_grants":         {`SELECT * FROM identity.object_grants($1, 'task', $2::uuid)`, []any{task}},
 		"replace_object_grants": {`SELECT * FROM identity.replace_object_grants($1, 'task', $2::uuid, $3::jsonb)`, []any{task, grants}},
 		"add_team_member":       {`SELECT * FROM identity.add_team_member($1, $2::uuid, $3::uuid)`, []any{team, w.ownerID}},
+		"remove_team_member":    {`SELECT * FROM identity.remove_team_member($1, $2::uuid, $3::uuid)`, []any{team, w.ownerID}},
 	}
 	if len(calls) != len(actorDefiners) {
 		t.Fatalf("calls cover %d definers, want all %d", len(calls), len(actorDefiners))
@@ -471,6 +473,33 @@ func (w *definerWorld) teamEvents(t *testing.T) int {
 	return w.count(t, "audit.pending WHERE action = 'team.member_add'")
 }
 
+// removeEvents counts the team.member_remove events waiting to be sealed.
+func (w *definerWorld) removeEvents(t *testing.T) int {
+	t.Helper()
+	return w.count(t, "audit.pending WHERE action = 'team.member_remove'")
+}
+
+// atOnce starts every call in its own goroutine at one signal and answers
+// the first error.
+func atOnce(calls ...func() error) error {
+	start := make(chan struct{})
+	errs := make(chan error, len(calls))
+	for _, call := range calls {
+		go func() {
+			<-start
+			errs <- call()
+		}()
+	}
+	close(start)
+	var first error
+	for range calls {
+		if err := <-errs; err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
 // endingSessions ends a session right after the route looked it up, so the
 // definer sees a session the route still holds.
 type endingSessions struct {
@@ -579,6 +608,177 @@ func TestAddTeamMemberDefiner(t *testing.T) {
 	}
 }
 
+// remove_team_member needs a live joined actor with teams:manage, keeps the
+// refusals add_team_member answers, and records one team.member_remove event
+// only when the person left the team. Someone who was not on the team answers
+// false with no event and no error. An unknown team is P0002, which the store
+// maps to domain.ErrNoSuchTeam. Two managers removing the same person at once
+// get one true, one false and one event. A session that ends after the
+// route's lookup answers 401 and removes nobody.
+func TestRemoveTeamMemberDefiner(t *testing.T) {
+	w := newDefinerWorld(t)
+	ann, annSess := w.live(t, "ann@example.com", "Ann", "admin")
+	_, benSess := w.live(t, "ben@example.com", "Ben", "admin")
+	bob, _ := w.live(t, "bob@example.com", "Bob", "member")
+	_, moSess := w.live(t, "mo@example.com", "Mo", "member")
+	t1 := w.team(t, "T1")
+	teamID, err := domain.ParseTeamID(t1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := func(id string) domain.UserID {
+		t.Helper()
+		parsed, err := domain.ParseUserID(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	bobID := user(bob)
+	teams := identity.Teams(w.app, nil)
+	as := w.session(t, ann, annSess)
+	const remove = `SELECT * FROM identity.remove_team_member($1, $2::uuid, $3::uuid)`
+	const add = `SELECT * FROM identity.add_team_member($1, $2::uuid, $3::uuid)`
+
+	if err := teams.Add(w.ctx, as, teamID, bobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := teams.Remove(w.ctx, as, teamID, bobID); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.removeEvents(t); got != 1 {
+		t.Fatalf("team.member_remove events = %d, want 1", got)
+	}
+	if got := w.count(t, "identity.team_members"); got != 0 {
+		t.Fatalf("team_members = %d, want 0", got)
+	}
+	if err := teams.Remove(w.ctx, as, teamID, bobID); err != nil {
+		t.Fatalf("removing someone who is not on the team: %v", err)
+	}
+	if got := w.removeEvents(t); got != 1 {
+		t.Fatalf("team.member_remove events after a repeat = %d, want still 1", got)
+	}
+
+	// The definer itself answers true when it deleted a row and false when
+	// the person was not on the team.
+	if _, err := w.app.Exec(w.ctx, add, annSess, t1, bob); err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	if err := w.app.QueryRow(w.ctx, remove, annSess, t1, bob).Scan(&removed); err != nil || !removed {
+		t.Fatalf("remove_team_member for a member = %t %v, want true", removed, err)
+	}
+	if err := w.app.QueryRow(w.ctx, remove, annSess, t1, bob).Scan(&removed); err != nil || removed {
+		t.Fatalf("remove_team_member for someone not on the team = %t %v, want false", removed, err)
+	}
+
+	unknownTeam, err := domain.ParseTeamID(w.randomUUID(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.app.Exec(w.ctx, remove, annSess, unknownTeam, bob); pgCode(err) != "P0002" {
+		t.Fatalf("remove_team_member on an unknown team = %v, want SQLSTATE P0002", err)
+	}
+	if err := teams.Store.RemoveTeamMember(w.ctx, annSess, unknownTeam, bobID); !errors.Is(err, domain.ErrNoSuchTeam) {
+		t.Fatalf("RemoveTeamMember on an unknown team = %v, want ErrNoSuchTeam", err)
+	}
+
+	// Every refusal answers 42501, maps as add_team_member's refusals map, and
+	// leaves the person on the team.
+	if _, err := w.app.Exec(w.ctx, add, annSess, t1, bob); err != nil {
+		t.Fatal(err)
+	}
+	for name, hash := range w.bad {
+		if _, err := w.app.Exec(w.ctx, remove, hash, t1, bob); pgCode(err) != "42501" {
+			t.Fatalf("%s: remove_team_member = %v, want SQLSTATE 42501", name, err)
+		}
+		if err := teams.Store.RemoveTeamMember(w.ctx, hash, teamID, bobID); !errors.Is(err, app.ErrNotSignedIn) {
+			t.Fatalf("%s: RemoveTeamMember = %v, want ErrNotSignedIn", name, err)
+		}
+		if got := w.count(t, "identity.team_members"); got != 1 {
+			t.Fatalf("%s: team_members = %d, want 1", name, got)
+		}
+	}
+	if _, err := w.app.Exec(w.ctx, remove, moSess, t1, bob); pgCode(err) != "42501" {
+		t.Fatalf("member remove_team_member = %v, want SQLSTATE 42501", err)
+	}
+	if err := teams.Store.RemoveTeamMember(w.ctx, moSess, teamID, bobID); !errors.Is(err, domain.ErrTeamsOnly) {
+		t.Fatalf("member RemoveTeamMember = %v, want ErrTeamsOnly", err)
+	}
+	if got := w.count(t, "identity.team_members"); got != 1 {
+		t.Fatalf("team_members after the refusals = %d, want 1", got)
+	}
+
+	// Two managers removing the same person at once, each on their own
+	// database session: one delete wins and the other answers false.
+	if _, err := w.app.Exec(w.ctx, add, annSess, t1, bob); err != nil {
+		t.Fatal(err)
+	}
+	answers := make(chan bool, 2)
+	removeBy := func(hash []byte) func() error {
+		return func() error {
+			var removed bool
+			if err := w.app.QueryRow(w.ctx, remove, hash, t1, bob).Scan(&removed); err != nil {
+				return err
+			}
+			answers <- removed
+			return nil
+		}
+	}
+	if err := atOnce(removeBy(annSess), removeBy(benSess)); err != nil {
+		t.Fatal(err)
+	}
+	trues := 0
+	for range 2 {
+		if <-answers {
+			trues++
+		}
+	}
+	if trues != 1 {
+		t.Fatalf("two removes at once answered true %d times, want 1", trues)
+	}
+
+	// Through the store, the same race records exactly one event.
+	if err := teams.Add(w.ctx, as, teamID, bobID); err != nil {
+		t.Fatal(err)
+	}
+	before := w.removeEvents(t)
+	store := teams.Store
+	if err := atOnce(
+		func() error { return store.RemoveTeamMember(w.ctx, annSess, teamID, bobID) },
+		func() error { return store.RemoveTeamMember(w.ctx, benSess, teamID, bobID) },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.removeEvents(t) - before; got != 1 {
+		t.Fatalf("two removes at once recorded %d team.member_remove events, want 1", got)
+	}
+	if got := w.count(t, "identity.team_members"); got != 0 {
+		t.Fatalf("team_members after two removes at once = %d, want 0", got)
+	}
+
+	// A session that ends between the route's lookup and the definer call
+	// answers 401, not 500, and the person stays on the team.
+	if err := teams.Add(w.ctx, as, teamID, bobID); err != nil {
+		t.Fatal(err)
+	}
+	sessions := identity.Sessions(w.app, domain.IdleTimeout, domain.MaxAge)
+	sessions.Store = endingSessions{Store: sessions.Store, owner: w.owner}
+	text, _, err := sessions.Start(w.ctx, user(ann), "passkey", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	identity.MountTeams(mux, teams, sessions)
+	rec := call(mux, http.MethodDelete, "/api/teams/"+t1+"/members/"+bob, text, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ended session remove = %d %s, want 401", rec.Code, rec.Body.String())
+	}
+	if got := w.count(t, "identity.team_members"); got != 1 {
+		t.Fatalf("team_members after the ended session = %d, want 1", got)
+	}
+}
+
 // statementLog records the SQL text of every query a pool sends.
 type statementLog struct {
 	mu   sync.Mutex
@@ -607,8 +807,14 @@ func (l *statementLog) take() []string {
 func TestStoreSendsOnlyDefinerCalls(t *testing.T) {
 	w := newDefinerWorld(t)
 	bob, _ := w.live(t, "bob@example.com", "Bob", "member")
+	cy := w.person(t, "cy@example.com", "Cy", w.roleID(t, "member"), true, false)
 	t1 := w.team(t, "T1")
 	task := w.randomUUID(t)
+	// Cy starts on the team, so the remove deletes a row whatever the order
+	// of the calls below.
+	if _, err := w.owner.Exec(w.ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1, $2)`, t1, cy); err != nil {
+		t.Fatal(err)
+	}
 
 	log := &statementLog{}
 	cfg, err := pgxpool.ParseConfig(pgtest.AppLoginURL(t, w.owner))
@@ -631,26 +837,34 @@ func TestStoreSendsOnlyDefinerCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cyID, err := domain.ParseUserID(cy)
+	if err != nil {
+		t.Fatal(err)
+	}
 	grants := []identity.GrantWrite{{SubjectType: "person", SubjectID: bob, Level: "viewer"}}
 
-	calls := map[string]func() error{
-		"NamesOf": func() error {
+	// fn is the one definer each call may send.
+	calls := map[string]struct {
+		run func() error
+		fn  string
+	}{
+		"NamesOf": {func() error {
 			_, _, err := members.Store.NamesOf(w.ctx, w.ownerSess, []string{bob}, []string{t1})
 			return err
-		},
-		"ListRoles": func() error {
+		}, "names_of"},
+		"ListRoles": {func() error {
 			_, err := members.Store.ListRoles(w.ctx, w.ownerSess)
 			return err
-		},
-		"TaskGrants": func() error {
+		}, "role_directory"},
+		"TaskGrants": {func() error {
 			_, err := members.Store.TaskGrants(w.ctx, w.ownerSess, task)
 			return err
-		},
-		"ChatGrants": func() error {
+		}, "object_grants"},
+		"ChatGrants": {func() error {
 			_, err := members.Store.ChatGrants(w.ctx, w.ownerSess, task)
 			return err
-		},
-		"ReplaceTaskGrantsTx": func() error {
+		}, "object_grants"},
+		"ReplaceTaskGrantsTx": {func() error {
 			tx, err := pool.Begin(w.ctx)
 			if err != nil {
 				return err
@@ -660,17 +874,20 @@ func TestStoreSendsOnlyDefinerCalls(t *testing.T) {
 				return err
 			}
 			return tx.Commit(w.ctx)
-		},
-		"ReplaceChatGrants": func() error {
+		}, "replace_object_grants"},
+		"ReplaceChatGrants": {func() error {
 			return members.Store.ReplaceChatGrants(w.ctx, w.ownerSess, task, grants)
-		},
-		"AddTeamMember": func() error {
+		}, "replace_object_grants"},
+		"AddTeamMember": {func() error {
 			return teams.Store.AddTeamMember(w.ctx, w.ownerSess, teamID, bobID)
-		},
+		}, "add_team_member"},
+		"RemoveTeamMember": {func() error {
+			return teams.Store.RemoveTeamMember(w.ctx, w.ownerSess, teamID, cyID)
+		}, "remove_team_member"},
 	}
-	for name, run := range calls {
+	for name, call := range calls {
 		log.take()
-		if err := run(); err != nil {
+		if err := call.run(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		sqls := log.take()
@@ -679,25 +896,22 @@ func TestStoreSendsOnlyDefinerCalls(t *testing.T) {
 			switch {
 			case strings.EqualFold(sql, "begin"), strings.EqualFold(sql, "commit"):
 				continue
-			case name == "AddTeamMember" && strings.HasPrefix(sql, "INSERT INTO audit.pending"):
+			case (name == "AddTeamMember" || name == "RemoveTeamMember") && strings.HasPrefix(sql, "INSERT INTO audit.pending"):
 				continue
 			}
-			ok := false
-			for _, fn := range []string{"names_of", "role_directory", "object_grants", "replace_object_grants", "add_team_member"} {
-				if strings.HasPrefix(sql, "SELECT * FROM identity."+fn+"(") {
-					ok = true
-				}
-			}
-			if !ok {
-				t.Fatalf("%s sent %q, want only a definer call", name, sql)
+			if !strings.HasPrefix(sql, "SELECT * FROM identity."+call.fn+"(") {
+				t.Fatalf("%s sent %q, want only identity.%s", name, sql, call.fn)
 			}
 			definer++
 		}
 		if definer != 1 {
-			t.Fatalf("%s sent %d definer calls in %q, want 1", name, definer, sqls)
+			t.Fatalf("%s sent %d identity.%s calls in %q, want 1", name, definer, call.fn, sqls)
 		}
 	}
 	if got := w.teamEvents(t); got != 1 {
 		t.Fatalf("team.member_add events = %d, want 1", got)
+	}
+	if got := w.removeEvents(t); got != 1 {
+		t.Fatalf("team.member_remove events = %d, want 1", got)
 	}
 }

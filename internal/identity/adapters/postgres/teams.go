@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/upmo-ai/upmo/internal/identity/app"
@@ -94,8 +93,8 @@ func (p Passkeys) AddTeamMember(ctx context.Context, actorTokenHash []byte, team
 	return tx.Commit(ctx)
 }
 
-// mapAddTeamMember maps the add_team_member refusals to their domain errors;
-// any other error is a team write.
+// mapAddTeamMember maps the add_team_member and remove_team_member refusals
+// to their domain errors; any other error is a team write.
 func mapAddTeamMember(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -115,27 +114,22 @@ func mapAddTeamMember(err error) error {
 	return mapTeamWrite(err)
 }
 
-// RemoveTeamMember takes a person off a team. Removing someone who is not on
-// the team changes nothing and records no event. The team.member_remove event
-// records the removed user in the same transaction.
-func (p Passkeys) RemoveTeamMember(ctx context.Context, team domain.TeamID, user domain.UserID) error {
+// RemoveTeamMember takes a person off a team through
+// identity.remove_team_member for the actor behind actorTokenHash. Removing
+// someone who is not on the team changes nothing and records no event. The
+// team.member_remove event records the removed user in the same transaction.
+func (p Passkeys) RemoveTeamMember(ctx context.Context, actorTokenHash []byte, team domain.TeamID, user domain.UserID) error {
 	tx, err := p.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var one int
-	if err := tx.QueryRow(ctx, `SELECT 1 FROM identity.teams WHERE id = $1`, team).Scan(&one); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrNoSuchTeam
-		}
-		return err
+	var removed bool
+	if err := tx.QueryRow(ctx, `SELECT * FROM identity.remove_team_member($1, $2, $3)`,
+		actorTokenHash, team, user).Scan(&removed); err != nil {
+		return mapAddTeamMember(err)
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM identity.team_members WHERE team_id = $1 AND user_id = $2`, team, user)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+	if !removed {
 		// Not on the team, so nothing changed and there is no event.
 		audit.NoChange(ctx)
 		return tx.Commit(ctx)
