@@ -11,7 +11,7 @@ import (
 // TeamStore is the team rows and their memberships.
 type TeamStore interface {
 	ListTeams(ctx context.Context) ([]domain.Team, error)
-	CreateTeam(ctx context.Context, name string) (domain.TeamID, error)
+	CreateTeam(ctx context.Context, actorTokenHash []byte, name string) (domain.TeamID, error)
 	AddTeamMember(ctx context.Context, actorTokenHash []byte, team domain.TeamID, user domain.UserID) error
 	RemoveTeamMember(ctx context.Context, actorTokenHash []byte, team domain.TeamID, user domain.UserID) error
 	MemberActor(ctx context.Context, id domain.UserID) (domain.RoleID, string, bool, []string, error)
@@ -52,7 +52,7 @@ func (t Teams) Create(ctx context.Context, session Session, name string) (domain
 	if err != nil {
 		return domain.TeamID{}, t.refuse("team create refused", session, err)
 	}
-	id, err := t.Store.CreateTeam(ctx, clean)
+	id, err := t.Store.CreateTeam(ctx, session.TokenHash, clean)
 	if err != nil {
 		return domain.TeamID{}, t.refuse("team create refused", session, err)
 	}

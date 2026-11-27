@@ -97,3 +97,34 @@ func TestTeamsIntegration(t *testing.T) {
 		t.Fatalf("remove %d %s", removed.Code, removed.Body.String())
 	}
 }
+
+func TestTeamCreateAsAdmin(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ownerPool, pool, handler, passkeys, ctx := identityMuxWithOwner(t, now)
+	mux := handler.(*http.ServeMux)
+	identity.MountTeams(mux, identity.Teams(pool, nil), passkeys.Sessions)
+	link, err := passkeys.Bootstrap(ctx, "ada@example.com", "Ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	soft, err := webauthn.NewSoft()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCookie := finishLink(t, mux, soft, link)
+	seedOwner(t, ownerPool, ctx, "another-owner@example.com")
+	if _, err := ownerPool.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'admin') WHERE id = $1`, userByEmail(t, pool, ctx, "ada@example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	created := call(mux, http.MethodPost, "/api/teams", adminCookie, jsonBody(t, map[string]string{"name": "Finance"}))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create as admin %d %s", created.Code, created.Body.String())
+	}
+	var team struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &team); err != nil || team.ID == "" {
+		t.Fatalf("created team = %+v, err %v", team, err)
+	}
+}

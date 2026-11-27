@@ -516,9 +516,9 @@ func TestRolledBackChangeLeavesNoPending(t *testing.T) {
 }
 
 func TestFailedAuditInsertRollsTheChangeBack(t *testing.T) {
-	owner, app := setup(t)
+	owner, _ := setup(t)
 	ctx := context.Background()
-	tx, err := app.Begin(ctx)
+	tx, err := owner.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
