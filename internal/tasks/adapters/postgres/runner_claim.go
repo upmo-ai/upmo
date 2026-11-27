@@ -13,6 +13,8 @@ import (
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
 
+var errBadMsgs = errors.New("tasks: negative message count")
+
 // ClaimState is the task and run state returned by ClaimRun.
 type ClaimState struct {
 	Token       string
@@ -20,6 +22,7 @@ type ClaimState struct {
 	Tainted     bool
 	PrivateRead bool
 	TurnSeq     int
+	MsgSeq      int
 }
 
 // ClaimRun acquires or takes over an expired runner lease for turn on runID.
@@ -62,12 +65,12 @@ func (s Store) ClaimRun(ctx context.Context, access app.Access, taskID, runID st
 	}
 
 	var runState string
-	var turnSeq int
+	var turnSeq, msgSeq int
 	err = tx.QueryRow(ctx, `
-		SELECT state, turn_seq
+		SELECT state, turn_seq, msg_seq
 		FROM tasks.runs
 		WHERE id = $1::uuid AND task_id = $2::uuid
-		FOR UPDATE`, runID, taskID).Scan(&runState, &turnSeq)
+		FOR UPDATE`, runID, taskID).Scan(&runState, &turnSeq, &msgSeq)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClaimState{}, app.ErrNotRunnable
 	}
@@ -133,6 +136,7 @@ func (s Store) ClaimRun(ctx context.Context, access app.Access, taskID, runID st
 		Tainted:     tainted,
 		PrivateRead: privateRead,
 		TurnSeq:     turnSeq,
+		MsgSeq:      msgSeq,
 	}, nil
 }
 
@@ -265,7 +269,7 @@ func (s Store) Release(ctx context.Context, access app.Access, taskID, token str
 }
 
 // SettleTx settles a live claim inside the caller's runner transaction.
-func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token string, actual int64) error {
+func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token string, actual int64, seqStart, msgs int) error {
 	if _, err := uuid.Parse(taskID); err != nil {
 		return app.ErrTask
 	}
@@ -277,6 +281,9 @@ func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token str
 	}
 	if actual < 0 {
 		return domain.ErrBudget
+	}
+	if msgs < 0 {
+		return errBadMsgs
 	}
 
 	var budget, held, spent int64
@@ -297,6 +304,34 @@ func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token str
 		return app.ErrFenced
 	}
 
+	var msgSeq int
+	err = tx.QueryRow(ctx, `
+		SELECT msg_seq
+		FROM tasks.runs
+		WHERE id = $1::uuid AND task_id = $2::uuid
+		FOR UPDATE`, runID, taskID).Scan(&msgSeq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.ErrNotRunnable
+	}
+	if err != nil {
+		return fmt.Errorf("tasks: lock run settle: %w", err)
+	}
+	if seqStart != msgSeq+1 {
+		return app.ErrFenced
+	}
+
+	var rowCount, minSeq, maxSeq int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*), COALESCE(min(seq), 0), COALESCE(max(seq), 0)
+		FROM tasks.turns
+		WHERE run_id = $1::uuid AND task_id = $2::uuid AND seq > $3`,
+		runID, taskID, msgSeq).Scan(&rowCount, &minSeq, &maxSeq); err != nil {
+		return fmt.Errorf("tasks: verify turn rows: %w", err)
+	}
+	if rowCount != msgs || (msgs > 0 && (minSeq != seqStart || maxSeq != seqStart+msgs-1)) {
+		return app.ErrFenced
+	}
+
 	if err := insertSettlement(ctx, tx, taskID, token, actual); err != nil {
 		return err
 	}
@@ -306,8 +341,9 @@ func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token str
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks.runs
-		SET turn_seq = turn_seq + 1
-		WHERE id = $1::uuid AND task_id = $2::uuid`, runID, taskID)
+		SET turn_seq = turn_seq + 1,
+		    msg_seq = msg_seq + $3
+		WHERE id = $1::uuid AND task_id = $2::uuid`, runID, taskID, msgs)
 	if err != nil {
 		return fmt.Errorf("tasks: advance turn_seq: %w", err)
 	}

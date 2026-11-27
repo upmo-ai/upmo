@@ -28,13 +28,13 @@ func markTaskRunnerOwned(t *testing.T, owner *pgxpool.Pool, taskID string) {
 	}
 }
 
-func settleViaRunnerTx(ctx context.Context, store postgres.Store, taskID, runID, token string, actual int64) error {
+func settleViaRunnerTx(ctx context.Context, store postgres.Store, taskID, runID, token string, actual int64, seqStart, msgs int) error {
 	return store.NarrowedRunnerTx(ctx, agentloop.AccessScope{
 		UserID:   ownerUser,
 		Allow:    ownerAccess.Allow,
 		ObjectID: taskID,
 	}, func(tx pgx.Tx) error {
-		return store.SettleTx(ctx, tx, taskID, runID, token, actual)
+		return store.SettleTx(ctx, tx, taskID, runID, token, actual, seqStart, msgs)
 	})
 }
 
@@ -81,8 +81,8 @@ func TestRunnerClaim(t *testing.T) {
 	if _, err := uuid.Parse(claim1.Token); err != nil {
 		t.Fatalf("claim1 token %q invalid UUID: %v", claim1.Token, err)
 	}
-	if claim1.Status != domain.Working || !claim1.Tainted || !claim1.PrivateRead || claim1.TurnSeq != 0 {
-		t.Fatalf("claim1 = %+v, want Working/tainted=true/private=true/turnSeq=0", claim1)
+	if claim1.Status != domain.Working || !claim1.Tainted || !claim1.PrivateRead || claim1.TurnSeq != 0 || claim1.MsgSeq != 0 {
+		t.Fatalf("claim1 = %+v, want Working/tainted=true/private=true/turnSeq=0/msgSeq=0", claim1)
 	}
 
 	var dbToken string
@@ -127,7 +127,7 @@ func TestRunnerClaim(t *testing.T) {
 	}
 
 	// Settle turn 1 -> turn_seq = 1, claim_token cleared.
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim2.Token, 100); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim2.Token, 100, 1, 0); err != nil {
 		t.Fatalf("settle turn 1 = %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestRunnerClaim(t *testing.T) {
 	if err != nil || claimTurn2.TurnSeq != 1 {
 		t.Fatalf("Claim(turn 2) = %+v, %v", claimTurn2, err)
 	}
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claimTurn2.Token, 50); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claimTurn2.Token, 50, 1, 0); err != nil {
 		t.Fatalf("settle turn 2 = %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestRunnerSettleTx(t *testing.T) {
 		}
 	})
 
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim1.Token, 250_000); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim1.Token, 250_000, 1, 0); err != nil {
 		t.Fatalf("SettleTx(250000) = %v", err)
 	}
 
@@ -365,7 +365,7 @@ func TestRunnerSettleTx(t *testing.T) {
 	}
 
 	// Settling again with the cleared token returns ErrFenced.
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim1.Token, 100); !errors.Is(err, app.ErrFenced) {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim1.Token, 100, 1, 0); !errors.Is(err, app.ErrFenced) {
 		t.Fatalf("repeat SettleTx = %v, want ErrFenced", err)
 	}
 
@@ -379,7 +379,7 @@ func TestRunnerSettleTx(t *testing.T) {
 		VALUES ($1::uuid, $2::uuid, 123)`, task.ID, claim2.Token); err != nil {
 		t.Fatal(err)
 	}
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim2.Token, 50_000); !errors.Is(err, app.ErrAlready) {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim2.Token, 50_000, 1, 0); !errors.Is(err, app.ErrAlready) {
 		t.Fatalf("settlement row replay = %v, want ErrAlready", err)
 	}
 	if got := taskInt(t, owner, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, task.ID); got != 250_000 {
@@ -400,7 +400,7 @@ func TestRunnerSettleTx(t *testing.T) {
 	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET paused = true WHERE id = $1::uuid`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim2Live.Token, 100_000); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim2Live.Token, 100_000, 1, 0); err != nil {
 		t.Fatalf("SettleTx on paused task = %v", err)
 	}
 	if got := taskInt(t, owner, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, task.ID); got != 350_000 {
@@ -418,7 +418,7 @@ func TestRunnerSettleTx(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim3.Token, 60); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task.ID, run.ID, claim3.Token, 60, 1, 0); err != nil {
 		t.Fatalf("SettleTx overflow saturate = %v", err)
 	}
 	if got := taskInt(t, owner, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, task.ID); got != math.MaxInt64 {
@@ -875,7 +875,7 @@ func TestRunnerSettleOrphan(t *testing.T) {
 		t.Fatalf("order 1 turn_seq after A orphan = %d, want 0", got)
 	}
 
-	if err := settleViaRunnerTx(ctx, store, task1.ID, run1.ID, claimB1.Token, 200_000); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task1.ID, run1.ID, claimB1.Token, 200_000, 1, 0); err != nil {
 		t.Fatalf("order 1 SettleTx(B) = %v", err)
 	}
 	if err := owner.QueryRow(ctx, `
@@ -923,7 +923,7 @@ func TestRunnerSettleOrphan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := settleViaRunnerTx(ctx, store, task2.ID, run2.ID, claimB2.Token, 200_000); err != nil {
+	if err := settleViaRunnerTx(ctx, store, task2.ID, run2.ID, claimB2.Token, 200_000, 1, 0); err != nil {
 		t.Fatalf("order 2 SettleTx(B) = %v", err)
 	}
 	if err := store.SettleOrphan(ctx, ownerAccess, task2.ID, claimA2.Token, 100_000); err != nil {
