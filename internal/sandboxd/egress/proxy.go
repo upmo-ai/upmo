@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/upmo-ai/upmo/internal/platform/netguard"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/inject"
 )
@@ -215,31 +216,21 @@ func pipe(dst, src net.Conn) int64 {
 // gap between the name check at CONNECT and the address the name resolves
 // to, so an allowed name cannot be pointed at the host or its network.
 func PublicDialer() DialFunc {
-	d := &net.Dialer{
-		Timeout: DialTimeout,
-		ControlContext: func(_ context.Context, _, address string, _ syscall.RawConn) error {
-			ap, err := netip.ParseAddrPort(address)
-			if err != nil {
-				return fmt.Errorf("%w: %s", ErrResolved, address)
-			}
-			if !Public(ap.Addr()) {
-				return fmt.Errorf("%w: %s", ErrResolved, ap.Addr())
-			}
-			return nil
-		},
-	}
+	d := &net.Dialer{Timeout: DialTimeout, ControlContext: refuseBlocked}
 	return d.DialContext
 }
 
-// shared is the carrier-grade NAT range (RFC 6598), which netip does not
-// count as private.
-var shared = netip.MustParsePrefix("100.64.0.0/10")
-
-// Public reports whether addr is a public unicast address: not loopback,
-// link-local, private, shared, unspecified or multicast.
-func Public(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	return addr.IsValid() && addr.IsGlobalUnicast() && !addr.IsPrivate() && !shared.Contains(addr)
+// refuseBlocked is the dialer's control hook. netguard judges NAT64, 6to4
+// and mapped addresses by the IPv4 address inside them.
+func refuseBlocked(_ context.Context, _, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrResolved, address)
+	}
+	if reason := netguard.BlockedAddr(ap.Addr()); reason != "" {
+		return fmt.Errorf("%w: %s (%s)", ErrResolved, ap.Addr(), reason)
+	}
+	return nil
 }
 
 // proxyAuth reads Basic credentials from Proxy-Authorization.

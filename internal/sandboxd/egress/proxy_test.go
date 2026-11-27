@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -422,27 +421,35 @@ func TestRefusesUnknownSandboxAndOtherMethods(t *testing.T) {
 	}
 }
 
-func TestPublic(t *testing.T) {
+func TestRefuseBlocked(t *testing.T) {
 	for addr, want := range map[string]bool{
-		"140.82.121.4":        true,
-		"2606:4700::1111":     true,
-		"127.0.0.1":           false,
-		"10.0.0.1":            false,
-		"172.17.0.1":          false,
-		"192.168.5.2":         false,
-		"169.254.169.254":     false,
-		"100.100.100.200":     false,
-		"0.0.0.0":             false,
-		"255.255.255.255":     false,
-		"224.0.0.1":           false,
-		"::1":                 false,
-		"fe80::1":             false,
-		"fd00::1":             false,
-		"::ffff:127.0.0.1":    false,
-		"::ffff:140.82.121.4": true,
+		"140.82.121.4":         true,
+		"2606:4700::1111":      true,
+		"::ffff:140.82.121.4":  true,
+		"127.0.0.1":            false,
+		"10.0.0.1":             false,
+		"172.17.0.1":           false,
+		"192.168.5.2":          false,
+		"169.254.169.254":      false,
+		"100.100.100.200":      false,
+		"0.0.0.0":              false,
+		"255.255.255.255":      false,
+		"224.0.0.1":            false,
+		"::1":                  false,
+		"fe80::1":              false,
+		"fd00::1":              false,
+		"::ffff:127.0.0.1":     false,
+		"64:ff9b::a9fe:a9fe":   false,
+		"64:ff9b:1::a9fe:a9fe": false,
+		"2002:a9fe:a9fe::":     false,
+		"198.18.0.1":           false,
 	} {
-		if got := Public(netip.MustParseAddr(addr)); got != want {
-			t.Errorf("Public(%s) = %t", addr, got)
+		err := refuseBlocked(context.Background(), "tcp", net.JoinHostPort(addr, "443"), nil)
+		if (err == nil) != want {
+			t.Errorf("refuseBlocked(%s) = %v, want allowed=%t", addr, err, want)
+		}
+		if err != nil && !errors.Is(err, ErrResolved) {
+			t.Errorf("refuseBlocked(%s) = %v, want ErrResolved", addr, err)
 		}
 	}
 }
