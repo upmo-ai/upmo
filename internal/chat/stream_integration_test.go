@@ -243,10 +243,12 @@ func TestStreamSendsDeltasAsTheyAreWrittenThenTheLine(t *testing.T) {
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
 	release, closeRelease := holdRound(t)
+	releaseDone, closeDone := holdRound(t)
 	r.stub.reply(func(_ int, s *frames) {
 		s.delta("Hello ")
 		s.hold(release)
 		s.delta("world")
+		s.hold(releaseDone)
 		s.done("m1", 1, 1, nil)
 	})
 
@@ -260,6 +262,7 @@ func TestStreamSendsDeltasAsTheyAreWrittenThenTheLine(t *testing.T) {
 	live.expectQuiet(100 * time.Millisecond)
 	closeRelease()
 	live.expectDelta(queued.Args.ReplyID, 2, "world")
+	closeDone()
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
 	}
@@ -274,14 +277,21 @@ func TestStreamLineEventFollowsTheLastDeltaItsClientHolds(t *testing.T) {
 	chatID := r.open()
 	r.say(chatID, "hi", "")
 	queued := r.lastJob()
-	r.stub.reply(func(_ int, s *frames) { s.delta("Hello"); s.done("m1", 3, 4, i64(500000)) })
+	release, closeRelease := holdRound(t)
+	r.stub.reply(func(_ int, s *frames) {
+		s.delta("Hello")
+		s.hold(release)
+		s.done("m1", 3, 4, i64(500000))
+	})
 
 	live := r.stream("owner", chatID, nil, "")
-	if err := r.run(queued, 1); err != nil {
-		t.Fatal(err)
-	}
+	done := r.runAsync(queued, 1)
 	marker := live.expectDelta(queued.Args.ReplyID, 0, "")
 	text := live.expectDelta(queued.Args.ReplyID, 1, "Hello")
+	closeRelease()
+	if err := result(t, done); err != nil {
+		t.Fatal(err)
+	}
 	frame, line := live.expectLine(queued.Args.ReplyID)
 	if frame.id <= text.id || text.id <= marker.id {
 		t.Fatalf("ids %q %q %q do not rise", marker.id, text.id, frame.id)
