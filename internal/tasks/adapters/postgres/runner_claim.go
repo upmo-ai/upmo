@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
 	"github.com/upmo-ai/upmo/internal/tasks/domain"
 )
@@ -364,7 +365,8 @@ func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token str
 	if err := insertSettlement(ctx, tx, taskID, token, actual); err != nil {
 		return err
 	}
-	if err := applySettlementCharge(ctx, tx, taskID, budget, held, spent, actual, paused, true); err != nil {
+	nextSpent, nextPaused, err := applySettlementCharge(ctx, tx, taskID, budget, held, spent, actual, paused, true)
+	if err != nil {
 		return err
 	}
 
@@ -379,7 +381,19 @@ func (s Store) SettleTx(ctx context.Context, tx pgx.Tx, taskID, runID, token str
 	if tag.RowsAffected() != 1 {
 		return app.ErrNotRunnable
 	}
-	return nil
+	return audit.Record(ctx, tx, audit.Event{
+		Action: audit.TaskSettle, Outcome: audit.Success, TargetID: taskID,
+		Changes: audit.Changes{
+			Fields: []string{"amount", "claim_token", "mode", "paused", "spent"},
+			Values: map[string]audit.Change{
+				"amount":      {To: actual},
+				"claim_token": {To: token},
+				"mode":        {To: "turn"},
+				"paused":      {From: paused, To: nextPaused},
+				"spent":       {From: spent, To: nextSpent},
+			},
+		},
+	})
 }
 
 // SettleOrphan charges actual for a lost or stopped claim without touching any live claim or reservation.
@@ -424,7 +438,23 @@ func (s Store) SettleOrphan(ctx context.Context, access app.Access, taskID, toke
 	if err := insertSettlement(ctx, tx, taskID, token, actual); err != nil {
 		return err
 	}
-	if err := applySettlementCharge(ctx, tx, taskID, budget, held, spent, actual, paused, false); err != nil {
+	nextSpent, nextPaused, err := applySettlementCharge(ctx, tx, taskID, budget, held, spent, actual, paused, false)
+	if err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, audit.Event{
+		Action: audit.TaskSettle, Outcome: audit.Success, TargetID: taskID,
+		Changes: audit.Changes{
+			Fields: []string{"amount", "claim_token", "mode", "paused", "spent"},
+			Values: map[string]audit.Change{
+				"amount":      {To: actual},
+				"claim_token": {To: token},
+				"mode":        {To: "orphan"},
+				"paused":      {From: paused, To: nextPaused},
+				"spent":       {From: spent, To: nextSpent},
+			},
+		},
+	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -451,7 +481,8 @@ const (
 		    lease_until = NULL,
 		    updated_at = now()
 		WHERE id = $1::uuid
-		  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid`
+		  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+		RETURNING spent, paused`
 
 	settleOrphanExactSQL = `
 		UPDATE tasks.tasks
@@ -467,7 +498,8 @@ const (
 		    paused = paused OR (CASE WHEN $2::bigint > 9223372036854775807 - spent THEN 9223372036854775807 ELSE spent + $2::bigint END) >= budget - held,
 		    updated_at = now()
 		WHERE id = $1::uuid
-		  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid`
+		  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+		RETURNING spent, paused`
 )
 
 func insertSettlement(ctx context.Context, tx pgx.Tx, taskID, token string, actual int64) error {
@@ -484,24 +516,23 @@ func insertSettlement(ctx context.Context, tx pgx.Tx, taskID, token string, actu
 	return nil
 }
 
-func applySettlementCharge(ctx context.Context, tx pgx.Tx, taskID string, budget, held, spent, actual int64, paused, clearClaim bool) error {
+func applySettlementCharge(ctx context.Context, tx pgx.Tx, taskID string, budget, held, spent, actual int64, paused, clearClaim bool) (int64, bool, error) {
 	nextSpent, nextPaused, chargeErr := domain.Charge(budget, spent, actual, paused)
 	if chargeErr != nil {
 		if !errors.Is(chargeErr, domain.ErrExhausted) && !errors.Is(chargeErr, domain.ErrBudget) {
-			return chargeErr
+			return 0, false, chargeErr
 		}
 		query := settleOrphanSaturateSQL
 		if clearClaim {
 			query = settleClearSaturateSQL
 		}
-		tag, err := tx.Exec(ctx, query, taskID, actual)
-		if err != nil {
-			return fmt.Errorf("tasks: settle task: %w", err)
+		if err := tx.QueryRow(ctx, query, taskID, actual).Scan(&nextSpent, &nextPaused); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, false, app.ErrGone
+			}
+			return 0, false, fmt.Errorf("tasks: settle task: %w", err)
 		}
-		if tag.RowsAffected() != 1 {
-			return app.ErrGone
-		}
-		return nil
+		return nextSpent, nextPaused, nil
 	}
 	nextPaused = nextPaused || nextSpent >= budget-held
 	query := settleOrphanExactSQL
@@ -510,12 +541,12 @@ func applySettlementCharge(ctx context.Context, tx pgx.Tx, taskID string, budget
 	}
 	tag, err := tx.Exec(ctx, query, taskID, nextSpent, nextPaused)
 	if err != nil {
-		return fmt.Errorf("tasks: settle task: %w", err)
+		return 0, false, fmt.Errorf("tasks: settle task: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return app.ErrGone
+		return 0, false, app.ErrGone
 	}
-	return nil
+	return nextSpent, nextPaused, nil
 }
 
 func hasPermission(allow, want string) bool {

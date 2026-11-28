@@ -13,7 +13,18 @@ END
 $$;
 -- +goose StatementEnd
 
+-- +goose StatementBegin
+DO $$
+BEGIN
+  CREATE ROLE upmo_runner NOLOGIN;
+EXCEPTION
+  WHEN duplicate_object OR unique_violation THEN NULL;
+END
+$$;
+-- +goose StatementEnd
+
 GRANT USAGE ON SCHEMA audit TO upmo_app;
+GRANT USAGE ON SCHEMA audit TO upmo_runner;
 
 CREATE TABLE audit.pending (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -182,6 +193,12 @@ ALTER TABLE audit.pending ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit.pending FORCE ROW LEVEL SECURITY;
 CREATE POLICY pending_owner ON audit.pending FOR ALL USING (audit.owner()) WITH CHECK (audit.owner());
 CREATE POLICY pending_app_insert ON audit.pending FOR INSERT TO upmo_app WITH CHECK (true);
+CREATE POLICY pending_runner_insert ON audit.pending FOR INSERT TO upmo_runner WITH CHECK (
+  service = 'brain'
+  AND action = 'task.settle'
+  AND target_type = 'task'
+  AND target_id <> ''
+);
 
 ALTER TABLE audit.events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit.events FORCE ROW LEVEL SECURITY;
@@ -190,6 +207,8 @@ CREATE POLICY events_app_read ON audit.events FOR SELECT TO upmo_app
   USING ('audit:view' = ANY (string_to_array(NULLIF(current_setting('upmo.allow', true), ''), ',')));
 
 GRANT INSERT ON audit.pending TO upmo_app;
+GRANT INSERT ON audit.pending TO upmo_runner;
+REVOKE ALL ON audit.goose_db_version FROM upmo_runner;
 GRANT SELECT ON audit.events TO upmo_app;
 REVOKE ALL ON audit.goose_db_version FROM upmo_app;
 
@@ -213,3 +232,4 @@ DROP TABLE IF EXISTS audit.anchors;
 DROP FUNCTION IF EXISTS audit.events_immutable();
 DROP FUNCTION IF EXISTS audit.owner();
 REVOKE USAGE ON SCHEMA audit FROM upmo_app;
+REVOKE USAGE ON SCHEMA audit FROM upmo_runner;

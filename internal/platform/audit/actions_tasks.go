@@ -23,6 +23,8 @@ const (
 	ApprovalApprove Action = "approval.approve"
 	// ApprovalDeny settles a pending approval with a deny.
 	ApprovalDeny Action = "approval.deny"
+	// TaskSettle records runner settlement charges.
+	TaskSettle Action = "task.settle"
 )
 
 func init() {
@@ -35,4 +37,5 @@ func init() {
 	register(TaskRun, "run", classAPIActivity, activityUnknown, "state")
 	register(ApprovalApprove, "approval", classAPIActivity, activityUnknown, "state")
 	register(ApprovalDeny, "approval", classAPIActivity, activityUnknown, "state")
+	register(TaskSettle, "task", classAPIActivity, activityUnknown, "amount", "spent", "paused", "claim_token", "mode")
 }

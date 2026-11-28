@@ -39,7 +39,7 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 	if taskID == "" {
 		task, err = insertOpen(ctx, tx, access.UserID, access.Allow, input)
 	} else {
-		task, effect, err = stepLocked(ctx, tx, access.UserID, taskID, input)
+		task, effect, err = stepLocked(ctx, tx, access.UserID, "person", taskID, input)
 	}
 	if err != nil {
 		return app.Task{}, err
@@ -436,7 +436,10 @@ func budgetOrDefault(amount int64) int64 {
 	return amount
 }
 
-func stepLocked(ctx context.Context, tx pgx.Tx, callerID, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
+func stepLocked(ctx context.Context, tx pgx.Tx, callerID, actor, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
+	if !validTaskActor(actor) {
+		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: invalid task event actor %q", actor)
+	}
 	var ownerID, status, goal string
 	var passes, paused, runnerOwned bool
 	err := tx.QueryRow(ctx, `
@@ -506,8 +509,7 @@ func stepLocked(ctx context.Context, tx pgx.Tx, callerID, taskID string, input d
 			return app.Task{}, domain.Effect{}, err
 		}
 	}
-	// shortcut: pause, hold and ask_plan edges from Request and insertBatchApprovalTx also record 'person'; 237a2 maps system edges to their actor.
-	if err := insertTaskEvent(ctx, tx, taskID, effect, "person"); err != nil {
+	if err := insertTaskEvent(ctx, tx, taskID, effect, actor); err != nil {
 		return app.Task{}, domain.Effect{}, err
 	}
 	statusSQL := `
@@ -540,6 +542,15 @@ func stepLocked(ctx context.Context, tx pgx.Tx, callerID, taskID string, input d
 		}
 	}
 	return app.Task{ID: taskID, Status: next, Goal: goal}, effect, nil
+}
+
+func validTaskActor(actor string) bool {
+	switch actor {
+	case "person", "planner", "worker", "verifier", "core":
+		return true
+	default:
+		return false
+	}
 }
 
 func isManualRunnerRefused(kind domain.Kind) bool {

@@ -881,10 +881,22 @@ func TestRunnerGrantMap(t *testing.T) {
 	want["tasks.run_history"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: runHistoryCols, Insert: runHistoryCols, Update: []string{"history", "updated_at"}}
 	settlementCols := []string{"amount", "at", "claim_token", "task_id"}
 	want["tasks.settlements"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: settlementCols, Insert: settlementCols}
+	want["audit.pending"] = rolePrivs{
+		Table:  []string{"INSERT"},
+		Insert: []string{"action", "actor_id", "actor_role_id", "actor_type", "changes", "credential_id", "credential_type", "id", "occurred_at", "outcome", "reason", "request_id", "service", "source_ip", "target_id", "target_type", "user_agent"},
+	}
+	chatEventCols := []string{"at", "body", "id", "seq", "task_id"}
+	want["tasks.chat_events"] = rolePrivs{Table: []string{"INSERT", "SELECT"}, Select: chatEventCols, Insert: chatEventCols}
 	compareGrantMap(t, "upmo_runner", got, want)
 
 	runner := pgtest.Login(t, owner, "upmo_runner")
 	for _, stmt := range []string{
+		`SELECT * FROM audit.pending`,
+		`SELECT * FROM audit.events`,
+		`SELECT * FROM audit.head`,
+		`SELECT * FROM audit.push_cursor`,
+		`SELECT * FROM audit.goose_db_version`,
+		`SELECT audit.record_keys('keys.unwrap', 'success', 'brain', '{"fields":[],"values":{}}'::jsonb)`,
 		`SELECT id FROM identity.users`,
 		`SELECT id FROM identity.roles`,
 		`SELECT team_id FROM identity.team_members`,
@@ -893,6 +905,18 @@ func TestRunnerGrantMap(t *testing.T) {
 		`SELECT * FROM gateway.credentials`,
 		`SELECT proxy_secret_hash FROM runtime.task_sandboxes`,
 		`SELECT * FROM tasks.goose_db_version`,
+	} {
+		if _, err := runner.Exec(ctx, stmt); pgCode(err) != "42501" {
+			t.Errorf("runner %q = %v, want 42501", stmt, err)
+		}
+	}
+	for _, stmt := range []string{
+		`INSERT INTO audit.pending (service, action, outcome, actor_type, credential_type, target_type, target_id) VALUES ('brain', 'task.share', 'success', 'system', 'service', 'task', 'task-id')`,
+		`INSERT INTO audit.pending (service, action, outcome, actor_type, credential_type, target_type, target_id) VALUES ('gateway', 'task.settle', 'success', 'system', 'service', 'task', 'task-id')`,
+		`INSERT INTO audit.pending (service, action, outcome, actor_type, credential_type, target_type, target_id) VALUES ('brain', 'task.settle', 'success', 'system', 'service', 'user', 'task-id')`,
+		`INSERT INTO audit.pending (service, action, outcome, actor_type, credential_type, target_type, target_id) VALUES ('brain', 'task.settle', 'success', 'system', 'service', 'task', '')`,
+		`UPDATE tasks.chat_events SET body = 'x' WHERE false`,
+		`DELETE FROM tasks.chat_events WHERE false`,
 	} {
 		if _, err := runner.Exec(ctx, stmt); pgCode(err) != "42501" {
 			t.Errorf("runner %q = %v, want 42501", stmt, err)
