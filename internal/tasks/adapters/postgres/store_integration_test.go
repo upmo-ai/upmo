@@ -345,11 +345,13 @@ func TestEvidenceAndEventsCannotBeRewritten(t *testing.T) {
 const (
 	ownerUser = "018f3b2c-7a10-7c4a-8e11-111111111111"
 	otherUser = "018f3b2c-7a10-7c4a-8e11-222222222222"
+	adminUser = "018f3b2c-7a10-7c4a-8e11-444444444444"
 )
 
 var (
 	ownerAccess = app.Access{UserID: ownerUser, Allow: "task:create,task:view,task:edit"}
 	otherAccess = app.Access{UserID: otherUser, Allow: "task:view,task:edit"}
+	adminAccess = app.Access{UserID: adminUser, Allow: "task:create,task:view,task:edit,members:manage,settings:manage"}
 )
 
 func TestOpenUsesDefaultBudget(t *testing.T) {
@@ -410,6 +412,18 @@ func up(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	if err := migrate.Up(ctx, pool, identity.Schema, identity.Migrations()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at)
+		SELECT people.id, people.email, people.email_hash, 'test', people.name, role.id, now()
+		FROM (VALUES
+			($1::uuid, 'owner@example.test', decode(repeat('11', 32), 'hex'), 'Owner', 'member'),
+			($2::uuid, 'other@example.test', decode(repeat('22', 32), 'hex'), 'Other', 'member'),
+			('018f3b2c-7a10-7c4a-8e11-444444444444'::uuid, 'admin@example.test', decode(repeat('44', 32), 'hex'), 'Admin', 'admin'),
+			('018f3b2c-7a10-7c4a-8e11-333333333333'::uuid, 'install-owner@example.test', decode(repeat('33', 32), 'hex'), 'Install owner', 'owner')
+		) AS people(id, email, email_hash, name, role_key)
+		JOIN identity.roles AS role ON role.key = people.role_key`, ownerUser, otherUser); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate.Up(ctx, pool, tasks.Schema, tasks.Migrations()); err != nil {

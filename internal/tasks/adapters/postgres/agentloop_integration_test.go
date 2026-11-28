@@ -546,6 +546,427 @@ func TestPausedCommitTurnAndEnqueueReturnsErrExhaustedWithoutCharge(t *testing.T
 	}
 }
 
+func TestCommitRunnerTurnContinueAndEnqueue(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	teamID := "018f3b2c-7a10-7c4a-8e11-aaaa00000003"
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.teams (id, name) VALUES ($1::uuid, 'Live runner team')`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1::uuid, $2::uuid)`, teamID, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, status := range []domain.Status{domain.Planning, domain.Working} {
+		t.Run(string(status), func(t *testing.T) {
+			task := reach(t, store, "Runner continues", status)
+			markTaskRunnerOwned(t, owner, task.ID)
+			run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			called := 0
+			turnStore := postgres.TaskTurnStore{
+				Store: store,
+				Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(ctx context.Context, tx pgx.Tx, _ agentloop.TurnCommit) error {
+					called++
+					var teams string
+					if err := tx.QueryRow(ctx, `SELECT current_setting('upmo.teams')`).Scan(&teams); err != nil {
+						return err
+					}
+					if teams != "{"+teamID+"}" {
+						t.Fatalf("live teams in runner tx = %q, want {%s}", teams, teamID)
+					}
+					return nil
+				},
+			}
+			result, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{
+				RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+				Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "continue"}}, CostMicroUSD: 1,
+			})
+			if err != nil || !result.Continue || called != 1 {
+				t.Fatalf("CommitRunnerTurn = %+v calls=%d err=%v, want continue once", result, called, err)
+			}
+		})
+	}
+	validationTask, validationRun := runnerCommitTask(t, store, owner, domain.Working, true)
+	for _, test := range []struct {
+		name  string
+		scope agentloop.AccessScope
+		user  string
+	}{
+		{"empty allow", agentloop.AccessScope{UserID: ownerUser, ObjectID: validationTask.ID}, ownerUser},
+		{"view only", agentloop.AccessScope{UserID: ownerUser, Allow: "task:view", ObjectID: validationTask.ID}, ownerUser},
+		{"mismatched user", agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: validationTask.ID}, otherUser},
+		{"invalid user", agentloop.AccessScope{UserID: "invalid", Allow: ownerAccess.Allow, ObjectID: validationTask.ID}, "invalid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			turnStore := postgres.TaskTurnStore{
+				Store: store, Scope: test.scope,
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error {
+					t.Fatal("invalid scope enqueued")
+					return nil
+				},
+			}
+			if _, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{RunID: validationRun.ID, ObjectID: validationTask.ID, UserID: test.user}); !errors.Is(err, app.ErrAccess) {
+				t.Fatalf("CommitRunnerTurn = %v, want ErrAccess", err)
+			}
+		})
+	}
+
+	missingHook := postgres.TaskTurnStore{Store: store, Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: validationTask.ID}}
+	if _, err := missingHook.CommitRunnerTurn(ctx, agentloop.TurnCommit{ObjectID: validationTask.ID}); !errors.Is(err, app.ErrEnqueueHook) {
+		t.Fatalf("nil enqueue hook for continuing task = %v, want ErrEnqueueHook", err)
+	}
+	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET paused = true WHERE id = $1::uuid`, validationTask.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := missingHook.CommitRunnerTurn(ctx, agentloop.TurnCommit{ObjectID: validationTask.ID}); !errors.Is(err, app.ErrEnqueueHook) {
+		t.Fatalf("nil enqueue hook for paused task = %v, want ErrEnqueueHook", err)
+	}
+
+	for _, test := range []struct {
+		name        string
+		runnerOwned bool
+		cost        int64
+		hold        bool
+	}{
+		{name: "hold", runnerOwned: true, cost: 1, hold: true},
+		{name: "paused", runnerOwned: true, cost: domain.DefaultBudget},
+		{name: "failed", runnerOwned: true, cost: 1},
+		{name: "verifying", runnerOwned: true, cost: 1},
+		{name: "done", runnerOwned: true, cost: 1},
+		{name: "non-runner-owned", cost: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task := reach(t, store, "Runner stops", domain.Working)
+			run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit := agentloop.TurnCommit{
+				RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+				Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "stop"}}, CostMicroUSD: test.cost,
+			}
+			if test.hold {
+				hold := agentloop.BuildBatchHold("ask", []agentloop.HeldCall{
+					agentloop.BuildHeldCall(agentloop.ToolCall{ID: "hold-1", Name: "send_payment", Arguments: json.RawMessage(`{"iban":"DE89"}`)}, agentloop.ToolDef{Op: agentloop.OpChange}, "acct", true),
+				})
+				commit.Hold = &hold
+			}
+			switch test.name {
+			case "failed":
+				if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Fail}); err != nil {
+					t.Fatal(err)
+				}
+			case "verifying", "done":
+				if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Advance, Turn: domain.Sentinel}); err != nil {
+					t.Fatal(err)
+				}
+				if test.name == "done" {
+					if _, err := app.RecordChecks(ctx, store, ownerAccess, task.ID, []domain.Check{{Name: "go test", Code: 0}}, nil); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Pass}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.runnerOwned {
+				markTaskRunnerOwned(t, owner, task.ID)
+			}
+			called := 0
+			turnStore := postgres.TaskTurnStore{
+				Store:       store,
+				Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { called++; return nil },
+			}
+			result, err := turnStore.CommitRunnerTurn(ctx, commit)
+			if err != nil || result.Continue || called != 0 {
+				t.Fatalf("CommitRunnerTurn = %+v calls=%d err=%v, want stop without enqueue", result, called, err)
+			}
+		})
+	}
+}
+
+func TestCommitRunnerTurnRejectsLiveRevocationWithoutWrites(t *testing.T) {
+	for _, revoke := range []struct {
+		name  string
+		query string
+	}{
+		{"demoted", `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'viewer') WHERE id = $1::uuid`},
+		{"disabled", `UPDATE identity.users SET disabled_at = now() WHERE id = $1::uuid`},
+		{"unjoined", `UPDATE identity.users SET joined_at = NULL WHERE id = $1::uuid`},
+	} {
+		t.Run(revoke.name, func(t *testing.T) {
+			owner := up(t)
+			store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+			ctx := context.Background()
+			task := reach(t, store, "Revoked commit", domain.Working)
+			markTaskRunnerOwned(t, owner, task.ID)
+			run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := owner.Exec(ctx, revoke.query, ownerUser); err != nil {
+				t.Fatal(err)
+			}
+			called := 0
+			turnStore := postgres.TaskTurnStore{
+				Store:       store,
+				Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { called++; return nil },
+			}
+			_, err = turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{
+				RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+				Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "denied"}}, CostMicroUSD: 500, Exposure: agentloop.ExposureState{Tainted: true},
+			})
+			if !errors.Is(err, app.ErrAccess) || called != 0 {
+				t.Fatalf("revoked CommitRunnerTurn err=%v calls=%d, want ErrAccess/no enqueue", err, called)
+			}
+			var turns, approvals int
+			var spent int64
+			var tainted bool
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.approvals WHERE task_id = $1::uuid`, task.ID).Scan(&approvals); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent, tainted FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &tainted); err != nil {
+				t.Fatal(err)
+			}
+			if turns != 0 || approvals != 0 || spent != 0 || tainted {
+				t.Fatalf("revoked commit wrote turns=%d approvals=%d spent=%d tainted=%t", turns, approvals, spent, tainted)
+			}
+		})
+	}
+	owner := up(t)
+	store := postgres.Store{Runner: pgtest.Runner(t, owner)}
+	missingID := "018f3b2c-7a10-7c4a-8e11-666666666666"
+	called := false
+	turnStore := postgres.TaskTurnStore{
+		Store:       store,
+		Scope:       agentloop.AccessScope{UserID: missingID, Allow: ownerAccess.Allow},
+		EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { called = true; return nil },
+	}
+	if _, err := turnStore.CommitRunnerTurn(context.Background(), agentloop.TurnCommit{UserID: missingID}); !errors.Is(err, app.ErrAccess) || called {
+		t.Fatalf("missing-user CommitRunnerTurn = %v called=%t, want ErrAccess/no enqueue", err, called)
+	}
+}
+
+func TestCommitRunnerTurnFailsClosedWithoutRunnerOrOnLookupError(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	task, run := runnerCommitTask(t, store, owner, domain.Working, true)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	noRunner := store
+	noRunner.Runner = nil
+	for _, test := range []struct {
+		name  string
+		store postgres.Store
+		ctx   context.Context
+	}{
+		{"nil runner", noRunner, ctx},
+		{"canceled lookup", store, canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			turnStore := postgres.TaskTurnStore{
+				Store:       test.store,
+				Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { calls++; return nil },
+			}
+			_, err := turnStore.CommitRunnerTurn(test.ctx, agentloop.TurnCommit{
+				RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+				Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "lookup failure"}}, CostMicroUSD: 500,
+			})
+			if err == nil || calls != 0 {
+				t.Fatalf("CommitRunnerTurn err=%v calls=%d, want lookup error/no enqueue", err, calls)
+			}
+			var turns int
+			var spent int64
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent); err != nil {
+				t.Fatal(err)
+			}
+			if turns != 0 || spent != 0 {
+				t.Fatalf("lookup failure wrote turns=%d spent=%d", turns, spent)
+			}
+		})
+	}
+}
+
+func TestCommitRunnerTurnOwnerAccessMatrix(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	task, run := runnerCommitTask(t, store, owner, domain.Working, true)
+	for _, person := range []struct {
+		name   string
+		user   string
+		allow  string
+		shared bool
+		want   error
+	}{
+		{"shared editor", otherUser, otherAccess.Allow, true, app.ErrAccess},
+		{"shared admin", adminUser, adminAccess.Allow, true, app.ErrAccess},
+		{"stranger", otherUser, otherAccess.Allow, false, app.ErrGone},
+	} {
+		t.Run(person.name, func(t *testing.T) {
+			scope := agentloop.AccessScope{UserID: person.user, Allow: person.allow, ObjectID: task.ID}
+			if person.shared {
+				scope.SharedView, scope.SharedEdit = "{"+task.ID+"}", "{"+task.ID+"}"
+			}
+			turnStore := postgres.TaskTurnStore{
+				Store: store, Scope: scope,
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { t.Fatal("non-owner enqueued"); return nil },
+			}
+			_, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{
+				RunID: run.ID, ObjectID: task.ID, UserID: person.user, SeqStart: 1,
+				Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "denied"}}, CostMicroUSD: 1,
+			})
+			if !errors.Is(err, person.want) {
+				t.Fatalf("CommitRunnerTurn = %v, want %v", err, person.want)
+			}
+		})
+	}
+	if got := taskInt(t, owner, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID); got != 0 {
+		t.Fatalf("non-owner commit inserted %d turns", got)
+	}
+}
+
+func TestCommitRunnerTurnRevocationAllowsClaimCleanup(t *testing.T) {
+	for _, revoke := range []struct {
+		name  string
+		query string
+	}{
+		{"demoted", `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'viewer') WHERE id = $1::uuid`},
+		{"disabled", `UPDATE identity.users SET disabled_at = now() WHERE id = $1::uuid`},
+	} {
+		t.Run(revoke.name, func(t *testing.T) {
+			owner := up(t)
+			store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+			ctx := context.Background()
+			task := reach(t, store, "Revocation cleanup", domain.Working)
+			markTaskRunnerOwned(t, owner, task.ID)
+			run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim, err := store.ClaimRun(ctx, ownerAccess, task.ID, run.ID, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Reserve(ctx, ownerAccess, task.ID, claim.Token, 1_000); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := owner.Exec(ctx, revoke.query, ownerUser); err != nil {
+				t.Fatal(err)
+			}
+			turnStore := postgres.TaskTurnStore{
+				Store: store,
+				Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error {
+					t.Fatal("revoked turn enqueued")
+					return nil
+				},
+			}
+			if _, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{RunID: run.ID, ObjectID: task.ID, UserID: ownerUser}); !errors.Is(err, app.ErrAccess) {
+				t.Fatalf("revoked commit = %v, want ErrAccess", err)
+			}
+			var turns int
+			var spent, reserved int64
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent, reserved FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &reserved); err != nil {
+				t.Fatal(err)
+			}
+			if turns != 0 || spent != 0 || reserved != 1_000 {
+				t.Fatalf("revoked commit wrote turns=%d spent=%d reserved=%d", turns, spent, reserved)
+			}
+			if err := store.SettleOrphan(ctx, ownerAccess, task.ID, claim.Token, 500); err != nil {
+				t.Fatalf("revoked-owner SettleOrphan = %v", err)
+			}
+			if err := store.SettleOrphan(ctx, ownerAccess, task.ID, claim.Token, 500); !errors.Is(err, app.ErrAlready) {
+				t.Fatalf("duplicate SettleOrphan = %v, want ErrAlready", err)
+			}
+			if err := store.Release(ctx, ownerAccess, task.ID, claim.Token); err != nil {
+				t.Fatalf("revoked-owner Release = %v", err)
+			}
+			var settlementCount int
+			var token *string
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.settlements WHERE task_id = $1::uuid AND claim_token = $2::uuid`, task.ID, claim.Token).Scan(&settlementCount); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent, reserved, claim_token::text FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &reserved, &token); err != nil {
+				t.Fatal(err)
+			}
+			if settlementCount != 1 || spent != 500 || reserved != 0 || token != nil {
+				t.Fatalf("cleanup settlements=%d spent=%d reserved=%d token=%v", settlementCount, spent, reserved, token)
+			}
+		})
+	}
+}
+
+func TestCommitRunnerTurnHookFailureRollsBack(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	task := reach(t, store, "Runner rollback", domain.Working)
+	markTaskRunnerOwned(t, owner, task.ID)
+	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("enqueue failed")
+	turnStore := postgres.TaskTurnStore{
+		Store:       store,
+		Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+		EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { return wantErr },
+	}
+	_, err = turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{
+		RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+		Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "rollback"}}, CostMicroUSD: 500,
+		Exposure: agentloop.ExposureState{Tainted: true},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("hook error = %v, want %v", err, wantErr)
+	}
+	var turns int
+	var spent int64
+	var tainted bool
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT spent, tainted FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &tainted); err != nil {
+		t.Fatal(err)
+	}
+	if turns != 0 || spent != 0 || tainted {
+		t.Fatalf("hook failure persisted turns=%d spent=%d tainted=%t", turns, spent, tainted)
+	}
+}
+
+func runnerCommitTask(t *testing.T, store postgres.Store, owner *pgxpool.Pool, status domain.Status, runnerOwned bool) (app.Task, app.Run) {
+	t.Helper()
+	task := reach(t, store, "Runner commit", status)
+	if runnerOwned {
+		markTaskRunnerOwned(t, owner, task.ID)
+	}
+	run, err := app.Admit(context.Background(), store, ownerAccess, task.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task, run
+}
+
 func taskMoney(t *testing.T, owner *pgxpool.Pool, id string) (int64, bool) {
 	t.Helper()
 	var spent int64

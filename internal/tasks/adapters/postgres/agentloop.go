@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -109,7 +111,7 @@ func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, tool
 		return app.Approval{}, fmt.Errorf("tasks: status: %w", err)
 	}
 	kind := approvalEdge(domain.Status(status), batch.Reason)
-	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind, Reason: batch.Reason, From: domain.Status(status)})
+	task, _, err := stepLocked(ctx, tx, ownerID, taskID, domain.Input{Kind: kind, Reason: batch.Reason, From: domain.Status(status)})
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -233,6 +235,108 @@ type TaskTurnStore struct {
 	Store       Store
 	Scope       agentloop.AccessScope
 	EnqueueNext func(ctx context.Context, tx pgx.Tx, commit agentloop.TurnCommit) error
+}
+
+type RunnerCommitResult struct {
+	Continue bool
+}
+
+// CommitRunnerTurn persists a runner turn and its optional next job atomically.
+func (s TaskTurnStore) CommitRunnerTurn(ctx context.Context, commit agentloop.TurnCommit) (RunnerCommitResult, error) {
+	if s.EnqueueNext == nil {
+		return RunnerCommitResult{}, app.ErrEnqueueHook
+	}
+	actingUser := commit.UserID
+	if actingUser != "" && s.Scope.UserID != "" && actingUser != s.Scope.UserID {
+		return RunnerCommitResult{}, app.ErrAccess
+	}
+	if actingUser == "" {
+		actingUser = s.Scope.UserID
+	}
+	if _, err := uuid.Parse(actingUser); err != nil || !hasPermission(s.Scope.Allow, "task:edit") {
+		return RunnerCommitResult{}, app.ErrAccess
+	}
+	liveAllow, liveTeams, err := s.Store.liveRunnerAccess(ctx, actingUser)
+	if err != nil {
+		return RunnerCommitResult{}, err
+	}
+	if !hasPermission(strings.Join(liveAllow, ","), "task:edit") {
+		return RunnerCommitResult{}, app.ErrAccess
+	}
+	freshScope := s.Scope
+	freshScope.UserID = actingUser
+	freshScope.Allow = strings.Join(liveAllow, ",")
+	freshScope.UserTeams = liveTeams
+
+	var result RunnerCommitResult
+	err = s.Store.NarrowedRunnerTx(ctx, freshScope, func(tx pgx.Tx) error {
+		var owner string
+		var runnerOwned, currentTainted, currentPaused, currentPrivate bool
+		var currentBudget, currentSpent int64
+		var status string
+		err := tx.QueryRow(ctx, `
+			SELECT owner_user_id::text, runner_owned, status, tainted, paused, budget, spent, private_read
+			FROM tasks.tasks WHERE id = $1::uuid FOR UPDATE`, commit.ObjectID).Scan(
+			&owner, &runnerOwned, &status, &currentTainted, &currentPaused,
+			&currentBudget, &currentSpent, &currentPrivate,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.ErrGone
+		}
+		if err != nil {
+			return fmt.Errorf("tasks: lock runner turn commit: %w", err)
+		}
+		if owner != actingUser {
+			return app.ErrAccess
+		}
+		if err := InsertTurnRows(ctx, tx, commit, defaultTurnActor); err != nil {
+			return err
+		}
+		nextTainted := currentTainted || commit.Exposure.Tainted
+		nextPrivate := currentPrivate || commit.Exposure.PrivateRead
+		nextSpent, nextPaused, err := domain.Charge(currentBudget, currentSpent, commit.CostMicroUSD, currentPaused)
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks.tasks
+			SET spent = $2, paused = $3, tainted = $4, private_read = $5, updated_at = now()
+			WHERE id = $1::uuid
+			  AND owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid`,
+			commit.ObjectID, nextSpent, nextPaused, nextTainted, nextPrivate)
+		if err != nil {
+			return fmt.Errorf("tasks: update runner turn state: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return app.ErrGone
+		}
+		if commit.Hold != nil {
+			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "", *commit.Hold); err != nil {
+				return err
+			}
+		}
+		var paused, hasPendingApproval bool
+		err = tx.QueryRow(ctx, `
+			SELECT task.runner_owned, task.status, task.paused,
+			       EXISTS (SELECT 1 FROM tasks.approvals WHERE task_id = task.id AND state = 'pending')
+			FROM tasks.tasks AS task WHERE task.id = $1::uuid`, commit.ObjectID).Scan(
+			&result.Continue, &status, &paused, &hasPendingApproval,
+		)
+		if err != nil {
+			return fmt.Errorf("tasks: read runner continuation state: %w", err)
+		}
+		result.Continue = result.Continue &&
+			(domain.Status(status) == domain.Planning || domain.Status(status) == domain.Working) &&
+			!paused && !hasPendingApproval
+		if result.Continue {
+			return s.EnqueueNext(ctx, tx, commit)
+		}
+		return nil
+	})
+	if err != nil {
+		return RunnerCommitResult{}, err
+	}
+	return result, nil
 }
 
 // CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.

@@ -36,6 +36,15 @@ func (s Store) ClaimRun(ctx context.Context, access app.Access, taskID, runID st
 	if _, err := uuid.Parse(runID); err != nil {
 		return ClaimState{}, app.ErrRun
 	}
+	liveAllow, liveTeams, err := s.liveRunnerAccess(ctx, access.UserID)
+	if err != nil {
+		return ClaimState{}, err
+	}
+	if !hasPermission(strings.Join(liveAllow, ","), "task:edit") {
+		return ClaimState{}, app.ErrAccess
+	}
+	access.Allow = strings.Join(liveAllow, ",")
+	access.Teams = "{" + strings.Join(liveTeams, ",") + "}"
 
 	tx, err := s.beginRunner(ctx, access)
 	if err != nil {
@@ -140,6 +149,27 @@ func (s Store) ClaimRun(ctx context.Context, access app.Access, taskID, runID st
 	}, nil
 }
 
+func (s Store) liveRunnerAccess(ctx context.Context, userID string) ([]string, []string, error) {
+	if s.Runner == nil {
+		return nil, nil, fmt.Errorf("tasks: no runner database")
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		return nil, nil, app.ErrAccess
+	}
+	var active bool
+	var allow, teams []string
+	err := s.Runner.QueryRow(ctx, `
+		SELECT active, allow, teams::text[]
+		FROM identity.runner_access($1::uuid)`, userID).Scan(&active, &allow, &teams)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && !active {
+		return nil, nil, app.ErrAccess
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("tasks: read live runner access: %w", err)
+	}
+	return allow, teams, nil
+}
+
 // Reserve holds x micro-USD against a live runner claim, pausing on budget exhaustion.
 func (s Store) Reserve(ctx context.Context, access app.Access, taskID, token string, x int64) error {
 	if _, err := uuid.Parse(access.UserID); err != nil {
@@ -228,7 +258,6 @@ func (s Store) Release(ctx context.Context, access app.Access, taskID, token str
 	if _, err := uuid.Parse(taskID); err != nil {
 		return app.ErrTask
 	}
-
 	tx, err := s.beginRunner(ctx, access)
 	if err != nil {
 		return err

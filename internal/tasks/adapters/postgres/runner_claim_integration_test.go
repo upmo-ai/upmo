@@ -28,6 +28,126 @@ func markTaskRunnerOwned(t *testing.T, owner *pgxpool.Pool, taskID string) {
 	}
 }
 
+func TestClaimRunRejectsLiveRevokedOwnerWithoutClaim(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	task := reach(t, store, "Revoked runner", domain.Working)
+	markTaskRunnerOwned(t, owner, task.ID)
+	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		UPDATE identity.users
+		SET role_id = (SELECT id FROM identity.roles WHERE key = 'viewer')
+		WHERE id = $1::uuid`, ownerUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimRun(ctx, ownerAccess, task.ID, run.ID, 1); !errors.Is(err, app.ErrAccess) {
+		t.Fatalf("ClaimRun after demotion = %v, want ErrAccess", err)
+	}
+	var claimToken string
+	var leaseUntil *time.Time
+	var turnSeq int
+	if err := owner.QueryRow(ctx, `
+		SELECT COALESCE(claim_token::text, ''), lease_until
+		FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&claimToken, &leaseUntil); err != nil {
+		t.Fatal(err)
+	}
+	if claimToken != "" || leaseUntil != nil {
+		t.Fatalf("claim after denied ClaimRun: token=%q lease=%v", claimToken, leaseUntil)
+	}
+	if err := owner.QueryRow(ctx, `SELECT turn_seq FROM tasks.runs WHERE id = $1::uuid`, run.ID).Scan(&turnSeq); err != nil {
+		t.Fatal(err)
+	}
+	if turnSeq != 0 {
+		t.Fatalf("run turn_seq after denied ClaimRun = %d, want 0", turnSeq)
+	}
+}
+
+func TestClaimRunRejectsInactiveOrMissingOwner(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		query   string
+		missing bool
+	}{
+		{"disabled", `UPDATE identity.users SET disabled_at = now() WHERE id = $1::uuid`, false},
+		{"unjoined", `UPDATE identity.users SET joined_at = NULL WHERE id = $1::uuid`, false},
+		{"missing", "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			owner := up(t)
+			store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+			ctx := context.Background()
+			task := reach(t, store, "Inactive claim", domain.Working)
+			markTaskRunnerOwned(t, owner, task.ID)
+			run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			access := ownerAccess
+			if test.missing {
+				access.UserID = "018f3b2c-7a10-7c4a-8e11-666666666666"
+			} else if _, err := owner.Exec(ctx, test.query, ownerUser); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ClaimRun(ctx, access, task.ID, run.ID, 1); !errors.Is(err, app.ErrAccess) {
+				t.Fatalf("ClaimRun = %v, want ErrAccess", err)
+			}
+			var claims int
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.tasks WHERE id = $1::uuid AND claim_token IS NOT NULL`, task.ID).Scan(&claims); err != nil {
+				t.Fatal(err)
+			}
+			if claims != 0 {
+				t.Fatalf("ClaimRun wrote %d claims", claims)
+			}
+		})
+	}
+}
+
+func TestClaimRunFailsClosedWithoutRunnerOrOnLookupError(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	task := reach(t, store, "Claim lookup failure", domain.Working)
+	markTaskRunnerOwned(t, owner, task.ID)
+	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noRunner := store
+	noRunner.Runner = nil
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, test := range []struct {
+		name  string
+		store postgres.Store
+		ctx   context.Context
+	}{
+		{"nil runner", noRunner, ctx},
+		{"canceled lookup", store, canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := test.store.ClaimRun(test.ctx, ownerAccess, task.ID, run.ID, 1); err == nil {
+				t.Fatal("ClaimRun succeeded, want lookup error")
+			}
+			var claims int
+			var token *string
+			var turnSeq int
+			if err := owner.QueryRow(ctx, `SELECT count(*) FILTER (WHERE claim_token IS NOT NULL), min(claim_token::text) FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&claims, &token); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT turn_seq FROM tasks.runs WHERE id = $1::uuid`, run.ID).Scan(&turnSeq); err != nil {
+				t.Fatal(err)
+			}
+			if claims != 0 || token != nil || turnSeq != 0 {
+				t.Fatalf("lookup failure wrote claims=%d token=%v turn_seq=%d", claims, token, turnSeq)
+			}
+		})
+	}
+}
+
 func settleViaRunnerTx(ctx context.Context, store postgres.Store, taskID, runID, token string, actual int64, seqStart, msgs int) error {
 	return store.NarrowedRunnerTx(ctx, agentloop.AccessScope{
 		UserID:   ownerUser,

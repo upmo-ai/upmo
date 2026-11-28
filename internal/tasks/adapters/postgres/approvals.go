@@ -62,7 +62,7 @@ func (s Store) Request(ctx context.Context, access app.Access, taskID string, as
 	}
 
 	kind := approvalEdge(domain.Status(status), ask.Reason)
-	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: kind, Reason: ask.Reason, From: domain.Status(status)})
+	task, _, err := stepLocked(ctx, tx, access.UserID, taskID, domain.Input{Kind: kind, Reason: ask.Reason, From: domain.Status(status)})
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -161,7 +161,7 @@ func (s Store) DecideWithInput(ctx context.Context, access app.Access, approvalI
 	if tag.RowsAffected() != 1 {
 		return app.Approval{}, app.ErrNoApproval
 	}
-	if _, _, err := stepLocked(ctx, tx, taskID, domain.Input{
+	if _, _, err := stepLocked(ctx, tx, access.UserID, taskID, domain.Input{
 		Kind: kind, Reason: reason, From: domain.Status(fromStatus), Body: body,
 	}); err != nil {
 		return app.Approval{}, err
