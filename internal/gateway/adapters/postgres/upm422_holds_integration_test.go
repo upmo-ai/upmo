@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,31 +244,147 @@ func TestFeature_UPM422_StaleReleaseIdempotentSecondSweep(t *testing.T) {
 	reserveAt := time.Date(2026, 11, 25, 8, 0, 0, 0, time.UTC)
 	sweepAt := reserveAt.Add(30 * time.Minute)
 	store := postgres.Store{Pool: w.pool, Now: func() time.Time { return reserveAt }}
-	if _, err := store.Reserve(ctx, app.ReserveRequest{
+	res, err := store.Reserve(ctx, app.ReserveRequest{
 		UserID: pinAuthor, Source: domain.SourceChat, Estimate: estimate, PeriodStart: period,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	n1, err := postgres.ReleaseStaleHolds(ctx, w.pool, sweepAt, 15*time.Minute)
 	if err != nil || n1 != 1 {
 		t.Fatalf("first sweep = %d %v, want 1 nil", n1, err)
 	}
+	if err := store.Release(ctx, res); err != nil {
+		t.Fatalf("Release after sweep = %v, want nil (racing caller must not double-decrement)", err)
+	}
 	n2, err := postgres.ReleaseStaleHolds(ctx, w.pool, sweepAt, 15*time.Minute)
 	if err != nil || n2 != 0 {
 		t.Fatalf("second sweep = %d %v, want 0 nil", n2, err)
 	}
-	var wsHeld int64
 	periodStr := period.Format("2006-01-02")
+	var wsHeld, personHeld int64
 	if err := w.pool.QueryRow(ctx, `
 		SELECT held_micro_usd FROM gateway.usage_spend
 		WHERE kind = 'workspace' AND subject_id IS NULL AND period_start = $1::date`, periodStr).Scan(&wsHeld); err != nil {
 		t.Fatal(err)
 	}
-	if wsHeld < 0 {
-		t.Fatalf("workspace held underflow = %d", wsHeld)
+	if err := w.pool.QueryRow(ctx, `
+		SELECT held_micro_usd FROM gateway.usage_spend
+		WHERE kind = 'person' AND subject_id = $1::uuid AND period_start = $2::date`,
+		pinAuthor, periodStr).Scan(&personHeld); err != nil {
+		t.Fatal(err)
 	}
-	if wsHeld != 0 {
-		t.Fatalf("workspace held = %d, want 0", wsHeld)
+	if wsHeld < 0 || personHeld < 0 {
+		t.Fatalf("held underflow workspace=%d person=%d", wsHeld, personHeld)
+	}
+	if wsHeld != 0 || personHeld != 0 {
+		t.Fatalf("held workspace=%d person=%d, want 0/0", wsHeld, personHeld)
+	}
+}
+
+func TestFeature_UPM422_ConcurrentSettleAndSweepRace(t *testing.T) {
+	w := newPinWorld(t, nil)
+	ctx := context.Background()
+	setUsageLimit(t, w, domain.LimitWorkspace, "", 20_000_000)
+	setUsageLimit(t, w, domain.LimitPerson, pinAuthor, 20_000_000)
+
+	const estimate = int64(1_000_000)
+	const settleCost = int64(400_000)
+	settleCostVal := settleCost
+	period := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	periodStr := period.Format("2006-01-02")
+	principal := domain.Principal{User: pinAuthor, Source: domain.SourceChat}
+	entry := domain.Entry{
+		Route: "pin-house", AccountID: pinHouse, Model: "m1", PlanKind: domain.PlanMetered,
+		Class: domain.ClassOK, Principal: principal, PriceSource: "override",
+		ChargedToLimit: true, CostMicroUSD: &settleCostVal,
+	}
+
+	readSpendHeld := func(t *testing.T) (wsSpent, wsHeld, personSpent, personHeld int64) {
+		t.Helper()
+		if err := w.pool.QueryRow(ctx, `
+			SELECT spent_micro_usd, held_micro_usd FROM gateway.usage_spend
+			WHERE kind = 'workspace' AND subject_id IS NULL AND period_start = $1::date`, periodStr,
+		).Scan(&wsSpent, &wsHeld); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.pool.QueryRow(ctx, `
+			SELECT spent_micro_usd, held_micro_usd FROM gateway.usage_spend
+			WHERE kind = 'person' AND subject_id = $1::uuid AND period_start = $2::date`,
+			pinAuthor, periodStr).Scan(&personSpent, &personHeld); err != nil {
+			t.Fatal(err)
+		}
+		return wsSpent, wsHeld, personSpent, personHeld
+	}
+
+	for i := 0; i < 5; i++ {
+		reserveAt := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Second)
+		sweepAt := reserveAt.Add(20 * time.Minute)
+		store := postgres.Store{Pool: w.pool, Now: func() time.Time { return reserveAt }}
+		res, err := store.Reserve(ctx, app.ReserveRequest{
+			UserID: pinAuthor, Source: domain.SourceChat, Estimate: estimate, PeriodStart: period,
+		})
+		if err != nil {
+			t.Fatalf("iteration %d Reserve: %v", i, err)
+		}
+
+		var ledgerBefore int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger`).Scan(&ledgerBefore); err != nil {
+			t.Fatal(err)
+		}
+		wsSpentBefore, _, personSpentBefore, _ := readSpendHeld(t)
+
+		start := make(chan struct{})
+		var (
+			settleErr error
+			released  int
+			sweepErr  error
+			wg        sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			<-start
+			settleErr = store.Settle(ctx, res, entry)
+			wg.Done()
+		}()
+		go func() {
+			<-start
+			released, sweepErr = postgres.ReleaseStaleHolds(ctx, w.pool, sweepAt, 15*time.Minute)
+			wg.Done()
+		}()
+		close(start)
+		wg.Wait()
+		if sweepErr != nil {
+			t.Fatalf("iteration %d ReleaseStaleHolds: %v", i, sweepErr)
+		}
+
+		wsSpent, wsHeld, personSpent, personHeld := readSpendHeld(t)
+		var holdCount int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_holds WHERE id = $1::uuid`, res.ID).Scan(&holdCount); err != nil {
+			t.Fatal(err)
+		}
+		var ledgerAfter int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.ledger`).Scan(&ledgerAfter); err != nil {
+			t.Fatal(err)
+		}
+		ledgerDelta := ledgerAfter - ledgerBefore
+
+		if wsHeld != 0 || personHeld != 0 || wsHeld < 0 || personHeld < 0 {
+			t.Fatalf("iteration %d held ws=%d person=%d, want 0 (no underflow)", i, wsHeld, personHeld)
+		}
+		if holdCount != 0 {
+			t.Fatalf("iteration %d usage_holds for res = %d, want 0", i, holdCount)
+		}
+
+		settleWon := settleErr == nil && released == 0 && wsSpent == wsSpentBefore+settleCost &&
+			personSpent == personSpentBefore+settleCost && ledgerDelta == 1
+		sweepWon := settleErr != nil && released == 1 && wsSpent == wsSpentBefore &&
+			personSpent == personSpentBefore && ledgerDelta == 0
+
+		if !settleWon && !sweepWon {
+			t.Fatalf("iteration %d ambiguous race: settleErr=%v released=%d wsSpent=%d personSpent=%d ledgerDelta=%d wsSpentBefore=%d personSpentBefore=%d",
+				i, settleErr, released, wsSpent, personSpent, ledgerDelta, wsSpentBefore, personSpentBefore)
+		}
 	}
 }
 
