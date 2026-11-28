@@ -1,14 +1,17 @@
 package stub
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 )
 
 func spec() runtime.Spec {
@@ -121,6 +124,39 @@ func TestStubAuthenticateRejectsPausedAndExpired(t *testing.T) {
 	now = now.Add(time.Hour)
 	if _, ok := d2.Authenticate(ip, secret); ok {
 		t.Fatal("authenticated expired sandbox")
+	}
+}
+
+func TestStubRevokeTimeoutWaitsForHeldLease(t *testing.T) {
+	var output bytes.Buffer
+	secret := []byte(strings.Repeat("s", 32))
+	d := NewWithLogger(nil, slog.New(slog.NewJSONHandler(&output, nil)))
+	box, err := d.Create(context.Background(), spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := netip.MustParseAddr("10.0.0.7")
+	d.recordProxyIdentityForTest(box.ID, ip, secret)
+	p, ok := d.Authenticate(ip, secret)
+	if !ok {
+		t.Fatal("Authenticate refused sandbox")
+	}
+	release, held, ok := d.Acquire(box.ID, p.Lease)
+	if !ok {
+		t.Fatal("Acquire refused sandbox")
+	}
+	start := time.Now()
+	err = d.Pause(context.Background(), box.ID)
+	if !errors.Is(err, egress.ErrRevokeTimeout) || time.Since(start) < egress.RevokeTimeout-100*time.Millisecond {
+		t.Fatalf("Pause=%v after %s", err, time.Since(start))
+	}
+	if held.Err() == nil {
+		t.Fatal("Pause did not cancel held request")
+	}
+	release()
+	line := output.String()
+	if !strings.Contains(line, `"msg":"lease_revoke_timeout"`) || !strings.Contains(line, `"sandbox":"`+box.ID+`"`) || !strings.Contains(line, `"reason":"pause"`) || strings.Contains(line, string(secret)) {
+		t.Fatalf("timeout log=%s", line)
 	}
 }
 

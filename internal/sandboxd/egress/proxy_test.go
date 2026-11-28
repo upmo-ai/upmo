@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -98,6 +99,11 @@ type dialer struct {
 	err    error
 	addrs  []string
 }
+
+type failingBody struct{}
+
+func (failingBody) Read([]byte) (int, error) { return 0, errors.New("upstream read failed") }
+func (failingBody) Close() error             { return nil }
 
 func (d *dialer) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	d.mu.Lock()
@@ -265,6 +271,25 @@ func TestTunnelDefaultsToPort443(t *testing.T) {
 	}
 	if a := d.dialled(); len(a) != 1 || a[0] != "github.com:443" {
 		t.Fatalf("dialled %v", a)
+	}
+}
+
+func TestTunnelOutlivesDialTimeout(t *testing.T) {
+	addr, _ := upstream(t, func(c net.Conn) { _, _ = io.Copy(c, c) })
+	p, _ := proxy(&injector{}, &dialer{target: addr})
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+	c, br, res := open(t, srv, "github.com:443", "box-1", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT = %d", res.StatusCode)
+	}
+	_ = c.SetDeadline(time.Now().Add(DialTimeout + time.Second))
+	time.Sleep(DialTimeout + 50*time.Millisecond)
+	if _, err := io.WriteString(c, "still open"); err != nil {
+		t.Fatalf("tunnel closed after dial deadline: %v", err)
+	}
+	if got := readN(t, br, len("still open")); got != "still open" {
+		t.Fatalf("tunnel echo after dial deadline = %q", got)
 	}
 }
 
@@ -470,6 +495,26 @@ func TestProxyRefusesKeyOnPort80And8443(t *testing.T) {
 	}
 }
 
+func TestProxyRejectsExplicitRawPath(t *testing.T) {
+	p, _ := proxy(&injector{}, nil)
+	r := httptest.NewRequest(http.MethodGet, "http://github.com/user", nil)
+	r.URL.RawPath = "/user"
+	r.RemoteAddr = "203.0.113.9:1234"
+	r.Header.Set("Proxy-Authorization", "Basic "+basic("box-1"))
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("RawPath status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestReadResponseReportsUpstreamReadFailure(t *testing.T) {
+	_, _, err := readResponse(&http.Response{Body: failingBody{}})
+	if err == nil || err.Error() != "upstream_read_failed" {
+		t.Fatalf("readResponse err=%v", err)
+	}
+}
+
 func TestProxyAcceptsAbsoluteFormOnly(t *testing.T) {
 	p, _ := proxy(&injector{}, &dialer{err: errors.New("should not dial")})
 	r := httptest.NewRequest(http.MethodGet, "http://github.com/user", nil)
@@ -493,6 +538,76 @@ func TestProxyRejectsDisagreeingTarget(t *testing.T) {
 	p.ServeHTTP(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("disagreeing Host = %d", w.Code)
+	}
+}
+
+func TestProxyCredentialsIgnoreProxyAuthorization(t *testing.T) {
+	sentinel := "upmo_sentinel_" + strings.Repeat("8", 64)
+	cred := runtime.Credential{Sentinel: sentinel, Ref: "github_token", Host: "example.com", Methods: []string{"GET"}, Paths: []string{"/user"}}
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer up.Close()
+	inj := &injector{}
+	p, _ := proxy(inj, &dialer{target: up.Listener.Addr().String()})
+	p.TLSRootCAs = up.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	p.Book = book{allow: map[string][]string{"box-1": {"example.com"}}, creds: []runtime.Credential{cred}}
+	for _, user := range []string{sentinel, "upmo_sentinel_" + strings.Repeat("9", 64)} {
+		r := httptest.NewRequest(http.MethodGet, "http://example.com/user", nil)
+		r.RemoteAddr = "203.0.113.9:1234"
+		r.Header.Set("Proxy-Authorization", "Basic "+basic(user))
+		w := httptest.NewRecorder()
+		p.ServeHTTP(w, r)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("proxy username %q status=%d body=%q", user, w.Code, w.Body.String())
+		}
+	}
+	if len(inj.hosts) != 0 {
+		t.Fatalf("Proxy-Authorization triggered For: %v", inj.hosts)
+	}
+}
+
+func TestUnpresentedRequestMatchesOneOfMultipleCredentialScopes(t *testing.T) {
+	creds := []runtime.Credential{
+		{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "repos", Host: "example.com", Methods: []string{"GET"}, Paths: []string{"/repos"}},
+		{Sentinel: "upmo_sentinel_" + strings.Repeat("b", 64), Ref: "issues", Host: "example.com", Methods: []string{"POST"}, Paths: []string{"/issues"}},
+	}
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer up.Close()
+	inj := &injector{}
+	p, _ := proxy(inj, &dialer{target: up.Listener.Addr().String()})
+	p.TLSRootCAs = up.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	p.Book = book{allow: map[string][]string{"box-1": {"example.com"}}, creds: creds}
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/repos", nil)
+	r.RemoteAddr = "203.0.113.9:1234"
+	r.Header.Set("Proxy-Authorization", "Basic "+basic("box-1"))
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent || len(inj.hosts) != 0 {
+		t.Fatalf("unpresented matching scope status=%d For=%v body=%q", w.Code, inj.hosts, w.Body.String())
+	}
+}
+
+func TestTwoPresentedSentinelsSharingRefBothSwap(t *testing.T) {
+	live := strings.Repeat("0123456789abcdef", 2)
+	sa, sb := "upmo_sentinel_"+strings.Repeat("a", 64), "upmo_sentinel_"+strings.Repeat("b", 64)
+	creds := []runtime.Credential{{Sentinel: sa, Ref: "shared", Host: "example.com", Methods: []string{"GET"}, Paths: []string{"/user"}}, {Sentinel: sb, Ref: "shared", Host: "example.com", Methods: []string{"GET"}, Paths: []string{"/user"}}}
+	var gotA, gotB string
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotA, gotB = r.Header.Get("Authorization"), r.Header.Get("X-Other")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer up.Close()
+	p, _ := proxy(inject.Injector{Resolver: resolvedSecret{"shared": live}}, &dialer{target: up.Listener.Addr().String()})
+	p.TLSRootCAs = up.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	p.Book = book{allow: map[string][]string{"box-1": {"example.com"}}, creds: creds}
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/user", nil)
+	r.RemoteAddr = "203.0.113.9:1234"
+	r.Header.Set("Authorization", "Bearer "+sa)
+	r.Header.Set("X-Other", "Token "+sb)
+	r.Header.Set("Proxy-Authorization", "Basic "+basic("box-1"))
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent || gotA != "Bearer "+live || gotB != "Token "+live {
+		t.Fatalf("status=%d Authorization=%q X-Other=%q", w.Code, gotA, gotB)
 	}
 }
 
@@ -609,6 +724,21 @@ func TestProxyDropsTrailersAndBoundsGzip(t *testing.T) {
 		})
 		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "upstream_response_too_large") || len(w.Body.Bytes()) != len("upstream_response_too_large\n") {
 			t.Fatalf("oversize status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+	t.Run("compressed input bound", func(t *testing.T) {
+		w, _ := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			if _, err := io.CopyN(gz, rand.Reader, MaxResponseBytes-1); err != nil {
+				t.Errorf("write compressed payload: %v", err)
+			}
+			if err := gz.Close(); err != nil {
+				t.Errorf("close gzip: %v", err)
+			}
+		})
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "upstream_response_too_large") {
+			t.Fatalf("compressed oversize status=%d body=%q", w.Code, w.Body.String())
 		}
 	})
 }
@@ -936,27 +1066,32 @@ func TestTwoSandboxesCarryDifferentSentinels(t *testing.T) {
 }
 
 func TestProxyAgreesHostAfterCanonicalParse(t *testing.T) {
-	for _, host := range []string{"API.GITHUB.COM", "api.github.com."} {
+	for _, target := range []struct{ url, host string }{
+		{"http://API.GITHUB.COM/user", "api.github.com."},
+		{"http://api.github.com:443/user", "api.github.com"},
+	} {
 		d := &dialer{err: errors.New("dial reached canonical admitted host")}
 		p, _ := proxy(&injector{}, d)
 		p.Book = book{allow: map[string][]string{"box-1": {"api.github.com"}}}
-		r := httptest.NewRequest(http.MethodGet, "http://"+host+"/user", nil)
+		r := httptest.NewRequest(http.MethodGet, target.url, nil)
+		r.Host = target.host
 		r.RemoteAddr = "203.0.113.9:1234"
 		r.Header.Set("Proxy-Authorization", "Basic "+basic("box-1"))
 		w := httptest.NewRecorder()
 		p.ServeHTTP(w, r)
 		if w.Code != http.StatusBadGateway || len(d.dialled()) != 1 || d.dialled()[0] != "api.github.com:443" {
-			t.Errorf("host %q status=%d dial=%v", host, w.Code, d.dialled())
+			t.Errorf("target=%q Host=%q status=%d dial=%v", target.url, target.host, w.Code, d.dialled())
 		}
 	}
 	d := &dialer{}
 	p, _ := proxy(&injector{}, d)
 	r := httptest.NewRequest(http.MethodGet, "http://[2001:db8::1]/user", nil)
+	r.Host = "[2001:0db8:0:0:0:0:0:1]"
 	r.RemoteAddr = "203.0.113.9:1234"
 	r.Header.Set("Proxy-Authorization", "Basic "+basic("box-1"))
 	w := httptest.NewRecorder()
 	p.ServeHTTP(w, r)
-	if w.Code != http.StatusForbidden || len(d.dialled()) != 0 {
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "address") || len(d.dialled()) != 0 {
 		t.Fatalf("IPv6 target status=%d dial=%v", w.Code, d.dialled())
 	}
 }

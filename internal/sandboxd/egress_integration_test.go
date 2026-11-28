@@ -265,6 +265,10 @@ func TestSandboxResolvesOneCredentialThroughWorker(t *testing.T) {
 	if _, err := tx.Exec(ctx, `INSERT INTO tasks.tasks (id, owner_user_id, goal, status) VALUES ($1, $2, 'credential tracer', 'Working')`, taskID, "018f3b2c-7a10-7c4a-8e11-111111111112"); err != nil {
 		t.Fatal(err)
 	}
+	const refusalTaskID = "018f3b2c-7a10-7c4a-8e11-111111111115"
+	if _, err := tx.Exec(ctx, `INSERT INTO tasks.tasks (id, owner_user_id, goal, status) VALUES ($1, $2, 'credential refusal cases', 'Working')`, refusalTaskID, "018f3b2c-7a10-7c4a-8e11-111111111112"); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +341,52 @@ func TestSandboxResolvesOneCredentialThroughWorker(t *testing.T) {
 	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1,$2,$3)`, sandboxID, ref, secretHash[:]); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1,$2,$3)`, sandboxID, ref, secretHash[:]); !pgCodeIs(err, "42501") {
+		t.Fatalf("duplicate credential binding=%v, want 42501", err)
+	}
+	wrongHash := sha256.Sum256([]byte("wrong proxy secret"))
+	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1,$2,$3)`, sandboxID, ref, wrongHash[:]); !pgCodeIs(err, "42501") {
+		t.Fatalf("wrong-hash binding=%v, want 42501", err)
+	}
+	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1,$2,$3)`, sandboxID, "unknown_credential", secretHash[:]); !pgCodeIs(err, "42501") {
+		t.Fatalf("unknown-ref binding=%v, want 42501", err)
+	}
+	if err := (runtimepg.TaskSandboxes{Pool: appPool}).Claim(ctx, refusalTaskID, time.Hour, secretHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.attach_sandbox_credential($1,$2,$3)`, refusalTaskID, "sb-tracer-refusal", secretHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	setStatus := func(id, status string) error {
+		tx, err := owner.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE tasks.tasks SET paused=false,status=$2 WHERE id=$1`, id, status); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET paused=true WHERE id=$1`, refusalTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1,$2,$3)`, "sb-tracer-refusal", ref, secretHash[:]); !pgCodeIs(err, "42501") {
+		t.Fatalf("paused-task binding=%v, want 42501", err)
+	}
+	if err := setStatus(refusalTaskID, "Done"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sandboxPool.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1,$2,$3)`, "sb-tracer-refusal", ref, secretHash[:]); !pgCodeIs(err, "42501") {
+		t.Fatalf("done-task binding=%v, want 42501", err)
+	}
+	var upstreamHits int
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
 		if got := r.Header.Get("Authorization"); got != "Bearer "+liveSecret {
 			t.Errorf("upstream Authorization=%q", got)
 		}
@@ -352,24 +401,44 @@ func TestSandboxResolvesOneCredentialThroughWorker(t *testing.T) {
 		var d net.Dialer
 		return d.DialContext(ctx, network, upstream.Listener.Addr().String())
 	}}
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/user", nil)
-	req.RemoteAddr = "203.0.113.9:1234"
-	req.Header.Set("Authorization", "Bearer "+sentinel)
-	authReq := &http.Request{Header: http.Header{}}
-	authReq.SetBasicAuth("ignored", base64.RawURLEncoding.EncodeToString(proxySecret))
-	req.Header.Set("Proxy-Authorization", authReq.Header.Get("Authorization"))
-	_, pass, hasAuth := authReq.BasicAuth()
-	decoded, decodeErr := base64.RawURLEncoding.DecodeString(pass)
-	if !hasAuth || decodeErr != nil || len(decoded) != 32 {
-		t.Fatalf("proxy authentication fixture malformed: auth=%t bytes=%d err=%v", hasAuth, len(decoded), decodeErr)
+	forward := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/user", nil)
+		req.RemoteAddr = "203.0.113.9:1234"
+		req.Header.Set("Authorization", "Bearer "+sentinel)
+		authReq := &http.Request{Header: http.Header{}}
+		authReq.SetBasicAuth("ignored", base64.RawURLEncoding.EncodeToString(proxySecret))
+		req.Header.Set("Proxy-Authorization", authReq.Header.Get("Authorization"))
+		_, pass, hasAuth := authReq.BasicAuth()
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(pass)
+		if !hasAuth || decodeErr != nil || len(decoded) != 32 {
+			t.Fatalf("proxy authentication fixture malformed: auth=%t bytes=%d err=%v", hasAuth, len(decoded), decodeErr)
+		}
+		if _, ok := book.Authenticate(book.source, decoded); !ok {
+			t.Fatal("proxy authentication fixture did not match the book")
+		}
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		return rec
 	}
-	if _, ok := book.Authenticate(book.source, decoded); !ok {
-		t.Fatal("proxy authentication fixture did not match the book")
-	}
-	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, req)
+	rec := forward()
 	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
 		t.Fatalf("forward=%d %q", rec.Code, rec.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("upstream hits=%d", upstreamHits)
+	}
+	if err := setStatus(taskID, "Done"); err != nil {
+		t.Fatal(err)
+	}
+	if rec := forward(); rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "denied_credential_unresolved") || upstreamHits != 1 {
+		t.Fatalf("done task forward=%d body=%q upstream hits=%d", rec.Code, rec.Body.String(), upstreamHits)
+	}
+	if err := setStatus(taskID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	workerServer.Close()
+	if rec := forward(); rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "denied_credential_unresolved") || upstreamHits != 1 {
+		t.Fatalf("stopped worker forward=%d body=%q upstream hits=%d", rec.Code, rec.Body.String(), upstreamHits)
 	}
 }
 
@@ -687,9 +756,14 @@ func TestSandboxCredentialResolveUnderRLSConcurrency(t *testing.T) {
 		}
 	}
 	elapsed := time.Since(start)
+	goruntime.GC()
 	goruntime.ReadMemStats(&after)
-	if elapsed >= 2*time.Second || after.HeapAlloc-before.HeapAlloc > 12<<20 || after.HeapAlloc-before.HeapAlloc > 256<<20 {
-		t.Fatalf("concurrency budget elapsed=%s heap delta=%d", elapsed, after.HeapAlloc-before.HeapAlloc)
+	var heapDelta uint64
+	if after.HeapAlloc > before.HeapAlloc {
+		heapDelta = after.HeapAlloc - before.HeapAlloc
+	}
+	if elapsed >= 2*time.Second || heapDelta > 12<<20 || heapDelta > 256<<20 {
+		t.Fatalf("concurrency budget elapsed=%s heap delta=%d", elapsed, heapDelta)
 	}
 	for i, result := range results {
 		if latencies[i] >= 500*time.Millisecond {

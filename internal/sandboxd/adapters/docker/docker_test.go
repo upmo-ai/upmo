@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"iter"
+	"log/slog"
 	"net"
 	"net/netip"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/mount"
@@ -33,6 +35,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 )
 
 // fake is an in-memory engine. It records what the driver asked for and
@@ -53,9 +56,15 @@ type fake struct {
 	listed  []container.Summary
 
 	// networks maps a network name to whether it is internal.
-	networks   map[string]bool
-	netCreated []client.NetworkCreateOptions
-	netErr     error
+	networks          map[string]bool
+	netCreated        []client.NetworkCreateOptions
+	netErr            error
+	networkConnectErr error
+	netDisconnects    []struct {
+		name string
+		opts client.NetworkDisconnectOptions
+	}
+	netRemoved []string
 
 	startErr error
 	// script is the multiplexed output and exit code of the next exec. A nil
@@ -127,6 +136,9 @@ func (f *fake) NetworkCreate(_ context.Context, name string, opts client.Network
 func (f *fake) NetworkConnect(_ context.Context, name string, opts client.NetworkConnectOptions) (client.NetworkConnectResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.networkConnectErr != nil {
+		return client.NetworkConnectResult{}, f.networkConnectErr
+	}
 	c, ok := f.containers[opts.Container]
 	if !ok {
 		return client.NetworkConnectResult{}, cerrdefs.ErrNotFound
@@ -136,11 +148,18 @@ func (f *fake) NetworkConnect(_ context.Context, name string, opts client.Networ
 	f.containers[opts.Container] = c
 	return client.NetworkConnectResult{}, nil
 }
-func (f *fake) NetworkDisconnect(_ context.Context, _ string, _ client.NetworkDisconnectOptions) (client.NetworkDisconnectResult, error) {
+func (f *fake) NetworkDisconnect(_ context.Context, name string, opts client.NetworkDisconnectOptions) (client.NetworkDisconnectResult, error) {
+	f.mu.Lock()
+	f.netDisconnects = append(f.netDisconnects, struct {
+		name string
+		opts client.NetworkDisconnectOptions
+	}{name, opts})
+	f.mu.Unlock()
 	return client.NetworkDisconnectResult{}, nil
 }
 func (f *fake) NetworkRemove(_ context.Context, name string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
 	f.mu.Lock()
+	f.netRemoved = append(f.netRemoved, name)
 	delete(f.networks, name)
 	f.mu.Unlock()
 	return client.NetworkRemoveResult{}, nil
@@ -507,6 +526,15 @@ func create(t *testing.T, d *Driver) runtime.Sandbox {
 	return box
 }
 
+func (d *Driver) recordProxyIdentityForTest(id string, ip netip.Addr, secret []byte) {
+	d.mu.Lock()
+	b := d.boxes[id]
+	b.ip = ip
+	b.secret = sha256.Sum256(secret)
+	d.boxes[id] = b
+	d.mu.Unlock()
+}
+
 func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 	d, f, c := setup(t)
 	box := create(t, d)
@@ -656,6 +684,12 @@ func TestDockerAuthenticateRevokesPausedExpiredAndStopped(t *testing.T) {
 	if !ok || p.ID != box.ID || p.Lease == 0 {
 		t.Fatalf("Authenticate = %+v %t", p, ok)
 	}
+	if _, ok := d.Authenticate(netip.MustParseAddr("172.20.0.11"), secret); ok {
+		t.Fatal("authenticated sandbox from the wrong source IP")
+	}
+	if _, ok := d.Authenticate(ip, []byte(strings.Repeat("x", 32))); ok {
+		t.Fatal("authenticated sandbox with the wrong proxy secret")
+	}
 	if release, ctx, ok := d.Acquire(box.ID, p.Lease); !ok || ctx == nil {
 		t.Fatal("Acquire refused live sandbox")
 	} else {
@@ -688,17 +722,178 @@ func TestDockerAuthenticateRevokesPausedExpiredAndStopped(t *testing.T) {
 	d3.mu.Lock()
 	b = d3.boxes[editorBox.ID]
 	editorIP := b.editorIP
+	editorLease := b.editorLease
 	b.editorSecret = sha256.Sum256(secret)
 	d3.boxes[editorBox.ID] = b
 	d3.mu.Unlock()
 	if _, ok := d3.Authenticate(editorIP, secret); !ok {
 		t.Fatal("editor authentication refused")
 	}
+	if _, ok := d3.Authenticate(netip.MustParseAddr("172.20.0.99"), secret); ok {
+		t.Fatal("authenticated editor from the wrong source IP")
+	}
+	if _, ok := d3.Authenticate(editorIP, []byte(strings.Repeat("x", 32))); ok {
+		t.Fatal("authenticated editor with the wrong proxy secret")
+	}
+	d3.mu.Lock()
+	b = d3.boxes[editorBox.ID]
+	b.paused = true
+	d3.boxes[editorBox.ID] = b
+	d3.mu.Unlock()
+	if _, _, ok := d3.Acquire(runtime.EditorEgressID(editorBox.ID), editorLease); ok {
+		t.Fatal("editor Acquire succeeded while sandbox paused")
+	}
+	d3.mu.Lock()
+	b = d3.boxes[editorBox.ID]
+	b.paused = false
+	d3.boxes[editorBox.ID] = b
+	d3.mu.Unlock()
 	if err := d3.StopEditor(context.Background(), editorBox.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := d3.Authenticate(editorIP, secret); ok {
 		t.Fatal("authenticated stopped editor")
+	}
+}
+
+func TestCreateCleansPartialSandboxNetwork(t *testing.T) {
+	d, f, _ := setup(t)
+	f.networkConnectErr = errors.New("attach failed")
+	if _, err := d.Create(context.Background(), spec()); err == nil {
+		t.Fatal("Create succeeded after sandboxd network attach failed")
+	}
+	if len(f.created) != 0 || len(f.netRemoved) != 1 || len(f.networks) != 0 {
+		t.Fatalf("container creates=%d removed networks=%v remaining=%v", len(f.created), f.netRemoved, f.networks)
+	}
+	for _, call := range f.netDisconnects {
+		if !call.opts.Force {
+			t.Fatalf("network disconnect was not forced: %+v", call)
+		}
+	}
+}
+
+func TestCreateWithDatabaseRequiresProxySecretBeforeContainerStart(t *testing.T) {
+	for _, secret := range [][]byte{nil, bytes.Repeat([]byte{'x'}, 31)} {
+		f := newFake()
+		d, err := newDriver(f, Options{DB: &pgxpool.Pool{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := spec()
+		s.ProxySecret = secret
+		if _, err := d.Create(context.Background(), s); err == nil {
+			t.Fatalf("Create accepted %d-byte proxy secret", len(secret))
+		}
+		if len(f.created) != 0 || len(f.started) != 0 || len(f.networks) != 0 {
+			t.Fatalf("missing proxy secret reached engine: create=%d start=%d networks=%v", len(f.created), len(f.started), f.networks)
+		}
+	}
+}
+
+func TestDestroyAndSweepRevokeAndRemoveSandboxNetworks(t *testing.T) {
+	secret := []byte(strings.Repeat("s", 32))
+	ip := netip.MustParseAddr("172.20.0.20")
+	checkRemoved := func(t *testing.T, f *fake, id string) {
+		t.Helper()
+		name := sandboxNetworkName(id)
+		if !slices.Contains(f.netRemoved, name) || f.networks[name] {
+			t.Fatalf("network %s removal records=%v remaining=%v", name, f.netRemoved, f.networks)
+		}
+		seenBox, seenSelf := false, false
+		for _, call := range f.netDisconnects {
+			if call.name != name || !call.opts.Force {
+				t.Errorf("disconnect=%+v", call)
+			}
+			seenBox = seenBox || call.opts.Container == containerName(id)
+			self, _ := os.Hostname()
+			seenSelf = seenSelf || call.opts.Container == self
+		}
+		if !seenBox || !seenSelf {
+			t.Fatalf("network disconnects lack sandboxd/sandbox force records: %+v", f.netDisconnects)
+		}
+	}
+	t.Run("destroy", func(t *testing.T) {
+		d, f, _ := setup(t)
+		box := create(t, d)
+		d.recordProxyIdentityForTest(box.ID, ip, secret)
+		principal, ok := d.Authenticate(ip, secret)
+		if !ok {
+			t.Fatal("sandbox identity was not live before Destroy")
+		}
+		release, held, ok := d.Acquire(box.ID, principal.Lease)
+		if !ok {
+			t.Fatal("Acquire refused sandbox before Destroy")
+		}
+		if err := d.Destroy(context.Background(), box.ID); !errors.Is(err, egress.ErrRevokeTimeout) {
+			t.Fatalf("Destroy=%v, want revoke timeout", err)
+		}
+		if held.Err() == nil {
+			t.Fatal("Destroy did not cancel held lease")
+		}
+		release()
+		if _, ok := d.Authenticate(ip, secret); ok {
+			t.Fatal("sandbox authenticated after Destroy")
+		}
+		checkRemoved(t, f, box.ID)
+	})
+	t.Run("sweep", func(t *testing.T) {
+		d, f, clock := setup(t)
+		box := create(t, d)
+		d.recordProxyIdentityForTest(box.ID, ip, secret)
+		principal, ok := d.Authenticate(ip, secret)
+		if !ok {
+			t.Fatal("sandbox identity was not live before Sweep")
+		}
+		release, held, ok := d.Acquire(box.ID, principal.Lease)
+		if !ok {
+			t.Fatal("Acquire refused sandbox before Sweep")
+		}
+		f.listed = []container.Summary{{Labels: map[string]string{labelSandbox: box.ID, labelExpires: box.Expires.Format(time.RFC3339Nano)}}}
+		clock.add(2 * time.Hour)
+		count, err := d.Sweep(context.Background())
+		if !errors.Is(err, egress.ErrRevokeTimeout) || count != 1 {
+			t.Fatalf("Sweep=%d,%v", count, err)
+		}
+		if held.Err() == nil {
+			t.Fatal("Sweep did not cancel held lease")
+		}
+		release()
+		if _, ok := d.Authenticate(ip, secret); ok {
+			t.Fatal("sandbox authenticated after Sweep")
+		}
+		checkRemoved(t, f, box.ID)
+	})
+}
+
+func TestDockerRevokeTimeoutLogsMinimalFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	d, _, _ := setupOpts(t, Options{Log: logger})
+	box := create(t, d)
+	secret := []byte("raw-secret-must-not-be-logged-000000")
+	secret = secret[:32]
+	ip := netip.MustParseAddr("172.20.0.21")
+	d.recordProxyIdentityForTest(box.ID, ip, secret)
+	p, ok := d.Authenticate(ip, secret)
+	if !ok {
+		t.Fatal("sandbox auth failed")
+	}
+	release, held, ok := d.Acquire(box.ID, p.Lease)
+	if !ok {
+		t.Fatal("Acquire failed")
+	}
+	start := time.Now()
+	err := d.Pause(context.Background(), box.ID)
+	if !errors.Is(err, egress.ErrRevokeTimeout) || time.Since(start) < egress.RevokeTimeout-100*time.Millisecond {
+		t.Fatalf("Pause=%v after %s", err, time.Since(start))
+	}
+	if held.Err() == nil {
+		t.Fatal("revoke did not cancel held request")
+	}
+	release()
+	line := output.String()
+	if !strings.Contains(line, `"msg":"lease_revoke_timeout"`) || !strings.Contains(line, `"sandbox":"`+box.ID+`"`) || !strings.Contains(line, `"reason":"pause"`) || strings.Contains(line, string(secret)) {
+		t.Fatalf("timeout log=%s", line)
 	}
 }
 

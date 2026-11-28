@@ -195,6 +195,7 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &body, bodyLimit) {
 		return
 	}
+	defer clear(body.ProxySecret)
 	// The domain sets no TTL ceiling; this bound only keeps the duration from overflowing.
 	if body.TTLSeconds <= 0 || body.TTLSeconds > math.MaxInt64/int64(time.Second) {
 		h.fail(w, runtime.ErrSpec)

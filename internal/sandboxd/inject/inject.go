@@ -200,8 +200,8 @@ func (rw Rewrite) transform(value string, scrub bool) string {
 				changed := strings.ReplaceAll(string(decoded), from, to)
 				if changed != string(decoded) {
 					value = "Basic " + base64.StdEncoding.EncodeToString([]byte(changed))
+					continue
 				}
-				continue
 			}
 		}
 		value = strings.ReplaceAll(value, from, to)

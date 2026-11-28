@@ -343,11 +343,12 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	}
 	proxyIP, err := d.ensureSandboxNetwork(ctx, netName)
 	if err != nil {
+		d.cleanup(ctx, id)
 		return runtime.Sandbox{}, err
 	}
 	if d.db != nil {
 		if _, err := d.db.Exec(ctx, `SELECT gateway.attach_sandbox_credential($1::uuid, $2, $3)`, spec.Task, id, hash[:]); err != nil {
-			_ = d.removeNetwork(ctx, id, netName)
+			d.cleanup(ctx, id)
 			return runtime.Sandbox{}, fmt.Errorf("keys: worker unavailable: sandbox credential binding")
 		}
 		bound := make(map[string]struct{}, len(spec.Credentials))
@@ -357,7 +358,7 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 			}
 			bound[c.Ref] = struct{}{}
 			if _, err := d.db.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1, $2, $3)`, id, c.Ref, hash[:]); err != nil {
-				_ = d.removeNetwork(ctx, id, netName)
+				d.cleanup(ctx, id)
 				return runtime.Sandbox{}, fmt.Errorf("keys: worker unavailable: sandbox credential binding")
 			}
 		}
@@ -698,7 +699,7 @@ func (d *Driver) Acquire(id string, token uint64) (func(), context.Context, bool
 	d.mu.Lock()
 	if sandboxID, editor := runtime.SandboxFromEditorEgress(id); editor {
 		b, ok := d.boxes[sandboxID]
-		if !ok || token == 0 || b.editorLease != token || !d.now().UTC().Before(b.expires) {
+		if !ok || token == 0 || b.editorLease != token || b.paused || !d.now().UTC().Before(b.expires) {
 			d.mu.Unlock()
 			return nil, context.Background(), false
 		}
@@ -778,16 +779,16 @@ func (d *Driver) revoke(id, reason string) error {
 		}
 	}
 	d.boxes[id] = b
-	deadline := time.Now().Add(egress.RevokeTimeout)
 	timedOut := false
 	timer := time.AfterFunc(egress.RevokeTimeout, func() { d.mu.Lock(); timedOut = true; d.cond.Broadcast(); d.mu.Unlock() })
 	for ((isEditor && b.editorFlight > 0) || (!isEditor && (b.inFlight > 0 || b.editorFlight > 0))) && !timedOut {
 		d.cond.Wait()
 		b = d.boxes[id]
 	}
+	stillInFlight := (isEditor && b.editorFlight > 0) || (!isEditor && (b.inFlight > 0 || b.editorFlight > 0))
 	timer.Stop()
 	d.mu.Unlock()
-	if timedOut && time.Now().After(deadline) {
+	if stillInFlight {
 		if d.log != nil {
 			d.log.Warn("lease_revoke_timeout", "sandbox", id, "reason", reason)
 		}

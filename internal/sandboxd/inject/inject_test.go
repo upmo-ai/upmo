@@ -81,6 +81,19 @@ func TestForRejectsSecretBytes(t *testing.T) {
 	}
 }
 
+func TestScrubHeaderReplacesLiteralSecretInBasicText(t *testing.T) {
+	secret := strings.Repeat("0123456789abcdef", 2)
+	cred := []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "token", Host: "example.com"}}
+	rw, err := (Injector{Resolver: fakeResolver{"token": secret}}).For(context.Background(), "sb-1", nil, "example.com", cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rw.ScrubHeader(http.Header{"X-Echo": {"Basic " + secret}}).Get("X-Echo")
+	if want := "Basic " + cred[0].Sentinel; got != want {
+		t.Fatalf("ScrubHeader = %q, want %q", got, want)
+	}
+}
+
 func TestForResolvesNothingForAnotherHost(t *testing.T) {
 	rw, err := Injector{Resolver: Refuse{}}.For(context.Background(), "", nil, "proxy.golang.org", creds)
 	if err != nil {

@@ -130,13 +130,15 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request, principal Princi
 		return
 	}
 	defer release()
-	p.log(r, principal.ID, note.Host, port, "allow", "", nil)
-	ctx, cancel := context.WithTimeout(held, DialTimeout)
-	stop := context.AfterFunc(r.Context(), cancel)
-	defer func() { stop(); cancel() }()
+	tunnelCtx, tunnelCancel := context.WithCancel(held)
+	stop := context.AfterFunc(r.Context(), tunnelCancel)
+	defer func() { stop(); tunnelCancel() }()
+	dialCtx, dialCancel := context.WithTimeout(tunnelCtx, DialTimeout)
 	dial := p.dial()
-	upstream, err := dial(ctx, "tcp", net.JoinHostPort(note.Host, port))
-	if err != nil || held.Err() != nil {
+	upstream, err := dial(dialCtx, "tcp", net.JoinHostPort(note.Host, port))
+	dialErr := dialCtx.Err()
+	dialCancel()
+	if err != nil || dialErr != nil || tunnelCtx.Err() != nil {
 		if upstream != nil {
 			_ = upstream.Close()
 		}
@@ -147,6 +149,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request, principal Princi
 		p.reject(w, r, principal, note.Host, port, "upstream_dial_failed", http.StatusBadGateway)
 		return
 	}
+	p.log(r, principal.ID, note.Host, port, "allow", "", nil)
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		_ = upstream.Close()
@@ -172,7 +175,7 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request, principal Princi
 			return
 		}
 	}
-	Relay(ctx, client, upstream)
+	Relay(tunnelCtx, client, upstream)
 }
 
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, principal Principal, secret []byte) {
@@ -215,7 +218,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, principal Princi
 	if rawPath == "" {
 		rawPath = "/"
 	}
-	if !canonicalPath(rawPath, target.Path) {
+	if !canonicalPath(rawPath, target.Path) || target.RawPath != "" || r.URL.RawPath != "" {
 		p.reject(w, r, principal, note.Host, port, "denied_credential_path", http.StatusBadRequest)
 		return
 	}
@@ -232,7 +235,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, principal Princi
 		p.reject(w, r, principal, note.Host, port, "denied_sentinel_in_target", http.StatusForbidden)
 		return
 	}
-	selected, refs, reason := selectCredentials(r, principal.Creds, note.Host, r.Method, target.Path)
+	forwarded := stripHeaders(r.Header)
+	selected, refs, reason := selectCredentials(forwarded, principal.Creds, note.Host, r.Method, target.Path)
 	if reason != "" {
 		p.reject(w, r, principal, note.Host, port, reason, http.StatusForbidden)
 		return
@@ -274,7 +278,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, principal Princi
 	}
 	out.URL.Host = note.Host
 	out.Host = note.Host
-	out.Header = stripHeaders(r.Header)
+	out.Header = forwarded
 	out.Header = rw.Apply(out.Header)
 	out.Header.Set("Accept-Encoding", "identity")
 	tr := &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{RootCAs: p.TLSRootCAs, ServerName: note.Host, MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second, IdleConnTimeout: 90 * time.Second}
@@ -360,21 +364,24 @@ func readResponse(res *http.Response) ([]byte, bool, error) {
 		gzipEncoding = true
 	}
 	body, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, false, errors.New("upstream_content_encoding")
-	}
-	if int64(len(body)) > MaxResponseBytes {
+	if gzipEncoding && raw.N == 0 {
 		return nil, false, errors.New("upstream_response_too_large")
 	}
-	if gzipEncoding && raw.N == 0 {
+	if err != nil {
+		if gzipEncoding {
+			return nil, false, errors.New("upstream_content_encoding")
+		}
+		return nil, false, errors.New("upstream_read_failed")
+	}
+	if int64(len(body)) > MaxResponseBytes {
 		return nil, false, errors.New("upstream_response_too_large")
 	}
 	return body, gzipEncoding, nil
 }
 
-func selectCredentials(r *http.Request, creds []runtime.Credential, host, method, requestPath string) ([]runtime.Credential, []string, string) {
+func selectCredentials(headers http.Header, creds []runtime.Credential, host, method, requestPath string) ([]runtime.Credential, []string, string) {
 	var found []string
-	for _, values := range r.Header {
+	for _, values := range headers {
 		for _, value := range values {
 			if strings.HasPrefix(strings.ToLower(value), "basic ") {
 				if raw, err := base64.StdEncoding.DecodeString(value[6:]); err == nil {
@@ -385,7 +392,7 @@ func selectCredentials(r *http.Request, creds []runtime.Credential, host, method
 			found = append(found, sentinelPattern.FindAllString(value, -1)...)
 		}
 	}
-	if len(r.Header.Values("Authorization")) > 1 && len(found) > 0 {
+	if len(headers.Values("Authorization")) > 1 && len(found) > 0 {
 		return nil, nil, "denied_duplicate_authorization"
 	}
 	var selected []runtime.Credential
@@ -410,18 +417,30 @@ func selectCredentials(r *http.Request, creds []runtime.Credential, host, method
 		if !pathAllowed(c.Paths, requestPath) {
 			return nil, nil, "denied_credential_path"
 		}
-		if !slices.Contains(refs, c.Ref) {
+		if !slices.ContainsFunc(selected, func(selected runtime.Credential) bool { return selected.Sentinel == c.Sentinel }) {
 			selected = append(selected, *c)
+		}
+		if !slices.Contains(refs, c.Ref) {
 			refs = append(refs, c.Ref)
 		}
 	}
+	hasHost, anyMethod, anyMethodAndPath := false, false, false
 	for _, c := range creds {
-		if c.Host == host && len(found) == 0 && (!slices.Contains(c.Methods, method) || !pathAllowed(c.Paths, requestPath)) {
-			if !slices.Contains(c.Methods, method) {
-				return nil, nil, "denied_credential_method"
+		if c.Host == host {
+			hasHost = true
+			if slices.Contains(c.Methods, method) {
+				anyMethod = true
+				if pathAllowed(c.Paths, requestPath) {
+					anyMethodAndPath = true
+				}
 			}
-			return nil, nil, "denied_credential_path"
 		}
+	}
+	if len(selected) == 0 && len(found) == 0 && hasHost && !anyMethodAndPath {
+		if !anyMethod {
+			return nil, nil, "denied_credential_method"
+		}
+		return nil, nil, "denied_credential_path"
 	}
 	return selected, refs, ""
 }
@@ -438,7 +457,32 @@ func canonicalPath(raw, decoded string) bool {
 	return strings.HasPrefix(raw, "/") && !strings.ContainsAny(raw, "\\%") && !strings.Contains(raw, "..") && !strings.Contains(raw, "//") && path.Clean(decoded) == decoded
 }
 func sameTarget(target, parsed *url.URL, host string) bool {
-	return parsed != nil && host != "" && strings.EqualFold(target.Host, parsed.Host) && target.Path == parsed.Path && target.RawPath == parsed.RawPath && target.RawQuery == parsed.RawQuery && strings.EqualFold(host, target.Host)
+	if parsed == nil || host == "" || target.Path != parsed.Path || target.RawPath != parsed.RawPath || target.RawQuery != parsed.RawQuery {
+		return false
+	}
+	targetHost, err := runtime.AdmitEgress(target.Host, nil)
+	if err != nil {
+		return false
+	}
+	requestHost, err := runtime.AdmitEgress(host, nil)
+	if err != nil {
+		return false
+	}
+	if targetHost.Port == "" {
+		targetHost.Port = defaultPort
+	}
+	if requestHost.Port == "" {
+		requestHost.Port = defaultPort
+	}
+	if targetHost.Port != requestHost.Port {
+		return false
+	}
+	if targetHost.Host == requestHost.Host {
+		return true
+	}
+	targetIP, targetErr := netip.ParseAddr(targetHost.Host)
+	requestIP, requestErr := netip.ParseAddr(requestHost.Host)
+	return targetErr == nil && requestErr == nil && targetIP.Unmap() == requestIP.Unmap()
 }
 func stripHeaders(in http.Header) http.Header {
 	out := in.Clone()

@@ -213,9 +213,10 @@ func (d *Driver) revoke(id, reason string) error {
 		d.cond.Wait()
 		b = d.boxes[id]
 	}
+	stillInFlight := b.inFlight > 0
 	timer.Stop()
 	d.mu.Unlock()
-	if timed {
+	if stillInFlight {
 		if d.log != nil {
 			d.log.Warn("lease_revoke_timeout", "sandbox", id, "reason", reason)
 		}
