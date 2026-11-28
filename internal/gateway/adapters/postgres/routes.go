@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,8 @@ import (
 // Store reads routing rows. It does not resolve secrets.
 type Store struct {
 	Pool *pgxpool.Pool
+	// Now pins hold created_at in integration tests; when nil Postgres defaults apply.
+	Now func() time.Time
 }
 
 var (

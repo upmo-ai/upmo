@@ -207,7 +207,17 @@ func (s Store) Reserve(ctx context.Context, req app.ReserveRequest) (app.Reserva
 
 	var holdID string
 	if req.Estimate > 0 {
-		if err := tx.QueryRow(ctx, `INSERT INTO gateway.usage_holds DEFAULT VALUES RETURNING id::text`).Scan(&holdID); err != nil {
+		const holdInsert = `
+			INSERT INTO gateway.usage_holds (period_start, amount_micro_usd, user_id, source, automation_id, created_at)
+			VALUES ($1::date, $2, $3::uuid, $4, $5::uuid, COALESCE($6::timestamptz, now()))
+			RETURNING id::text`
+		var createdAt any
+		if s.Now != nil {
+			createdAt = s.Now().UTC()
+		}
+		if err := tx.QueryRow(ctx, holdInsert,
+			period, req.Estimate, uuidOrNil(req.UserID), req.Source, uuidOrNil(automationID), createdAt,
+		).Scan(&holdID); err != nil {
 			return app.Reservation{}, err
 		}
 	}
@@ -273,6 +283,41 @@ func (s Store) Settle(ctx context.Context, res app.Reservation, row domain.Entry
 	return tx.Commit(ctx)
 }
 
+// releaseReservation deletes the hold row and decrements held counters when the
+// row exists. It returns whether a hold was claimed.
+func (s Store) releaseReservation(ctx context.Context, res app.Reservation) (bool, error) {
+	if res.Amount <= 0 {
+		return true, nil
+	}
+	if s.Pool == nil {
+		return false, fmt.Errorf("gateway: no database")
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	claimed, err := claimHold(ctx, tx, res.ID)
+	if err != nil {
+		return false, err
+	}
+	if !claimed {
+		return false, nil
+	}
+
+	period := res.PeriodStart.Format("2006-01-02")
+	for _, target := range reservationTargetsFor(res) {
+		if err := adjustSpendRow(ctx, tx, target.kind, target.subjectID, period, -res.Amount, 0); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Release drops an unsettled reservation hold without writing a ledger row or
 // charging spent_micro_usd. It is safe to call twice: an attempt is settled or
 // released at most once.
@@ -280,30 +325,60 @@ func (s Store) Release(ctx context.Context, res app.Reservation) error {
 	if res.Amount <= 0 {
 		return nil
 	}
-	if s.Pool == nil {
-		return fmt.Errorf("gateway: no database")
-	}
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	_, err := s.releaseReservation(ctx, res)
+	return err
+}
 
-	claimed, err := claimHold(ctx, tx, res.ID)
+// ReleaseStaleHolds releases every hold with created_at strictly before now-maxAge.
+func ReleaseStaleHolds(ctx context.Context, owner *pgxpool.Pool, now time.Time, maxAge time.Duration) (int, error) {
+	if owner == nil {
+		return 0, fmt.Errorf("gateway: no database")
+	}
+	if maxAge <= 0 {
+		return 0, fmt.Errorf("gateway: invalid stale hold age")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	cutoff := now.UTC().Add(-maxAge)
+	rows, err := owner.Query(ctx, `
+		SELECT id::text, period_start, amount_micro_usd,
+		       COALESCE(user_id::text, ''), source, COALESCE(automation_id::text, '')
+		FROM gateway.usage_holds
+		WHERE created_at < $1
+		ORDER BY created_at, id`,
+		cutoff,
+	)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if !claimed {
-		return nil
+	var candidates []app.Reservation
+	for rows.Next() {
+		var res app.Reservation
+		if err := rows.Scan(&res.ID, &res.PeriodStart, &res.Amount, &res.UserID, &res.Source, &res.AutomationID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		candidates = append(candidates, res)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
 
-	period := res.PeriodStart.Format("2006-01-02")
-	for _, target := range reservationTargetsFor(res) {
-		if err := adjustSpendRow(ctx, tx, target.kind, target.subjectID, period, -res.Amount, 0); err != nil {
-			return err
+	store := Store{Pool: owner}
+	var released int
+	for _, res := range candidates {
+		claimed, err := store.releaseReservation(ctx, res)
+		if err != nil {
+			return released, err
+		}
+		if claimed {
+			released++
 		}
 	}
-	return tx.Commit(ctx)
+	return released, nil
 }
 
 // SpendMismatch describes one discrepancy between gateway.usage_spend and the

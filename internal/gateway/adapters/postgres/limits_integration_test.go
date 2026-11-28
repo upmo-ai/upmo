@@ -1242,3 +1242,114 @@ func TestFeature_UPM355_ReserveLocksSpendRows(t *testing.T) {
 		t.Fatalf("spent=%d held=%d, want spent=0 held=%d", spent, held, estimate)
 	}
 }
+
+func TestFeature_UPM422_TracerStaleHoldSweepPinnedClock(t *testing.T) {
+	w := newPinWorld(t, nil)
+	ctx := context.Background()
+	setUsageLimit(t, w, domain.LimitWorkspace, "", 20_000_000)
+	setUsageLimit(t, w, domain.LimitPerson, pinAuthor, 20_000_000)
+
+	const estimate = int64(3_000_000)
+	period := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	reserveAt := time.Date(2026, 11, 25, 0, 11, 0, 0, time.UTC)
+	store := postgres.Store{Pool: w.pool, Now: func() time.Time { return reserveAt }}
+
+	res, err := store.Reserve(ctx, app.ReserveRequest{
+		UserID:      pinAuthor,
+		Source:      domain.SourceChat,
+		Estimate:    estimate,
+		PeriodStart: period,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holdPeriod time.Time
+	var holdAmount int64
+	var holdUser, holdSource, holdAuto string
+	var holdCreated time.Time
+	if err := w.pool.QueryRow(ctx, `
+		SELECT period_start, amount_micro_usd,
+		       COALESCE(user_id::text, ''), source, COALESCE(automation_id::text, ''), created_at
+		FROM gateway.usage_holds WHERE id = $1::uuid`, res.ID).Scan(
+		&holdPeriod, &holdAmount, &holdUser, &holdSource, &holdAuto, &holdCreated,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if holdPeriod != period || holdAmount != estimate || holdUser != pinAuthor ||
+		holdSource != domain.SourceChat || holdAuto != "" || !holdCreated.Equal(reserveAt) {
+		t.Fatalf("hold metadata = {%s %d %s %s %s %s}, want pinned reserve metadata",
+			holdPeriod, holdAmount, holdUser, holdSource, holdAuto, holdCreated)
+	}
+
+	readHeld := func(t *testing.T) (wsHeld, personHeld int64) {
+		t.Helper()
+		periodStr := period.Format("2006-01-02")
+		if err := w.pool.QueryRow(ctx, `
+			SELECT held_micro_usd FROM gateway.usage_spend
+			WHERE kind = 'workspace' AND subject_id IS NULL AND period_start = $1::date`, periodStr,
+		).Scan(&wsHeld); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.pool.QueryRow(ctx, `
+			SELECT held_micro_usd FROM gateway.usage_spend
+			WHERE kind = 'person' AND subject_id = $1::uuid AND period_start = $2::date`,
+			pinAuthor, periodStr,
+		).Scan(&personHeld); err != nil {
+			t.Fatal(err)
+		}
+		return wsHeld, personHeld
+	}
+	wsHeld, personHeld := readHeld(t)
+	if wsHeld != estimate || personHeld != estimate {
+		t.Fatalf("held ws=%d person=%d, want %d each", wsHeld, personHeld, estimate)
+	}
+
+	sweepAt := time.Date(2026, 11, 25, 0, 27, 0, 0, time.UTC)
+	released, err := postgres.ReleaseStaleHolds(ctx, w.pool, sweepAt, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released != 1 {
+		t.Fatalf("released = %d, want 1", released)
+	}
+	wsHeld, personHeld = readHeld(t)
+	if wsHeld != 0 || personHeld != 0 {
+		t.Fatalf("after sweep held ws=%d person=%d, want 0", wsHeld, personHeld)
+	}
+	var holdCount int
+	if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_holds`).Scan(&holdCount); err != nil {
+		t.Fatal(err)
+	}
+	if holdCount != 0 {
+		t.Fatalf("hold rows = %d, want 0", holdCount)
+	}
+
+	freshAt := time.Date(2026, 11, 25, 0, 5, 0, 0, time.UTC)
+	store.Now = func() time.Time { return freshAt }
+	if _, err := store.Reserve(ctx, app.ReserveRequest{
+		UserID:      pinAuthor,
+		Source:      domain.SourceChat,
+		Estimate:    estimate,
+		PeriodStart: period,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sweepEarly := time.Date(2026, 11, 25, 0, 11, 0, 0, time.UTC)
+	released, err = postgres.ReleaseStaleHolds(ctx, w.pool, sweepEarly, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released != 0 {
+		t.Fatalf("early sweep released = %d, want 0", released)
+	}
+	if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM gateway.usage_holds`).Scan(&holdCount); err != nil {
+		t.Fatal(err)
+	}
+	if holdCount != 1 {
+		t.Fatalf("hold rows after early sweep = %d, want 1", holdCount)
+	}
+	wsHeld, personHeld = readHeld(t)
+	if wsHeld != estimate || personHeld != estimate {
+		t.Fatalf("after early sweep held ws=%d person=%d, want %d", wsHeld, personHeld, estimate)
+	}
+}

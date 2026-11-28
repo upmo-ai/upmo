@@ -711,6 +711,7 @@ func openWorkerJobs(owner *pgxpool.Pool, cfg config.Config, secrets secretchain.
 		return err
 	}
 	gateway.AddSpendChecker(workers, owner, workspaceZone, reg, log)
+	gateway.AddHoldSweeper(workers, owner, log)
 	gateway.AddUsageRollup(workers, owner, workspaceZone, log)
 	gateway.AddProviderChecker(workers, gateway.ProviderCheckDeps{
 		Owner:   owner,
@@ -740,6 +741,7 @@ func openWorkerJobs(owner *pgxpool.Pool, cfg config.Config, secrets secretchain.
 	periodic := []*river.PeriodicJob{
 		audit.SealPeriodic(), audit.RetentionPeriodic(), audit.VerifyPeriodic(),
 		provision.NonceSweepPeriodic(), brainops.PasswordWindowSweepPeriodic(), gateway.SpendCheckPeriodic(),
+		gateway.HoldSweepPeriodic(),
 		gateway.ProviderCheckPeriodic(), gateway.CatalogRefreshPeriodic(),
 		gateway.UsageRollupPeriodic(),
 	}

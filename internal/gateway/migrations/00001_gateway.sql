@@ -425,8 +425,16 @@ CREATE TABLE gateway.usage_spend (
 
 CREATE TABLE gateway.usage_holds (
   id uuid PRIMARY KEY DEFAULT uuidv7(),
-  created_at timestamptz NOT NULL DEFAULT now()
+  period_start date NOT NULL,
+  amount_micro_usd bigint NOT NULL CHECK (amount_micro_usd > 0),
+  user_id uuid,
+  source text NOT NULL DEFAULT '',
+  automation_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (source <> 'automation' OR automation_id IS NOT NULL)
 );
+
+CREATE INDEX usage_holds_created_at_idx ON gateway.usage_holds (created_at);
 
 -- True for the role that owns the gateway tables.
 -- +goose StatementBegin
