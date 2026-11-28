@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/upmo-ai/upmo/internal/platform/agentloop"
+	"github.com/upmo-ai/upmo/internal/platform/audit"
 	"github.com/upmo-ai/upmo/internal/platform/jobs"
 	"github.com/upmo-ai/upmo/internal/tasks/adapters/postgres"
 	"github.com/upmo-ai/upmo/internal/tasks/app"
@@ -1105,6 +1106,107 @@ func TestRunnerSettleOrphan(t *testing.T) {
 	}
 	if got := taskInt(t, owner, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, failedTask.ID); got != math.MaxInt64 {
 		t.Fatalf("spent after orphan overflow = %d, want MaxInt64", got)
+	}
+}
+
+func TestSettleAndSettleOrphanAuditAtomically(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	assertAudit := func(taskID, mode, token string, amount, spentFrom, spentTo int64, pausedFrom, pausedTo bool) {
+		t.Helper()
+		var count int
+		var matches bool
+		if err := owner.QueryRow(ctx, `
+			SELECT count(*), COALESCE(bool_and(
+				service = 'brain' AND outcome = 'success' AND target_type = 'task'
+				AND changes = jsonb_build_object(
+					'fields', ARRAY['amount', 'claim_token', 'mode', 'paused', 'spent']::text[],
+					'values', jsonb_build_object(
+						'amount', jsonb_build_object('from', NULL, 'to', $3::bigint),
+						'claim_token', jsonb_build_object('from', NULL, 'to', $4::text),
+						'mode', jsonb_build_object('from', NULL, 'to', $2::text),
+						'paused', jsonb_build_object('from', $5::boolean, 'to', $6::boolean),
+						'spent', jsonb_build_object('from', $7::bigint, 'to', $8::bigint)
+					)
+				)
+			), false)
+			FROM audit.pending
+			WHERE action = 'task.settle' AND target_id = $1`,
+			taskID, mode, amount, token, pausedFrom, pausedTo, spentFrom, spentTo).Scan(&count, &matches); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 || !matches {
+			t.Fatalf("%s audit rows = %d, exact row match = %t", mode, count, matches)
+		}
+	}
+
+	turnTask := reach(t, store, "Audited turn settlement", domain.Working)
+	markTaskRunnerOwned(t, owner, turnTask.ID)
+	run, err := app.Admit(ctx, store, ownerAccess, turnTask.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimRun(ctx, ownerAccess, turnTask.ID, run.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settleViaRunnerTx(ctx, store, turnTask.ID, run.ID, claim.Token, 250_000, 1, 0); err != nil {
+		t.Fatalf("SettleTx = %v", err)
+	}
+	assertAudit(turnTask.ID, "turn", claim.Token, 250_000, 0, 250_000, false, false)
+
+	orphanTask := reach(t, store, "Audited orphan settlement", domain.Working)
+	if _, err := owner.Exec(ctx, `UPDATE tasks.tasks SET spent = $2, paused = false WHERE id = $1::uuid`, orphanTask.ID, int64(math.MaxInt64-5)); err != nil {
+		t.Fatal(err)
+	}
+	token := uuid.NewString()
+	if err := store.SettleOrphan(ctx, ownerAccess, orphanTask.ID, token, 10); err != nil {
+		t.Fatalf("SettleOrphan = %v", err)
+	}
+	assertAudit(orphanTask.ID, "orphan", token, 10, math.MaxInt64-5, math.MaxInt64, false, true)
+	if err := store.SettleOrphan(ctx, ownerAccess, orphanTask.ID, token, 10); !errors.Is(err, app.ErrAlready) {
+		t.Fatalf("duplicate SettleOrphan = %v, want ErrAlready", err)
+	}
+	if got := taskInt(t, owner, `SELECT count(*) FROM audit.pending WHERE action = 'task.settle' AND target_id = $1`, orphanTask.ID); got != 1 {
+		t.Fatalf("orphan audit rows after duplicate = %d, want 1", got)
+	}
+
+	rollbackTask := reach(t, store, "Rolled back settlement", domain.Working)
+	markTaskRunnerOwned(t, owner, rollbackTask.ID)
+	rollbackRun, err := app.Admit(ctx, store, ownerAccess, rollbackTask.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackClaim, err := store.ClaimRun(ctx, ownerAccess, rollbackTask.ID, rollbackRun.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackErr := errors.New("rollback settlement")
+	err = store.NarrowedRunnerTx(ctx, agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: rollbackTask.ID}, func(tx pgx.Tx) error {
+		if err := store.SettleTx(ctx, tx, rollbackTask.ID, rollbackRun.ID, rollbackClaim.Token, 123, 1, 0); err != nil {
+			return err
+		}
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("rolled-back SettleTx = %v, want rollback error", err)
+	}
+	if got := taskInt(t, owner, `SELECT count(*) FROM audit.pending WHERE action = 'task.settle' AND target_id = $1`, rollbackTask.ID); got != 0 {
+		t.Fatalf("rolled-back settlement audit rows = %d, want 0", got)
+	}
+
+	unsafeTask := reach(t, store, "Filtered settlement audit", domain.Working)
+	if err := store.NarrowedRunnerTx(ctx, agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: unsafeTask.ID}, func(tx pgx.Tx) error {
+		return audit.Record(ctx, tx, audit.Event{
+			Action: audit.TaskSettle, Outcome: audit.Success, TargetID: unsafeTask.ID,
+			Changes: audit.Changes{Values: map[string]audit.Change{"body": {To: "must be dropped"}}},
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskInt(t, owner, `SELECT count(*) FROM audit.pending WHERE action = 'task.settle' AND target_id = $1 AND changes = '{"fields": [], "values": {}}'::jsonb`, unsafeTask.ID); got != 1 {
+		t.Fatalf("filtered unsafe audit row count = %d, want 1", got)
 	}
 }
 

@@ -55,7 +55,18 @@ func (s Store) NarrowedRunnerTx(ctx context.Context, scope agentloop.AccessScope
 	return tx.Commit(ctx)
 }
 
-const defaultTurnActor = "worker" // shortcut: 237a2 maps stage to actor
+func stageActor(status domain.Status) string {
+	switch status {
+	case domain.Planning:
+		return "planner"
+	case domain.Working:
+		return "worker"
+	case domain.Verifying:
+		return "verifier"
+	default:
+		return "core"
+	}
+}
 
 // RequestBatchApproval pauses the task and persists a batch hold (calls jsonb[])
 // with deterministic action/preview and untrusted_origin flag.
@@ -81,7 +92,7 @@ func (s Store) RequestBatchApproval(ctx context.Context, access app.Access, task
 	if owner != access.UserID {
 		return app.Approval{}, app.ErrAccess
 	}
-	approval, err := insertBatchApprovalTx(ctx, tx, taskID, owner, toolName, batch)
+	approval, err := insertBatchApprovalTx(ctx, tx, taskID, owner, "person", toolName, batch)
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -91,7 +102,7 @@ func (s Store) RequestBatchApproval(ctx context.Context, access app.Access, task
 	return approval, nil
 }
 
-func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, toolName string, batch agentloop.BatchHold) (app.Approval, error) {
+func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, actor, toolName string, batch agentloop.BatchHold) (app.Approval, error) {
 	calls, err := batch.CallsJSONB()
 	if err != nil {
 		return app.Approval{}, err
@@ -111,7 +122,7 @@ func insertBatchApprovalTx(ctx context.Context, tx pgx.Tx, taskID, ownerID, tool
 		return app.Approval{}, fmt.Errorf("tasks: status: %w", err)
 	}
 	kind := approvalEdge(domain.Status(status), batch.Reason)
-	task, _, err := stepLocked(ctx, tx, ownerID, taskID, domain.Input{Kind: kind, Reason: batch.Reason, From: domain.Status(status)})
+	task, _, err := stepLocked(ctx, tx, ownerID, actor, taskID, domain.Input{Kind: kind, Reason: batch.Reason, From: domain.Status(status)})
 	if err != nil {
 		return app.Approval{}, err
 	}
@@ -289,7 +300,7 @@ func (s TaskTurnStore) CommitRunnerTurn(ctx context.Context, commit agentloop.Tu
 		if owner != actingUser {
 			return app.ErrAccess
 		}
-		if err := InsertTurnRows(ctx, tx, commit, defaultTurnActor); err != nil {
+		if err := InsertTurnRows(ctx, tx, commit, stageActor(domain.Status(status))); err != nil {
 			return err
 		}
 		nextTainted := currentTainted || commit.Exposure.Tainted
@@ -311,7 +322,7 @@ func (s TaskTurnStore) CommitRunnerTurn(ctx context.Context, commit agentloop.Tu
 			return app.ErrGone
 		}
 		if commit.Hold != nil {
-			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "", *commit.Hold); err != nil {
+			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "core", "", *commit.Hold); err != nil {
 				return err
 			}
 		}
@@ -342,17 +353,14 @@ func (s TaskTurnStore) CommitRunnerTurn(ctx context.Context, commit agentloop.Tu
 // CommitTurnAndEnqueue persists tx3 atomically under narrowed RLS.
 func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloop.TurnCommit) error {
 	return s.Store.NarrowedRunnerTx(ctx, s.Scope, func(tx pgx.Tx) error {
-		if err := InsertTurnRows(ctx, tx, commit, defaultTurnActor); err != nil {
-			return err
-		}
-		var owner string
+		var owner, status string
 		var currentTainted, currentPaused, currentPrivate bool
 		var currentBudget, currentSpent int64
 		if err := tx.QueryRow(ctx, `
-			SELECT owner_user_id::text, tainted, paused, budget, spent, private_read
+			SELECT owner_user_id::text, status, tainted, paused, budget, spent, private_read
 			FROM tasks.tasks
 			WHERE id = $1::uuid
-			FOR UPDATE`, commit.ObjectID).Scan(&owner, &currentTainted, &currentPaused, &currentBudget, &currentSpent, &currentPrivate); err != nil {
+			FOR UPDATE`, commit.ObjectID).Scan(&owner, &status, &currentTainted, &currentPaused, &currentBudget, &currentSpent, &currentPrivate); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return app.ErrGone
 			}
@@ -364,6 +372,9 @@ func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloo
 		}
 		if owner != actingUser {
 			return app.ErrAccess
+		}
+		if err := InsertTurnRows(ctx, tx, commit, stageActor(domain.Status(status))); err != nil {
+			return err
 		}
 		nextTainted := currentTainted || commit.Exposure.Tainted
 		nextPrivate := currentPrivate || commit.Exposure.PrivateRead
@@ -384,7 +395,7 @@ func (s TaskTurnStore) CommitTurnAndEnqueue(ctx context.Context, commit agentloo
 			return app.ErrGone
 		}
 		if commit.Hold != nil {
-			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "", *commit.Hold); err != nil {
+			if _, err := insertBatchApprovalTx(ctx, tx, commit.ObjectID, owner, "core", "", *commit.Hold); err != nil {
 				return err
 			}
 		}

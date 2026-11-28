@@ -64,6 +64,79 @@ func TestRunnerOwnedColumnBoundary(t *testing.T) {
 	}
 }
 
+func TestRunnerChatEventsOwnerPolicy(t *testing.T) {
+	owner := up(t)
+	ctx := context.Background()
+	task := openRoot(t, postgres.Store{Pool: pgtest.App(t, owner)}, "Runner chat policy")
+	insert := `
+		INSERT INTO tasks.chat_events (task_id, seq, body)
+		SELECT $1::uuid, COALESCE(MAX(seq), 0) + 1, $2
+		FROM tasks.chat_events WHERE task_id = $1::uuid
+		RETURNING seq`
+
+	asRole(t, owner, "upmo_runner", ownerAccess, true, func(tx pgx.Tx) {
+		var visible int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1::uuid`, task.ID).Scan(&visible); err != nil || visible != 0 {
+			t.Fatalf("owner initial chat events = %d, %v; want 0", visible, err)
+		}
+		for _, want := range []int{1, 2} {
+			var seq int
+			if err := tx.QueryRow(ctx, insert, task.ID, "runner line").Scan(&seq); err != nil || seq != want {
+				t.Fatalf("runner chat insert seq = %d, %v; want %d", seq, err, want)
+			}
+		}
+	})
+
+	shared := app.Access{
+		UserID: otherUser, Allow: "task:view,task:edit",
+		SharedView: "{" + task.ID + "}", SharedEdit: "{" + task.ID + "}",
+	}
+	for _, access := range []struct {
+		name string
+		user app.Access
+	}{
+		{name: "stranger", user: app.Access{UserID: otherUser, Allow: "task:view,task:edit"}},
+		{name: "shared editor", user: shared},
+	} {
+		t.Run(access.name, func(t *testing.T) {
+			asRole(t, owner, "upmo_runner", access.user, false, func(tx pgx.Tx) {
+				var visible int
+				if err := tx.QueryRow(ctx, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1::uuid`, task.ID).Scan(&visible); err != nil || visible != 0 {
+					t.Fatalf("non-owner chat events = %d, %v; want 0", visible, err)
+				}
+				if _, err := tx.Exec(ctx, insert, task.ID, "forbidden"); sqlState(err) != "42501" {
+					t.Fatalf("non-owner runner chat insert = %v (code %s), want 42501", err, sqlState(err))
+				}
+			})
+		})
+	}
+
+	asRole(t, owner, "upmo_app", shared, true, func(tx pgx.Tx) {
+		var visible int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1::uuid`, task.ID).Scan(&visible); err != nil || visible != 2 {
+			t.Fatalf("shared editor app chat events = %d, %v; want 2", visible, err)
+		}
+		var seq int
+		if err := tx.QueryRow(ctx, insert, task.ID, "shared app line").Scan(&seq); err != nil || seq != 3 {
+			t.Fatalf("shared app chat insert seq = %d, %v; want 3", seq, err)
+		}
+	})
+
+	for _, stmt := range []string{
+		`UPDATE tasks.chat_events SET body = 'x' WHERE task_id = '` + task.ID + `'::uuid`,
+		`DELETE FROM tasks.chat_events WHERE task_id = '` + task.ID + `'::uuid`,
+	} {
+		asRole(t, owner, "upmo_runner", ownerAccess, false, func(tx pgx.Tx) {
+			if _, err := tx.Exec(ctx, stmt); sqlState(err) != "42501" {
+				t.Fatalf("runner chat mutation = %v (code %s), want 42501", err, sqlState(err))
+			}
+		})
+	}
+	if got := taskInt(t, owner, `SELECT count(*) FROM tasks.chat_events WHERE task_id = $1::uuid`, task.ID); got != 3 {
+		t.Fatalf("chat event count = %d, want 3", got)
+	}
+}
+
 func TestRunnerOwnedManualTransitionsRefused(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}

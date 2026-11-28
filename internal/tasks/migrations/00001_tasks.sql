@@ -1903,6 +1903,7 @@ GRANT SELECT, INSERT ON tasks.turns TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.approvals TO upmo_runner;
 GRANT UPDATE (state, decided_at) ON tasks.approvals TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.task_events TO upmo_runner;
+GRANT SELECT, INSERT ON tasks.chat_events TO upmo_runner;
 GRANT SELECT ON tasks.runs TO upmo_runner;
 GRANT UPDATE (turn_seq, msg_seq) ON tasks.runs TO upmo_runner;
 GRANT SELECT, INSERT ON tasks.settlements TO upmo_runner;
@@ -1972,6 +1973,32 @@ CREATE POLICY turns_runner ON tasks.turns
 
 CREATE POLICY task_events_runner ON tasks.task_events
   FOR ALL TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY chat_events_runner ON tasks.chat_events
+  FOR ALL TO upmo_runner
+  USING (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM tasks.tasks AS task
+    WHERE task.id = task_id
+      AND task.owner_user_id = NULLIF(current_setting('upmo.user_id', true), '')::uuid
+  ));
+
+CREATE POLICY chat_events_runner_owner_only ON tasks.chat_events
+  AS RESTRICTIVE FOR ALL TO upmo_runner
   USING (EXISTS (
     SELECT 1 FROM tasks.tasks AS task
     WHERE task.id = task_id
@@ -2071,6 +2098,10 @@ CREATE POLICY run_history_runner_update ON tasks.run_history
   ));
 
 -- +goose Down
+
+DROP POLICY IF EXISTS chat_events_runner_owner_only ON tasks.chat_events;
+DROP POLICY IF EXISTS chat_events_runner ON tasks.chat_events;
+REVOKE SELECT, INSERT ON tasks.chat_events FROM upmo_runner;
 
 DROP TABLE IF EXISTS tasks.run_history;
 DROP TABLE IF EXISTS tasks.settlements;

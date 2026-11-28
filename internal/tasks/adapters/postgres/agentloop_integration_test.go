@@ -976,3 +976,129 @@ func taskMoney(t *testing.T, owner *pgxpool.Pool, id string) (int64, bool) {
 	}
 	return spent, paused
 }
+
+func TestCommitRunnerTurnAndEnqueueStageActors(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	for _, test := range []struct {
+		status domain.Status
+		actor  string
+	}{
+		{domain.Planning, "planner"},
+		{domain.Working, "worker"},
+		{domain.Verifying, "verifier"},
+		{domain.Failed, "core"},
+	} {
+		t.Run(string(test.status), func(t *testing.T) {
+			for _, method := range []string{"CommitRunnerTurn", "CommitTurnAndEnqueue"} {
+				t.Run(method, func(t *testing.T) {
+					status := test.status
+					if status == domain.Failed {
+						status = domain.Working
+					}
+					task := reach(t, store, "Stage actor "+method, status)
+					markTaskRunnerOwned(t, owner, task.ID)
+					run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if test.status == domain.Failed {
+						if _, err := app.ApplyTransition(ctx, store, ownerAccess, task.ID, domain.Input{Kind: domain.Fail}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					commit := agentloop.TurnCommit{
+						RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+						Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "stage actor"}},
+					}
+					turnStore := postgres.TaskTurnStore{
+						Store:       store,
+						Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+						EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { return nil },
+					}
+					switch method {
+					case "CommitRunnerTurn":
+						if _, err := turnStore.CommitRunnerTurn(ctx, commit); err != nil {
+							t.Fatal(err)
+						}
+					case "CommitTurnAndEnqueue":
+						if err := turnStore.CommitTurnAndEnqueue(ctx, commit); err != nil {
+							t.Fatal(err)
+						}
+					}
+					var actors []string
+					rows, err := owner.Query(ctx, `SELECT actor FROM tasks.turns WHERE run_id = $1::uuid ORDER BY seq`, run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for rows.Next() {
+						var actor string
+						if err := rows.Scan(&actor); err != nil {
+							rows.Close()
+							t.Fatal(err)
+						}
+						actors = append(actors, actor)
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						t.Fatal(err)
+					}
+					rows.Close()
+					if len(actors) != 1 || actors[0] != test.actor {
+						t.Fatalf("turn actors = %v, want [%s]", actors, test.actor)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRunnerHoldRecordsCoreActorAndAppPathsRecordPerson(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	batch := func(id string) agentloop.BatchHold {
+		return agentloop.BuildBatchHold("ask", []agentloop.HeldCall{
+			agentloop.BuildHeldCall(agentloop.ToolCall{ID: id, Name: "send_payment", Arguments: json.RawMessage(`{"amount":1}`)}, agentloop.ToolDef{Op: agentloop.OpChange}, "account", true),
+		})
+	}
+	assertActor := func(taskID, want string) {
+		t.Helper()
+		got := taskText(t, owner, `SELECT actor FROM tasks.task_events WHERE task_id = $1::uuid ORDER BY seq DESC LIMIT 1`, taskID)
+		if got != want {
+			t.Fatalf("latest task event actor = %q, want %q", got, want)
+		}
+	}
+
+	task, run := runnerCommitTask(t, store, owner, domain.Working, true)
+	hold := batch("core-hold")
+	turnStore := postgres.TaskTurnStore{
+		Store:       store,
+		Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+		EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { return nil },
+	}
+	if _, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{
+		RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+		Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "requesting hold"}}, Hold: &hold,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertActor(task.ID, "core")
+
+	batchTask := reach(t, store, "Batch approval actor", domain.Working)
+	if _, err := store.RequestBatchApproval(ctx, ownerAccess, batchTask.ID, "send_payment", batch("person-batch")); err != nil {
+		t.Fatal(err)
+	}
+	assertActor(batchTask.ID, "person")
+
+	requestTask := reach(t, store, "Request actor", domain.Working)
+	ask, err := domain.NewAsk("send_payment", domain.ReasonAsk, "Send payment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Request(ctx, ownerAccess, requestTask.ID, ask); err != nil {
+		t.Fatal(err)
+	}
+	assertActor(requestTask.ID, "person")
+}
