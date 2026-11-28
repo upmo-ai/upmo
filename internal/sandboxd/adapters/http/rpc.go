@@ -100,9 +100,11 @@ type Handler struct {
 }
 
 type credentialBody struct {
-	Sentinel string `json:"sentinel"`
-	Ref      string `json:"ref"`
-	Host     string `json:"host"`
+	Sentinel string   `json:"sentinel"`
+	Ref      string   `json:"ref"`
+	Host     string   `json:"host"`
+	Methods  []string `json:"methods"`
+	Paths    []string `json:"paths"`
 }
 
 type createBody struct {
@@ -213,7 +215,7 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request) {
 		ProxySecret: body.ProxySecret,
 	}
 	for _, c := range body.Credentials {
-		spec.Credentials = append(spec.Credentials, runtime.Credential{Sentinel: c.Sentinel, Ref: c.Ref, Host: c.Host})
+		spec.Credentials = append(spec.Credentials, runtime.Credential{Sentinel: c.Sentinel, Ref: c.Ref, Host: c.Host, Methods: c.Methods, Paths: c.Paths})
 	}
 	box, err := h.Provider.Create(r.Context(), spec)
 	if err != nil {

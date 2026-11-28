@@ -696,6 +696,9 @@ func loadSandboxd(lookup func(string) (string, bool)) (Sandboxd, error) {
 			return Sandboxd{}, err
 		}
 		cfg.DatabaseSandboxURL = v
+		if cfg.WorkerURL == "" || cfg.WorkerSandboxdKey == "" {
+			return Sandboxd{}, fmt.Errorf("config: UPMO_DATABASE_SANDBOX_URL requires UPMO_WORKER_URL and UPMO_WORKER_SANDBOXD_KEY")
+		}
 	}
 	if v, ok := lookup("UPMO_EDITOR_IMAGE"); ok {
 		v = strings.TrimSpace(v)

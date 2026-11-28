@@ -3,6 +3,8 @@ package stub
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +18,7 @@ func spec() runtime.Spec {
 		Tier:        runtime.TierContainer,
 		TTL:         time.Hour,
 		Allow:       []string{"github.com"},
-		Credentials: []runtime.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:GITHUB_TOKEN", Host: "github.com"}},
+		Credentials: []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "github_token", Host: "github.com", Methods: []string{"GET"}, Paths: []string{"/user"}}},
 	}
 }
 
@@ -83,6 +85,42 @@ func TestTTLExpiry(t *testing.T) {
 	}
 	if err := d.Destroy(context.Background(), box.ID); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("destroy after expiry err = %v", err)
+	}
+}
+
+func TestStubAuthenticateRejectsPausedAndExpired(t *testing.T) {
+	now := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	d := New(func() time.Time { return now })
+	box, err := d.Create(context.Background(), spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte(strings.Repeat("s", 32))
+	ip := netip.MustParseAddr("10.0.0.2")
+	d.recordProxyIdentityForTest(box.ID, ip, secret)
+	if p, ok := d.Authenticate(ip, secret); !ok || p.ID != box.ID {
+		t.Fatalf("Authenticate = %+v %t", p, ok)
+	}
+	if release, _, ok := d.Acquire(box.ID, 1); !ok {
+		t.Fatal("Acquire refused live sandbox")
+	} else {
+		release()
+	}
+	if err := d.Pause(context.Background(), box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.Authenticate(ip, secret); ok {
+		t.Fatal("authenticated paused sandbox")
+	}
+	d2 := New(func() time.Time { return now })
+	expired, err := d2.Create(context.Background(), spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2.recordProxyIdentityForTest(expired.ID, ip, secret)
+	now = now.Add(time.Hour)
+	if _, ok := d2.Authenticate(ip, secret); ok {
+		t.Fatal("authenticated expired sandbox")
 	}
 }
 

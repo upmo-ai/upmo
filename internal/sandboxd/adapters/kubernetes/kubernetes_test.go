@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -37,6 +38,16 @@ type fakeCluster struct {
 	execErr   error
 	execCode  int
 	execCalls [][]string
+}
+
+func TestKubernetesEgressFailsClosed(t *testing.T) {
+	d := &Driver{}
+	if p, ok := d.Authenticate(netip.MustParseAddr("10.0.0.1"), make([]byte, 32)); ok || p.ID != "" {
+		t.Fatalf("Authenticate = %+v %t", p, ok)
+	}
+	if release, ctx, ok := d.Acquire("sandbox", 1); ok || release != nil || ctx == nil {
+		t.Fatalf("Acquire returned release=%t context=%t ok=%t", release != nil, ctx != nil, ok)
+	}
 }
 
 func newFakeCluster() *fakeCluster {

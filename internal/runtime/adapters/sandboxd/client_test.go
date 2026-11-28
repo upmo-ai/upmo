@@ -60,7 +60,7 @@ func TestClientCreateAndDestroySigned(t *testing.T) {
 		Tier:        "container",
 		TTL:         time.Hour,
 		Allow:       []string{"github.com"},
-		Credentials: []app.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:GITHUB_TOKEN", Host: "github.com"}},
+		Credentials: []app.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "github_token", Host: "github.com", Methods: []string{"GET"}, Paths: []string{"/user"}}},
 		ProxySecret: []byte(strings.Repeat("p", 32)),
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ func TestClientCreateAndDestroySigned(t *testing.T) {
 		t.Fatalf("create body = %v", created)
 	}
 	creds, _ := created["credentials"].([]any)
-	if len(creds) != 1 || creds[0].(map[string]any)["ref"] != "env:GITHUB_TOKEN" {
+	if len(creds) != 1 || creds[0].(map[string]any)["ref"] != "github_token" || creds[0].(map[string]any)["methods"].([]any)[0] != "GET" || creds[0].(map[string]any)["paths"].([]any)[0] != "/user" {
 		t.Fatalf("credentials = %v", created["credentials"])
 	}
 	if err := client.Destroy(context.Background(), box.ID); err != nil {

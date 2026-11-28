@@ -12,6 +12,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	workerkeys "github.com/upmo-ai/upmo/internal/platform/keys"
+
 	"github.com/upmo-ai/upmo/internal/platform/editorjwt"
 	"github.com/upmo-ai/upmo/internal/platform/httpserver"
 	"github.com/upmo-ai/upmo/internal/platform/metrics"
@@ -43,6 +47,7 @@ const (
 type Driver interface {
 	runtime.SandboxProvider
 	egress.Book
+	Egress(id string) (allow []string, creds []runtime.Credential, ok bool)
 }
 
 // sweeper is a driver that holds sandboxes outside this process and must
@@ -52,7 +57,10 @@ type sweeper interface {
 }
 
 // Stub returns the in-memory driver. It accepts only the container tier.
-func Stub() Driver {
+func Stub(log ...*slog.Logger) Driver {
+	if len(log) != 0 {
+		return stub.NewWithLogger(nil, log[0])
+	}
 	return stub.New(nil)
 }
 
@@ -72,11 +80,12 @@ type Network struct {
 // instead of falling back. network applies to the Docker and Kubernetes drivers.
 // editorImage is the code editor image for Docker and Kubernetes; empty uses the driver default.
 // editorBaseURL is the public editor gate origin for StartEditor URLs.
-func Open(ctx context.Context, choice string, network Network, editorImage, editorBaseURL string, log *slog.Logger) (Driver, error) {
+func Open(ctx context.Context, choice string, network Network, editorImage, editorBaseURL string, db *pgxpool.Pool, log *slog.Logger) (Driver, error) {
 	return open(ctx, choice, network, editorImage, editorBaseURL, log, func(ctx context.Context) (Driver, error) {
 		d, err := docker.Open(ctx, docker.Options{
 			Network: network.Name, ProxyURL: network.ProxyURL,
 			EditorImage: editorImage, EditorBaseURL: editorBaseURL,
+			DB: db, Log: log,
 		})
 		if err != nil {
 			return nil, err
@@ -96,7 +105,7 @@ func open(ctx context.Context, choice string, network Network, editorImage, edit
 	switch choice {
 	case DriverStub:
 		log.Info("sandbox driver", "driver", DriverStub)
-		return Stub(), nil
+		return Stub(log), nil
 	case DriverKubernetes:
 		d, err := kubernetes.Open(ctx, kubernetes.Options{
 			EditorImage: editorImage, EditorBaseURL: editorBaseURL, ProxyURL: network.ProxyURL,
@@ -117,7 +126,7 @@ func open(ctx context.Context, choice string, network Network, editorImage, edit
 		if err != nil {
 			log.Warn("sandbox driver: docker engine unreachable, using the in-memory stub; sandboxes start no container",
 				"driver", DriverStub, "err", err)
-			return Stub(), nil
+			return Stub(log), nil
 		}
 		return d, nil
 	default:
@@ -224,6 +233,6 @@ func EditorGate(editorKey, previousKey string, driver Driver, log *slog.Logger) 
 // no credential: a host that names one is refused, and every other allowed
 // host tunnels. Nothing is read from sandboxd's environment until the worker
 // key unwrap is wired. CONNECT still does not rewrite TLS bytes.
-func Proxy(driver Driver, log *slog.Logger) http.Handler {
-	return egress.Proxy{Book: driver, Inject: inject.Injector{Resolver: inject.Refuse{}}, Log: log}
+func Proxy(driver Driver, db *pgxpool.Pool, keys *workerkeys.Client, log *slog.Logger) http.Handler {
+	return &egress.Proxy{Book: driver, Inject: inject.Injector{Sandbox: inject.WorkerResolver{DB: db, Keys: keys}}, Log: log}
 }

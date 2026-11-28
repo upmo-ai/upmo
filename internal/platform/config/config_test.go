@@ -531,7 +531,7 @@ func TestLoadRefusesSocketHostInProduction(t *testing.T) {
 		{"UPMO_DATABASE_RUNNER_URL", map[string]string{"UPMO_PUBLIC_URL": "http://localhost:5173", "UPMO_DATABASE_APP_URL": pgtls.URL(t, "upmo_app:s3cret")}, brain},
 		{"UPMO_DATABASE_GATEWAY_URL", withWorker(allKeys(t), "gateway"),
 			func(env map[string]string) error { _, err := loadGateway(lookupFrom(env)); return err }},
-		{"UPMO_DATABASE_SANDBOX_URL", map[string]string{"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey},
+		{"UPMO_DATABASE_SANDBOX_URL", map[string]string{"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey, "UPMO_WORKER_URL": "https://worker.example.com", "UPMO_WORKER_SANDBOXD_KEY": workerSandboxdKey},
 			func(env map[string]string) error { _, err := loadSandboxd(lookupFrom(env)); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -568,8 +568,10 @@ func TestLoadDatabaseAppURLRequiresVerifyFullOffLocalhost(t *testing.T) {
 // Sandboxd refuses the privileged URL outright and reads only its own.
 func TestLoadSandboxdDatabaseURLs(t *testing.T) {
 	env := map[string]string{
-		"UPMO_SANDBOXD_KEY": sbxKey,
-		"UPMO_EDITOR_KEY":   edKey,
+		"UPMO_SANDBOXD_KEY":        sbxKey,
+		"UPMO_EDITOR_KEY":          edKey,
+		"UPMO_WORKER_URL":          "https://worker.example.com",
+		"UPMO_WORKER_SANDBOXD_KEY": workerSandboxdKey,
 	}
 	cfg, err := loadSandboxd(lookupFrom(env))
 	if err != nil || cfg.DatabaseSandboxURL != "" {
@@ -1026,6 +1028,21 @@ func TestLoadSandboxd(t *testing.T) {
 		if _, err := loadSandboxd(lookupFrom(env)); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+func TestLoadSandboxdRequiresWorkerWithSandboxDatabase(t *testing.T) {
+	env := map[string]string{
+		"UPMO_SANDBOXD_KEY": sbxKey, "UPMO_EDITOR_KEY": edKey,
+		"UPMO_DATABASE_SANDBOX_URL": pgtls.URL(t, "upmo_sandbox"),
+	}
+	if _, err := loadSandboxd(lookupFrom(env)); err == nil || !strings.Contains(err.Error(), "UPMO_WORKER_URL") || !strings.Contains(err.Error(), "UPMO_WORKER_SANDBOXD_KEY") {
+		t.Fatalf("missing worker err = %v", err)
+	}
+	env["UPMO_WORKER_URL"] = "https://worker.example.com"
+	env["UPMO_WORKER_SANDBOXD_KEY"] = workerSandboxdKey
+	if _, err := loadSandboxd(lookupFrom(env)); err != nil {
+		t.Fatalf("configured worker: %v", err)
 	}
 }
 

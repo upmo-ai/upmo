@@ -3,14 +3,18 @@ package sandboxd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +24,7 @@ import (
 	"github.com/upmo-ai/upmo/internal/platform/svcsig"
 	"github.com/upmo-ai/upmo/internal/runtime"
 	httpapi "github.com/upmo-ai/upmo/internal/sandboxd/adapters/http"
+	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 	"github.com/upmo-ai/upmo/internal/testutil/tasksandbox"
 )
 
@@ -446,23 +451,30 @@ func TestProxyRefusesUnlistedHost(t *testing.T) {
 	driver := Stub()
 	s := spec()
 	s.Allow = append(s.Allow, "proxy.golang.org")
-	s.Credentials = []runtime.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:GITHUB_TOKEN", Host: "github.com"}}
+	s.Credentials = []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "github_token", Host: "github.com", Methods: []string{"GET"}, Paths: []string{"/user"}}}
 	box, err := driver.Create(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := Proxy(driver, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	book, secret := proxyBookForTest(driver, box.ID)
+	p := Proxy(book, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))).(*egress.Proxy)
+	p.Dial = func(context.Context, string, string) (net.Conn, error) {
+		a, b := net.Pipe()
+		go func() { _ = b.Close() }()
+		return a, nil
+	}
 	for target, code := range map[string]int{
 		"example.com:443": http.StatusForbidden,
-		// Listed, but its credential has no backend to resolve it.
-		"github.com:443": http.StatusBadGateway,
+		// A credentialed host never tunnels.
+		"github.com:443": http.StatusForbidden,
 		// Listed with no credential: admitted as far as the tunnel, which a
 		// recorder cannot be hijacked for, so nothing is dialled.
 		"proxy.golang.org:443": http.StatusInternalServerError,
 	} {
 		r := httptest.NewRequest(http.MethodConnect, target, nil)
+		r.RemoteAddr = book.source.String() + ":1234"
 		u := &http.Request{Header: http.Header{}}
-		u.SetBasicAuth(box.ID, "")
+		u.SetBasicAuth("ignored", base64.RawURLEncoding.EncodeToString(secret))
 		r.Header.Set("Proxy-Authorization", u.Header.Get("Authorization"))
 		rec := httptest.NewRecorder()
 		p.ServeHTTP(rec, r)
@@ -472,34 +484,57 @@ func TestProxyRefusesUnlistedHost(t *testing.T) {
 	}
 }
 
-func TestProxyResolvesNoCredentialFromTheEnvironment(t *testing.T) {
+func TestProxyRefusesConnectToCredentialedHost(t *testing.T) {
 	t.Setenv("ALLOWED_REF", "sk-test-allowed")
 	driver := Stub()
 	s := spec()
 	s.Allow = []string{"github.com"}
-	s.Credentials = []runtime.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:ALLOWED_REF", Host: "github.com"}}
+	s.Credentials = []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "ALLOWED_REF", Host: "github.com", Methods: []string{"GET"}, Paths: []string{"/user"}}}
 	box, err := driver.Create(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var logs strings.Builder
-	p := Proxy(driver, slog.New(slog.NewTextHandler(&logs, nil)))
+	book, secret := proxyBookForTest(driver, box.ID)
+	p := Proxy(book, nil, nil, slog.New(slog.NewTextHandler(&logs, nil)))
 	r := httptest.NewRequest(http.MethodConnect, "github.com:443", nil)
+	r.RemoteAddr = book.source.String() + ":1234"
 	u := &http.Request{Header: http.Header{}}
-	u.SetBasicAuth(box.ID, "")
+	u.SetBasicAuth("ignored", base64.RawURLEncoding.EncodeToString(secret))
 	r.Header.Set("Proxy-Authorization", u.Header.Get("Authorization"))
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, r)
-	// A resolved credential would reach the tunnel step (500 on a recorder);
-	// a refused one stops at 502 before any dial.
-	if rec.Code != http.StatusBadGateway || rec.Body.String() != "credential unavailable\n" {
-		t.Fatalf("CONNECT = %d %q, want 502 credential unavailable", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "denied_connect_credential") {
+		t.Fatalf("CONNECT = %d %q, want credentialed CONNECT refusal", rec.Code, rec.Body.String())
 	}
 	for _, out := range []string{rec.Body.String(), logs.String(), fmt.Sprint(rec.Header())} {
-		if strings.Contains(out, "sk-test-allowed") {
+		if strings.Contains(out, "sk-test-allowed") || strings.Contains(out, string(secret)) {
 			t.Fatalf("credential value leaked: %s", out)
 		}
 	}
+}
+
+type proxyTestBook struct {
+	Driver
+	id     string
+	source netip.Addr
+	hash   [32]byte
+}
+
+func proxyBookForTest(driver Driver, id string) (proxyTestBook, []byte) {
+	secret := []byte(strings.Repeat("p", 32))
+	return proxyTestBook{Driver: driver, id: id, source: netip.MustParseAddr("203.0.113.9"), hash: sha256.Sum256(secret)}, secret
+}
+
+func (b proxyTestBook) Authenticate(source netip.Addr, secret []byte) (egress.Principal, bool) {
+	h := sha256.Sum256(secret)
+	valid := source == b.source && len(secret) == 32 && subtle.ConstantTimeCompare(h[:], b.hash[:]) == 1
+	allow, creds, live := b.Egress(b.id)
+	return egress.Principal{ID: b.id, Allow: allow, Creds: creds, Lease: 1}, valid && live
+}
+
+func (b proxyTestBook) Acquire(id string, token uint64) (func(), context.Context, bool) {
+	return func() {}, context.Background(), id == b.id && token == 1
 }
 
 // swept is a driver that records sweeps.

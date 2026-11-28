@@ -1057,8 +1057,17 @@ func TestSandboxGrantMap(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if wantFuncs := []string{"gateway.attach_sandbox_credential", "gateway.credential_for_sandbox"}; !slices.Equal(funcs, wantFuncs) {
+	if wantFuncs := []string{"gateway.attach_sandbox_credential", "gateway.bind_sandbox_credential", "gateway.credential_for_sandbox"}; !slices.Equal(funcs, wantFuncs) {
 		t.Fatalf("upmo_sandbox EXECUTE = %v, want %v", funcs, wantFuncs)
+	}
+	for _, role := range []struct {
+		name string
+		want bool
+	}{{"upmo_sandbox", true}, {"upmo_app", false}, {"upmo_gateway", false}, {"upmo_runner", false}} {
+		var got bool
+		if err := owner.QueryRow(ctx, `SELECT has_function_privilege($1::name, 'gateway.bind_sandbox_credential(text, text, bytea)', 'EXECUTE')`, role.name).Scan(&got); err != nil || got != role.want {
+			t.Errorf("%s bind EXECUTE = %t, %v; want %t", role.name, got, err, role.want)
+		}
 	}
 }
 

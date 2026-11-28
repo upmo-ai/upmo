@@ -47,9 +47,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The proxy still refuses every credential (UPM-406 wires the unwrap),
-	// so the client is only checked here.
-	if _, err := openWorkerKeys(ctx, cfg); err != nil {
+	workerClient, err := openWorkerKeys(ctx, cfg)
+	if err != nil {
 		return err
 	}
 
@@ -62,7 +61,7 @@ func run() error {
 	}
 
 	network := sandboxd.Network{Name: cfg.SandboxNetwork, ProxyURL: cfg.EgressProxyURL}
-	driver, err := sandboxd.Open(ctx, cfg.Driver, network, cfg.EditorImage, cfg.EditorBaseURL, log)
+	driver, err := sandboxd.Open(ctx, cfg.Driver, network, cfg.EditorImage, cfg.EditorBaseURL, db, log)
 	if err != nil {
 		return err
 	}
@@ -83,7 +82,7 @@ func run() error {
 	// Either server stopping stops the other.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	proxy := httpserver.New(cfg.ProxyAddr, sandboxd.Proxy(driver, log))
+	proxy := httpserver.New(cfg.ProxyAddr, sandboxd.Proxy(driver, db, workerClient, log))
 	gateHandler, err := sandboxd.EditorGate(cfg.EditorKey, cfg.EditorKeyPrevious, driver, log)
 	if err != nil {
 		return err

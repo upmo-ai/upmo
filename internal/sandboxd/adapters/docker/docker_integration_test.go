@@ -4,7 +4,10 @@ package docker
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -112,7 +115,7 @@ func TestDockerSandboxLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nets := inspect.Container.NetworkSettings.Networks; len(nets) != 1 || nets[testNetwork()] == nil {
+	if nets := inspect.Container.NetworkSettings.Networks; len(nets) != 1 || nets[sandboxNetworkName(box.ID)] == nil {
 		t.Fatalf("networks = %v", nets)
 	}
 	if out, _, _ := run(t, d, box.ID, "ls /sys/class/net | sort | tr '\\n' ' '"); strings.TrimSpace(out) != "eth0 lo" {
@@ -124,9 +127,28 @@ func TestDockerSandboxLifecycle(t *testing.T) {
 	if _, _, code := run(t, d, box.ID, "getent hosts github.com"); code == 0 {
 		t.Fatal("a sandbox resolved an outside name")
 	}
-	if out, _, _ := run(t, d, box.ID, "echo $HTTPS_PROXY $https_proxy $no_proxy$NO_PROXY"); strings.TrimSpace(out) != "http://"+box.ID+":@host.docker.internal:3128 http://"+box.ID+":@host.docker.internal:3128" {
-		t.Fatalf("proxy env = %q", out)
+	self, _ := os.Hostname()
+	proxyInspect, err := cli.ContainerInspect(ctx, self, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
+	proxyIP := proxyInspect.Container.NetworkSettings.Networks[sandboxNetworkName(box.ID)].IPAddress.String()
+	out, _, _ = run(t, d, box.ID, "echo $HTTPS_PROXY $https_proxy")
+	proxyURLs := strings.Fields(out)
+	if len(proxyURLs) != 2 || proxyURLs[0] != proxyURLs[1] {
+		t.Fatal("proxy environment variables do not agree")
+	}
+	proxyURL, err := url.Parse(proxyURLs[0])
+	if err != nil {
+		t.Fatal("proxy URL is invalid")
+	}
+	password, _ := proxyURL.User.Password()
+	secret, err := base64.RawURLEncoding.DecodeString(password)
+	if err != nil || len(secret) != 32 || proxyURL.User.Username() != "sandbox" || proxyURL.Host != net.JoinHostPort(proxyIP, "3128") {
+		clear(secret)
+		t.Fatal("proxy URL has invalid credentials or endpoint")
+	}
+	clear(secret)
 	if _, _, code := run(t, d, box.ID, "test -e /var/run/docker.sock || test -e /run/docker.sock"); code == 0 {
 		t.Fatal("an engine socket is visible in the sandbox")
 	}

@@ -4,8 +4,12 @@
 package inject
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -79,38 +83,61 @@ func envName(name string) bool {
 // Injector resolves the credentials of one sandbox for one host.
 type Injector struct {
 	Resolver Resolver
+	Sandbox  SandboxResolver
+}
+
+// SandboxResolver resolves a credential only for the sandbox holding it.
+type SandboxResolver interface {
+	ResolveForSandbox(ctx context.Context, sandboxID string, proxySecret []byte, ref string) ([]byte, error)
 }
 
 // Rewrite maps each sentinel to its real value for one host. It has no
 // String method, so a log line cannot print a value by accident.
 type Rewrite struct {
 	pairs []string
+	refs  []string
 }
 
 // For resolves every credential whose host is host. A credential for another
 // host is never resolved, so its value cannot leave toward the wrong host.
 // A host with no credential gets an empty rewrite and no error, even with no
 // resolver; only a credential the host names that cannot be resolved fails.
-func (i Injector) For(ctx context.Context, host string, creds []runtime.Credential) (Rewrite, error) {
+func (i Injector) For(ctx context.Context, sandboxID string, proxySecret []byte, host string, creds []runtime.Credential) (Rewrite, error) {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-	var pairs []string
+	var rw Rewrite
 	for _, c := range creds {
 		if c.Host != host {
 			continue
 		}
-		if i.Resolver == nil {
+		var value string
+		if i.Sandbox != nil {
+			plain, err := i.Sandbox.ResolveForSandbox(ctx, sandboxID, proxySecret, c.Ref)
+			if err != nil {
+				return Rewrite{}, err
+			}
+			if len(plain) == 0 || strings.ContainsAny(string(plain), "\r\n\x00") || strings.HasPrefix(string(plain), runtime.SentinelPrefix) {
+				clear(plain)
+				return Rewrite{}, ErrNoBackend
+			}
+			value = string(plain)
+			clear(plain)
+		} else {
+			if i.Resolver == nil {
+				return Rewrite{}, ErrNoBackend
+			}
+			var err error
+			value, err = i.Resolver.Resolve(ctx, c.Ref)
+			if err != nil {
+				return Rewrite{}, err
+			}
+		}
+		if value == "" || strings.ContainsAny(value, "\r\n\x00") || strings.HasPrefix(value, runtime.SentinelPrefix) {
 			return Rewrite{}, ErrNoBackend
 		}
-		value, err := i.Resolver.Resolve(ctx, c.Ref)
-		if err != nil {
-			return Rewrite{}, err
-		}
-		if value == "" {
-			return Rewrite{}, ErrNoBackend
-		}
-		pairs = append(pairs, c.Sentinel, value)
+		rw.pairs = append(rw.pairs, c.Sentinel, value)
+		rw.refs = append(rw.refs, c.Ref)
 	}
-	return Rewrite{pairs: pairs}, nil
+	return rw, nil
 }
 
 // Empty reports whether the rewrite changes nothing.
@@ -124,11 +151,66 @@ func (rw Rewrite) Apply(header http.Header) http.Header {
 	if out == nil || rw.Empty() {
 		return out
 	}
-	r := strings.NewReplacer(rw.pairs...)
 	for k, values := range out {
 		for j, v := range values {
-			out[k][j] = r.Replace(v)
+			out[k][j] = rw.transform(v, false)
 		}
 	}
 	return out
 }
+
+// ScrubHeader returns a copy with exact resolved values replaced by sentinels.
+func (rw Rewrite) ScrubHeader(header http.Header) http.Header {
+	out := header.Clone()
+	if out == nil || rw.Empty() {
+		return out
+	}
+	for k, values := range out {
+		for j, v := range values {
+			out[k][j] = rw.transform(v, true)
+		}
+	}
+	return out
+}
+
+// Scrub replaces exact resolved values in body in place when no replacement is needed.
+func (rw Rewrite) Scrub(body []byte) []byte {
+	if rw.Empty() {
+		return body
+	}
+	out := body
+	for i := 0; i < len(rw.pairs); i += 2 {
+		secret := []byte(rw.pairs[i+1])
+		if bytes.Contains(out, secret) {
+			out = bytes.ReplaceAll(out, secret, []byte(rw.pairs[i]))
+		}
+	}
+	return out
+}
+
+func (rw Rewrite) transform(value string, scrub bool) string {
+	for i := 0; i < len(rw.pairs); i += 2 {
+		from, to := rw.pairs[i], rw.pairs[i+1]
+		if scrub {
+			from, to = to, from
+		}
+		if len(value) >= 6 && strings.EqualFold(value[:6], "Basic ") {
+			decoded, err := base64.StdEncoding.DecodeString(value[6:])
+			if err == nil {
+				changed := strings.ReplaceAll(string(decoded), from, to)
+				if changed != string(decoded) {
+					value = "Basic " + base64.StdEncoding.EncodeToString([]byte(changed))
+				}
+				continue
+			}
+		}
+		value = strings.ReplaceAll(value, from, to)
+	}
+	return value
+}
+
+// String reports only the credential refs represented by this rewrite.
+func (rw Rewrite) String() string { return fmt.Sprintf("Rewrite{refs:%q}", rw.refs) }
+
+// LogValue reports only the credential refs represented by this rewrite.
+func (rw Rewrite) LogValue() slog.Value { return slog.AnyValue(rw.refs) }
