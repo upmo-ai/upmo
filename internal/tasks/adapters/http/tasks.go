@@ -242,7 +242,7 @@ func (h Handler) step(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch kind {
-	case domain.Advance, domain.Plan, domain.Fail, domain.Chat, domain.Pass:
+	case domain.Advance, domain.Plan, domain.Fail, domain.Chat, domain.Pass, domain.Resume:
 	default:
 		writeError(w, http.StatusBadRequest, "a task needs a kind")
 		return

@@ -234,6 +234,126 @@ func TestReadmittingAnAdmittedRunIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunnerOwnedControlsAreOwnerOnly(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner)}
+	ctx := context.Background()
+
+	working := reach(t, store, "Runner controls", domain.Working)
+	markTaskRunnerOwned(t, owner, working.ID)
+	runs := make([]app.Run, 0, 3)
+	for range 3 {
+		run, err := app.Admit(ctx, store, ownerAccess, working.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, run)
+	}
+	if runs[2].State != domain.RunQueued {
+		t.Fatalf("third run = %s, want queued", runs[2].State)
+	}
+
+	resume := reach(t, store, "Runner resume", domain.NeedsApproval)
+	markTaskRunnerOwned(t, owner, resume.ID)
+	newRun := reach(t, store, "Runner new admission", domain.Working)
+	markTaskRunnerOwned(t, owner, newRun.ID)
+
+	editor := app.Access{UserID: otherUser, Allow: otherAccess.Allow,
+		SharedView: "{" + working.ID + "," + resume.ID + "," + newRun.ID + "}",
+		SharedEdit: "{" + working.ID + "," + resume.ID + "," + newRun.ID + "}"}
+	adminEditor := app.Access{UserID: adminUser, Allow: adminAccess.Allow,
+		SharedView: editor.SharedView, SharedEdit: editor.SharedEdit}
+	stranger := otherAccess
+	initialBudget := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, working.ID)
+	for _, person := range []struct {
+		name   string
+		access app.Access
+		want   error
+	}{{"shared editor", editor, app.ErrAccess}, {"admin", adminEditor, app.ErrAccess}, {"stranger", stranger, app.ErrGone}} {
+		t.Run(person.name, func(t *testing.T) {
+			budget := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, working.ID)
+			for _, amount := range []int64{budget, budget + 1} {
+				if err := app.Fund(ctx, store, person.access, working.ID, amount); !errors.Is(err, person.want) {
+					t.Errorf("Fund(%d) = %v, want %v", amount, err, person.want)
+				}
+			}
+			if person.name == "shared editor" {
+				if code, _ := postFund(t, store, person.access, working.ID, `{"kind":"fund","amount":3000000}`); code != 403 {
+					t.Errorf("HTTP Fund = %d, want 403", code)
+				}
+				h := approvalServer(store, map[string]app.Access{"editor": person.access})
+				if code, _ := postTaskStep(h, "editor", resume.ID, `{"kind":"resume"}`); code != 403 {
+					t.Errorf("HTTP Resume = %d, want 403", code)
+				}
+			}
+			if _, err := app.ApplyTransition(ctx, store, person.access, resume.ID, domain.Input{Kind: domain.Resume}); !errors.Is(err, person.want) {
+				t.Errorf("Resume = %v, want %v", err, person.want)
+			}
+			if _, err := app.EndRun(ctx, store, person.access, runs[0].ID); !errors.Is(err, person.want) {
+				t.Errorf("End = %v, want %v", err, person.want)
+			}
+			if _, err := app.Admit(ctx, store, person.access, newRun.ID, ""); !errors.Is(err, person.want) {
+				t.Errorf("Admit new = %v, want %v", err, person.want)
+			}
+			if _, err := app.Admit(ctx, store, person.access, working.ID, runs[0].ID); !errors.Is(err, person.want) {
+				t.Errorf("Admit existing admitted = %v, want %v", err, person.want)
+			}
+			if _, err := app.Admit(ctx, store, person.access, working.ID, runs[2].ID); !errors.Is(err, person.want) {
+				t.Errorf("Admit existing queued = %v, want %v", err, person.want)
+			}
+		})
+	}
+	if budget := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, working.ID); budget != initialBudget {
+		t.Fatalf("denied Fund changed budget from %d to %d", initialBudget, budget)
+	}
+	var state string
+	var newRunCount int
+	if err := owner.QueryRow(ctx, `SELECT state FROM tasks.runs WHERE id = $1::uuid`, runs[0].ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.runs WHERE task_id = $1::uuid`, newRun.ID).Scan(&newRunCount); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.RunAdmitted) || newRunCount != 0 {
+		t.Fatalf("denied controls changed run state=%s new-task runs=%d", state, newRunCount)
+	}
+	if got := taskStatus(t, owner, resume.ID); got != string(domain.NeedsApproval) {
+		t.Fatalf("denied Resume changed status to %s", got)
+	}
+	if err := owner.QueryRow(ctx, `SELECT state FROM tasks.runs WHERE id = $1::uuid`, runs[2].ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.RunQueued) {
+		t.Fatalf("denied Admit changed queued run state to %s", state)
+	}
+	if swept, err := app.Sweep(ctx, store, editor); err != nil || len(swept) != 0 {
+		t.Fatalf("editor Sweep = %+v %v, want no visible owned queue", swept, err)
+	}
+	if _, err := app.EndRun(ctx, store, ownerAccess, runs[0].ID); err != nil {
+		t.Fatalf("owner End runner-owned run = %v", err)
+	}
+	if swept, err := app.Sweep(ctx, store, ownerAccess); err != nil || len(swept) != 1 || swept[0].ID != runs[2].ID || swept[0].State != domain.RunAdmitted {
+		t.Fatalf("owner Sweep = %+v %v, want queued runner-owned run admitted", swept, err)
+	}
+	manual := reach(t, store, "Shared manual controls", domain.NeedsApproval)
+	manualEditor := app.Access{UserID: otherUser, Allow: otherAccess.Allow,
+		SharedView: "{" + manual.ID + "}", SharedEdit: "{" + manual.ID + "}"}
+	manualBudget := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, manual.ID)
+	if err := app.Fund(ctx, store, manualEditor, manual.ID, manualBudget+1); err != nil {
+		t.Fatalf("shared manual Fund = %v", err)
+	}
+	if _, err := app.ApplyTransition(ctx, store, manualEditor, manual.ID, domain.Input{Kind: domain.Resume}); err != nil {
+		t.Fatalf("shared manual Resume = %v", err)
+	}
+	manualRun, err := app.Admit(ctx, store, manualEditor, manual.ID, "")
+	if err != nil {
+		t.Fatalf("shared manual Admit = %v", err)
+	}
+	if _, err := app.EndRun(ctx, store, manualEditor, manualRun.ID); err != nil {
+		t.Fatalf("shared manual End = %v", err)
+	}
+}
+
 func openRunTask(t *testing.T, store postgres.Store, access app.Access, goal string) app.Task {
 	t.Helper()
 	task, err := app.ApplyTransition(

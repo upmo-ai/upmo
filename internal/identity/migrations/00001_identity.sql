@@ -794,6 +794,41 @@ $$;
 REVOKE ALL ON FUNCTION identity.role_permissions(text, text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION identity.role_permissions(text, text[]) TO upmo_app;
 
+-- The runner may revalidate one user's access without reading identity tables.
+-- +goose StatementBegin
+CREATE FUNCTION identity.runner_access(p_user_id uuid)
+RETURNS TABLE (active boolean, allow text[], teams uuid[])
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT
+    (u.joined_at IS NOT NULL AND u.disabled_at IS NULL) AS active,
+    CASE
+      WHEN u.joined_at IS NOT NULL AND u.disabled_at IS NULL
+        THEN identity.role_permissions(r.key, r.permissions)
+      ELSE '{}'::text[]
+    END AS allow,
+    CASE
+      WHEN u.joined_at IS NOT NULL AND u.disabled_at IS NULL
+        THEN COALESCE(
+          (SELECT pg_catalog.array_agg(m.team_id ORDER BY m.team_id)
+           FROM identity.team_members AS m
+           WHERE m.user_id = u.id),
+          '{}'::uuid[]
+        )
+      ELSE '{}'::uuid[]
+    END AS teams
+  FROM identity.users AS u
+  JOIN identity.roles AS r ON r.id = u.role_id
+  WHERE u.id = p_user_id;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION identity.runner_access(uuid) FROM PUBLIC, upmo_app;
+GRANT EXECUTE ON FUNCTION identity.runner_access(uuid) TO upmo_runner;
+
 -- +goose StatementBegin
 CREATE FUNCTION identity.member_set_role(
   actor_token_hash bytea,
@@ -2266,6 +2301,7 @@ DROP FUNCTION IF EXISTS identity.add_team_member(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.remove_team_member(bytea, uuid, uuid);
 DROP FUNCTION IF EXISTS identity.team_create(bytea, text);
 DROP FUNCTION IF EXISTS identity.member_set_role(bytea, uuid, uuid);
+DROP FUNCTION IF EXISTS identity.runner_access(uuid);
 DROP FUNCTION IF EXISTS identity.role_permissions(text, text[]);
 DROP FUNCTION IF EXISTS identity.teams_of(uuid);
 DROP FUNCTION IF EXISTS identity.may_manage(uuid, text);

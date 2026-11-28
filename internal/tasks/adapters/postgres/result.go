@@ -62,12 +62,12 @@ func (s Store) Cancel(ctx context.Context, access app.Access, taskID string) (ap
 	}
 	rows.Close()
 
-	task, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Fail})
+	task, _, err := stepLocked(ctx, tx, access.UserID, taskID, domain.Input{Kind: domain.Fail})
 	if err != nil {
 		return app.Task{}, err
 	}
 	for _, childID := range children {
-		if _, _, err := stepLocked(ctx, tx, childID, domain.Input{Kind: domain.Fail}); err != nil {
+		if _, _, err := stepLocked(ctx, tx, access.UserID, childID, domain.Input{Kind: domain.Fail}); err != nil {
 			return app.Task{}, err
 		}
 		tag, err := tx.Exec(ctx, `

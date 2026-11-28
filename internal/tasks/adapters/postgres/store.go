@@ -39,7 +39,7 @@ func (s Store) Transition(ctx context.Context, access app.Access, taskID string,
 	if taskID == "" {
 		task, err = insertOpen(ctx, tx, access.UserID, access.Allow, input)
 	} else {
-		task, effect, err = stepLocked(ctx, tx, taskID, input)
+		task, effect, err = stepLocked(ctx, tx, access.UserID, taskID, input)
 	}
 	if err != nil {
 		return app.Task{}, err
@@ -118,6 +118,20 @@ func (s Store) End(ctx context.Context, access app.Access, runID string) (app.Ru
 	run, err := lockRun(ctx, tx, runID)
 	if err != nil {
 		return app.Run{}, err
+	}
+	var ownerID string
+	var runnerOwned bool
+	err = tx.QueryRow(ctx, `
+		SELECT owner_user_id::text, runner_owned
+		FROM tasks.tasks WHERE id = $1::uuid FOR UPDATE`, run.TaskID).Scan(&ownerID, &runnerOwned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Run{}, app.ErrGone
+	}
+	if err != nil {
+		return app.Run{}, fmt.Errorf("tasks: lock end task: %w", err)
+	}
+	if runnerOwned && ownerID != access.UserID {
+		return app.Run{}, app.ErrAccess
 	}
 	next, err := domain.RunStep(run.State, domain.RunInput{Kind: domain.RunEnd})
 	if err != nil {
@@ -236,17 +250,21 @@ func arrayOr(literal string) string {
 }
 
 func insertRun(ctx context.Context, tx pgx.Tx, userID, taskID string) (app.Run, error) {
-	var status string
+	var ownerID, status string
+	var runnerOwned bool
 	err := tx.QueryRow(ctx, `
-		SELECT status
+		SELECT owner_user_id::text, runner_owned, status
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&status)
+		FOR UPDATE`, taskID).Scan(&ownerID, &runnerOwned, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Run{}, app.ErrGone
 	}
 	if err != nil {
 		return app.Run{}, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if runnerOwned && ownerID != userID {
+		return app.Run{}, app.ErrAccess
 	}
 	if domain.Status(status) == domain.Done || domain.Status(status) == domain.Failed {
 		return app.Run{}, domain.ErrTerminal
@@ -282,6 +300,20 @@ func admitRunLocked(ctx context.Context, tx pgx.Tx, userID, runID string) (app.R
 	run, err := lockRun(ctx, tx, runID)
 	if err != nil {
 		return app.Run{}, "", err
+	}
+	var ownerID string
+	var runnerOwned bool
+	err = tx.QueryRow(ctx, `
+		SELECT owner_user_id::text, runner_owned
+		FROM tasks.tasks WHERE id = $1::uuid FOR UPDATE`, run.TaskID).Scan(&ownerID, &runnerOwned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.Run{}, "", app.ErrGone
+	}
+	if err != nil {
+		return app.Run{}, "", fmt.Errorf("tasks: lock run task: %w", err)
+	}
+	if runnerOwned && ownerID != userID {
+		return app.Run{}, "", app.ErrAccess
 	}
 	if run.State == domain.RunAdmitted {
 		return run, run.State, nil
@@ -404,19 +436,22 @@ func budgetOrDefault(amount int64) int64 {
 	return amount
 }
 
-func stepLocked(ctx context.Context, tx pgx.Tx, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
-	var status, goal string
+func stepLocked(ctx context.Context, tx pgx.Tx, callerID, taskID string, input domain.Input) (app.Task, domain.Effect, error) {
+	var ownerID, status, goal string
 	var passes, paused, runnerOwned bool
 	err := tx.QueryRow(ctx, `
-		SELECT status, goal, passes, paused, runner_owned
+		SELECT owner_user_id::text, status, goal, passes, paused, runner_owned
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&status, &goal, &passes, &paused, &runnerOwned)
+		FOR UPDATE`, taskID).Scan(&ownerID, &status, &goal, &passes, &paused, &runnerOwned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Task{}, domain.Effect{}, app.ErrGone
 	}
 	if err != nil {
 		return app.Task{}, domain.Effect{}, fmt.Errorf("tasks: lock: %w", err)
+	}
+	if runnerOwned && input.Kind == domain.Resume && ownerID != callerID {
+		return app.Task{}, domain.Effect{}, app.ErrAccess
 	}
 	if runnerOwned && isManualRunnerRefused(input.Kind) {
 		return app.Task{}, domain.Effect{}, app.ErrRunnerOwned

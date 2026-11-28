@@ -156,7 +156,7 @@ func (s Store) Send(ctx context.Context, access app.Access, taskID, body string)
 	if !isChild {
 		return domain.ErrInput
 	}
-	if _, _, err := stepLocked(ctx, tx, taskID, domain.Input{Kind: domain.Chat, Body: body}); err != nil {
+	if _, _, err := stepLocked(ctx, tx, access.UserID, taskID, domain.Input{Kind: domain.Chat, Body: body}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

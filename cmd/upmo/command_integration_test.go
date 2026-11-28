@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -884,6 +885,9 @@ func TestRunnerGrantMap(t *testing.T) {
 
 	runner := pgtest.Login(t, owner, "upmo_runner")
 	for _, stmt := range []string{
+		`SELECT id FROM identity.users`,
+		`SELECT id FROM identity.roles`,
+		`SELECT team_id FROM identity.team_members`,
 		`SELECT email FROM identity.users`,
 		`SELECT password_hash FROM identity.users`,
 		`SELECT * FROM gateway.credentials`,
@@ -893,6 +897,72 @@ func TestRunnerGrantMap(t *testing.T) {
 		if _, err := runner.Exec(ctx, stmt); pgCode(err) != "42501" {
 			t.Errorf("runner %q = %v, want 42501", stmt, err)
 		}
+	}
+	rows, err := runner.Query(ctx, `SELECT * FROM identity.runner_access('00000000-0000-0000-0000-000000000000'::uuid)`)
+	if err != nil {
+		t.Fatalf("runner execute identity.runner_access: %v", err)
+	}
+	rows.Close()
+	appPool := pgtest.AppLogin(t, owner)
+	if _, err := appPool.Exec(ctx, `SELECT * FROM identity.runner_access('00000000-0000-0000-0000-000000000000'::uuid)`); pgCode(err) != "42501" {
+		t.Fatalf("app execute identity.runner_access = %v, want 42501", err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO identity.users (id, email, email_hash, email_hash_key_id, name, role_id, joined_at, disabled_at)
+		SELECT people.id, people.email, people.email_hash, 'test', people.name, role.id,
+		       CASE WHEN people.joined THEN now() END,
+		       CASE WHEN people.disabled THEN now() END
+		FROM (VALUES
+		 ('018f3b2c-7a10-7c4a-8e11-555555555551'::uuid, 'runner-member@example.test', decode(repeat('51',32),'hex'), 'Runner member', 'member', true, false),
+		 ('018f3b2c-7a10-7c4a-8e11-555555555552'::uuid, 'runner-admin@example.test', decode(repeat('52',32),'hex'), 'Runner admin', 'admin', true, false),
+		 ('018f3b2c-7a10-7c4a-8e11-555555555553'::uuid, 'runner-viewer@example.test', decode(repeat('53',32),'hex'), 'Runner viewer', 'viewer', true, false),
+		 ('018f3b2c-7a10-7c4a-8e11-555555555554'::uuid, 'runner-disabled@example.test', decode(repeat('54',32),'hex'), 'Runner disabled', 'member', true, true),
+		 ('018f3b2c-7a10-7c4a-8e11-555555555555'::uuid, 'runner-unjoined@example.test', decode(repeat('55',32),'hex'), 'Runner unjoined', 'member', false, false),
+		 ('018f3b2c-7a10-7c4a-8e11-555555555556'::uuid, 'runner-install-owner@example.test', decode(repeat('56',32),'hex'), 'Runner install owner', 'owner', true, false)
+		) AS people(id, email, email_hash, name, role_key, joined, disabled)
+		JOIN identity.roles AS role ON role.key = people.role_key`); err != nil {
+		t.Fatal(err)
+	}
+	teamID := "018f3b2c-7a10-7c4a-8e11-555555555557"
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.teams (id, name) VALUES ($1::uuid, 'Runner access team')`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `INSERT INTO identity.team_members (team_id, user_id) VALUES ($1::uuid, '018f3b2c-7a10-7c4a-8e11-555555555551'::uuid)`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	memberAllow := []string{
+		"task:create", "task:view", "task:edit", "task:share", "task:delete",
+		"chat:create", "chat:view", "chat:edit", "chat:share", "chat:delete",
+		"folder:create", "folder:view", "folder:edit", "folder:share", "folder:delete",
+		"automation:create", "automation:view", "automation:edit", "automation:share", "automation:delete",
+		"agent:create", "agent:view", "agent:edit", "agent:share", "agent:delete",
+		"artifact:create", "artifact:view", "artifact:edit", "artifact:share", "artifact:delete",
+	}
+	adminAllow := append(slices.Clone(memberAllow), "members:manage", "teams:manage", "roles:manage", "settings:manage", "connectors:manage", "audit:view", "usage:view")
+	viewerAllow := []string{"task:view", "chat:view", "folder:view", "automation:view", "agent:view", "artifact:view"}
+	for _, test := range []struct {
+		id     string
+		active bool
+		allow  []string
+		teams  []string
+	}{
+		{"018f3b2c-7a10-7c4a-8e11-555555555551", true, memberAllow, []string{teamID}},
+		{"018f3b2c-7a10-7c4a-8e11-555555555552", true, adminAllow, nil},
+		{"018f3b2c-7a10-7c4a-8e11-555555555553", true, viewerAllow, nil},
+		{"018f3b2c-7a10-7c4a-8e11-555555555554", false, nil, nil},
+		{"018f3b2c-7a10-7c4a-8e11-555555555555", false, nil, nil},
+	} {
+		var active bool
+		var allow, teams []string
+		if err := runner.QueryRow(ctx, `SELECT active, allow, teams::text[] FROM identity.runner_access($1::uuid)`, test.id).Scan(&active, &allow, &teams); err != nil {
+			t.Fatalf("runner_access(%s): %v", test.id, err)
+		}
+		if active != test.active || !slices.Equal(allow, test.allow) || !slices.Equal(teams, test.teams) {
+			t.Errorf("runner_access(%s) = active:%t allow:%v teams:%v", test.id, active, allow, teams)
+		}
+	}
+	if err := runner.QueryRow(ctx, `SELECT active FROM identity.runner_access('018f3b2c-7a10-7c4a-8e11-555555555599'::uuid)`).Scan(new(bool)); err == nil || pgx.ErrNoRows != err {
+		t.Fatalf("missing runner_access row = %v, want pgx.ErrNoRows", err)
 	}
 	var serving, dispatching bool
 	if err := runner.QueryRow(ctx, `SELECT gateway.serving(), gateway.dispatching()`).Scan(&serving, &dispatching); err == nil {

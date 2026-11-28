@@ -19,6 +19,8 @@ var (
 	ErrGone = errors.New("tasks: no such task")
 	// ErrRunnerOwned is a manual transition refused on a runner-owned task.
 	ErrRunnerOwned = errors.New("tasks: runner owned")
+	// ErrEnqueueHook means the runner turn store has no next-turn hook.
+	ErrEnqueueHook = errors.New("tasks: enqueue hook required")
 )
 
 // Access is the person and the allow list for this transaction.

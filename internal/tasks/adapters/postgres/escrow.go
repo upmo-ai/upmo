@@ -23,19 +23,23 @@ func (s Store) Fund(ctx context.Context, access app.Access, taskID string, budge
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var isChild, paused bool
+	var ownerID string
+	var isChild, paused, runnerOwned bool
 	var current, held, spent int64
 	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT parent_id IS NOT NULL, budget, held, spent, paused, status
+		SELECT owner_user_id::text, runner_owned, parent_id IS NOT NULL, budget, held, spent, paused, status
 		FROM tasks.tasks
 		WHERE id = $1::uuid
-		FOR UPDATE`, taskID).Scan(&isChild, &current, &held, &spent, &paused, &status)
+		FOR UPDATE`, taskID).Scan(&ownerID, &runnerOwned, &isChild, &current, &held, &spent, &paused, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrGone
 	}
 	if err != nil {
 		return fmt.Errorf("tasks: lock fund: %w", err)
+	}
+	if runnerOwned && ownerID != access.UserID {
+		return app.ErrAccess
 	}
 	if isChild || budget < current {
 		return domain.ErrBudget

@@ -447,11 +447,12 @@ func TestAParentCancelClosesTheChildrenPendingApprovals(t *testing.T) {
 	}
 }
 
-func TestASharedEditorFailingTheTaskClosesTheOwnersApproval(t *testing.T) {
+func TestRunnerOwnedFailKeepsEditorStopAndSharedControls(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner)}
 	ctx := context.Background()
 	task := reach(t, store, "File the receipts", domain.Working)
+	markTaskRunnerOwned(t, owner, task.ID)
 	approval := request(t, store, task.ID)
 	editor := app.Access{
 		UserID: otherUser, Allow: "task:view,task:edit",
@@ -459,6 +460,12 @@ func TestASharedEditorFailingTheTaskClosesTheOwnersApproval(t *testing.T) {
 	}
 	h := approvalServer(store, map[string]app.Access{"owner": ownerAccess})
 
+	if _, err := app.ApplyTransition(ctx, store, otherAccess, task.ID, domain.Input{Kind: domain.Fail}); !errors.Is(err, app.ErrGone) {
+		t.Fatalf("stranger Fail = %v, want ErrGone", err)
+	}
+	if got := taskStatus(t, owner, task.ID); got != string(domain.NeedsApproval) {
+		t.Fatalf("stranger Fail changed task status to %s", got)
+	}
 	if _, err := app.ApplyTransition(ctx, store, editor, task.ID, domain.Input{Kind: domain.Fail}); err != nil {
 		t.Fatal(err)
 	}
@@ -477,6 +484,12 @@ func TestASharedEditorFailingTheTaskClosesTheOwnersApproval(t *testing.T) {
 	}
 	if code, body := send(h, "owner", http.MethodGet, "/api/approvals"); code != http.StatusOK || strings.TrimSpace(string(body)) != `[]` {
 		t.Fatalf("list after the fail = %d %s", code, body)
+	}
+	manual := reach(t, store, "Shared manual fail", domain.Working)
+	manualEditor := app.Access{UserID: otherUser, Allow: otherAccess.Allow,
+		SharedView: "{" + manual.ID + "}", SharedEdit: "{" + manual.ID + "}"}
+	if _, err := app.ApplyTransition(ctx, store, manualEditor, manual.ID, domain.Input{Kind: domain.Fail}); err != nil {
+		t.Fatalf("shared editor Fail on non-runner-owned task = %v", err)
 	}
 }
 
