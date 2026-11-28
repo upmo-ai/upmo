@@ -1139,6 +1139,53 @@ REVOKE ALL ON FUNCTION gateway.attach_sandbox_credential(uuid, text, bytea) FROM
 GRANT USAGE ON SCHEMA gateway TO upmo_sandbox;
 GRANT EXECUTE ON FUNCTION gateway.attach_sandbox_credential(uuid, text, bytea) TO upmo_sandbox;
 
+-- Bind one existing credential ref to a live sandbox after its task row has
+-- been attached with the same proxy-secret hash.
+-- +goose StatementBegin
+CREATE FUNCTION gateway.bind_sandbox_credential(sandbox_id text, ref text, secret_hash bytea)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  n bigint;
+BEGIN
+  IF session_user <> 'upmo_sandbox'
+     OR sandbox_id IS NULL OR sandbox_id !~ '^[A-Za-z0-9._-]{1,64}$'
+     OR ref IS NULL OR ref !~ '^[A-Za-z0-9_]{1,64}$'
+     OR secret_hash IS NULL OR octet_length(secret_hash) <> 32
+     OR NOT EXISTS (
+       SELECT 1
+       FROM runtime.task_sandboxes AS box
+       JOIN tasks.tasks AS task ON task.id = box.task_id
+       WHERE box.sandbox_id = bind_sandbox_credential.sandbox_id
+         AND box.proxy_secret_hash = bind_sandbox_credential.secret_hash
+         AND box.expires_at > clock_timestamp()
+         AND NOT task.paused
+         AND task.status IN ('Preparing', 'Planning', 'Working', 'Verifying')
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM gateway.credentials AS c
+       WHERE c.ref = bind_sandbox_credential.ref
+     ) THEN
+    RAISE EXCEPTION 'gateway: sandbox credential refused' USING ERRCODE = '42501';
+  END IF;
+  INSERT INTO gateway.sandbox_credential_refs (sandbox_id, ref)
+  VALUES (bind_sandbox_credential.sandbox_id, bind_sandbox_credential.ref)
+  ON CONFLICT DO NOTHING;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'gateway: sandbox credential refused' USING ERRCODE = '42501';
+  END IF;
+END;
+$$;
+-- +goose StatementEnd
+
+REVOKE ALL ON FUNCTION gateway.bind_sandbox_credential(text, text, bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gateway.bind_sandbox_credential(text, text, bytea) TO upmo_sandbox;
+
 -- True only when the hash matches the sandbox's stored proxy secret hash, the
 -- ref is bound to that sandbox and stored, and the sandbox's task is live. It
 -- never reads upmo.user_id. Only the owner calls it.
@@ -1210,6 +1257,7 @@ GRANT EXECUTE ON FUNCTION gateway.credential_for_sandbox(text, text, bytea) TO u
 -- +goose Down
 
 DROP FUNCTION IF EXISTS gateway.credential_for_sandbox(text, text, bytea);
+DROP FUNCTION IF EXISTS gateway.bind_sandbox_credential(text, text, bytea);
 DROP FUNCTION IF EXISTS gateway.sandbox_may_open(text, text, bytea);
 DROP FUNCTION IF EXISTS gateway.attach_sandbox_credential(uuid, text, bytea);
 DROP TABLE IF EXISTS gateway.sandbox_credential_refs;

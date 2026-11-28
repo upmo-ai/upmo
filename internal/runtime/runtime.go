@@ -75,9 +75,13 @@ const (
 
 // Sandbox defaults.
 const (
-	SandboxImage = app.SandboxImage
-	SandboxTTL   = app.SandboxTTL
+	SandboxImage   = app.SandboxImage
+	SandboxTTL     = app.SandboxTTL
+	SentinelPrefix = app.SentinelPrefix
 )
+
+// NewSentinel returns a random, per-sandbox stand-in credential.
+func NewSentinel() (string, error) { return app.NewSentinel() }
 
 // Errors TaskSandboxes reports.
 var (

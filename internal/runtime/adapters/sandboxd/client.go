@@ -106,9 +106,11 @@ func Open(baseURL, serviceKey string) (Client, error) {
 }
 
 type credentialBody struct {
-	Sentinel string `json:"sentinel"`
-	Ref      string `json:"ref"`
-	Host     string `json:"host"`
+	Sentinel string   `json:"sentinel"`
+	Ref      string   `json:"ref"`
+	Host     string   `json:"host"`
+	Methods  []string `json:"methods"`
+	Paths    []string `json:"paths"`
 }
 
 type createBody struct {
@@ -175,7 +177,7 @@ func (c Client) Create(ctx context.Context, spec app.Spec) (app.Sandbox, error) 
 		ProxySecret: spec.ProxySecret,
 	}
 	for _, cr := range spec.Credentials {
-		body.Credentials = append(body.Credentials, credentialBody{Sentinel: cr.Sentinel, Ref: cr.Ref, Host: cr.Host})
+		body.Credentials = append(body.Credentials, credentialBody{Sentinel: cr.Sentinel, Ref: cr.Ref, Host: cr.Host, Methods: cr.Methods, Paths: cr.Paths})
 	}
 	var out sandboxBody
 	if err := c.post(ctx, pathCreate, body, &out, bodyLimit); err != nil {

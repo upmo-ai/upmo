@@ -2,8 +2,10 @@ package inject
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
@@ -26,7 +28,7 @@ var creds = []runtime.Credential{
 
 func TestForReplacesOnlyTowardItsHost(t *testing.T) {
 	resolved := fakeResolver{"env:GITHUB_TOKEN": "real-gh", "env:NPM_TOKEN": "real-npm"}
-	rw, err := Injector{Resolver: resolved}.For(context.Background(), "GitHub.com.", creds)
+	rw, err := Injector{Resolver: resolved}.For(context.Background(), "", nil, "GitHub.com.", creds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +45,57 @@ func TestForReplacesOnlyTowardItsHost(t *testing.T) {
 	}
 }
 
+func TestForRejectsSecretBytes(t *testing.T) {
+	cred := []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "github_token", Host: "github.com"}}
+	for _, value := range []string{"good", "good\r", "good\n", "good\x00", runtime.SentinelPrefix + strings.Repeat("a", 64)} {
+		rw, err := (Injector{Resolver: fakeResolver{"github_token": value}}).For(context.Background(), "sb-1", nil, "github.com", cred)
+		if value != "good" {
+			if !errors.Is(err, ErrNoBackend) || strings.Contains(err.Error(), value) {
+				t.Fatalf("For(%q) = %v", value, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		basic := "basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+cred[0].Sentinel))
+		got := rw.Apply(http.Header{"Authorization": {basic, "Bearer " + cred[0].Sentinel}})
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(got.Values("Authorization")[0], "Basic "))
+		if err != nil || string(decoded) != "x-access-token:good" || got.Values("Authorization")[1] != "Bearer good" {
+			t.Fatalf("rewritten authorization = %v", got.Values("Authorization"))
+		}
+		if strings.Contains(rw.String(), value) || strings.Contains(rw.String(), cred[0].Sentinel) || strings.Contains(rw.LogValue().String(), value) {
+			t.Fatalf("rewrite formatting leaked credential material: %s", rw)
+		}
+		scrubbed := rw.ScrubHeader(http.Header{"X-Echo": {"good", "other"}})
+		if !strings.HasPrefix(scrubbed.Get("X-Echo"), cred[0].Sentinel) {
+			t.Fatalf("scrubbed header = %v", scrubbed)
+		}
+		body := []byte("no secret here")
+		if got := rw.Scrub(body); &got[0] != &body[0] {
+			t.Fatal("Scrub copied a body with no secret")
+		}
+		if got := rw.Scrub([]byte("echo good")); string(got) != "echo "+cred[0].Sentinel {
+			t.Fatalf("scrubbed body = %q", got)
+		}
+	}
+}
+
+func TestScrubHeaderReplacesLiteralSecretInBasicText(t *testing.T) {
+	secret := strings.Repeat("0123456789abcdef", 2)
+	cred := []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "token", Host: "example.com"}}
+	rw, err := (Injector{Resolver: fakeResolver{"token": secret}}).For(context.Background(), "sb-1", nil, "example.com", cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rw.ScrubHeader(http.Header{"X-Echo": {"Basic " + secret}}).Get("X-Echo")
+	if want := "Basic " + cred[0].Sentinel; got != want {
+		t.Fatalf("ScrubHeader = %q, want %q", got, want)
+	}
+}
+
 func TestForResolvesNothingForAnotherHost(t *testing.T) {
-	rw, err := Injector{Resolver: Refuse{}}.For(context.Background(), "proxy.golang.org", creds)
+	rw, err := Injector{Resolver: Refuse{}}.For(context.Background(), "", nil, "proxy.golang.org", creds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +107,7 @@ func TestForResolvesNothingForAnotherHost(t *testing.T) {
 func TestNoCredentialIsNotAnError(t *testing.T) {
 	for name, inj := range map[string]Injector{"refuse": {Resolver: Refuse{}}, "nil resolver": {}} {
 		for _, list := range [][]runtime.Credential{nil, {}, creds} {
-			rw, err := inj.For(context.Background(), "proxy.golang.org", list)
+			rw, err := inj.For(context.Background(), "", nil, "proxy.golang.org", list)
 			if err != nil || !rw.Empty() {
 				t.Fatalf("%s with %d credentials = %v empty=%t", name, len(list), err, rw.Empty())
 			}
@@ -65,20 +116,20 @@ func TestNoCredentialIsNotAnError(t *testing.T) {
 }
 
 func TestRefuseResolvesNothing(t *testing.T) {
-	if _, err := (Injector{Resolver: Refuse{}}).For(context.Background(), "github.com", creds); !errors.Is(err, ErrNoBackend) {
+	if _, err := (Injector{Resolver: Refuse{}}).For(context.Background(), "", nil, "github.com", creds); !errors.Is(err, ErrNoBackend) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := (Injector{}).For(context.Background(), "github.com", creds); !errors.Is(err, ErrNoBackend) {
+	if _, err := (Injector{}).For(context.Background(), "", nil, "github.com", creds); !errors.Is(err, ErrNoBackend) {
 		t.Fatalf("nil resolver err = %v", err)
 	}
-	if _, err := (Injector{Resolver: fakeResolver{"env:GITHUB_TOKEN": ""}}).For(context.Background(), "github.com", creds); !errors.Is(err, ErrNoBackend) {
+	if _, err := (Injector{Resolver: fakeResolver{"env:GITHUB_TOKEN": ""}}).For(context.Background(), "", nil, "github.com", creds); !errors.Is(err, ErrNoBackend) {
 		t.Fatalf("empty value err = %v", err)
 	}
 }
 
 func TestEnvResolvesFromTheProcess(t *testing.T) {
 	t.Setenv("INJECT_TEST_TOKEN", "real-from-env")
-	rw, err := Injector{Resolver: Env{Allow: []string{"INJECT_TEST_TOKEN"}}}.For(context.Background(), "github.com", []runtime.Credential{
+	rw, err := Injector{Resolver: Env{Allow: []string{"INJECT_TEST_TOKEN"}}}.For(context.Background(), "", nil, "github.com", []runtime.Credential{
 		{Sentinel: "upmo_sentinel_gh", Ref: "env:INJECT_TEST_TOKEN", Host: "github.com"},
 	})
 	if err != nil {

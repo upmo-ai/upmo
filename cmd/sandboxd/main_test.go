@@ -6,10 +6,22 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/upmo-ai/upmo/internal/testutil/pgtls"
 )
 
 func repeated(prefix string, b byte) string {
 	return prefix + base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32))
+}
+
+func TestRunRequiresWorkerWithSandboxDatabase(t *testing.T) {
+	keys(t)
+	t.Setenv("UPMO_ENV", "development")
+	t.Setenv("UPMO_DATABASE_SANDBOX_URL", pgtls.URL(t, "upmo_sandbox"))
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "UPMO_WORKER_URL") || !strings.Contains(err.Error(), "UPMO_WORKER_SANDBOXD_KEY") {
+		t.Fatalf("run err = %v, want worker configuration refusal", err)
+	}
 }
 
 // keys sets a fresh-looking sandboxd and editor key, so each case changes

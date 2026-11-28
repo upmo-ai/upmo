@@ -523,8 +523,8 @@ func TestCreateRefusesAMissingOrShortProxySecret(t *testing.T) {
 	if rec.Code != http.StatusOK || driver.creates.Load() != 1 {
 		t.Fatalf("32 bytes = %d %s, creates %d", rec.Code, rec.Body, driver.creates.Load())
 	}
-	if want := []byte(strings.Repeat("a", 32)); !bytes.Equal(driver.secret, want) {
-		t.Fatalf("secret handed to the provider = %q, want %q", driver.secret, want)
+	if want := make([]byte, 32); !bytes.Equal(driver.secret, want) {
+		t.Fatalf("request secret was not cleared after Create: %x", driver.secret)
 	}
 	if body := rec.Body.String(); strings.Contains(body, "YWFhYWFh") || strings.Contains(body, strings.Repeat("a", 32)) {
 		t.Fatalf("create response carries the proxy secret: %s", body)

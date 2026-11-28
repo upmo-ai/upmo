@@ -5,14 +5,19 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"iter"
+	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -22,6 +27,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/mount"
@@ -29,6 +35,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/upmo-ai/upmo/internal/runtime"
+	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 )
 
 // fake is an in-memory engine. It records what the driver asked for and
@@ -49,9 +56,15 @@ type fake struct {
 	listed  []container.Summary
 
 	// networks maps a network name to whether it is internal.
-	networks   map[string]bool
-	netCreated []client.NetworkCreateOptions
-	netErr     error
+	networks          map[string]bool
+	netCreated        []client.NetworkCreateOptions
+	netErr            error
+	networkConnectErr error
+	netDisconnects    []struct {
+		name string
+		opts client.NetworkDisconnectOptions
+	}
+	netRemoved []string
 
 	startErr error
 	// script is the multiplexed output and exit code of the next exec. A nil
@@ -66,13 +79,14 @@ type fake struct {
 }
 
 type fakeCont struct {
-	name      string
-	labels    map[string]string
-	started   bool
-	removed   bool
-	hostPort  int
-	networkIP string
-	opts      client.ContainerCreateOptions
+	name        string
+	labels      map[string]string
+	started     bool
+	removed     bool
+	hostPort    int
+	networkIP   string
+	networkName string
+	opts        client.ContainerCreateOptions
 }
 
 type frame struct {
@@ -81,13 +95,16 @@ type frame struct {
 }
 
 func newFake() *fake {
-	return &fake{
+	f := &fake{
 		images:       map[string]bool{"upmo/sandbox:base": true, "upmo/editor:dev": true},
 		files:        map[string][]byte{},
 		networks:     map[string]bool{},
 		containers:   map[string]fakeCont{},
 		nextHostPort: 30000,
 	}
+	self, _ := os.Hostname()
+	f.containers[self] = fakeCont{name: self}
+	return f
 }
 
 func (f *fake) NetworkInspect(_ context.Context, id string, _ client.NetworkInspectOptions) (client.NetworkInspectResult, error) {
@@ -114,6 +131,38 @@ func (f *fake) NetworkCreate(_ context.Context, name string, opts client.Network
 	}
 	f.networks[name] = opts.Internal
 	return client.NetworkCreateResult{ID: "n-" + name}, nil
+}
+
+func (f *fake) NetworkConnect(_ context.Context, name string, opts client.NetworkConnectOptions) (client.NetworkConnectResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkConnectErr != nil {
+		return client.NetworkConnectResult{}, f.networkConnectErr
+	}
+	c, ok := f.containers[opts.Container]
+	if !ok {
+		return client.NetworkConnectResult{}, cerrdefs.ErrNotFound
+	}
+	c.networkName = name
+	c.networkIP = "172.20.0.2"
+	f.containers[opts.Container] = c
+	return client.NetworkConnectResult{}, nil
+}
+func (f *fake) NetworkDisconnect(_ context.Context, name string, opts client.NetworkDisconnectOptions) (client.NetworkDisconnectResult, error) {
+	f.mu.Lock()
+	f.netDisconnects = append(f.netDisconnects, struct {
+		name string
+		opts client.NetworkDisconnectOptions
+	}{name, opts})
+	f.mu.Unlock()
+	return client.NetworkDisconnectResult{}, nil
+}
+func (f *fake) NetworkRemove(_ context.Context, name string, _ client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
+	f.mu.Lock()
+	f.netRemoved = append(f.netRemoved, name)
+	delete(f.networks, name)
+	f.mu.Unlock()
+	return client.NetworkRemoveResult{}, nil
 }
 
 func (f *fake) ImageInspect(_ context.Context, image string, _ ...client.ImageInspectOption) (client.ImageInspectResult, error) {
@@ -149,10 +198,22 @@ func (f *fake) ContainerCreate(_ context.Context, opts client.ContainerCreateOpt
 		f.nextHostPort++
 		hostPort = f.nextHostPort
 	}
-	networkIP := ""
+	networkIP, networkName := "", ""
+	if opts.NetworkingConfig != nil {
+		for n := range opts.NetworkingConfig.EndpointsConfig {
+			networkName = n
+			break
+		}
+		if networkName != "" {
+			f.nextEditorIP++
+			networkIP = fmt.Sprintf("172.20.0.%d", f.nextEditorIP+2)
+		}
+	}
 	if opts.Config != nil && opts.Config.Labels[labelEditor] == "1" {
-		f.nextEditorIP++
-		networkIP = fmt.Sprintf("172.20.0.%d", f.nextEditorIP)
+		if networkIP == "" {
+			f.nextEditorIP++
+			networkIP = fmt.Sprintf("172.20.0.%d", f.nextEditorIP)
+		}
 	}
 	labels := map[string]string{}
 	if opts.Config != nil {
@@ -160,7 +221,7 @@ func (f *fake) ContainerCreate(_ context.Context, opts client.ContainerCreateOpt
 			labels[k] = v
 		}
 	}
-	f.containers[opts.Name] = fakeCont{name: opts.Name, labels: labels, hostPort: hostPort, networkIP: networkIP, opts: opts}
+	f.containers[opts.Name] = fakeCont{name: opts.Name, labels: labels, hostPort: hostPort, networkIP: networkIP, networkName: networkName, opts: opts}
 	return client.ContainerCreateResult{ID: "c-" + opts.Name}, nil
 }
 
@@ -269,7 +330,7 @@ func (f *fake) ContainerInspect(_ context.Context, id string, _ client.Container
 	if c.networkIP != "" {
 		res.Container.NetworkSettings = &container.NetworkSettings{
 			Networks: map[string]*network.EndpointSettings{
-				DefaultNetwork: {IPAddress: netip.MustParseAddr(c.networkIP)},
+				c.networkName: {IPAddress: netip.MustParseAddr(c.networkIP)},
 			},
 		}
 	} else if c.hostPort > 0 {
@@ -277,12 +338,6 @@ func (f *fake) ContainerInspect(_ context.Context, id string, _ client.Container
 		res.Container.NetworkSettings = &container.NetworkSettings{
 			Ports: network.PortMap{
 				port: []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(c.hostPort)}},
-			},
-		}
-	} else if strings.HasPrefix(c.name, namePrefix) {
-		res.Container.NetworkSettings = &container.NetworkSettings{
-			Networks: map[string]*network.EndpointSettings{
-				DefaultNetwork: {IPAddress: netip.MustParseAddr("172.20.0.2")},
 			},
 		}
 	}
@@ -424,7 +479,7 @@ func spec() runtime.Spec {
 		Tier:        runtime.TierContainer,
 		TTL:         time.Hour,
 		Allow:       []string{"github.com"},
-		Credentials: []runtime.Credential{{Sentinel: "upmo_sentinel_gh", Ref: "env:GITHUB_TOKEN", Host: "github.com"}},
+		Credentials: []runtime.Credential{{Sentinel: "upmo_sentinel_" + strings.Repeat("a", 64), Ref: "github_token", Host: "github.com", Methods: []string{"GET"}, Paths: []string{"/user"}}},
 	}
 }
 
@@ -471,6 +526,15 @@ func create(t *testing.T, d *Driver) runtime.Sandbox {
 	return box
 }
 
+func (d *Driver) recordProxyIdentityForTest(id string, ip netip.Addr, secret []byte) {
+	d.mu.Lock()
+	b := d.boxes[id]
+	b.ip = ip
+	b.secret = sha256.Sum256(secret)
+	d.boxes[id] = b
+	d.mu.Unlock()
+}
+
 func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 	d, f, c := setup(t)
 	box := create(t, d)
@@ -497,27 +561,19 @@ func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 
 	// Only the internal sandbox network: the only route out is the sandboxd
 	// proxy, and nothing is published.
-	if host.NetworkMode != DefaultNetwork || cfg.NetworkDisabled || len(cfg.ExposedPorts) != 0 || len(host.PortBindings) != 0 || host.PublishAllPorts {
+	if string(host.NetworkMode) != sandboxNetworkName(box.ID) || cfg.NetworkDisabled || len(cfg.ExposedPorts) != 0 || len(host.PortBindings) != 0 || host.PublishAllPorts {
 		t.Fatalf("network = %q disabled=%v", host.NetworkMode, cfg.NetworkDisabled)
 	}
-	if opts.NetworkingConfig == nil || len(opts.NetworkingConfig.EndpointsConfig) != 1 || opts.NetworkingConfig.EndpointsConfig[DefaultNetwork] == nil {
+	if opts.NetworkingConfig == nil || len(opts.NetworkingConfig.EndpointsConfig) != 1 || opts.NetworkingConfig.EndpointsConfig[sandboxNetworkName(box.ID)] == nil {
 		t.Fatalf("endpoints = %+v", opts.NetworkingConfig)
 	}
 	if len(host.ExtraHosts) != 0 || len(host.DNS) != 0 {
 		t.Fatalf("extra hosts %v dns %v", host.ExtraHosts, host.DNS)
 	}
-	if internal, ok := f.networks[DefaultNetwork]; !ok || !internal || len(f.netCreated) != 1 || f.netCreated[0].Driver != "bridge" {
+	if internal, ok := f.networks[sandboxNetworkName(box.ID)]; !ok || !internal || len(f.netCreated) != 1 || f.netCreated[0].Driver != "bridge" {
 		t.Fatalf("network created = %+v", f.netCreated)
 	}
-	proxy := "http://" + box.ID + ":@host.docker.internal:3128"
-	wantEnv := []string{
-		"HTTP_PROXY=" + proxy, "http_proxy=" + proxy,
-		"HTTPS_PROXY=" + proxy, "https_proxy=" + proxy,
-		"ALL_PROXY=" + proxy, "all_proxy=" + proxy,
-	}
-	if !slices.Equal(cfg.Env, wantEnv) {
-		t.Fatalf("env = %q", cfg.Env)
-	}
+	checkProxyEnv(t, cfg.Env, "172.20.0.2")
 	for _, e := range cfg.Env {
 		if strings.HasPrefix(strings.ToUpper(e), "NO_PROXY=") || strings.Contains(e, "GITHUB_TOKEN") {
 			t.Fatalf("env %q", e)
@@ -580,7 +636,7 @@ func TestCreateStartsAnIsolatedContainer(t *testing.T) {
 	}
 }
 
-func TestCreateUsesTheConfiguredNetworkAndProxy(t *testing.T) {
+func TestCreateUsesPerSandboxNetworkAndProxy(t *testing.T) {
 	f := newFake()
 	f.networks["upm114_sandbox-egress"] = true
 	d, err := newDriver(f, Options{Network: " upm114_sandbox-egress ", ProxyURL: "http://sandboxd:3128/"})
@@ -588,16 +644,11 @@ func TestCreateUsesTheConfiguredNetworkAndProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	box := create(t, d)
-	if len(f.netCreated) != 0 {
-		t.Fatalf("created an existing network: %+v", f.netCreated)
-	}
 	opts := f.created[0]
-	if opts.HostConfig.NetworkMode != "upm114_sandbox-egress" || opts.NetworkingConfig.EndpointsConfig["upm114_sandbox-egress"] == nil {
+	if string(opts.HostConfig.NetworkMode) != sandboxNetworkName(box.ID) || opts.NetworkingConfig.EndpointsConfig[sandboxNetworkName(box.ID)] == nil || opts.NetworkingConfig.EndpointsConfig["upm114_sandbox-egress"] != nil {
 		t.Fatalf("network = %q %+v", opts.HostConfig.NetworkMode, opts.NetworkingConfig)
 	}
-	if want := "HTTPS_PROXY=http://" + box.ID + ":@sandboxd:3128"; !slices.Contains(opts.Config.Env, want) {
-		t.Fatalf("env = %q, want %q", opts.Config.Env, want)
-	}
+	checkProxyEnv(t, opts.Config.Env, "172.20.0.2")
 	if d.Network() != "upm114_sandbox-egress" {
 		t.Fatalf("Network() = %q", d.Network())
 	}
@@ -605,17 +656,244 @@ func TestCreateUsesTheConfiguredNetworkAndProxy(t *testing.T) {
 
 func TestCreateRefusesANetworkWithARouteOut(t *testing.T) {
 	d, f, _ := setup(t)
-	f.networks[DefaultNetwork] = false
-	if _, err := d.Create(context.Background(), spec()); err == nil || !strings.Contains(err.Error(), "not internal") {
+	f.networks["upmo-sbx-test"] = false
+	if _, err := d.ensureSandboxNetwork(context.Background(), "upmo-sbx-test"); err == nil || !strings.Contains(err.Error(), "not internal") {
 		t.Fatalf("err = %v", err)
 	}
 	f.networks = map[string]bool{}
 	f.netErr = errors.New("engine down")
-	if _, err := d.Create(context.Background(), spec()); err == nil {
+	if _, err := d.ensureSandboxNetwork(context.Background(), "upmo-sbx-test"); err == nil {
 		t.Fatal("want an error when the network cannot be inspected")
 	}
 	if len(f.created) != 0 {
 		t.Fatalf("a container was created without a safe network: %d", len(f.created))
+	}
+}
+
+func TestDockerAuthenticateRevokesPausedExpiredAndStopped(t *testing.T) {
+	d, _, _ := setup(t)
+	box := create(t, d)
+	secret := []byte(strings.Repeat("s", 32))
+	ip := netip.MustParseAddr("172.20.0.10")
+	d.mu.Lock()
+	b := d.boxes[box.ID]
+	b.ip, b.secret = ip, sha256.Sum256(secret)
+	d.boxes[box.ID] = b
+	d.mu.Unlock()
+	p, ok := d.Authenticate(ip, secret)
+	if !ok || p.ID != box.ID || p.Lease == 0 {
+		t.Fatalf("Authenticate = %+v %t", p, ok)
+	}
+	if _, ok := d.Authenticate(netip.MustParseAddr("172.20.0.11"), secret); ok {
+		t.Fatal("authenticated sandbox from the wrong source IP")
+	}
+	if _, ok := d.Authenticate(ip, []byte(strings.Repeat("x", 32))); ok {
+		t.Fatal("authenticated sandbox with the wrong proxy secret")
+	}
+	if release, ctx, ok := d.Acquire(box.ID, p.Lease); !ok || ctx == nil {
+		t.Fatal("Acquire refused live sandbox")
+	} else {
+		release()
+	}
+	if err := d.Pause(context.Background(), box.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.Authenticate(ip, secret); ok {
+		t.Fatal("authenticated paused sandbox")
+	}
+
+	d2, _, c2 := setup(t)
+	expired := create(t, d2)
+	d2.mu.Lock()
+	b = d2.boxes[expired.ID]
+	b.ip, b.secret = ip, sha256.Sum256(secret)
+	d2.boxes[expired.ID] = b
+	d2.mu.Unlock()
+	c2.add(time.Hour)
+	if _, ok := d2.Authenticate(ip, secret); ok {
+		t.Fatal("authenticated expired sandbox")
+	}
+
+	d3, _, _ := setupEditor(t)
+	editorBox := create(t, d3)
+	if _, err := d3.StartEditor(context.Background(), editorBox.ID, "Working"); err != nil {
+		t.Fatal(err)
+	}
+	d3.mu.Lock()
+	b = d3.boxes[editorBox.ID]
+	editorIP := b.editorIP
+	editorLease := b.editorLease
+	b.editorSecret = sha256.Sum256(secret)
+	d3.boxes[editorBox.ID] = b
+	d3.mu.Unlock()
+	if _, ok := d3.Authenticate(editorIP, secret); !ok {
+		t.Fatal("editor authentication refused")
+	}
+	if _, ok := d3.Authenticate(netip.MustParseAddr("172.20.0.99"), secret); ok {
+		t.Fatal("authenticated editor from the wrong source IP")
+	}
+	if _, ok := d3.Authenticate(editorIP, []byte(strings.Repeat("x", 32))); ok {
+		t.Fatal("authenticated editor with the wrong proxy secret")
+	}
+	d3.mu.Lock()
+	b = d3.boxes[editorBox.ID]
+	b.paused = true
+	d3.boxes[editorBox.ID] = b
+	d3.mu.Unlock()
+	if _, _, ok := d3.Acquire(runtime.EditorEgressID(editorBox.ID), editorLease); ok {
+		t.Fatal("editor Acquire succeeded while sandbox paused")
+	}
+	d3.mu.Lock()
+	b = d3.boxes[editorBox.ID]
+	b.paused = false
+	d3.boxes[editorBox.ID] = b
+	d3.mu.Unlock()
+	if err := d3.StopEditor(context.Background(), editorBox.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d3.Authenticate(editorIP, secret); ok {
+		t.Fatal("authenticated stopped editor")
+	}
+}
+
+func TestCreateCleansPartialSandboxNetwork(t *testing.T) {
+	d, f, _ := setup(t)
+	f.networkConnectErr = errors.New("attach failed")
+	if _, err := d.Create(context.Background(), spec()); err == nil {
+		t.Fatal("Create succeeded after sandboxd network attach failed")
+	}
+	if len(f.created) != 0 || len(f.netRemoved) != 1 || len(f.networks) != 0 {
+		t.Fatalf("container creates=%d removed networks=%v remaining=%v", len(f.created), f.netRemoved, f.networks)
+	}
+	for _, call := range f.netDisconnects {
+		if !call.opts.Force {
+			t.Fatalf("network disconnect was not forced: %+v", call)
+		}
+	}
+}
+
+func TestCreateWithDatabaseRequiresProxySecretBeforeContainerStart(t *testing.T) {
+	for _, secret := range [][]byte{nil, bytes.Repeat([]byte{'x'}, 31)} {
+		f := newFake()
+		d, err := newDriver(f, Options{DB: &pgxpool.Pool{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := spec()
+		s.ProxySecret = secret
+		if _, err := d.Create(context.Background(), s); err == nil {
+			t.Fatalf("Create accepted %d-byte proxy secret", len(secret))
+		}
+		if len(f.created) != 0 || len(f.started) != 0 || len(f.networks) != 0 {
+			t.Fatalf("missing proxy secret reached engine: create=%d start=%d networks=%v", len(f.created), len(f.started), f.networks)
+		}
+	}
+}
+
+func TestDestroyAndSweepRevokeAndRemoveSandboxNetworks(t *testing.T) {
+	secret := []byte(strings.Repeat("s", 32))
+	ip := netip.MustParseAddr("172.20.0.20")
+	checkRemoved := func(t *testing.T, f *fake, id string) {
+		t.Helper()
+		name := sandboxNetworkName(id)
+		if !slices.Contains(f.netRemoved, name) || f.networks[name] {
+			t.Fatalf("network %s removal records=%v remaining=%v", name, f.netRemoved, f.networks)
+		}
+		seenBox, seenSelf := false, false
+		for _, call := range f.netDisconnects {
+			if call.name != name || !call.opts.Force {
+				t.Errorf("disconnect=%+v", call)
+			}
+			seenBox = seenBox || call.opts.Container == containerName(id)
+			self, _ := os.Hostname()
+			seenSelf = seenSelf || call.opts.Container == self
+		}
+		if !seenBox || !seenSelf {
+			t.Fatalf("network disconnects lack sandboxd/sandbox force records: %+v", f.netDisconnects)
+		}
+	}
+	t.Run("destroy", func(t *testing.T) {
+		d, f, _ := setup(t)
+		box := create(t, d)
+		d.recordProxyIdentityForTest(box.ID, ip, secret)
+		principal, ok := d.Authenticate(ip, secret)
+		if !ok {
+			t.Fatal("sandbox identity was not live before Destroy")
+		}
+		release, held, ok := d.Acquire(box.ID, principal.Lease)
+		if !ok {
+			t.Fatal("Acquire refused sandbox before Destroy")
+		}
+		if err := d.Destroy(context.Background(), box.ID); !errors.Is(err, egress.ErrRevokeTimeout) {
+			t.Fatalf("Destroy=%v, want revoke timeout", err)
+		}
+		if held.Err() == nil {
+			t.Fatal("Destroy did not cancel held lease")
+		}
+		release()
+		if _, ok := d.Authenticate(ip, secret); ok {
+			t.Fatal("sandbox authenticated after Destroy")
+		}
+		checkRemoved(t, f, box.ID)
+	})
+	t.Run("sweep", func(t *testing.T) {
+		d, f, clock := setup(t)
+		box := create(t, d)
+		d.recordProxyIdentityForTest(box.ID, ip, secret)
+		principal, ok := d.Authenticate(ip, secret)
+		if !ok {
+			t.Fatal("sandbox identity was not live before Sweep")
+		}
+		release, held, ok := d.Acquire(box.ID, principal.Lease)
+		if !ok {
+			t.Fatal("Acquire refused sandbox before Sweep")
+		}
+		f.listed = []container.Summary{{Labels: map[string]string{labelSandbox: box.ID, labelExpires: box.Expires.Format(time.RFC3339Nano)}}}
+		clock.add(2 * time.Hour)
+		count, err := d.Sweep(context.Background())
+		if !errors.Is(err, egress.ErrRevokeTimeout) || count != 1 {
+			t.Fatalf("Sweep=%d,%v", count, err)
+		}
+		if held.Err() == nil {
+			t.Fatal("Sweep did not cancel held lease")
+		}
+		release()
+		if _, ok := d.Authenticate(ip, secret); ok {
+			t.Fatal("sandbox authenticated after Sweep")
+		}
+		checkRemoved(t, f, box.ID)
+	})
+}
+
+func TestDockerRevokeTimeoutLogsMinimalFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	d, _, _ := setupOpts(t, Options{Log: logger})
+	box := create(t, d)
+	secret := []byte("raw-secret-must-not-be-logged-000000")
+	secret = secret[:32]
+	ip := netip.MustParseAddr("172.20.0.21")
+	d.recordProxyIdentityForTest(box.ID, ip, secret)
+	p, ok := d.Authenticate(ip, secret)
+	if !ok {
+		t.Fatal("sandbox auth failed")
+	}
+	release, held, ok := d.Acquire(box.ID, p.Lease)
+	if !ok {
+		t.Fatal("Acquire failed")
+	}
+	start := time.Now()
+	err := d.Pause(context.Background(), box.ID)
+	if !errors.Is(err, egress.ErrRevokeTimeout) || time.Since(start) < egress.RevokeTimeout-100*time.Millisecond {
+		t.Fatalf("Pause=%v after %s", err, time.Since(start))
+	}
+	if held.Err() == nil {
+		t.Fatal("revoke did not cancel held request")
+	}
+	release()
+	line := output.String()
+	if !strings.Contains(line, `"msg":"lease_revoke_timeout"`) || !strings.Contains(line, `"sandbox":"`+box.ID+`"`) || !strings.Contains(line, `"reason":"pause"`) || strings.Contains(line, string(secret)) {
+		t.Fatalf("timeout log=%s", line)
 	}
 }
 
@@ -951,7 +1229,7 @@ func TestStartEditorMountsScratchAndRefusesSecond(t *testing.T) {
 		editor.HostConfig.Mounts[0].Target != ScratchDir || !editor.HostConfig.Mounts[0].ReadOnly {
 		t.Fatalf("mount = %+v", editor.HostConfig.Mounts)
 	}
-	if len(editor.HostConfig.PortBindings) != 0 || editor.HostConfig.NetworkMode != DefaultNetwork {
+	if len(editor.HostConfig.PortBindings) != 0 || string(editor.HostConfig.NetworkMode) != sandboxNetworkName(box.ID) {
 		t.Fatalf("network = %q ports = %v", editor.HostConfig.NetworkMode, editor.HostConfig.PortBindings)
 	}
 	if editor.Config.Labels[labelEditorToken] == "" {
@@ -1155,15 +1433,34 @@ func TestStartEditorProxyUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	ed := f.created[len(f.created)-1]
-	wantUser := runtime.EditorEgressID(box.ID)
-	proxy := "http://" + wantUser + ":@host.docker.internal:3128"
-	wantEnv := []string{
-		"HTTP_PROXY=" + proxy, "http_proxy=" + proxy,
-		"HTTPS_PROXY=" + proxy, "https_proxy=" + proxy,
-		"ALL_PROXY=" + proxy, "all_proxy=" + proxy,
+	checkProxyEnv(t, ed.Config.Env, "172.20.0.2")
+}
+
+func checkProxyEnv(t *testing.T, env []string, host string) {
+	t.Helper()
+	if len(env) != 6 {
+		t.Fatalf("proxy env = %v", env)
 	}
-	if !slices.Equal(ed.Config.Env, wantEnv) {
-		t.Fatalf("env = %v", ed.Config.Env)
+	for i := 0; i < len(env); i += 2 {
+		key, raw, ok := strings.Cut(env[i], "=")
+		if !ok {
+			t.Fatalf("proxy env entry %q", env[i])
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host != net.JoinHostPort(host, "3128") || u.User == nil {
+			t.Fatalf("proxy url %q: %v", raw, err)
+		}
+		user := u.User.Username()
+		pass, _ := u.User.Password()
+		b, e := base64.RawURLEncoding.DecodeString(pass)
+		if user != "sandbox" || e != nil || len(b) != 32 {
+			t.Fatalf("proxy user=%q secret length=%d err=%v", user, len(b), e)
+		}
+		clear(b)
+		lower, rawLower, ok := strings.Cut(env[i+1], "=")
+		if !ok || strings.ToLower(key) != lower || rawLower != raw {
+			t.Fatalf("proxy env pair %q %q", env[i], env[i+1])
+		}
 	}
 }
 

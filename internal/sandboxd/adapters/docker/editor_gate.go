@@ -42,7 +42,7 @@ func (d *Driver) EditorRoute(ctx context.Context, sandboxID string) (editorgate.
 	if token == "" {
 		return editorgate.Route{}, fmt.Errorf("docker: editor connection token missing")
 	}
-	ip, err := editorNetworkIP(res, d.network)
+	ip, err := editorNetworkIP(res, sandboxNetworkName(sandboxID))
 	if err != nil {
 		return editorgate.Route{}, err
 	}

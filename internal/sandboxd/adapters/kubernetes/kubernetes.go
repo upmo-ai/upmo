@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
+	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 )
 
 const (
@@ -398,6 +400,16 @@ func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
 		return nil, nil, false
 	}
 	return slices.Clone(b.spec.Allow), slices.Clone(b.spec.Credentials), true
+}
+
+// Authenticate fails closed until Kubernetes sandbox identity is implemented.
+func (d *Driver) Authenticate(netip.Addr, []byte) (egress.Principal, bool) {
+	return egress.Principal{}, false
+}
+
+// Acquire fails closed until Kubernetes request leases are implemented.
+func (d *Driver) Acquire(string, uint64) (func(), context.Context, bool) {
+	return nil, context.Background(), false
 }
 
 // ParseProxyURL checks raw is an http URL with a host and no user, path,

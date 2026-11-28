@@ -5,14 +5,18 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
+	"path"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/upmo-ai/upmo/internal/platform/secretchain"
 	"github.com/upmo-ai/upmo/internal/runtime/domain"
 )
 
@@ -36,6 +40,18 @@ var (
 
 // MaxFile is the largest file ReadFile returns or WriteFile copies.
 const MaxFile = 16 << 20
+
+// SentinelPrefix starts every stand-in credential value.
+const SentinelPrefix = "upmo_sentinel_"
+
+// NewSentinel returns a random, per-sandbox stand-in credential.
+func NewSentinel() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return SentinelPrefix + hex.EncodeToString(b), nil
+}
 
 // SandboxProvider creates, controls and destroys sandboxes. Every method
 // names a sandbox by the id Create returned.
@@ -72,7 +88,7 @@ type SandboxProvider interface {
 //
 // ProxySecret is the 32-byte secret brain chooses for the sandbox's proxy.
 // Brain stores only its SHA-256, with the task's pending row; sandboxd
-// presents that hash to bind the sandbox. CheckSpec does not carry it.
+// presents that hash to bind the sandbox. CheckSpec preserves it.
 type Spec struct {
 	Task        string
 	Image       string
@@ -89,6 +105,8 @@ type Credential struct {
 	Sentinel string
 	Ref      string
 	Host     string
+	Methods  []string
+	Paths    []string
 }
 
 // Sandbox is a created sandbox.
@@ -164,19 +182,60 @@ func CheckSpec(spec Spec) (Spec, error) {
 	creds := make([]Credential, 0, len(spec.Credentials))
 	seen := map[string]bool{}
 	for _, c := range spec.Credentials {
-		sentinel, ref := strings.TrimSpace(c.Sentinel), strings.TrimSpace(c.Ref)
+		sentinel, ref := c.Sentinel, c.Ref
 		host, ok := allowEntry(c.Host)
 		switch {
 		case !ok, !slices.Contains(allow, host),
-			sentinel == "", ref == "", sentinel == ref, seen[sentinel],
-			strings.ContainsAny(sentinel+ref, " \t\r\n"):
+			!sentinelPattern(sentinel), !secretchain.ValidRef(ref),
+			strings.HasPrefix(ref, SentinelPrefix), strings.ContainsAny(sentinel+ref, " \t\r\n"):
 			return Spec{}, ErrSpec
 		}
+		for prior := range seen {
+			if strings.Contains(prior, sentinel) || strings.Contains(sentinel, prior) {
+				return Spec{}, ErrSpec
+			}
+		}
 		seen[sentinel] = true
-		creds = append(creds, Credential{Sentinel: sentinel, Ref: ref, Host: host})
+		methods := make([]string, 0, len(c.Methods))
+		for _, method := range c.Methods {
+			if !slices.Contains([]string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, method) {
+				return Spec{}, ErrSpec
+			}
+			if !slices.Contains(methods, method) {
+				methods = append(methods, method)
+			}
+		}
+		if len(methods) == 0 || len(c.Paths) == 0 {
+			return Spec{}, ErrSpec
+		}
+		paths := make([]string, 0, len(c.Paths))
+		for _, p := range c.Paths {
+			if !strings.HasPrefix(p, "/") || p == "/" || strings.ContainsAny(p, "?#\\%") || strings.Contains(p, "..") || path.Clean(p) != p {
+				return Spec{}, ErrSpec
+			}
+			if !slices.Contains(paths, p) {
+				paths = append(paths, p)
+			}
+		}
+		creds = append(creds, Credential{Sentinel: sentinel, Ref: ref, Host: host, Methods: slices.Clone(methods), Paths: slices.Clone(paths)})
 	}
 
-	return Spec{Task: task.String(), Image: image, Tier: tier, TTL: spec.TTL, Allow: allow, Credentials: creds}, nil
+	if len(spec.ProxySecret) != 0 && len(spec.ProxySecret) != 32 {
+		return Spec{}, ErrSpec
+	}
+	return Spec{Task: task.String(), Image: image, Tier: tier, TTL: spec.TTL, Allow: allow, Credentials: creds, ProxySecret: slices.Clone(spec.ProxySecret)}, nil
+}
+
+func sentinelPattern(s string) bool {
+	if !strings.HasPrefix(s, SentinelPrefix) || len(s) != len(SentinelPrefix)+64 {
+		return false
+	}
+	for _, c := range s[len(SentinelPrefix):] {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }
 
 // allowEntry normalizes a host name through the domain egress rule: a listed

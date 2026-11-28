@@ -23,10 +23,18 @@ package docker
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
+	"net/netip"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +42,7 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
@@ -41,6 +50,7 @@ import (
 
 	"github.com/upmo-ai/upmo/internal/runtime"
 	"github.com/upmo-ai/upmo/internal/sandboxd/editorgate"
+	"github.com/upmo-ai/upmo/internal/sandboxd/egress"
 )
 
 const (
@@ -98,6 +108,9 @@ type engine interface {
 	VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+	NetworkConnect(ctx context.Context, name string, opts client.NetworkConnectOptions) (client.NetworkConnectResult, error)
+	NetworkDisconnect(ctx context.Context, name string, opts client.NetworkDisconnectOptions) (client.NetworkDisconnectResult, error)
+	NetworkRemove(ctx context.Context, name string, opts client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
 	ExecCreate(ctx context.Context, id string, opts client.ExecCreateOptions) (client.ExecCreateResult, error)
 	ExecAttach(ctx context.Context, id string, opts client.ExecAttachOptions) (client.ExecAttachResult, error)
 	ExecInspect(ctx context.Context, id string, opts client.ExecInspectOptions) (client.ExecInspectResult, error)
@@ -116,6 +129,8 @@ type Engine struct {
 
 // Options tune the driver. The zero value is the default.
 type Options struct {
+	DB  *pgxpool.Pool
+	Log *slog.Logger
 	// Memory is the memory limit of each sandbox in bytes; 0 means DefaultMemory.
 	Memory int64
 	// Now is the clock; nil means time.Now.
@@ -137,6 +152,8 @@ type Options struct {
 // earlier process left behind.
 type Driver struct {
 	api           engine
+	db            *pgxpool.Pool
+	log           *slog.Logger
 	closer        io.Closer
 	memory        int64
 	now           func() time.Time
@@ -148,12 +165,27 @@ type Driver struct {
 
 	mu    sync.Mutex
 	boxes map[string]box
+	cond  *sync.Cond
 }
 
 type box struct {
-	spec    runtime.Spec
-	expires time.Time
-	paused  bool
+	spec         runtime.Spec
+	expires      time.Time
+	paused       bool
+	network      string
+	ip           netip.Addr
+	secret       [32]byte
+	lease        uint64
+	nextLease    uint64
+	ctx          context.Context
+	cancel       context.CancelFunc
+	inFlight     int
+	editorIP     netip.Addr
+	editorSecret [32]byte
+	editorLease  uint64
+	editorCtx    context.Context
+	editorCancel context.CancelFunc
+	editorFlight int
 }
 
 var _ runtime.SandboxProvider = (*Driver)(nil)
@@ -224,8 +256,10 @@ func newDriver(api engine, opts Options) (*Driver, error) {
 	if base == "" {
 		base = editorgate.DefaultBaseURL
 	}
-	return &Driver{
+	d := &Driver{
 		api:           api,
+		db:            opts.DB,
+		log:           opts.Log,
 		memory:        opts.Memory,
 		now:           opts.Now,
 		network:       netName,
@@ -233,7 +267,9 @@ func newDriver(api engine, opts Options) (*Driver, error) {
 		editorImage:   strings.TrimSpace(opts.EditorImage),
 		editorBaseURL: base,
 		boxes:         map[string]box{},
-	}, nil
+	}
+	d.cond = sync.NewCond(&d.mu)
+	return d, nil
 }
 
 func (d *Driver) editorImageRef() string {
@@ -279,6 +315,7 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	if err != nil {
 		return runtime.Sandbox{}, err
 	}
+	defer clear(spec.ProxySecret)
 	place, err := runtime.Place(spec.Tier, runtime.PlatformCompose)
 	if err != nil {
 		return runtime.Sandbox{}, runtime.ErrIsolation
@@ -288,11 +325,43 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 		return runtime.Sandbox{}, err
 	}
 	id := uid.String()
+	secret := slices.Clone(spec.ProxySecret)
+	if d.db != nil && len(secret) != 32 {
+		return runtime.Sandbox{}, fmt.Errorf("docker: proxy secret required with sandbox database")
+	}
+	if d.db == nil && len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return runtime.Sandbox{}, err
+		}
+	}
+	defer clear(secret)
+	hash := sha256.Sum256(secret)
+	netName := sandboxNetworkName(id)
 	if err := d.ensureImage(ctx, spec.Image); err != nil {
 		return runtime.Sandbox{}, err
 	}
-	if err := d.ensureNetwork(ctx); err != nil {
+	proxyIP, err := d.ensureSandboxNetwork(ctx, netName)
+	if err != nil {
+		d.cleanup(ctx, id)
 		return runtime.Sandbox{}, err
+	}
+	if d.db != nil {
+		if _, err := d.db.Exec(ctx, `SELECT gateway.attach_sandbox_credential($1::uuid, $2, $3)`, spec.Task, id, hash[:]); err != nil {
+			d.cleanup(ctx, id)
+			return runtime.Sandbox{}, fmt.Errorf("keys: worker unavailable: sandbox credential binding")
+		}
+		bound := make(map[string]struct{}, len(spec.Credentials))
+		for _, c := range spec.Credentials {
+			if _, exists := bound[c.Ref]; exists {
+				continue
+			}
+			bound[c.Ref] = struct{}{}
+			if _, err := d.db.Exec(ctx, `SELECT gateway.bind_sandbox_credential($1, $2, $3)`, id, c.Ref, hash[:]); err != nil {
+				d.cleanup(ctx, id)
+				return runtime.Sandbox{}, fmt.Errorf("keys: worker unavailable: sandbox credential binding")
+			}
+		}
 	}
 
 	expires := d.now().UTC().Add(spec.TTL)
@@ -314,13 +383,13 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 			WorkingDir: ScratchDir,
 			Hostname:   "sandbox",
 			Labels:     labels,
-			Env:        d.proxyEnv(id),
+			Env:        d.proxyEnv(id, secret, proxyIP.String()),
 		},
 		NetworkingConfig: &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{d.network: {}},
+			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
 		},
 		HostConfig: &container.HostConfig{
-			NetworkMode:   container.NetworkMode(d.network),
+			NetworkMode:   container.NetworkMode(netName),
 			Runtime:       place.Runtime,
 			CapDrop:       []string{"ALL"},
 			CapAdd:        slices.Clone(keepCaps),
@@ -352,7 +421,24 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 	}
 
 	d.mu.Lock()
-	d.boxes[id] = box{spec: spec, expires: expires}
+	leaseCtx, leaseCancel := context.WithCancel(context.Background())
+	spec.ProxySecret = nil
+	d.boxes[id] = box{spec: spec, expires: expires, network: netName, secret: hash, lease: 1, nextLease: 1, ctx: leaseCtx, cancel: leaseCancel}
+	d.mu.Unlock()
+	inspect, err := d.api.ContainerInspect(ctx, containerName(id), client.ContainerInspectOptions{})
+	if err != nil {
+		_ = d.Destroy(context.WithoutCancel(ctx), id)
+		return runtime.Sandbox{}, fmt.Errorf("docker: inspect sandbox: %w", err)
+	}
+	ip, err := sandboxNetworkIP(inspect, netName)
+	if err != nil {
+		_ = d.Destroy(context.WithoutCancel(ctx), id)
+		return runtime.Sandbox{}, err
+	}
+	d.mu.Lock()
+	b := d.boxes[id]
+	b.ip = netip.MustParseAddr(ip)
+	d.boxes[id] = b
 	d.mu.Unlock()
 	return runtime.Sandbox{ID: id, Tier: spec.Tier, Shape: shape, Expires: expires}, nil
 }
@@ -361,9 +447,10 @@ func (d *Driver) Create(ctx context.Context, spec runtime.Spec) (runtime.Sandbox
 // sandbox id as the Basic user name the proxy reads. Both cases are set,
 // because curl reads only the lower-case http_proxy. NO_PROXY stays unset,
 // so every HTTP and HTTPS request goes to the proxy.
-func (d *Driver) proxyEnv(id string) []string {
+func (d *Driver) proxyEnv(id string, secret []byte, host string) []string {
 	u := *d.proxy
-	u.User = url.UserPassword(id, "")
+	u.Host = net.JoinHostPort(host, proxyPort(d.proxy))
+	u.User = url.UserPassword("sandbox", base64.RawURLEncoding.EncodeToString(secret))
 	v := u.String()
 	env := make([]string, 0, 6)
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
@@ -372,35 +459,75 @@ func (d *Driver) proxyEnv(id string) []string {
 	return env
 }
 
-// ensureNetwork makes sure the sandbox network exists and is internal. A
-// network that is not internal has a route off the bridge, so a sandbox on
-// it could bypass the proxy; the driver refuses it rather than use it.
-func (d *Driver) ensureNetwork(ctx context.Context) error {
-	for range 2 {
-		res, err := d.api.NetworkInspect(ctx, d.network, client.NetworkInspectOptions{})
-		if err == nil {
-			if !res.Network.Internal {
-				return fmt.Errorf("docker: network %s is not internal; a sandbox on it could bypass the egress proxy", d.network)
-			}
-			return nil
+func proxyPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	return "3128"
+}
+
+func sandboxNetworkName(id string) string { return "upmo-sbx-" + id }
+
+func (d *Driver) ensureSandboxNetwork(ctx context.Context, name string) (netip.Addr, error) {
+	res, err := d.api.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		_, err = d.api.NetworkCreate(ctx, name, client.NetworkCreateOptions{Driver: "bridge", Internal: true, Labels: map[string]string{labelNetwork: "egress"}})
+		if err != nil && !cerrdefs.IsConflict(err) {
+			return netip.Addr{}, fmt.Errorf("docker: create network %s: %w", name, err)
 		}
-		if !cerrdefs.IsNotFound(err) {
-			return fmt.Errorf("docker: network %s: %w", d.network, err)
-		}
-		_, err = d.api.NetworkCreate(ctx, d.network, client.NetworkCreateOptions{
-			Driver:   "bridge",
-			Internal: true,
-			Labels:   map[string]string{labelNetwork: "egress"},
-		})
-		if err == nil {
-			return nil
-		}
-		// Another Create made it first: inspect it again.
-		if !cerrdefs.IsConflict(err) {
-			return fmt.Errorf("docker: create network %s: %w", d.network, err)
+		res, err = d.api.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
+	}
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("docker: network %s: %w", name, err)
+	}
+	if !res.Network.Internal {
+		return netip.Addr{}, fmt.Errorf("docker: network %s is not internal", name)
+	}
+	selfName, _ := os.Hostname()
+	self := strings.TrimSpace(selfName)
+	if self == "" {
+		return netip.Addr{}, fmt.Errorf("docker: sandboxd container identity unavailable")
+	}
+	if _, err := d.api.NetworkConnect(ctx, name, client.NetworkConnectOptions{Container: self}); err != nil && !cerrdefs.IsConflict(err) {
+		return netip.Addr{}, fmt.Errorf("docker: connect sandboxd network: %w", err)
+	}
+	inspect, err := d.api.ContainerInspect(ctx, self, client.ContainerInspectOptions{})
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("docker: inspect sandboxd: %w", err)
+	}
+	ip, err := sandboxNetworkIP(inspect, name)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return netip.ParseAddr(ip)
+}
+
+func sandboxNetworkIP(res client.ContainerInspectResult, name string) (string, error) {
+	if res.Container.NetworkSettings == nil || res.Container.NetworkSettings.Networks == nil {
+		return "", fmt.Errorf("docker: no network settings for %s", name)
+	}
+	ep := res.Container.NetworkSettings.Networks[name]
+	if ep == nil || !ep.IPAddress.IsValid() {
+		return "", fmt.Errorf("docker: no IP on network %s", name)
+	}
+	return ep.IPAddress.String(), nil
+}
+
+func (d *Driver) removeNetwork(ctx context.Context, id, name string) error {
+	if _, err := d.api.NetworkDisconnect(ctx, name, client.NetworkDisconnectOptions{Container: containerName(id), Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+		return err
+	}
+	selfName, _ := os.Hostname()
+	self := strings.TrimSpace(selfName)
+	if self != "" {
+		if _, err := d.api.NetworkDisconnect(ctx, name, client.NetworkDisconnectOptions{Container: self, Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+			return err
 		}
 	}
-	return fmt.Errorf("docker: network %s: still missing after create", d.network)
+	if _, err := d.api.NetworkRemove(ctx, name, client.NetworkRemoveOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // ensureImage uses a local image when there is one and pulls it otherwise.
@@ -430,6 +557,7 @@ func (d *Driver) Pause(ctx context.Context, id string) error {
 	if !ok {
 		return runtime.ErrNotFound
 	}
+	revokeErr := d.revoke(id, "pause")
 	timeout := stopSeconds
 	if _, err := d.api.ContainerStop(ctx, containerName(id), client.ContainerStopOptions{Timeout: &timeout}); err != nil {
 		if cerrdefs.IsNotFound(err) {
@@ -444,7 +572,7 @@ func (d *Driver) Pause(ctx context.Context, id string) error {
 		d.boxes[id] = b
 	}
 	d.mu.Unlock()
-	return nil
+	return revokeErr
 }
 
 // Destroy removes the container, its anonymous volumes and its scratch volume.
@@ -453,22 +581,20 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 	if !ok {
 		return runtime.ErrNotFound
 	}
+	revokeErr := d.revoke(id, "destroy")
 	if err := d.remove(ctx, id); err != nil {
 		return err
 	}
 	d.forget(id)
-	return nil
+	return revokeErr
 }
 
 // Sweep removes expired sandbox containers and idle code editors, and returns
 // how many it removed.
 func (d *Driver) Sweep(ctx context.Context) (int, error) {
-	n, err := d.sweepExpiredSandboxes(ctx)
-	if err != nil {
-		return n, err
-	}
-	idle, err := d.sweepIdleEditors(ctx)
-	return n + idle, err
+	n, sandboxErr := d.sweepExpiredSandboxes(ctx)
+	idle, editorErr := d.sweepIdleEditors(ctx)
+	return n + idle, errors.Join(sandboxErr, editorErr)
 }
 
 func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
@@ -494,6 +620,9 @@ func (d *Driver) sweepExpiredSandboxes(ctx context.Context) (int, error) {
 		// container carries the sandbox label, so it is ours to reclaim.
 		if expires, err := time.Parse(time.RFC3339Nano, c.Labels[labelExpires]); err == nil && now.Before(expires) {
 			continue
+		}
+		if revokeErr := d.revoke(id, "sweep"); revokeErr != nil {
+			errs = append(errs, revokeErr)
 		}
 		if err := d.remove(ctx, id); err != nil {
 			errs = append(errs, err)
@@ -525,6 +654,147 @@ func (d *Driver) Egress(id string) ([]string, []runtime.Credential, bool) {
 		return nil, nil, false
 	}
 	return slices.Clone(b.spec.Allow), slices.Clone(b.spec.Credentials), true
+}
+
+// Authenticate is fail-closed until the per-sandbox network identity lands.
+func (d *Driver) Authenticate(source netip.Addr, secret []byte) (egress.Principal, bool) {
+	d.mu.Lock()
+	got := sha256.Sum256(secret)
+	var result egress.Principal
+	found := false
+	editorSandbox := ""
+	for id, b := range d.boxes {
+		valid := source.IsValid() && source == b.ip && d.now().UTC().Before(b.expires) && !b.paused && b.lease != 0
+		equal := subtle.ConstantTimeCompare(got[:], b.secret[:])
+		if valid && len(secret) == 32 && equal == 1 {
+			result = egress.Principal{ID: id, Allow: slices.Clone(b.spec.Allow), Creds: slices.Clone(b.spec.Credentials), Lease: b.lease}
+			found = true
+		}
+		evalid := source.IsValid() && source == b.editorIP && d.now().UTC().Before(b.expires) && b.editorLease != 0 && !b.paused
+		equal = subtle.ConstantTimeCompare(got[:], b.editorSecret[:])
+		if evalid && len(secret) == 32 && equal == 1 {
+			result = egress.Principal{ID: runtime.EditorEgressID(id), Allow: []string{runtime.GalleryHost}, Lease: b.editorLease}
+			editorSandbox = id
+			found = true
+		}
+	}
+	if !found {
+		var dummy [32]byte
+		_ = subtle.ConstantTimeCompare(got[:], dummy[:])
+		d.mu.Unlock()
+		return egress.Principal{}, false
+	}
+	d.mu.Unlock()
+	if editorSandbox != "" {
+		open, err := d.editorOpen(context.Background(), editorSandbox)
+		if err != nil || open == 0 {
+			return egress.Principal{}, false
+		}
+	}
+	return result, true
+}
+
+// Acquire is fail-closed until the driver tracks revocable request leases.
+func (d *Driver) Acquire(id string, token uint64) (func(), context.Context, bool) {
+	d.mu.Lock()
+	if sandboxID, editor := runtime.SandboxFromEditorEgress(id); editor {
+		b, ok := d.boxes[sandboxID]
+		if !ok || token == 0 || b.editorLease != token || b.paused || !d.now().UTC().Before(b.expires) {
+			d.mu.Unlock()
+			return nil, context.Background(), false
+		}
+		b.editorFlight++
+		d.boxes[sandboxID] = b
+		held, cancel := context.WithCancel(b.editorCtx)
+		d.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				cancel()
+				d.mu.Lock()
+				if cur, ok := d.boxes[sandboxID]; ok {
+					cur.editorFlight--
+					d.boxes[sandboxID] = cur
+				}
+				d.cond.Broadcast()
+				d.mu.Unlock()
+			})
+		}, held, true
+	}
+	b, ok := d.boxes[id]
+	if !ok || token == 0 || b.lease != token || b.paused || !d.now().UTC().Before(b.expires) {
+		d.mu.Unlock()
+		return nil, context.Background(), false
+	}
+	b.inFlight++
+	d.boxes[id] = b
+	held, cancel := context.WithCancel(b.ctx)
+	d.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			d.mu.Lock()
+			if cur, ok := d.boxes[id]; ok {
+				cur.inFlight--
+				d.boxes[id] = cur
+			}
+			d.cond.Broadcast()
+			d.mu.Unlock()
+		})
+	}, held, true
+}
+
+func (d *Driver) revoke(id, reason string) error {
+	d.mu.Lock()
+	isEditor := false
+	if sandboxID, editor := runtime.SandboxFromEditorEgress(id); editor {
+		id = sandboxID
+		isEditor = true
+	}
+	b, ok := d.boxes[id]
+	if !ok {
+		d.mu.Unlock()
+		return nil
+	}
+	if isEditor {
+		b.editorLease = 0
+		b.editorIP = netip.Addr{}
+		clear(b.editorSecret[:])
+		if b.editorCancel != nil {
+			b.editorCancel()
+		}
+	} else {
+		b.lease = 0
+		b.ip = netip.Addr{}
+		clear(b.secret[:])
+		b.editorLease = 0
+		b.editorIP = netip.Addr{}
+		clear(b.editorSecret[:])
+		if b.cancel != nil {
+			b.cancel()
+		}
+		if b.editorCancel != nil {
+			b.editorCancel()
+		}
+	}
+	d.boxes[id] = b
+	timedOut := false
+	timer := time.AfterFunc(egress.RevokeTimeout, func() { d.mu.Lock(); timedOut = true; d.cond.Broadcast(); d.mu.Unlock() })
+	for ((isEditor && b.editorFlight > 0) || (!isEditor && (b.inFlight > 0 || b.editorFlight > 0))) && !timedOut {
+		d.cond.Wait()
+		b = d.boxes[id]
+	}
+	stillInFlight := (isEditor && b.editorFlight > 0) || (!isEditor && (b.inFlight > 0 || b.editorFlight > 0))
+	timer.Stop()
+	d.mu.Unlock()
+	if stillInFlight {
+		if d.log != nil {
+			d.log.Warn("lease_revoke_timeout", "sandbox", id, "reason", reason)
+		}
+		return egress.ErrRevokeTimeout
+	}
+	return nil
 }
 
 // PTY is not built in the Docker driver.
@@ -582,6 +852,7 @@ func (d *Driver) remove(ctx context.Context, id string) error {
 	if err := d.removeEditor(ctx, id); err != nil {
 		return err
 	}
+	netName := sandboxNetworkName(id)
 	_, err := d.api.ContainerRemove(ctx, containerName(id), client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	if err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("docker: remove: %w", err)
@@ -589,6 +860,9 @@ func (d *Driver) remove(ctx context.Context, id string) error {
 	_, err = d.api.VolumeRemove(ctx, volumeName(id), client.VolumeRemoveOptions{Force: true})
 	if err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("docker: remove volume: %w", err)
+	}
+	if err := d.removeNetwork(ctx, id, netName); err != nil {
+		return fmt.Errorf("docker: remove network: %w", err)
 	}
 	return nil
 }

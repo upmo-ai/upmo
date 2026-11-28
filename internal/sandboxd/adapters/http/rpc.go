@@ -100,9 +100,11 @@ type Handler struct {
 }
 
 type credentialBody struct {
-	Sentinel string `json:"sentinel"`
-	Ref      string `json:"ref"`
-	Host     string `json:"host"`
+	Sentinel string   `json:"sentinel"`
+	Ref      string   `json:"ref"`
+	Host     string   `json:"host"`
+	Methods  []string `json:"methods"`
+	Paths    []string `json:"paths"`
 }
 
 type createBody struct {
@@ -193,6 +195,7 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &body, bodyLimit) {
 		return
 	}
+	defer clear(body.ProxySecret)
 	// The domain sets no TTL ceiling; this bound only keeps the duration from overflowing.
 	if body.TTLSeconds <= 0 || body.TTLSeconds > math.MaxInt64/int64(time.Second) {
 		h.fail(w, runtime.ErrSpec)
@@ -213,7 +216,7 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request) {
 		ProxySecret: body.ProxySecret,
 	}
 	for _, c := range body.Credentials {
-		spec.Credentials = append(spec.Credentials, runtime.Credential{Sentinel: c.Sentinel, Ref: c.Ref, Host: c.Host})
+		spec.Credentials = append(spec.Credentials, runtime.Credential{Sentinel: c.Sentinel, Ref: c.Ref, Host: c.Host, Methods: c.Methods, Paths: c.Paths})
 	}
 	box, err := h.Provider.Create(r.Context(), spec)
 	if err != nil {
