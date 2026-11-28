@@ -269,7 +269,7 @@ func TestRunnerOwnedControlsAreOwnerOnly(t *testing.T) {
 		name   string
 		access app.Access
 		want   error
-	}{{"shared editor", editor, app.ErrAccess}, {"admin", adminEditor, app.ErrAccess}, {"stranger", stranger, app.ErrGone}} {
+	}{{"shared editor", editor, app.ErrAccess}, {"admin", adminEditor, app.ErrAccess}, {"unshared admin", adminAccess, app.ErrGone}, {"stranger", stranger, app.ErrGone}} {
 		t.Run(person.name, func(t *testing.T) {
 			budget := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, working.ID)
 			for _, amount := range []int64{budget, budget + 1} {
@@ -282,8 +282,8 @@ func TestRunnerOwnedControlsAreOwnerOnly(t *testing.T) {
 					t.Errorf("HTTP Fund = %d, want 403", code)
 				}
 				h := approvalServer(store, map[string]app.Access{"editor": person.access})
-				if code, _ := postTaskStep(h, "editor", resume.ID, `{"kind":"resume"}`); code != 403 {
-					t.Errorf("HTTP Resume = %d, want 403", code)
+				if code, _ := postTaskStep(h, "editor", resume.ID, `{"kind":"resume"}`); code != 400 {
+					t.Errorf("HTTP Resume = %d, want 400", code)
 				}
 			}
 			if _, err := app.ApplyTransition(ctx, store, person.access, resume.ID, domain.Input{Kind: domain.Resume}); !errors.Is(err, person.want) {
@@ -320,11 +320,82 @@ func TestRunnerOwnedControlsAreOwnerOnly(t *testing.T) {
 	if got := taskStatus(t, owner, resume.ID); got != string(domain.NeedsApproval) {
 		t.Fatalf("denied Resume changed status to %s", got)
 	}
+	if err := app.Fund(ctx, store, ownerAccess, working.ID, initialBudget); err != nil {
+		t.Fatalf("member owner equal Fund = %v", err)
+	}
+	if err := app.Fund(ctx, store, ownerAccess, working.ID, initialBudget+123); err != nil {
+		t.Fatalf("member owner Fund raise = %v", err)
+	}
+	if got := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, working.ID); got != initialBudget+123 {
+		t.Fatalf("member owner Fund budget = %d, want %d", got, initialBudget+123)
+	}
+	if _, err := app.ApplyTransition(ctx, store, ownerAccess, resume.ID, domain.Input{Kind: domain.Resume}); err != nil {
+		t.Fatalf("member owner Resume = %v", err)
+	}
+	if got := taskStatus(t, owner, resume.ID); got != string(domain.Working) {
+		t.Fatalf("member owner Resume status = %s, want Working", got)
+	}
 	if err := owner.QueryRow(ctx, `SELECT state FROM tasks.runs WHERE id = $1::uuid`, runs[2].ID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != string(domain.RunQueued) {
 		t.Fatalf("denied Admit changed queued run state to %s", state)
+	}
+	adminTask, err := app.ApplyTransition(ctx, store, adminAccess, "", domain.Input{Kind: domain.Open, Goal: "Admin owner controls"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []domain.Status{domain.Working} {
+		adminTask, err = app.ApplyTransition(ctx, store, adminAccess, adminTask.ID, domain.Input{Kind: domain.Advance})
+		if err != nil || adminTask.Status != status {
+			t.Fatalf("admin owner advance = %+v %v, want %s", adminTask, err, status)
+		}
+	}
+	markTaskRunnerOwned(t, owner, adminTask.ID)
+	adminBudget := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, adminTask.ID)
+	if err := app.Fund(ctx, store, adminAccess, adminTask.ID, adminBudget); err != nil {
+		t.Fatalf("admin owner equal Fund = %v", err)
+	}
+	if err := app.Fund(ctx, store, adminAccess, adminTask.ID, adminBudget+456); err != nil {
+		t.Fatalf("admin owner Fund raise = %v", err)
+	}
+	if got := taskInt(t, owner, `SELECT budget FROM tasks.tasks WHERE id = $1::uuid`, adminTask.ID); got != adminBudget+456 {
+		t.Fatalf("admin owner Fund budget = %d, want %d", got, adminBudget+456)
+	}
+	adminResume, err := app.ApplyTransition(ctx, store, adminAccess, "", domain.Input{Kind: domain.Open, Goal: "Admin owner resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ApplyTransition(ctx, store, adminAccess, adminResume.ID, domain.Input{Kind: domain.Advance}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ApplyTransition(ctx, store, adminAccess, adminResume.ID, domain.Input{Kind: domain.Pause}); err != nil {
+		t.Fatal(err)
+	}
+	markTaskRunnerOwned(t, owner, adminResume.ID)
+	if _, err := app.ApplyTransition(ctx, store, adminAccess, adminResume.ID, domain.Input{Kind: domain.Resume}); err != nil {
+		t.Fatalf("admin owner Resume = %v", err)
+	}
+	if got := taskStatus(t, owner, adminResume.ID); got != string(domain.Working) {
+		t.Fatalf("admin owner Resume status = %s, want Working", got)
+	}
+	adminRuns := make([]app.Run, 0, 3)
+	for range 3 {
+		admitted, err := app.Admit(ctx, store, adminAccess, adminTask.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		adminRuns = append(adminRuns, admitted)
+	}
+	if adminRuns[2].State != domain.RunQueued {
+		t.Fatalf("admin owner queued run = %s, want queued", adminRuns[2].State)
+	}
+	if _, err := app.EndRun(ctx, store, adminAccess, adminRuns[0].ID); err != nil {
+		t.Fatalf("admin owner End = %v", err)
+	}
+	adminSwept, err := app.Sweep(ctx, store, adminAccess)
+	if err != nil || len(adminSwept) != 1 || adminSwept[0].ID != adminRuns[2].ID || adminSwept[0].State != domain.RunAdmitted {
+		t.Fatalf("admin owner Sweep = %+v %v, want queued run admitted", adminSwept, err)
 	}
 	if swept, err := app.Sweep(ctx, store, editor); err != nil || len(swept) != 0 {
 		t.Fatalf("editor Sweep = %+v %v, want no visible owned queue", swept, err)

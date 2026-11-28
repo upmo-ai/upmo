@@ -757,6 +757,52 @@ func TestCommitRunnerTurnRejectsLiveRevocationWithoutWrites(t *testing.T) {
 	}
 }
 
+func TestCommitRunnerTurnFailsClosedWithoutRunnerOrOnLookupError(t *testing.T) {
+	owner := up(t)
+	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+	ctx := context.Background()
+	task, run := runnerCommitTask(t, store, owner, domain.Working, true)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	noRunner := store
+	noRunner.Runner = nil
+	for _, test := range []struct {
+		name  string
+		store postgres.Store
+		ctx   context.Context
+	}{
+		{"nil runner", noRunner, ctx},
+		{"canceled lookup", store, canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			turnStore := postgres.TaskTurnStore{
+				Store:       test.store,
+				Scope:       agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error { calls++; return nil },
+			}
+			_, err := turnStore.CommitRunnerTurn(test.ctx, agentloop.TurnCommit{
+				RunID: run.ID, ObjectID: task.ID, UserID: ownerUser, SeqStart: 1,
+				Messages: []agentloop.Message{{Role: agentloop.RoleAssistant, Text: "lookup failure"}}, CostMicroUSD: 500,
+			})
+			if err == nil || calls != 0 {
+				t.Fatalf("CommitRunnerTurn err=%v calls=%d, want lookup error/no enqueue", err, calls)
+			}
+			var turns int
+			var spent int64
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent); err != nil {
+				t.Fatal(err)
+			}
+			if turns != 0 || spent != 0 {
+				t.Fatalf("lookup failure wrote turns=%d spent=%d", turns, spent)
+			}
+		})
+	}
+}
+
 func TestCommitRunnerTurnOwnerAccessMatrix(t *testing.T) {
 	owner := up(t)
 	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
@@ -797,56 +843,76 @@ func TestCommitRunnerTurnOwnerAccessMatrix(t *testing.T) {
 }
 
 func TestCommitRunnerTurnRevocationAllowsClaimCleanup(t *testing.T) {
-	owner := up(t)
-	store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
-	ctx := context.Background()
-	task := reach(t, store, "Revocation cleanup", domain.Working)
-	markTaskRunnerOwned(t, owner, task.ID)
-	run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	claim, err := store.ClaimRun(ctx, ownerAccess, task.ID, run.ID, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Reserve(ctx, ownerAccess, task.ID, claim.Token, 1_000); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := owner.Exec(ctx, `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'viewer') WHERE id = $1::uuid`, ownerUser); err != nil {
-		t.Fatal(err)
-	}
-	turnStore := postgres.TaskTurnStore{
-		Store: store,
-		Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
-		EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error {
-			t.Fatal("revoked turn enqueued")
-			return nil
-		},
-	}
-	if _, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{RunID: run.ID, ObjectID: task.ID, UserID: ownerUser}); !errors.Is(err, app.ErrAccess) {
-		t.Fatalf("revoked commit = %v, want ErrAccess", err)
-	}
-	if err := store.SettleOrphan(ctx, ownerAccess, task.ID, claim.Token, 500); err != nil {
-		t.Fatalf("revoked-owner SettleOrphan = %v", err)
-	}
-	if err := store.SettleOrphan(ctx, ownerAccess, task.ID, claim.Token, 500); !errors.Is(err, app.ErrAlready) {
-		t.Fatalf("duplicate SettleOrphan = %v, want ErrAlready", err)
-	}
-	if err := store.Release(ctx, ownerAccess, task.ID, claim.Token); err != nil {
-		t.Fatalf("revoked-owner Release = %v", err)
-	}
-	var settlementCount int
-	var spent, reserved int64
-	var token *string
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.settlements WHERE task_id = $1::uuid AND claim_token = $2::uuid`, task.ID, claim.Token).Scan(&settlementCount); err != nil {
-		t.Fatal(err)
-	}
-	if err := owner.QueryRow(ctx, `SELECT spent, reserved, claim_token::text FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &reserved, &token); err != nil {
-		t.Fatal(err)
-	}
-	if settlementCount != 1 || spent != 500 || reserved != 0 || token != nil {
-		t.Fatalf("cleanup settlements=%d spent=%d reserved=%d token=%v", settlementCount, spent, reserved, token)
+	for _, revoke := range []struct {
+		name  string
+		query string
+	}{
+		{"demoted", `UPDATE identity.users SET role_id = (SELECT id FROM identity.roles WHERE key = 'viewer') WHERE id = $1::uuid`},
+		{"disabled", `UPDATE identity.users SET disabled_at = now() WHERE id = $1::uuid`},
+	} {
+		t.Run(revoke.name, func(t *testing.T) {
+			owner := up(t)
+			store := postgres.Store{Pool: pgtest.App(t, owner), Runner: pgtest.Runner(t, owner)}
+			ctx := context.Background()
+			task := reach(t, store, "Revocation cleanup", domain.Working)
+			markTaskRunnerOwned(t, owner, task.ID)
+			run, err := app.Admit(ctx, store, ownerAccess, task.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim, err := store.ClaimRun(ctx, ownerAccess, task.ID, run.ID, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Reserve(ctx, ownerAccess, task.ID, claim.Token, 1_000); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := owner.Exec(ctx, revoke.query, ownerUser); err != nil {
+				t.Fatal(err)
+			}
+			turnStore := postgres.TaskTurnStore{
+				Store: store,
+				Scope: agentloop.AccessScope{UserID: ownerUser, Allow: ownerAccess.Allow, ObjectID: task.ID},
+				EnqueueNext: func(context.Context, pgx.Tx, agentloop.TurnCommit) error {
+					t.Fatal("revoked turn enqueued")
+					return nil
+				},
+			}
+			if _, err := turnStore.CommitRunnerTurn(ctx, agentloop.TurnCommit{RunID: run.ID, ObjectID: task.ID, UserID: ownerUser}); !errors.Is(err, app.ErrAccess) {
+				t.Fatalf("revoked commit = %v, want ErrAccess", err)
+			}
+			var turns int
+			var spent, reserved int64
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.turns WHERE run_id = $1::uuid`, run.ID).Scan(&turns); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent, reserved FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &reserved); err != nil {
+				t.Fatal(err)
+			}
+			if turns != 0 || spent != 0 || reserved != 1_000 {
+				t.Fatalf("revoked commit wrote turns=%d spent=%d reserved=%d", turns, spent, reserved)
+			}
+			if err := store.SettleOrphan(ctx, ownerAccess, task.ID, claim.Token, 500); err != nil {
+				t.Fatalf("revoked-owner SettleOrphan = %v", err)
+			}
+			if err := store.SettleOrphan(ctx, ownerAccess, task.ID, claim.Token, 500); !errors.Is(err, app.ErrAlready) {
+				t.Fatalf("duplicate SettleOrphan = %v, want ErrAlready", err)
+			}
+			if err := store.Release(ctx, ownerAccess, task.ID, claim.Token); err != nil {
+				t.Fatalf("revoked-owner Release = %v", err)
+			}
+			var settlementCount int
+			var token *string
+			if err := owner.QueryRow(ctx, `SELECT count(*) FROM tasks.settlements WHERE task_id = $1::uuid AND claim_token = $2::uuid`, task.ID, claim.Token).Scan(&settlementCount); err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.QueryRow(ctx, `SELECT spent, reserved, claim_token::text FROM tasks.tasks WHERE id = $1::uuid`, task.ID).Scan(&spent, &reserved, &token); err != nil {
+				t.Fatal(err)
+			}
+			if settlementCount != 1 || spent != 500 || reserved != 0 || token != nil {
+				t.Fatalf("cleanup settlements=%d spent=%d reserved=%d token=%v", settlementCount, spent, reserved, token)
+			}
+		})
 	}
 }
 

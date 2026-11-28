@@ -903,6 +903,15 @@ func TestRunnerGrantMap(t *testing.T) {
 		t.Fatalf("runner execute identity.runner_access: %v", err)
 	}
 	rows.Close()
+	for _, role := range []string{"upmo_app", "upmo_gateway", "upmo_sandbox", "upmo_runner"} {
+		var canExecute bool
+		if err := owner.QueryRow(ctx, `SELECT has_function_privilege($1, 'identity.runner_access(uuid)', 'EXECUTE')`, role).Scan(&canExecute); err != nil {
+			t.Fatal(err)
+		}
+		if canExecute != (role == "upmo_runner") {
+			t.Errorf("%s execute identity.runner_access = %t, want %t", role, canExecute, role == "upmo_runner")
+		}
+	}
 	appPool := pgtest.AppLogin(t, owner)
 	if _, err := appPool.Exec(ctx, `SELECT * FROM identity.runner_access('00000000-0000-0000-0000-000000000000'::uuid)`); pgCode(err) != "42501" {
 		t.Fatalf("app execute identity.runner_access = %v, want 42501", err)

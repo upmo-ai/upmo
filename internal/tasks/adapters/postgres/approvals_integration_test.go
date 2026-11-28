@@ -458,7 +458,7 @@ func TestRunnerOwnedFailKeepsEditorStopAndSharedControls(t *testing.T) {
 		UserID: otherUser, Allow: "task:view,task:edit",
 		SharedView: "{" + task.ID + "}", SharedEdit: "{" + task.ID + "}",
 	}
-	h := approvalServer(store, map[string]app.Access{"owner": ownerAccess})
+	h := approvalServer(store, map[string]app.Access{"owner": ownerAccess, "editor": editor})
 
 	if _, err := app.ApplyTransition(ctx, store, otherAccess, task.ID, domain.Input{Kind: domain.Fail}); !errors.Is(err, app.ErrGone) {
 		t.Fatalf("stranger Fail = %v, want ErrGone", err)
@@ -488,8 +488,24 @@ func TestRunnerOwnedFailKeepsEditorStopAndSharedControls(t *testing.T) {
 	manual := reach(t, store, "Shared manual fail", domain.Working)
 	manualEditor := app.Access{UserID: otherUser, Allow: otherAccess.Allow,
 		SharedView: "{" + manual.ID + "}", SharedEdit: "{" + manual.ID + "}"}
+	manualApproval := request(t, store, manual.ID)
+	manualH := approvalServer(store, map[string]app.Access{"owner": ownerAccess})
+	if code, body := send(manualH, "owner", http.MethodGet, "/api/approvals"); code != http.StatusOK || len(decode[[]approvalJSON](t, body)) != 1 {
+		t.Fatalf("manual approval list before fail = %d %s", code, body)
+	}
 	if _, err := app.ApplyTransition(ctx, store, manualEditor, manual.ID, domain.Input{Kind: domain.Fail}); err != nil {
 		t.Fatalf("shared editor Fail on non-runner-owned task = %v", err)
+	}
+	var manualApprovalState string
+	var manualApprovalDecided bool
+	if err := owner.QueryRow(ctx, `SELECT state, decided_at IS NOT NULL FROM tasks.approvals WHERE id = $1`, manualApproval.ID).Scan(&manualApprovalState, &manualApprovalDecided); err != nil {
+		t.Fatal(err)
+	}
+	if manualApprovalState != "closed" || !manualApprovalDecided {
+		t.Fatalf("manual approval = %s decided %t, want closed and decided", manualApprovalState, manualApprovalDecided)
+	}
+	if code, body := send(manualH, "owner", http.MethodGet, "/api/approvals"); code != http.StatusOK || strings.TrimSpace(string(body)) != `[]` {
+		t.Fatalf("list after manual fail = %d %s", code, body)
 	}
 }
 
